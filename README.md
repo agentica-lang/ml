@@ -4,7 +4,7 @@ Machine learning for Agentica: tensors, training and inference over adaptable
 backends (libtorch, XLA, candle). The API is functional, in the style of JAX and
 Nx: values are immutable, and a training step returns new parameters.
 
-Status: design only. The design and its open decisions are in the design issue;
+Status: design only. The design and its open decisions are in [issue #1](https://github.com/agentica-lang/ml/issues/1);
 no package exists yet.
 
 ## Packages
