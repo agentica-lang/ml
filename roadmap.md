@@ -169,10 +169,12 @@ congelada del backend.
 - Valida el patrón native-gen + C++ pesado + prebuilt antes del torch.
 
 **Vía B — Whisper puro sobre `tensor`/`nn`/`hub` (el examen final).**
-- `nn/` se diseña **driven por transformers**: lo que Whisper necesita —
-  `matmul`, `softmax`, `layer_norm`, multi-head attention, `gelu/silu`,
-  `conv1d` (frontend), embeddings posicionales, `argmax`/greedy + beam
-  search, temperatura. Si falta un op para Whisper, entra en el set mínimo.
+- `nn/` se diseña driven por transformers: los requisitos genéricos de un
+  cliente de inferencia están en `tensor/DESIGN.md` §5 (`matmul`, `softmax`,
+  `layer_norm`, multi-head attention, `gelu/silu`, `conv1d` para un stem
+  acústico, embeddings posicionales, `argmax`/greedy + beam search,
+  temperatura). Si el cliente necesita un op que falte, entra en el contrato
+  antes de congelarlo.
 - Frontend log-mel (80 bins, ventanas 30 s) en Agentica puro donde sea
   viable, nativo solo si el spike lo exige (STFT/mel es el primer candidato
   a `compute def`).
@@ -241,8 +243,8 @@ linalg (`matmul`, `dot`, transpose) · forma (`reshape/squeeze/unsqueeze`,
    (solo necesita native-gen + un `whisper.cpp` compilable; no depende del
    diseño de `tensor/`). Lector WAV 16 kHz en Agentica puro + test con wav
    de referencia ES + modelo small/medium.
-4. Escribir el diseño detallado de `tensor/` (tipos + las ~60 firmas)
-   **con el checklist de ops de Whisper-B** (Fase W) como requisito.
+4. Diseño de `tensor/` **ya escrito**: `tensor/DESIGN.md` (contrato y
+   decisiones abiertas). Lo siguiente es el spike M0 y el detalle por firma.
 5. `cli.agc new torch` en este repo, header inicial, spike M0.
 6. Fijar `AGENTICA_VERSION` + tag de native-gen y abrir el workspace.
 
