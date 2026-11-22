@@ -8,6 +8,7 @@
 #define WHISPER_NATIVE_IMPLEMENTATION
 #include "whisper_native.h"
 
+#include <float.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -136,7 +137,10 @@ an_term whisper_transcribe(an_env *env, struct whisper_Model_state *model, whisp
   int more = 0;
 
   while ((more = whisper_list_Float_next(env, &pcm, &x)) == 1) {
-    if (!isfinite(x)) {
+    /* The cast below can round a finite double to infinite float (1.0e300
+       and kin), so the range is checked on the double: only values the
+       float keeps reach whisper_full, per the documented contract. */
+    if (!isfinite(x) || fabs(x) > (double)FLT_MAX) {
       free(samples);
       static const char message[] = "transcribe needs finite samples";
       return an_error(env, message, sizeof message - 1);
