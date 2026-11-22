@@ -145,3 +145,33 @@ def test_merge_segments_drops_empty_text() -> Result[Void]
   segments = [Whisper.Segment(start_ms: 0, end_ms: 500, text: "   ")]
   Test.eq(Stream.merge_segments(segments), [])
 end
+
+def test_merge_segments_dedupes_exact_duplicates() -> Result[Void]
+  segment = Whisper.Segment(start_ms: 1_000, end_ms: 2_000, text: "hola")
+  kept = Stream.merge_segments([segment, segment])
+  try Test.eq(kept.size, 1)
+  Test.eq(kept[0], segment)
+end
+
+def test_window_offset_and_merge_cover_a_stream_end_to_end() -> Result[Void]
+  wins = try Stream.windows(List.repeat(0.0, 1_000), 300, 100)
+  try Test.eq(wins[2].start_sample, 400)
+  first = Stream.offset_segments(
+    [Whisper.Segment(start_ms: 0, end_ms: 500, text: "hola")],
+    (wins[0].start_sample * 1000) / 16_000,
+  )
+
+  third = Stream.offset_segments(
+    [
+      Whisper.Segment(start_ms: 0, end_ms: 500, text: "hola"),
+      Whisper.Segment(start_ms: 100, end_ms: 600, text: "mundo"),
+    ],
+    (wins[2].start_sample * 1000) / 16_000,
+  )
+
+  kept = Stream.merge_segments(first + third)
+  try Test.eq(kept.size, 2)
+  try Test.eq(kept[0].start_ms, 0)
+  try Test.eq(kept[1].start_ms, 125)
+  Test.eq(kept[1].text, "mundo")
+end

@@ -63,3 +63,30 @@ def test_capture_names_a_missing_command() -> Result[Void]
     error(e) -> Test.eq(e.message, "process: executable is unavailable")
   end
 end
+
+def test_capture_returns_partial_audio_when_the_command_exits_cleanly() -> Result[Void]
+  spec = Mic.default_capture().with(command: "sh", args: ["-c", "printf '\\001\\000'"], timeout_ms: 5_000)
+  Test.eq(try Mic.capture(spec), [1.0 / 32_768.0])
+end
+
+def test_capture_discards_partial_audio_when_the_command_fails() -> Result[Void]
+  spec = Mic.default_capture().with(command: "sh", args: ["-c", "printf '\\001\\000'; exit 3"], timeout_ms: 5_000)
+  case Mic.capture(spec)
+    ok(_) -> Test.assert(false, "capture returned audio from a failed command")
+    error(e) ->
+      Test.eq(e.message, "mic: the capture command failed (exit 3; partial audio is discarded, never returned)")
+  end
+end
+
+def test_capture_stops_at_the_cap_without_checking_the_status() -> Result[Void]
+  spec = Mic.default_capture().with(
+    command: "sh",
+    args: ["-c", "head -c 100000 /dev/zero"],
+    max_samples: 8_000,
+    timeout_ms: 5_000,
+  )
+
+  samples = try Mic.capture(spec)
+  try Test.eq(samples.size, 8_000)
+  Test.eq(samples.take(2), [0.0, 0.0])
+end

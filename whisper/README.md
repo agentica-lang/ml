@@ -99,7 +99,18 @@ samples = try Mic.capture(Mic.default_capture())
 - The capture reads standard output in ~1 s chunks until the cap or the end
   of the output, then closes the process on every path (a read timeout kills
   it first), and decodes with `Mic.decode_s16le`. The tool's standard error
-  passes through to ours, so a missing device explains itself there.
+  passes through to ours, so a missing device explains itself there; keep
+  the invocation quiet (`-q`, `-hide_banner -nostats -loglevel error`) or
+  route its stderr away (`sh -c '... 2>/dev/null'`), since a chatty child
+  (an ffmpeg banner) fills that buffer and stalls the read until the
+  timeout. Only `arecord` is pinned and tested.
+- A command that dies on its own reports its status: a nonzero exit on the
+  natural end of its output (ALSA xrun, unplug, exit 1) is
+  `mic: the capture command failed (exit N; ...)`, and the partial audio is
+  discarded, never returned — a truncated utterance cannot transcribe as if
+  complete. Partial audio is returned only when the command exited 0 (for
+  example `arecord -d 2` with a longer cap); on the cap path the kill is
+  deliberate, so the status is meaningless and unchecked.
 - `Mic.Source` is what the tests feed instead of a device:
   `Mic.Source.Samples(pcm)` for synthetic PCM, `Mic.Source.Command(spec)`
   for a live capture; `Mic.read` resolves either to samples.
@@ -135,10 +146,16 @@ segments = try Stream.transcribe_stream(model, Mic.Source.Samples(pcm), Stream.d
   all kept: the merge never drops words, it only drops copies.
 - Latency is the sum of the window decodes, and every returned segment is
   final (each window is decoded whole): there are no partial hypotheses.
+  The merge only dedupes same-text overlaps: the same speech transcribed
+  with different words in two windows is kept twice, by design (dropping
+  words is worse than doubling them).
   What is not implemented: true low-latency streaming (no incremental
   `Channel` of segments: one would need a producer task outliving the call,
   which breaks this package's rule that no call leaves a task or a process
-  running), barge-in, and resampling of arbitrary device rates.
+  running), barge-in, and resampling of arbitrary device rates. The capture
+  spawns one command with no process group: invoke the tool directly rather
+  than through a `sh -c` wrapper with grandchildren, since closing kills the
+  direct child only and descendants may outlive it (see `Process` `pgroup`).
 
 ## Local setup
 
@@ -197,7 +214,7 @@ agentica live/transcribe_spanish.agc   # Spanish, options and timed segments
 The three layers differ in what they are allowed to need, so a failure points
 at one of them:
 
-- **Model-free and offline** (`agentica test`, 38 tests): the WAV reader on
+- **Model-free and offline** (`agentica test`, 43 tests): the WAV reader on
   synthetic fixtures (formats, chunks, errors, file round-trip), the binding's
   pure half (`Options` defaults, `join_text` on hand-built `Segment`s:
   trimming, dropped empty segments, one space between, `""` for none), the
@@ -205,13 +222,17 @@ at one of them:
   error; a path past 4096 bytes is refused), the capture layer with no
   device (the pinned `arecord` invocation, the s16le conversion down to the
   odd byte, the fake `Source`, a missing command as
-  `process: executable is unavailable`, the bound and timeout guards), and
-  the streaming layer with no model (the default walk and its validation,
+  `process: executable is unavailable`, the bound and timeout guards, and
+  the exit-status paths over synthetic shell commands: clean exit returns
+  partial audio, a failing exit discards it, the cap kills without checking),
+  and the streaming layer with no model (the default walk and its validation,
   RMS/is-speech/has-speech on synthetic frames including the threshold edge,
   window boundaries with overlap, short tails and short streams, timestamp
-  offsetting, same-text overlap dedupe with distinct and disjoint text kept
-  and empty text dropped). It still links the built engine, so CI builds it
-  first; no weights, no device and no network are involved, which is why it
+  offsetting, same-text overlap dedupe with distinct and disjoint text kept,
+  empty text dropped, an exact duplicate, and an end-to-end offset-plus-merge
+  over a non-zero window start). It still links the built engine, so CI builds
+  it first; no weights, no device and no network are involved (the shell
+  commands are hermetic: `printf`, `head`, `/dev/zero`), which is why it
   runs before the download.
 - **Live, model-bound** (`agentica test live/`, 6 tests, needs the downloaded
   tiny model): real weights load through the FFI, real inference on 0.1 s of
@@ -263,12 +284,16 @@ at one of them:
 
 CI (no microphone, no sound card) proves everything above except live
 capture: the offline suite, the tiny-model live tests (including the stream
-walk over silent windows), the SKIP path of the microphone test (it passes,
-printing its SKIP lines), and both transcription programs. A human with a
-mic proves the rest by running `agentica test live/mic_live_test.agc` where
-a capture command and a device exist: the test then takes the capture path
-and asserts the samples. CI must never gate on that path, and the test must
-never pass silently on it: without a device it prints why it skipped.
+walk over silent windows), the SKIP path of the microphone test (it passes),
+and both transcription programs. The runner shows passing tests as PASS
+only, so the SKIP text is not visible in CI logs: the honesty is structural,
+not printed — the test only skips on the device-less errors (a missing
+command, no audio, a command that died mid-capture, a hung read) and fails
+on anything else, so a broken capture cannot masquerade as "no microphone".
+A human with a mic proves the rest by running
+`agentica test live/mic_live_test.agc` where a capture command and a device
+exist: the test then takes the capture path and asserts the samples. CI must
+never gate on that path, and the test must never pass silently on it.
 
 ### The Spanish fixture
 
@@ -294,9 +319,12 @@ the language copy and the segment list on every path, and holds the per-model
 mutex only for the decode itself.
 
 One `Mic.capture` keeps 1–4 800 000 samples (five minutes at most) with a
-timeout of at least 1 ms per read; a missing command, a timed-out read, or
-no audio at all is an `error`, and the device process is closed on every
-path, so no call leaves a process running. One `Stream.transcribe_stream`
+timeout of at least 1 ms per read; a missing command, a timed-out read, no
+audio at all, or a command that died mid-capture (nonzero exit on the natural
+end of its output) is an `error`, and the device process is closed on every
+path, so no call leaves a process running. Partial audio is returned only
+when the command exited 0; a nonzero exit discards it, and the cap path
+kills deliberately without checking the status. One `Stream.transcribe_stream`
 checks its walk first (`window_s` 1..300 s, `overlap_s` inside its window,
 `frame_ms` 1..1000 ms, `threshold` 0.0..1.0), refuses empty input, then
 decodes each speech window within the per-call bound and merges. Window
