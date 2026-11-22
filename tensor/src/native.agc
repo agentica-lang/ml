@@ -1,4 +1,4 @@
-## The native side of the libtorch backend: the thirty-seven calls of
+## The native side of the libtorch backend: the thirty-six calls of
 ## `native/torch.c`, a thin C++ layer over libtorch's C++ API (as `tch-rs` is),
 ## behind the `extern module` block below.
 ##

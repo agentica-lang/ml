@@ -20,6 +20,8 @@ end
 
 ## The axes `axes` will reduce: every axis for `none`, the named ones for
 ## `some`, after checking each names a distinct axis of a rank-`rank` tensor.
+## The wrapper (`tensor.agc`) has already sorted them ascending, which is the
+## order this backend and the reference both number a reduced block by.
 def normalize_axes(axes: Optional[List[Int]], rank: Int, op: String) -> Result[List[Int]]
   case axes
     some(given) ->
@@ -37,14 +39,6 @@ def check_axes(axes: List[Int], rank: Int, op: String) -> Result[Bool]
 
   return error("#{op} names an axis twice, got #{axes}") if axes.uniq.size != axes.size
   ok(true)
-end
-
-## `none` is every axis; entries name distinct axes of a rank-`rank` tensor.
-def check_axes_option(axes: Optional[List[Int]], rank: Int, op: String) -> Result[Bool]
-  case axes
-    some(given) -> check_axes(given, rank, op)
-    none -> ok(true)
-  end
 end
 
 ## The shape left after reducing `axes`: dropped, or `1` with `keep_dims`.

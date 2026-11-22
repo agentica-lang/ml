@@ -142,13 +142,14 @@ static an_term error_text(an_env *env, const std::string &message) {
 
 /* The answer of a call libtorch threw out of: `failed` is called from the
    `catch (...)` of every entry point, so one text covers a `c10::Error`, any
-   other `std::exception`, and a throw that is neither (which would otherwise
-   unwind across the C boundary). */
+   other `std::exception` (a `std::bad_alloc`, say), and a throw that is neither
+   (which would otherwise unwind across the C boundary). Every branch names the
+   op, so a message that came from libtorch still says where it came from. */
 static an_term failed(an_env *env, const char *op) {
   try {
     throw;
   } catch (const std::exception &e) {
-    return error_text(env, e.what());
+    return error_text(env, std::string(op) + ": " + e.what());
   } catch (...) {
     return error_text(env, std::string(op) + " failed inside libtorch");
   }

@@ -21,6 +21,10 @@
 ##   before dispatch (§9); element domains (divisors, `log`/`sqrt`/`pow`
 ##   inputs, index bounds) and value-count matches live in the backend that
 ##   owns the storage, which is the only place that can see them.
+## - Reduction `axes` are a set: `none` is every axis, and a named list is
+##   sorted ascending in the wrapper before dispatch. `argmax` numbers the
+##   position inside a reduced block by that order, so sorting is what keeps
+##   the backends breaking a tie between two axes on the same element.
 ## - Dtypes: numeric compute is `F32`; `F16`/`F64` compute exactly in doubles
 ##   (a native `F32` backend rounds on its side, which is the tolerance the
 ##   conformance suite quotes).
@@ -422,13 +426,15 @@ def clamp(t: Types.Tensor, lo: Float, hi: Float) -> Result[Types.Tensor]
   end
 end
 
-## Sums every element (`none`) or the named `axes`, float only.
+## Sums every element (`none`) or the named `axes`, float only. `axes` is a
+## set: the wrapper hands the backend the ascending order, which is the order
+## `argmax` numbers a reduced block by (`README.md`, "What is implemented").
 def sum(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = false) -> Result[Types.Tensor]
   _ = try float_only(t, "sum")
-  _ = try check_axes_option(axes, t.shape.size, "sum")
+  axs = try normalize_axes_option(axes, t.shape.size, "sum")
   case t.backend
-    Types.Backend.Reference -> Reference.sum(t, axes, keep_dims)
-    Types.Backend.Torch(device) -> Torch.sum(device, t, axes, keep_dims)
+    Types.Backend.Reference -> Reference.sum(t, axs, keep_dims)
+    Types.Backend.Torch(device) -> Torch.sum(device, t, axs, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -437,10 +443,10 @@ end
 ## `sum` divided by the reduced count, float only.
 def mean(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = false) -> Result[Types.Tensor]
   _ = try float_only(t, "mean")
-  _ = try check_axes_option(axes, t.shape.size, "mean")
+  axs = try normalize_axes_option(axes, t.shape.size, "mean")
   case t.backend
-    Types.Backend.Reference -> Reference.mean(t, axes, keep_dims)
-    Types.Backend.Torch(device) -> Torch.mean(device, t, axes, keep_dims)
+    Types.Backend.Reference -> Reference.mean(t, axs, keep_dims)
+    Types.Backend.Torch(device) -> Torch.mean(device, t, axs, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -449,22 +455,25 @@ end
 ## The largest value per reduced block, float only.
 def max(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = false) -> Result[Types.Tensor]
   _ = try float_only(t, "max")
-  _ = try check_axes_option(axes, t.shape.size, "max")
+  axs = try normalize_axes_option(axes, t.shape.size, "max")
   case t.backend
-    Types.Backend.Reference -> Reference.max(t, axes, keep_dims)
-    Types.Backend.Torch(device) -> Torch.max(device, t, axes, keep_dims)
+    Types.Backend.Reference -> Reference.max(t, axs, keep_dims)
+    Types.Backend.Torch(device) -> Torch.max(device, t, axs, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
 end
 
-## The index of the largest value per reduced block, as `I64`.
+## The index of the largest value per reduced block, as `I64`. The position is
+## the row-major offset inside the reduced block, numbered by the ascending
+## `axes`, and a tie keeps the lowest one — on both backends, because the
+## wrapper sorts the axes before dispatch.
 def argmax(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = false) -> Result[Types.Tensor]
   _ = try float_only(t, "argmax")
-  _ = try check_axes_option(axes, t.shape.size, "argmax")
+  axs = try normalize_axes_option(axes, t.shape.size, "argmax")
   case t.backend
-    Types.Backend.Reference -> Reference.argmax(t, axes, keep_dims)
-    Types.Backend.Torch(device) -> Torch.argmax(device, t, axes, keep_dims)
+    Types.Backend.Reference -> Reference.argmax(t, axs, keep_dims)
+    Types.Backend.Torch(device) -> Torch.argmax(device, t, axs, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -1094,10 +1103,18 @@ def float_or_int(t: Types.Tensor, op: String) -> Result[Bool]
 end
 
 ## `none` is every axis; entries name distinct axes of a rank-`rank` tensor.
-def check_axes_option(axes: Optional[List[Int]], rank: Int, op: String) -> Result[Bool]
+## The answer is what every backend takes: `none`, or the axes in ascending
+## order. Reductions are order-independent, but `argmax` numbers the position
+## inside a reduced block by the order of its axes, and the two backends walk
+## the tensor differently, so `some([2, 0])` would number `(i0=0, i2=1)` and
+## `(i0=1, i2=0)` the other way round on each side and break a tie between them
+## on different elements. Sorting here is the one place the rule lives.
+def normalize_axes_option(axes: Optional[List[Int]], rank: Int, op: String) -> Result[Optional[List[Int]]]
   case axes
-    some(given) -> check_axes(given, rank, op)
-    none -> ok(true)
+    some(given) ->
+      _ = try check_axes(given, rank, op)
+      ok(some(given.sort))
+    none -> ok(none)
   end
 end
 

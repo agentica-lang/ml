@@ -24,7 +24,7 @@ answers whether this machine has it, and the dispatch arm answers
 - `src/torch.agc` — the libtorch backend: the §3.1 primitives libtorch
   expresses, per-op checks, and one `Native.arena` per call (§8).
 - `src/native.agc` — the FFI boundary and nothing else: `resource
-  TensorHandle` and the thirty-seven `compute def` calls. The generated header
+  TensorHandle` and the thirty-six `compute def` calls. The generated header
   `native/torch_native.h` comes from this file (native-gen).
 - `src/torch_dtypes.agc`, `src/torch_shapes.agc` — the dtype table with the
   codes that cross to C, the two conversions between a storage double and a
@@ -106,6 +106,19 @@ refuse exactly the same windows. `conv1d` takes `[C_in, L]` or
 length, and both refuse an empty input, a window wider than the padded input
 and a channel-count mismatch.
 
+Reduction `axes` are a **set**, and the wrapper hands every backend the
+ascending order (`tensor.agc`, `normalize_axes_option`). That is not cosmetic:
+`argmax` numbers the position inside a reduced block by the order of its axes,
+and the two backends walk a tensor differently — the reference row-major, over
+the whole tensor, libtorch one permuted axis at a time — so a literal
+`some([2, 0])` would number the same element two ways and break a tie between
+`(i0=0, i2=2)` and `(i0=1, i2=0)` on different elements (`argmax` of the raw
+`[2, 1, 3]` block answers `1` on one side and `2` on the other). Sorting in the
+one place that both backends share fixes the order and the tie:
+`argmax(x, some([2, 0]))` and `argmax(x, some([0, 2]))` are the same call, and
+`test/torch_reductions_test.agc` pins both the tie and the numbering on a block
+whose reduced axes have different sizes.
+
 Two more honest limits of what crosses the boundary:
 
 - shapes, dtypes and devices cross as `List[Int]`, an `Int` code and nothing
@@ -175,7 +188,7 @@ download it cannot pin by sha256 would be worse than not running. So:
   libtorch are the same one-line warning inside a green job.
 - what was run locally, by hand, with libtorch 2.4.1+cpu at `$HOME/opt/libtorch`:
   `agentica check`, `agentica fmt --check`, the header `--check`, `agentica
-  test` (318 tests: the reference suite plus the libtorch conformance suite)
+  test` (321 tests: the reference suite plus the libtorch conformance suite)
   and `agentica tools/bench.agc`.
 
 The exit is a **non-required** CI job that installs libtorch pinned by sha256

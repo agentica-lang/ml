@@ -185,3 +185,48 @@ def test_argmax_rejects_an_int_tensor_on_both_backends() -> Result[Void]
   try Test.error?(Tensor.argmax(try Conform.on_torch_i64([1, 2], [2])))
   Test.error?(Tensor.argmax(try Conform.on_ref_i64([1, 2], [2])))
 end
+
+def test_argmax_with_unsorted_axes_breaks_ties_in_ascending_order() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  # `[2, 1, 2]` with a tie between (i0=0, i2=1) and (i0=1, i2=0), asked for with
+  # `axes = [2, 0]`. The wrapper reads the axes as the ascending set {0, 2}, so
+  # the position inside the block is the row-major offset of that order: 1 for
+  # (i0=0, i2=1) and 2 for (i0=1, i2=0), and the tie goes to 1.
+  data = [1.0, 5.0, 5.0, 0.0]
+  ours = try Tensor.argmax(try Conform.on_torch(data, [2, 1, 2]), some([2, 0]))
+  theirs = try Tensor.argmax(try Conform.on_ref(data, [2, 1, 2]), some([2, 0]))
+  try Test.eq(Tensor.shape(ours), [1])
+  try Test.eq(try Conform.ints_of(ours), [1])
+  Conform.agrees(ours, theirs, "argmax with unsorted axes")
+end
+
+def test_argmax_with_unsorted_axes_numbers_the_block_by_the_ascending_order() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  # The two reduced axes have different sizes, which is where the order of the
+  # axes is visible in the number, not just in the tie. `[2, 1, 3]` under
+  # `{0, 2}` numbers the block as `i0 * 3 + i2`, so the unique maximum at
+  # (i0=1, i2=2) is 5. Reading `[2, 0]` literally would number it `i2 * 2 + i0`
+  # on one side and `i0 * 2 + i2` on the other, and the two backends would
+  # answer 5 and 4.
+  data = [1.0, 2.0, 3.0, 4.0, 5.0, 9.0]
+  ours = try Tensor.argmax(try Conform.on_torch(data, [2, 1, 3]), some([2, 0]), keep_dims: true)
+  theirs = try Tensor.argmax(try Conform.on_ref(data, [2, 1, 3]), some([2, 0]), keep_dims: true)
+  try Test.eq(Tensor.shape(ours), [1, 1, 1])
+  try Test.eq(try Conform.ints_of(ours), [5])
+  Conform.agrees(ours, theirs, "argmax with unsorted axes and no tie")
+end
+
+def test_argmax_with_unsorted_axes_breaks_a_tie_over_uneven_axes() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  # A tie between (i0=0, i2=2) and (i0=1, i2=0), with `[2, 1, 3]` and `{0, 2}`:
+  # their offsets are 2 and 3, so the lower one wins. Read literally, the two
+  # backends collide on those two elements and answer 1 and 2 instead.
+  data = [1.0, 2.0, 9.0, 9.0, 5.0, 6.0]
+  ours = try Tensor.argmax(try Conform.on_torch(data, [2, 1, 3]), some([2, 0]))
+  theirs = try Tensor.argmax(try Conform.on_ref(data, [2, 1, 3]), some([2, 0]))
+  try Test.eq(try Conform.ints_of(ours), [2])
+  Conform.agrees(ours, theirs, "argmax tie over uneven axes")
+end
