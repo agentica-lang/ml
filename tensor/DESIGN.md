@@ -34,14 +34,15 @@ Out of scope here (each gets its own design):
   primitives.
 - A ggml quantized backend: quantized checkpoints are consumed by
   specialized bindings, not by this stack.
-- Final signatures: the `.agc` and generated header are the contract once
-  written (§4).
+- Final signatures (§4).
 
 ## 2. Types (proposal)
 
 ```text
 Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool   # proposal
+Device  = cpu | cuda(Int)                                      # proposal
 Shape   = List[Int]                                            # static ints, row-major C-order
+Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
 Backend = reference | torch(Device) | xla(Device) | candle(Device)   # proposal, see §7
 Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Resource | Data }
 ```
@@ -55,11 +56,12 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Resource | Dat
   source of signatures; native-gen regenerates the header; blocking work is
   `compute def` on the compute pool; `List`/`Map` cross via cursors/builders).
 - **Inference-first dtype rule (proposal):** numeric compute is `F32`; `F16`
-  weights load-and-cast to it. Two kinds of non-`F32` compute tensors are
-  required by the op set itself: `Bool` masks (`eq`, `lt`, the condition of
-  `where`) and integer index tensors (`gather` indices, `argmax` output).
-  The rest of the table exists for checkpoint loading (§6) and grows only when
-  a consumer requirement (§5) or conformance demands it.
+  and `F64` weights are converted to it on load (§6, lossy for `F64`). Two
+  kinds of non-`F32` compute tensors are required by the op set itself: `Bool`
+  masks (`eq`, `lt`, the condition of `where`) and integer index tensors
+  (`gather` indices, `argmax` output). The other table entries are checkpoint
+  dtypes only (§6), kept as indices or masks at runtime; the table grows only
+  when a consumer requirement (§5) or conformance demands it.
 - No operator overloading (ml#1 question 2): `Tensor.add(a, b)` plus pipes
   (`t |> Tensor.add(other) |> Tensor.relu()`). If the language ever allows
   `a + b` on user structs, it is sugar over this.
@@ -70,11 +72,11 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Resource | Dat
 is **derived**: pure Agentica code over primitives, shared by all backends
 and therefore tested once.
 
-### 3.1 Primitives (proposal: the backend contract, ~45 ops inference subset)
+### 3.1 Primitives (proposal: the backend contract, 45 ops inference subset)
 
 Creation: `zeros, ones, empty, full, like, arange, scalar_to_tensor`.
 Elementwise: `add, sub, mul, div, neg, exp, log, sqrt, pow, relu, sigmoid,
-tanh, gelu_tanh_approx?, eq, lt, where, clamp`.
+tanh, gelu_tanh_approx, eq, lt, where, clamp`.
 Reductions: `sum, mean, max, argmax` (each with `axes: Optional[List[Int]]`,
 `keep_dims: Bool`).
 Linear algebra: `matmul, transpose, batch_matmul` (batched `matmul` covers
@@ -85,18 +87,17 @@ is derived).
 Normalization support: `rsqrt, mean_var` are **not** primitives —
 `layer_norm` is derived (§3.2); the backend only needs the pieces above plus
 `broadcast_to`.
-Convolution/pooling: `conv1d, avg_pool1d` (a transformer frontend needs `conv1d`;
- anything beyond stride/padding-1D is decided by the spike).
-Random: **out** for inference v1 (dropout is identity at inference;
- stochastic sampling stays behind an explicit key in the later training set).
+Convolution/pooling: `conv1d, avg_pool1d` (a transformer frontend needs
+`conv1d`; anything beyond stride/padding-1D is decided by the spike).
+Random: **out** for inference v1 (dropout is identity at inference; stochastic
+sampling stays behind an explicit key in the later training set).
 Movement: `to_dtype, to_device, copy, contiguous`.
 
-Deliberately missing: `softmax`, `layer_norm`, attention, `gelu` exact,
-`silu`, beam search, STFT/mel — all derived or host-side (§3.2, §5).
+Deliberately missing: `softmax`, `layer_norm`, attention, the exact (`erf`)
+`gelu`, `silu`, beam search, STFT/mel — all derived or host-side (§3.2, §5).
 
-The names above are 45 (44 without the optional `gelu_tanh_approx?`). Keyed
-random and the training-only ops of §10 are outside this inference subset but
-inside the frozen contract.
+The names above are 45. Keyed random and the training-only ops of §10 are
+outside this inference subset but inside the frozen contract.
 
 ### 3.2 Derived ops (pure Agentica, backend-agnostic)
 
@@ -105,8 +106,9 @@ Built only from §3.1, in `tensor/` (generic) or `nn/` (model-shaped):
 - `softmax(x, axis) = div(exp(sub(x, max)), sum(...))` with max-subtraction.
 - `layer_norm(x)`, `rms_norm(x)` from `mean`, `pow`, `sqrt` and `div`
   compositions over §3.1 (no `var`/`rsqrt` primitive is needed).
-- `gelu` (the `tanh` approximation of §3.1), `silu` from `sigmoid` and `mul`.
-  The `erf` form cannot be expressed over §3.1 and is not offered.
+- `gelu` is the user-facing name of `gelu_tanh_approx` (§3.1); the `erf` form
+  cannot be expressed over §3.1 and is not offered. `silu` derives from
+  `sigmoid` and `mul`.
 - `dot(a, b)` as `reshape` + `matmul`; `linear(x, w, b?)`, `embedding(ids,
   table)` via `matmul`/`gather`.
 - `multi_head_attention(q, k, v, mask?)`: split heads by `reshape/transpose`,
@@ -125,11 +127,10 @@ gate for adding ops.
 ## 4. Inference-first API shape (proposal)
 
 ```text
-Tensor.zeros(shape, dtype, backend) -> Tensor | error
-Tensor.from_list(data: List[Float] | List[Int] | List[Bool], shape, dtype, backend)
-                                                  -> Tensor | error
-Tensor.to_list(t) -> Result[List[Float] | List[Int] | List[Bool]]
-                                                  # host readback, tests + decode loop
+Tensor.zeros(shape, dtype, backend) -> Result[Tensor]
+Tensor.from_list(data: List[Values], shape, dtype, backend)
+                                                  -> Result[Tensor]
+Tensor.to_list(t) -> Result[List[Values]]         # host readback, tests + decode loop
 Tensor.shape(t) -> Shape                          # no native call
 Tensor.dtype(t) -> Dtype                          # no native call
 Tensor.backend(t) -> Backend                      # no native call
@@ -140,8 +141,11 @@ Tensor.backend(t) -> Backend                      # no native call
 - Device is explicit, never a global: dispatch is **by value** (`t.backend`),
   not by global config, so `reference` (oracle) and `torch` can check each
   other in the same process. A backend value carries its device
-  (`torch:cpu`, `torch:cuda:0`); `reference` has none. Batch lives in the
+  (`torch(cpu)`, `torch(cuda(0))`); `reference` has none. Batch lives in the
   shape, not in a global either.
+- Backend-module functions take the device as an explicit first argument
+  (`Torch.matmul(device, a, b)`): dispatch unpacks it from the backend value
+  (§7) and the tensor keeps no second copy of it.
 - The `.agc` signatures plus the generated native header are the contract
   once written; until then this document is the only source, and it is still
   a proposal.
@@ -159,7 +163,7 @@ Encoder/decoder (parametric in size, no model-specific constant here):
 - Positional information via `arange + gather` or `full + add` (no dedicated
   primitive).
 - N blocks of: `layer_norm` (derived) → multi-head self-attention (derived,
-  §3.2) → `layer_norm` → MLP (`linear`, `gelu_tanh_approx`, `linear`).
+  §3.2) → `layer_norm` → MLP (`linear`, `gelu`, `linear`).
 - `conv1d`/`avg_pool1d` are primitives because a consumer needs a 1-D
   convolution stem; a text-only client does not, and that is fine (§5 is the
   gate, not a minimum for every client).
@@ -187,9 +191,9 @@ A client proves the requirements above are met by reproducing, on
   C-order buffer, no strides). No code runs at load; that property is the
   reason for choosing it.
 - Covered dtypes are the safetensors set (`F32/F16/F64`, `I8/I16/I32/I64`,
-  `U8`, `Bool`); numeric tensors upcast to `F32` on load (§2), while integer
-  index tensors and `Bool` masks keep their dtype because the op set needs
-  them.
+  `U8`, `Bool`); numeric tensors are converted to `F32` on load (lossy for
+  `F64`), while integer index tensors and `Bool` masks keep their dtype
+  because the op set needs them (§2).
 - Loader shape (proposal): pure-Agentica header parse (`std/binary` +
   JSON) yielding `{ dtype, shape, offset }` entries, then per-tensor
   `load_slice(path, entry, backend) -> Tensor`. Multi-file sharding and its
@@ -203,16 +207,21 @@ A client proves the requirements above are met by reproducing, on
 ## 7. Backend dispatch (proposal for ml#1 question 1)
 
 Proposal: a `Backend` **enum value carried by each `Tensor`**, with dispatch
-by `case` to one backend module per variant sharing the §3.1 signature set:
+by `case` to one backend module per variant, each sharing the §3.1 signature
+set:
 
 ```text
-case t.backend
-  when reference then Reference.matmul(a, b)
-  when torch(device) then Torch.matmul(device, a, b)
-  # xla / candle join behind the same case
+r: Result[Tensor] = case a.backend
+  reference -> Reference.matmul(a, b)
+  torch(device) -> Torch.matmul(device, a, b)
+  xla(_) -> error("backend not available")     # module not written yet
+  candle(_) -> error("backend not available")  # module not written yet
 end
 ```
 
+- The `case` is checked and exhaustive over all four variants, which is the
+  property this shape buys; `xla` and `candle` return `error` until their
+  modules exist, so the arm set does not change when they land.
 - Why this shape: Agentica is static and already checks before running
   (no `defn` macros as in `Nx.Defn`); an enum + `case` keeps dispatch
   visible to the checker and lets `reference` and `torch` coexist by value
@@ -227,14 +236,15 @@ end
 
 ## 8. Tensor lifetime (proposal for ml#1 question 3)
 
-`agentica#1091` (native arenas) semantics, which this section builds on: `Native.arena do ... end` takes **no
-block parameter**, runs the block, returns its value, and at block end closes
-**newest-first** every native resource and owned buffer the task opened
-inside — except what the return value reaches (struct fields, enum payloads,
-`Result`/`List`/`Map` items; lambda captures do **not** keep). A kept view
-keeps its buffer; kept resources keep their `up` links. Inner arenas hand
-kept resources to the enclosing arena; `try` failure ends the block normally;
-panic/cancel ends the task, which already closes everything newest-first.
+`agentica#1091` (native arenas) semantics, which this section builds on:
+`Native.arena do ... end` takes **no block parameter**, runs the block, returns
+its value, and at block end closes **newest-first** every native resource and
+owned buffer the task opened inside — except what the return value reaches
+(struct fields, enum payloads, `Result`/`List`/`Map` items; lambda captures do
+**not** keep). A kept view keeps its buffer; kept resources keep their `up`
+links. Inner arenas hand kept resources to the enclosing arena; `try` failure
+ends the block normally; panic/cancel ends the task, which already closes
+everything newest-first.
 In-flight `compute def` arguments are held until the call returns (same path
 as `Native.close`); use-after-close is `RUNTIME-NATIVE-CLOSED`, never UB;
 `Task.spawn_owning` transfers ownership, anything else crossing tasks is
@@ -272,20 +282,24 @@ Proposed usage for tensors (needs sign-off):
 - The graph must be compilable (static shapes) so `xla/` can later compile
   it whole via the PJRT C API (`pjrt_c_api.h`, `dlopen` plugin, no own layer).
   `vmap`/`jit` also live in Agentica.
-- Nothing in §3.1–§4 assumes training, but every primitive must be
-  differentiable in Agentica: the trace records the ops, and each op
-  declares its backward rule in `tensor/` (not in a backend). `nn/`
-  (forward-only layers over `tensor/`) and `train/` (losses, SGD/Adam,
-  `Axon.Loop`-style loop with `std/logger`) build on them.
+- Nothing in §3.1–§4 assumes training, but every differentiable primitive
+  declares its backward rule in Agentica: the trace records the ops, and the
+  rule lives in `tensor/`, not in a backend. `nn/` (forward-only layers over
+  `tensor/`) and `train/` (losses, SGD/Adam, `Axon.Loop`-style loop with
+  `std/logger`) build on them.
 - Op admission rule: §3.1 is frozen once, when the contract is written. An op
   that a backward rule needs enters §3.1 then, and so does an op `train/`
   needs with no backward rule of its own — keyed random (`randn`/`randint`/
   `split`) and `stop_grad`/detach. Adding either later would be a breaking
   change to the frozen backend interface.
-- Every §3.1 op has a backward rule expressible over §3.1 itself; an op whose
-  rule needs more admits that op (§3.1).
+- Every differentiable primitive — an `F32`-output arithmetic, linalg, shape
+  or movement op — has a backward rule expressible over §3.1 itself; an op
+  whose rule needs more admits that op (§3.1). `eq`, `lt` and `argmax` give
+  `Bool`/integer values, and `arange`/`empty` have no input to differentiate,
+  so they cut the trace; that is why `stop_grad`, which cuts it too, enters
+  §3.1 with them.
 
-## 11. Conformance and testing (proposal)
+## 11. Conformance (proposal)
 
 - `reference` is the oracle. One shared suite runs on every backend:
   values, shapes, dtypes, and error paths.
