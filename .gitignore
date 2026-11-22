@@ -1,0 +1,7 @@
+# Fetched Agentica packages: the lock is committed, the sources are not.
+deps/
+# Bytecode caches and compiled programs.
+_build/
+*.agcb
+# Downloaded model weights: never enter git (see whisper/tools/fetch-model.sh).
+models/
