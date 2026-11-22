@@ -32,10 +32,21 @@ def test_the_tiny_model_transcribes_silence_to_empty() -> Result[Void]
   Test.eq(text, "")
 end
 
+def test_silence_has_no_text_to_join() -> Result[Void]
+  zeros: List[Float] = []
+  for _i in 0...1600
+    zeros = zeros.push(0.0)
+  end
+
+  model = try Whisper.load_model(MODEL_PATH)
+  segments = try Whisper.transcribe_with(model, zeros, Whisper.Options())
+  Test.eq(Whisper.join_text(segments), "")
+end
+
 def test_transcribe_errors_without_samples() -> Result[Void]
   model = try Whisper.load_model(MODEL_PATH)
   case Whisper.transcribe(model, [])
     ok(_) -> Test.assert(false, "transcribe took no samples")
-    error(e) -> Test.eq(e.message, "transcribe needs at least one sample at 16000 Hz")
+    error(e) -> Test.eq(e.message, "transcribe_with needs at least one sample at 16000 Hz")
   end
 end

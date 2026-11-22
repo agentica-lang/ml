@@ -21,15 +21,14 @@ SAMPLE_PATH = "../third_party/whisper.cpp/samples/jfk.wav"
 MODEL_PATH = "models/ggml-tiny.bin"
 
 ## The greedy transcript of the sample with the pinned tiny model, byte for
-## byte. The leading space is genuine whisper output (its tokenizer starts
-## the segment with a space), not a typo. The exact match holds because
-## decoding is fully deterministic here: WHISPER_SAMPLING_GREEDY takes the
-## argmax at every step (no temperature sampling, no beam search) over fixed
-## weights and fixed 16 kHz PCM, so the same engine pin always yields these
-## bytes; a whisper.cpp upgrade that retokens or rewords needs a new pin.
-EXPECTED = (
-  " And so my fellow Americans ask not what your country can do for you, ask what you can do for your country."
-)
+## byte. The binding trims the text of each segment, so the leading space the
+## tokenizer puts in front of a segment does not appear here: the word
+## sequence and its punctuation are what this pins. The exact match holds
+## because decoding is fully deterministic here: WHISPER_SAMPLING_GREEDY takes
+## the argmax at every step (no temperature sampling, no beam search) over
+## fixed weights and fixed 16 kHz PCM, so the same engine pin always yields
+## these bytes; a whisper.cpp upgrade that retokens or rewords needs a new pin.
+EXPECTED = "And so my fellow Americans ask not what your country can do for you, ask what you can do for your country."
 
 def main() -> Void
   case Whisper.load(SAMPLE_PATH)

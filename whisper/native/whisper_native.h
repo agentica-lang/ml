@@ -30,6 +30,15 @@ typedef struct {
 } ng_buf;
 #endif
 
+/* The rows of the type table: the TYPE of an_struct, an_enum and their getters. */
+enum { WHISPER_TYPE_Options = 0, WHISPER_TYPE_Segment = 1 };
+
+/* The fields of Options, in declared order. */
+enum { WHISPER_Options_language = 0, WHISPER_Options_translate = 1 };
+
+/* The fields of Segment, in declared order. */
+enum { WHISPER_Segment_start_ms = 0, WHISPER_Segment_end_ms = 1, WHISPER_Segment_text = 2 };
+
 /* The rows of the resource table: the TYPE of an_resource_new and an_get_resource. */
 enum { WHISPER_RESOURCE_Model = 0 };
 
@@ -48,6 +57,24 @@ static inline struct whisper_Model_state *whisper_Model_get(an_env *env, an_term
   void *state;
   return an_get_resource(env, t, WHISPER_RESOURCE_Model, &state) ? (struct whisper_Model_state *)state : NULL;
 }
+
+/* The structs and enums as C values. A String or Bytes in them is borrowed, a term lasts for the call: keep them
+   in C locals. _get reads a term into OUT; false when it is not one, and then the call has failed with the path of
+   the first bad part. A function whose signature does not reach the type reads none ("Point: expected Point").
+   _make and the constructors (one per variant) make a term. */
+
+typedef struct {
+  ng_str language;
+  bool translate;
+} whisper_Options;
+bool whisper_Options_get(an_env *env, an_term t, whisper_Options *out);
+
+typedef struct {
+  int64_t start_ms;
+  int64_t end_ms;
+  ng_str text;
+} whisper_Segment;
+an_term whisper_Segment_make(an_env *env, const whisper_Segment *value);
 
 /* The Lists, Maps, Optionals and Results. A List or Map that is read is a cursor: _next gives 1 for an item, 0 at
    the end, and -1 when the item does not decode: the call has then failed with the path of the item in its own
@@ -72,14 +99,23 @@ int whisper_list_Float_next(an_env *env, whisper_list_Float *list, double *out);
 
 an_term whisper_result_Model_ok(an_env *env, an_term value);
 
-an_term whisper_result_String_ok(an_env *env, ng_str value);
+typedef struct {
+  an_list_builder builder;
+} whisper_list_Segment_builder;
+void whisper_list_Segment_begin(an_env *env, whisper_list_Segment_builder *b, size_t hint);
+void whisper_list_Segment_push(an_env *env, whisper_list_Segment_builder *b, whisper_Segment value);
+an_term whisper_list_Segment_end(an_env *env, whisper_list_Segment_builder *b);
+
+an_term whisper_result_list_Segment_ok(an_env *env, an_term value);
 
 /* Loads the model at `path` (a ggml/gguf file); error when it cannot be read. */
 an_term whisper_load_model(an_env *env, ng_str path);
 
 /* Transcribes 16 kHz mono PCM audio (at most five minutes: longer input is
-   an error, so one call is bounded); error when the model cannot run it. */
-an_term whisper_transcribe(an_env *env, struct whisper_Model_state *model, whisper_list_Float pcm);
+   an error, so one call is bounded) as `options` asks, returning the
+   segments the engine emitted, in time order; error when the model cannot
+   run it. */
+an_term whisper_transcribe_with(an_env *env, struct whisper_Model_state *model, whisper_list_Float pcm, whisper_Options options);
 
 #ifdef __cplusplus
 }
@@ -194,6 +230,28 @@ static inline int ng_fail_cursor_item(an_env *env, ng_fail *fail, const char *ty
 }
 #endif
 
+static bool whisper_native_get_Options(an_env *env, an_term t, whisper_Options *out, ng_fail *fail) {
+  an_term x;
+  if (!an_get_field(env, t, WHISPER_TYPE_Options, 0, &x)) return ng_expected(fail, "Options");
+  if (!an_get_string(env, x, &out->language.data, &out->language.len)) return ng_leaf(fail, "String", "language");
+  if (!an_get_field(env, t, WHISPER_TYPE_Options, 1, &x)) return ng_expected(fail, "Options");
+  if (!an_get_bool(env, x, &out->translate)) return ng_leaf(fail, "Bool", "translate");
+  return true;
+}
+
+bool whisper_Options_get(an_env *env, an_term t, whisper_Options *out) {
+  ng_fail fail;
+  return whisper_native_get_Options(env, t, out, &fail) || ng_raise(env, "", "Options", &fail);
+}
+
+an_term whisper_Segment_make(an_env *env, const whisper_Segment *value) {
+  an_term fields[3];
+  fields[0] = an_int(env, value->start_ms);
+  fields[1] = an_int(env, value->end_ms);
+  fields[2] = an_string(env, value->text.data, value->text.len);
+  return an_struct(env, WHISPER_TYPE_Segment, fields);
+}
+
 static bool whisper_native_item_Float(an_env *env, an_term x, double *out, ng_fail *fail) {
   return an_get_float(env, x, &(*out)) || ng_expected(fail, "Float");
 }
@@ -227,8 +285,16 @@ an_term whisper_result_Model_ok(an_env *env, an_term value) {
   return an_ok(env, value);
 }
 
-an_term whisper_result_String_ok(an_env *env, ng_str value) {
-  return an_ok(env, an_string(env, value.data, value.len));
+void whisper_list_Segment_begin(an_env *env, whisper_list_Segment_builder *b, size_t hint) { an_list_begin(env, &b->builder, hint); }
+
+void whisper_list_Segment_push(an_env *env, whisper_list_Segment_builder *b, whisper_Segment value) {
+  an_list_push(env, &b->builder, whisper_Segment_make(env, &value));
+}
+
+an_term whisper_list_Segment_end(an_env *env, whisper_list_Segment_builder *b) { return an_list_end(env, &b->builder); }
+
+an_term whisper_result_list_Segment_ok(an_env *env, an_term value) {
+  return an_ok(env, value);
 }
 
 static an_term whisper_native_load_model(an_env *env, int argc, const an_term *argv) {
@@ -238,7 +304,7 @@ static an_term whisper_native_load_model(an_env *env, int argc, const an_term *a
   return whisper_load_model(env, a0);
 }
 
-static an_term whisper_native_transcribe(an_env *env, int argc, const an_term *argv) {
+static an_term whisper_native_transcribe_with(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   ng_fail fail;
   struct whisper_Model_state *a0 = whisper_Model_get(env, argv[0]);
@@ -247,12 +313,19 @@ static an_term whisper_native_transcribe(an_env *env, int argc, const an_term *a
   if (!whisper_native_open_list_Float(env, argv[1], &a1, &fail))
     return ng_fail_argument(env, &fail, "List[Float]", 1);
   a1.argument = 2;
-  return whisper_transcribe(env, a0, a1);
+  whisper_Options a2;
+  if (!whisper_native_get_Options(env, argv[2], &a2, &fail)) return ng_fail_argument(env, &fail, "Options", 2);
+  return whisper_transcribe_with(env, a0, a1, a2);
 }
 
 static const an_function whisper_native_functions[] = {
   {"load_model", "(String) -> Result[Model]", whisper_native_load_model, AN_DIRTY},
-  {"transcribe", "(Model, List[Float]) -> Result[String]", whisper_native_transcribe, AN_DIRTY},
+  {"transcribe_with", "(Model, List[Float], Options) -> Result[List[Segment]]", whisper_native_transcribe_with, AN_DIRTY},
+};
+
+static const an_type whisper_native_types[] = {
+  {"Options", AN_STRUCT, "language: String, translate: Bool"},
+  {"Segment", AN_STRUCT, "start_ms: Int, end_ms: Int, text: String"},
 };
 
 /* Ends the module's one .c file: the tables and agentica_native_init. LOAD is NULL or a const char *(*)(void)
@@ -261,5 +334,5 @@ static const an_function whisper_native_functions[] = {
   static const an_resource_type whisper_native_resources[] = { \
     {"Model", sizeof(struct whisper_Model_state), WHISPER_Model_FREE}, \
   }; \
-  AN_MODULE_TABLES("whisper", whisper_native_functions, 2, NULL, 0, whisper_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("whisper", whisper_native_functions, 2, whisper_native_types, 2, whisper_native_resources, 1, LOAD)
 #endif
