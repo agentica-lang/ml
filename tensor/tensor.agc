@@ -47,8 +47,8 @@
 ## - The 45 names of §3.1 all exist below; the PR body lists which compute
 ##   and which are stubs, so the gap is explicit rather than hidden.
 
-import Reference from "reference"
-import Types from "types"
+import Reference from "src/reference"
+import Types from "src/types"
 
 export Types.Backend
 export Types.Data
@@ -98,7 +98,7 @@ def ones(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result
 end
 
 ## Creation: `empty` is deterministic `zeros` over plain Agentica data
-## (there is no uninitialized memory to expose; see `reference.agc`).
+## (there is no uninitialized memory to expose; see `src/reference.agc`).
 def empty(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
   case backend
@@ -281,7 +281,7 @@ def sqrt(t: Types.Tensor) -> Result[Types.Tensor]
 end
 
 ## Elementwise `base ** exponent`, float only, exact shapes; `base <= 0`
-## is an error (square with `mul`; see `reference.agc`).
+## is an error (square with `mul`; see `src/reference.agc`).
 def pow(base: Types.Tensor, exponent: Types.Tensor) -> Result[Types.Tensor]
   _ = try same_backend(base, exponent, "pow")
   _ = try same_shape(base, exponent, "pow")

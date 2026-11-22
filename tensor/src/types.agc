@@ -1,7 +1,7 @@
 ## Shared types of the `tensor/` package (`tensor/DESIGN.md` §2).
 ##
 ## This module is the dependency leaf: it imports nothing, so both the
-## reference backend (`reference.agc`) and the public API (`tensor.agc`) can
+## reference backend (`src/reference.agc`) and the public API (`tensor.agc`) can
 ## use it without an import cycle. The public entry point is `tensor.agc`,
 ## which re-exports every type here; tests and future backends go through
 ## `Tensor.*`, never through this module directly.
