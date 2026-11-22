@@ -86,3 +86,25 @@ def test_bool_to_float_agrees() -> Result[Void]
   ours = try Tensor.to_dtype(flags, Tensor.Dtype.F32)
   Conform.expect_floats(ours, [0.0, 1.0], "Bool to F32")
 end
+
+def test_copy_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [1.0, -2.5, 3.25]
+  ours = try Tensor.copy(try Conform.on_torch(data, [3]))
+  try Conform.agrees(ours, try Tensor.copy(try Conform.on_ref(data, [3])), "copy")
+  # A copy shares no buffer: the original is still readable through its own
+  # handle, and reading both back gives the same values.
+  Conform.expect_floats(ours, data, "copy")
+end
+
+def test_contiguous_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+  # A transposed tensor is a view in libtorch; `contiguous` must hand back the
+  # same row-major values the reference produces.
+  ours = try Tensor.contiguous(try Tensor.transpose(try Conform.on_torch(data, [2, 3])))
+  theirs = try Tensor.contiguous(try Tensor.transpose(try Conform.on_ref(data, [2, 3])))
+  Conform.agrees(ours, theirs, "contiguous of a transpose")
+end

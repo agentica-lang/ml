@@ -1052,13 +1052,122 @@ end
 ## contiguous by construction.
 def contiguous(t: Types.Tensor) -> Result[Types.Tensor] = copy(t)
 
-## Not in M1: a 1-D convolution stem waits for a consumer that needs it
-## (`tensor/DESIGN.md` §5 is the gate, and §3.2 needs no convolution).
-def conv1d(input: Types.Tensor, weight: Types.Tensor) -> Result[Types.Tensor] = error("not implemented")
+## Convolution: the cross-correlation of `input` with `weight` along the last
+## axis, an explicit loop over batch, output channel, position, input channel
+## and kernel tap. `input` is `[C_in, L]` or `[N, C_in, L]`, `weight` is
+## `[C_out, C_in, K]`, and the window moves by `stride` with `padding` zeros on
+## each side; there is no dilation and there are no groups (`DESIGN.md` §3.1
+## admits stride/padding-1D).
+def conv1d(input: Types.Tensor, weight: Types.Tensor, stride: Int, padding: Int) -> Result[Types.Tensor]
+  rank = input.shape.size
+  return error("conv1d needs a rank-2 or rank-3 input, got #{input.shape}") if rank < 2 or rank > 3
+  return error("conv1d needs a rank-3 weight, got #{weight.shape}") if weight.shape.size != 3
+  return error("conv1d needs stride >= 1, got #{stride}") if stride < 1
+  return error("conv1d needs padding >= 0, got #{padding}") if padding < 0
+  if !Types.is_float_dtype(input.dtype) or input.dtype != weight.dtype
+    return error("conv1d needs one float dtype, got #{Types.dtype_name(input.dtype)}")
+  end
 
-## Not in M1: same gate as `conv1d`; `mean` over an explicit window covers
-## the cases the derived ops need.
-def avg_pool1d(input: Types.Tensor) -> Result[Types.Tensor] = error("not implemented")
+  n = 1
+  if rank == 3
+    n = input.shape[0]
+  end
+
+  in_channels = input.shape[rank - 2]
+  length = input.shape[rank - 1]
+  out_channels = weight.shape[0]
+  kernel = weight.shape[2]
+  return error("conv1d needs #{in_channels} input channels, got #{weight.shape[1]}") if weight.shape[1] != in_channels
+  padded = length + 2 * padding
+  return error("conv1d needs a window of #{kernel} positions in #{length} padded to #{padded}") if padded < kernel
+  out_length = (padded - kernel) / stride + 1
+  xs = try data_of(input)
+  ws = try data_of(weight)
+  out: List[Float] = []
+  for bn in 0...n
+    for co in 0...out_channels
+      for o in 0...out_length
+        acc = 0.0
+        for ci in 0...in_channels
+          for k in 0...kernel
+            pos = o * stride + k - padding
+            if pos >= 0 and pos < length
+              acc = acc + xs[(bn * in_channels + ci) * length + pos] * ws[(co * in_channels + ci) * kernel + k]
+            end
+          end
+        end
+
+        out = out.push(acc)
+      end
+    end
+  end
+
+  shape: List[Int] = []
+  if rank == 3
+    shape = [n, out_channels, out_length]
+  else
+    shape = [out_channels, out_length]
+  end
+
+  ok(make(shape, input.dtype, out))
+end
+
+## The mean over a window of `kernel` positions, moved by `stride`, with
+## `padding` zeros on each side, dividing by `kernel` (`count_include_pad`:
+## a window off the edge averages over the zeros it was padded with). `input`
+## is `[C, L]` or `[N, C, L]`; the last axis becomes
+## `(L + 2*padding - kernel) / stride + 1`.
+def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> Result[Types.Tensor]
+  rank = input.shape.size
+  return error("avg_pool1d needs a rank-2 or rank-3 input, got #{input.shape}") if rank < 2 or rank > 3
+  return error("avg_pool1d needs kernel >= 1, got #{kernel}") if kernel < 1
+  return error("avg_pool1d needs stride >= 1, got #{stride}") if stride < 1
+  return error("avg_pool1d needs padding >= 0, got #{padding}") if padding < 0
+  if !Types.is_float_dtype(input.dtype)
+    return error("avg_pool1d needs a float dtype, got #{Types.dtype_name(input.dtype)}")
+  end
+
+  if padding > kernel / 2
+    return error("avg_pool1d needs padding <= #{kernel / 2} for a kernel of #{kernel}, got #{padding}")
+  end
+
+  n = 1
+  if rank == 3
+    n = input.shape[0]
+  end
+
+  channels = input.shape[rank - 2]
+  length = input.shape[rank - 1]
+  padded = length + 2 * padding
+  return error("avg_pool1d needs a window of #{kernel} positions in #{length} padded to #{padded}") if padded < kernel
+  out_length = (padded - kernel) / stride + 1
+  xs = try data_of(input)
+  out: List[Float] = []
+  for bn in 0...n
+    for c in 0...channels
+      for o in 0...out_length
+        acc = 0.0
+        for k in 0...kernel
+          pos = o * stride + k - padding
+          if pos >= 0 and pos < length
+            acc = acc + xs[(bn * channels + c) * length + pos]
+          end
+        end
+
+        out = out.push(acc / kernel.to_f)
+      end
+    end
+  end
+
+  shape: List[Int] = []
+  if rank == 3
+    shape = [n, channels, out_length]
+  else
+    shape = [channels, out_length]
+  end
+
+  ok(make(shape, input.dtype, out))
+end
 
 private
 

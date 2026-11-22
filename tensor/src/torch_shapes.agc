@@ -71,3 +71,87 @@ def reduced_count(shape: List[Int], axes: List[Int]) -> Int
 
   total
 end
+
+## `shape` without the axes `axes` names, or without every size-1 axis when
+## `axes` is `[]`: the shape a `squeeze` leaves.
+def squeezed_shape(shape: List[Int], axes: List[Int]) -> List[Int]
+  kept: List[Int] = []
+  for i in 0...shape.size
+    next if axes.empty? and shape[i] == 1
+    next if axes.include?(i)
+    kept = kept.push(shape[i])
+  end
+
+  kept
+end
+
+## `shape` with a `1` at `axis`: the shape an `unsqueeze` leaves.
+def unsqueezed_shape(shape: List[Int], axis: Int) -> List[Int]
+  out: List[Int] = []
+  for i in 0...shape.size
+    if i == axis
+      out = out.push(1)
+    end
+
+    out = out.push(shape[i])
+  end
+
+  if axis == shape.size
+    out = out.push(1)
+  end
+
+  out
+end
+
+## `a` with `axis` grown by the same dimension of `b`: the shape a `concat`
+## along `axis` leaves.
+def concatenated_shape(a: List[Int], b: List[Int], axis: Int) -> List[Int]
+  out: List[Int] = []
+  for i in 0...a.size
+    if i == axis
+      out = out.push(a[i] + b[i])
+    else
+      out = out.push(a[i])
+    end
+  end
+
+  out
+end
+
+## The length a window of `kernel` positions leaves in `length`, padded by
+## `padding` on each side and moved by `stride`: the `L_out` of `conv1d` and
+## `avg_pool1d`.
+def windowed_length(length: Int, kernel: Int, stride: Int, padding: Int) -> Int
+  (length + 2 * padding - kernel) / stride + 1
+end
+
+## The `[...leading, out_channels, L_out]` a `conv1d` leaves.
+def conv1d_output_shape(shape: List[Int], out_channels: Int, kernel: Int, stride: Int, padding: Int) -> List[Int]
+  out: List[Int] = []
+  for i in 0...(shape.size - 2)
+    out = out.push(shape[i])
+  end
+
+  out.push(out_channels).push(windowed_length(shape[shape.size - 1], kernel, stride, padding))
+end
+
+## The `[...leading, L_out]` an `avg_pool1d` leaves.
+def avg_pool1d_output_shape(shape: List[Int], kernel: Int, stride: Int, padding: Int) -> List[Int]
+  out: List[Int] = []
+  for i in 0...(shape.size - 1)
+    out = out.push(shape[i])
+  end
+
+  out.push(windowed_length(shape[shape.size - 1], kernel, stride, padding))
+end
+
+## `indices`'s shape followed by the tail of `source`'s: the shape a `gather`
+## leaves.
+def gathered_shape(source: List[Int], indices: List[Int]) -> List[Int]
+  out = indices
+  for i in 1...source.size
+    out = out.push(source[i])
+  end
+
+  out
+end

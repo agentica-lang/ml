@@ -21,10 +21,10 @@ answers whether this machine has it, and the dispatch arm answers
   (§7).
 - `src/reference.agc` — the reference backend, pure Agentica over
   `List[Float]`; the oracle every other backend is checked against.
-- `src/torch.agc` — the libtorch backend: the §3.1 subset libtorch can
-  express today, per-op checks, and one `Native.arena` per call (§8).
+- `src/torch.agc` — the libtorch backend: the §3.1 primitives libtorch
+  expresses, per-op checks, and one `Native.arena` per call (§8).
 - `src/native.agc` — the FFI boundary and nothing else: `resource
-  TensorHandle` and the thirteen `compute def` calls. The generated header
+  TensorHandle` and the thirty-seven `compute def` calls. The generated header
   `native/torch_native.h` comes from this file (native-gen).
 - `src/torch_dtypes.agc`, `src/torch_shapes.agc` — the dtype table with the
   codes that cross to C, the two conversions between a storage double and a
@@ -55,54 +55,65 @@ carries the libtorch layer as a deliberate, documented trade-off.
 
 ## What is implemented, and what is not
 
-`DESIGN.md` §3.1 names 45 primitives. The **reference computes all of them**
-(except the two convolution/pooling stubs, which answer `error("not
-implemented")` for the reason in §5). The **libtorch backend implements 18**
-and answers `error("<op> is not implemented on the torch backend yet")` for the
-other 27, so the gap is an error naming the op, never a wrong number. Every
+`DESIGN.md` §3.1 names 45 primitives. Both backends compute them: the
+**reference computes all 45**, and the **libtorch backend implements 42** and
+answers `error("<op> is not implemented on the torch backend yet")` for the
+other three, so the gap is an error naming the op, never a wrong number. Every
 implemented one is checked against the reference on the same inputs, values and
 shape/dtype, plus its error paths.
 
 | §3.1 group | Implemented on libtorch | Not implemented |
 |---|---|---|
 | Creation (7) | `zeros`, `ones`, `empty`, `full`, `like`, `arange`, `scalar_to_tensor` | — |
-| Elementwise (17) | `add`, `mul`, `relu`, `exp`, `log` | `sub`, `div`, `neg`, `sqrt`, `pow`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `eq`, `lt`, `where`, `clamp` |
-| Reductions (4) | `sum`, `mean` (with `axes` and `keep_dims`) | `max`, `argmax` |
+| Elementwise (17) | `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `sqrt`, `pow`, `relu`, `sigmoid`, `tanh`, `eq`, `lt`, `where`, `clamp` | `gelu_tanh_approx` |
+| Reductions (4) | `sum`, `mean`, `max`, `argmax` (each with `axes` and `keep_dims`) | — |
 | Linear algebra (3) | `matmul`, `transpose` | `batch_matmul` |
-| Shape (8) | `reshape` | `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `broadcast_to`, `gather` |
-| Convolution/pooling (2) | — | `conv1d`, `avg_pool1d` |
-| Movement (4) | `to_dtype` | `to_device`, `copy`, `contiguous` |
+| Shape (8) | `reshape`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `broadcast_to`, `gather` | — |
+| Convolution/pooling (2) | `conv1d` (`stride`, `padding`), `avg_pool1d` (`kernel`, `stride`, `padding`) | — |
+| Movement (4) | `to_dtype`, `copy`, `contiguous` | `to_device` |
 
 Plus the two host-crossing functions §4 names, `from_list` and `to_list`
 (readback), which are not primitives.
 
-Why the gaps, in three groups:
+Why those three are still out, in this slice's terms:
 
-- **`conv1d`/`avg_pool1d`** are missing because the reference refuses them too
-  (`error("not implemented")`: no §3.2 derived op needs them and §5 admits an
-  op only for a consumer that does). There is nothing to conform against, so a
-  libtorch version could not be checked the way the rest of this package is.
-- **`div` is the one that matters.** `softmax`, `layer_norm`,
-  `multi_head_attention` (§3.2) all divide, so they cannot be built on the
-  libtorch backend from this primitive set (they do run on the reference, whose
-  `div` exists). That is why the composite conformance checks are an MLP block
-  and a scaled score matrix, not full attention. `gelu_tanh_approx` needs
-  `tanh`, also missing.
-  The complete §3.2 list is one primitive away: `div` plus `tanh` make
-  `softmax`, `gelu`, `silu` and attention expressible on both backends.
-- **Everything else is a native call away** and deliberately not in this
-  slice: each op is one libtorch line plus its validation, and the backend
-  started as thirteen native calls. libtorch expresses all 27 (`x - y`,
-  `x / y`, `-x`, `sqrt`, `pow`, `sigmoid`, `tanh`, `eq`, `lt`, `where`,
-  `clamp`, `max`, `argmax`, batched `matmul`, `squeeze`/`unsqueeze`, `slice`,
-  `cat`/`stack`, `expand`, `gather`, `conv1d`, `avg_pool1d`, `.to(device)`,
-  `clone`, `contiguous`).
+- **`gelu_tanh_approx`** is one libtorch call (`at::gelu(..., "tanh")`), but it
+  is not part of this change, so no test here pins it against the reference.
+  Everything else a transformer block uses is in: the composite conformance
+  checks run `softmax`, `layer_norm`, `rms_norm`, `silu`, the masked and
+  unmasked `multi_head_attention` and `greedy_step` on **both** backends.
+- **`batch_matmul`** is likewise expressible (`at::matmul` already takes a
+  batch) and likewise untested here. `multi_head_attention` does not need it:
+  it splits heads into rank-2 `matmul` calls (§3.2).
+- **`to_device`** would only ever move a tensor to the one device this CPU
+  release serves, which is the identity; `Cuda` is already `error("backend not
+  available")` at the module level. Adding it would claim a device story this
+  build does not have.
+
+The three that *did* land changed what the §3.2 vocabulary can do on libtorch:
+`div` (with `sub`, `max`, `argmax`, `sqrt`, `pow` and `broadcast_to`) is what
+`softmax`, `layer_norm`, `rms_norm` and attention divide with, and
+`conv1d`/`avg_pool1d` now exist on both sides because the reference computes
+them too — the oracle comes first, then the backend is checked against it.
+
+`conv1d`/`avg_pool1d` take the window `DESIGN.md` §3.1 admits and no more:
+`stride` ≥ 1 and `padding` ≥ 0, no dilation, no groups. `avg_pool1d` also caps
+`padding` at half the kernel, because that is the window the libtorch kernel
+admits; the cap lives in the public wrapper, so the reference and libtorch
+refuse exactly the same windows. `conv1d` takes `[C_in, L]` or
+`[N, C_in, L]` against a `[C_out, C_in, K]` weight, and `avg_pool1d` takes
+`[C, L]` or `[N, C, L]`; both answer the input's leading axes plus the new
+length, and both refuse an empty input, a window wider than the padded input
+and a channel-count mismatch.
 
 Two more honest limits of what crosses the boundary:
 
 - shapes, dtypes and devices cross as `List[Int]`, an `Int` code and nothing
   (CPU only); there is no struct over the boundary, so the wrapper is the one
-  that knows both metadata and handles.
+  that knows both metadata and handles. A `List` of handles does not cross
+  either, which is why native `concat` joins **two** tensors and
+  `src/torch.agc` folds: concatenation along one axis is associative, so the
+  fold answers exactly what one call would.
 - readback crosses as storage doubles: `I64` values past 2^53 lose precision
   on the way out. Relatedly, `arange` past an int dtype's width diverges by
   side — libtorch's conversion wraps (200 into `I8` reads back `-56`) while the
@@ -164,7 +175,7 @@ download it cannot pin by sha256 would be worse than not running. So:
   libtorch are the same one-line warning inside a green job.
 - what was run locally, by hand, with libtorch 2.4.1+cpu at `$HOME/opt/libtorch`:
   `agentica check`, `agentica fmt --check`, the header `--check`, `agentica
-  test` (213 tests: the reference suite plus the libtorch conformance suite)
+  test` (318 tests: the reference suite plus the libtorch conformance suite)
   and `agentica tools/bench.agc`.
 
 The exit is a **non-required** CI job that installs libtorch pinned by sha256

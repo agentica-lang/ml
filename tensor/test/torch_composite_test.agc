@@ -25,14 +25,14 @@ def mlp_block(
   end
 end
 
-## One attention head's scores `q . kᵀ`, scaled by `scale` (a `full` tensor:
-## the primitive set has no `div` yet, and a per-element scale is what `mul`
-## takes).
+## One attention head's scores `q . kᵀ / sqrt(d)`: the scale is widened by
+## `broadcast_to` and applied with `div`, which is the shape a transformer
+## block takes now that the primitive set has a division on both backends.
 def scores(q: Tensor.Tensor, k: Tensor.Tensor, scale: Tensor.Tensor) -> Result[Tensor.Tensor]
   Native.arena do
     transposed = try Tensor.transpose(k)
     qk = try Tensor.matmul(q, transposed)
-    Tensor.mul(qk, scale)
+    Tensor.div(qk, try Tensor.broadcast_to(scale, qk.shape))
   end
 end
 
@@ -78,11 +78,11 @@ def test_attention_scores_agree_with_the_reference() -> Result[Void]
   k = [1.0, 1.0, 0.0, 0.0, -1.0, 2.0]
   scale_value = Tensor.Values.Float(0.5773502691896258)
 
-  ours_scale = try Tensor.full([2, 2], scale_value, Tensor.Dtype.F32, Conform.TORCH)
+  ours_scale = try Tensor.full([], scale_value, Tensor.Dtype.F32, Conform.TORCH)
   ours = try scores(try Conform.on_torch(q, [2, 3]), try Conform.on_torch(k, [2, 3]), ours_scale)
   try Test.eq(Tensor.shape(ours), [2, 2])
 
-  theirs_scale = try Tensor.full([2, 2], scale_value, Tensor.Dtype.F32, Conform.REF)
+  theirs_scale = try Tensor.full([], scale_value, Tensor.Dtype.F32, Conform.REF)
   Conform.agrees(
     ours,
     try scores(try Conform.on_ref(q, [2, 3]), try Conform.on_ref(k, [2, 3]), theirs_scale),
@@ -98,4 +98,263 @@ def test_a_chain_that_breaks_midway_is_an_error() -> Result[Void]
   square = try Conform.on_torch([1.0, 2.0, 3.0, 4.0], [2, 2])
   wide = try Conform.on_torch([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
   Test.error?(mlp_block(square, wide, square, square, square))
+end
+
+def test_softmax_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [0.5, -1.0, 2.0, 1.0, 1.0, 1.0, -3.0, 0.25, 4.0]
+  ours = try Tensor.softmax(try Conform.on_torch(data, [3, 3]), 1)
+  try Test.eq(Tensor.shape(ours), [3, 3])
+  Conform.agrees(ours, try Tensor.softmax(try Conform.on_ref(data, [3, 3]), 1), "softmax over the last axis")
+end
+
+def test_softmax_over_the_first_axis_agrees() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [1.0, 2.0, 3.0, 4.0, 0.0, -1.0]
+  Conform.agrees(
+    try Tensor.softmax(try Conform.on_torch(data, [3, 2]), 0),
+    try Tensor.softmax(try Conform.on_ref(data, [3, 2]), 0),
+    "softmax over axis 0",
+  )
+end
+
+def test_softmax_of_a_large_shift_agrees() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  # The max-subtraction is what keeps `exp` inside `F32`: without it the two
+  # power-of-ten rows below and their shifted versions saturate to `+inf` and
+  # `0.0`. `div` is the op that closes the block.
+  data = [30.0, 20.0, 10.0, -30.0, -20.0, -10.0]
+  ours = try Tensor.softmax(try Conform.on_torch(data, [2, 3]), 1)
+  row_sums = try Tensor.sum(ours, some([1]), false)
+  try Conform.expect_floats(row_sums, [1.0, 1.0], "softmax rows sum to one")
+  Conform.agrees(ours, try Tensor.softmax(try Conform.on_ref(data, [2, 3]), 1), "softmax of a large shift")
+end
+
+def test_layer_norm_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [1.0, 2.0, 3.0, 4.0, 8.0, 5.0, 7.0, -2.0, 0.5, 0.25, 1.5, 3.0]
+  ours = try Tensor.layer_norm(try Conform.on_torch(data, [3, 4]), 0.00001)
+  try Test.eq(Tensor.shape(ours), [3, 4])
+  Conform.agrees(ours, try Tensor.layer_norm(try Conform.on_ref(data, [3, 4]), 0.00001), "layer_norm")
+end
+
+def test_layer_norm_has_zero_mean_on_the_torch_backend() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [1.0, 2.0, 3.0, 4.0, 8.0, 5.0]
+  normalised = try Tensor.layer_norm(try Conform.on_torch(data, [2, 3]), 0.000001)
+  try Conform.expect_floats(try Tensor.mean(normalised, some([1]), false), [0.0, 0.0], "zero mean")
+  ok()
+end
+
+def test_rms_norm_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [1.0, 2.0, 3.0, -0.5, 4.0, 2.5]
+  Conform.agrees(
+    try Tensor.rms_norm(try Conform.on_torch(data, [2, 3]), 0.000001),
+    try Tensor.rms_norm(try Conform.on_ref(data, [2, 3]), 0.000001),
+    "rms_norm",
+  )
+end
+
+def test_silu_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [-2.0, -0.5, 0.0, 0.5, 2.0, 6.0]
+  Conform.agrees(
+    try Tensor.silu(try Conform.on_torch(data, [2, 3])),
+    try Tensor.silu(try Conform.on_ref(data, [2, 3])),
+    "silu",
+  )
+end
+
+def test_linear_with_a_bias_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  x = [1.0, -2.0, 3.0, 0.5, 1.5, -0.5]
+  w = [0.5, -1.0, 2.0, 0.25, -0.75, 1.5]
+  b = [0.1, -0.2]
+  Conform.agrees(
+    try Tensor.linear(
+      try Conform.on_torch(x, [2, 3]),
+      try Conform.on_torch(w, [3, 2]),
+      some(try Conform.on_torch(b, [2])),
+    ),
+    try Tensor.linear(try Conform.on_ref(x, [2, 3]), try Conform.on_ref(w, [3, 2]), some(try Conform.on_ref(b, [2]))),
+    "linear with a bias",
+  )
+end
+
+def test_dot_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  a = [1.0, 2.0, 3.0]
+  b = [-1.0, 0.5, 2.0]
+  ours = try Tensor.dot(try Conform.on_torch(a, [3]), try Conform.on_torch(b, [3]))
+  try Test.eq(Tensor.shape(ours), [])
+  Conform.agrees(ours, try Tensor.dot(try Conform.on_ref(a, [3]), try Conform.on_ref(b, [3])), "dot")
+end
+
+## `softmax(q . kᵀ / sqrt(d)) . v` for one head, the block every attention
+## layer is made of.
+def head_context(q: Tensor.Tensor, k: Tensor.Tensor, v: Tensor.Tensor, scale: Tensor.Tensor) -> Result[Tensor.Tensor]
+  Native.arena do
+    probs = try Tensor.softmax(try scores(q, k, scale), 1)
+    Tensor.matmul(probs, v)
+  end
+end
+
+def test_attention_softmax_then_context_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  q = [1.0, 0.0, -1.0, 0.5, 0.5, 0.0]
+  k = [1.0, 1.0, 0.0, 0.0, -1.0, 2.0]
+  v = [0.5, -0.5, 1.0, 2.0]
+  scale = Tensor.Values.Float(0.5773502691896258)
+
+  ours = try head_context(
+    try Conform.on_torch(q, [2, 3]),
+    try Conform.on_torch(k, [2, 3]),
+    try Conform.on_torch(v, [2, 2]),
+    try Tensor.full([], scale, Tensor.Dtype.F32, Conform.TORCH),
+  )
+
+  try Test.eq(Tensor.shape(ours), [2, 2])
+  Conform.agrees(
+    ours,
+    try head_context(
+      try Conform.on_ref(q, [2, 3]),
+      try Conform.on_ref(k, [2, 3]),
+      try Conform.on_ref(v, [2, 2]),
+      try Tensor.full([], scale, Tensor.Dtype.F32, Conform.REF),
+    ),
+    "attention context",
+  )
+end
+
+def test_multi_head_attention_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  q = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+  k = [1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0]
+  v = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+  ours = try Tensor.multi_head_attention(
+    try Conform.on_torch(q, [1, 2, 4]),
+    try Conform.on_torch(k, [1, 2, 4]),
+    try Conform.on_torch(v, [1, 2, 4]),
+    2,
+    none,
+  )
+
+  try Test.eq(Tensor.shape(ours), [1, 2, 4])
+  Conform.agrees(
+    ours,
+    try Tensor.multi_head_attention(
+      try Conform.on_ref(q, [1, 2, 4]),
+      try Conform.on_ref(k, [1, 2, 4]),
+      try Conform.on_ref(v, [1, 2, 4]),
+      2,
+      none,
+    ),
+    "multi_head_attention",
+  )
+end
+
+def test_multi_head_attention_with_a_mask_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  q = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+  k = [1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0]
+  v = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+  bias = [0.0, -100.0, -100.0, 0.0, 0.0, -100.0, -100.0, 0.0]
+  ours = try Tensor.multi_head_attention(
+    try Conform.on_torch(q, [1, 2, 4]),
+    try Conform.on_torch(k, [1, 2, 4]),
+    try Conform.on_torch(v, [1, 2, 4]),
+    2,
+    some(try Conform.on_torch(bias, [1, 2, 2, 2])),
+  )
+
+  try Test.eq(Tensor.shape(ours), [1, 2, 4])
+  Conform.agrees(
+    ours,
+    try Tensor.multi_head_attention(
+      try Conform.on_ref(q, [1, 2, 4]),
+      try Conform.on_ref(k, [1, 2, 4]),
+      try Conform.on_ref(v, [1, 2, 4]),
+      2,
+      some(try Conform.on_ref(bias, [1, 2, 2, 2])),
+    ),
+    "masked multi_head_attention",
+  )
+end
+
+def test_multi_head_attention_over_two_heads_and_two_batches_agrees() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  # A `[2, 3, 4]` batch: four heads of width one, three keys per batch, so the
+  # head split, the `stack`/`concat` merge and the batch axis all run.
+  q = [
+    1.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.25, 0.75, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 1.0, 1.0, 0.0, 0.0,
+    1.0, 1.0,
+  ]
+
+  v = [
+    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0,
+    21.0, 22.0, 23.0, 24.0,
+  ]
+
+  ours = try Tensor.multi_head_attention(
+    try Conform.on_torch(q, [2, 3, 4]),
+    try Conform.on_torch(q, [2, 3, 4]),
+    try Conform.on_torch(v, [2, 3, 4]),
+    4,
+    none,
+  )
+
+  try Test.eq(Tensor.shape(ours), [2, 3, 4])
+  Conform.agrees(
+    ours,
+    try Tensor.multi_head_attention(
+      try Conform.on_ref(q, [2, 3, 4]),
+      try Conform.on_ref(q, [2, 3, 4]),
+      try Conform.on_ref(v, [2, 3, 4]),
+      4,
+      none,
+    ),
+    "multi_head_attention over two batches",
+  )
+end
+
+def test_greedy_step_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  logits = [0.5, 2.0, -1.0, 2.0, 0.25]
+  ours = try Tensor.greedy_step(try Conform.on_torch(logits, [5]))
+  try Test.eq(Tensor.dtype(ours), Tensor.Dtype.I64)
+  Conform.agrees(ours, try Tensor.greedy_step(try Conform.on_ref(logits, [5])), "greedy_step")
+end
+
+def test_greedy_step_with_a_temperature_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  logits = [0.5, 2.0, -1.0, 2.0, 0.25]
+  Conform.agrees(
+    try Tensor.greedy_step(try Conform.on_torch(logits, [5]), some(0.5)),
+    try Tensor.greedy_step(try Conform.on_ref(logits, [5]), some(0.5)),
+    "greedy_step with a temperature",
+  )
+end
+
+def test_greedy_step_refuses_a_non_positive_temperature_on_both_backends() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  logits = [0.5, 2.0]
+  try Test.error?(Tensor.greedy_step(try Conform.on_torch(logits, [2]), some(0.0)))
+  Test.error?(Tensor.greedy_step(try Conform.on_ref(logits, [2]), some(0.0)))
 end
