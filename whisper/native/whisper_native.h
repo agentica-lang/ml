@@ -33,7 +33,8 @@ typedef struct {
 /* The rows of the resource table: the TYPE of an_resource_new and an_get_resource. */
 enum { WHISPER_RESOURCE_Model = 0 };
 
-/* A loaded model: a resource whose state the native side owns.
+/* A loaded model: a resource whose state the native side owns (the
+   whisper context plus the mutex that serializes inference on it).
 
    Define it, and WHISPER_Model_FREE (a void (*)(void *state), or NULL), before WHISPER_NATIVE_MODULE.
    A parameter of this type is its state. _new makes one, with zeroed state. _get gives the state of a term
@@ -76,7 +77,8 @@ an_term whisper_result_String_ok(an_env *env, ng_str value);
 /* Loads the model at `path` (a ggml/gguf file); error when it cannot be read. */
 an_term whisper_load_model(an_env *env, ng_str path);
 
-/* Transcribes 16 kHz mono PCM audio; error when the model cannot run it. */
+/* Transcribes 16 kHz mono PCM audio (at most five minutes: longer input is
+   an error, so one call is bounded); error when the model cannot run it. */
 an_term whisper_transcribe(an_env *env, struct whisper_Model_state *model, whisper_list_Float pcm);
 
 #ifdef __cplusplus
@@ -249,7 +251,7 @@ static an_term whisper_native_transcribe(an_env *env, int argc, const an_term *a
 }
 
 static const an_function whisper_native_functions[] = {
-  {"load_model", "(String) -> Result[Model]", whisper_native_load_model, AN_SHORT},
+  {"load_model", "(String) -> Result[Model]", whisper_native_load_model, AN_DIRTY},
   {"transcribe", "(Model, List[Float]) -> Result[String]", whisper_native_transcribe, AN_DIRTY},
 };
 

@@ -4,7 +4,8 @@ name: CI
 # AGENTICA_VERSION. The plan job lists the package folders so the packages
 # job runs as a matrix: adding a folder adds it to CI with no edit here.
 # Models and weights never enter git: tests use synthetic fixtures, and a
-# future job that needs a model downloads it explicitly.
+# package that needs a model downloads its pinned one explicitly (see the
+# engine/model steps of the packages job).
 on:
   push:
     branches: [main]
@@ -90,6 +91,36 @@ jobs:
         run: |
           if [ -f agentica.lock ]; then agentica install; else echo "no agentica.lock: nothing to fetch"; fi
 
+      # A package with tools/build-engine.sh links a pinned third-party
+      # engine (a submodule at the repository root, never vendored); the
+      # script builds it and prints the include/library exports, which the
+      # native build needs from here on. A package without the script skips
+      # this step, so adding a folder adds it to CI with no edit here.
+      - name: Build the pinned third-party engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f tools/build-engine.sh ]; then
+            echo "no tools/build-engine.sh: nothing to build"
+            exit 0
+          fi
+          eval "$(sh tools/build-engine.sh | grep ^export)"
+          echo "C_INCLUDE_PATH=$C_INCLUDE_PATH" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      # A package with tools/fetch-model.sh validates against a downloaded
+      # pinned model (weights never enter git); the script checks its sha256.
+      # A package without the script skips this step.
+      - name: Download the pinned test model
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f tools/fetch-model.sh ]; then
+            echo "no tools/fetch-model.sh: nothing to fetch"
+            exit 0
+          fi
+          sh tools/fetch-model.sh models
+
       - name: Check
         run: agentica check
 
@@ -127,6 +158,22 @@ jobs:
 
       - name: Test
         run: agentica test
+
+      # The live layer needs the built engine and the downloaded model from
+      # the steps above: the runner checks plus the end-to-end transcription
+      # as a program (decoding a full sample costs more steps than one test
+      # file may spend; runs are not step-capped). A package without it
+      # skips this step.
+      - name: Live transcription
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f live/transcribe_jfk.agc ]; then
+            echo "no live/transcribe_jfk.agc: nothing to run"
+            exit 0
+          fi
+          agentica test live/
+          agentica live/transcribe_jfk.agc
 
   # `test` is the required check, so it carries the result of the other jobs.
   test:

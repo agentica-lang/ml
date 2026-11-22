@@ -6,7 +6,12 @@ agentica = "0.35.0"
 blank_line_after_end = true
 
 # The header of the `extern module` block of whisper.agc, made with native-gen
-# (see its header comment); `build` compiles the thin C layer, which answers
-# error until whisper.cpp is linked.
+# (see its header comment); `build` compiles the thin C layer in native/ and
+# links the pinned whisper.cpp engine (tools/build-engine.sh). The engine's
+# headers come from C_INCLUDE_PATH and its static libraries from LIBRARY_PATH
+# (both printed by that script); only `-l` names can live here.
 [native.whisper]
-build = { sources = ["native/whisper.c"] }
+build = { sources = ["native/whisper.c"], libs = ["whisper", "ggml", "ggml-base", "ggml-cpu", "stdc++", "m", "pthread"] }
+
+[dependencies]
+native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.4.0", subdir = "native-gen" }
