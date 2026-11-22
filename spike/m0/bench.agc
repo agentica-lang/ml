@@ -14,7 +14,12 @@
 ##
 ## The numbers are the ones the README quotes; they are one machine and they
 ## are noise, not a benchmark suite: they exist to show what the boundary
-## costs relative to the work it carries.
+## costs relative to the work it carries. The last row has no native column:
+## the backward is Agentica code, the same on both sides, so a "native step"
+## that ran the libtorch forward *and* the reference backward would time the
+## crossing plus a duplicated step instead of one thing. The cost of putting
+## libtorch's forward into a step is the difference between the columns of the
+## row above it.
 
 import Dataset from "dataset"
 import Model from "model"
@@ -61,21 +66,22 @@ def run() -> Result[Void]
   add_ns: Optional[Int] = none
   matmul_ns: Optional[Int] = none
   create_ns: Optional[Int] = none
-  step_ns: Optional[Int] = none
+  forward_ns: Optional[Int] = none
   if enabled
     add_ns = some(try timed_add())
     matmul_ns = some(try timed_matmul())
     create_ns = some(try timed_create())
-    step_ns = some(try timed_step())
+    forward_ns = some(try timed_forward())
   end
 
   puts("# bench: #{ROUNDS} rounds per measurement")
   puts(format("torchspike library load: %.3f ms", load_ns.to_f / 1000000.0))
   puts(format("%-26s %12s %12s", "op (shape)", "reference", "torchspike"))
-  report("add [2, 2]", try reference_add(), add_ns)
-  report("matmul [4, 3]x[3, 2]", try reference_matmul(), matmul_ns)
-  report("create [64, 64] (4096 values)", try reference_create(), create_ns)
-  report("f + backward, demo shapes", try reference_step(), step_ns)
+  report("add [2, 2]", try reference_add(), add_ns, "skipped")
+  report("matmul [4, 3]x[3, 2]", try reference_matmul(), matmul_ns, "skipped")
+  report("create [64, 64] (4096 values)", try reference_create(), create_ns, "skipped")
+  report("f, demo shapes", try reference_forward(), forward_ns, "skipped")
+  report("f + backward, demo shapes", try reference_step(), none, "n/a")
   ok()
 end
 
@@ -107,6 +113,24 @@ def reference_create() -> Result[Int]
   start = Time.monotonic_ns()
   for _round in 0...ROUNDS
     _ = try TensorRef.from_list(wide, WIDE)
+  end
+
+  ok(Time.monotonic_ns() - start)
+end
+
+# The reference's forward pass, the same three ops `Torch.loss` runs natively.
+def forward(x: TensorRef.Tensor, w: TensorRef.Tensor) -> Result[Float]
+  y = try TensorRef.matmul(x, w)
+  TensorRef.scalar(TensorRef.sum(TensorRef.relu(y)))
+end
+
+# `f` alone on the reference: the same function the native side runs.
+def reference_forward() -> Result[Int]
+  x = try TensorRef.from_list(values(12), Dataset.X_SHAPE)
+  w = try TensorRef.from_list(values(6), Dataset.W_SHAPE)
+  start = Time.monotonic_ns()
+  for _round in 0...ROUNDS
+    _ = try forward(x, w)
   end
 
   ok(Time.monotonic_ns() - start)
@@ -167,29 +191,27 @@ def timed_create() -> Result[Int]
   end
 end
 
-# `f` on libtorch and the backward in Agentica, which is the loop the spike
-# has: the gap between this row and `f + backward` on the reference is what
-# moving `f` across the boundary costs for a toy shape.
-def timed_step() -> Result[Int]
+# `f` alone on libtorch: the same function as `f` on the reference.
+def timed_forward() -> Result[Int]
   x = try TensorRef.from_list(values(12), Dataset.X_SHAPE)
   w = try TensorRef.from_list(values(6), Dataset.W_SHAPE)
   start = Time.monotonic_ns()
   for _round in 0...ROUNDS
     _ = try Torch.loss(x, w)
-    _ = try Model.loss_and_grad(x, w)
   end
 
   ok(Time.monotonic_ns() - start)
 end
 
-def report(name: String, reference_ns: Int, native_ns: Optional[Int]) -> Void
-  puts(format("%-26s %12d %12s", name, reference_ns / ROUNDS, cell(native_ns)))
+def report(name: String, reference_ns: Int, native_ns: Optional[Int], missing: String) -> Void
+  puts(format("%-26s %12d %12s", name, reference_ns / ROUNDS, cell(native_ns, missing)))
 end
 
-# A skipped native measurement says so instead of printing a zero.
-def cell(ns: Optional[Int]) -> String
+# A row without a native number says why instead of printing a zero: the
+# module did not build ("skipped") or the row has no native side ("n/a").
+def cell(ns: Optional[Int], missing: String) -> String
   case ns
     some(value) -> (value / ROUNDS).to_s
-    none -> "skipped"
+    none -> missing
   end
 end

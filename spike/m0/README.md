@@ -271,15 +271,23 @@ free of the tensor the op made (`Native.close`):
 
 | op (shape) | reference | torchspike (`compute def`) |
 |---|---|---|
-| `add` [2, 2] | 580 – 2215 | 6635 – 13112 |
-| `matmul` [4, 3]×[3, 2] | 1233 – 3718 | 9710 – 13552 |
-| `create` [64, 64] (4096 values, `List[Float]`) | 239 – 695 | 94644 – 99682 |
-| `f` + backward, demo shapes | 8069 – 16784 | 78523 – 98484 |
-| library load, first call | – | 407 – 517 ms |
+| `add` [2, 2] | 453 – 1982 | 8167 – 15198 |
+| `matmul` [4, 3]×[3, 2] | 1541 – 1970 | 11782 – 14163 |
+| `create` [64, 64] (4096 values, `List[Float]`) | 207 – 260 | 90490 – 99082 |
+| `f`, demo shapes | 2586 – 3050 | 56768 – 97232 |
+| `f` + backward, demo shapes | 6948 – 7457 | n/a |
+| library load, first call | – | 391 – 504 ms |
 
 The reference `create` number is not a copy: a reference tensor shares its
 `List[Float]`, so it measures almost nothing. The native `create` is a copy of
 4096 doubles across the boundary, which is the interesting part.
+
+`f` is the same function on both sides (`matmul`, `relu`, `sum`).
+`f` + backward has no native column on purpose: the backward is Agentica code
+and identical on both backends, so a "native step" would be the libtorch
+forward *plus* the reference backward — the crossing plus a duplicated step,
+which measures neither. What putting libtorch's forward into a step costs is
+the difference between the columns of the `f` row (about 54–94 µs here).
 
 Two follow-up experiments, both run on copies of this folder in `/tmp` (they
 change the committed surface, so they are not committed):
@@ -296,15 +304,17 @@ eval "$(sh tools/build-torch.sh)" && agentica bench.agc
 
 | op (shape) | reference | torchspike (`def`, short) |
 |---|---|---|
-| `add` [2, 2] | 447 – 660 | 2707 – 6536 |
-| `matmul` [4, 3]×[3, 2] | 1233 – 1710 | 3526 – 7948 |
-| `create` [64, 64] (`List[Float]`) | 254 – 278 | 63505 – 65828 |
-| `f` + backward, demo shapes | 7998 – 9069 | 40404 – 41005 |
+| `add` [2, 2] | 504 – 677 | 2979 – 6482 |
+| `matmul` [4, 3]×[3, 2] | 1584 – 1848 | 4359 – 6103 |
+| `create` [64, 64] (`List[Float]`) | 258 – 392 | 70646 – 72653 |
+| `f`, demo shapes | 3018 – 6855 | 23180 – 25542 |
+| `f` + backward, demo shapes | 8135 – 20830 | n/a |
 
-So the mode of the call is worth roughly **3–6 µs per op**: `compute def` costs
-about twice a short `def` at these sizes, and the reference is ~0.5–1.5 µs.
-Both native columns are still an order of magnitude above the reference for a
-2×2 add, which is the fixed cost of a call plus a resource allocate/free.
+So the mode of the call is worth roughly **4–9 µs per op** on these shapes:
+`compute def` costs about twice a short `def`, and the reference is
+~0.5–3 µs. Both native columns are still an order of magnitude above the
+reference for a 2×2 add, which is the fixed cost of a call plus a resource
+allocate/free.
 
 **B. `create` taking bulk data as `Bytes` (raw little-endian float32) instead
 of `List[Float]`** — the same 4096 values, one `Bytes` built once outside the
@@ -318,10 +328,10 @@ eval "$(sh tools/build-torch.sh)" && agentica bench.agc
 
 | op (shape) | reference | torchspike (`Bytes`, short) |
 |---|---|---|
-| `create` [64, 64] (4096 values) | 164 – 248 | **3677 – 4689** |
+| `create` [64, 64] (4096 values) | 168 – 748 | **3747 – 4228** |
 
 `List[Float]` costs ~63 500–99 700 ns for 4096 values and `Bytes` costs
-~3 700–4 700 ns: the cursor decode of a `List` is about **15–24 ns per value**,
+~3 700–4 200 ns: the cursor decode of a `List` is about **15–24 ns per value**,
 and a `Bytes` argument is one borrowed buffer (`ng_buf`) with no per-element
 work. Extrapolated — arithmetic, not measured — a 250 M-value F32 tensor
 (1 GB, a small model) would cost ~5 s per crossing as `List[Float]`, against a
@@ -508,7 +518,7 @@ The gaps in lifetime handling that the spike hit:
 - **`Native.arena` + `try` has a writing rule that §8 does not mention** (see
   decisions 5).
 - **Nothing about the GC-pressure argument.** The benchmark creates and frees
-  ~14 000 native tensors (0.93 s, max RSS 150 MB, which is libtorch's mapped
+  ~14 000 native tensors (0.99 s, max RSS 144 MB, which is libtorch's mapped
   image); a leak of 14 000 small tensors would not show. §8's real question —
   thousands of tens of MB of intermediates per step — is not answered by a
   4×2 tensor.
@@ -624,9 +634,10 @@ above.
    forward values (`y` here) alive for the backward, which is a lifetime
    question §8 does not answer for tracked intermediates.
 7. **§7: the design has no rule for `def` vs `compute def` per op, and the
-   choice is measurable.** The same module with `def` costs 2.7–6.5 µs per
-   call and with `compute def` 6.6–13.1 µs (measured above); the dirty call
-   buys the ability to block on a real kernel and costs ~3–6 µs of dispatch.
+   choice is measurable.** On a 2×2 `add`, the same module with `def` costs
+   3.0–6.5 µs and with `compute def` 8.2–15.2 µs (measured above); the dirty
+   call buys the ability to block on a real kernel and costs ~4–9 µs of
+   dispatch.
    A backend needs a rule ("dirty above N elements", or "dirty for ops that
    may call into a thread pool"), which the contract should state once.
 8. **§3.1's "adding an op later would be breaking" is right, and `mul` is the
