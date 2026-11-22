@@ -1,0 +1,9 @@
+version = 1
+
+[[package]]
+name = "native-gen"
+git = "https://github.com/agentica-lang/packages"
+subdir = "native-gen"
+tag = "native-gen-0.4.0"
+commit = "42a1fd2b39a08bc1524aa9c5a2d2525f0f29aba0"
+hash = "sha256:ab8003991f11a706b5fd396bd6f2792c6c6485c9010d84293e0139d164e20557"
