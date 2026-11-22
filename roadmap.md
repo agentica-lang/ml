@@ -81,7 +81,7 @@ Agentica, backends solo forward**.
 | Backend | Kind | FFI | Prioridad |
 |---|---|---|---|
 | `reference` | eager, solo Agentica | ninguna | **fase 1** — oráculo |
-| `torch` (libtorch) | eager | **capa C fina sobre la API C++** (como hace `tch-rs`): `torch::zeros/ones/empty/full/rand`, `Tensor.sizes()`, matmul, etc. CPU primero | **fase 2** — el más completo, primer backend real |
+| `torch` (libtorch) | eager | **capa C fina sobre la API C++** (como hace `tch-rs`): `torch::zeros/ones/empty/full/rand`, `Tensor.sizes()`, matmul, etc. CPU primero. Vive dentro de `tensor/` mientras #1918 no cierre | **fase 2** — el más completo, primer backend real; 18/45 primitivas hechas |
 | `candle` | eager | capa C fina sobre Rust (`extern "C"`); bueno para inferencia, ligero | **fase 7** — después de entrenar sobre torch |
 | `xla` | JIT estilo JAX | **PJRT C API directa**, sin capa (`dlopen` del plugin, cliente → dispositivos → compilación del grafo) | **fase 6** — lo más complejo, diferido |
 | `ggml` | eager/inferencia LLM | C/C++ sin dependencias, CPU/GPU/NPU, quants 2–8 bits, ficheros `gguf`; el motor tras llama.cpp y whisper.cpp. **Cero allocs durante la ejecución**, sin fusión de kernels: op-set para transformers | **vía A (ya) + fase 8 (tensor puro)** — ver Fase W |
@@ -113,12 +113,35 @@ congelada del backend.
 - Preguntas 1–4 de ml#1 cerradas aquí (struct de fns vs enum+`case`,
   operadores vs `Tensor.*`, liberación de intermedios, shapes/dtypes).
 
-### Fase 2 — `torch/` (libtorch eager, vía `../packages/native-gen/`)
-- `extern module "torch"` con tipos C generados por native-gen.
-- Capa C++ fina: crear/enviar/recibir tensores, ~el subset de la fase 1,
-  `compute def` para lo que bloquee.
-- Prebuilt CPU por plataforma; documentar tamaño de binarios.
-- Pasa la suite de conformidad de fase 1 bit a bit contra referencia.
+### Fase 2 — libtorch eager (dentro de `tensor/`), vía `native-gen`
+- **Hecho**: `extern module "torch"` (`tensor/src/native.agc`, 13
+  `compute def` + `resource TensorHandle`) con header generado por native-gen
+  y `--check` en CI; capa C++ fina en `tensor/native/torch.c`; dispatch real
+  en el brazo `Backend.Torch(device)` de `tensor.agc`; `Handle` con
+  `Native(TensorHandle) | Plain(Data)`; 18 de las 45 primitivas §3.1 sobre
+  libtorch, el resto `error("<op> is not implemented on the torch backend
+  yet")`; suite de conformidad (`tensor/test/torch_*_test.agc`) que corre la
+  misma llamada pública en `Reference` y `Torch` y compara
+  valores/shape/dtype/errores; arenas por llamada y por step; libtorch como
+  dependencia de sistema `optional` (nunca vendorizada ni descargada por el
+  repo) documentada con su coste medido.
+- **Por qué vive en `tensor/` y no en un paquete `torch/`**: un `resource` es
+  nominal al bloque `extern module` que lo declara, así que el handle que
+  lleva `Tensor` y el brazo que despacha tienen que estar en el mismo paquete
+  (ver `tensor/DESIGN.md` §1, §2, §7). Es un trade-off deliberado, no el
+  destino: [agentica-lang/agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
+  (resources opacos que viven en datos y cruzan módulos) es la salida.
+- **Pendiente cuando #1918 cierre**: mover `src/native.agc`, `src/torch.agc`,
+  `native/torch.c` y su tabla `[native.torch]` a un paquete `torch/` propio
+  (con su `AGENTICA_VERSION` y su tag `torch-0.1.0`), dejar `Handle` en
+  `Native(Resource)` opaco y `tensor/` sin dependencia nativa, y devolver el
+  job de CI a un `torch` que sólo necesite libtorch para la conformidad.
+- **Pendiente en general** (fase 2 inacabada por primitivas, no por dispatch):
+  las 27 primitivas §3.1 que faltan en el backend, con `div` y `tanh` primero
+  porque desbloquean `softmax`/`gelu`/`silu` y la atención §3.2 en libtorch;
+  `conv1d`/`avg_pool1d` cuando un consumidor las pida (§5); y el job de CI no
+  requerido con libtorch pineado por sha256 que pruebe que el C++ compila y
+  que los valores siguen coincidiendo (`tensor/README.md`, "CI").
 
 ### Fase 3 — `nn/` (solo forward = inferencia)
 - Capas funcionales (dense, conv, norm, dropout, embeddings),
@@ -224,7 +247,7 @@ linalg (`matmul`, `dot`, transpose) · forma (`reshape/squeeze/unsqueeze`,
 |---|---|---|
 | M0 spike | tensor crear + matmul + grad juguete + 1 paso SGD en reference y torch CPU | gaps FFI listados, API mínima congelada |
 | M1 tensor | tipos, ~60 ops, traza+grad, referencia, conformidad | conformidad verde en referencia |
-| M2 torch | capa C++ vía native-gen, prebuilt CPU | conformidad verde en torch, bit a bit vs referencia |
+| M2 torch | capa C++ vía native-gen dentro de `tensor/`, libtorch `optional` | conformidad verde en el backend libtorch (18/45 primitivas) y en la referencia; 27 primitivas pendientes; prebuilt CPU y el job de CI con libtorch, pendientes |
 | M3 nn | capas + inferencia MLP | inferencia con `nn` + torch, ejemplo runnable |
 | M4 train | losses + SGD/Adam + loop | MLP entrena end-to-end, loss baja, test lo prueba |
 | M5 hub | safetensors + descarga HF | pesos reales cargados en `nn` |

@@ -4,9 +4,11 @@ Status: **proposal, not a contract.** The four open questions of ml#1 are
 answered here as working proposals; §12 is the list of what stays open.
 
 References: [ml#1](https://github.com/agentica-lang/ml/issues/1) (goals, grad-in-Agentica
-decision, backend table, open questions), and
+decision, backend table, open questions),
 [agentica#1091](https://github.com/agentica-lang/agentica/issues/1091)
-(native arenas; see §8).
+(native arenas; see §8), and
+[agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
+(opaque native resources that can live in data and cross modules; see §2 and §7).
 
 ## 1. Goals and scope
 
@@ -26,6 +28,19 @@ Goals:
 - Keep the backend interface small enough to implement four times
   (`reference`, `torch`, `xla`, `candle`) with one shared conformance
   suite where the reference is the oracle.
+- **`tensor/` declares the native module of every backend it dispatches to.**
+  A `Tensor` carries the backend's handle, and a native handle is a
+  `resource`: resources are nominal to the `extern module` block that declares
+  them and cannot cross into another module, so `Handle` (§2) can only name a
+  handle type declared in this package, and the `Torch` arm of §7 can only
+  call a module declared here. Each such module is `optional` in
+  `agentica.toml`, so a machine without the library still checks, formats and
+  tests with the arm answering `error("backend not available")`;
+  `Tensor.available/1` answers the same question before a call does. The cost
+  is that `tensor/` is no longer "nothing native": it ships the thin layer of
+  each real backend and its build table. [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
+  is the change that lets a handle be opaque, at which point the backend code
+  moves back out into its own package and this bullet goes away.
 
 Out of scope here (each gets its own design):
 
@@ -44,21 +59,24 @@ Device  = Cpu | Cuda(Int)                                      # enum, proposal
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
 Backend = Reference | Torch(Device) | Xla(Device) | Candle(Device)   # enum, see §7
-Handle  = Native(Resource) | Plain(Data)                       # enum, shorthand types
+Handle  = Native(TensorHandle) | Plain(Data)                   # enum, see §2
 Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 ```
 
 - `Tensor` values are **immutable**; every op returns a new `Tensor`.
   A training step returning new parameters falls out of this later.
-- `handle` is `Native(Resource)` on native backends (libtorch/candle:
+- `handle` is `Native(TensorHandle)` on the libtorch backend (a
   `struct NAME_state *` + thread-safe `NAME_FREE`, C data only, never terms;
-  valid only during the call, never stored) and `Plain(Data)` on `reference`.
-  `Resource` names the backend module's `resource` declaration and `Data` is
-  plain Agentica data; both are shorthand for the representation §8 proposes,
-  which §12.3 keeps open. This follows the repo's FFI rules (`extern module` is
-  the only source of signatures; native-gen regenerates the header; blocking
-  work is `compute def` on the compute pool; `List`/`Map` cross via
-  cursors/builders).
+  valid only during the call, never stored) and `Plain(Data)` on `reference`,
+  where `Data` is plain Agentica data. `TensorHandle` is the resource the
+  `extern module "torch"` block of `src/native.agc` declares: a resource is
+  nominal to its block, so the handle type has to be the concrete one and it
+  has to live in this package (§7). A second native backend adds a second arm
+  (`Native(CandleHandle)`, …) when it exists; a backend that only reads a
+  handle it did not make answers `error`, never a stopped task. This follows
+  the repo's FFI rules (`extern module` is the only source of signatures;
+  native-gen regenerates the header; blocking work is `compute def` on the
+  compute pool; `List`/`Map` cross via cursors/builders).
 - **Inference-first dtype rule (proposal):** numeric compute is `F32`; `F16`
   and `F64` weights are converted to it on load (§6, lossy for `F64`). Two
   kinds of non-`F32` compute tensors are required by the op set itself: `Bool`
@@ -217,22 +235,44 @@ set:
 
 ```text
 r: Result[Tensor] = case a.backend
-  Backend.Reference -> Reference.matmul(a, b)
-  Backend.Torch(device) -> Torch.matmul(device, a, b)
-  Backend.Xla(_) -> error("backend not available")     # module not written yet
-  Backend.Candle(_) -> error("backend not available")  # module not written yet
+  Backend.Reference -> Reference.matmul(a, b)              # src/reference.agc
+  Backend.Torch(device) -> Torch.matmul(device, a, b)      # src/torch.agc
+  Backend.Xla(_) -> error("backend not available")         # module not written yet
+  Backend.Candle(_) -> error("backend not available")      # module not written yet
 end
 ```
 
 - The `case` is checked and exhaustive over all four variants, which is the
   property this shape buys; `xla` and `candle` return `error` until their
   modules exist, so the arm set does not change when they land.
+- The `Torch` arm calls `src/torch.agc`, which calls the thirteen `compute
+  def`s of `extern module "torch"` (`src/native.agc`). Both files live in this
+  package, and they have to: the arm needs the module's signatures, and the
+  arm's *argument* is a `Tensor` whose `Handle.Native` names the module's
+  resource type, which is nominal to that block. The alternatives are ruled
+  out by that same property — a table of `Fn` values injected by a backend
+  package still has to name the handle type in its signature, and a third
+  package owning the dispatch still has to carry both backends' handles in one
+  type. An untyped handle (an `Int` into a registry) would break §8, where
+  ownership, arena closing and `RUNTIME-NATIVE-CLOSED` all key on the resource
+  value. [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
+  is the change that makes the handle opaque; when it lands the module and its
+  wrapper move back out into `torch/`, and neither this `case` nor `Tensor`
+  changes shape.
+- The module is `optional = true` and built from `native/torch.c` on first
+  use, with libtorch found by the environment (`tools/build-torch.sh`). Where
+  it is not built, `Backend.Torch(device)` answers
+  `error("backend not available")` — the same answer the two unwritten
+  backends give — and `Tensor.available(Backend.Torch(device))` is `false`, so
+  a caller can choose a backend without catching that error.
 - Why this shape: Agentica is static and already checks before running
   (no `defn` macros as in `Nx.Defn`); an enum + `case` keeps dispatch
   visible to the checker and lets `reference` and `torch` coexist by value
   in one process for oracle comparison. The considered alternative — a
-  struct of functions per backend (object-style interface) — stays open
-  until the owner settles question 1; this document does not prejudge it.
+  struct of functions per backend (object-style interface) — cannot carry a
+  native handle across the package boundary while a resource is nominal to its
+  block (§12.1); [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
+  would unblock it, and with it the move of this module out of the package.
 - Each native backend is one `extern module` with a thin C layer (libtorch:
   C++ as `tch-rs` does; candle later: `extern "C"` over Rust), shipped via
   `[native.NAME]` + per-platform prebuilt (CPU first; sizes documented).
@@ -260,7 +300,10 @@ Proposed usage for tensors (needs sign-off):
 - One arena per **inference call**, and one nested arena per **decode step**:
   intermediates die at a known point instead of waiting for the GC (a 1 GB
   native tensor looks like any other `resource` to the GC; a step makes
-  thousands of them).
+  thousands of them). Each op of `src/torch.agc` opens an arena of its own and
+  returns the tensor it made as the block's value, so the arena keeps exactly
+  what the value reaches; a caller that runs a step nests those calls in one
+  arena of its own.
 - Only the returned `Tensor`(s) leave the arena; views keep their buffers
   through the rule above, so no explicit `keep` call exists in this proposal.
 - `compute def` kernels only push data or return a resource; the loop lives
@@ -316,7 +359,12 @@ Proposed usage for tensors (needs sign-off):
 
 ## 12. Open decisions (ml#1 questions 1–4)
 
-1. Dispatch: enum + `case` (§7) vs struct of functions.
+1. Dispatch: **decided — enum + `case`** (§7). The struct-of-functions
+   alternative is blocked, not rejected, while a native handle is a `resource`
+   nominal to its `extern module`: an injected table still has to name the
+   handle type in its signature.
+   [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918) is
+   the exit.
 2. Surface: `Tensor.*` + pipes (§2–§4) until/unless operator overloading on
    user structs exists.
 3. Lifetime: arena-per-call/step over #1091 semantics (§8) vs graph-owned

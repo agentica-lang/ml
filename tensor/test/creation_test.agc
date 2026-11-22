@@ -104,8 +104,14 @@ def test_introspection_reads_fields_without_a_call() -> Result[Void]
   Test.eq(Tensor.backend(t), Tensor.Backend.Reference)
 end
 
-def test_zeros_on_torch_is_not_available() -> Result[Void]
-  Test.error?(Tensor.zeros([1], Tensor.Dtype.F32, Tensor.Backend.Torch(Tensor.Device.Cpu)))
+def test_zeros_on_torch_answers_the_module_state() -> Result[Void]
+  # The libtorch backend is the one arm that runs or not depending on this
+  # machine (`[native.torch] optional`), so the same call is a tensor where the
+  # module is built and an error naming the missing backend where it is not.
+  case Tensor.zeros([1], Tensor.Dtype.F32, Tensor.Backend.Torch(Tensor.Device.Cpu))
+    ok(t) -> Test.eq(Tensor.shape(t), [1])
+    error(e) -> Test.assert(e.message.include?("backend not available"), "the Torch arm said \"#{e.message}\"")
+  end
 end
 
 def test_ones_on_xla_is_not_available() -> Result[Void]
@@ -117,6 +123,6 @@ def test_from_list_on_candle_is_not_available() -> Result[Void]
   Test.error?(Tensor.from_list(vals, [1], Tensor.Dtype.F32, Tensor.Backend.Candle(Tensor.Device.Cpu)))
 end
 
-def test_cuda_construction_is_not_available() -> Result[Void]
+def test_cuda_construction_is_an_error() -> Result[Void]
   Test.error?(Tensor.zeros([1], Tensor.Dtype.F32, Tensor.Backend.Torch(Tensor.Device.Cuda(0))))
 end

@@ -4,9 +4,12 @@
 ## `Result` and reports `error`, never a halt; shape, dtype and backend
 ## mismatches are validated eagerly in these wrappers, before dispatch.
 ## Dispatch is by value (`t.backend`) through an exhaustive `case` over all
-## four `Backend` arms (`tensor/DESIGN.md` §7): `Reference` runs, the other
-## three answer `error("backend not available")` until their modules land
-## (`torch/` is M2, `xla/`/`candle/` later).
+## four `Backend` arms (`tensor/DESIGN.md` §7): `Reference` runs in Agentica,
+## `Torch` runs on libtorch through `src/torch.agc` and `src/native.agc`, and
+## `Xla`/`Candle` answer `error("backend not available")` until their modules
+## exist. With libtorch absent (the native module is `optional`) the `Torch`
+## arm answers `error("backend not available")` too, and `available/1` says so
+## before a call does.
 ##
 ## Rules this file enforces:
 ## - No operator overloading: `Tensor.add(a, b)` plus pipes, never `a + b`.
@@ -19,7 +22,8 @@
 ##   inputs, index bounds) and value-count matches live in the backend that
 ##   owns the storage, which is the only place that can see them.
 ## - Dtypes: numeric compute is `F32`; `F16`/`F64` compute exactly in doubles
-##   (a native `F32` backend will round on its side — see the PR body).
+##   (a native `F32` backend rounds on its side, which is the tolerance the
+##   conformance suite quotes).
 ##   `Bool` masks and integer index tensors are first-class; `to_dtype`
 ##   truncates float to int, tests nonzero for `Bool`, and range-checks int
 ##   widths. Int overflows are errors, never wrap-around.
@@ -36,18 +40,24 @@
 ##   through the primitives they are built from; `greedy_step` additionally
 ##   refuses a temperature so small that `1/t` overflows.
 ## - Lifetimes (§8): the reference holds plain Agentica data and needs no
-##   arena. Arenas are not faked for `Plain`: the first native backend
-##   allocates its handles inside `Native.arena` per call/step instead.
+##   arena. The native backend allocates its handles inside a `Native.arena`
+##   per call, and a caller that runs a step wraps the step in one arena of its
+##   own (`src/torch.agc`); arenas are never faked for `Plain`.
 ## - There is no tracing and no `grad` in M1: every backward rule waits for
 ##   the graph of `tensor/DESIGN.md` §10 (`train/` is M4). Saying so here so
 ##   no caller mistakes a forward op for a differentiable one.
 ## - `conv1d`/`avg_pool1d` name the §3.1 surface but answer
 ##   `error("not implemented")`: no §3.2 op needs them, and §5 admits an op
 ##   only for a consumer that does.
-## - The 45 names of §3.1 all exist below; the PR body lists which compute
-##   and which are stubs, so the gap is explicit rather than hidden.
+## - The 45 names of §3.1 all exist below. `Reference` computes all of them
+##   except the two convolution/pooling stubs; the `Torch` arm computes the
+##   subset in `src/torch.agc` and answers
+##   `error("<op> is not implemented on the torch backend yet")` for the rest,
+##   so the gap is a `Result` error naming the op, never a wrong number
+##   (`README.md`, "What is implemented").
 
 import Reference from "src/reference"
+import Torch from "src/torch"
 import Types from "src/types"
 
 export Types.Backend
@@ -75,12 +85,26 @@ def dtype(t: Types.Tensor) -> Types.Dtype = t.dtype
 ## The backend of `t`: a field read, no backend call.
 def backend(t: Types.Tensor) -> Types.Backend = t.backend
 
+## True when `backend` can run on this machine: `Reference` always can, `Torch`
+## when the native libtorch module is built (`[native.torch] optional = true` in
+## `agentica.toml`), and `Xla`/`Candle` never, since their modules do not exist
+## yet. A caller that needs to work on both asks this instead of catching the
+## `error("backend not available")` an op would answer.
+def available(backend: Types.Backend) -> Bool
+  case backend
+    Types.Backend.Reference -> true
+    Types.Backend.Torch(_) -> Torch.available()
+    Types.Backend.Xla(_) -> false
+    Types.Backend.Candle(_) -> false
+  end
+end
+
 ## Creation: zeros of `shape`, `dtype` and `backend`.
 def zeros(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
   case backend
     Types.Backend.Reference -> Reference.zeros(shape, dtype)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.zeros(device, shape, dtype)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -91,7 +115,7 @@ def ones(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result
   _ = try Types.volume(shape)
   case backend
     Types.Backend.Reference -> Reference.ones(shape, dtype)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.ones(device, shape, dtype)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -103,7 +127,7 @@ def empty(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Resul
   _ = try Types.volume(shape)
   case backend
     Types.Backend.Reference -> Reference.empty(shape, dtype)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.empty(device, shape, dtype)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -114,7 +138,7 @@ def full(shape: List[Int], value: Types.Values, dtype: Types.Dtype, backend: Typ
   _ = try Types.volume(shape)
   case backend
     Types.Backend.Reference -> Reference.full(shape, value, dtype)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.full(device, shape, value, dtype)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -124,7 +148,7 @@ end
 def like(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.like(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.like(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -137,7 +161,7 @@ def arange(start: Int, stop: Int, step: Int, dtype: Types.Dtype, backend: Types.
   return error("arange needs a nonzero step, got #{step}") if step == 0
   case backend
     Types.Backend.Reference -> Reference.arange(start, stop, step, dtype)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.arange(device, start, stop, step, dtype)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -147,7 +171,7 @@ end
 def scalar_to_tensor(value: Types.Values, dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]
   case backend
     Types.Backend.Reference -> Reference.scalar_to_tensor(value, dtype)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.scalar_to_tensor(device, value, dtype)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -164,7 +188,7 @@ def from_list(
   return error("from_list needs #{n} values for #{shape}, got #{data.size}") if data.size != n
   case backend
     Types.Backend.Reference -> Reference.from_list(data, shape, dtype)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.from_list(device, data, shape, dtype)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -174,7 +198,7 @@ end
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   case t.backend
     Types.Backend.Reference -> Reference.to_list(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.to_list(t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -188,7 +212,7 @@ def add(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(a, "add")
   case a.backend
     Types.Backend.Reference -> Reference.add(a, b)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.add(device, a, b)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -202,7 +226,7 @@ def sub(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(a, "sub")
   case a.backend
     Types.Backend.Reference -> Reference.sub(a, b)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("sub")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -216,7 +240,7 @@ def mul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(a, "mul")
   case a.backend
     Types.Backend.Reference -> Reference.mul(a, b)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.mul(device, a, b)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -230,7 +254,7 @@ def div(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(a, "div")
   case a.backend
     Types.Backend.Reference -> Reference.div(a, b)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("div")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -241,7 +265,7 @@ def neg(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "neg")
   case t.backend
     Types.Backend.Reference -> Reference.neg(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("neg")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -252,7 +276,7 @@ def exp(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "exp")
   case t.backend
     Types.Backend.Reference -> Reference.exp(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.exp(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -263,7 +287,7 @@ def log(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "log")
   case t.backend
     Types.Backend.Reference -> Reference.log(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.log(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -274,7 +298,7 @@ def sqrt(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "sqrt")
   case t.backend
     Types.Backend.Reference -> Reference.sqrt(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("sqrt")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -289,7 +313,7 @@ def pow(base: Types.Tensor, exponent: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(base, "pow")
   case base.backend
     Types.Backend.Reference -> Reference.pow(base, exponent)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("pow")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -300,7 +324,7 @@ def relu(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "relu")
   case t.backend
     Types.Backend.Reference -> Reference.relu(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.relu(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -311,7 +335,7 @@ def sigmoid(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "sigmoid")
   case t.backend
     Types.Backend.Reference -> Reference.sigmoid(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("sigmoid")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -322,7 +346,7 @@ def tanh(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "tanh")
   case t.backend
     Types.Backend.Reference -> Reference.tanh(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("tanh")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -334,7 +358,7 @@ def gelu_tanh_approx(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "gelu_tanh_approx")
   case t.backend
     Types.Backend.Reference -> Reference.gelu_tanh_approx(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("gelu_tanh_approx")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -348,7 +372,7 @@ def eq(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_or_int(a, "eq")
   case a.backend
     Types.Backend.Reference -> Reference.eq(a, b)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("eq")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -362,7 +386,7 @@ def lt(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_or_int(a, "lt")
   case a.backend
     Types.Backend.Reference -> Reference.lt(a, b)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("lt")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -379,7 +403,7 @@ def where(cond: Types.Tensor, a: Types.Tensor, b: Types.Tensor) -> Result[Types.
   return error("where needs a condition of shape #{a.shape}, got #{cond.shape}") if cond.shape != a.shape
   case a.backend
     Types.Backend.Reference -> Reference.where(cond, a, b)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("where")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -391,7 +415,7 @@ def clamp(t: Types.Tensor, lo: Float, hi: Float) -> Result[Types.Tensor]
   _ = try float_only(t, "clamp")
   case t.backend
     Types.Backend.Reference -> Reference.clamp(t, lo, hi)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("clamp")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -403,7 +427,7 @@ def sum(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = fal
   _ = try check_axes_option(axes, t.shape.size, "sum")
   case t.backend
     Types.Backend.Reference -> Reference.sum(t, axes, keep_dims)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.sum(device, t, axes, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -415,7 +439,7 @@ def mean(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = fa
   _ = try check_axes_option(axes, t.shape.size, "mean")
   case t.backend
     Types.Backend.Reference -> Reference.mean(t, axes, keep_dims)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.mean(device, t, axes, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -427,7 +451,7 @@ def max(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = fal
   _ = try check_axes_option(axes, t.shape.size, "max")
   case t.backend
     Types.Backend.Reference -> Reference.max(t, axes, keep_dims)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("max")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -439,7 +463,7 @@ def argmax(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = 
   _ = try check_axes_option(axes, t.shape.size, "argmax")
   case t.backend
     Types.Backend.Reference -> Reference.argmax(t, axes, keep_dims)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("argmax")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -454,7 +478,7 @@ def matmul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   return error("matmul needs #{a.shape[1]} in the inner dimension, got #{b.shape[0]}") if a.shape[1] != b.shape[0]
   case a.backend
     Types.Backend.Reference -> Reference.matmul(a, b)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.matmul(device, a, b)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -479,7 +503,7 @@ def batch_matmul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
 
   case a.backend
     Types.Backend.Reference -> Reference.batch_matmul(a, b)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("batch_matmul")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -489,8 +513,8 @@ end
 ## A true axis permutation is derived from `slice`/`stack` where needed.
 def transpose(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
-    Types.Backend.Reference -> ok(Reference.transpose(t))
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Reference -> Reference.transpose(t)
+    Types.Backend.Torch(device) -> Torch.transpose(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -501,7 +525,7 @@ def reshape(t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
   case t.backend
     Types.Backend.Reference -> Reference.reshape(t, shape)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.reshape(device, t, shape)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -512,7 +536,7 @@ def squeeze(t: Types.Tensor, axis: Optional[Int] = none) -> Result[Types.Tensor]
   _ = try check_squeeze_axis(axis, t.shape, "squeeze")
   case t.backend
     Types.Backend.Reference -> Reference.squeeze(t, axis)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("squeeze")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -523,7 +547,7 @@ def unsqueeze(t: Types.Tensor, axis: Int = 0) -> Result[Types.Tensor]
   return error("unsqueeze needs an axis in 0...#{t.shape.size}, got #{axis}") if axis < 0 or axis > t.shape.size
   case t.backend
     Types.Backend.Reference -> Reference.unsqueeze(t, axis)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("unsqueeze")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -534,7 +558,7 @@ def slice(t: Types.Tensor, starts: List[Int], ends: List[Int]) -> Result[Types.T
   _ = try check_slice(starts, ends, t.shape, "slice")
   case t.backend
     Types.Backend.Reference -> Reference.slice(t, starts, ends)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("slice")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -552,7 +576,7 @@ def concat(tensors: List[Types.Tensor], axis: Int) -> Result[Types.Tensor]
 
   case first.backend
     Types.Backend.Reference -> Reference.concat(tensors, axis)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("concat")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -569,7 +593,7 @@ def stack(tensors: List[Types.Tensor], axis: Int = 0) -> Result[Types.Tensor]
 
   case first.backend
     Types.Backend.Reference -> Reference.stack(tensors, axis)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("stack")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -580,7 +604,7 @@ def broadcast_to(t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
   _ = try check_broadcast(t.shape, shape, "broadcast_to")
   case t.backend
     Types.Backend.Reference -> Reference.broadcast_to(t, shape)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("broadcast_to")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -596,7 +620,7 @@ def gather(source: Types.Tensor, indices: Types.Tensor) -> Result[Types.Tensor]
 
   case source.backend
     Types.Backend.Reference -> Reference.gather(source, indices)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("gather")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -606,7 +630,7 @@ end
 def to_dtype(t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.to_dtype(t, dtype)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(device) -> Torch.to_dtype(device, t, dtype)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -616,7 +640,7 @@ end
 def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.to_device(t, device)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("to_device")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -626,7 +650,7 @@ end
 def copy(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.copy(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("copy")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -637,7 +661,7 @@ end
 def contiguous(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.contiguous(t)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("contiguous")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -650,7 +674,7 @@ def conv1d(input: Types.Tensor, weight: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(weight, "conv1d")
   case input.backend
     Types.Backend.Reference -> Reference.conv1d(input, weight)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("conv1d")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -661,7 +685,7 @@ def avg_pool1d(input: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(input, "avg_pool1d")
   case input.backend
     Types.Backend.Reference -> Reference.avg_pool1d(input)
-    Types.Backend.Torch(_) -> error("backend not available")
+    Types.Backend.Torch(_) -> Torch.unsupported("avg_pool1d")
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end

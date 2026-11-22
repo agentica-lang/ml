@@ -1,16 +1,22 @@
 ## Shared types of the `tensor/` package (`tensor/DESIGN.md` §2).
 ##
-## This module is the dependency leaf: it imports nothing, so both the
-## reference backend (`src/reference.agc`) and the public API (`tensor.agc`) can
-## use it without an import cycle. The public entry point is `tensor.agc`,
-## which re-exports every type here; tests and future backends go through
-## `Tensor.*`, never through this module directly.
+## This module imports one thing: `src/native.agc`, the `extern module "torch"`
+## declaration whose `TensorHandle` resource the `Native` arm of `Handle`
+## names. Agentica resources are nominal to the block that declares them, so
+## the backend's handle type has to be visible here for a `Tensor` to carry one
+## (`tensor/DESIGN.md` §2, §7; agentica-lang/agentica#1918 is the way out).
+## Everything else about this module is unchanged: the reference backend
+## (`src/reference.agc`) and the public API (`tensor.agc`) use it without an
+## import cycle, and the public entry point stays `tensor.agc`, which
+## re-exports every type here.
 ##
 ## Storage rule (design of record: `tensor/DESIGN.md` §2): the reference
 ## backend holds plain Agentica data, row-major (C order), as `List[Float]`
 ## inside `Data`. Float-class dtypes hold the value itself; int-class dtypes
 ## hold exactly integral values; `Bool` holds `1.0`/`0.0`. `Values` is the
 ## dtype-tagged crossing type for `from_list`/`to_list` only.
+
+import Raw from "native"
 
 enum Dtype
   F32
@@ -41,13 +47,15 @@ struct Data
   values: List[Float]
 end
 
-## How a tensor's values are held. M1 has the `Plain` arm only: the reference
-## backend owns Agentica data and needs no arena. `Native(Resource)` arrives
-## with the first native backend (`torch/`, M2), which will use
-## `Native.arena` per call/step (`tensor/DESIGN.md` §8); arenas are never
-## faked for `Plain`.
+## How a tensor's values are held. `Plain` is the reference backend, which
+## owns Agentica data and needs no arena; `Native` is a handle of the libtorch
+## backend, owned by the task that made it and closed by the arena it was made
+## in, `Native.close`, or the end of the task (`tensor/DESIGN.md` §8). The
+## handle is the resource of the `torch` module, so it is typed by that
+## module's declaration and not by an opaque resource.
 enum Handle
   Plain(Data)
+  Native(Raw.TensorHandle)
 end
 
 ## One dtype-tagged value: the element type of `from_list`/`to_list`.
