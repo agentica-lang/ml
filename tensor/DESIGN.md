@@ -17,10 +17,19 @@ decisions; see §8).
 
 Goals:
 
-- Run **forward inference first**: `tensor/` + `nn/` over `reference`
-  (pure Agentica oracle) and one real eager backend, proven by
-  **Whisper-B** (the same reference wav as the `whisper/` binding transcribes,
-  on `reference`/torch CPU, slower is acceptable).
+- Run **training and inference**, in that order of arrival but both in scope.
+  Inference first: `tensor/` + `nn/` over `reference` (pure Agentica oracle)
+  and one real eager backend, proven by **Whisper-B** (the same reference wav
+  as the `whisper/` binding transcribes, on `reference`/torch CPU, slower is
+  acceptable).
+- **Training is a goal, not a non-goal** (owner decision 2026-11-22):
+  `train/` (losses, SGD/Adam, an `Axon.Loop`-style loop) and the traced
+  `grad`/`value_and_grad` that it needs are part of this stack. This proposal
+  only *sequences* them after inference — it does not exclude them. The
+  primitives below are chosen so that tracing and grad attach **without
+  changing them** (see §10), and any op that training needs (e.g. `stop_grad`,
+  `sum` over all axes with a keep-dims option) is admitted from the start
+  rather than bolted on later.
 - Keep every backend **forward-only**. `grad`, `vmap`, `jit` live in
   Agentica over a traced graph (ml#1 key decision, as Nx does); XLA has no
   autograd of its own, so per-backend autograd is out.
@@ -28,11 +37,11 @@ Goals:
   (`reference`, `torch`, later `xla`, `candle`) with one shared conformance
   suite where the reference is the oracle.
 
-Non-goals for this proposal:
+Deferred in this proposal (sequenced later, still goals):
 
-- Training (`train/`: losses, optimizers, loop), the JIT compiler (`xla/`
-  via PJRT), and the model hub (`hub/` download/sharding UX). §10 sketches
-  how tracing/grad attaches later without changing the primitives.
+- The JIT compiler (`xla/` via PJRT) and the model hub (`hub/` download and
+  sharding UX). §10 sketches how tracing/grad attach without changing the
+  primitives.
 - A ggml quantized backend (phase 8; the `whisper/` binding already uses
   ggml through whisper.cpp and is out of scope here).
 - Final signatures (`.agc` + native-gen headers come in Fase 0/M1, after the
@@ -156,7 +165,9 @@ Encoder (transformer, sizes differ small/medium — shapes stay parametric):
   `full + add` (no dedicated primitive).
 - N blocks of: `layer_norm` (derived) → multi-head self-attention
   (derived, §3.2) → `layer_norm` → MLP (`linear`, `gelu`, `linear`).
-- All weights come from checkpoint (§6); no training path is needed.
+- All weights come from checkpoint (§6); no training path is needed for the
+  Whisper-B milestone. Training arrives in `train/` (§10) on the same
+  primitives.
 
 Decoder (autoregressive, greedy first):
 
@@ -254,7 +265,7 @@ Proposed usage for tensors (pending owner sign-off):
 - Conformance covers values **plus** shapes, dtypes, and error cases on every
   backend, bit-for-bit against `reference` where the dtype is exact.
 
-## 10. Later: tracing and grad (deferred, not designed here)
+## 10. Training: tracing and grad (sequenced after inference, in scope)
 
 - Functions trace to a graph of §3.1 primitives; `grad`/`value_and_grad` are
   computed **in Agentica over that graph** (ml#1 key decision). Backends stay
@@ -262,9 +273,17 @@ Proposed usage for tensors (pending owner sign-off):
 - The graph must be compilable (static shapes) so `xla/` can later compile
   it whole via the PJRT C API (`pjrt_c_api.h`, `dlopen` plugin, no own layer).
   `vmap`/`jit` also live in Agentica.
-- Nothing in §3.1–§4 assumes training; `nn/` (forward-only layers over
-  `tensor/`) comes before `train/` (losses, SGD/Adam, `Axon.Loop`-style loop
-  with `std/logger`), per roadmap phases 3–4.
+- Nothing in §3.1–§4 assumes training, but every primitive must be
+  differentiable in Agentica: the trace records the ops, and each op
+  declares its backward rule in `tensor/` (not in a backend). `nn/`
+  (forward-only layers over `tensor/`) comes before `train/` (losses,
+  SGD/Adam, `Axon.Loop`-style loop with `std/logger`), per roadmap phases 3–4.
+- Op admission rule: if an op cannot express a backward rule (or its rule
+  needs an op missing here), the missing op is added to §3.1 then, not
+  deferred — otherwise `train/` would force a breaking change to the frozen
+  backend interface.
+- Exit criterion for this stack (roadmap M4): a small MLP trains end-to-end
+  over `torch` with `reference` as the oracle.
 
 ## 11. Conformance and testing (proposal)
 
