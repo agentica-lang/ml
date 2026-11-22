@@ -1012,7 +1012,9 @@ end
 
 ## Moves `t` to `dtype`: float to float keeps the value, float to int
 ## truncates toward zero, anything to `Bool` tests nonzero, and int widths
-## are range-checked. Overflows and `NaN` are errors, never wrap-around.
+## are range-checked. Int targets error on overflow and `NaN`, never
+## wrap-around; `Bool` keeps the nonzero rule for every input, so `NaN`
+## is `true` (it is nonzero, as in torch) rather than an error.
 def to_dtype(t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
   out: List[Float] = []
   for x in data_of(t)

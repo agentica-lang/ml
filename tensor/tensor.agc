@@ -853,9 +853,11 @@ def greedy_step(logits: Types.Tensor, temperature: Optional[Float] = none) -> Re
   return error("greedy_step needs rank-1 logits, got #{logits.shape}") if logits.shape.size != 1
   scaled = case temperature
     some(t) ->
+      return error("greedy_step needs a finite temperature, got #{t}") if !Types.is_finite(t)
       return error("greedy_step needs temperature > 0, got #{t}") if t <= 0.0
-      return error("greedy_step needs temperature >= 1.0e-308, got #{t}") if t * 1.0e308 < 1.0
-      try mul(logits, try full(logits.shape, Types.Values.Float(1.0 / t), logits.dtype, logits.backend))
+      r = 1.0 / t
+      return error("greedy_step needs a temperature whose reciprocal is finite, got #{t}") if !Types.is_finite(r)
+      try mul(logits, try full(logits.shape, Types.Values.Float(r), logits.dtype, logits.backend))
     none -> logits
   end
 

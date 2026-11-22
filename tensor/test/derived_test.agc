@@ -147,7 +147,26 @@ end
 
 def test_greedy_step_rejects_a_denormal_temperature() -> Result[Void]
   logits = try Support.f32([1.0, 2.0], [2])
-  Test.error?(Tensor.greedy_step(logits, some(5.0e-324)))
+  case Tensor.greedy_step(logits, some(5.0e-324))
+    ok(_) -> Test.assert(false, "a denormal temperature must be an error")
+    error(e) -> Test.assert(e.message.include?("reciprocal"), "wrong error: #{e.message}")
+  end
+end
+
+def test_greedy_step_accepts_the_smallest_finite_reciprocal() -> Result[Void]
+  logits = try Support.f32([0.0, 1.0], [2])
+  tok = try Tensor.greedy_step(logits, some(1.0e-308))
+  Test.eq(try Tensor.to_list(tok), [Tensor.Values.Int(1)])
+end
+
+def test_greedy_step_rejects_a_non_finite_temperature() -> Result[Void]
+  logits = try Support.f32([2.0, 1.0], [2])
+  inf = 1.0e308 * 10.0
+  try Test.error?(Tensor.greedy_step(logits, some(inf)))
+  case Tensor.greedy_step(logits, some(inf - inf))
+    ok(_) -> Test.assert(false, "a NaN temperature must be an error")
+    error(e) -> Test.assert(e.message.include?("finite temperature"), "wrong error: #{e.message}")
+  end
 end
 
 def test_greedy_step_rejects_a_non_positive_temperature() -> Result[Void]

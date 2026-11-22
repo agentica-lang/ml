@@ -79,6 +79,13 @@ def test_top_k_with_k_equals_n_sorts_everything() -> Result[Void]
   Support.expect_floats(got.values, [3.0, 2.0, 1.0])
 end
 
+def test_top_k_rejects_non_finite_values() -> Result[Void]
+  saturated = try Tensor.exp(try Support.f32([1000.0, 0.0], [2]))
+  try Test.error?(Tensor.top_k(saturated, 1))
+  nan = try Tensor.sub(saturated, saturated)
+  Test.error?(Tensor.top_k(nan, 2))
+end
+
 def test_top_k_rejects_k_outside_one_to_n() -> Result[Void]
   x = try Support.f32([1.0, 2.0], [2])
   try Test.error?(Tensor.top_k(x, 0))

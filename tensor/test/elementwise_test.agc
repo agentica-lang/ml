@@ -78,6 +78,15 @@ def test_log_of_a_saturated_exp_is_an_error() -> Result[Void]
   Test.error?(Tensor.log(saturated))
 end
 
+def test_sqrt_pow_sigmoid_gelu_reject_non_finite_inputs() -> Result[Void]
+  saturated = try Tensor.exp(try Support.f32([1000.0], [1]))
+  nan = try Tensor.sub(saturated, saturated)
+  try Test.error?(Tensor.sqrt(saturated))
+  try Test.error?(Tensor.pow(saturated, try Support.f32([1.0], [1])))
+  try Test.error?(Tensor.sigmoid(nan))
+  Test.error?(Tensor.gelu_tanh_approx(nan))
+end
+
 def test_exp_matches_the_hand_values() -> Result[Void]
   a = try Support.f32([1.0, -1.0, 0.0, 2.0, -3.0], [5])
   Support.expect_floats(
