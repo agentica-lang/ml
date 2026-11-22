@@ -1,0 +1,144 @@
+name: CI
+
+# One folder per Agentica package, each with its own agentica.toml and
+# AGENTICA_VERSION. The plan job lists the package folders so the packages
+# job runs as a matrix: adding a folder adds it to CI with no edit here.
+# Models and weights never enter git: tests use synthetic fixtures, and a
+# future job that needs a model downloads it explicitly.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older run; a push to main gets a
+# group of its own, so it is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The native-gen release that regenerates and checks the native headers.
+  NATIVE_GEN_TAG: native-gen-0.4.0
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      packages: ${{ steps.packages.outputs.packages }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Third-party engines (whisper.cpp and friends) enter as submodules,
+          # never vendored; tests must run against the pinned commits.
+          submodules: recursive
+
+      - name: Find the packages
+        id: packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkgs=$(for f in */agentica.toml; do echo "${f%/agentica.toml}"; done | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
+          echo "Packages: $pkgs"
+
+  # Each package on its pinned Agentica release: install, check, format, the
+  # --check of its generated native headers, and its tests.
+  packages:
+    needs: plan
+    if: needs.plan.outputs.packages != '[]'
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.plan.outputs.packages) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: recursive
+
+      - name: Read the pinned Agentica version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version sha256 _ < AGENTICA_VERSION
+          [ -n "$version" ] && [ -n "$sha256" ] || {
+            echo "AGENTICA_VERSION must hold the version and the sha256 of its linux-x86_64 archive" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Agentica release
+        uses: agentica-lang/setup-agentica@v1
+        with:
+          version: ${{ steps.pin.outputs.version }}
+          sha256: ${{ steps.pin.outputs.sha256 }}
+
+      # A package with no dependencies has no lock and nothing to fetch.
+      - name: Install the locked dependencies
+        shell: bash
+        run: |
+          if [ -f agentica.lock ]; then agentica install; else echo "no agentica.lock: nothing to fetch"; fi
+
+      - name: Check
+        run: agentica check
+
+      - name: Format
+        run: agentica fmt --check
+
+      # Every committed native/*_native.h must be the header that native-gen
+      # makes from the tracked .agc that declares its `extern module` (any
+      # folder layout); a package with no generated headers skips this step,
+      # so adding a folder adds it to CI with no edit here. The clone of the
+      # native-gen release is shallow, at the tag.
+      - name: Check the generated native headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          headers=(native/*_native.h)
+          if [ "${#headers[@]}" -eq 0 ]; then
+            echo "no generated native headers: nothing to check"
+            exit 0
+          fi
+          git clone --depth 1 --branch "$NATIVE_GEN_TAG" \
+            https://github.com/agentica-lang/packages.git "$RUNNER_TEMP/packages"
+          for h in "${headers[@]}"; do
+            name=${h#native/}
+            name=${name%_native.h}
+            src=$(git grep -l "extern module \"$name\"" -- '*.agc' | head -n 1 || true)
+            [ -n "$src" ] || {
+              echo "no tracked .agc declares extern module \"$name\"" >&2
+              exit 1
+            }
+            agentica "$RUNNER_TEMP/packages/native-gen/cli.agc" "$src" \
+              --output "$h" --check
+          done
+
+      - name: Test
+        run: agentica test
+
+  # `test` is the required check, so it carries the result of the other jobs.
+  test:
+    needs: [plan, packages]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check that the other jobs passed
+        env:
+          PLAN: ${{ needs.plan.result }}
+          PACKAGES: ${{ needs.packages.result }}
+        run: |
+          echo "plan: $PLAN, packages: $PACKAGES"
+          [ "$PLAN" = success ] && [[ "$PACKAGES" =~ ^(success|skipped)$ ]]
