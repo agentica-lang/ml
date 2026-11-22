@@ -16,7 +16,8 @@ whisper.cpp** para transcribir en días y validar native-gen con algo real,
 **(B) Whisper puro sobre `tensor`/`nn`/`hub`** como prueba end-to-end del
 stack. La vía A no sustituye a la B: es el bootstrap mientras madura el
 tensor puro. Checkout local de referencia: `../whisper.cpp` (con ggml
-vendored, modelos de test y scripts `convert-pt-to-ggml.py`).
+vendored, modelos de test y scripts `convert-pt-to-ggml.py`); en este repo
+entra como submódulo en `third_party/`, no copiado (ver punto 7).
 
 ## 1. Qué copiamos de Nx (y qué no)
 
@@ -63,7 +64,8 @@ Agentica, backends solo forward**.
    carga el type-checker vs. runtime, por decidir. Cursores `List`/`Map` de
    native-gen se leen por `_next` (nada se copia a arrays); builders para
    construir resultados.
-7. **Distribución = `[native.NAME]` + prebuilt por plataforma.**
+7. **Nada de copiar código externo: todo como submódulo git** (decisión 2026-11-22). whisper.cpp, ggml, libtorch, modelos y deps pesadas entran pineados en `third_party/` vía `git submodule`, nunca vendorizados. En este repo solo vive: `*.agc`, `agentica.toml`, el C/Rust fino propio, headers generados, tests y fixtures sintéticas.
+8. **Distribución = `[native.NAME]` + prebuilt por plataforma.**
    `build = { sources = [...] }` para C; librerías comprometidas en
    `native/` por sistema para Rust/C++ pesado (libtorch: **CPU primero**,
    binarios grandes — irrelevante para `check`, crítico para CI/install).
