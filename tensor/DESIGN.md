@@ -13,7 +13,7 @@ decision, backend table, open questions), and
 (native arenas — **verified CLOSED 2026-11-15** with phase-1 design
 decisions; see §8).
 
-## 1. Goals and non-goals
+## 1. Goals, and what is deferred
 
 Goals:
 
