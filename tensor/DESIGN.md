@@ -34,15 +34,15 @@ Out of scope here (each gets its own design):
   primitives.
 - A ggml quantized backend: quantized checkpoints are consumed by
   specialized bindings, not by this stack.
-- Final signatures: the `.agc` and native-gen headers are the contract once
-  written, and the spike that writes them freezes the minimum.
+- Final signatures: the `.agc` and generated header are the contract once
+  written (§4).
 
 ## 2. Types (proposal)
 
 ```text
 Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool   # proposal
 Shape   = List[Int]                                            # static ints, row-major C-order
-Backend = reference | torch | xla | candle                     # proposal, see §7
+Backend = reference | torch(Device) | xla(Device) | candle(Device)   # proposal, see §7
 Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Resource | Data }
 ```
 
@@ -54,10 +54,12 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Resource | Dat
   `reference`. This follows the repo's FFI rules (`extern module` is the only
   source of signatures; native-gen regenerates the header; blocking work is
   `compute def` on the compute pool; `List`/`Map` cross via cursors/builders).
-- **Inference-first dtype rule (proposal):** compute requires only `F32`;
-  `F16` is load-and-cast (weights may arrive as `F16`, compute upcasts);
-  the rest of the table exists for checkpoint loading (§6) and grows only
-  when a consumer requirement (§5) or conformance demands it.
+- **Inference-first dtype rule (proposal):** numeric compute is `F32`; `F16`
+  weights load-and-cast to it. Two kinds of non-`F32` compute tensors are
+  required by the op set itself: `Bool` masks (`eq`, `lt`, the condition of
+  `where`) and integer index tensors (`gather` indices, `argmax` output).
+  The rest of the table exists for checkpoint loading (§6) and grows only when
+  a consumer requirement (§5) or conformance demands it.
 - No operator overloading (ml#1 question 2): `Tensor.add(a, b)` plus pipes
   (`t |> Tensor.add(other) |> Tensor.relu()`). If the language ever allows
   `a + b` on user structs, it is sugar over this.
@@ -103,16 +105,17 @@ Built only from §3.1, in `tensor/` (generic) or `nn/` (model-shaped):
 - `softmax(x, axis) = div(exp(sub(x, max)), sum(...))` with max-subtraction.
 - `layer_norm(x)`, `rms_norm(x)` from `mean`, `pow`, `sqrt` and `div`
   compositions over §3.1 (no `var`/`rsqrt` primitive is needed).
-- `gelu_exact`, `silu` from `erf`-free formulations (`tanh` approx first;
-  exact formula only if conformance needs it).
-- `linear(x, w, b?)`, `embedding(ids, table)` via `matmul`/`gather`.
+- `gelu` (the `tanh` approximation of §3.1), `silu` from `sigmoid` and `mul`.
+  The `erf` form cannot be expressed over §3.1 and is not offered.
+- `dot(a, b)` as `reshape` + `matmul`; `linear(x, w, b?)`, `embedding(ids,
+  table)` via `matmul`/`gather`.
 - `multi_head_attention(q, k, v, mask?)`: split heads by `reshape/transpose`,
   scores by `batch_matmul`, scale by `mul`, `softmax`, context by
   `batch_matmul`, merge by `transpose/reshape`. No fused kernel in v1.
 - `greedy_step(logits, temperature?)`: `div` by temperature, `softmax`,
-  `argmax`. Beam search is an Agentica loop over `gather` + `top_k_derived`
-  (`top_k` itself is a derived sort/select loop in v1; a native `top_k`
-  primitive enters only if the spike shows the loop is unusably slow).
+  `argmax`. Beam search is an Agentica loop over `gather` + `top_k` (`top_k`
+  is a derived sort/select loop in v1; a native `top_k` primitive enters only
+  if the spike shows the loop is unusably slow).
 - `dropout(x, p)` at inference is identity (kept for `nn/` API symmetry).
 
 If a consumer needs an op that is neither in §3.1 nor expressible above at
@@ -123,7 +126,8 @@ gate for adding ops.
 
 ```text
 Tensor.zeros(shape, dtype, backend) -> Tensor | error
-Tensor.from_list(data: List[Float], shape, dtype, backend) -> Tensor | error
+Tensor.from_list(data: List[Float] | List[Int] | List[Bool], shape, dtype, backend)
+                                                  -> Tensor | error
 Tensor.to_list(t) -> Result[List[Float] | List[Int] | List[Bool]]
                                                   # host readback, tests + decode loop
 Tensor.shape(t) -> Shape                          # no native call
@@ -133,10 +137,11 @@ Tensor.backend(t) -> Backend                      # no native call
 
 - Every fallible op returns `Result`; shape/dtype mismatches are `error`,
   never a halt. Introspection is free (fields, no FFI round-trip).
-- Batch and device are explicit arguments, never globals: dispatch is **by
-  value** (`t.backend`), not by global config, so `reference` (oracle) and
-  `torch` can check each other in the same process. A backend value names its
-  device (`torch:cpu`, `torch:cuda:0`); `reference` has none.
+- Device is explicit, never a global: dispatch is **by value** (`t.backend`),
+  not by global config, so `reference` (oracle) and `torch` can check each
+  other in the same process. A backend value carries its device
+  (`torch:cpu`, `torch:cuda:0`); `reference` has none. Batch lives in the
+  shape, not in a global either.
 - The `.agc` signatures plus the generated native header are the contract
   once written; until then this document is the only source, and it is still
   a proposal.
@@ -155,12 +160,14 @@ Encoder/decoder (parametric in size, no model-specific constant here):
   primitive).
 - N blocks of: `layer_norm` (derived) → multi-head self-attention (derived,
   §3.2) → `layer_norm` → MLP (`linear`, `gelu_tanh_approx`, `linear`).
-- A frontend that needs a 1-D convolution stem: `conv1d` × 2 is the reason
-  `conv1d` is primitive. A feature frontend (windowed transform plus a
-  filterbank) is the first `compute def` candidate: implement in pure Agentica
-  against §3.1 where viable, drop to native only if the spike proves the pure
-  version unusable. Either way the **signature stays Agentica-side**
-  (`features(pcm: List[Float]) -> Tensor`; exact shape is the client's).
+- `conv1d`/`avg_pool1d` are primitives because a consumer needs a 1-D
+  convolution stem; a text-only client does not, and that is fine (§5 is the
+  gate, not a minimum for every client).
+- A feature frontend (windowed transform plus a filterbank) is a `compute def`
+  candidate: implement in pure Agentica against §3.1 where viable, drop to
+  native only if a spike proves the pure version unusable. Either way the
+  **signature stays Agentica-side** (`features(pcm: List[Float]) -> Tensor`;
+  the exact shape belongs to the client).
 - Autoregressive decode: masked self-attention and cross-attention (derived
   MHA), output head `linear` → `softmax` → `argmax` (greedy) with optional
   temperature scaling; beam search is the Agentica loop from §3.2.
@@ -169,8 +176,8 @@ Encoder/decoder (parametric in size, no model-specific constant here):
 - Weights come from a checkpoint (§6). Training (`train/`, §10) runs on the
   same primitives.
 
-Acceptance for this design: a client reproduces, on `reference`/torch CPU,
-the output it gets from its native binding for the same input.
+A client proves the requirements above are met by reproducing, on
+`reference`/`torch`, the output its native binding gives for the same input.
 
 ## 6. Checkpoint requirements (weights in, no code execution)
 
@@ -180,7 +187,9 @@ the output it gets from its native binding for the same input.
   C-order buffer, no strides). No code runs at load; that property is the
   reason for choosing it.
 - Covered dtypes are the safetensors set (`F32/F16/F64`, `I8/I16/I32/I64`,
-  `U8`, `Bool`); compute in v1 still means §2's rule (upcast to `F32`).
+  `U8`, `Bool`); numeric tensors upcast to `F32` on load (§2), while integer
+  index tensors and `Bool` masks keep their dtype because the op set needs
+  them.
 - Loader shape (proposal): pure-Agentica header parse (`std/binary` +
   JSON) yielding `{ dtype, shape, offset }` entries, then per-tensor
   `load_slice(path, entry, backend) -> Tensor`. Multi-file sharding and its
@@ -199,8 +208,8 @@ by `case` to one backend module per variant sharing the §3.1 signature set:
 ```text
 case t.backend
   when reference then Reference.matmul(a, b)
-  when torch then Torch.matmul(a, b)
-  # xla / candle join later behind the same case
+  when torch(device) then Torch.matmul(device, a, b)
+  # xla / candle join behind the same case
 end
 ```
 
@@ -273,17 +282,15 @@ Proposed usage for tensors (needs sign-off):
   needs with no backward rule of its own — keyed random (`randn`/`randint`/
   `split`) and `stop_grad`/detach. Adding either later would be a breaking
   change to the frozen backend interface.
-- Acceptance: a small MLP trains end-to-end over `torch` with `reference` as
-  the oracle.
+- Every §3.1 op has a backward rule expressible over §3.1 itself; an op whose
+  rule needs more admits that op (§3.1).
 
 ## 11. Conformance and testing (proposal)
 
 - `reference` is the oracle. One shared suite runs on every backend:
   values, shapes, dtypes, and error paths.
-- Pure Agentica gets unit tests (`*_test.agc`); inference paths get
-  `.feature` + steps and runnable doc examples; native headers stay generated
-  and `--check`ed in CI so nothing goes stale.
-- Benchmarks measure compiled `.agcb` (`run`), never the frontend.
+- Every backend is checked against `reference` through that one suite, so a
+  backend is correct by construction or not at all.
 
 ## 12. Open decisions (ml#1 questions 1–4)
 
