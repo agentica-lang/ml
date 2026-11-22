@@ -1,35 +1,25 @@
 # tensor — design proposal (inference-first)
 
-Status: **proposal, not a contract.** Implementation is in progress (the
-`whisper/` scaffold is merged; this repo has no external blocking gate).
-Nothing below finalizes the four open questions of ml#1; each affected
-section states its working proposal so the owner can accept, change, or
-reject it before the detailed per-function design.
+Status: **proposal, not a contract.** The four open questions of ml#1 are
+answered here as working proposals for the owner to accept or change before
+the per-function design freezes them.
 
 References: `roadmap.md` (execution plan, Fase W Whisper tractor),
 [ml#1](https://github.com/agentica-lang/ml/issues/1) (goals, grad-in-Agentica
 decision, backend table, open questions), and
 [agentica#1091](https://github.com/agentica-lang/agentica/issues/1091)
-(native arenas — **verified CLOSED 2026-11-15** with phase-1 design
-decisions; see §8).
+(native arenas, phase-1 semantics; see §8).
 
-## 1. Goals, and what is deferred
+## 1. Goals and scope
 
 Goals:
 
-- Run **training and inference**, in that order of arrival but both in scope.
-  Inference first: `tensor/` + `nn/` over `reference` (pure Agentica oracle)
-  and one real eager backend, proven by **Whisper-B** (the same reference wav
-  as the `whisper/` binding transcribes, on `reference`/torch CPU, slower is
-  acceptable).
-- **Training is a goal, not a non-goal** (owner decision 2026-11-22):
-  `train/` (losses, SGD/Adam, an `Axon.Loop`-style loop) and the traced
-  `grad`/`value_and_grad` that it needs are part of this stack. This proposal
-  only *sequences* them after inference — it does not exclude them. The
-  primitives below are chosen so that tracing and grad attach **without
-  changing them** (see §10), and any op that training needs (e.g. `stop_grad`,
-  `sum` over all axes with a keep-dims option) is admitted from the start
-  rather than bolted on later.
+- **Training and inference.** Inference ships first: `tensor/` + `nn/` over
+  `reference` (pure Agentica oracle) and one real eager backend, proven by
+  **Whisper-B** (the same reference wav as the `whisper/` binding transcribes,
+  on `reference`/torch CPU; slower is acceptable). `train/` (losses,
+  SGD/Adam, an `Axon.Loop`-style loop) and the traced `grad`/`value_and_grad`
+  it needs follow on the same primitives (§10).
 - Keep every backend **forward-only**. `grad`, `vmap`, `jit` live in
   Agentica over a traced graph (ml#1 key decision, as Nx does); XLA has no
   autograd of its own, so per-backend autograd is out.
@@ -37,13 +27,13 @@ Goals:
   (`reference`, `torch`, later `xla`, `candle`) with one shared conformance
   suite where the reference is the oracle.
 
-Deferred in this proposal (sequenced later, still goals):
+Out of scope here (designed when their phase starts):
 
 - The JIT compiler (`xla/` via PJRT) and the model hub (`hub/` download and
-  sharding UX). §10 sketches how tracing/grad attach without changing the
+  sharding UX). §10 fixes how tracing/grad attach without changing the
   primitives.
 - A ggml quantized backend (phase 8; the `whisper/` binding already uses
-  ggml through whisper.cpp and is out of scope here).
+  ggml through whisper.cpp).
 - Final signatures (`.agc` + native-gen headers come in Fase 0/M1, after the
   spike freezes the minimum).
 
@@ -223,12 +213,12 @@ end
   `[native.NAME]` + per-platform prebuilt (CPU first; sizes documented, as
   with `whisper/`). Heavy third parties (`whisper.cpp`, `ggml`, libtorch,
   models) enter only as pinned git submodules under `third_party/`, never
-  vendored — per the 2026-11-22 repo decision.
+  vendored.
 
-## 8. Tensor lifetime (proposal for ml#1 question 3 — #1091 verified)
+## 8. Tensor lifetime (proposal for ml#1 question 3)
 
-`agentica#1091` (native arenas) is **CLOSED since 2026-11-15** with phase-1
-decisions. Verified semantics used here: `Native.arena do ... end` takes **no
+`agentica#1091` (native arenas) landed its phase-1 semantics, which this
+section builds on: `Native.arena do ... end` takes **no
 block parameter**, runs the block, returns its value, and at block end closes
 **newest-first** every native resource and owned buffer the task opened
 inside — except what the return value reaches (struct fields, enum payloads,
@@ -241,7 +231,7 @@ as `Native.close`); use-after-close is `RUNTIME-NATIVE-CLOSED`, never UB;
 `Task.spawn_owning` transfers ownership, anything else crossing tasks is
 documented-not-refused.
 
-Proposed usage for tensors (pending owner sign-off):
+Proposed usage for tensors (needs sign-off):
 
 - One arena per **inference call**, and one nested arena per **decode step**:
   intermediates die at a known point instead of waiting for the GC (a 1 GB
@@ -259,13 +249,13 @@ Proposed usage for tensors (pending owner sign-off):
   `error` without touching native code. Backends may re-check cheaply but
   must not be the only check (the reference oracle defines correctness,
   including the error cases).
-- How much the static checker carries vs runtime stays an **owner decision**:
-  this proposal asks only that trace/compile time reuse the same predicates,
-  and that `xla/` later requires static shapes to compile the whole graph.
+- How much the static checker carries vs runtime stays open: this proposal
+  asks only that trace/compile time reuse the same predicates, and that
+  `xla/` later requires static shapes to compile the whole graph.
 - Conformance covers values **plus** shapes, dtypes, and error cases on every
   backend, bit-for-bit against `reference` where the dtype is exact.
 
-## 10. Training: tracing and grad (sequenced after inference, in scope)
+## 10. Training: tracing and grad
 
 - Functions trace to a graph of §3.1 primitives; `grad`/`value_and_grad` are
   computed **in Agentica over that graph** (ml#1 key decision). Backends stay
@@ -294,12 +284,12 @@ Proposed usage for tensors (pending owner sign-off):
   and `--check`ed in CI so nothing goes stale.
 - Benchmarks measure compiled `.agcb` (`run`), never the frontend.
 
-## 12. What needs the owner (maps to ml#1 questions 1–4)
+## 12. Open decisions (ml#1 questions 1–4)
 
-1. Dispatch: enum + `case` (§7) vs struct of functions — proposal, not settled.
+1. Dispatch: enum + `case` (§7) vs struct of functions.
 2. Surface: `Tensor.*` + pipes (§2–§4) until/unless operator overloading on
-   user structs exists — plan A stands.
-3. Lifetime: arena-per-call/step over verified #1091 semantics (§8) vs
-   graph-owned buffers or explicit scopes — proposal, not settled.
-4. Checking: eager wrapper validation now, static-vs-runtime split later
-   (§9) — load on the checker TBD.
+   user structs exists.
+3. Lifetime: arena-per-call/step over #1091 semantics (§8) vs graph-owned
+   buffers or explicit scopes.
+4. Checking: eager wrapper validation now; the static-vs-runtime split (§9)
+   and how much the checker carries are not fixed here.
