@@ -40,21 +40,25 @@ Out of scope here (each gets its own design):
 
 ```text
 Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool   # proposal
-Device  = cpu | cuda(Int)                                      # proposal
+Device  = Cpu | Cuda(Int)                                      # enum, proposal
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
-Backend = reference | torch(Device) | xla(Device) | candle(Device)   # proposal, see §7
-Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Resource | Data }
+Backend = Reference | Torch(Device) | Xla(Device) | Candle(Device)   # enum, see §7
+Handle  = Native(Resource) | Plain(Data)                       # enum, shorthand types
+Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 ```
 
 - `Tensor` values are **immutable**; every op returns a new `Tensor`.
   A training step returning new parameters falls out of this later.
-- `handle` is a native **resource** on native backends (libtorch/candle:
+- `handle` is `Native(Resource)` on native backends (libtorch/candle:
   `struct NAME_state *` + thread-safe `NAME_FREE`, C data only, never terms;
-  valid only during the call, never stored) and plain Agentica data on
-  `reference`. This follows the repo's FFI rules (`extern module` is the only
-  source of signatures; native-gen regenerates the header; blocking work is
-  `compute def` on the compute pool; `List`/`Map` cross via cursors/builders).
+  valid only during the call, never stored) and `Plain(Data)` on `reference`.
+  `Resource` names the backend module's `resource` declaration and `Data` is
+  plain Agentica data; both are shorthand for the representation §8 proposes,
+  which §12.3 keeps open. This follows the repo's FFI rules (`extern module` is
+  the only source of signatures; native-gen regenerates the header; blocking
+  work is `compute def` on the compute pool; `List`/`Map` cross via
+  cursors/builders).
 - **Inference-first dtype rule (proposal):** numeric compute is `F32`; `F16`
   and `F64` weights are converted to it on load (§6, lossy for `F64`). Two
   kinds of non-`F32` compute tensors are required by the op set itself: `Bool`
@@ -141,8 +145,9 @@ Tensor.backend(t) -> Backend                      # no native call
 - Device is explicit, never a global: dispatch is **by value** (`t.backend`),
   not by global config, so `reference` (oracle) and `torch` can check each
   other in the same process. A backend value carries its device
-  (`torch(cpu)`, `torch(cuda(0))`); `reference` has none. Batch lives in the
-  shape, not in a global either.
+  (`Backend.Torch(Device.Cpu)`, `Backend.Torch(Device.Cuda(0))`);
+  `Backend.Reference` has none. Batch lives in the shape, not in a global
+  either.
 - Backend-module functions take the device as an explicit first argument
   (`Torch.matmul(device, a, b)`): dispatch unpacks it from the backend value
   (§7) and the tensor keeps no second copy of it.
@@ -212,10 +217,10 @@ set:
 
 ```text
 r: Result[Tensor] = case a.backend
-  reference -> Reference.matmul(a, b)
-  torch(device) -> Torch.matmul(device, a, b)
-  xla(_) -> error("backend not available")     # module not written yet
-  candle(_) -> error("backend not available")  # module not written yet
+  Backend.Reference -> Reference.matmul(a, b)
+  Backend.Torch(device) -> Torch.matmul(device, a, b)
+  Backend.Xla(_) -> error("backend not available")     # module not written yet
+  Backend.Candle(_) -> error("backend not available")  # module not written yet
 end
 ```
 
@@ -292,12 +297,15 @@ Proposed usage for tensors (needs sign-off):
   needs with no backward rule of its own — keyed random (`randn`/`randint`/
   `split`) and `stop_grad`/detach. Adding either later would be a breaking
   change to the frozen backend interface.
-- Every differentiable primitive — an `F32`-output arithmetic, linalg, shape
-  or movement op — has a backward rule expressible over §3.1 itself; an op
-  whose rule needs more admits that op (§3.1). `eq`, `lt` and `argmax` give
-  `Bool`/integer values, and `arange`/`empty` have no input to differentiate,
-  so they cut the trace; that is why `stop_grad`, which cuts it too, enters
-  §3.1 with them.
+- Every differentiable primitive — an `F32`-output arithmetic, reduction,
+  linalg, shape, movement, conv or pooling op — has a backward rule
+  expressible over §3.1 itself; an op whose rule needs more admits that op
+  (§3.1). Creation, comparison and index ops cut the trace instead: `zeros`,
+  `ones`, `empty`, `full`, `arange` and `scalar_to_tensor` build a value from
+  shape/dtype arguments; `like(t)` reads only `t`'s metadata (shape, dtype,
+  backend), ignoring its value, so it needs no rule either; `eq`, `lt` and
+  `argmax` give `Bool`/integer values. That is why `stop_grad`, which cuts the
+  trace too, enters §3.1 with them.
 
 ## 11. Conformance (proposal)
 
