@@ -1,12 +1,13 @@
-# Like agentica-lang/agentica: normalise text to LF on every platform.
 * text=auto eol=lf
 *.agcb binary
 *.agc linguist-language=Ruby
-# Model weights are downloaded, never committed (see whisper/README.md).
+*.feature text eol=lf
+*.md text eol=lf
+# Generated C headers are compared byte for byte (native-gen --check).
+*_native.h text eol=lf
+# Model weights are downloaded, never committed (whisper/README.md).
 *.bin binary
 *.gguf binary
 *.safetensors binary
-# Generated C headers are compared byte for byte (native-gen --check).
-*_native.h text eol=lf
 # Open PRs all add lines under [Unreleased]: keep both sides when merging.
 CHANGELOG.md merge=union
