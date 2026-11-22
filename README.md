@@ -4,8 +4,10 @@ Machine learning for Agentica: tensors, training and inference over adaptable
 backends (libtorch, XLA, candle). The API is functional, in the style of JAX and
 Nx: values are immutable, and a training step returns new parameters.
 
-Status: design only. The design and its open decisions are in [issue #1](https://github.com/agentica-lang/ml/issues/1);
-no package exists yet.
+Status: in progress. `whisper/` is the first package; the tensor stack is
+designed in [`tensor/DESIGN.md`](tensor/DESIGN.md), with execution order in
+[`roadmap.md`](roadmap.md) and the open decisions in
+[issue #1](https://github.com/agentica-lang/ml/issues/1).
 
 ## Packages
 
