@@ -1,41 +1,41 @@
 # tensor — design proposal (inference-first)
 
 Status: **proposal, not a contract.** The four open questions of ml#1 are
-answered here as working proposals for the owner to accept or change before
-the per-function design freezes them.
+answered here as working proposals; §12 is the list of what stays open.
 
-References: `roadmap.md` (execution plan, Fase W Whisper tractor),
-[ml#1](https://github.com/agentica-lang/ml/issues/1) (goals, grad-in-Agentica
+References: [ml#1](https://github.com/agentica-lang/ml/issues/1) (goals, grad-in-Agentica
 decision, backend table, open questions), and
 [agentica#1091](https://github.com/agentica-lang/agentica/issues/1091)
-(native arenas, phase-1 semantics; see §8).
+(native arenas; see §8).
 
 ## 1. Goals and scope
 
 Goals:
 
-- **Training and inference.** Inference ships first: `tensor/` + `nn/` over
-  `reference` (pure Agentica oracle) and one real eager backend, proven by
-  **Whisper-B** (the same reference wav as the `whisper/` binding transcribes,
-  on `reference`/torch CPU; slower is acceptable). `train/` (losses,
-  SGD/Adam, an `Axon.Loop`-style loop) and the traced `grad`/`value_and_grad`
-  it needs follow on the same primitives (§10).
+- **Training and inference.** `tensor/` + `nn/` (forward) run over
+  `reference` (pure Agentica oracle) and real eager backends; `train/`
+  (losses, SGD/Adam, an `Axon.Loop`-style loop) and the traced
+  `grad`/`value_and_grad` it needs sit on the same primitives (§10). The
+  design must let either land without changing the other. Clients (bindings,
+  applications, `hub/`-loaded checkpoints) state their requirements
+  elsewhere; they bound what §3–§6 must support without this document
+  knowing them.
 - Keep every backend **forward-only**. `grad`, `vmap`, `jit` live in
   Agentica over a traced graph (ml#1 key decision, as Nx does); XLA has no
   autograd of its own, so per-backend autograd is out.
 - Keep the backend interface small enough to implement four times
-  (`reference`, `torch`, later `xla`, `candle`) with one shared conformance
+  (`reference`, `torch`, `xla`, `candle`) with one shared conformance
   suite where the reference is the oracle.
 
-Out of scope here (designed when their phase starts):
+Out of scope here (each gets its own design):
 
 - The JIT compiler (`xla/` via PJRT) and the model hub (`hub/` download and
   sharding UX). §10 fixes how tracing/grad attach without changing the
   primitives.
-- A ggml quantized backend (phase 8; the `whisper/` binding already uses
-  ggml through whisper.cpp).
-- Final signatures (`.agc` + native-gen headers come in Fase 0/M1, after the
-  spike freezes the minimum).
+- A ggml quantized backend: quantized checkpoints are consumed by
+  specialized bindings, not by this stack.
+- Final signatures: the `.agc` and native-gen headers are the contract once
+  written, and the spike that writes them freezes the minimum.
 
 ## 2. Types (proposal)
 
@@ -57,10 +57,10 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Resource | Dat
 - **Inference-first dtype rule (proposal):** compute requires only `F32`;
   `F16` is load-and-cast (weights may arrive as `F16`, compute upcasts);
   the rest of the table exists for checkpoint loading (§6) and grows only
-  when the Whisper checklist (§5) or conformance demands it.
-- No operator overloading (ml#1 question 2, still open). Plan A, as today:
-  `Tensor.add(a, b)` plus pipes (`t |> Tensor.add(other) |> Tensor.relu()`).
-  If the language ever allows `a + b` on user structs, it is sugar over this.
+  when a consumer requirement (§5) or conformance demands it.
+- No operator overloading (ml#1 question 2): `Tensor.add(a, b)` plus pipes
+  (`t |> Tensor.add(other) |> Tensor.relu()`). If the language ever allows
+  `a + b` on user structs, it is sugar over this.
 
 ## 3. Primitives vs derived ops (the split)
 
@@ -68,7 +68,7 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Resource | Dat
 is **derived**: pure Agentica code over primitives, shared by all backends
 and therefore tested once.
 
-### 3.1 Primitives (proposal: the backend contract, ~35 ops inference subset)
+### 3.1 Primitives (proposal: the backend contract, ~45 ops inference subset)
 
 Creation: `zeros, ones, empty, full, like, arange, scalar_to_tensor`.
 Elementwise: `add, sub, mul, div, neg, exp, log, sqrt, pow, relu, sigmoid,
@@ -83,21 +83,26 @@ is derived).
 Normalization support: `rsqrt, mean_var` are **not** primitives —
 `layer_norm` is derived (§3.2); the backend only needs the pieces above plus
 `broadcast_to`.
-Convolution/pooling: `conv1d, avg_pool1d` (Whisper frontend needs `conv1d`;
- anything beyond stride/padding-1D is deferred to the spike).
+Convolution/pooling: `conv1d, avg_pool1d` (a transformer frontend needs `conv1d`;
+ anything beyond stride/padding-1D is decided by the spike).
 Random: **out** for inference v1 (dropout is identity at inference;
  stochastic sampling stays behind an explicit key in the later training set).
 Movement: `to_dtype, to_device, copy, contiguous`.
 
 Deliberately missing: `softmax`, `layer_norm`, attention, `gelu` exact,
-`silu`, beam search, STFT/mel — all derived or host-side (§4–§5).
+`silu`, beam search, STFT/mel — all derived or host-side (§3.2, §5).
+
+The names above are 45 (44 without the optional `gelu_tanh_approx?`). Keyed
+random and the training-only ops of §10 are outside this inference subset but
+inside the frozen contract.
 
 ### 3.2 Derived ops (pure Agentica, backend-agnostic)
 
 Built only from §3.1, in `tensor/` (generic) or `nn/` (model-shaped):
 
 - `softmax(x, axis) = div(exp(sub(x, max)), sum(...))` with max-subtraction.
-- `layer_norm(x)`, `rms_norm(x)` from `mean/var/rsqrt` compositions.
+- `layer_norm(x)`, `rms_norm(x)` from `mean`, `pow`, `sqrt` and `div`
+  compositions over §3.1 (no `var`/`rsqrt` primitive is needed).
 - `gelu_exact`, `silu` from `erf`-free formulations (`tanh` approx first;
   exact formula only if conformance needs it).
 - `linear(x, w, b?)`, `embedding(ids, table)` via `matmul`/`gather`.
@@ -110,16 +115,17 @@ Built only from §3.1, in `tensor/` (generic) or `nn/` (model-shaped):
   primitive enters only if the spike shows the loop is unusably slow).
 - `dropout(x, p)` at inference is identity (kept for `nn/` API symmetry).
 
-If Whisper-B needs an op that is neither in §3.1 nor expressible above at
-acceptable cost, it enters §3.1 through the Fase 0 spike — the checklist in
-§5 is the gate, not an excuse to grow the set upfront.
+If a consumer needs an op that is neither in §3.1 nor expressible above at
+acceptable cost, it enters §3.1 when the contract is frozen: §5 is the only
+gate for adding ops.
 
 ## 4. Inference-first API shape (proposal)
 
 ```text
 Tensor.zeros(shape, dtype, backend) -> Tensor | error
 Tensor.from_list(data: List[Float], shape, dtype, backend) -> Tensor | error
-Tensor.to_list(t) -> Result[List[Float]]          # host readback, tests + decode loop
+Tensor.to_list(t) -> Result[List[Float] | List[Int] | List[Bool]]
+                                                  # host readback, tests + decode loop
 Tensor.shape(t) -> Shape                          # no native call
 Tensor.dtype(t) -> Dtype                          # no native call
 Tensor.backend(t) -> Backend                      # no native call
@@ -129,47 +135,42 @@ Tensor.backend(t) -> Backend                      # no native call
   never a halt. Introspection is free (fields, no FFI round-trip).
 - Batch and device are explicit arguments, never globals: dispatch is **by
   value** (`t.backend`), not by global config, so `reference` (oracle) and
-  `torch` can check each other in the same process.
+  `torch` can check each other in the same process. A backend value names its
+  device (`torch:cpu`, `torch:cuda:0`); `reference` has none.
 - The `.agc` signatures plus the generated native header are the contract
   once written; until then this document is the only source, and it is still
   a proposal.
 
-## 5. Whisper forward requirements (checklist that gates §3.1)
+## 5. Requirements the API must satisfy (consumer checklist)
 
-Whisper-B transcribes the same fixture wav as Via A (16 kHz mono PCM floats
-from `Wav.decode`; file first, microphone later per roadmap Fase W).
-Frontend and model below are **requirements on** the API, not designs of it.
+The packages have clients: bindings, applications and `hub/`-loaded
+checkpoints. Their requirements bound what §3.1–§4 must support; the clients
+state their own specifics (shapes, frontends, sampling policy) outside this
+document. The generic requirements a pre-trained transformer inference client
+imposes are below.
 
-Frontend (log-mel, 80 bins, 30 s windows):
+Encoder/decoder (parametric in size, no model-specific constant here):
 
-- STFT + mel filterbank + log is the first `compute def` candidate: implement
-  in pure Agentica against §3.1 where viable; drop to native only if the
-  spike proves the pure version unusable. Either way the **signature stays
-  Agentica-side** (`log_mel(pcm: List[Float]) -> Tensor[80, 3000]` shape
-  proposal — exact frames fixed at detailed design).
-- `conv1d` × 2 (frontend encoder stem) is the reason `conv1d` is primitive.
+- Positional information via `arange + gather` or `full + add` (no dedicated
+  primitive).
+- N blocks of: `layer_norm` (derived) → multi-head self-attention (derived,
+  §3.2) → `layer_norm` → MLP (`linear`, `gelu_tanh_approx`, `linear`).
+- A frontend that needs a 1-D convolution stem: `conv1d` × 2 is the reason
+  `conv1d` is primitive. A feature frontend (windowed transform plus a
+  filterbank) is the first `compute def` candidate: implement in pure Agentica
+  against §3.1 where viable, drop to native only if the spike proves the pure
+  version unusable. Either way the **signature stays Agentica-side**
+  (`features(pcm: List[Float]) -> Tensor`; exact shape is the client's).
+- Autoregressive decode: masked self-attention and cross-attention (derived
+  MHA), output head `linear` → `softmax` → `argmax` (greedy) with optional
+  temperature scaling; beam search is the Agentica loop from §3.2.
+- The decode loop runs in Agentica (one `Native.arena` per step, §8); the
+  backend never holds the loop.
+- Weights come from a checkpoint (§6). Training (`train/`, §10) runs on the
+  same primitives.
 
-Encoder (transformer, sizes differ small/medium — shapes stay parametric):
-
-- Learned/sinusoidal positional embeddings via `arange + gather` or
-  `full + add` (no dedicated primitive).
-- N blocks of: `layer_norm` (derived) → multi-head self-attention
-  (derived, §3.2) → `layer_norm` → MLP (`linear`, `gelu`, `linear`).
-- All weights come from checkpoint (§6); no training path is needed for the
-  Whisper-B milestone. Training arrives in `train/` (§10) on the same
-  primitives.
-
-Decoder (autoregressive, greedy first):
-
-- Masked self-attention + cross-attention (both derived MHA) + MLP, same
-  blocks as the encoder plus the cross-attention leg.
-- Output head: `linear` to vocabulary, `softmax`, `argmax` (greedy) with
-  optional temperature scaling; beam search is the Agentica loop from §3.2.
-- The decode loop runs in Agentica (one `Native.arena` per step, §8);
-  the backend never holds the loop.
-
-Exit criterion (unchanged from roadmap): the Via A fixture wav transcribes
-to the same text under the pure stack on `reference`/torch CPU.
+Acceptance for this design: a client reproduces, on `reference`/torch CPU,
+the output it gets from its native binding for the same input.
 
 ## 6. Checkpoint requirements (weights in, no code execution)
 
@@ -182,12 +183,13 @@ to the same text under the pure stack on `reference`/torch CPU.
   `U8`, `Bool`); compute in v1 still means §2's rule (upcast to `F32`).
 - Loader shape (proposal): pure-Agentica header parse (`std/binary` +
   JSON) yielding `{ dtype, shape, offset }` entries, then per-tensor
-  `load_slice(path, entry, backend) -> Tensor`; multi-file sharding plus
-  its JSON index is the second load case after single-file Whisper weights.
+  `load_slice(path, entry, backend) -> Tensor`. Multi-file sharding and its
+  JSON index belong to `hub/`: this document fixes only the single-file
+  format and the loader signature that sharding reuses.
 - `mmap` where the backend supports it, plain read where it does not;
   the choice is per-backend, hidden behind the same loader signature.
-- `gguf`/ggml checkpoints stay with the `whisper/` binding (Via A);
-  the pure stack does not read them in v1.
+- `gguf`/ggml checkpoints stay with the specialized native bindings; the
+  pure stack reads safetensors only in v1.
 
 ## 7. Backend dispatch (proposal for ml#1 question 1)
 
@@ -210,15 +212,13 @@ end
   until the owner settles question 1; this document does not prejudge it.
 - Each native backend is one `extern module` with a thin C layer (libtorch:
   C++ as `tch-rs` does; candle later: `extern "C"` over Rust), shipped via
-  `[native.NAME]` + per-platform prebuilt (CPU first; sizes documented, as
-  with `whisper/`). Heavy third parties (`whisper.cpp`, `ggml`, libtorch,
-  models) enter only as pinned git submodules under `third_party/`, never
-  vendored.
+  `[native.NAME]` + per-platform prebuilt (CPU first; sizes documented).
+  Heavy third parties (ML engines, models) enter only as pinned git
+  submodules under `third_party/`, never vendored.
 
 ## 8. Tensor lifetime (proposal for ml#1 question 3)
 
-`agentica#1091` (native arenas) landed its phase-1 semantics, which this
-section builds on: `Native.arena do ... end` takes **no
+`agentica#1091` (native arenas) semantics, which this section builds on: `Native.arena do ... end` takes **no
 block parameter**, runs the block, returns its value, and at block end closes
 **newest-first** every native resource and owned buffer the task opened
 inside — except what the return value reaches (struct fields, enum payloads,
@@ -266,14 +266,15 @@ Proposed usage for tensors (needs sign-off):
 - Nothing in §3.1–§4 assumes training, but every primitive must be
   differentiable in Agentica: the trace records the ops, and each op
   declares its backward rule in `tensor/` (not in a backend). `nn/`
-  (forward-only layers over `tensor/`) comes before `train/` (losses,
-  SGD/Adam, `Axon.Loop`-style loop with `std/logger`), per roadmap phases 3–4.
-- Op admission rule: if an op cannot express a backward rule (or its rule
-  needs an op missing here), the missing op is added to §3.1 then, not
-  deferred — otherwise `train/` would force a breaking change to the frozen
-  backend interface.
-- Exit criterion for this stack (roadmap M4): a small MLP trains end-to-end
-  over `torch` with `reference` as the oracle.
+  (forward-only layers over `tensor/`) and `train/` (losses, SGD/Adam,
+  `Axon.Loop`-style loop with `std/logger`) build on them.
+- Op admission rule: §3.1 is frozen once, when the contract is written. An op
+  that a backward rule needs enters §3.1 then, and so does an op `train/`
+  needs with no backward rule of its own — keyed random (`randn`/`randint`/
+  `split`) and `stop_grad`/detach. Adding either later would be a breaking
+  change to the frozen backend interface.
+- Acceptance: a small MLP trains end-to-end over `torch` with `reference` as
+  the oracle.
 
 ## 11. Conformance and testing (proposal)
 
