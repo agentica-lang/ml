@@ -1,7 +1,7 @@
 # tensor — design proposal (inference-first)
 
-Status: **proposal, not a contract.** Implementation waits for Campfire and
-its dependencies (see [ml#1](https://github.com/agentica-lang/ml/issues/1)).
+Status: **proposal, not a contract.** Implementation is in progress (the
+`whisper/` scaffold is merged; this repo has no external blocking gate).
 Nothing below finalizes the four open questions of ml#1; each affected
 section states its working proposal so the owner can accept, change, or
 reject it before the detailed per-function design.
