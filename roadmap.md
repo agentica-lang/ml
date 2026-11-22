@@ -7,8 +7,8 @@
 > Diseño base en [ml#1](https://github.com/agentica-lang/ml/issues/1) y
 > `README.md` de este repo. Este archivo es el plan de ejecución.
 
-Fecha: 2026-11-22. Estado: **diseño** (la implementación espera a Campfire
-y sus dependencias, decisión vigente en ml#1).
+Fecha: 2026-11-22. Estado: **en marcha** (Vía A scaffold mergeada; no hay
+bloqueos externos: el trabajo avanza por lanes paralelos).
 
 Objetivo tractor (2026-11-22): **ejecutar Whisper** (small/medium, español,
 entrada fichero + micrófono). Dos vías en paralelo: **(A) binding fino a
@@ -93,7 +93,7 @@ lo trae vendored); el backend ggml puro sobre `tensor/` sigue en fase 8.
 
 ## 4. Fases
 
-### Fase 0 — spike CPU (lo primero cuando se levante el veto)
+### Fase 0 — spike CPU (primera tarea del tensor puro)
 Objetivo: encontrar los gaps de FFI **antes** de fijar la API.
 Crear tensores, `matmul`, `grad` de una función pequeña, un paso SGD —
 sobre `reference` y sobre libtorch. Solo CPU.
@@ -232,7 +232,7 @@ linalg (`matmul`, `dot`, transpose) · forma (`reshape/squeeze/unsqueeze`,
 | WA whisper binding | `whisper/` sobre whisper.cpp + wav 16 kHz + micro, small/medium ES | transcribe el wav de referencia; valida native-gen + prebuilt |
 | WB whisper puro | mismo wav con `tensor`/`nn`/`hub` (reference/torch CPU) | paridad funcional con WA en el caso de prueba |
 
-## 9. Próximos pasos (cuando se levante el veto de Campfire)
+## 9. Próximos pasos
 
 1. Verificar estado de agentica#1091 (arenas) y fijar Agentica mínima.
 2. Cerrar las 4 preguntas abiertas de ml#1 con el owner **antes** del
