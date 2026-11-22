@@ -85,17 +85,13 @@ jobs:
           version: ${{ steps.pin.outputs.version }}
           sha256: ${{ steps.pin.outputs.sha256 }}
 
-      # A package with no dependencies has no lock and nothing to fetch.
-      - name: Install the locked dependencies
-        shell: bash
-        run: |
-          if [ -f agentica.lock ]; then agentica install; else echo "no agentica.lock: nothing to fetch"; fi
-
       # A package with tools/build-engine.sh links a pinned third-party
       # engine (a submodule at the repository root, never vendored); the
-      # script builds it and prints the include/library exports, which the
-      # native build needs from here on. A package without the script skips
-      # this step, so adding a folder adds it to CI with no edit here.
+      # script builds it and prints the include/library exports. This runs
+      # before `agentica install` because installing already compiles the
+      # native module, which needs the engine headers and libraries. A
+      # package without the script skips this step, so adding a folder adds
+      # it to CI with no edit here.
       - name: Build the pinned third-party engine
         shell: bash
         run: |
@@ -104,9 +100,15 @@ jobs:
             echo "no tools/build-engine.sh: nothing to build"
             exit 0
           fi
-          eval "$(sh tools/build-engine.sh | grep ^export)"
+          eval "$(sh tools/build-engine.sh | grep '^export ')"
           echo "C_INCLUDE_PATH=$C_INCLUDE_PATH" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=$LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      # A package with no dependencies has no lock and nothing to fetch.
+      - name: Install the locked dependencies
+        shell: bash
+        run: |
+          if [ -f agentica.lock ]; then agentica install; else echo "no agentica.lock: nothing to fetch"; fi
 
       # A package with tools/fetch-model.sh validates against a downloaded
       # pinned model (weights never enter git); the script checks its sha256.

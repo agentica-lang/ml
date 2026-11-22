@@ -21,20 +21,23 @@ pinned whisper.cpp engine. File input only — no microphone in this package.
 
 ## Local setup
 
-From this folder:
+From this folder (order matters: installing already compiles the native
+module, so the engine exports come first):
 
 ```sh
-agentica install
 sh tools/build-engine.sh
-eval "$(sh tools/build-engine.sh | grep ^export)"
+eval "$(sh tools/build-engine.sh | grep '^export ')"
+agentica install
 sh tools/fetch-model.sh
 ```
 
-`agentica install` fetches native-gen (the locked dependency that regenerates
-the header); the engine build is separate because the engine is a pinned git
-submodule, not an Agentica package. The two exports must be set for every
-build below (they are part of the native build key, so changing them rebuilds
-correctly).
+`tools/build-engine.sh` builds the pinned engine submodule (CPU-only,
+static; needs cmake and a C/C++ compiler) and prints the
+`C_INCLUDE_PATH`/`LIBRARY_PATH` exports; `agentica install` fetches
+native-gen (the locked dependency that regenerates the header). Any
+`agentica` invocation that builds the native module (`install`, `check` is
+exempt, `test`, a run) needs those two exports set first — they are part of
+the native build key, so changing them rebuilds correctly.
 
 ## Checks
 
@@ -78,7 +81,7 @@ copies paths of 4096 bytes at most. Greedy decoding with the library
 defaults (language `"en"`): widening the options is a later change, not this
 one.
 
-## For fetched copies
+## Outside the repository checkout
 
 A package installed through `agentica install` carries only `native/` (and
 `live/` scripts read nothing outside the checkout), so building from the

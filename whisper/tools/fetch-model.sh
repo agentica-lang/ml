@@ -25,8 +25,17 @@ out="${1:-$pkg/models}"
 mkdir -p "$out"
 model="$out/$MODEL_FILE"
 
+# The sha256 of a file, via sha256sum (Linux) or shasum -a 256 (macOS).
+sha256_of() {
+  if command -v sha256sum > /dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
 if [ -f "$model" ]; then
-  got=$(sha256sum "$model" | cut -d' ' -f1)
+  got=$(sha256_of "$model")
   if [ "$got" = "$MODEL_SHA256" ]; then
     echo "$model"
     exit 0
@@ -37,7 +46,7 @@ if [ -f "$model" ]; then
 fi
 
 curl -sSfL "$MODEL_URL" -o "$model"
-got=$(sha256sum "$model" | cut -d' ' -f1)
+got=$(sha256_of "$model")
 [ "$got" = "$MODEL_SHA256" ] || {
   echo "fetch-model.sh: $model has sha256 $got, want $MODEL_SHA256" >&2
   rm -f "$model"
