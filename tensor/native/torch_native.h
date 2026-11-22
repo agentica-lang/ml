@@ -93,7 +93,7 @@ an_term torch_list_Float_end(an_env *env, torch_list_Float_builder *b);
 an_term torch_result_list_Float_ok(an_env *env, an_term value);
 
 /* A tensor of `shape` from row-major `data` in the dtype `dtype` names
-   (`Dtypes.code`). The values cross as doubles; an integer dtype must hold
+   (`TorchDtypes.code`). The values cross as doubles; an integer dtype must hold
    integral values in range, which the callers of `create` check first. */
 an_term torch_create(an_env *env, torch_list_Int shape, torch_list_Float data, int64_t dtype);
 
@@ -127,8 +127,8 @@ an_term torch_mean(an_env *env, struct torch_TensorHandle_state *a, torch_list_I
 /* The same values with `shape`; the element counts must agree. */
 an_term torch_reshape(an_env *env, struct torch_TensorHandle_state *a, torch_list_Int shape);
 
-/* Reverses every axis, as `Ref`'s `transpose` does (rank 2 swaps rows and
-   columns; below rank 2 nothing changes). */
+/* Reverses every axis, as the reference's `transpose` does (rank 2 swaps
+   rows and columns; below rank 2 nothing changes). */
 an_term torch_transpose(an_env *env, struct torch_TensorHandle_state *a);
 
 /* `a` in the dtype `dtype` names: float to int truncates towards zero and

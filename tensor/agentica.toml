@@ -4,3 +4,20 @@ agentica = "0.35.0"
 # Every bare `end` is followed by an empty line (AGENTS.md).
 [style]
 blank_line_after_end = true
+
+[dependencies]
+native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.4.0", subdir = "native-gen" }
+
+# The libtorch backend's native side: a thin C++ layer over libtorch's C++ API,
+# declared by the `extern module "torch"` of `src/native.agc` and dispatched to
+# from the `Backend.Torch(device)` arms of `tensor.agc`
+# (`tensor/DESIGN.md` §7).
+#
+# libtorch is a system dependency, never vendored and never downloaded by this
+# repository: `tools/build-torch.sh` finds it and prints the exports this table
+# cannot name. `optional` keeps the package usable where it is not installed —
+# the run warns, `Tensor.available(Backend.Torch(..))` says no, and the Torch
+# arm answers `error("backend not available")` instead of halting.
+[native.torch]
+optional = true
+build = { sources = ["native/torch.c"], libs = ["torch", "torch_cpu", "c10", "stdc++", "m"] }

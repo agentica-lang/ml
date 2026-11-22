@@ -118,12 +118,23 @@ static std::string shape_text(const torch::Tensor &t) {
   return text + "]";
 }
 
-/* A native tensor as the resource the signature returns. */
+/* A native tensor as the resource the signature returns. `new` is the one
+   allocation here that libtorch does not wrap, so a failed allocation is caught
+   and reported as an error instead of unwinding across the C boundary; the
+   resource made just above is then freed by the caller's arena with a NULL
+   value, which the free hook handles. */
 static an_term ok_tensor(an_env *env, const torch::Tensor &value) {
   an_term term;
   struct torch_TensorHandle_state *state = torch_TensorHandle_new(env, &term);
 
-  state->value = new torch::Tensor(value);
+  try {
+    state->value = new torch::Tensor(value);
+  } catch (const std::exception &e) {
+    return error_text(env, std::string("could not hold a native tensor: ") + e.what());
+  } catch (...) {
+    return error_text(env, "could not hold a native tensor");
+  }
+
   return torch_result_TensorHandle_ok(env, term);
 }
 
@@ -299,12 +310,29 @@ static bool read_axes(an_env *env, torch_list_Int &axes, std::vector<int64_t> *o
   return true;
 }
 
+/* The axis backstop both reductions share: libtorch would answer a bad axis
+   with a `c10::Error` of its own, and the count `mean` divides by needs it
+   anyway, so `sum` checks it too. The range is written half-open: `[0, dim)`.
+   A negative axis is refused while the list is read (`read_axes`). */
+static bool check_axes(an_env *env, const torch::Tensor &t, const std::vector<int64_t> &axs, const char *op,
+                       an_term *failure) {
+  for (size_t i = 0; i < axs.size(); i++) {
+    if (axs[i] >= t.dim()) {
+      *failure = error_text(env, std::string(op) + " needs axes in [0, " + std::to_string(t.dim()) + "), got " +
+                               std::to_string(axs[i]));
+      return false;
+    }
+  }
+  return true;
+}
+
 an_term torch_sum(an_env *env, struct torch_TensorHandle_state *a, torch_list_Int axes, bool keep_dims) {
   const torch::Tensor &t = *a->value;
   std::vector<int64_t> axs;
   an_term failure;
 
   if (!read_axes(env, axes, &axs, &failure)) return failure;
+  if (!check_axes(env, t, axs, "sum", &failure)) return failure;
 
   try {
     if (axs.empty()) return ok_tensor(env, t.clone());
@@ -321,14 +349,10 @@ an_term torch_mean(an_env *env, struct torch_TensorHandle_state *a, torch_list_I
 
   if (!read_axes(env, axes, &axs, &failure)) return failure;
 
+  if (!check_axes(env, t, axs, "mean", &failure)) return failure;
+
   int64_t count = 1;
-  for (size_t i = 0; i < axs.size(); i++) {
-    if (axs[i] >= t.dim()) {
-      return error_text(env, "mean needs axes in 0.." + std::to_string(t.dim()) + ", got " +
-                               std::to_string(axs[i]));
-    }
-    count *= t.size(axs[i]);
-  }
+  for (size_t i = 0; i < axs.size(); i++) count *= t.size(axs[i]);
   if (count == 0) return error_text(env, "mean of zero elements is an error");
 
   try {

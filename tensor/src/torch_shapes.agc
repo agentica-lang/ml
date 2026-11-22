@@ -1,12 +1,11 @@
-## Shape arithmetic of the torch backend: the element count, the axis checks
-## and the shape a reduction leaves (`tensor/DESIGN.md` §9 asks the wrapper to
-## validate eagerly, before dispatch; the native side re-checks as a backstop
-## and is never the only check).
+## Shape arithmetic of the libtorch backend: the element count, the axis
+## checks and the shape a reduction leaves (`tensor/DESIGN.md` §9 asks the
+## wrapper to validate eagerly, before dispatch; the native side re-checks as a
+## backstop and is never the only check).
 ##
-## These mirror `tensor/`'s reference (`tensor/src/types.agc` and
-## `tensor/src/reference.agc`), which this package does not export: the
-## backend computes the shape of the tensor it is about to hand back, so a
-## metadata mismatch cannot hide behind a valid native buffer.
+## These mirror the reference (`src/types.agc`, `src/reference.agc`) without
+## importing it: the backend computes the shape of the tensor it is about to
+## hand back, so a metadata mismatch cannot hide behind a valid native buffer.
 
 ## The number of elements `shape` names: `1` for `[]`, the product otherwise.
 def volume(shape: List[Int]) -> Result[Int]

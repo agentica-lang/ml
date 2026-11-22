@@ -122,10 +122,14 @@ def make(shape: List[Int], dtype: Types.Dtype, values: List[Float]) -> Types.Ten
   )
 end
 
-## The row-major values behind `t`.
-def data_of(t: Types.Tensor) -> List[Float]
+## The row-major values behind `t`. A `Native` handle is not this backend's to
+## read: the public wrappers only dispatch `Reference` tensors here, and the
+## arm answers `error` rather than pretending an empty tensor.
+def data_of(t: Types.Tensor) -> Result[List[Float]]
   case t.handle
-    Types.Handle.Plain(d) -> d.values
+    Types.Handle.Plain(d) -> ok(d.values)
+    Types.Handle.Native(_) ->
+      error("the reference backend cannot read a native handle (#{Types.backend_name(t.backend)})")
   end
 end
 
@@ -247,28 +251,29 @@ end
 ## Readback: the values tagged with the tensor's dtype.
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   out: List[Types.Values] = []
-  for x in data_of(t)
+  for x in try data_of(t)
     out = out.push(try Types.float_to_value(x, t.dtype))
   end
 
   ok(out)
 end
 
-## One infallible unary op over the values.
-def map_one(t: Types.Tensor, f: Fn[Float, Float]) -> Types.Tensor
-  make(t.shape, t.dtype, data_of(t).map do |x: Float| f.call(x) end)
+## One unary op over the values.
+def map_one(t: Types.Tensor, f: Fn[Float, Float]) -> Result[Types.Tensor]
+  xs = try data_of(t)
+  ok(make(t.shape, t.dtype, xs.map do |x: Float| f.call(x) end))
 end
 
-## One infallible binary op over two same-shape value lists.
-def map_two(a: Types.Tensor, b: Types.Tensor, dtype: Types.Dtype, f: Fn[Float, Float, Float]) -> Types.Tensor
-  xs = data_of(a)
-  ys = data_of(b)
+## One binary op over two same-shape value lists.
+def map_two(a: Types.Tensor, b: Types.Tensor, dtype: Types.Dtype, f: Fn[Float, Float, Float]) -> Result[Types.Tensor]
+  xs = try data_of(a)
+  ys = try data_of(b)
   out: List[Float] = []
   for i in 0...xs.size
     out = out.push(f.call(xs[i], ys[i]))
   end
 
-  make(a.shape, dtype, out)
+  ok(make(a.shape, dtype, out))
 end
 
 ## The cheap structural check every binary op repeats.
@@ -298,7 +303,7 @@ end
 def add(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   try check_pair(a, b, "add")
   return error("add needs a float dtype, got #{Types.dtype_name(a.dtype)}") if !Types.is_float_dtype(a.dtype)
-  out = map_two(a, b, a.dtype) do |x: Float, y: Float| x + y end
+  out = try map_two(a, b, a.dtype) do |x: Float, y: Float| x + y end
   ok(out)
 end
 
@@ -306,7 +311,7 @@ end
 def sub(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   try check_pair(a, b, "sub")
   return error("sub needs a float dtype, got #{Types.dtype_name(a.dtype)}") if !Types.is_float_dtype(a.dtype)
-  out = map_two(a, b, a.dtype) do |x: Float, y: Float| x - y end
+  out = try map_two(a, b, a.dtype) do |x: Float, y: Float| x - y end
   ok(out)
 end
 
@@ -314,7 +319,7 @@ end
 def mul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   try check_pair(a, b, "mul")
   return error("mul needs a float dtype, got #{Types.dtype_name(a.dtype)}") if !Types.is_float_dtype(a.dtype)
-  out = map_two(a, b, a.dtype) do |x: Float, y: Float| x * y end
+  out = try map_two(a, b, a.dtype) do |x: Float, y: Float| x * y end
   ok(out)
 end
 
@@ -322,8 +327,8 @@ end
 def div(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   try check_pair(a, b, "div")
   return error("div needs a float dtype, got #{Types.dtype_name(a.dtype)}") if !Types.is_float_dtype(a.dtype)
-  xs = data_of(a)
-  ys = data_of(b)
+  xs = try data_of(a)
+  ys = try data_of(b)
   out: List[Float] = []
   for i in 0...xs.size
     return error("div by zero at index #{i}") if ys[i] == 0.0
@@ -336,7 +341,7 @@ end
 ## Elementwise `-a`, float only.
 def neg(t: Types.Tensor) -> Result[Types.Tensor]
   return error("neg needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  out = map_one(t) do |x: Float| -x end
+  out = try map_one(t) do |x: Float| -x end
   ok(out)
 end
 
@@ -344,7 +349,7 @@ end
 ## is a legitimate answer, but `NaN`/`inf` in never evaluates.
 def exp(t: Types.Tensor) -> Result[Types.Tensor]
   return error("exp needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  xs = try require_finite(data_of(t), "exp")
+  xs = try require_finite(try data_of(t), "exp")
   out = xs.map do |x: Float| exp_ref(x) end
   ok(make(t.shape, t.dtype, out))
 end
@@ -353,7 +358,7 @@ end
 ## `log` of `+inf` would divide forever, so non-finite inputs are errors.
 def log(t: Types.Tensor) -> Result[Types.Tensor]
   return error("log needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  xs = try require_finite(data_of(t), "log")
+  xs = try require_finite(try data_of(t), "log")
   out: List[Float] = []
   for x in xs
     return error("log needs x > 0, got #{x}") if x <= 0.0
@@ -366,7 +371,7 @@ end
 ## Elementwise `sqrt`, float only, finite inputs with `x >= 0` only.
 def sqrt(t: Types.Tensor) -> Result[Types.Tensor]
   return error("sqrt needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  xs = try require_finite(data_of(t), "sqrt")
+  xs = try require_finite(try data_of(t), "sqrt")
   out: List[Float] = []
   for x in xs
     return error("sqrt needs x >= 0, got #{x}") if x < 0.0
@@ -382,8 +387,8 @@ end
 def pow(base: Types.Tensor, exponent: Types.Tensor) -> Result[Types.Tensor]
   try check_pair(base, exponent, "pow")
   return error("pow needs a float dtype, got #{Types.dtype_name(base.dtype)}") if !Types.is_float_dtype(base.dtype)
-  bs = try require_finite(data_of(base), "pow")
-  es = try require_finite(data_of(exponent), "pow")
+  bs = try require_finite(try data_of(base), "pow")
+  es = try require_finite(try data_of(exponent), "pow")
   out: List[Float] = []
   for i in 0...bs.size
     return error("pow needs base > 0, got #{bs[i]} at index #{i}") if bs[i] <= 0.0
@@ -396,7 +401,7 @@ end
 ## Elementwise `max(0, x)`, float only.
 def relu(t: Types.Tensor) -> Result[Types.Tensor]
   return error("relu needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  out = map_one(t) do |x: Float|
+  out = try map_one(t) do |x: Float|
     return 0.0 if x <= 0.0
     x
   end
@@ -407,7 +412,7 @@ end
 ## Elementwise sigmoid, float only, finite inputs only.
 def sigmoid(t: Types.Tensor) -> Result[Types.Tensor]
   return error("sigmoid needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  xs = try require_finite(data_of(t), "sigmoid")
+  xs = try require_finite(try data_of(t), "sigmoid")
   out = xs.map do |x: Float| sigmoid_ref(x) end
   ok(make(t.shape, t.dtype, out))
 end
@@ -415,7 +420,7 @@ end
 ## Elementwise tanh, float only, finite inputs only.
 def tanh(t: Types.Tensor) -> Result[Types.Tensor]
   return error("tanh needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  xs = try require_finite(data_of(t), "tanh")
+  xs = try require_finite(try data_of(t), "tanh")
   out = xs.map do |x: Float| tanh_ref(x) end
   ok(make(t.shape, t.dtype, out))
 end
@@ -428,7 +433,7 @@ def gelu_tanh_approx(t: Types.Tensor) -> Result[Types.Tensor]
     return error("gelu_tanh_approx needs a float dtype, got #{Types.dtype_name(t.dtype)}")
   end
 
-  xs = try require_finite(data_of(t), "gelu_tanh_approx")
+  xs = try require_finite(try data_of(t), "gelu_tanh_approx")
   out = xs.map do |x: Float|
     inner = SQRT2_OVER_PI * (x + GELU_C * x * x * x)
     0.5 * x * (1.0 + tanh_ref(inner))
@@ -444,7 +449,7 @@ def eq(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     return error("eq needs a float or int dtype, got #{Types.dtype_name(a.dtype)}")
   end
 
-  out = map_two(a, b, Types.Dtype.Bool) do |x: Float, y: Float|
+  out = try map_two(a, b, Types.Dtype.Bool) do |x: Float, y: Float|
     return 1.0 if x == y
     0.0
   end
@@ -459,7 +464,7 @@ def lt(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     return error("lt needs a float or int dtype, got #{Types.dtype_name(a.dtype)}")
   end
 
-  out = map_two(a, b, Types.Dtype.Bool) do |x: Float, y: Float|
+  out = try map_two(a, b, Types.Dtype.Bool) do |x: Float, y: Float|
     return 1.0 if x < y
     0.0
   end
@@ -473,9 +478,9 @@ def where(cond: Types.Tensor, a: Types.Tensor, b: Types.Tensor) -> Result[Types.
   try check_pair(a, b, "where")
   return error("where needs a Bool condition, got #{Types.dtype_name(cond.dtype)}") if cond.dtype != Types.Dtype.Bool
   return error("where needs a condition of shape #{a.shape}, got #{cond.shape}") if cond.shape != a.shape
-  cs = data_of(cond)
-  xs = data_of(a)
-  ys = data_of(b)
+  cs = try data_of(cond)
+  xs = try data_of(a)
+  ys = try data_of(b)
   out: List[Float] = []
   for i in 0...xs.size
     if cs[i] == 1.0
@@ -492,7 +497,7 @@ end
 def clamp(t: Types.Tensor, lo: Float, hi: Float) -> Result[Types.Tensor]
   return error("clamp needs lo <= hi, got #{lo} and #{hi}") if lo > hi
   return error("clamp needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  out = map_one(t) do |x: Float| x.clamp(lo, hi) end
+  out = try map_one(t) do |x: Float| x.clamp(lo, hi) end
   ok(out)
 end
 
@@ -544,7 +549,7 @@ def sum_axes(t: Types.Tensor, axes: List[Int], keep_dims: Bool) -> Result[Types.
   out_strides = strides_of(out_shape)
   n = try Types.volume(out_shape)
   acc: List[Float] = List.repeat(0.0, n)
-  xs = data_of(t)
+  xs = try data_of(t)
   for linear in 0...xs.size
     index = multi_of(linear, shape, in_strides)
     out_index: List[Int] = []
@@ -580,7 +585,7 @@ def mean(t: Types.Tensor, axes: Optional[List[Int]], keep_dims: Bool) -> Result[
   return error("mean of zero elements is an error") if count == 0
   total = try sum_axes(t, axs, keep_dims)
   out: List[Float] = []
-  for x in data_of(total)
+  for x in try data_of(total)
     out = out.push(x / count.to_f)
   end
 
@@ -599,7 +604,7 @@ def max(t: Types.Tensor, axes: Optional[List[Int]], keep_dims: Bool) -> Result[T
   n = try Types.volume(out_shape)
   best: List[Float] = List.repeat(0.0, n)
   seen: List[Bool] = List.repeat(false, n)
-  xs = data_of(t)
+  xs = try data_of(t)
   for linear in 0...xs.size
     index = multi_of(linear, shape, in_strides)
     out_index: List[Int] = []
@@ -644,7 +649,7 @@ def argmax(t: Types.Tensor, axes: Optional[List[Int]], keep_dims: Bool) -> Resul
   best: List[Float] = List.repeat(0.0, n)
   pos: List[Float] = List.repeat(0.0, n)
   seen: List[Bool] = List.repeat(false, n)
-  xs = data_of(t)
+  xs = try data_of(t)
   for linear in 0...xs.size
     index = multi_of(linear, shape, in_strides)
     out_index: List[Int] = []
@@ -687,8 +692,8 @@ def matmul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   rows = a.shape[0]
   inner = a.shape[1]
   cols = b.shape[1]
-  xs = data_of(a)
-  ys = data_of(b)
+  xs = try data_of(a)
+  ys = try data_of(b)
   out: List[Float] = []
   for r in 0...rows
     for c in 0...cols
@@ -735,8 +740,8 @@ def batch_matmul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   batches = try Types.volume(batch_shape)
   plane_a = m * ka
   plane_b = kb * n
-  xs = data_of(a)
-  ys = data_of(b)
+  xs = try data_of(a)
+  ys = try data_of(b)
   out: List[Float] = []
   for batch in 0...batches
     for r in 0...m
@@ -757,28 +762,29 @@ end
 ## The transpose: reverses every axis (for rank 2 this swaps rows and
 ## columns, for rank 0/1 it is the identity). A true axis permutation is
 ## derived from `slice`/`stack` where needed (see `tensor.agc`).
-def transpose(t: Types.Tensor) -> Types.Tensor
+def transpose(t: Types.Tensor) -> Result[Types.Tensor]
   shape = t.shape
   rank = shape.size
-  return make(shape, t.dtype, data_of(t)) if rank < 2
+  xs = try data_of(t)
+  return ok(make(shape, t.dtype, xs)) if rank < 2
   flipped = shape.reverse
   in_strides = strides_of(shape)
   out_strides = strides_of(flipped)
-  xs = data_of(t)
   out: List[Float] = []
   for linear in 0...xs.size
     index = multi_of(linear, flipped, out_strides)
     out = out.push(xs[offset_of(index.reverse, in_strides)])
   end
 
-  make(flipped, t.dtype, out)
+  ok(make(flipped, t.dtype, out))
 end
 
 ## A tensor of `shape` with the same values: the volumes must match.
 def reshape(t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
   n = try Types.volume(shape)
-  return error("reshape needs #{n} values for #{shape}, got #{data_of(t).size}") if data_of(t).size != n
-  ok(make(shape, t.dtype, data_of(t)))
+  xs = try data_of(t)
+  return error("reshape needs #{n} values for #{shape}, got #{xs.size}") if xs.size != n
+  ok(make(shape, t.dtype, xs))
 end
 
 ## Drops size-1 dimensions: every one for `none`, or the named `axis`,
@@ -788,7 +794,7 @@ def squeeze(t: Types.Tensor, axis: Optional[Int]) -> Result[Types.Tensor]
     some(ax) ->
       return error("squeeze needs an axis in 0...#{t.shape.size}, got #{ax}") if ax < 0 or ax >= t.shape.size
       return error("squeeze needs a dimension of size 1 at #{ax}, got #{t.shape[ax]}") if t.shape[ax] != 1
-      ok(make(drop_axis(t.shape, ax), t.dtype, data_of(t)))
+      ok(make(drop_axis(t.shape, ax), t.dtype, try data_of(t)))
     none ->
       kept: List[Int] = []
       for d in t.shape
@@ -797,7 +803,7 @@ def squeeze(t: Types.Tensor, axis: Optional[Int]) -> Result[Types.Tensor]
         end
       end
 
-      ok(make(kept, t.dtype, data_of(t)))
+      ok(make(kept, t.dtype, try data_of(t)))
   end
 end
 
@@ -818,7 +824,7 @@ def unsqueeze(t: Types.Tensor, axis: Int) -> Result[Types.Tensor]
     out = out.push(1)
   end
 
-  ok(make(out, t.dtype, data_of(t)))
+  ok(make(out, t.dtype, try data_of(t)))
 end
 
 ## The `[starts[i], ends[i])` window per axis (no steps in M1).
@@ -839,7 +845,7 @@ def slice(t: Types.Tensor, starts: List[Int], ends: List[Int]) -> Result[Types.T
 
   in_strides = strides_of(t.shape)
   out_strides = strides_of(shape)
-  xs = data_of(t)
+  xs = try data_of(t)
   n = try Types.volume(shape)
   out: List[Float] = []
   for linear in 0...n
@@ -899,7 +905,7 @@ def concat(tensors: List[Types.Tensor], axis: Int) -> Result[Types.Tensor]
   n = try Types.volume(out_shape)
   datas: List[List[Float]] = []
   for t in tensors
-    datas = datas.push(data_of(t))
+    datas = datas.push(try data_of(t))
   end
 
   out: List[Float] = []
@@ -962,7 +968,7 @@ def broadcast_to(t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
 
   in_strides = strides_of(t.shape)
   out_strides = strides_of(shape)
-  xs = data_of(t)
+  xs = try data_of(t)
   out: List[Float] = []
   for linear in 0...n
     index = multi_of(linear, shape, out_strides)
@@ -997,9 +1003,9 @@ def gather(source: Types.Tensor, indices: Types.Tensor) -> Result[Types.Tensor]
 
   out_shape = indices.shape + tail
   row = try Types.volume(tail)
-  src = data_of(source)
+  src = try data_of(source)
   out: List[Float] = []
-  for x in data_of(indices)
+  for x in try data_of(indices)
     i = try x.to_i
     return error("gather needs indices in 0...#{rows}, got #{i}") if i < 0 or i >= rows
     for k in 0...row
@@ -1017,7 +1023,7 @@ end
 ## is `true` (it is nonzero, as in torch) rather than an error.
 def to_dtype(t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
   out: List[Float] = []
-  for x in data_of(t)
+  for x in try data_of(t)
     out = out.push(try convert_one(x, t.dtype, dtype))
   end
 
@@ -1027,7 +1033,7 @@ end
 ## Moves `t` to `device`: reference tensors live on `Cpu` only.
 def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
   case device
-    Types.Device.Cpu -> ok(make(t.shape, t.dtype, data_of(t)))
+    Types.Device.Cpu -> ok(make(t.shape, t.dtype, try data_of(t)))
     Types.Device.Cuda(n) -> error("reference tensors live on Cpu, not Cuda(#{n})")
   end
 end
@@ -1035,7 +1041,7 @@ end
 ## The identity move: values are immutable, so a copy shares nothing.
 def copy(t: Types.Tensor) -> Result[Types.Tensor]
   out: List[Float] = []
-  for x in data_of(t)
+  for x in try data_of(t)
     out = out.push(x)
   end
 
