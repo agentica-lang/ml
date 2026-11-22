@@ -119,6 +119,12 @@ def dtype_name(dtype: Dtype) -> String
   end
 end
 
+## True for ordinary values: false for `NaN` and both infinities.
+## `(x - x) == 0.0` holds exactly for the finite cases (including `0.0`
+## and denormals) and fails for the three non-finite ones, with no
+## arithmetic a caller could halt on.
+def is_finite(x: Float) -> Bool = x - x == 0.0
+
 ## The short name used in error messages.
 def device_name(device: Device) -> String
   case device

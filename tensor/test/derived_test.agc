@@ -145,6 +145,11 @@ def test_greedy_step_scales_by_temperature() -> Result[Void]
   Test.eq(try Tensor.to_list(tok), [Tensor.Values.Int(0)])
 end
 
+def test_greedy_step_rejects_a_denormal_temperature() -> Result[Void]
+  logits = try Support.f32([1.0, 2.0], [2])
+  Test.error?(Tensor.greedy_step(logits, some(5.0e-324)))
+end
+
 def test_greedy_step_rejects_a_non_positive_temperature() -> Result[Void]
   logits = try Support.f32([1.0, 2.0], [2])
   Test.error?(Tensor.greedy_step(logits, some(0.0)))

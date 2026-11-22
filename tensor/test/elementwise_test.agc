@@ -58,6 +58,26 @@ def test_neg_flips_the_sign() -> Result[Void]
   Support.expect_floats(try Tensor.neg(a), [-1.0, 2.5])
 end
 
+def test_exp_saturates_at_the_boundary() -> Result[Void]
+  big = try Support.floats_of(try Tensor.exp(try Support.f32([708.0], [1])))
+  try Test.assert((big[0] - 3.023383144276055e307).abs / 3.023383144276055e307 <= 0.000000001, "exp(708) drifts")
+  saturated = try Tensor.to_list(try Tensor.exp(try Support.f32([709.0], [1])))
+  Test.eq(saturated, [Tensor.Values.Float(1.0e308 * 10.0)])
+end
+
+def test_exp_of_nan_is_an_error() -> Result[Void]
+  saturated = try Tensor.exp(try Support.f32([1000.0], [1]))
+  nan = try Tensor.sub(saturated, saturated)
+  try Test.error?(Tensor.exp(nan))
+  try Test.error?(Tensor.tanh(nan))
+  Test.error?(Tensor.log(saturated))
+end
+
+def test_log_of_a_saturated_exp_is_an_error() -> Result[Void]
+  saturated = try Tensor.exp(try Support.f32([1000.0, 0.0], [2]))
+  Test.error?(Tensor.log(saturated))
+end
+
 def test_exp_matches_the_hand_values() -> Result[Void]
   a = try Support.f32([1.0, -1.0, 0.0, 2.0, -3.0], [5])
   Support.expect_floats(

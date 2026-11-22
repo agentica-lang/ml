@@ -17,6 +17,10 @@
 ## Accuracy is ~1e-15 relative on ordinary inputs; out-of-domain inputs
 ## (`log` of `x <= 0`, `sqrt` of `x < 0`, `pow` of `b <= 0`) are errors, and
 ## overflow/underflow saturate to `+inf`/`0.0` instead of halting.
+## Non-finite inputs (`NaN`, `+-inf`) are errors at every entry point that
+## could halt or hang on them (`exp`, `log`, `sqrt`, `pow`, `sigmoid`,
+## `tanh`, `gelu_tanh_approx`): saturation of finite inputs stays legitimate,
+## but non-finite storage never enters the core.
 
 import Types from "types"
 
@@ -277,6 +281,19 @@ def check_pair(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
   ok(true)
 end
 
+## Every storage value is finite: non-finite inputs are `error`, never a
+## halt or a hang (`log` of `+inf` would divide forever, `round` halts on
+## `NaN`). The wrapper documents this as the backend-agnostic input rule;
+## the reference enforces it here, and every native backend enforces the
+## same rule before touching its own numbers.
+def require_finite(xs: List[Float], op: String) -> Result[List[Float]]
+  for i in 0...xs.size
+    return error("#{op} needs finite values, got a non-finite value at index #{i}") if !Types.is_finite(xs[i])
+  end
+
+  ok(xs)
+end
+
 ## Elementwise `a + b`, float only.
 def add(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   try check_pair(a, b, "add")
@@ -323,18 +340,22 @@ def neg(t: Types.Tensor) -> Result[Types.Tensor]
   ok(out)
 end
 
-## Elementwise `exp`, float only.
+## Elementwise `exp`, float only, finite inputs only: saturation to `+inf`
+## is a legitimate answer, but `NaN`/`inf` in never evaluates.
 def exp(t: Types.Tensor) -> Result[Types.Tensor]
   return error("exp needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  out = map_one(t) do |x: Float| exp_ref(x) end
-  ok(out)
+  xs = try require_finite(data_of(t), "exp")
+  out = xs.map do |x: Float| exp_ref(x) end
+  ok(make(t.shape, t.dtype, out))
 end
 
-## Elementwise `log`, float only, `x <= 0` is an error.
+## Elementwise `log`, float only, finite inputs with `x > 0` only:
+## `log` of `+inf` would divide forever, so non-finite inputs are errors.
 def log(t: Types.Tensor) -> Result[Types.Tensor]
   return error("log needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
+  xs = try require_finite(data_of(t), "log")
   out: List[Float] = []
-  for x in data_of(t)
+  for x in xs
     return error("log needs x > 0, got #{x}") if x <= 0.0
     out = out.push(log_ref(x))
   end
@@ -342,11 +363,12 @@ def log(t: Types.Tensor) -> Result[Types.Tensor]
   ok(make(t.shape, t.dtype, out))
 end
 
-## Elementwise `sqrt`, float only, `x < 0` is an error.
+## Elementwise `sqrt`, float only, finite inputs with `x >= 0` only.
 def sqrt(t: Types.Tensor) -> Result[Types.Tensor]
   return error("sqrt needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
+  xs = try require_finite(data_of(t), "sqrt")
   out: List[Float] = []
-  for x in data_of(t)
+  for x in xs
     return error("sqrt needs x >= 0, got #{x}") if x < 0.0
     out = out.push(Math.sqrt(x))
   end
@@ -360,8 +382,8 @@ end
 def pow(base: Types.Tensor, exponent: Types.Tensor) -> Result[Types.Tensor]
   try check_pair(base, exponent, "pow")
   return error("pow needs a float dtype, got #{Types.dtype_name(base.dtype)}") if !Types.is_float_dtype(base.dtype)
-  bs = data_of(base)
-  es = data_of(exponent)
+  bs = try require_finite(data_of(base), "pow")
+  es = try require_finite(data_of(exponent), "pow")
   out: List[Float] = []
   for i in 0...bs.size
     return error("pow needs base > 0, got #{bs[i]} at index #{i}") if bs[i] <= 0.0
@@ -382,33 +404,37 @@ def relu(t: Types.Tensor) -> Result[Types.Tensor]
   ok(out)
 end
 
-## Elementwise sigmoid, float only.
+## Elementwise sigmoid, float only, finite inputs only.
 def sigmoid(t: Types.Tensor) -> Result[Types.Tensor]
   return error("sigmoid needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  out = map_one(t) do |x: Float| sigmoid_ref(x) end
-  ok(out)
+  xs = try require_finite(data_of(t), "sigmoid")
+  out = xs.map do |x: Float| sigmoid_ref(x) end
+  ok(make(t.shape, t.dtype, out))
 end
 
-## Elementwise tanh, float only.
+## Elementwise tanh, float only, finite inputs only.
 def tanh(t: Types.Tensor) -> Result[Types.Tensor]
   return error("tanh needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  out = map_one(t) do |x: Float| tanh_ref(x) end
-  ok(out)
+  xs = try require_finite(data_of(t), "tanh")
+  out = xs.map do |x: Float| tanh_ref(x) end
+  ok(make(t.shape, t.dtype, out))
 end
 
-## The `gelu` approximation of §3.1: `0.5*x*(1+tanh(c*(x+0.044715*x^3))`.
-## The `erf` form is not offered: it cannot be expressed over §3.1.
+## The `gelu` approximation of §3.1: `0.5*x*(1+tanh(c*(x+0.044715*x^3))`,
+## finite inputs only. The `erf` form is not offered: it cannot be
+## expressed over §3.1.
 def gelu_tanh_approx(t: Types.Tensor) -> Result[Types.Tensor]
   if !Types.is_float_dtype(t.dtype)
     return error("gelu_tanh_approx needs a float dtype, got #{Types.dtype_name(t.dtype)}")
   end
 
-  out = map_one(t) do |x: Float|
+  xs = try require_finite(data_of(t), "gelu_tanh_approx")
+  out = xs.map do |x: Float|
     inner = SQRT2_OVER_PI * (x + GELU_C * x * x * x)
     0.5 * x * (1.0 + tanh_ref(inner))
   end
 
-  ok(out)
+  ok(make(t.shape, t.dtype, out))
 end
 
 ## Elementwise `a == b` as `1.0`/`0.0`, float or int dtypes.

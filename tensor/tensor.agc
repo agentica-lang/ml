@@ -13,13 +13,28 @@
 ## - Device is explicit, never global: it rides in the `Backend` value.
 ## - No implicit broadcasting: every elementwise op needs exact shapes;
 ##   widen explicitly with `broadcast_to` first (the wrapper checks the
-##   trailing-1 rule eagerly). Ranks, dimension sizes, dtype legality and
-##   broadcast compatibility are all checked here (§9).
+##   trailing-1 rule eagerly). Ranks, dimension sizes, dtype legality,
+##   backend agreement and broadcast compatibility are checked in the wrapper
+##   before dispatch (§9); element domains (divisors, `log`/`sqrt`/`pow`
+##   inputs, index bounds) and value-count matches live in the backend that
+##   owns the storage, which is the only place that can see them.
 ## - Dtypes: numeric compute is `F32`; `F16`/`F64` compute exactly in doubles
 ##   (a native `F32` backend will round on its side — see the PR body).
 ##   `Bool` masks and integer index tensors are first-class; `to_dtype`
 ##   truncates float to int, tests nonzero for `Bool`, and range-checks int
-##   widths. Overflows and `NaN` are errors, never wrap-around.
+##   widths. Int overflows are errors, never wrap-around.
+## - Finite values in, errors out, never a halt or a hang: non-finite storage
+##   (`NaN`, `+-inf`) is refused with `error` at every entry point that could
+##   halt or hang on it (`exp`, `log`, `sqrt`, `pow`, `sigmoid`, `tanh`,
+##   `gelu_tanh_approx`, `top_k`). Saturating finite inputs stays legitimate
+##   (`exp` of a large value is `+inf`), but non-finite values never enter
+##   the transcendental core. This is a backend-agnostic input rule: the
+##   wrappers document it, and each backend enforces it before touching its
+##   own numbers (the reference enforces it in-backend, since a wrapper
+##   cannot see stored values without a readback). `softmax`, `gelu`,
+##   `silu`, `layer_norm`, `rms_norm` and `greedy_step` inherit the rule
+##   through the primitives they are built from; `greedy_step` additionally
+##   refuses a temperature so small that `1/t` overflows.
 ## - Lifetimes (§8): the reference holds plain Agentica data and needs no
 ##   arena. Arenas are not faked for `Plain`: the first native backend
 ##   allocates its handles inside `Native.arena` per call/step instead.
@@ -839,6 +854,7 @@ def greedy_step(logits: Types.Tensor, temperature: Optional[Float] = none) -> Re
   scaled = case temperature
     some(t) ->
       return error("greedy_step needs temperature > 0, got #{t}") if t <= 0.0
+      return error("greedy_step needs temperature >= 1.0e-308, got #{t}") if t * 1.0e308 < 1.0
       try mul(logits, try full(logits.shape, Types.Values.Float(1.0 / t), logits.dtype, logits.backend))
     none -> logits
   end
@@ -868,6 +884,10 @@ def top_k(x: Types.Tensor, k: Int) -> Result[Types.TopK]
       Types.Values.Float(f) -> vals = vals.push(f)
       _ -> return error("top_k reads a float tensor")
     end
+  end
+
+  for i in 0...vals.size
+    return error("top_k needs finite values, got a non-finite value at index #{i}") if !Types.is_finite(vals[i])
   end
 
   order = (0...n).to_a.sort_by do |i: Int| 0.0 - vals[i] end
