@@ -1,8 +1,10 @@
 ## Whisper speech-to-text (Via A): a thin binding over whisper.cpp.
 ##
 ## The `.agc` file is the one source of the native signatures: after each
-## change to the `extern module` block, make the header again from this folder
-## with native-gen, and check that it is current:
+## change to the `extern module` block, make the header again and check that
+## it is current. With the native-gen dependency added (`agentica add
+## native-gen https://github.com/agentica-lang/packages --tag native-gen-0.4.0
+## --subdir native-gen`), from this folder:
 ##
 ## ```sh
 ## agentica deps/native-gen/cli.agc whisper.agc --output native/whisper_native.h

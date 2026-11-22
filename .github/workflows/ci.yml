@@ -97,16 +97,31 @@ jobs:
         run: agentica fmt --check
 
       # Every committed native/*_native.h must be the header that native-gen
-      # makes from the .agc of its name; the clone is shallow, at the tag.
+      # makes from the tracked .agc that declares its `extern module` (any
+      # folder layout); a package with no generated headers skips this step,
+      # so adding a folder adds it to CI with no edit here. The clone of the
+      # native-gen release is shallow, at the tag.
       - name: Check the generated native headers
         shell: bash
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          headers=(native/*_native.h)
+          if [ "${#headers[@]}" -eq 0 ]; then
+            echo "no generated native headers: nothing to check"
+            exit 0
+          fi
           git clone --depth 1 --branch "$NATIVE_GEN_TAG" \
             https://github.com/agentica-lang/packages.git "$RUNNER_TEMP/packages"
-          for h in native/*_native.h; do
+          for h in "${headers[@]}"; do
             name=${h#native/}
-            agentica "$RUNNER_TEMP/packages/native-gen/cli.agc" "${name%_native.h}.agc" \
+            name=${name%_native.h}
+            src=$(git grep -l "extern module \"$name\"" -- '*.agc' | head -n 1 || true)
+            [ -n "$src" ] || {
+              echo "no tracked .agc declares extern module \"$name\"" >&2
+              exit 1
+            }
+            agentica "$RUNNER_TEMP/packages/native-gen/cli.agc" "$src" \
               --output "$h" --check
           done
 
