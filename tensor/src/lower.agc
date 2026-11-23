@@ -80,20 +80,26 @@ def evaluate(
   keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
   code = try Ggml.code_of(device, "evaluate")
-  p = try plan(outs, env, Types.Backend.Ggml(device))
+  p = try System.Profile.measure("ml.plan") do plan(outs, env, Types.Backend.Ggml(device)) end
   Native.arena do
-    lease = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1, keep)
+    lease = try System.Profile.measure("ml.acquire") do GgmlRaw.acquire(code, p.key, p.nodes.size + 1, keep) end
     if !GgmlRaw.ready(lease)
       for l in p.nodes
         _ = try GgmlRaw.node(lease, l.op, l.args, l.shape, l.ints)
       end
 
-      try GgmlRaw.compile(lease, p.outputs)
+      try System.Profile.measure("ml.compile") do GgmlRaw.compile(lease, p.outputs) end
     end
 
-    for i in 0...p.leaves.size
-      try GgmlRaw.bind(lease, i, try Ggml.handle_of(p.leaves[i]))
+    bound: Result[Void] = System.Profile.measure("ml.bind") do
+      for i in 0...p.leaves.size
+        try GgmlRaw.bind(lease, i, try Ggml.handle_of(p.leaves[i]))
+      end
+
+      ok()
     end
+
+    try bound
 
     out: List[Types.Tensor] = []
     for i in 0...outs.size
@@ -101,7 +107,7 @@ def evaluate(
       out = out.push(Ggml.tensor_of(device, outs[i].shape, outs[i].dtype, h))
     end
 
-    try GgmlRaw.run(lease, p.fills)
+    try System.Profile.measure("ml.run") do GgmlRaw.run(lease, p.fills) end
     # A tensor made from the lease would keep it past the arena (one level
     # up), and the graph stays busy while leased; the outputs need nothing
     # of it after the run.

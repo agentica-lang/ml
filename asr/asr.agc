@@ -284,9 +284,15 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
   backend = Tensor.backend(m.tokens.table)
   values = ids.map { |i| Tensor.Values.Int(i) }
   if compiled(backend)
-    at = try Tensor.from_list(values, [n], Tensor.Dtype.I32, backend)
-    where = (cache.length...(cache.length + n)).map { |i| Tensor.Values.Int(i) }
-    positions = try Tensor.from_list(where, [n], Tensor.Dtype.I32, backend)
+    made: Result[List[Tensor.Tensor]] = System.Profile.measure("ml.inputs") do
+      at = try Tensor.from_list(values, [n], Tensor.Dtype.I32, backend)
+      where = (cache.length...(cache.length + n)).map { |i| Tensor.Values.Int(i) }
+      ok([at, try Tensor.from_list(where, [n], Tensor.Dtype.I32, backend)])
+    end
+
+    fed = try made
+    at = fed[0]
+    positions = fed[1]
     room = capacity(cache.length + n, m.config.max_target_positions)
     got = Trace.eval_many(
       [at, positions],
@@ -297,7 +303,7 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
     outs = try got
     layers = m.decoder.size
     own = (0...layers).map { |i| Kv(key: outs[1 + i], value: outs[1 + layers + i]) }
-    logits = try floats(outs[0])
+    logits = try System.Profile.measure("ml.readback") do floats(outs[0]) end
     close([outs[0]])
     return ok(Stepped(logits: logits, cache: Cache(cross: cache.cross, own: own, length: cache.length + n)))
   end

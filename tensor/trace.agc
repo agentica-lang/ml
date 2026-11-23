@@ -113,7 +113,7 @@ end
 ## `Tensor.*` calls give eagerly.
 def eval(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor]]) -> Result[Types.Tensor]
   inputs = try inputs_for(args)
-  out = try f.call(inputs)
+  out = try System.Profile.measure("ml.trace") do f.call(inputs) end
   values = try evaluate([out], bind(inputs, args), args[0].backend)
   ok(values[0])
 end
@@ -127,7 +127,7 @@ def eval_many(
   keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
   inputs = try inputs_for(args)
-  outs = try f.call(inputs)
+  outs = try System.Profile.measure("ml.trace") do f.call(inputs) end
   evaluate(outs, bind(inputs, args), args[0].backend, keep)
 end
 
