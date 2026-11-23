@@ -23,6 +23,7 @@ en `tensor/DESIGN.md`.
 | `train/` loader: `Data` (dataset en memoria o de un safetensors, barajado con semilla por época, `drop_last`, un `gather` por batch), prefetch en un `Task` con `Channel` acotado; `fit` toma un `Data.Loader` | `train/data.agc` | (este PR) |
 | `nn/` decoder: `causal_mask`, `DecoderBlock` pre-norm como Whisper; `Load.decoder_block` en `hub/` | `nn/`, `hub/` | #26 |
 | `asr/` (Whisper vía B): forward del modelo (stem conv, encoder, decoder, logits atados) cargado con los nombres de HF y el `config.json`; `Nn.Conv1d` y `Load.conv1d`. Solo referencia: en libtorch falta `gelu_tanh_approx`; deriva de la GELU tanh frente a la erf en el modelo de test: 1.7e-4 (encoder), 3.8e-5 (logits) | `asr/`, `nn/`, `hub/` | #27 |
+| Todos los miembros en agentica 0.36.0; `agentica test --max-steps` por test en CI, sin los apaños del presupuesto de pasos; pins entre miembros al día (instalan desde fuera del workspace); checks de gradiente completos en `nn/` | `*/AGENTICA_VERSION`, `.github/workflows/ci.yml` | (este PR) |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
 | Docs: `tensor/DESIGN.md` (contrato, sin fases), `roadmap.md` (orden e hitos), `README.md`, `.gitattributes`, CI matricial | raíz | #3, #6 |

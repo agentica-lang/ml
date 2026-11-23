@@ -115,8 +115,4 @@ repository and a `subdir`: a member reads another from its folder, with no
 fetch, and the `ref` it writes is not used inside the workspace. A project
 outside the workspace fetches a member at the `ref` written, so a PR that
 changes several members leaves outside users on the old pin until a follow-up
-bumps the `ref` (or a release tag replaces it). Today that breaks `train/`
-from outside: its `ref` of `tensor/` (926da75) lacks `stop_grad`, which
-`Loss.cross_entropy` uses. `hub/` and `asr/` break the same way, since their
-`ref` of `nn/` lacks `Conv1d` and `DecoderBlock`; `tensor/` and `nn/` install
-correctly.
+bumps the `ref` (or a release tag replaces it).
