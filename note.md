@@ -1,8 +1,8 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-23. `main` en `37e9e37` (`hub/` mergeado, #23). Abierto: las
-reglas de backward (#24). Este fichero es el parte de estado: lo hecho, lo que
-quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
+Fecha: 2026-11-23. `main` en `5c02eb7` (reglas de backward mergeadas, #24).
+Abierto: el decoder de `nn/` (#26). Este fichero es el parte de estado: lo
+hecho, lo que quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 `roadmap.md`; el contrato del tensor, en `tensor/DESIGN.md`.
 
 ## 1. Hecho (mergeado en `main`)
@@ -19,6 +19,7 @@ quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 | `tensor/`: tests property-based con `prop` (órdenes de `axes`, `concat`, round trips de dtype, oráculo torch, conv/pool contra bucles) | `tensor/test/prop_*` | #17, #19 |
 | `nn/` primer PR: capas funcionales (`dense`, `layer_norm`, `embedding`, `attention`, `mlp`, `encoder_block`), init con semilla, solo forward; `dense` y `mlp` relu diferenciables vía `Trace` | `nn/` | #20 |
 | `train/` primer PR: `Loss.mse`, `Loss.binary_cross_entropy`, `Optim` (SGD, Adam) puros, `Train.fit` sobre `Trace.value_and_grad`; la raíz pasa a ser un workspace | `train/`, `agentica.toml` | #21 |
+| `tensor/`: `stop_grad` y reglas de backward de `sqrt`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `max`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `gather`; `softmax`, `layer_norm`, atención y `embedding` diferenciables; `Loss.cross_entropy` | `tensor/`, `train/` | #24 |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
 | Docs: `tensor/DESIGN.md` (contrato, sin fases), `roadmap.md` (orden e hitos), `README.md`, `.gitattributes`, CI matricial | raíz | #3, #6 |
@@ -45,14 +46,11 @@ quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 
 ## 2. En progreso (parado a propósito)
 
-- **Reglas de backward** (rama `grad-rules`, PR #24): `stop_grad` (op de
-  wrapper, sin primitiva de backend) y reglas para `sqrt`, `sigmoid`, `tanh`,
-  `gelu_tanh_approx`, `max` (empates a partes iguales), `squeeze`,
-  `unsqueeze`, `slice`, `concat`, `stack` y `gather` (one-hot `matmul`; el
-  scatter-add es ml#25). Con ellas `softmax`, `layer_norm`, `rms_norm`,
-  atención, `embedding`, `positional` y `silu`/`gelu` son diferenciables, y
-  `train/` gana `Loss.cross_entropy` (labels enteros, estable vía
-  `stop_grad`).
+- **Decoder de `nn/`** (rama `decoder`, PR #26): `Nn.causal_mask` (sesgo
+  aditivo `[t, t]` hecho con `arange`, `lt` y `where`), `DecoderBlock` y
+  `Nn.decoder_block(p, x, memory)` pre-norm como Whisper (self-attention
+  causal, cross-attention con `Nn.attention` sobre la salida del encoder,
+  MLP), y `Load.decoder_block` en `hub/` con los nombres de Whisper.
 
 Ningún subagente sigue corriendo.
 
@@ -61,9 +59,10 @@ Ningún subagente sigue corriendo.
 1. **`grad`**: faltan reglas para `pow`, `clamp`, `batch_matmul`,
    `to_dtype` entre floats, `conv1d` y `avg_pool1d`, y el scatter-add de
    `gather` (ml#25).
-2. **`nn/`**: falta decoder (máscara causal, cross-attention), conv,
-   `rms_norm`, y `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
-3. **`train/`**: mergeado (#21); softmax cross-entropy en #24. Después:
+2. **`nn/`**: decoder en #26. Siguiente: caché KV y bucle de decodificación
+   (greedy sobre `decoder_block`), luego conv, `rms_norm`, y `gelu` en
+   libtorch (`gelu_tanh_approx`, en `tensor/`).
+3. **`train/`**: mergeado (#21); softmax cross-entropy mergeado (#24). Después:
    shuffling, schedules, y aplanar structs de capas (pytrees)
    cuando un modelo lo pida.
 4. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
