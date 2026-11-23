@@ -27,6 +27,7 @@ en `tensor/DESIGN.md`.
 | `tensor/`: fuera los stubs `Backend.Xla`/`Candle` y `Device.Cuda` (sin módulo, solo devolvían `error`); `Device` queda con el brazo `Cpu` | `tensor/` | (este PR) |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
+| Spike ggml-graph: un paso de entrenamiento trazado (forward, backward, SGD/Adam) bajado a **un** grafo ggml, construido una vez, en la iGPU por Vulkan | `spike/ggml-graph/` | #30 |
 | Docs: `tensor/DESIGN.md` (contrato, sin fases), `roadmap.md` (orden e hitos), `README.md`, `.gitattributes`, CI matricial | raíz | #3, #6 |
 
 ### Medidas que importan (esta máquina: Ryzen 5 3550H, Vega iGPU RADV, AVX2+FMA, **sin AVX512**)
@@ -38,6 +39,18 @@ en `tensor/DESIGN.md`.
 - Consecuencia de diseño: **Vulkan no puede ser un backend op-por-op**;
   pide batching de grafo.
 - AVX512 no es alcanzable aquí: el techo real es AVX2.
+- **Un paso compilado a un grafo ggml sí sirve en la iGPU** (spike
+  ggml-graph, MLP 784→512→512→10, SGD). Con `mul_mat` F32 (el default):
+  4.5–4.6 / 7.2–7.3 / 18.9 / 68 ms por paso a batch 64 / 256 / 1024 / 4096.
+  Contra el mejor libtorch C++ en CPU de cada corrida (4 u 8 hilos; máquina
+  ociosa / cargada) gana **1.2–1.5× a 256, 1.5–2.2× a 1024 y 1.8–2.1× a
+  4096**, y pierde 1.4–1.6× a 64. Con fp16 (opcional): 1.5–1.9×, 2.1–2.9× y
+  2.7–3.2×, pero un tensor de gradientes sale con un 10 % de error a esas
+  formas. Ninguna op del paso falta en Vulkan. Trazar, derivar y bajar
+  cuesta 2–6 ms una vez; luego un paso es una llamada FFI.
+- `Train.fit` sobre libtorch hoy: 42–105 ms por paso (op a op, y el
+  optimizador materializa cada `full` por FFI); a batch 4096 se para: el
+  `full` de torch usa `List.repeat`, que tiene tope de 1 048 576.
 
 ### Fuera de este repo
 
@@ -67,7 +80,22 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
 5. **`hub/`**: descarga HF con `http-client` `stream()`, **nunca** `bond` (es
    solo servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
 6. **CI**: un job no requerido con libtorch pineado por sha256.
-7. Cuando cierre **#1918**: mover el backend libtorch a un paquete `torch/`.
+7. **`jit`/caché del grafo**: `fit` retraza cada paso. El spike ggml-graph
+   mide retrazar el paso de un MLP (pérdida, gradientes y optimizador) en
+   0.6–2.0 ms: basta una caché por estructura del grafo (ops, formas; no
+   valores de `full` ni de constantes), sin API `jit`.
+8. **Batching de grafo**: justificado por los 2 ms por dispatch y
+   **probado** por el spike ggml-graph (#30): el grafo que `Trace` ya graba
+   se baja entero a ggml.
+9. **Backend Vulkan/iGPU** como backend real (diseño y PRs en
+   `spike/ggml-graph/README.md`): `Device.Vulkan(Int)`, `Backend.Ggml(Device)`
+   y `Handle.Ggml` en `tensor/` como (b′) hasta #1918; `Train.fit` compila
+   pérdida, gradientes y optimizador en un grafo con caché por estructura y
+   deja parámetros y momentos en un estado de entrenamiento que `fit` posee
+   y nunca devuelve; al final devuelve tensores nuevos (sin donación).
+   `mul_mat` F32 por defecto; fp16 opcional y por proceso (1.1–1.5×, con
+   error en los gradientes).
+10. Cuando cierre **#1918**: mover el backend libtorch a un paquete `torch/`.
 
 ## 4. Deuda y issues abiertos
 
@@ -78,6 +106,10 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
 - **ml#12**: menores de `tensor/` (comentarios obsoletos, `catch` de OOM,
   dos aserciones, y el límite de CI que no compila el C++).
 - **agentica#1918**: el cambio de lenguaje.
+- `Torch.full` (`tensor/src/torch.agc`) arma los valores con `List.repeat`
+  y los sube: por encima de 1 048 576 elementos la ejecución se para
+  (`RUNTIME-INVALID-COUNT`, no un `Result`), y cada `full` del optimizador
+  cruza el FFI cada paso (spike ggml-graph).
 - `conv1d`/`avg_pool1d` no soportan dilation ni groups (declarado).
 - `gelu_tanh_approx`, `batch_matmul` y `to_device` no están en libtorch
   (declarado en el README del paquete, con razón).

@@ -11,6 +11,7 @@
 #   sh tools/build-ggml.sh vulkan       # the Vulkan build only (needs the
 #                                       # Vulkan headers, glslc and
 #                                       # SPIRV-Headers; see below)
+#   JOBS=2 sh tools/build-ggml.sh       # parallel jobs (default: every CPU)
 #
 # Each build prints the cmake command it configured, stores it in
 # `build/<name>/cmake-flags.txt`, and cmake keeps the same flags in
@@ -48,7 +49,7 @@ pkg=$(CDPATH= cd -- "$here/.." && pwd)
 root=$(CDPATH= cd -- "$pkg/../.." && pwd)
 engine="$root/third_party/ggml"
 build="$pkg/build"
-jobs=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
+jobs=${JOBS:-$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)}
 
 [ -f "$engine/CMakeLists.txt" ] || {
   echo "build-ggml.sh: no ggml at third_party/ggml (git submodule update --init)" >&2
