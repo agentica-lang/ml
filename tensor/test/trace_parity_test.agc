@@ -117,6 +117,12 @@ def all_cases() -> Result[List[Case]]
     ),
     Case(name: "gather", args: [m, ids], f: ->(x: List[Tensor.Tensor]) { Tensor.gather(x[0], x[1]) }),
     Case(name: "gather out of range", args: [m, far], f: ->(x: List[Tensor.Tensor]) { Tensor.gather(x[0], x[1]) }),
+    Case(name: "scatter_add", args: [ids, w], f: ->(x: List[Tensor.Tensor]) { Tensor.scatter_add(x[0], x[1], 3) }),
+    Case(
+      name: "scatter_add out of range",
+      args: [far, row],
+      f: ->(x: List[Tensor.Tensor]) { Tensor.scatter_add(x[0], x[1], 3) },
+    ),
     Case(name: "to_dtype", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.to_dtype(x[0], Tensor.Dtype.I32) }),
     Case(name: "to_device", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.to_device(x[0], Tensor.Device.Cpu) }),
     Case(name: "copy", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.copy(x[0]) }),

@@ -356,6 +356,96 @@ def test_joins_and_whisper_ops_match_the_reference() -> Result[Void]
   ok()
 end
 
+## The loss of an embedding lookup: the sum of squares of the rows `ids` name.
+def lookup_loss(ids: Tensor.Tensor) -> Fn[List[Tensor.Tensor], Result[Tensor.Tensor]]
+  ->(a: List[Tensor.Tensor]) {
+    rows = try Tensor.gather(a[0], Trace.constant(ids))
+    Tensor.sum(try Tensor.mul(rows, rows))
+  }
+end
+
+## The gradient of a lookup is a `scatter_add`: it sums the rows of a repeated
+## index and matches the reference.
+def lookup_parity(backend: Tensor.Backend) -> Result[Void]
+  xs = uniform(12, 5, 1.0)
+  ids = [3, 0, 3, 1, 3]
+  parity(
+    backend,
+    [try floats(xs, [4, 3], backend)],
+    [try floats(xs, [4, 3], REF)],
+    lookup_loss(try labels(ids, backend)),
+    lookup_loss(try labels(ids, REF)),
+  )
+end
+
+def test_the_gradient_of_a_lookup_matches_the_reference() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  try lookup_parity(CPU)
+  return ok() if !Tensor.available(VULKAN)
+  lookup_parity(VULKAN)
+end
+
+## `scatter_add` of rank-2 indices into a rank-2 tail, on `backend` and on the
+## reference.
+def tail_scatter(backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  ids = try Tensor.from_list([1, 0, 1, 2].map { |x| Tensor.Values.Int(x) }, [2, 2], Tensor.Dtype.I32, backend)
+  updates = try floats((0...16).to_a.map { |i| (i % 5).to_f / 4.0 - 0.25 }, [2, 2, 2, 2], backend)
+  Trace.eval([ids, updates]) do |a| Tensor.scatter_add(a[0], a[1], 3) end
+end
+
+def test_scatter_add_takes_rank_two_indices_and_a_rank_two_tail() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  got = try tail_scatter(CPU)
+  want = try tail_scatter(REF)
+  try Test.eq(Tensor.shape(got), [3, 2, 2])
+  try Test.eq(try Tensor.to_list(got), try Tensor.to_list(want))
+  ok()
+end
+
+def test_a_scatter_add_with_one_index_outside_the_rows_is_an_error() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  rows = ->(a: List[Tensor.Tensor]) { Tensor.scatter_add(a[0], a[1], 3) }
+  updates = try floats([1.0, 2.0], [1, 2], CPU)
+  try refused(Trace.eval([try labels([5], CPU), updates], rows), "scatter_add is outside the rows")
+  try gives([try labels([2], CPU), updates], rows, [0.0, 0.0, 0.0, 0.0, 1.0, 2.0])
+  ok()
+end
+
+## Every lookup of a chain of `n` makes about 14 ggml tensors, more than the
+## 8 per traced node the graph once had room for.
+def chain_of_lookups(n: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  table = try floats((0...16).to_a.map { |i| i.to_f }, [4, 4], backend)
+  ids = try labels([1, 0, 3, 2], backend)
+  Trace.eval([table, ids]) do |a|
+    acc = a[0]
+    for _ in 0...n
+      acc = try Tensor.gather(acc, a[1])
+    end
+
+    ok(acc)
+  end
+end
+
+def test_a_graph_of_many_lookups_fits_its_room() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  got = try chain_of_lookups(600, CPU)
+  Test.eq(try Tensor.to_list(got), try Tensor.to_list(try chain_of_lookups(600, REF)))
+end
+
+def test_scatter_add_sums_repeated_indices_and_refuses_one_outside_the_rows() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  rows = ->(a: List[Tensor.Tensor]) { Tensor.scatter_add(a[0], a[1], 4) }
+  updates = try floats([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [3, 2], CPU)
+  try gives([try labels([2, 0, 2], CPU), updates], rows, [3.0, 4.0, 0.0, 0.0, 6.0, 8.0, 0.0, 0.0])
+  try refused(Trace.eval([try labels([0, 4, 1], CPU), updates], rows), "outside")
+  refused(Trace.eval([try labels([0, -1, 1], CPU), updates], rows), "outside")
+end
+
 def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]
   return ok() if !try present(CPU)
 

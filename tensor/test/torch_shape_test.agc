@@ -259,6 +259,72 @@ def test_gather_with_a_rank_two_index_agrees() -> Result[Void]
   )
 end
 
+def test_scatter_add_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  updates = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+  ids = [2, 0, 2]
+  ours = try Tensor.scatter_add(try Conform.on_torch_i64(ids, [3]), try Conform.on_torch(updates, [3, 2]), 4)
+  try Test.eq(Tensor.shape(ours), [4, 2])
+  try Conform.agrees(
+    ours,
+    try Tensor.scatter_add(try Conform.on_ref_i64(ids, [3]), try Conform.on_ref(updates, [3, 2]), 4),
+    "scatter_add rows",
+  )
+
+  wide = try Tensor.scatter_add(
+    try Conform.on_torch_i64([1, 0], [2, 1]),
+    try Conform.on_torch([1.0, 2.0, 3.0, 4.0], [2, 1, 2]),
+    2,
+  )
+
+  Conform.expect_floats(wide, [3.0, 4.0, 1.0, 2.0], "scatter_add a rank-2 index")
+end
+
+def test_scatter_add_in_f16_agrees_within_the_rounding_of_each_add() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+  values = data.map { |x| Tensor.Values.Float(x) }
+  ids = [1, 0, 1, 1]
+  ours = try Tensor.scatter_add(
+    try Conform.on_torch_i64(ids, [4]),
+    try Tensor.from_list(values, [4, 2], Tensor.Dtype.F16, Conform.TORCH),
+    2,
+  )
+
+  want = try Tensor.scatter_add(
+    try Conform.on_ref_i64(ids, [4]),
+    try Tensor.from_list(values, [4, 2], Tensor.Dtype.F16, Conform.REF),
+    2,
+  )
+
+  try Test.eq(Tensor.dtype(ours), Tensor.Dtype.F16)
+  got = try Conform.floats_of(ours)
+  exact = try Conform.floats_of(want)
+  try Test.eq(got.size, exact.size)
+  for i in 0...exact.size
+    if (got[i] - exact[i]).abs > 0.002
+      return error("scatter_add F16: value #{i} is #{got[i]}, the reference says #{exact[i]}")
+    end
+  end
+
+  ok()
+end
+
+def test_scatter_add_errors_agree_on_both_backends() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  try Test.error?(
+    Tensor.scatter_add(try Conform.on_torch_i64([0, 2], [2]), try Conform.on_torch([1.0, 2.0], [2, 1]), 2),
+  )
+
+  try Test.error?(Tensor.scatter_add(try Conform.on_torch_i64([-1], [1]), try Conform.on_torch([1.0], [1, 1]), 2))
+  try Test.error?(Tensor.scatter_add(try Conform.on_torch([0.0], [1]), try Conform.on_torch([1.0], [1, 1]), 2))
+  try Test.error?(Tensor.scatter_add(try Conform.on_torch_i64([0, 1], [2]), try Conform.on_torch([1.0], [1, 1]), 2))
+  Test.error?(Tensor.scatter_add(try Conform.on_torch_i64([0], [1]), try Conform.on_torch([1.0], [1, 1]), -1))
+end
+
 def test_gather_with_an_index_out_of_range_is_an_error_on_both_backends() -> Result[Void]
   return Conform.absent() if !Conform.available()
 

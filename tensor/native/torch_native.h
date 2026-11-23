@@ -215,6 +215,11 @@ an_term torch_broadcast_to(an_env *env, struct torch_TensorHandle_state *a, torc
    `indices.dims ++ a.dims[1:]`. */
 an_term torch_gather(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *indices);
 
+/* The inverse of `gather`: the rows of the float tensor `updates`
+   (`indices.dims ++ tail`) added into `rows` zero rows of `tail`, each at
+   the row its integer index names. A repeated index sums its rows. */
+an_term torch_scatter_add(an_env *env, struct torch_TensorHandle_state *indices, struct torch_TensorHandle_state *updates, int64_t rows);
+
 /* Reverses every axis, as the reference's `transpose` does (rank 2 swaps
    rows and columns; below rank 2 nothing changes). */
 an_term torch_transpose(an_env *env, struct torch_TensorHandle_state *a);
@@ -783,6 +788,17 @@ static an_term torch_native_gather(an_env *env, int argc, const an_term *argv) {
   return torch_gather(env, a0, a1);
 }
 
+static an_term torch_native_scatter_add(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  return torch_scatter_add(env, a0, a1, a2);
+}
+
 static an_term torch_native_transpose(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
@@ -881,6 +897,7 @@ static const an_function torch_native_functions[] = {
   {"concat", "(TensorHandle, TensorHandle, Int) -> Result[TensorHandle]", torch_native_concat, AN_DIRTY},
   {"broadcast_to", "(TensorHandle, List[Int]) -> Result[TensorHandle]", torch_native_broadcast_to, AN_DIRTY},
   {"gather", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_gather, AN_DIRTY},
+  {"scatter_add", "(TensorHandle, TensorHandle, Int) -> Result[TensorHandle]", torch_native_scatter_add, AN_DIRTY},
   {"transpose", "(TensorHandle) -> Result[TensorHandle]", torch_native_transpose, AN_DIRTY},
   {"to_dtype", "(TensorHandle, Int) -> Result[TensorHandle]", torch_native_to_dtype, AN_DIRTY},
   {"copy", "(TensorHandle) -> Result[TensorHandle]", torch_native_copy, AN_DIRTY},
@@ -896,5 +913,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 41, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 42, NULL, 0, torch_native_resources, 1, LOAD)
 #endif

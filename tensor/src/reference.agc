@@ -1038,6 +1038,29 @@ def gather(source: Types.Tensor, indices: Types.Tensor) -> Result[Types.Tensor]
   ok(make(out_shape, source.dtype, out))
 end
 
+## The inverse of `gather`: `updates` (`indices.shape ++ tail`) added into
+## `rows` zero rows of `tail`, row by row in index order, so a repeated index
+## sums its rows. Every index must be in range; the answer is `[rows] ++ tail`.
+def scatter_add(indices: Types.Tensor, updates: Types.Tensor, rows: Int) -> Result[Types.Tensor]
+  tail = updates.shape.drop(indices.shape.size)
+  row = try Types.volume(tail)
+  total = try Types.volume([rows, row])
+  out: List[Float] = List.repeat(0.0, total)
+  src = try data_of(updates)
+  at = 0
+  for x in try data_of(indices)
+    i = try x.to_i
+    return error("scatter_add needs indices in [0, #{rows}), got #{i}") if i < 0 or i >= rows
+    for k in 0...row
+      out = out.set(i * row + k, out[i * row + k] + src[at * row + k])
+    end
+
+    at += 1
+  end
+
+  ok(make([rows] + tail, updates.dtype, out))
+end
+
 ## Moves `t` to `dtype`: float to float keeps the value, float to int
 ## truncates toward zero, anything to `Bool` tests nonzero, and int widths
 ## are range-checked. Int targets error on overflow and `NaN`, never

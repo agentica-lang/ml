@@ -954,6 +954,53 @@ an_term torch_gather(an_env *env, struct torch_TensorHandle_state *a, struct tor
   }
 }
 
+/* The inverse of `gather`: the rows of `updates` (`indices.dims ++ tail`)
+   added into `rows` zero rows of `tail` with `index_add_`, which sums the
+   rows of a repeated index. Every index is range-checked first, so an
+   out-of-range one is this file's error and not libtorch's. */
+an_term torch_scatter_add(an_env *env, struct torch_TensorHandle_state *indices, struct torch_TensorHandle_state *updates,
+                          int64_t rows) {
+  const torch::Tensor &where = *indices->value;
+  const torch::Tensor &values = *updates->value;
+
+  if (rows < 0) return error_text(env, "scatter_add needs a row count of 0 or more, got " + std::to_string(rows));
+  if (!is_index_type(where.scalar_type())) {
+    return error_text(env, "scatter_add needs integer indices, got " + scalar_type_name(where.scalar_type()));
+  }
+  if (!values.is_floating_point()) {
+    return error_text(env, "scatter_add needs float updates, got " + scalar_type_name(values.scalar_type()));
+  }
+  if (values.dim() < where.dim() || values.sizes().slice(0, where.dim()) != where.sizes()) {
+    return error_text(env, "scatter_add needs updates of shape " + shape_text(where) + " followed by a row, got " +
+                               shape_text(values));
+  }
+
+  try {
+    torch::Tensor flat = where.to(torch::kLong).reshape({-1});
+    if (flat.numel() > 0) {
+      int64_t lowest = flat.min().item<int64_t>();
+      int64_t highest = flat.max().item<int64_t>();
+      if (lowest < 0 || highest >= rows) {
+        int64_t worst = lowest < 0 ? lowest : highest;
+        return error_text(env, "scatter_add needs indices in [0, " + std::to_string(rows) + "), got " +
+                                   std::to_string(worst));
+      }
+    }
+
+    std::vector<int64_t> out{rows};
+    std::vector<int64_t> piled{flat.numel()};
+    for (int64_t i = where.dim(); i < values.dim(); i++) {
+      out.push_back(values.size(i));
+      piled.push_back(values.size(i));
+    }
+    torch::Tensor sum = torch::zeros(out, values.options());
+    sum.index_add_(0, flat, values.reshape(piled));
+    return ok_tensor(env, sum);
+  } catch (...) {
+    return failed(env, "scatter_add");
+  }
+}
+
 an_term torch_transpose(an_env *env, struct torch_TensorHandle_state *a) {
   const torch::Tensor &t = *a->value;
   std::vector<int64_t> dims;

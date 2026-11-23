@@ -726,6 +726,30 @@ def gather(source: Types.Tensor, indices: Types.Tensor) -> Result[Types.Tensor]
   end
 end
 
+## The inverse of `gather`: `updates` of shape `indices.shape ++ tail` added
+## into `rows` zero rows of shape `tail`, each at the row its index names. A
+## repeated index sums its rows; an index outside `[0, rows)` is an error.
+## The answer is `[rows] ++ tail`.
+def scatter_add(indices: Types.Tensor, updates: Types.Tensor, rows: Int) -> Result[Types.Tensor]
+  _ = try same_backend(indices, updates, "scatter_add")
+  return error("scatter_add needs a row count of 0 or more, got #{rows}") if rows < 0
+  if !Types.is_int_dtype(indices.dtype)
+    return error("scatter_add needs integer indices, got #{Types.dtype_name(indices.dtype)}")
+  end
+
+  _ = try float_only(updates, "scatter_add")
+  if updates.shape.take(indices.shape.size) != indices.shape
+    return error("scatter_add needs updates of shape #{indices.shape} followed by a row, got #{updates.shape}")
+  end
+
+  case updates.backend
+    Types.Backend.Reference -> Reference.scatter_add(indices, updates, rows)
+    Types.Backend.Torch(device) -> Torch.scatter_add(device, indices, updates, rows)
+    Types.Backend.Trace -> ok(Graph.scatter_add(indices, updates, rows))
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("scatter_add")
+  end
+end
+
 ## Moves `t` to `dtype` (float to int truncates, anything nonzero is `true`).
 def to_dtype(t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
   case t.backend

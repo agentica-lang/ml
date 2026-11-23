@@ -14,7 +14,7 @@ Works today.
 
 | Piece | What is in |
 |---|---|
-| `tensor/` | the API, 45 backend primitives and the derived ops over them, the pure Agentica reference backend (the oracle), the libtorch CPU backend (43 of the 45), the ggml backend on CPU and Vulkan (a traced graph compiles to one ggml graph, with a structural cache), tracing, `value_and_grad` and backward rules for most ops, property tests |
+| `tensor/` | the API, 46 backend primitives and the derived ops over them, the pure Agentica reference backend (the oracle), the libtorch CPU backend (44 of the 46), the ggml backend on CPU and Vulkan (a traced graph compiles to one ggml graph, with a structural cache), tracing, `value_and_grad` and backward rules for most ops, property tests |
 | `nn/` | dense, layer norm, embeddings, convolution, attention, MLP, encoder and decoder blocks, seeded initializers, `gelu_tanh_approx` on libtorch |
 | `train/` | `mse`, binary and softmax cross-entropy, SGD, Adam, `Train.fit`, a data loader (seeded shuffle, background prefetch) |
 | `hub/` | safetensors (one file or sharded), `nn` layers loaded by name, float weights read by the backend from the file (`Tensor.from_file`, [PR #67](https://github.com/agentica-lang/ml/pull/67)) |
@@ -40,7 +40,7 @@ Works, but not yet fast.
 - [ml#46](https://github.com/agentica-lang/ml/issues/46): training metrics: a
   logger with JSONL and TensorBoard sinks.
 - Backward rules for `pow`, `clamp`, `batch_matmul`, float `to_dtype`,
-  `conv1d`, `avg_pool1d`, and a scatter-add for `gather` (ml#25).
+  `conv1d` and `avg_pool1d`.
 - `train/`: learning-rate schedules.
 - `hub/`: downloading checkpoints from Hugging Face.
 - CI: a non-required job that builds libtorch and runs the comparison with the

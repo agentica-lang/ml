@@ -71,8 +71,7 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
 ## 3. Siguientes pasos
 
 1. **`grad`**: faltan reglas para `pow`, `clamp`, `batch_matmul`,
-   `to_dtype` entre floats, `conv1d` y `avg_pool1d`, y el scatter-add de
-   `gather` (ml#25).
+   `to_dtype` entre floats, `conv1d` y `avg_pool1d`.
 2. **`nn/`**: caché KV (con ella, un `mask` opcional en `decoder_block`), y
    `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
 3. **`asr/`**: frontend log-mel, tokenizer y decodificación; después, comparar

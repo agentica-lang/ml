@@ -74,13 +74,14 @@ enum {
   OP_GELU_ERF,
   OP_CONCAT, /* ints: the axis, then 1 for a stack (each arg gains that axis) */
   OP_CONV1D, /* ints: stride, padding */
+  OP_SCATTER_ADD, /* ints: the rows */
   OP_COUNT
 };
 
 static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
-  "slice", "gather", "gelu_erf", "concat", "conv1d",
+  "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -101,7 +102,7 @@ struct gnode {
   int zero; /* a fill of 0.0, possibly broadcast or reshaped */
   int arg;  /* a transpose's argument, for matmul's layout */
   int rank; /* of the recorded shape */
-  struct ggml_tensor *guard; /* a gather's count of indices out of range */
+  struct ggml_tensor *guard; /* a gather's or scatter_add's count of indices out of range */
 };
 
 #define MAX_OUTPUTS 256
@@ -228,9 +229,10 @@ static struct ggml_context *new_context(size_t bytes) {
 }
 
 /* Room for the graph: a traced node lowers to a handful of ggml tensors at
-   most (a matmul's transpose and cont, a reduction's reshapes); `node` and
+   most (a matmul's transpose and cont, a reduction's reshapes; a `gather` or
+   `scatter_add` is the largest, about 14 with its index guard); `node` and
    `compile` check the room is there. */
-static size_t graph_size(int64_t capacity) { return (size_t)(capacity * 8 + 8 * MAX_OUTPUTS + 64); }
+static size_t graph_size(int64_t capacity) { return (size_t)(capacity * 16 + 8 * MAX_OUTPUTS + 64); }
 
 /* True when the graph's context has room for `tensors` more tensor headers
    and, before `compile`, for the graph itself. */
@@ -241,8 +243,8 @@ static bool room(struct entry *p, size_t tensors) {
 }
 
 /* The most nodes a graph takes. Its metadata is allocated up front, about
-   8 tensor headers (3 KB) per node, so this bounds one graph at about
-   200 MB of metadata; a traced MLP step is about a hundred nodes. */
+   16 tensor headers (6 KB) per node, so this bounds one graph at about
+   400 MB of metadata; a traced MLP step is about a hundred nodes. */
 #define MAX_NODES 65536
 
 /* A free cache slot, unlinking the least recently used graph nobody holds
@@ -424,16 +426,13 @@ static struct ggml_tensor *slice(struct entry *p, const struct gnode *x, const i
   return ggml_cont(p->ctx, ggml_view_4d(p->ctx, t, ne[0], ne[1], ne[2], ne[3], t->nb[1], t->nb[2], t->nb[3], offset));
 }
 
-/* The rows of `source` (its first row-major axis) that `indices` name, as
-   ggml_get_rows over a [width, rows] view. ggml reads out of bounds (or
-   aborts) on a bad index, so the indices are clamped to the rows first and
-   `guard` counts the ones that were outside: `run` refuses its result unless
-   that count is 0. The indices are F32 here, exact below 2^24, so `node`
-   refuses a source with more rows. */
-static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, int rank, const struct gnode *indices,
-                                  struct ggml_tensor **guard) {
-  int64_t rows = source->ne[rank - 1];
-  struct ggml_tensor *table = ggml_reshape_2d(p->ctx, dense(p, source), volume(source->ne) / rows, rows);
+/* The indices as I32 row ids of a table of `rows` rows. ggml reads out of
+   bounds (or aborts) on a bad index, so the indices are clamped to the rows
+   first and `guard` counts the ones that were outside: `run` refuses its
+   result unless that count is 0. The indices are F32 here, exact below 2^24,
+   so `node` refuses a table with more rows. */
+static struct ggml_tensor *row_ids(struct entry *p, const struct gnode *indices, int64_t rows,
+                                   struct ggml_tensor **guard) {
   struct ggml_tensor *at = ggml_reshape_1d(p->ctx, dense(p, indices), volume(indices->ne));
   float top = (float)(rows - 1);
   /* ggml_clamp works in place: clamp a copy */
@@ -443,7 +442,30 @@ static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, i
   struct ggml_tensor *above = ggml_step(p->ctx, ggml_scale_bias(p->ctx, at, 1.0f, -top - 0.5f));
 
   *guard = ggml_sum(p->ctx, ggml_add(p->ctx, below, above));
-  return ggml_get_rows(p->ctx, table, ggml_cast(p->ctx, clamped, GGML_TYPE_I32));
+  return ggml_cast(p->ctx, clamped, GGML_TYPE_I32);
+}
+
+/* The rows of `source` (its first row-major axis) that `indices` name, as
+   ggml_get_rows over a [width, rows] view. */
+static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, int rank, const struct gnode *indices,
+                                  struct ggml_tensor **guard) {
+  int64_t rows = source->ne[rank - 1];
+  struct ggml_tensor *table = ggml_reshape_2d(p->ctx, dense(p, source), volume(source->ne) / rows, rows);
+
+  return ggml_get_rows(p->ctx, table, row_ids(p, indices, rows, guard));
+}
+
+/* The inverse of `gather`: the rows of `updates` ([width, k] once flat)
+   added into `rows` zero rows, at the row each of the k indices names, as
+   ggml_get_rows_back. The reference tensor only gives the answer its shape;
+   it is not part of the graph. */
+static struct ggml_tensor *scatter_add(struct entry *p, const struct gnode *indices, const struct gnode *updates,
+                                       int64_t rows, struct ggml_tensor **guard) {
+  int64_t k = volume(indices->ne);
+  struct ggml_tensor *flat = ggml_reshape_2d(p->ctx, dense(p, updates), volume(updates->ne) / k, k);
+  struct ggml_tensor *shape = ggml_new_tensor_2d(p->ctx, GGML_TYPE_F32, flat->ne[0], rows);
+
+  return ggml_get_rows_back(p->ctx, flat, row_ids(p, indices, rows, guard), shape);
 }
 
 /* Whether the args, of the output's rank (one less for a stack), match `ne`
@@ -552,7 +574,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if (nargs > 1) b = &p->nodes[args[1]];
   if (nargs > 2) c = &p->nodes[args[2]];
   if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT || op == OP_GATHER ||
-      op == OP_CONV1D) {
+      op == OP_SCATTER_ADD || op == OP_CONV1D) {
     if (nargs != 2) return tg_error(env, "a binary op takes 2 args");
   } else if (op == OP_WHERE) {
     if (nargs != 3) return tg_error(env, "where takes 3 args");
@@ -703,7 +725,23 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       if (a->ne[a->rank - 1] > 16777216) {
         return tg_error(env, "gather from more than 2^24 rows is not lowered to ggml: F32 row ids are exact below that");
       }
+      if (volume(n->ne) != volume(b->ne) * (volume(a->ne) / a->ne[a->rank - 1])) {
+        return tg_error(env, "gather: the recorded shape is not the indices' shape followed by the source's rows");
+      }
       t = reshape(p, gather(p, a, (int)ints[0], b, &n->guard), n->ne);
+      break;
+    case OP_SCATTER_ADD:
+      if (n->rank < 1 || nints != 1 || ints[0] < 1 || ints[0] != n->ne[n->rank - 1]) {
+        return tg_error(env, "scatter_add takes the rows of its answer");
+      }
+      if (ints[0] > 16777216) {
+        return tg_error(env, "scatter_add into more than 2^24 rows is not lowered to ggml: F32 row ids are exact below that");
+      }
+      if (b->rank < a->rank || volume(b->ne) % volume(a->ne) != 0 ||
+          volume(b->ne) / volume(a->ne) * ints[0] != volume(n->ne)) {
+        return tg_error(env, "scatter_add takes updates that hold a row for each index, and answers the rows of them");
+      }
+      t = reshape(p, scatter_add(p, a, b, ints[0], &n->guard), n->ne);
       break;
     case OP_GELU_ERF: t = ggml_gelu_erf(p->ctx, dense(p, a)); break;
     case OP_CONCAT:
@@ -949,7 +987,7 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   struct device_state *d;
   float *values, *checks;
   double v;
-  int64_t i = 0;
+  int64_t i = 0, j;
   int next;
   const char *why = NULL;
   char text[160];
@@ -998,8 +1036,11 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   if (why == NULL) {
     ggml_backend_tensor_get(p->checks, checks, 0, (size_t)(p->output_count + p->guard_count) * sizeof(float));
   }
-  for (i = p->output_count; why == NULL && i < p->output_count + p->guard_count; i++) {
-    if (checks[i] != 0.0f) why = "an index of gather is outside the rows of its source";
+  for (i = 0, j = p->output_count; why == NULL && i < p->count; i++) {
+    if (p->nodes[i].guard != NULL && checks[j++] != 0.0f) {
+      snprintf(text, sizeof text, "an index of %s is outside the rows of its table", op_names[p->nodes[i].op]);
+      why = text;
+    }
   }
   for (i = 0; why == NULL && i < p->output_count; i++) {
     if (!isfinite(checks[i])) {
