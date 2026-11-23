@@ -71,6 +71,28 @@ Reading it:
 - On Vulkan, the encoder gains 2.5 times over the CPU, but the decoder loses: a graph costs about 2 ms to dispatch (`note.md`), and a step has many small ones.
 - libtorch runs the encoder op by op: 3.2 s, and 117.7 M VM steps.
 
+### Where a decoder step goes
+
+`asr/tools/bench_step.agc` runs the prompt and the 23 tokens of jfk through `Asr.step` over and over (the audio goes through the encoder once), and `benchmarks/step_profile.py` subtracts a run with no steps from one with steps. The sections are `System.Profile.measure` labels in `Trace.eval_many`, `Lower.evaluate` and `Asr.step` (they cost one block call when the profile is off). Whisper-tiny, jfk, the mean of 96 steps after a warm-up pass, ml `b59c68c`, Agentica 0.37.0. The milliseconds come from `Time.monotonic_ns` timers around the same sections in a run without the profile; the VM steps are exact.
+
+| Part of a step | what it is | VM steps | ggml CPU, ms | ggml Vulkan, ms |
+|---|---|---|---|---|
+| tracing | `traced(m)` and `stepped_graph`: about 1,400 nodes recorded | 0.19 M | 2.1 | 3.2 |
+| cache key and lowering | `Lower.plan`: walk, sort, one string per node, joined | 0.23 M | 7.0 | 10.7 |
+| lease lookup | `acquire` by the key string | 0 | 0.1 | 0.1 |
+| input upload | the id and the position, 8 bytes in 2 calls | 0 | 0.1 | 0.6 |
+| binding | 147 leaves (weights, caches), read in place, no copy | 0.003 M | 0.8 | 2.2 |
+| native execution | `run`: allocator, compute, finiteness checks, copy-out | 0 | 40.7 | 80.4 |
+| read-back | the 51,865 logits (207 KB) as a `List[Float]`, then each as a `Tensor.Values.Float`, then as a `Float` | 1.04 M | 19.6 | 30.9 |
+| sum of the parts | | 1.47 M | 70.4 | 128.2 |
+| wall time of a step | | | 77.6 | 129.7 |
+
+What this says:
+
+- **The read-back is the largest VM cost, not the tracing.** 1.04 M of the 1.47 M steps, and 20 to 31 ms, are the logits crossing as a list and being converted twice. The planning (key and lowering) is the second, then the tracing; together the VM work that an unchanged graph repeats (tracing, planning, read-back) is 29 ms on the CPU and 45 ms on Vulkan, the rest being native.
+- **Nothing big is uploaded.** The step feeds 8 bytes. The weights and both caches are bound where they are (`bind` makes no copy for an F32 tensor). Each step makes 9 fresh output tensors: the logits (207 KB) and 8 self-attention caches of `capacity x 384` floats (up to 393 KB in all at capacity 32), allocated and written by the graph. Only the logits come back to the host.
+- **The device part is what remains**: 41 ms on the CPU (28 ms of ggml compute by a timer in `ggml_run`, the rest the allocator, the finiteness check and the call) and 80 ms on Vulkan, for a graph of 1,377 ggml nodes. That is 58 us a node on Vulkan, so the node count is the lever there (whisper.cpp's decoder step is 7 and 11 ms).
+
 ## Whisper-medium, ours only
 
 whisper-medium (the Hugging Face `openai/whisper-medium` checkpoint, 3.06 GB of F32, `model.safetensors` sha256 `62f73550fa6db24b0c6f6c5962bd0dae80fa644e93cde9cd9c3792971b47fd28`) could not load before ml#63. Same machine and clips, under a 6 GB memory cap, the median of 2 timed runs after the warm-up. No whisper.cpp row: only the tiny model was converted.
