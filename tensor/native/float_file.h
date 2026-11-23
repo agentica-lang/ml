@@ -185,7 +185,7 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
 
   /* the chunk, or all of a smaller range */
   n = count < (int64_t)(FF_CHUNK / 2) ? (size_t)count : FF_CHUNK / 2;
-  raw = (uint8_t *)malloc(n * 2);
+  raw = (uint8_t *)calloc(n, 2); /* zeroed: the analyzers cannot see that ff_pread fills it */
   if (raw == NULL) {
     close(fd);
     snprintf(why, why_len, "out of memory");
