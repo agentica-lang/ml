@@ -112,7 +112,8 @@ def test_the_torch_side_of_the_shape_laws_is_compared_or_absent() -> Result[Void
 end
 
 ## `from_list` then `to_list` gives the values back, as the dtype, in a rank-1
-## tensor, whatever the backend.
+## tensor, whatever the backend. Subnormals, `-0.0`, NaN and infinity are not
+## covered: `Prop.eq` compares JSON, which cannot encode them.
 def round_trips(dtype: Tensor.Dtype, values: Prop.Gen[Tensor.Values]) -> Result[Void]
   for backend in Support.backends()
     encode = ->(xs: List[Tensor.Values]) { Tensor.from_list(xs, [xs.size], dtype, backend) }
@@ -147,7 +148,7 @@ end
 
 ## Values a dtype can hold, in `low` ..= `high`, and the ones next to its limits.
 def ints(low: Int, high: Int) -> Prop.Gen[Tensor.Values]
-  limits = [low, low + 1, -1, 0, 1, high - 1, high].select do |n: Int| n >= low and n <= high end
+  limits = [0, 1, -1, low, low + 1, high - 1, high].select do |n: Int| n >= low and n <= high end
   as_values = ->(n: Int) { Tensor.Values.Int(n) }
   mixed(Prop.map(Prop.one_of(limits), as_values), Prop.map(Prop.int(low, high), as_values))
 end

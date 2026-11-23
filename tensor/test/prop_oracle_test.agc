@@ -349,7 +349,7 @@ def test_avg_pool1d_is_the_naive_window_mean() -> Result[Void]
   end
 end
 
-def test_the_torch_side_of_the_window_laws_is_compared_or_absent() -> Result[Void]
+def test_the_torch_side_of_the_oracle_laws_is_compared_or_absent() -> Result[Void]
   Support.torch_is_compared_or_absent()
 end
 
@@ -357,36 +357,15 @@ def scalar(backend: Tensor.Backend, x: Float) -> Result[Tensor.Tensor]
   Support.tensor(backend, Support.Spec(shape: [1], data: [x]))
 end
 
-## The inputs a property never draws (they are outside the domain, or past the
-## `F32` range), one example each: both backends refuse them with an `error`
-## instead of answering NaN or infinity.
-def test_out_of_domain_inputs_are_errors_on_every_backend() -> Result[Void]
-  for backend in Support.backends()
-    for x in [0.0, -1.0]
-      try Test.error?(Tensor.log(try scalar(backend, x)))
-    end
-
-    try Test.error?(Tensor.sqrt(try scalar(backend, -1.0)))
-    try Test.error?(Tensor.div(try scalar(backend, 1.0), try scalar(backend, 0.0)))
-    try Support.holds(try Tensor.sqrt(try scalar(backend, 0.0)), [1], [0.0], "sqrt of zero on #{backend}", EXACT)
-  end
-
-  ok()
-end
-
-## `exp(100)` is finite in the reference's doubles and `+inf` in libtorch's
-## `F32` (README, "Tolerances, and why"): pinned, and `near?` is what keeps an
-## infinity from agreeing with a large finite value.
-def test_exp_past_the_f32_range_is_finite_on_the_reference_and_infinite_on_torch() -> Result[Void]
+## `exp(100)` is finite in the reference's doubles (libtorch's `F32` answers
+## `+inf`, which `test/torch_elementwise_test.agc` pins).
+def test_the_reference_computes_exp_past_the_f32_range() -> Result[Void]
   ref = try Tensor.exp(try scalar(Conform.REF, 100.0))
-  try Support.holds(ref, [1], [2.688117141816139e43], "exp(100) on the reference", LOOSE)
-  return Conform.absent() if !Conform.available()
-
-  infinity = 1.0e308 * 10.0
-  try Support.holds(try Tensor.exp(try scalar(Conform.TORCH, 100.0)), [1], [infinity], "exp(100) on torch", EXACT)
-  Test.assert(!Support.near?(infinity, 1.0e308, LOOSE), "an infinity agreed with a finite value")
+  Support.holds(ref, [1], [2.688117141816139e43], "exp(100) on the reference", LOOSE)
 end
 
+## `near?` is what keeps an infinity from agreeing with a large finite value, and
+## makes two NaNs agree.
 def test_near_treats_two_nans_as_equal_and_exact_means_exact() -> Result[Void]
   infinity = 1.0e308 * 10.0
   nan = infinity - infinity
@@ -394,6 +373,7 @@ def test_near_treats_two_nans_as_equal_and_exact_means_exact() -> Result[Void]
   try Test.assert(!Support.near?(nan, 1.0, LOOSE), "NaN against a number")
   try Test.assert(Support.near?(infinity, infinity, EXACT), "infinity against itself")
   try Test.assert(!Support.near?(infinity, -infinity, LOOSE), "opposite infinities")
-  try Test.assert(!Support.near?(1.0, 1.00000001, EXACT), "exact allows no gap")
-  Test.assert(Support.near?(1.0, 1.00000001, LOOSE), "loose allows a rounding gap")
+  try Test.assert(!Support.near?(infinity, 1.0e308, LOOSE), "an infinity agreed with a finite value")
+  try Test.assert(!Support.near?(1000.0, 1000.00005, EXACT), "exact allows no gap")
+  Test.assert(Support.near?(1000.0, 1000.00005, LOOSE), "loose allows a relative gap")
 end

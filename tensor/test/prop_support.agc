@@ -90,8 +90,8 @@ def torch_is_compared_or_absent() -> Result[Void]
   Test.eq(backends(), [Conform.REF, Conform.TORCH])
 end
 
-## `t` has `shape` and holds `want`, each value `near?` it. A plain `error` (never `Test.eq`), so `Prop.check` can
-## shrink the input that caused it.
+## `t` has `shape` and holds `want`, each value `near?` it. A plain `error` (never
+## `Test.eq`), so `Prop.check` can shrink the input that caused it.
 def holds(
   t: Tensor.Tensor,
   shape: List[Int],

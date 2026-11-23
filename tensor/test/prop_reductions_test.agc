@@ -5,8 +5,9 @@
 ## call (`../README.md`, "Reduction `axes` are a set"). That bug lived in the
 ## order, so the check is exhaustive: two rank-3 shapes ([2, 1, 3] has three
 ## different axis sizes, [2, 3, 2] repeats one), every ordered subset of their
-## axes (and `none`), and three value patterns, on every available backend, for `sum`, `mean`, `max` and `argmax`
-## with and without `keep_dims`. The naive reduction below is the oracle.
+## axes (and `none`), and three value patterns, on every available backend, for
+## `sum`, `mean`, `max` and `argmax` with and without `keep_dims`. The naive
+## reduction below is the oracle.
 
 import Prop from "pkg/prop/prop"
 import Support from "prop_support"
@@ -25,9 +26,9 @@ struct Reduced
   values: List[Float]
 end
 
-# One op on one shape per test because a test file's step budget is 1M steps x
-# (tests + 1) and the reference is slow. Merge them into one test per shape
-# when agentica#1917 makes the step budget configurable.
+## One op on one shape per test because a test file's step budget is 1M steps x
+## (tests + 1) and the reference is slow. Merge them into one test per shape
+## when agentica#1917 makes the step budget configurable.
 def test_sum_over_every_ordering_of_the_axes_of_a_2_1_3_tensor() -> Result[Void] = exhaust("sum", [2, 1, 3])
 
 def test_mean_over_every_ordering_of_the_axes_of_a_2_1_3_tensor() -> Result[Void] = exhaust("mean", [2, 1, 3])
