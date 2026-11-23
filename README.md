@@ -4,7 +4,9 @@ Machine learning for Agentica: tensors, training and inference over adaptable
 backends (libtorch, XLA, candle). The API is functional, in the style of JAX and
 Nx: values are immutable, and a training step returns new parameters.
 
-Status: in progress. `whisper/` is the first package; the tensor stack is
+Status: in progress. `whisper/` is the first package; `tensor/` (reference
+and libtorch backends, tracing and gradients) and the first layers of `nn/`
+([`nn/DESIGN.md`](nn/DESIGN.md)) are in. The tensor stack is
 designed in [`tensor/DESIGN.md`](tensor/DESIGN.md), with execution order in
 [`roadmap.md`](roadmap.md) and the open decisions in
 [issue #1](https://github.com/agentica-lang/ml/issues/1).
@@ -20,7 +22,7 @@ Versions are prefixed tags, such as `tensor-0.1.0`.
 | `tensor/` | the tensor API, the backend interface, a slow reference backend in Agentica, and the libtorch (eager) backend behind a thin C++ layer | nothing native for the reference backend; libtorch 2.4.1+cpu, **optional**, for `Backend.Torch` |
 | `xla/` | XLA backend (JIT, like JAX), through the PJRT C API | `tensor`, a PJRT plugin |
 | `candle/` | candle backend (eager), through a thin C layer over Rust | `tensor`, candle |
-| `nn/` | layers and models, forward only: what inference needs | `tensor` |
+| `nn/` | functional layers, forward only: dense, layer norm, embeddings, attention, MLP, a transformer encoder block, seeded initializers | `tensor` |
 | `train/` | gradients (computed in Agentica over the graph), losses, optimizers, the training loop | `nn` |
 | `hub/` | `safetensors` weights and Hugging Face models (later) | `nn` |
 
