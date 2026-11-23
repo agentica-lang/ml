@@ -3,12 +3,13 @@
 ## (`tensor/DESIGN.md` §2, §7, §8). It lives inside `tensor/` for the reason
 ## `src/torch.agc` does: `Handle.Ggml` names the resource of `ggml_native.agc`.
 ##
-## It creates tensors, uploads them and reads them back; it runs no op.
-## ggml is fast when a whole step is one compiled graph (a Vulkan dispatch
-## costs about 2 ms, spike/ggml-graph/README.md), so its ops will run there,
-## from a traced graph (`Trace`). Until that compiler exists every other
-## primitive answers `compiled_only(op)`: an error naming the op, never a
-## wrong number and never a slow op-by-op path (§7).
+## It creates tensors, uploads them, reads them back and copies them between
+## devices (`to_device`). ggml is fast when a whole computation is one
+## compiled graph (a Vulkan dispatch costs about 2 ms,
+## spike/ggml-graph/README.md), so ops run only there, from a traced graph
+## (`Trace`, `src/lower.agc`). Eagerly, every other primitive answers
+## `compiled_only(op)`: an error naming the op, never a wrong number and
+## never a slow op-by-op path (§7).
 ##
 ## Storage: ggml holds `F32` and `I32`. `Bool`, `I8`, `I16` and `U8` are held
 ## as `F32`, which represents each of their values exactly; `F16`, `F64` and
@@ -32,8 +33,8 @@ end
 ## The answer of every primitive the ggml backend has no eager form of.
 def compiled_only(op: String) -> Result[Types.Tensor]
   error(
-    "#{op} does not run eagerly on the ggml backend: ggml computes whole traced graphs (Trace), " +
-    "which tensor/ does not compile yet (tensor/DESIGN.md §7)",
+    "#{op} does not run eagerly on the ggml backend: ggml computes whole traced graphs " +
+    "(Trace.eval, Trace.value_and_grad; tensor/DESIGN.md §7)",
   )
 end
 
@@ -89,6 +90,47 @@ def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   ok(out)
 end
 
+## `t` copied to `device`: between ggml's CPU and a Vulkan device, or between
+## two Vulkan devices.
+def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
+  code = try code_of(device, "to_device")
+  h = try handle_of(t)
+  made("to_device", device, t.shape, t.dtype) do GgmlRaw.transfer(h, code) end
+end
+
+## Chooses fp16 `mul_mat` (`true`) or F32 (`false`, the default) for every
+## Vulkan device this process opens; an error once a ggml call fixed the
+## other one.
+def vulkan_fp16(enabled: Bool) -> Result[Void]
+  _ = try usable("vulkan_fp16")
+  GgmlRaw.vulkan_fp16(enabled)
+end
+
+## The device's code for the native calls: `-1` for `Cpu`, the index for
+## `Vulkan`; the module must be loaded.
+def code_of(device: Types.Device, op: String) -> Result[Int]
+  _ = try usable(op)
+  case device
+    Types.Device.Cpu -> ok(-1)
+    Types.Device.Vulkan(i) ->
+      return error("#{op}: a Vulkan device index is >= 0, got #{i}") if i < 0
+      ok(i)
+  end
+end
+
+## The ggml handle of `t`.
+def handle_of(t: Types.Tensor) -> Result[GgmlRaw.TensorHandle]
+  case t.handle
+    Types.Handle.Ggml(h) -> ok(h)
+    _ -> error("a #{Types.backend_name(t.backend)} tensor has no ggml handle")
+  end
+end
+
+## The `Tensor` a fresh handle makes.
+def tensor_of(device: Types.Device, shape: List[Int], dtype: Types.Dtype, h: GgmlRaw.TensorHandle) -> Types.Tensor
+  Types.Tensor(shape: shape, dtype: dtype, backend: Types.Backend.Ggml(device), handle: Types.Handle.Ggml(h))
+end
+
 private
 
 def upload(
@@ -126,12 +168,7 @@ def ready(device: Types.Device, shape: List[Int], dtype: Types.Dtype, op: String
   _ = try usable(op)
   _ = try storable(dtype, op)
   return error("#{op}: the ggml backend holds tensors of rank 4 at most, got #{shape}") if shape.size > 4
-  case device
-    Types.Device.Cpu -> ok(-1)
-    Types.Device.Vulkan(i) ->
-      return error("#{op}: a Vulkan device index is >= 0, got #{i}") if i < 0
-      ok(i)
-  end
+  code_of(device, op)
 end
 
 def storable(dtype: Types.Dtype, op: String) -> Result[Bool]
@@ -155,15 +192,4 @@ def usable(op: String) -> Result[Bool]
     "`eval \"$(sh tools/build-engine.sh | grep '^export ')\"` in the shell that runs agentica " +
     "(tensor/README.md, \"The ggml backend\")",
   )
-end
-
-def handle_of(t: Types.Tensor) -> Result[GgmlRaw.TensorHandle]
-  case t.handle
-    Types.Handle.Ggml(h) -> ok(h)
-    _ -> error("a #{Types.backend_name(t.backend)} tensor has no ggml handle")
-  end
-end
-
-def tensor_of(device: Types.Device, shape: List[Int], dtype: Types.Dtype, h: GgmlRaw.TensorHandle) -> Types.Tensor
-  Types.Tensor(shape: shape, dtype: dtype, backend: Types.Backend.Ggml(device), handle: Types.Handle.Ggml(h))
 end
