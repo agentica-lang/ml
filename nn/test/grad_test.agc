@@ -52,57 +52,43 @@ end
 
 def test_the_gradient_through_a_gelu_encoder_block_matches_a_central_difference() -> Result[Void]
   args = [try filler([1, 2, 4], 0), try filler([4], 1)]
-  fixed: List[Tensor.Tensor] = []
-  for k in 2...9
-    fixed = fixed.push(try filler([4, 4], k))
+  for k in 2...8
+    args = args.push(try filler([4, 4], k))
   end
 
-  check(args, ->(ps: List[Tensor.Tensor]) { block_loss(ps, fixed.map { |t| Trace.constant(t) }) })
+  args = args.push(try filler([4], 9))
+  args = args.push(try filler([4], 10))
+  check(args, ->(ps: List[Tensor.Tensor]) { block_loss(ps) })
 end
 
-## The input of a decoder block, then its encoder output (keys and values of
-## the cross-attention), each in a test of its own: every value costs two more
-## passes, and each test adds to the file's step budget. The block's `F32`
-## weights enter as `F64` constants.
-def test_the_gradient_of_a_decoder_block_input_matches_a_central_difference() -> Result[Void]
-  memory = Trace.constant(try filler([1, 3, 2], 9))
+## The input of a decoder block and its encoder output (keys and values of the
+## cross-attention), differentiated together. The block's `F32` weights enter
+## as `F64` constants.
+def test_the_gradient_of_a_decoder_block_matches_a_central_difference() -> Result[Void]
   block = try lift_block(try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF))
   check(
-    [try filler([1, 2, 2], 10)],
-    ->(ps: List[Tensor.Tensor]) { squared(try Nn.decoder_block(block, ps[0], memory)) },
+    [try filler([1, 2, 2], 10), try filler([1, 3, 2], 9)],
+    ->(ps: List[Tensor.Tensor]) { squared(try Nn.decoder_block(block, ps[0], ps[1])) },
   )
 end
 
-def test_the_gradient_of_a_decoder_block_memory_matches_a_central_difference() -> Result[Void]
-  x = Trace.constant(try filler([1, 1, 2], 10))
-  block = try lift_block(try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF))
-  check([try filler([1, 2, 2], 9)], ->(ps: List[Tensor.Tensor]) { squared(try Nn.decoder_block(block, x, ps[0])) })
-end
-
 ## `sum(encoder_block(x)^2)` with a gelu `mlp` and bias-free weights, for
-## `ps = [x, norm1 gamma]`: the gradient of `x` crosses every layer of the
-## block. `fixed` holds the query, key, value and output weights, the `mlp`
-## weights, and a beta and the norm2 gamma (rows 0 and 1).
-def block_loss(ps: List[Tensor.Tensor], fixed: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
-  beta = try Tensor.reshape(try Tensor.slice(fixed[6], [0, 0], [1, 4]), [4])
-  gamma2 = try Tensor.reshape(try Tensor.slice(fixed[6], [1, 0], [2, 4]), [4])
+## `ps = [x, norm1 gamma, query, key, value, output, up, down, beta, norm2
+## gamma]`: every parameter of the block is differentiated.
+def block_loss(ps: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
   attention = Nn.Attention(
-    query: Nn.Dense(w: fixed[0], b: none),
-    key: Nn.Dense(w: fixed[1], b: none),
-    value: Nn.Dense(w: fixed[2], b: none),
-    output: Nn.Dense(w: fixed[3], b: none),
+    query: Nn.Dense(w: ps[2], b: none),
+    key: Nn.Dense(w: ps[3], b: none),
+    value: Nn.Dense(w: ps[4], b: none),
+    output: Nn.Dense(w: ps[5], b: none),
     heads: 2,
   )
 
   block = Nn.EncoderBlock(
-    norm1: Nn.LayerNorm(gamma: ps[1], beta: beta, eps: 0.00001),
+    norm1: Nn.LayerNorm(gamma: ps[1], beta: ps[8], eps: 0.00001),
     attention: attention,
-    norm2: Nn.LayerNorm(gamma: gamma2, beta: beta, eps: 0.00001),
-    mlp: Nn.Mlp(
-      up: Nn.Dense(w: fixed[4], b: none),
-      down: Nn.Dense(w: fixed[5], b: none),
-      activation: Nn.Activation.Gelu,
-    ),
+    norm2: Nn.LayerNorm(gamma: ps[9], beta: ps[8], eps: 0.00001),
+    mlp: Nn.Mlp(up: Nn.Dense(w: ps[6], b: none), down: Nn.Dense(w: ps[7], b: none), activation: Nn.Activation.Gelu),
   )
 
   squared(try Nn.encoder_block(block, ps[0]))

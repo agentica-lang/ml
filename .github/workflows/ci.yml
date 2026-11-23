@@ -151,7 +151,9 @@ jobs:
           done
 
       - name: Test
-        run: agentica test
+        # A test gets 10M steps (the default is 1M): the gradient checks of
+        # nn/ and the reference backend's exhaustive properties cost more.
+        run: agentica test --max-steps 10000000
 
       # A package with tools/fetch-model.sh validates against the pinned
       # models it downloads (weights never enter git); the script checks every

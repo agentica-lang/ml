@@ -15,9 +15,8 @@ import Train from "../train"
 ## The XOR run: a 2-8-1 relu MLP from `nn/`, made from seed 1, trained by
 ## Adam (`lr` 0.2) on the four XOR rows for 20 full-batch epochs with binary
 ## cross-entropy. `HISTORY` is its loss per epoch on the reference: the golden
-## the reference reproduces and libtorch follows. Twenty epochs is what this
-## file's step budget allows with the libtorch run beside it (an epoch costs
-## about 75,000 VM steps on the reference, 45,000 on libtorch).
+## the reference reproduces and libtorch follows. An epoch costs about 75,000
+## VM steps on the reference, 45,000 on libtorch.
 EPOCHS = 20
 HISTORY = [
   0.668955092647425,

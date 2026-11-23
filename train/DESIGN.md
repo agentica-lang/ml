@@ -97,9 +97,8 @@ Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Resu
 `fit` traces the loss again on every step (`tensor/DESIGN.md` §10.1). On the
 reference backend an epoch of the XOR test (a 2-8-1 relu MLP, four rows)
 costs about 75,000 VM steps, most of it the evaluation of the forward and
-gradient graphs; a test file's step budget (1M steps per test, plus 1M) has to
-hold the reference run and the libtorch run, so the test trains for 20. On
-libtorch an epoch costs about 45,000.
+gradient graphs, so the test trains for 20 epochs. On libtorch an epoch costs
+about 45,000.
 
 Prefetch hides the cost of building a batch, not more. Measured once with a
 throwaway benchmark (libtorch, 16384 rows of 32, batches of 2048, about 3 ms
