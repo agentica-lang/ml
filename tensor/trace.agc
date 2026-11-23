@@ -9,6 +9,7 @@
 ## `grad`, `eval` and `eval_many` are the entry points; a tensor from outside
 ## enters a trace through `constant`.
 
+import GgmlRaw from "src/ggml_native"
 import Graph from "src/graph"
 import Lower from "src/lower"
 import Tensor from "tensor"
@@ -41,6 +42,8 @@ struct Compiled
   outs: List[Types.Tensor]
   backend: Types.Backend
   program: Optional[Lower.Program]
+  ## On ggml, the pin that keeps the graph in the cache (`close`).
+  pin: Optional[GgmlRaw.Pin]
 end
 
 ## A tensor from outside the function as a node of the trace: data, labels,
@@ -153,21 +156,23 @@ end
 def spec_of(t: Types.Tensor) -> Spec = Spec(shape: t.shape, dtype: t.dtype, backend: t.backend)
 
 ## Traces `f` once over inputs of `specs` and lowers it, so that `run` neither
-## traces nor plans. On `Ggml` the function is one ggml graph, kept in the
-## structural cache of the process (32 graphs, least recently used out): a
-## run whose graph the cache dropped, or that another run holds, sends the
-## nodes again to build it, though it still does not trace or plan. On the
-## other backends it is the traced graph, evaluated node by node on every run.
+## traces nor plans. On `Ggml` the function is one ggml graph, built now and
+## pinned in the structural cache of the process (32 graphs): the cache never
+## evicts it while the result lives, so `run` always finds it, and sends the
+## nodes again only when another run holds it at that moment. The pin belongs
+## to the task that compiles, like any native resource: it ends with that
+## task or at `close`, and the graph then stays in the cache as any other. On
+## the other backends the result is the traced graph, evaluated node by node
+## on every run.
 ##
 ## What `f` reads from outside the inputs enters through `constant`, and is
-## fixed: the same tensors, bound again on every run. They must stay open
-## while any task may run the result (a closed one is an `error` naming the
-## leaf, but nothing keeps one open between the bind and the run), so a
-## `Compiled` shared by tasks must not outlive the owner of its constants.
-## Whatever changes between runs (the weights of a training step, a KV cache)
-## must be an input. `f` may build any graph, a gradient (`gradients`) and an
-## update of the parameters included, and answers every tensor `run` gives
-## back.
+## fixed: the same tensors, bound again on every run. A run holds their memory
+## from the bind to its end, so a constant that its owner closes meanwhile is
+## still there for that run; a run that starts after the close is an `error`
+## naming the leaf. Whatever changes between runs (the weights of a training
+## step, a KV cache) must be an input. `f` may build any graph, a gradient
+## (`gradients`) and an update of the parameters included, and answers every
+## tensor `run` gives back.
 def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]]) -> Result[Compiled]
   return error("a compiled function needs at least one input") if specs.empty?
   backend = specs[0].backend
@@ -182,8 +187,9 @@ def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tenso
     Types.Backend.Ggml(device) ->
       # The program is all `run` needs: it keeps no trace.
       p = try Lower.program(outs, inputs, device)
-      ok(Compiled(specs: specs, inputs: [], outs: [], backend: backend, program: some(p)))
-    _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none))
+      held = try Lower.pin(p)
+      ok(Compiled(specs: specs, inputs: [], outs: [], backend: backend, program: some(p), pin: some(held)))
+    _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none, pin: none))
   end
 end
 
@@ -192,11 +198,32 @@ end
 ## the semantics of `eval_many`. Any number of tasks may run one compiled
 ## function; on `Ggml` a graph in use by one run is built again for another
 ## (the nodes are sent again, nothing is traced or planned).
-def run(compiled: Compiled, args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
+##
+## `into` (ggml only) gives, for the outputs it names, the tensor to write
+## there instead of a new one: one entry per output, `none` for a new tensor.
+## Such a tensor has the shape, dtype and backend of its output, is not an
+## input of the run, and is returned as it is. The run overwrites it, so
+## whoever else reads it must be done.
+def run(
+  compiled: Compiled,
+  args: List[Types.Tensor],
+  into: List[Optional[Types.Tensor]] = [],
+) -> Result[List[Types.Tensor]]
   try matches(compiled.specs, args)
   case compiled.program
-    some(p) -> Lower.execute(p, args)
-    none -> evaluate(compiled.outs, bind(compiled.inputs, args), compiled.backend)
+    some(p) -> Lower.execute(p, args, "run", into)
+    none ->
+      return error("run: into needs a compiled ggml function") if !into.empty?
+      evaluate(compiled.outs, bind(compiled.inputs, args), compiled.backend)
+  end
+end
+
+## Ends the pin of `compiled` (its graph stays in the cache, evictable). The
+## `Compiled` still runs: a run builds the graph again if the cache lost it.
+def close(compiled: Compiled) -> Void
+  case compiled.pin
+    some(p) -> Native.close(p)
+    none -> nil
   end
 end
 

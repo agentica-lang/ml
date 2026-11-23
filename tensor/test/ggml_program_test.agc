@@ -95,8 +95,8 @@ def test_a_compiled_function_traces_and_compiles_once() -> Result[Void]
   return ok() if !try present()
 
   first = try pair(CPU, 1, 6)
-  compiled = try Trace.compile(specs_of(first), counted("once"))
   before = try Lower.compiles()
+  compiled = try Trace.compile(specs_of(first), counted("once"))
   for seed in [1, 5, 9, 13]
     got = try Trace.run(compiled, try pair(CPU, seed, 6))
     want = try Trace.eval_many(try pair(REF, seed, 6), counted("reference"))
@@ -266,4 +266,59 @@ def test_a_closed_constant_is_an_error() -> Result[Void]
   end
 
   refused(Trace.run(compiled, [x]), "closed")
+end
+
+## `x` times a `[k, 1]` ramp: a graph of its own for each `k`, to fill the cache of 32 graphs.
+def ramp(k: Int) -> Result[Void]
+  x = try floats(uniform(k, k), [1, k], CPU)
+  _ = try Trace.eval_many(
+    [x],
+    ->(a: List[Tensor.Tensor]) {
+      w = Trace.constant(try floats(uniform(k, 1), [k, 1], CPU))
+      ok([try Tensor.matmul(a[0], w)])
+    },
+  )
+
+  ok()
+end
+
+## 40 graphs of other shapes take 40 slots of a cache of 32: a pinned graph stays, an unpinned one is evicted and
+## compiled again.
+def test_a_pinned_graph_is_never_evicted() -> Result[Void]
+  return ok() if !try present()
+
+  pinned = try Trace.compile(specs_of(try pair(CPU, 1, 9)), counted("pinned"))
+  loose = try Trace.compile(specs_of(try pair(CPU, 1, 10)), counted("loose"))
+  Trace.close(loose)
+  for k in 100...140
+    try ramp(k)
+  end
+
+  before = try Lower.compiles()
+  _ = try Trace.run(pinned, try pair(CPU, 2, 9))
+  try Test.eq(try Lower.compiles(), before)
+  _ = try Trace.run(loose, try pair(CPU, 2, 10))
+  try Test.eq(try Lower.compiles(), before + 1)
+  Trace.close(pinned)
+  ok()
+end
+
+## Outputs written into tensors that exist: the same tensors come back with the values a fresh run gives, a step
+## after the other, with two sets taking turns.
+def test_outputs_are_written_into_the_tensors_given() -> Result[Void]
+  return ok() if !try present()
+
+  args = try pair(CPU, 3, 8)
+  compiled = try Trace.compile(specs_of(args), counted("into"))
+  _ = try Trace.run(compiled, args)
+  spare = [some(try Tensor.zeros([3, 5], Tensor.Dtype.F32, CPU))]
+  for seed in [4, 5, 6]
+    more = try pair(CPU, seed, 8)
+    want = try Trace.run(compiled, more)
+    got = try Trace.run(compiled, more, spare)
+    try Test.assert(try gap(got[0], want[0]) < TOL, "run #{seed} into a tensor differs from a fresh run")
+    try Test.assert(try gap(got[0], spare[0].unwrap!) == 0.0, "the tensor given is not the output")
+  end
+
+  refused(Trace.run(compiled, args, [some(args[0])]), "output 0")
 end

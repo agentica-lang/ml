@@ -11,12 +11,35 @@
 
 #include <pthread.h>
 
+/* A queued `fn(arg)`, embedded in what it frees so queuing needs no memory. */
+struct deferred {
+  void (*fn)(void *);
+  void *arg;
+  struct deferred *next;
+};
+
+/* The memory of one tensor, shared by the handle that made it and by every graph that is bound to it: it is freed
+   (under the device lock, deferred) when the last of them lets go, so a handle that is closed while a run holds it
+   leaves the run its data. */
+struct tg_storage {
+  int refs; /* atomic */
+  struct ggml_context *ctx;
+  ggml_backend_buffer_t buffer;
+  struct deferred link;
+};
+
 struct ggml_TensorHandle_state {
   struct ggml_context *ctx;
   struct ggml_tensor *t;
   ggml_backend_buffer_t buffer;
   bool vulkan;
+  struct tg_storage *store; /* owns ctx and buffer; NULL for a handle that was never made */
 };
+
+/* One more holder of `s`. */
+CC_SHORT void tg_storage_retain(struct tg_storage *s);
+/* One holder less: the last one queues the free of the memory. Never waits (a free hook calls it). */
+CC_SHORT void tg_storage_release(struct tg_storage *s);
 
 /* The device lock: the device table, the registry, every graph build and
    run and every Vulkan buffer operation. Taking it first does the frees that
@@ -25,13 +48,6 @@ struct ggml_TensorHandle_state {
 CC_LOCK_LEVEL(1) extern pthread_mutex_t tg_device_lock;
 CC_ACQUIRES(tg_device_lock) void tg_lock_device(void);
 CC_RELEASES(tg_device_lock) void tg_unlock_device(void);
-
-/* A queued `fn(arg)`, embedded in what it frees so queuing needs no memory. */
-struct deferred {
-  void (*fn)(void *);
-  void *arg;
-  struct deferred *next;
-};
 
 /* Runs `d->fn(d->arg)` under the device lock, the next time anyone takes it. */
 void tg_defer(struct deferred *d);
@@ -60,5 +76,12 @@ struct ggml_Lease_state {
 };
 
 void ggml_Lease_free(void *state);
+
+/* A pin on a graph of the cache (`ggml_pin`). */
+struct ggml_Pin_state {
+  struct entry *e;
+};
+
+void ggml_Pin_free(void *state);
 
 #endif
