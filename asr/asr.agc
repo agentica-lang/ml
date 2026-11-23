@@ -60,7 +60,8 @@ struct Model
   logits: Nn.Dense
 end
 
-## One attention's keys and values, `[1, keys, d_model]` each.
+## One attention's keys and values, `[1, keys, d_model]` each: `keys` is the
+## tokens so far, or on `Ggml` the cache's padded capacity.
 struct Kv
   key: Tensor.Tensor
   value: Tensor.Tensor

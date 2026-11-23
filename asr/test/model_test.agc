@@ -164,6 +164,21 @@ def test_on_ggml_the_steps_and_transcribe_match() -> Result[Void]
   end
 end
 
+## On ggml the padded cache grows on purpose: 10 single ids take it from 8 to
+## 16 rows, and a 9-id prompt on a model of 12 positions takes it from none to
+## 12 rows (16, clamped) and then to its last position. Every step gives the
+## reference's logits.
+def test_on_ggml_the_padded_cache_grows_and_clamps() -> Result[Void]
+  with_fixtures do |dir|
+    for backend in try ggml_backends()
+      try steps_match(dir, "speech", (0...10).map { |i| (i * 7) % 36 }, 1, backend)
+      try steps_match(dir, "twelve", (0...12).map { |i| (i * 5) % 36 }, 9, backend)
+    end
+
+    ok()
+  end
+end
+
 ## The random `speech/` model says nothing sensible, but whatever it says
 ## keeps OpenAI's rules: its config suppresses 1 and 2, the first token is a
 ## timestamp (32 is `<|0.00|>`), the timestamps never decrease, and at most 13
@@ -297,6 +312,32 @@ def ggml_backends() -> Result[List[Tensor.Backend]]
 
   return ok([GGML, VULKAN]) if Tensor.available(VULKAN)
   ok([GGML])
+end
+
+## The logits of `ids` fed to the `model` fixture on `backend`, first `prompt`
+## of them at once and then one at a time, against the reference's.
+def steps_match(dir: String, model: String, ids: List[Int], prompt: Int, backend: Tensor.Backend) -> Result[Void]
+  mel = try rows(try JSON.get(try JSON.parse(try File.read_text("#{dir}/expected.json")), "mel"))
+  ref = try Asr.open("#{dir}/#{model}/model.safetensors", REF)
+  got = try Asr.open("#{dir}/#{model}/model.safetensors", backend)
+  want = try Asr.listen(ref, try Asr.encode(ref, try f32(mel, [1, 3, 6])))
+  have = try Asr.listen(got, try Asr.encode(got, try f32(mel, [1, 3, 6], backend)))
+  at = 0
+  while at < ids.size
+    n = 1
+    if at == 0
+      n = prompt
+    end
+
+    a = try Asr.step(ref, want, ids.drop(at).take(n))
+    b = try Asr.step(got, have, ids.drop(at).take(n))
+    try expect_close(b.logits, a.logits, F32, F32, "#{model}, the step at #{at}")
+    want = a.cache
+    have = b.cache
+    at += n
+  end
+
+  ok()
 end
 
 def ints(json: JSON.Value) -> Result[List[Int]]

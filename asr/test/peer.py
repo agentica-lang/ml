@@ -175,6 +175,8 @@ SPEECH = dict(CONFIG, vocab_size=36, max_target_positions=16, suppress_tokens=[1
 # special ids from `<|endoftext|>` at 50256 on, and no suppressed ids in its
 # config, so `transcribe` takes the defaults.
 ENGLISH = dict(CONFIG, vocab_size=51864, max_target_positions=16)
+# A limit that is not a power of two, for the padded cache on ggml.
+TWELVE = dict(SPEECH, max_target_positions=12)
 ENGLISH_SPECIALS = ["<|endoftext|>", "<|startoftranscript|>", "<|translate|>", "<|transcribe|>",
                     "<|startoflm|>", "<|startofprev|>", "<|nocaptions|>", "<|notimestamps|>"]
 
@@ -227,7 +229,8 @@ def write(out):
     expected["short"] = {"encoder": m.encode(short, gelu_erf)}
     for folder, model, config, skip in [("tiny", m, CONFIG, ()), ("missing", m, CONFIG, (MISSING,)),
                                         ("tanh", m, dict(CONFIG, activation_function="gelu_new"), ()),
-                                        ("speech", whisper(SPEECH), SPEECH, ())]:
+                                        ("speech", whisper(SPEECH), SPEECH, ()),
+                                        ("twelve", whisper(TWELVE), TWELVE, ())]:
         (out / folder).mkdir()
         model.save(out / folder / "model.safetensors", skip)
         (out / folder / "config.json").write_text(json.dumps(config))
