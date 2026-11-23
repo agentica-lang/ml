@@ -24,10 +24,12 @@ MODEL_PATH = "models/ggml-tiny.bin"
 ## byte. The binding trims the text of each segment, so the leading space the
 ## tokenizer puts in front of a segment does not appear here: the word
 ## sequence and its punctuation are what this pins. The exact match holds
-## because decoding is fully deterministic here: WHISPER_SAMPLING_GREEDY takes
-## the argmax at every step (no temperature sampling, no beam search) over
-## fixed weights and fixed 16 kHz PCM, so the same engine pin always yields
-## these bytes; a whisper.cpp upgrade that retokens or rewords needs a new pin.
+## because decoding is deterministic here: WHISPER_SAMPLING_GREEDY takes the
+## argmax at every step (no beam search) over fixed weights and fixed 16 kHz
+## PCM. The temperature fallback (`temperature_inc` is 0.2) can still retry a
+## segment, but whisper.cpp v1.9.5 re-seeds every decoder, so a retry gives the
+## same bytes too. The same engine pin always yields these bytes; a whisper.cpp
+## upgrade that retokens or rewords needs a new pin.
 EXPECTED = "And so my fellow Americans ask not what your country can do for you, ask what you can do for your country."
 
 def main() -> Void

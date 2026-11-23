@@ -204,11 +204,19 @@ From this folder (order matters: installing already compiles the native
 module, so the engine exports come first):
 
 ```sh
-sh tools/build-engine.sh
+git submodule update --init ../third_party/whisper.cpp   # a fresh clone only
 eval "$(sh tools/build-engine.sh | grep '^export ')"
 agentica install
 sh tools/fetch-model.sh
 ```
+
+After the submodule moves to another commit, rebuild the engine and make
+`agentica` link the module again: the native cache key covers the text of
+`native/whisper.c` and the paths in `C_INCLUDE_PATH`/`LIBRARY_PATH`, not the
+engine's contents (and a `touch` changes none of them), so `agentica install`
+keeps the stale `libwhisper.so`. Remove its folder from
+`~/.cache/agentica/pkg/native-build/` (the `built native whisper:` line names
+it) and run `agentica install` again.
 
 For the GPU, `sh tools/build-engine.sh vulkan` builds a second tree with
 ggml's Vulkan backend (it needs the Vulkan headers and loader, `glslc` and
@@ -320,7 +328,8 @@ one of them:
 ## Bounds and errors
 
 One `transcribe_with` call takes 1–4 800 000 samples (five minutes at 16 kHz);
-more, none, or a non-finite sample is an error, never a halt, and so is a
+more, none, a non-finite sample, or a finite one past the range of a `float`
+(about 3.4e38) is an error, never a halt, and so is a
 language code past 32 bytes, a `beam_size` outside 0–8, a `max_len` outside
 0–100 000, an unknown language code, or more than a megabyte of text (the
 segments' text, plus the tokens' for `transcribe_detailed`). `load_model`

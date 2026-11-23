@@ -161,7 +161,7 @@ jobs:
           for h in "${headers[@]}"; do
             name=${h#native/}
             name=${name%_native.h}
-            src=$(git grep -l "extern module \"$name\"" -- '*.agc' | head -n 1 || true)
+            src=$(git grep -l -F "extern module \"$name\"" -- '*.agc' | head -n 1 || true)
             [ -n "$src" ] || {
               echo "no tracked .agc declares extern module \"$name\"" >&2
               exit 1
@@ -196,8 +196,9 @@ jobs:
       # A package with tools/fetch-model.sh validates against the pinned
       # models it downloads (weights never enter git); the script checks every
       # sha256 and fetches all of them when given no names. This runs after
-      # `agentica test`, so the offline suite proves it needs no model and no
-      # network. A package without the script skips this step.
+      # `agentica test`, so the offline suite proves it needs no model (the
+      # tests use no network either; the steps before it do clone). A package
+      # without the script skips this step.
       - name: Download the pinned test models
         shell: bash
         run: |
@@ -222,8 +223,9 @@ jobs:
             echo "no live/: nothing to run"
             exit 0
           fi
-          agentica test live/
           shopt -s nullglob
+          checks=(live/*_test.agc live/*.feature)
+          [ "${#checks[@]}" -eq 0 ] || agentica test live/
           programs=(live/transcribe_*.agc)
           [ "${#programs[@]}" -gt 0 ] || echo "no live/transcribe_*.agc: program checks skipped"
           for program in "${programs[@]}"; do
