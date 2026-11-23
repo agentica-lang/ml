@@ -37,22 +37,11 @@ def compiled_only(op: String) -> Result[Types.Tensor]
   )
 end
 
-## Chooses fp16 `mul_mat` (`true`) or F32 (`false`, the default) for every
-## Vulkan device this process opens; an error once a device opened with the
-## other one.
-def prefer_fp16(enabled: Bool) -> Result[Void]
-  _ = try usable("vulkan_fp16")
-  GgmlRaw.prefer_fp16(enabled)
-end
-
 ## Creation: every element `x`, a storage float already checked for `dtype`.
 def filled(device: Types.Device, shape: List[Int], dtype: Types.Dtype, x: Float, op: String) -> Result[Types.Tensor]
   code = try ready(device, shape, dtype, op)
   int32 = dtype == Types.Dtype.I32
-  Native.arena do
-    h = try GgmlRaw.filled(code, shape, x, int32)
-    ok(tensor_of(device, shape, dtype, h))
-  end
+  made(op, device, shape, dtype) do GgmlRaw.filled(code, shape, x, int32) end
 end
 
 ## Creation: every element `value` (tagged for `dtype`).
@@ -62,6 +51,7 @@ end
 
 ## Creation: `start, start + step, ...` below `stop` (above for `step < 0`).
 def arange(device: Types.Device, start: Int, stop: Int, step: Int, dtype: Types.Dtype) -> Result[Types.Tensor]
+  _ = try ready(device, [], dtype, "arange")
   values: List[Float] = []
   v = start
   while (step > 0 and v < stop) or (step < 0 and v > stop)
@@ -110,9 +100,23 @@ def upload(
 ) -> Result[Types.Tensor]
   code = try ready(device, shape, dtype, op)
   int32 = dtype == Types.Dtype.I32
+  made(op, device, shape, dtype) do GgmlRaw.upload(code, shape, values, int32) end
+end
+
+## One native creation inside the arena of this call: the tensor leaves it as
+## the block's value, and a native error names the op.
+def made(
+  op: String,
+  device: Types.Device,
+  shape: List[Int],
+  dtype: Types.Dtype,
+  call: Fn[Result[GgmlRaw.TensorHandle]],
+) -> Result[Types.Tensor]
   Native.arena do
-    h = try GgmlRaw.upload(code, shape, values, int32)
-    ok(tensor_of(device, shape, dtype, h))
+    case call.call()
+      ok(h) -> ok(tensor_of(device, shape, dtype, h))
+      error(e) -> error("#{op}: #{e.message}")
+    end
   end
 end
 

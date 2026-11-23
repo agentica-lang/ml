@@ -82,8 +82,6 @@ typedef struct {
 bool ggml_list_Float_open(an_env *env, an_term t, ggml_list_Float *out);
 int ggml_list_Float_next(an_env *env, ggml_list_Float *list, double *out);
 
-an_term ggml_result_Void_ok(an_env *env, an_term value);
-
 an_term ggml_result_TensorHandle_ok(an_env *env, an_term value);
 
 typedef struct {
@@ -95,16 +93,10 @@ an_term ggml_list_Float_end(an_env *env, ggml_list_Float_builder *b);
 
 an_term ggml_result_list_Float_ok(an_env *env, an_term value);
 
-/* How many Vulkan devices this build of ggml sees: 0 when ggml was built
-   without its Vulkan backend (`tools/build-engine.sh cpu`). It opens no
-   device, so the fp16 choice stays open. */
+/* How many Vulkan devices this build of ggml sees, not counting a CPU
+   device (a software rasterizer): 0 when ggml was built without its Vulkan
+   backend (`tools/build-engine.sh cpu`). It opens no device. */
 an_term ggml_vulkan_devices(an_env *env);
-
-/* Chooses fp16 (`true`) or F32 (`false`) `mul_mat` for every Vulkan device
-   this process opens. ggml reads it once, when the first Vulkan device opens,
-   so a choice that differs from the one in force after that is an error.
-   The default, without a call, is F32. */
-an_term ggml_prefer_fp16(an_env *env, bool enabled);
 
 /* A tensor of the row-major `shape` (rank 4 at most) on `device`, holding
    `data`, one value per element. */
@@ -289,10 +281,6 @@ int ggml_list_Float_next(an_env *env, ggml_list_Float *list, double *out) {
   return ng_fail_cursor_item(env, &fail, "List[Float]", list->argument, at, NULL);
 }
 
-an_term ggml_result_Void_ok(an_env *env, an_term value) {
-  return an_ok(env, value);
-}
-
 an_term ggml_result_TensorHandle_ok(an_env *env, an_term value) {
   return an_ok(env, value);
 }
@@ -313,13 +301,6 @@ static an_term ggml_native_vulkan_devices(an_env *env, int argc, const an_term *
   (void)argc;
   (void)argv;
   return ggml_vulkan_devices(env);
-}
-
-static an_term ggml_native_prefer_fp16(an_env *env, int argc, const an_term *argv) {
-  (void)argc;
-  bool a0;
-  if (!an_get_bool(env, argv[0], &a0)) return an_badarg(env, 0);
-  return ggml_prefer_fp16(env, a0);
 }
 
 static an_term ggml_native_upload(an_env *env, int argc, const an_term *argv) {
@@ -365,7 +346,6 @@ static an_term ggml_native_readback(an_env *env, int argc, const an_term *argv) 
 
 static const an_function ggml_native_functions[] = {
   {"vulkan_devices", "() -> Int", ggml_native_vulkan_devices, AN_DIRTY},
-  {"prefer_fp16", "(Bool) -> Result[Void]", ggml_native_prefer_fp16, AN_DIRTY},
   {"upload", "(Int, List[Int], List[Float], Bool) -> Result[TensorHandle]", ggml_native_upload, AN_DIRTY},
   {"filled", "(Int, List[Int], Float, Bool) -> Result[TensorHandle]", ggml_native_filled, AN_DIRTY},
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
@@ -377,5 +357,5 @@ static const an_function ggml_native_functions[] = {
   static const an_resource_type ggml_native_resources[] = { \
     {"TensorHandle", sizeof(struct ggml_TensorHandle_state), GGML_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 5, NULL, 0, ggml_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 4, NULL, 0, ggml_native_resources, 1, LOAD)
 #endif

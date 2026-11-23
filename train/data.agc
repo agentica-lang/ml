@@ -241,6 +241,7 @@ end
 def closed?(t: Tensor.Tensor) -> Bool
   case t.handle
     Tensor.Handle.Native(h) -> Native.closed?(h)
+    Tensor.Handle.Ggml(h) -> Native.closed?(h)
     _ -> false
   end
 end
@@ -248,6 +249,7 @@ end
 def free(t: Tensor.Tensor) -> Void
   case t.handle
     Tensor.Handle.Native(h) -> Native.close(h)
+    Tensor.Handle.Ggml(h) -> Native.close(h)
     _ -> nil
   end
 end

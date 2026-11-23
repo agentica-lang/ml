@@ -26,15 +26,10 @@ extern module "ggml"
   ## ggml context holding the tensor's metadata and the buffer holding its
   ## data, both freed by the free hook. Nothing else points at them.
   resource TensorHandle
-  ## How many Vulkan devices this build of ggml sees: 0 when ggml was built
-  ## without its Vulkan backend (`tools/build-engine.sh cpu`). It opens no
-  ## device, so the fp16 choice stays open.
+  ## How many Vulkan devices this build of ggml sees, not counting a CPU
+  ## device (a software rasterizer): 0 when ggml was built without its Vulkan
+  ## backend (`tools/build-engine.sh cpu`). It opens no device.
   compute def vulkan_devices() -> Int
-  ## Chooses fp16 (`true`) or F32 (`false`) `mul_mat` for every Vulkan device
-  ## this process opens. ggml reads it once, when the first Vulkan device opens,
-  ## so a choice that differs from the one in force after that is an error.
-  ## The default, without a call, is F32.
-  compute def prefer_fp16(enabled: Bool) -> Result[Void]
   ## A tensor of the row-major `shape` (rank 4 at most) on `device`, holding
   ## `data`, one value per element.
   compute def upload(device: Int, shape: List[Int], data: List[Float], int32: Bool) -> Result[TensorHandle]

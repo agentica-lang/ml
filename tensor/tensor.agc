@@ -113,12 +113,6 @@ def available(backend: Types.Backend) -> Bool
   end
 end
 
-## Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
-## Vulkan device of the ggml backend in this process. ggml fixes the choice
-## when the first Vulkan tensor is made, so a different choice after that is
-## an error; fp16 is faster and less accurate (`tensor/DESIGN.md` §7).
-def vulkan_fp16(enabled: Bool) -> Result[Void] = Ggml.prefer_fp16(enabled)
-
 ## Creation: zeros of `shape`, `dtype` and `backend`.
 def zeros(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]
   _ = try Types.volume(shape)

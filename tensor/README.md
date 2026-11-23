@@ -175,13 +175,14 @@ here and never vendored:
 
 ```sh
 git -C .. submodule update --init third_party/ggml
-eval "$(sh tools/build-engine.sh | grep '^export ')"          # CPU only, ~30 s cold
+eval "$(sh tools/build-engine.sh | grep '^export ')"          # CPU only, about a minute cold
 eval "$(JOBS=2 sh tools/build-engine.sh vulkan | grep '^export ')"   # CPU + Vulkan
 eval "$(sh tools/build-torch.sh)"   # optional, after it: both modules then build with g++
 agentica test --max-steps 10000000
 ```
 
-The Vulkan build needs the Vulkan headers and loader, `glslc` and
+The script runs on Linux x86_64 only (a GNU ld linker script, AVX2 flags) and
+fails early elsewhere. The Vulkan build needs the Vulkan headers and loader, `glslc` and
 `SPIRV-Headers` (`libvulkan-dev`, `glslc`, `spirv-headers`, or a Vulkan SDK in
 `$VULKAN_SDK` or `$HOME/.local/vulkan-sdk/usr`); the script lists what is
 missing. The exports are `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` (g++ ignores
@@ -190,6 +191,9 @@ script writes `libtensor_ggml.a`: a linker script naming ggml's archives, plus
 `ggml-vulkan` and the Vulkan loader for the Vulkan tree. `agentica.toml` links
 that one name, so one build table serves both trees, and `native/ggml.c` finds
 Vulkan through ggml's backend registry at run time, so it has no `#ifdef`.
+The package cache keys a module on those paths, not on the libraries in them:
+after a bump of the ggml pin, run the script again and remove the cached build
+(`rm -rf ~/.cache/agentica/pkg/native-build`) so the module links the new ggml.
 
 What it does today: `zeros`, `ones`, `empty`, `full`, `like`, `arange`,
 `scalar_to_tensor`, `from_list` and `to_list`, plus `stop_grad` (the
@@ -198,16 +202,15 @@ ggml is fast only when a whole step is one compiled graph, and that compiler is
 the next step (`DESIGN.md` §7). ggml holds `F32` and `I32`; `Bool`, `I8`, `I16`
 and `U8` are held as `F32`, which is exact for them; `F16`, `F64` and `I64` are
 refused, and so is a rank above 4. A fill is made in C, so it has no
-`List.repeat` cap.
-
-`mul_mat` on Vulkan is F32 by default. `Tensor.vulkan_fp16(true)`, called
-before the first Vulkan tensor of the process, picks fp16 (faster, with a
-gradient error, `spike/ggml-graph/README.md`); ggml reads the choice when it
-opens the device, so a different choice later is an error.
+`List.repeat` cap. Vulkan buffer operations (allocate, write, read, free) run
+under one lock, so tasks can share a device. `Device.Vulkan(i)` counts only
+devices that are not a CPU (a software rasterizer is skipped).
 
 `test/ggml_test.agc` round-trips every creation call against the reference on
-the CPU backend and on Vulkan device 0. Without the module, or without a
-Vulkan device, it asserts the absent state instead.
+the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan
+device. Without the module, or without a Vulkan device, it asserts the absent
+state instead. With `TENSOR_REQUIRE_GGML` set (CI sets it for this package) a
+missing module fails the checks instead of passing them.
 
 ## CI
 
@@ -227,7 +230,8 @@ Vulkan device, it asserts the absent state instead.
   `$HOME/opt/libtorch`.
 - CI **does** build ggml's CPU backend (`tools/build-engine.sh`, the
   workflow's engine step), so `native/ggml.c` compiles and the ggml CPU
-  checks run there. Vulkan runs locally only: no hosted runner has a device.
+  checks run there; `TENSOR_REQUIRE_GGML=1` makes a module that did not build
+  fail them. Vulkan runs locally only: no hosted runner has a device.
 
 ## Tolerances, and why
 

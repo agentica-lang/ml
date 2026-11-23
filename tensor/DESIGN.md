@@ -155,12 +155,6 @@ Tensor.backend(t) -> Backend                      # no native call
 - Backend-module functions take the device as an explicit first argument
   (`Torch.matmul(device, a, b)`): dispatch unpacks it from the backend value
   (§7) and the tensor keeps no second copy of it.
-- One exception is process-wide, because ggml makes it so:
-  `Tensor.vulkan_fp16(enabled)` picks fp16 or F32 (the default) `mul_mat` for
-  every Vulkan device of the process. ggml reads it (`GGML_VK_DISABLE_F16`)
-  once, when the first Vulkan device opens, and has no per-op switch, so the
-  module sets the variable under a lock at that first open, and a later call
-  that asks for the other precision is an `error`.
 
 ## 5. Requirements the API must satisfy (consumer checklist)
 
@@ -297,8 +291,9 @@ Usage for tensors:
   opens its own arena, and the resource owns one ggml context and one backend
   buffer, freed together by its free hook. The device itself is opened once
   per process and never closed: a buffer only needs its device's buffer type,
-  which lives as long as the process, so closing a tensor never waits on
-  another one. A compiled step (later) will own its graph and the train state
+  which lives as long as the process. Every Vulkan buffer operation
+  (allocate, write, read, free, the free hook included) runs under one lock in
+  the C layer, so tasks on one device never overlap a transfer. A compiled step (later) will own its graph and the train state
   in a resource of its own, which `fit` creates and closes; the tensors it
   returns are fresh `Handle.Ggml` values (no donation).
 - `compute def` kernels only push data or return a resource; the loop lives

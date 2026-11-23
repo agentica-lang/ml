@@ -42,6 +42,15 @@ case "$action" in
     ;;
 esac
 
+# The linker script below is GNU ld's, and the flags pin x86-64 AVX2.
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64) ;;
+  *)
+    echo "build-engine.sh: Linux x86_64 only, got $(uname -s)/$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/../.." && pwd)
 engine="$root/third_party/ggml"
