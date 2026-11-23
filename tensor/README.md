@@ -87,6 +87,8 @@ shape/dtype, plus its error paths.
 
 Plus the two host-crossing functions §4 names, `from_list` and `to_list`
 (readback), which are not primitives.
+`gelu_erf`, the exact GELU, is outside §3.1: it runs on both backends for
+inference, `Trace` refuses it and ggml does not compile it yet.
 
 Why those two are out:
 

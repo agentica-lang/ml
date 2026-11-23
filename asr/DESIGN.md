@@ -44,17 +44,18 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   passed in. `load` checks the conv, position and token tables against it.
 - **Conv padding is `tensor/`'s**: `Tensor.conv1d` takes `stride` and
   `padding`, so `Nn.Conv1d` adds only the bias.
-- **GELU is the tanh form** (`Tensor.gelu`); Whisper uses the exact `erf`
-  form. On the test model the drift is 1.7e-4 on the encoder output and
-  3.8e-5 on the logits.
+- **GELU follows `activation_function`**: `gelu` (every released Whisper
+  checkpoint) is the exact `erf` form, `Tensor.gelu_erf`; `gelu_new` is the
+  tanh form; anything else is an error. The test model checks both against
+  the peer.
 - **Positions are sliced**, not fixed: the encoder adds the first
   `ceil(frames / 2)` rows of its table (the decoder the first `t`), so a short input runs, where Hugging Face
   wants exactly `2 * max_source_positions` frames.
 - **The conv stem loops over the batch**: `transpose` reverses every axis.
   The token lookup flattens the ids to `[batch * t]` and reshapes back.
-- **What the model assumes**: the tensor names start with `model.`, the
-  activation is gelu and `scale_embedding` is false (true of the released
-  Whisper checkpoints; `config.json` is not checked for either). The tied
+- **What the model assumes**: the tensor names start with `model.` and
+  `scale_embedding` is false (true of the released Whisper checkpoints;
+  `config.json` is not checked for it). The tied
   output projection is a second, transposed copy of the vocab table.
 - **Reference and libtorch**: the model runs on both. The tiny test model
   matches the peer within 1e-5 on libtorch, which computes in F32.
@@ -221,7 +222,7 @@ whisper-tiny: `tools/transcribe_check.agc` runs the five cases of
 and whisper.cpp's `samples/jfk.wav`: detected and named language, transcribe
 and translate, with and without timestamps). The token ids match exactly,
 and so do the text and the segments. The language probability is within
-4.1e-4 (es) and 1.2e-4 (en): the GELU here is the tanh form.
+1.3e-6 (es) and 1e-7 (en); with the tanh GELU it was 4.1e-4 and 1.2e-4.
 `test/transcribe_golden.py` wrote the golden once, by hand (it needs `torch`
 and `transformers`). The tests run neither: the checkpoint is not in git.
 

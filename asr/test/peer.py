@@ -9,8 +9,9 @@ model with its `tokenizer.json`) into a new temporary folder and prints its
 path.
 `expected.json` holds two mels of 6 frames with their token rows, and a mel
 of 4 frames for the encoder alone.
-The forward runs twice: with the tanh GELU the Agentica model uses, and with
-the exact erf GELU Whisper uses, so the tests can measure the drift.
+The forward runs with the exact erf GELU Whisper uses (`activation_function`
+`gelu`), and once with the tanh form, for `tanh/`: the same model with
+`gelu_new` in its config.
 """
 
 import json
@@ -221,10 +222,11 @@ def write(out):
     for name, gelu in [("tanh", gelu_tanh), ("erf", gelu_erf)]:
         audio = m.encode(first, gelu)
         expected[name] = {"encoder": audio, "logits": m.decode(TOKENS, audio, gelu)}
-    audio = m.encode(second, gelu_tanh)
-    expected["second"] = {"encoder": audio, "logits": m.decode(SECOND_TOKENS, audio, gelu_tanh)}
-    expected["short"] = {"encoder": m.encode(short, gelu_tanh)}
+    audio = m.encode(second, gelu_erf)
+    expected["second"] = {"encoder": audio, "logits": m.decode(SECOND_TOKENS, audio, gelu_erf)}
+    expected["short"] = {"encoder": m.encode(short, gelu_erf)}
     for folder, model, config, skip in [("tiny", m, CONFIG, ()), ("missing", m, CONFIG, (MISSING,)),
+                                        ("tanh", m, dict(CONFIG, activation_function="gelu_new"), ()),
                                         ("speech", whisper(SPEECH), SPEECH, ())]:
         (out / folder).mkdir()
         model.save(out / folder / "model.safetensors", skip)

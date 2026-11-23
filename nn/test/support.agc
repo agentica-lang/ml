@@ -155,12 +155,16 @@ def relu(v: Float) -> Float
 end
 
 def mlp(p: Nn.Mlp, x: List[List[Float]]) -> Result[List[List[Float]]]
-  return error("the naive model has no gelu") if p.activation == Nn.Activation.Gelu
+  if p.activation == Nn.Activation.Gelu or p.activation == Nn.Activation.GeluErf
+    return error("the naive model has no gelu")
+  end
+
   h = try dense(p.up, x)
   act = case p.activation
     Nn.Activation.Relu -> h.map { |row| row.map { |v| relu(v) } }
     Nn.Activation.Silu -> h.map { |row| row.map { |v| v / (1.0 + exp(-v)) } }
     Nn.Activation.Gelu -> h
+    Nn.Activation.GeluErf -> h
   end
 
   dense(p.down, act)

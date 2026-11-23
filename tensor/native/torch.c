@@ -530,6 +530,17 @@ an_term torch_gelu_tanh_approx(an_env *env, struct torch_TensorHandle_state *a) 
   }
 }
 
+an_term torch_gelu_erf(an_env *env, struct torch_TensorHandle_state *a) {
+  an_term failure;
+
+  try {
+    if (!all_finite(*a->value, env, "gelu_erf", &failure)) return failure;
+    return ok_tensor(env, torch::gelu(*a->value));
+  } catch (...) {
+    return failed(env, "gelu_erf");
+  }
+}
+
 an_term torch_eq(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b) {
   const torch::Tensor &left = *a->value;
   const torch::Tensor &right = *b->value;

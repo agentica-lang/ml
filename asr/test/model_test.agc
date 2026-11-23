@@ -12,15 +12,9 @@ import Tokenizer from "../tokenizer"
 REF = Tensor.Backend.Reference
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
 
-## The reference computes in doubles, as the peer does, with the same tanh
-## GELU.
+## The reference computes in doubles, as the peer does, with the same GELU.
 ABS = 0.000000001
 REL = 0.000000001
-
-## Whisper's exact erf GELU against the tanh form here: on this tiny random
-## model the peer's two forwards differ by 1.7e-4 on the encoder output and
-## 3.8e-5 on the logits; a real checkpoint may drift more.
-DRIFT = 0.0003
 
 ## libtorch's F32 against the peer's doubles.
 F32 = 0.00001
@@ -37,12 +31,19 @@ def test_the_tiny_whisper_matches_the_peer() -> Result[Void]
     try Test.eq(Tensor.shape(audio), [1, 3, 4])
     logits = try Asr.decode(m, try ids(try ints(try JSON.get(want, "tokens")), [1, 4]), audio)
     try Test.eq(Tensor.shape(logits), [1, 4, 7])
-    tanh = try JSON.get(want, "tanh")
-    try expect_close(try floats_of(audio), try rows(try JSON.get(tanh, "encoder")), ABS, REL, "encoder")
-    try expect_close(try floats_of(logits), try rows(try JSON.get(tanh, "logits")), ABS, REL, "logits")
     erf = try JSON.get(want, "erf")
-    try expect_close(try floats_of(audio), try rows(try JSON.get(erf, "encoder")), DRIFT, 0.0, "erf encoder")
-    expect_close(try floats_of(logits), try rows(try JSON.get(erf, "logits")), DRIFT, 0.0, "erf logits")
+    try expect_close(try floats_of(audio), try rows(try JSON.get(erf, "encoder")), ABS, REL, "encoder")
+    try expect_close(try floats_of(logits), try rows(try JSON.get(erf, "logits")), ABS, REL, "logits")
+    # `gelu_new` in the config is the tanh form.
+    tanh = try Asr.open("#{dir}/tanh/model.safetensors", REF)
+    approximate = try Asr.encode(tanh, try f32(mel, [1, 3, 6]))
+    expect_close(
+      try floats_of(approximate),
+      try rows(try JSON.get(try JSON.get(want, "tanh"), "encoder")),
+      ABS,
+      REL,
+      "tanh",
+    )
   end
 end
 
@@ -55,7 +56,7 @@ def test_a_batch_of_two_matches_the_peer_item_by_item() -> Result[Void]
     tokens = try ints(try JSON.get(want, "tokens")) + try ints(try JSON.get(want, "second_tokens"))
     logits = try Asr.decode(m, try ids(tokens, [2, 4]), audio)
     try Test.eq([Tensor.shape(audio), Tensor.shape(logits)], [[2, 3, 4], [2, 4, 7]])
-    first = try JSON.get(want, "tanh")
+    first = try JSON.get(want, "erf")
     second = try JSON.get(want, "second")
     audio_want = try rows(try JSON.get(first, "encoder")) + try rows(try JSON.get(second, "encoder"))
     try expect_close(try floats_of(audio), audio_want, ABS, REL, "batch encoder")
@@ -102,9 +103,9 @@ def test_on_libtorch_the_tiny_whisper_matches_the_peer() -> Result[Void]
       audio = try Asr.encode(m, try f32(try rows(try JSON.get(want, "mel")), [1, 3, 6], TORCH))
       tokens = try ids(try ints(try JSON.get(want, "tokens")), [1, 4], TORCH)
       logits = try Asr.decode(m, tokens, audio)
-      tanh = try JSON.get(want, "tanh")
-      try expect_close(try floats_of(audio), try rows(try JSON.get(tanh, "encoder")), F32, F32, "torch encoder")
-      expect_close(try floats_of(logits), try rows(try JSON.get(tanh, "logits")), F32, F32, "torch logits")
+      erf = try JSON.get(want, "erf")
+      try expect_close(try floats_of(audio), try rows(try JSON.get(erf, "encoder")), F32, F32, "torch encoder")
+      expect_close(try floats_of(logits), try rows(try JSON.get(erf, "logits")), F32, F32, "torch logits")
     end
 
     matched
@@ -247,7 +248,7 @@ def kv_steps(m: Asr.Model, dir: String, backend: Tensor.Backend, abs: Float, rel
   want = try JSON.parse(try File.read_text("#{dir}/expected.json"))
   cache = try Asr.listen(m, try Asr.encode(m, try f32(try rows(try JSON.get(want, "mel")), [1, 3, 6], backend)))
   tokens = try ints(try JSON.get(want, "tokens"))
-  logits = try rows(try JSON.get(try JSON.get(want, "tanh"), "logits"))
+  logits = try rows(try JSON.get(try JSON.get(want, "erf"), "logits"))
   prompt = try Asr.step(m, cache, tokens.take(2))
   try expect_close(prompt.logits, logits.drop(7).take(7), abs, rel, "prompt")
   third = try Asr.step(m, prompt.cache, [tokens[2]])

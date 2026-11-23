@@ -288,6 +288,14 @@ def gelu_tanh_approx(device: Types.Device, t: Types.Tensor) -> Result[Types.Tens
   one(device, t.dtype, t.shape) do Raw.gelu_tanh_approx(h) end
 end
 
+## The exact (erf) GELU, float only; a non-finite input is an `error`.
+def gelu_erf(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "gelu_erf")
+  _ = try float_only(t, "gelu_erf")
+  h = try handle_of(t)
+  one(device, t.dtype, t.shape) do Raw.gelu_erf(h) end
+end
+
 ## `a == b` elementwise as `Bool`, float or int dtypes, exact shapes.
 def eq(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try ready(device, "eq")

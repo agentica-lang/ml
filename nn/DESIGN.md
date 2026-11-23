@@ -11,7 +11,7 @@ struct Dense        { w: [in, out], b: Optional [out] }
 struct LayerNorm    { gamma: [width], beta: [width], eps: Float }
 struct Embedding    { table: [rows, width] }
 struct Conv1d       { weight: [out, in, kernel], bias: Optional [out], stride, padding: Int }
-enum   Activation   = Relu | Gelu | Silu
+enum   Activation   = Relu | Gelu | GeluErf | Silu
 struct Attention    { query, key, value, output: Dense, heads: Int }
 struct Mlp          { up, down: Dense, activation: Activation }
 struct EncoderBlock { norm1: LayerNorm, attention: Attention, norm2: LayerNorm, mlp: Mlp }
@@ -86,7 +86,7 @@ that are the layer's own (rank of `positional`, table length, heads).
   Layers themselves take any float dtype (the gradient test uses `F64`).
   The gradient tests need `agentica test --max-steps 10000000`: a bare
   `agentica test` runs out of its 1M steps (per file, times its tests + 1).
-- **`gelu` does not run on libtorch** (`gelu_tanh_approx` is one of its three
-  missing ops), so the libtorch comparisons use `relu` and `silu`. `gelu` is
-  the tanh approximation, while Whisper uses the `erf` form: expect drift near
-  1e-3 on real checkpoints.
+- **Two GELUs**: `Gelu` is the tanh approximation (`Tensor.gelu`), which
+  `Trace` differentiates; `GeluErf` is the exact `erf` form Whisper uses
+  (`Tensor.gelu_erf`), for inference only. The libtorch comparisons use
+  `relu` and `silu`.

@@ -78,6 +78,30 @@ def test_log_of_a_saturated_exp_is_an_error() -> Result[Void]
   Test.error?(Tensor.log(saturated))
 end
 
+## Python's `math.erf` gives the expected values; the series is good to about
+## 1e-15, far tighter than the shared tolerance.
+def test_gelu_erf_matches_python_math_erf() -> Result[Void]
+  a = try Support.f32([-6.0, -1.0, 0.0, 0.5, 1.75, 4.0, 9.0, -0.25], [8])
+  want = [
+    -5.919525869479969e-09,
+    -0.15865525393145707,
+    0.0,
+    0.34573123063700656,
+    1.67989647548832,
+    3.9998733150326675,
+    9.0,
+    -0.10032341857926907,
+  ]
+
+  got = try Support.floats_of(try Tensor.gelu_erf(a))
+  for i in 0...want.size
+    try Test.assert((got[i] - want[i]).abs < 0.00000000000001, "value #{i} is #{got[i]}, expected #{want[i]}")
+  end
+
+  try Test.error?(Tensor.gelu_erf(try Support.i64([1], [1])))
+  Test.error?(Tensor.gelu_erf(try Tensor.exp(try Support.f32([1000.0], [1]))))
+end
+
 def test_sqrt_pow_sigmoid_gelu_reject_non_finite_inputs() -> Result[Void]
   saturated = try Tensor.exp(try Support.f32([1000.0], [1]))
   nan = try Tensor.sub(saturated, saturated)

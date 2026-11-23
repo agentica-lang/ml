@@ -1,7 +1,7 @@
 ## Transcribes the clips of `test/fixtures/transcribe_golden.json` with a real
 ## whisper-tiny and compares them with what Hugging Face answered: the token
 ## ids exactly, the text and the segments, the language and its probability
-## within 1e-3. It prints the real-time factor of each case. Manual, not run by
+## within 1e-5. It prints the real-time factor of each case. Manual, not run by
 ## the tests (the checkpoint is not in git). From `asr/`:
 ##
 ## ```sh
@@ -18,7 +18,7 @@ import Tokenizer from "../tokenizer"
 
 GOLDEN = "test/fixtures/transcribe_golden.json"
 ## The gap allowed on the language probability.
-CLOSE = 0.001
+CLOSE = 0.00001
 
 struct Golden
   cases: List[Case]

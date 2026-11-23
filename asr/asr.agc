@@ -36,10 +36,15 @@ struct Config
   ## `Greedy.rules` has the defaults.
   suppress_tokens: Optional[List[Int]] = none
   begin_suppress_tokens: Optional[List[Int]] = none
+  ## `gelu` (the exact form, as Whisper's checkpoints say) or `gelu_new` (the
+  ## tanh approximation).
+  activation_function: String = "gelu"
 end
 
 struct Model
   config: Config
+  ## The GELU of `config.activation_function`, in the conv stem and the MLPs.
+  activation: Nn.Activation
   conv1: Nn.Conv1d
   conv2: Nn.Conv1d
   encoder_positions: Nn.Embedding
@@ -135,6 +140,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
   e = "#{PREFIX}encoder."
   d = "#{PREFIX}decoder."
   width = config.d_model
+  activation = try activation_of(config.activation_function)
   try expect_heads("encoder", width, config.encoder_attention_heads)
   try expect_heads("decoder", width, config.decoder_attention_heads)
   conv1 = try Load.conv1d(c, "#{e}conv1", 1, 1, backend)
@@ -151,22 +157,19 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
   encoder: List[Nn.EncoderBlock] = []
   for i in 0...config.encoder_layers
     names = encoder_names("#{e}layers.#{i}.")
-    encoder = encoder.push(
-      try Load.encoder_block(c, names, config.encoder_attention_heads, Nn.Activation.Gelu, EPS, backend),
-    )
+    encoder = encoder.push(try Load.encoder_block(c, names, config.encoder_attention_heads, activation, EPS, backend))
   end
 
   decoder: List[Nn.DecoderBlock] = []
   for i in 0...config.decoder_layers
     names = decoder_names("#{d}layers.#{i}.")
-    decoder = decoder.push(
-      try Load.decoder_block(c, names, config.decoder_attention_heads, Nn.Activation.Gelu, EPS, backend),
-    )
+    decoder = decoder.push(try Load.decoder_block(c, names, config.decoder_attention_heads, activation, EPS, backend))
   end
 
   ok(
     Model(
       config: config,
+      activation: activation,
       conv1: conv1,
       conv2: conv2,
       encoder_positions: encoder_positions,
@@ -194,8 +197,8 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
   items: List[Tensor.Tensor] = []
   for b in 0...shape[0]
     one = try Tensor.reshape(try Tensor.slice(mel, [b, 0, 0], [b + 1, shape[1], shape[2]]), [shape[1], shape[2]])
-    h = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv1, one))
-    h = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv2, h))
+    h = try Nn.activate(m.activation, try Nn.conv1d(m.conv1, one))
+    h = try Nn.activate(m.activation, try Nn.conv1d(m.conv2, h))
     items = items.push(try Tensor.transpose(h))
   end
 
@@ -533,6 +536,13 @@ def decoder_names(p: String) -> Load.DecoderBlockNames
     up: "#{p}fc1",
     down: "#{p}fc2",
   )
+end
+
+## The activation `config.json` names.
+def activation_of(name: String) -> Result[Nn.Activation]
+  return ok(Nn.Activation.GeluErf) if name == "gelu"
+  return ok(Nn.Activation.Gelu) if name == "gelu_new"
+  error("the activation #{name} is not gelu or gelu_new")
 end
 
 def expect_heads(stack: String, width: Int, heads: Int) -> Result[Void]
