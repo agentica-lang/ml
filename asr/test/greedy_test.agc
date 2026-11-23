@@ -91,13 +91,13 @@ def test_timestamps_give_segments() -> Result[Void]
   try Test.eq(segment(tok, [33, 4]), some([0.02, 1.5]))
   try Test.eq(segment(tok, [4, 33]), some([0.0, 0.02]))
   try Test.eq(segment(tok, [32, 4, 33]), some([0.0, 0.02]))
-  Test.eq(try Greedy.segments(tok, [], 1.5), [])
+  Test.eq(try Greedy.segments(tok, [], 1.5, 0.0), [])
 end
 
 ## The start and stop of the one segment of `ids` with the text `Hola`, if
 ## that is what they give.
 def segment(tok: Tokenizer.Tokenizer, ids: List[Int]) -> Optional[List[Float]]
-  case Greedy.segments(tok, ids, 1.5)
+  case Greedy.segments(tok, ids, 1.5, 0.0)
     ok(found) ->
       return none if found.size != 1 or not found[0].text.start_with?("Hola") or found[0].tokens != ids
       some([found[0].start, found[0].stop])

@@ -191,20 +191,35 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
     return error("encode needs [batch, #{m.config.num_mel_bins}, frames], got #{shape}")
   end
 
-  items: List[Tensor.Tensor] = []
-  for b in 0...shape[0]
-    one = try Tensor.reshape(try Tensor.slice(mel, [b, 0, 0], [b + 1, shape[1], shape[2]]), [shape[1], shape[2]])
-    h = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv1, one))
-    h = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv2, h))
-    items = items.push(try Tensor.transpose(h))
+  # Each stage hands only a list out of its arena (as `step` does) and the
+  # previous stage's tensor is closed, so a block's intermediates die with it.
+  out = [shape[0], (shape[2] + 1) / 2, m.config.d_model]
+  start: Result[List[Tensor.Values]] = Native.arena do
+    items: List[Tensor.Tensor] = []
+    for b in 0...shape[0]
+      one = try Tensor.reshape(try Tensor.slice(mel, [b, 0, 0], [b + 1, shape[1], shape[2]]), [shape[1], shape[2]])
+      x = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv1, one))
+      x = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv2, x))
+      items = items.push(try Tensor.transpose(x))
+    end
+
+    Tensor.to_list(try Nn.positional(m.encoder_positions, try Tensor.stack(items, 0)))
   end
 
-  h = try Nn.positional(m.encoder_positions, try Tensor.stack(items, 0))
+  h = try rebuilt(start, out, m.encoder_positions.table)
   for block in m.encoder
-    h = try Nn.encoder_block(block, h)
+    done: Result[List[Tensor.Values]] = Native.arena do Tensor.to_list(try Nn.encoder_block(block, h)) end
+
+    fresh = try rebuilt(done, out, h)
+    close([h])
+    h = fresh
   end
 
-  Nn.layer_norm(m.encoder_norm, h)
+  normed: Result[List[Tensor.Values]] = Native.arena do Tensor.to_list(try Nn.layer_norm(m.encoder_norm, h)) end
+
+  audio = try rebuilt(normed, out, h)
+  close([h])
+  ok(audio)
 end
 
 ## The logits `[batch, t, vocab_size]` of the integer token ids `[batch, t]`
@@ -271,9 +286,9 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
 
   d = m.config.d_model
   backend = Tensor.backend(m.tokens.table)
-  # The arena hands back only lists: an Agentica arena whose value holds a
-  # native resource keeps all of its resources alive, so the step's
-  # intermediates would outlive it.
+  # The arena hands back only lists: an arena keeps the resource its value
+  # holds and everything that resource comes from, all the way up, so a
+  # returned tensor would keep the step's intermediates.
   grown: Result[Grown] = Native.arena do
     rows = try Nn.embedding(
       m.tokens,
@@ -326,6 +341,8 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
     k = try Tensor.from_list(g.keys[i].map { |x| Tensor.Values.Float(x) }, [1, n, d], dtype, backend)
     v = try Tensor.from_list(g.values[i].map { |x| Tensor.Values.Float(x) }, [1, n, d], dtype, backend)
     if cache.length > 0
+      # The arena concatenated the old cache with these rows too, for its own
+      # attention, but could not hand that tensor out; it is built again here.
       fresh = [k, v]
       k = try Tensor.concat([cache.own[i].key, k], 1)
       v = try Tensor.concat([cache.own[i].value, v], 1)
@@ -368,7 +385,7 @@ def transcribe(
   # A named language and the job are checked before the audio costs anything.
   _ = try Tokenizer.prompt(tok, options.language, job(options), options.timestamps)
   # On libtorch the call runs in a task of its own: when it ends, the task
-  # closes what it opened, the encoder's intermediates included.
+  # closes what it opened, the encoder output and the cache included.
   call = Task.spawn do decoded(m, tok, pcm, options, frames) end
   Task.await(call)
 end
@@ -393,25 +410,25 @@ def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Optio
   )
 
   cache = try listen(m, try encode(m, mel))
-  first = try step(m, cache, [tok.sot])
-  close(kept(first.cache))
-  no_speech = 0.0
-  case tok.no_speech
-    some(id) -> no_speech = Greedy.probability(first.logits, id)
-    none -> nil
-  end
-
-  language = "en"
+  language = options.language.unwrap_or("en")
   probability = 1.0
-  case options.language
-    some(code) -> language = code
-    none ->
-      if tok.multilingual
-        scores = tok.languages.map { |l| first.logits[l.id] }
-        best = Greedy.pick(scores)
-        language = tok.languages[best].code
-        probability = Greedy.probability(scores, best)
-      end
+  no_speech = 0.0
+  detect = options.language == none and tok.multilingual
+  # One step after `sot` alone, only when something reads its logits.
+  if detect or tok.no_speech != none
+    first = try step(m, cache, [tok.sot])
+    close(kept(first.cache))
+    case tok.no_speech
+      some(id) -> no_speech = Greedy.probability(first.logits, id)
+      none -> nil
+    end
+
+    if detect
+      scores = tok.languages.map { |l| first.logits[l.id] }
+      best = Greedy.pick(scores)
+      language = tok.languages[best].code
+      probability = Greedy.probability(scores, best)
+    end
   end
 
   prompt = try Tokenizer.prompt(tok, some(language), job(options), options.timestamps)
@@ -490,12 +507,18 @@ def attend(queries: Tensor.Tensor, heard: Heard) -> Result[Tensor.Tensor]
   Tensor.concat(parts, 1)
 end
 
+## `values`, what an arena handed out, as a tensor of `shape` with the dtype
+## and backend of `like`.
+def rebuilt(values: Result[List[Tensor.Values]], shape: List[Int], like: Tensor.Tensor) -> Result[Tensor.Tensor]
+  Tensor.from_list(try values, shape, Tensor.dtype(like), Tensor.backend(like))
+end
+
 def floats(t: Tensor.Tensor) -> Result[List[Float]]
   out: List[Float] = []
   for v in try Tensor.to_list(t)
     case v
       Tensor.Values.Float(f) -> out = out.push(f)
-      _ -> return error("the logits hold Float values")
+      _ -> return error("expected Float values, got #{v}")
     end
   end
 

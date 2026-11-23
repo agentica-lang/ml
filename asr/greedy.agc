@@ -95,12 +95,13 @@ end
 ## timestamp with no closing one starts at that timestamp, as Hugging Face
 ## does (OpenAI starts it at 0), and ends at `duration`; text before any
 ## timestamp starts at 0, and with no timestamps at all the whole text is one
-## segment from 0. A segment with no text is left out.
+## segment from 0. A segment with no text is left out. Each segment carries
+## `avg_logprob`, the window's, as OpenAI's do.
 def segments(
   tok: Tokenizer.Tokenizer,
   emitted: List[Int],
   duration: Float,
-  avg_logprob: Float = 0.0,
+  avg_logprob: Float,
 ) -> Result[List[Segment]]
   out: List[Segment] = []
   opened: List[Int] = []

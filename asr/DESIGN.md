@@ -204,14 +204,17 @@ against the tokenizer before the audio costs anything.
   ratio it needs), initial prompts and word timestamps. Greedy at temperature
   0 is what the speech server asks for; each can come when something needs
   it.
-- **Memory on libtorch**: an Agentica `Native.arena` whose value holds a
-  native resource keeps every resource made inside it alive, so nothing here
-  returns a tensor from an arena. A call runs in a task of its own, which
-  closes what it opened when it ends (the encoder's intermediates, about 2 GB
-  for whisper-tiny, live until then). Each `step` hands only lists out of its
-  arena (the logits and the new rows of the self-attention keys and values),
-  builds the new cache from them outside it, and the loop closes the cache it
-  replaced. 224 forced steps of whisper-tiny take 0.12–0.14 s each with flat
+- **Memory on libtorch**: a `Native.arena` keeps the resource its value holds
+  and everything that resource comes from, all the way up, so nothing here
+  returns a tensor from an arena. Each encoder block runs in an arena that
+  hands out the block's output as a list; the tensor is built again outside
+  and the previous one closed, so the peak is one block (whisper-tiny on
+  `jfk.wav`: +0.4 GB over the loaded model, against +1.9 GB with the whole
+  encoder in one arena). A call runs in a task of its own, which closes what
+  it opened when it ends (the encoder output and the cross-attention cache).
+  Each `step` hands only lists out of its arena (the logits and the new rows
+  of the self-attention keys and values), builds the new cache from them
+  outside it, and the loop closes the cache it replaced. 224 forced steps of whisper-tiny take 0.12–0.14 s each with flat
   memory (+5 MB); everything in one enclosing arena, they went from 1.5 s to
   11.6 s a step by step 192, and memory grew by 760 MB.
 
@@ -226,9 +229,11 @@ and so do the text and the segments. The language probability is within
 and `transformers`). The tests run neither: the checkpoint is not in git.
 
 Speed on this machine (Ryzen 5 3550H, shared with other jobs, so the numbers
-spread): libtorch takes 3.6–4.5 s for the 2.6 s of es-hola (a real-time
-factor of 1.4–1.7) and 5.4–6.5 s for the 11 s of jfk (0.5–0.6); about 2 s is
-the encoder over the 30 s window and 0.12–0.14 s each decoder step. The
+spread): libtorch takes 5.5–6 s for the 2.6 s of es-hola (a real-time factor
+of 2.1–2.3) and 7.1–9.3 s for the 11 s of jfk (0.64–0.84); about 3.5 s is the
+encoder over the 30 s window, of which 1.5–2 s is handing each block's output
+out of its arena as a list (the memory bullet above), and 0.12–0.14 s each
+decoder step. The
 reference backend gave the same ids for es-hola in 22 minutes (a real-time
 factor of about 500). Loading the checkpoint takes 25–40 s.
 
