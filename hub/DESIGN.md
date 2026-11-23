@@ -18,6 +18,18 @@ Load.layer_norm(c, prefix, eps, backend)   {prefix}.weight, {prefix}.bias
 Load.embedding(c, name, backend)        [rows, width]
 Load.encoder_block(c, BlockNames { norm1, query, key, value, output, norm2, up, down },
                    heads, activation, eps, backend)
+Load.decoder_block(c, DecoderBlockNames { norm1, query, key, value, output,
+                     norm2, cross_query, cross_key, cross_value, cross_output,
+                     norm3, up, down }, heads, activation, eps, backend)
+```
+
+Whisper's names for decoder block `N` (prefix `model.decoder.layers.N.` in
+Hugging Face's `WhisperForConditionalGeneration`):
+
+```text
+norm1  self_attn_layer_norm      query..output  self_attn.{q,k,v,out}_proj
+norm2  encoder_attn_layer_norm   cross_*        encoder_attn.{q,k,v,out}_proj
+norm3  final_layer_norm          up, down       fc1, fc2
 ```
 
 ## Decisions
@@ -50,7 +62,7 @@ Load.encoder_block(c, BlockNames { norm1, query, key, value, output, norm2, up, 
   `nn/`'s `[in, out]`; a missing bias is `none` (Whisper's `k_proj`). Names
   are the caller's: Whisper's or BERT's live with the model code.
 - **Left out until a client needs them:** downloads, `mmap`, writing
-  safetensors, conv layers and the decoder's cross-attention.
+  safetensors and conv layers.
 
 ## Cost
 
@@ -68,5 +80,6 @@ reference backend until `File.seek`
 allows lazy reads and a native backend takes the bytes without the lists.
 
 The tests use files of a few hundred bytes that `test/peer.py` (Python,
-`struct` and `json` only) writes at test time into a temporary folder; run
-them from `hub/`.
+`struct`, `json` and `math` only) writes at test time into a temporary
+folder, with the forward pass of a decoder block in doubles; run them from
+`hub/`.

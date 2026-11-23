@@ -14,6 +14,8 @@ enum   Activation   = Relu | Gelu | Silu
 struct Attention    { query, key, value, output: Dense, heads: Int }
 struct Mlp          { up, down: Dense, activation: Activation }
 struct EncoderBlock { norm1: LayerNorm, attention: Attention, norm2: LayerNorm, mlp: Mlp }
+struct DecoderBlock { norm1, self_attention: Attention, norm2, cross_attention: Attention,
+                      norm3: LayerNorm, mlp: Mlp }
 
 Nn.dense(p, x)                     x [..., in] -> [..., out]
 Nn.layer_norm(p, x)                last axis, then * gamma + beta
@@ -24,9 +26,13 @@ Nn.attention(p, queries, memory, mask?)   [batch, q, width] over [batch, k, widt
 Nn.self_attention(p, x, mask?)
 Nn.mlp(p, x)
 Nn.encoder_block(p, x, mask?)      pre-norm: h = x + attn(norm1(x)); h + mlp(norm2(h))
+Nn.causal_mask(size, dtype, backend)   [size, size]: 0.0 on and below the diagonal, MASKED above
+Nn.decoder_block(p, x, memory)     x [batch, t, width] over memory [batch, s, width]:
+                                   h = x + self_attn(norm1(x), causal_mask(t));
+                                   h = h + attn(cross, norm2(h), memory); h + mlp(norm3(h))
 
 Nn.init_dense / init_layer_norm / init_embedding / init_attention /
-  init_mlp / init_encoder_block(..., seed, backend) -> Result[layer]
+  init_mlp / init_encoder_block / init_decoder_block(..., seed, backend) -> Result[layer]
 Init.uniform(shape, limit, seed, backend), Init.glorot_uniform(shape, seed, backend)
 ```
 
@@ -47,8 +53,18 @@ that are the layer's own (rank of `positional`, table length, heads).
 - **Differentiable for free.** Since a layer is `Tensor.*` calls, it records a
   graph on `Trace` tensors and `Trace.value_and_grad` differentiates it
   (`tensor/DESIGN.md` §10). The tests check `dense`, a relu and a silu
-  `mlp`, `embedding` with `positional`, and a gelu `encoder_block` (the
-  gradient of its input and of one gamma) against a central difference.
+  `mlp`, `embedding` with `positional`, a gelu `encoder_block` (the
+  gradient of its input and of one gamma) and a silu `decoder_block` (its
+  input) against a central difference.
+- **The decoder is Whisper's, pre-norm.** Self-attention is causal and
+  cross-attention reuses `attention(p, queries, memory)`: queries come from
+  the decoder and keys and values from the encoder output, so `t` and `s`
+  differ freely (`multi_head_attention` already allows it). The causal mask is
+  the additive bias that `mask` already takes, built from `arange`, `lt` and
+  `where` on the input's backend, so it costs no new op and, on `Trace`, is a
+  leaf with no gradient. `MASKED` is `-1e9`, not `-inf`: finite, and far
+  enough down that its softmax weight is `0`. No KV cache and no decode loop
+  yet: each call recomputes every position.
 - **Weights are `[in, out]`** (`x w`, as `Tensor.linear` takes them).
   Hugging Face and PyTorch checkpoints store `[out, in]`, so `hub/` transposes
   at load time.
@@ -65,8 +81,8 @@ that are the layer's own (rank of `positional`, table length, heads).
 - **`F32` only** for `init_*`, the compute dtype of `tensor/DESIGN.md` §2.
   Layers themselves take any float dtype (the gradient test uses `F64`).
 - **Left out until a client needs them:** dropout (identity at inference,
-  `Tensor.dropout` is there), a causal mask helper, cross-attention blocks
-  (the decoder), conv layers, `rms_norm`. `gelu` does not run on libtorch yet
+  `Tensor.dropout` is there), a KV cache and a decode loop, conv layers,
+  `rms_norm`. `gelu` does not run on libtorch yet
   (`gelu_tanh_approx` is one of its three missing ops), so the libtorch
   comparisons use `relu` and `silu`. `gelu` is the tanh approximation, while
   Whisper uses the `erf` form: expect drift near 1e-3 on real checkpoints.

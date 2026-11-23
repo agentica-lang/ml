@@ -170,3 +170,18 @@ def encoder_block(p: Nn.EncoderBlock, x: List[List[Float]]) -> Result[List[List[
   h = plus(x, try self_attention(p.attention, try layer_norm(p.norm1, x)))
   ok(plus(h, try mlp(p.mlp, try layer_norm(p.norm2, h))))
 end
+
+## The causal mask as a `[t, t]` bias: key `j` is blocked for query `i < j`.
+def causal(t: Int) -> List[List[Float]] = (0...t).to_a.map do |i: Int| (0...t).to_a.map { |j| bias_of(i, j) } end
+
+def bias_of(i: Int, j: Int) -> Float
+  return Nn.MASKED if j > i
+  0.0
+end
+
+def decoder_block(p: Nn.DecoderBlock, x: List[List[Float]], memory: List[List[Float]]) -> Result[List[List[Float]]]
+  n1 = try layer_norm(p.norm1, x)
+  h = plus(x, try attention(p.self_attention, n1, n1, some(causal(x.size))))
+  h = plus(h, try attention(p.cross_attention, try layer_norm(p.norm2, h), memory))
+  ok(plus(h, try mlp(p.mlp, try layer_norm(p.norm3, h))))
+end

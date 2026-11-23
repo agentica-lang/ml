@@ -40,6 +40,20 @@ def test_an_encoder_block_agrees_with_the_reference() -> Result[Void]
   S.expect_close(try S.floats_of(got), try S.floats_of(want), ABS, REL, "encoder_block")
 end
 
+def test_a_decoder_block_agrees_with_the_reference() -> Result[Void]
+  return absent() if !Tensor.available(S.TORCH)
+  x = Init.uniform_values(24, 1.0, 23)
+  memory = Init.uniform_values(40, 1.0, 24)
+  block = try Nn.init_decoder_block(4, 2, 8, Nn.Activation.Silu, 7, S.REF)
+  want = try Nn.decoder_block(block, try S.f32(x, [2, 3, 4]), try S.f32(memory, [2, 5, 4]))
+  got: Result[List[Float]] = Native.arena do
+    on = try Nn.init_decoder_block(4, 2, 8, Nn.Activation.Silu, 7, S.TORCH)
+    S.floats_of(try Nn.decoder_block(on, try S.f32(x, [2, 3, 4], S.TORCH), try S.f32(memory, [2, 5, 4], S.TORCH)))
+  end
+
+  S.expect_close(try got, try S.floats_of(want), ABS, REL, "decoder_block")
+end
+
 ## The block made and run in one arena, the way a caller runs a step.
 def on_torch(data: List[Float]) -> Result[Tensor.Tensor]
   Native.arena do

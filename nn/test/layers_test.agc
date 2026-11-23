@@ -131,3 +131,40 @@ def test_mlp_and_encoder_block_match_the_naive_model() -> Result[Void]
 
   ok()
 end
+
+def test_the_causal_mask_blocks_the_keys_after_each_query() -> Result[Void]
+  m = Nn.MASKED
+  got = try S.floats_of(try Nn.causal_mask(3, Tensor.Dtype.F32, S.REF))
+  try Test.eq(got, [0.0, m, m, 0.0, 0.0, m, 0.0, 0.0, 0.0])
+  Test.error?(Nn.causal_mask(0, Tensor.Dtype.F32, S.REF))
+end
+
+def test_a_decoder_block_over_a_longer_memory_matches_the_naive_model() -> Result[Void]
+  x = Init.uniform_values(24, 1.0, 31)
+  memory = Init.uniform_values(40, 1.0, 32)
+  for act in [Nn.Activation.Relu, Nn.Activation.Silu]
+    block = try Nn.init_decoder_block(4, 2, 8, act, 19, S.REF)
+    got = try Nn.decoder_block(block, try S.f32(x, [2, 3, 4]), try S.f32(memory, [2, 5, 4]))
+    try Test.eq(Tensor.shape(got), [2, 3, 4])
+    want: List[Float] = []
+    for b in 0...2
+      one = try S.decoder_block(block, S.item(x, b, 3, 4), S.item(memory, b, 5, 4))
+      want = want + one.flat_map { |row| row }
+    end
+
+    try S.expect_close(try S.floats_of(got), want, ABS, REL, "decoder_block")
+  end
+
+  ok()
+end
+
+def test_a_later_token_does_not_change_the_earlier_decoder_outputs() -> Result[Void]
+  block = try Nn.init_decoder_block(4, 2, 8, Nn.Activation.Relu, 23, S.REF)
+  memory = try S.f32(Init.uniform_values(8, 1.0, 34), [1, 2, 4])
+  x = Init.uniform_values(12, 1.0, 33)
+  moved = x.take(8) + [5.0, -3.0, 2.0, 7.0]
+  a = try S.floats_of(try Nn.decoder_block(block, try S.f32(x, [1, 3, 4]), memory))
+  b = try S.floats_of(try Nn.decoder_block(block, try S.f32(moved, [1, 3, 4]), memory))
+  try Test.eq(b.take(8), a.take(8))
+  Test.assert(b.drop(8) != a.drop(8), "the moved token did not change its own output")
+end
