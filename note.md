@@ -1,7 +1,7 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-23. `main` en `31e2609`. Abierto: el primer PR de `hub/`
-(rama `hub`). Este fichero es el parte de estado: lo hecho, lo que
+Fecha: 2026-11-23. `main` en `37e9e37` (`hub/` mergeado, #23). Abierto: las
+reglas de backward (#24). Este fichero es el parte de estado: lo hecho, lo que
 quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 `roadmap.md`; el contrato del tensor, en `tensor/DESIGN.md`.
 
@@ -68,7 +68,7 @@ Ningún subagente sigue corriendo.
    cuando un modelo lo pida.
 4. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
    época del XOR en la referencia).
-5. **`hub/`**: primer PR abierto (ver §2). Falta la descarga HF, con `http-client`
+5. **`hub/`**: primer PR mergeado (#23). Falta la descarga HF, con `http-client`
    `stream()` (redirects y retry incluidos), **nunca** `bond` (es solo
    servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
    Resume/progreso/sha256 hay que construirlos.
