@@ -376,6 +376,7 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.Concat(axis) -> part(concat_rule(n, ct, axis, i))
     Types.Op.Stack(axis) -> part(stack_rule(ct, x.shape, axis, i))
     Types.Op.Gather -> part(gather_rule(n.args[0], n.args[1], ct))
+    Types.Op.ScatterAdd(_) -> scatter_add_rule(n, ct, i)
     Types.Op.ToDtype -> no_rule("to_dtype")
     Types.Op.Conv1d(_, _) -> no_rule("conv1d")
     Types.Op.AvgPool1d(_, _, _) -> no_rule("avg_pool1d")
@@ -524,20 +525,19 @@ def stack_rule(ct: Types.Tensor, shape: List[Int], axis: Int, i: Int) -> Result[
 end
 
 ## The backward of `gather`: each row of `ct` added into the row of `source`
-## it was read from, as `onehot . ct` where
-## `onehot[r, k] = (indices[k] == r)`. A repeated index sums its rows. It
-## costs `[rows, k]` grids, which a scatter-add primitive would avoid (ml#25).
+## it was read from, which is `scatter_add`. A repeated index sums its rows.
 def gather_rule(source: Types.Tensor, indices: Types.Tensor, ct: Types.Tensor) -> Result[Types.Tensor]
   rows = source.shape[0]
-  k = try Types.volume(indices.shape)
-  width = try Types.volume(source.shape.drop(1))
-  return Graph.filled(source.shape, 0.0, ct.dtype) if rows == 0 or k == 0 or width == 0
-  grid = [rows, k]
-  positions = try Tensor.arange(0, rows, 1, indices.dtype, Types.Backend.Trace)
-  r = try Tensor.broadcast_to(try Tensor.reshape(positions, [rows, 1]), grid)
-  c = try Tensor.broadcast_to(try Tensor.reshape(indices, [1, k]), grid)
-  onehot = try Tensor.to_dtype(try Tensor.eq(r, c), ct.dtype)
-  Tensor.reshape(try Tensor.matmul(onehot, try Tensor.reshape(ct, [k, width])), source.shape)
+  empty = rows == 0 or (try Types.volume(ct.shape)) == 0
+  return Graph.filled(source.shape, 0.0, ct.dtype) if empty
+  Tensor.scatter_add(indices, ct, rows)
+end
+
+## The backward of `scatter_add` for its updates: the rows of `ct` at the
+## indices, which is `gather`. The indices have no gradient.
+def scatter_add_rule(n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Optional[Types.Tensor]]
+  return ok(none) if i == 0
+  part(Tensor.gather(ct, n.args[0]))
 end
 
 ## The value of `t` on `backend` from the values of its node's arguments, by
@@ -604,6 +604,7 @@ def compute(
     Types.Op.Concat(axis) -> Tensor.concat(args, axis)
     Types.Op.Stack(axis) -> Tensor.stack(args, axis)
     Types.Op.Gather -> Tensor.gather(args[0], args[1])
+    Types.Op.ScatterAdd(rows) -> Tensor.scatter_add(args[0], args[1], rows)
     Types.Op.ToDtype -> Tensor.to_dtype(args[0], t.dtype)
     Types.Op.ToDevice(device) -> Tensor.to_device(args[0], device)
     Types.Op.Copy -> Tensor.copy(args[0])

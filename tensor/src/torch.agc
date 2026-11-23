@@ -532,6 +532,34 @@ def gather(device: Types.Device, source: Types.Tensor, indices: Types.Tensor) ->
   one(device, source.dtype, TorchShapes.gathered_shape(source.shape, indices.shape)) do Raw.gather(hs, hi) end
 end
 
+## The inverse of `gather`: `updates` added into `rows` rows at integer
+## `indices`; the answer is `[rows] ++ updates.shape[indices.rank:]`.
+def scatter_add(
+  device: Types.Device,
+  indices: Types.Tensor,
+  updates: Types.Tensor,
+  rows: Int,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "scatter_add")
+  return error("scatter_add needs a row count of 0 or more, got #{rows}") if rows < 0
+  if !TorchDtypes.is_int_dtype(indices.dtype)
+    return error("scatter_add needs integer indices, got #{TorchDtypes.name(indices.dtype)}")
+  end
+
+  if !TorchDtypes.is_float_dtype(updates.dtype)
+    return error("scatter_add needs float updates, got #{TorchDtypes.name(updates.dtype)}")
+  end
+
+  if updates.shape.take(indices.shape.size) != indices.shape
+    return error("scatter_add needs updates of shape #{indices.shape} followed by a row, got #{updates.shape}")
+  end
+
+  hi = try handle_of(indices)
+  hu = try handle_of(updates)
+  shape = TorchShapes.scattered_shape(rows, indices.shape, updates.shape)
+  one(device, updates.dtype, shape) do Raw.scatter_add(hi, hu, rows) end
+end
+
 ## Reverses every axis: rank 2 swaps rows and columns, a rank below 2 is
 ## unchanged. A true axis permutation is derived from `slice`/`stack` later.
 def transpose(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]

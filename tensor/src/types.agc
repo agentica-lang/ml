@@ -129,6 +129,7 @@ enum Op
   Concat(Int)
   Stack(Int)
   Gather
+  ScatterAdd(Int)
   ToDtype
   ToDevice(Device)
   Copy
@@ -365,6 +366,7 @@ def op_name(op: Op) -> String
     Op.Concat(_) -> "concat"
     Op.Stack(_) -> "stack"
     Op.Gather -> "gather"
+    Op.ScatterAdd(_) -> "scatter_add"
     Op.ToDtype -> "to_dtype"
     Op.ToDevice(_) -> "to_device"
     Op.Copy -> "copy"

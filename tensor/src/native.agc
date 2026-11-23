@@ -129,6 +129,10 @@ extern module "torch"
   ## The rows of `a` at the integer tensor `indices`:
   ## `indices.dims ++ a.dims[1:]`.
   compute def gather(a: TensorHandle, indices: TensorHandle) -> Result[TensorHandle]
+  ## The inverse of `gather`: the rows of the float tensor `updates`
+  ## (`indices.dims ++ tail`) added into `rows` zero rows of `tail`, each at
+  ## the row its integer index names. A repeated index sums its rows.
+  compute def scatter_add(indices: TensorHandle, updates: TensorHandle, rows: Int) -> Result[TensorHandle]
   ## Reverses every axis, as the reference's `transpose` does (rank 2 swaps
   ## rows and columns; below rank 2 nothing changes).
   compute def transpose(a: TensorHandle) -> Result[TensorHandle]

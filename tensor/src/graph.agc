@@ -145,6 +145,16 @@ def gather(source: Types.Tensor, indices: Types.Tensor) -> Types.Tensor
   record(Types.Op.Gather, [source, indices], shape, source.dtype)
 end
 
+## A traced `scatter_add` of the `updates` rows into `rows` rows, at `indices`.
+def scatter_add(indices: Types.Tensor, updates: Types.Tensor, rows: Int) -> Types.Tensor
+  record(
+    Types.Op.ScatterAdd(rows),
+    [indices, updates],
+    Shapes.scattered_shape(rows, indices.shape, updates.shape),
+    updates.dtype,
+  )
+end
+
 ## A traced `conv1d` of `input` by `weight` (`[C_out, C_in, K]`).
 def conv1d(input: Types.Tensor, weight: Types.Tensor, stride: Int, padding: Int) -> Types.Tensor
   shape = Shapes.conv1d_output_shape(input.shape, weight.shape[0], weight.shape[2], stride, padding)

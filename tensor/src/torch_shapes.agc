@@ -139,6 +139,12 @@ def avg_pool1d_output_shape(shape: List[Int], kernel: Int, stride: Int, padding:
   out.push(windowed_length(shape[shape.size - 1], kernel, stride, padding))
 end
 
+## `rows` followed by the part of `updates` past the rank of `indices`: the
+## shape a `scatter_add` leaves.
+def scattered_shape(rows: Int, indices: List[Int], updates: List[Int]) -> List[Int]
+  [rows] + updates.drop(indices.size)
+end
+
 ## `indices`'s shape followed by the tail of `source`'s: the shape a `gather`
 ## leaves.
 def gathered_shape(source: List[Int], indices: List[Int]) -> List[Int]
