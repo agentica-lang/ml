@@ -4,3 +4,6 @@
 [submodule "third_party/ggml"]
 	path = third_party/ggml
 	url = https://github.com/ggml-org/ggml.git
+[submodule "site/themes/docs-theme"]
+	path = site/themes/docs-theme
+	url = https://github.com/agentica-lang/docs-theme.git
