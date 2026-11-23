@@ -224,6 +224,25 @@ an_term torch_scatter_add(an_env *env, struct torch_TensorHandle_state *indices,
    rows and columns; below rank 2 nothing changes). */
 an_term torch_transpose(an_env *env, struct torch_TensorHandle_state *a);
 
+/* The axes of `a` in the order `axes` names (output axis `i` is input axis
+   `axes[i]`), copied into row-major order. */
+an_term torch_permute(an_env *env, struct torch_TensorHandle_state *a, torch_list_Int axes);
+
+/* `softmax(scale * q k^T) v` over `q` `[B, H, Sq, D]`, `k` `[B, Hkv, Sk, D]` and
+   `v` `[B, Hkv, Sk, Dv]`, `Hkv` dividing `H` (query head `h` reads kv head
+   `h / (H / Hkv)`). */
+an_term torch_attention(an_env *env, struct torch_TensorHandle_state *q, struct torch_TensorHandle_state *k, struct torch_TensorHandle_state *v, double scale);
+
+/* The same with the additive `mask` (`[Sq, Sk]`, or `[Bm, Hm, Sq, Sk]` with
+   `Bm` in `{1, B}` and `Hm` in `{1, H}`) added to the scaled scores. */
+an_term torch_attention_masked(an_env *env, struct torch_TensorHandle_state *q, struct torch_TensorHandle_state *k, struct torch_TensorHandle_state *v, struct torch_TensorHandle_state *mask, double scale);
+
+/* Rotary embedding of `x` `[..., S, D]` by the integer `positions` `[S]`: the
+   first `dims` columns turn in pairs by `positions[s] * base^(-2i/dims)`,
+   the pair being `(i, i + dims/2)` with `neox` and `(2i, 2i + 1)` without,
+   the other way round with `inverse`. */
+an_term torch_rope(an_env *env, struct torch_TensorHandle_state *x, struct torch_TensorHandle_state *positions, double base, int64_t dims, bool neox, bool inverse);
+
 /* `a` in the dtype `dtype` names: float to int truncates towards zero and
    range-checks, anything nonzero becomes `true`, an int width that cannot
    hold a value is an error. */
@@ -806,6 +825,63 @@ static an_term torch_native_transpose(an_env *env, int argc, const an_term *argv
   return torch_transpose(env, a0);
 }
 
+static an_term torch_native_permute(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  torch_list_Int a1;
+  if (!torch_native_open_list_Int(env, argv[1], &a1, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 1);
+  a1.argument = 2;
+  return torch_permute(env, a0, a1);
+}
+
+static an_term torch_native_attention(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  struct torch_TensorHandle_state *a2 = torch_TensorHandle_get(env, argv[2]);
+  if (!a2) return an_badarg(env, 2);
+  double a3;
+  if (!an_get_float(env, argv[3], &a3)) return an_badarg(env, 3);
+  return torch_attention(env, a0, a1, a2, a3);
+}
+
+static an_term torch_native_attention_masked(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  struct torch_TensorHandle_state *a2 = torch_TensorHandle_get(env, argv[2]);
+  if (!a2) return an_badarg(env, 2);
+  struct torch_TensorHandle_state *a3 = torch_TensorHandle_get(env, argv[3]);
+  if (!a3) return an_badarg(env, 3);
+  double a4;
+  if (!an_get_float(env, argv[4], &a4)) return an_badarg(env, 4);
+  return torch_attention_masked(env, a0, a1, a2, a3, a4);
+}
+
+static an_term torch_native_rope(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  double a2;
+  if (!an_get_float(env, argv[2], &a2)) return an_badarg(env, 2);
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  bool a4;
+  if (!an_get_bool(env, argv[4], &a4)) return an_badarg(env, 4);
+  bool a5;
+  if (!an_get_bool(env, argv[5], &a5)) return an_badarg(env, 5);
+  return torch_rope(env, a0, a1, a2, a3, a4, a5);
+}
+
 static an_term torch_native_to_dtype(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
@@ -899,6 +975,10 @@ static const an_function torch_native_functions[] = {
   {"gather", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_gather, AN_DIRTY},
   {"scatter_add", "(TensorHandle, TensorHandle, Int) -> Result[TensorHandle]", torch_native_scatter_add, AN_DIRTY},
   {"transpose", "(TensorHandle) -> Result[TensorHandle]", torch_native_transpose, AN_DIRTY},
+  {"permute", "(TensorHandle, List[Int]) -> Result[TensorHandle]", torch_native_permute, AN_DIRTY},
+  {"attention", "(TensorHandle, TensorHandle, TensorHandle, Float) -> Result[TensorHandle]", torch_native_attention, AN_DIRTY},
+  {"attention_masked", "(TensorHandle, TensorHandle, TensorHandle, TensorHandle, Float) -> Result[TensorHandle]", torch_native_attention_masked, AN_DIRTY},
+  {"rope", "(TensorHandle, TensorHandle, Float, Int, Bool, Bool) -> Result[TensorHandle]", torch_native_rope, AN_DIRTY},
   {"to_dtype", "(TensorHandle, Int) -> Result[TensorHandle]", torch_native_to_dtype, AN_DIRTY},
   {"copy", "(TensorHandle) -> Result[TensorHandle]", torch_native_copy, AN_DIRTY},
   {"contiguous", "(TensorHandle) -> Result[TensorHandle]", torch_native_contiguous, AN_DIRTY},
@@ -913,5 +993,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 42, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 46, NULL, 0, torch_native_resources, 1, LOAD)
 #endif

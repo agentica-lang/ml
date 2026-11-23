@@ -85,15 +85,24 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 is **derived**: pure Agentica code over primitives, shared by all backends
 and therefore tested once.
 
-### 3.1 Primitives (the backend contract, 46 ops)
+### 3.1 Primitives (the backend contract, 49 ops)
 
 Creation: `zeros, ones, empty, full, like, arange, scalar_to_tensor`.
 Elementwise: `add, sub, mul, div, neg, exp, log, sqrt, pow, relu, sigmoid,
 tanh, gelu_tanh_approx, eq, lt, where, clamp`.
 Reductions: `sum, mean, max, argmax` (each with `axes: Optional[List[Int]]`,
 `keep_dims: Bool`).
-Linear algebra: `matmul, transpose, batch_matmul` (`multi_head_attention`
-uses rank-2 `matmul` per head, §3.2; plain `dot` is derived).
+Linear algebra: `matmul, transpose, batch_matmul` (plain `dot` is derived).
+Attention: `permute, attention, rope`. `permute(t, axes)` is the general axis
+permutation (`transpose` reverses every axis). `attention(q, k, v, mask?,
+scale?)` is `softmax(scale q kᵀ + mask) v` over `[batch, heads, q_len, dim]`,
+with grouped-query attention when the kv heads divide the heads; the mask is
+additive, and `causal: true` is the wrapper's, which builds the causal mask
+from `arange` and `lt`. `rope(x, positions, base, dims, neox, inverse)` is the
+rotary embedding of `x [..., seq, width]`. They are primitives so that ggml and
+libtorch can use their fused kernels, and so that the graph has one node where
+the per-head loop had a hundred; each has a backward rule over the primitives
+(§10.3).
 Shape: `reshape, squeeze, unsqueeze, slice, concat, stack, broadcast_to,
 gather, scatter_add` (embedding lookup and beam gather need `gather`, and its
 backward rule needs `scatter_add(indices, updates, rows)`, which adds the rows
@@ -124,10 +133,10 @@ Built only from §3.1, in `tensor/` (generic) or `nn/` (model-shaped):
   `torch::gelu`. `silu` derives from `sigmoid` and `mul`.
 - `dot(a, b)` as `reshape` + `matmul`; `linear(x, w, b?)`, `embedding(ids,
   table)` via `matmul`/`gather`.
-- `multi_head_attention(q, k, v, heads, mask?)`: for each `(batch, head)` pair,
-  slice its part of the width, scores by rank-2 `matmul`, scale by `mul`,
-  `softmax`, context by `matmul`, and join the pieces with `concat`/`stack`.
-  No fused kernel, and no `batch_matmul`.
+- `multi_head_attention(q, k, v, heads, mask?)` over `[batch, seq, width]`: a
+  wrapper over `attention`. The width splits into heads by `reshape` +
+  `permute`, and the answer joins back the same way. A mask that is not
+  `[q_len, k_len]` is widened to `[batch, heads, q_len, k_len]`.
 - `greedy_step(logits, temperature?)`: `div` by temperature, `softmax`,
   `argmax`. `beam_search` is an Agentica loop over `gather` + `top_k`, and
   `top_k` is a derived sort/select loop.
@@ -341,7 +350,15 @@ end
   50000 x 64 table and 4096 indices takes 14 ms on the CPU (1.7 s before) and
   960 ms on the Vega iGPU (455 ms with the old one-hot `matmul`); at 10000 x
   64 and 1024 indices, 58 ms against 30 ms), and
-  `eq`, `lt` and `where`
+  `permute` (a `ggml_permute` and a copy), `batch_matmul` (`mul_mat` over the
+  batch axes) and `rope` (`ggml_rope_ext`, with the sequence axis swapped to
+  ggml's third; its positions are `I32`, as every integer here, and a rank above 4
+  is an error), `attention` (two `mul_mat` and one `soft_max_ext`: `mul_mat`
+  repeats the kv heads over a group of query heads, and `soft_max_ext` takes the
+  scale and the mask; not `flash_attn_ext`, which wants an `F16` mask padded to
+  a multiple of 64 rows and, on Vulkan, an `F16` cache: a node of the same
+  signature can use it later). A scale and a base cross as integers of
+  nine decimals, so `|x| < 9e9`. `eq`, `lt` and `where`
   emulated in `F32` arithmetic (`eq` as `1 - step(|a - b|)`, exact for integers
   below 2^24 and true when an operand is NaN; `where` as `c·x + (1 - c)·y`,
   exact only when both branches are finite): enough for an MLP and softmax
@@ -558,6 +575,16 @@ The price:
   `softmax`, `layer_norm`, `rms_norm`, `silu`, `gelu`, `embedding` and
   `multi_head_attention` are differentiable; each rule and the last two are
   tested against a central difference.
+- `permute` (the inverse permutation), `rope` (the same rotation turned the
+  other way, `inverse`; the positions have no gradient) and `attention`. The
+  backward of `attention` recomputes the probabilities from `q`, `k` and the
+  mask, once for each of the three arguments it feeds (the graph does not share
+  the scores between them), folds the query heads of a group into the rows of
+  the scores (`[B, H, Sq, D]` as `[B, Hkv, H/Hkv * Sq, D]`) so every product is
+  a rank-4 `batch_matmul` and the kv heads are never repeated, and gives the
+  mask no gradient (it is a constant of the rule). Each is checked against a
+  central difference, with grouped heads, a mask per head and the causal flag,
+  and on ggml against the reference node by node (`test/ggml_attention_test.agc`).
 - Still open: rules for `pow`, `clamp`, `batch_matmul`, `to_dtype` between
   float dtypes (a precision cast), `conv1d` and `avg_pool1d`; the rule of
   `where`'s condition for gradients of gradients; and how an

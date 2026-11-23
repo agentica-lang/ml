@@ -136,6 +136,39 @@ extern module "torch"
   ## Reverses every axis, as the reference's `transpose` does (rank 2 swaps
   ## rows and columns; below rank 2 nothing changes).
   compute def transpose(a: TensorHandle) -> Result[TensorHandle]
+  ## The axes of `a` in the order `axes` names (output axis `i` is input axis
+  ## `axes[i]`), copied into row-major order.
+  compute def permute(a: TensorHandle, axes: List[Int]) -> Result[TensorHandle]
+  ## `softmax(scale * q k^T) v` over `q` `[B, H, Sq, D]`, `k` `[B, Hkv, Sk, D]` and
+  ## `v` `[B, Hkv, Sk, Dv]`, `Hkv` dividing `H` (query head `h` reads kv head
+  ## `h / (H / Hkv)`).
+  compute def attention(
+    q: TensorHandle,
+    k: TensorHandle,
+    v: TensorHandle,
+    scale: Float,
+  ) -> Result[TensorHandle]
+  ## The same with the additive `mask` (`[Sq, Sk]`, or `[Bm, Hm, Sq, Sk]` with
+  ## `Bm` in `{1, B}` and `Hm` in `{1, H}`) added to the scaled scores.
+  compute def attention_masked(
+    q: TensorHandle,
+    k: TensorHandle,
+    v: TensorHandle,
+    mask: TensorHandle,
+    scale: Float,
+  ) -> Result[TensorHandle]
+  ## Rotary embedding of `x` `[..., S, D]` by the integer `positions` `[S]`: the
+  ## first `dims` columns turn in pairs by `positions[s] * base^(-2i/dims)`,
+  ## the pair being `(i, i + dims/2)` with `neox` and `(2i, 2i + 1)` without,
+  ## the other way round with `inverse`.
+  compute def rope(
+    x: TensorHandle,
+    positions: TensorHandle,
+    base: Float,
+    dims: Int,
+    neox: Bool,
+    inverse: Bool,
+  ) -> Result[TensorHandle]
   ## `a` in the dtype `dtype` names: float to int truncates towards zero and
   ## range-checks, anything nonzero becomes `true`, an int width that cannot
   ## hold a value is an error.

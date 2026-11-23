@@ -52,6 +52,10 @@ GELU_ERF = 27
 CONCAT = 28
 CONV1D = 29
 SCATTER_ADD = 30
+PERMUTE = 31
+ATTENTION = 32
+ROPE = 33
+BATCH_MATMUL = 34
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -281,6 +285,9 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Concat(axis) -> ints = [axis, 0]
       Types.Op.Stack(axis) -> ints = [axis, 1]
       Types.Op.Conv1d(stride, padding) -> ints = [stride, padding]
+      Types.Op.Permute(axes) -> ints = axes
+      Types.Op.Attention(scale) -> ints = [try fixed(scale, n)]
+      Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try fixed(base, n), flag(inverse)]
       _ -> nil
     end
 
@@ -305,6 +312,22 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       keep: keep,
     ),
   )
+end
+
+## `x` as the integer the C layer reads back as `x / 1e9`: the C layer takes
+## integers only, and a scale or a base is held to nine decimals.
+def fixed(x: Float, n: Types.Node) -> Result[Int]
+  if !Types.is_finite(x) or x.abs >= 9.0e9
+    return error("node #{n.id} (#{Types.op_name(n.op)}): #{x} is not held by ggml here, which takes |x| < 9e9")
+  end
+
+  ok((x * 1.0e9).round)
+end
+
+## `true` as `1`, `false` as `0`.
+def flag(b: Bool) -> Int
+  return 1 if b
+  0
 end
 
 ## A leaf's tensor, which must live on the backend the graph runs on.
@@ -406,6 +429,10 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Concat(_) -> ok(CONCAT)
     Types.Op.Stack(_) -> ok(CONCAT)
     Types.Op.Conv1d(_, _) -> ok(CONV1D)
+    Types.Op.Permute(_) -> ok(PERMUTE)
+    Types.Op.Attention(_) -> ok(ATTENTION)
+    Types.Op.Rope(_, _, _, _) -> ok(ROPE)
+    Types.Op.BatchMatmul -> ok(BATCH_MATMUL)
     _ -> error("node #{n.id}: #{Types.op_name(n.op)} is not lowered to ggml yet")
   end
 end

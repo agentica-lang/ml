@@ -3,6 +3,7 @@
 ## own and still disagree once its output shape feeds the next one.
 
 import Conform from "torch_support"
+import Support from "support"
 import Tensor from "../tensor"
 
 private
@@ -237,6 +238,47 @@ def test_attention_softmax_then_context_agrees_with_the_reference() -> Result[Vo
   )
 end
 
+def test_attention_agrees_with_the_reference_over_grouped_heads_masks_and_the_causal_flag() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  for flags in [
+    [false, false, false],
+    [true, false, false],
+    [false, true, false],
+    [false, false, true],
+    [true, false, true],
+  ]
+    ours = try attend_on(Conform.TORCH, flags)
+    try Test.eq(Tensor.shape(ours), [2, 4, 3, 3])
+    try Conform.agrees(ours, try attend_on(Conform.REF, flags), "attention #{flags}")
+  end
+
+  ok()
+end
+
+def test_permute_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  x = Support.ramp(6, 2 * 3 * 5 * 6)
+  ours = try Tensor.permute(try Tensor.floats(x, [2, 3, 5, 6], Conform.TORCH), [3, 1, 0, 2])
+  try Test.eq(Tensor.shape(ours), [6, 3, 2, 5])
+  Conform.agrees(ours, try Tensor.permute(try Support.f32(x, [2, 3, 5, 6]), [3, 1, 0, 2]), "permute")
+end
+
+def test_rope_agrees_with_the_reference_in_both_layouts() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  for neox in [true, false]
+    for inverse in [false, true]
+      for dims in [6, 4, 2]
+        try rope_agrees(neox, inverse, dims)
+      end
+    end
+  end
+
+  ok()
+end
+
 def test_multi_head_attention_agrees_with_the_reference() -> Result[Void]
   return Conform.absent() if !Conform.available()
 
@@ -372,4 +414,48 @@ def test_attention_runs_past_a_million_scores() -> Result[Void]
   out = try Conform.floats_of(try Tensor.multi_head_attention(q, k, v, 1))
   try Test.eq(out.size, n)
   Test.assert((out[0] - 0.5).abs < 0.0001 and (out[n - 1] - 0.5).abs < 0.0001, "got #{out[0]} and #{out[n - 1]}")
+end
+
+## `attention` over grouped heads (`[2, 4, 3, 4]` queries over two kv heads of
+## five keys), with the mask `flags` pick: `[per-head, shared, causal]`.
+def attend_on(backend: Tensor.Backend, flags: List[Bool]) -> Result[Tensor.Tensor]
+  q = try Tensor.floats(Support.ramp(1, 2 * 4 * 3 * 4), [2, 4, 3, 4], backend)
+  k = try Tensor.floats(Support.ramp(2, 2 * 2 * 5 * 4), [2, 2, 5, 4], backend)
+  v = try Tensor.floats(Support.ramp(3, 2 * 2 * 5 * 3), [2, 2, 5, 3], backend)
+  mask: Optional[Tensor.Tensor] = none
+  if flags[0]
+    mask = some(try Tensor.floats(Support.ramp(4, 2 * 1 * 3 * 5), [2, 1, 3, 5], backend))
+  end
+
+  if flags[1]
+    mask = some(try Tensor.floats(Support.ramp(5, 3 * 5), [3, 5], backend))
+  end
+
+  Tensor.attention(q, k, v, mask, none, flags[2])
+end
+
+## `rope` of a `[2, 3, 5, 6]` tensor at positions up to 100, on libtorch and
+## on the reference.
+def rope_agrees(neox: Bool, inverse: Bool, dims: Int) -> Result[Void]
+  x = Support.ramp(7, 2 * 3 * 5 * 6)
+  at = [0, 3, 7, 8, 100]
+  got = try Tensor.rope(
+    try Tensor.floats(x, [2, 3, 5, 6], Conform.TORCH),
+    try Conform.on_torch_i64(at, [5]),
+    1000.0,
+    some(dims),
+    neox,
+    inverse,
+  )
+
+  want = try Tensor.rope(
+    try Support.f32(x, [2, 3, 5, 6]),
+    try Conform.on_ref_i64(at, [5]),
+    1000.0,
+    some(dims),
+    neox,
+    inverse,
+  )
+
+  Conform.agrees(got, want, "rope neox #{neox}, inverse #{inverse}, dims #{dims}")
 end

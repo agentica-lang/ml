@@ -362,6 +362,48 @@ def test_multi_head_attention_matches_a_central_difference() -> Result[Void]
   check_grad(args) do |xs| weigh(try Tensor.multi_head_attention(xs[0], xs[1], xs[2], 2)) end
 end
 
+def test_permute_matches_a_central_difference() -> Result[Void]
+  x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.4, 0.9, -0.2, 1.1, 0.6, -0.8], [2, 3, 2])
+  try check_grad([x]) do |xs| weigh(try Tensor.permute(xs[0], [2, 0, 1])) end
+
+  check_grad([x]) do |xs| weigh(try Tensor.permute(xs[0], [1, 2, 0])) end
+end
+
+def test_attention_matches_a_central_difference() -> Result[Void]
+  q = try f64(gen_floats(1, 1 * 2 * 4 * 2), [1, 2, 4, 2])
+  k = try f64(gen_floats(2, 1 * 1 * 6 * 2), [1, 1, 6, 2])
+  v = try f64(gen_floats(3, 1 * 1 * 6 * 3), [1, 1, 6, 3])
+  plain = try f64(gen_floats(4, 4 * 6), [4, 6])
+  try check_grad([q, k, v]) do |xs| weigh(try Tensor.attention(xs[0], xs[1], xs[2])) end
+
+  try check_grad([q, k, v]) do |xs| weigh(try Tensor.attention(xs[0], xs[1], xs[2], none, some(0.7), true)) end
+
+  check_grad([q, k, v]) do |xs| weigh(try Tensor.attention(xs[0], xs[1], xs[2], some(Trace.constant(plain)))) end
+end
+
+def test_attention_with_a_group_of_heads_and_a_mask_per_head_matches_a_central_difference() -> Result[Void]
+  q = try f64(gen_floats(1, 1 * 4 * 2 * 2), [1, 4, 2, 2])
+  k = try f64(gen_floats(2, 1 * 2 * 3 * 2), [1, 2, 3, 2])
+  v = try f64(gen_floats(3, 1 * 2 * 3 * 2), [1, 2, 3, 2])
+  per_head = try f64(gen_floats(4, 1 * 4 * 2 * 3), [1, 4, 2, 3])
+  shared = try f64(gen_floats(5, 1 * 1 * 2 * 3), [1, 1, 2, 3])
+  try check_grad([q, k, v]) do |xs|
+    weigh(try Tensor.attention(xs[0], xs[1], xs[2], some(Trace.constant(per_head))))
+  end
+
+  check_grad([q, k, v]) do |xs| weigh(try Tensor.attention(xs[0], xs[1], xs[2], some(Trace.constant(shared)))) end
+end
+
+def test_rope_matches_a_central_difference() -> Result[Void]
+  x = try f64([0.5, -1.0, 0.2, 0.3, 1.2, -0.7, 0.4, 0.9, 0.1, -0.6, 0.8, 0.3], [3, 4])
+  at = try Support.i64([0, 2, 5], [3])
+  try check_grad([x]) do |xs| weigh(try Tensor.rope(xs[0], Trace.constant(at))) end
+
+  try check_grad([x]) do |xs| weigh(try Tensor.rope(xs[0], Trace.constant(at), 500.0, none, false)) end
+
+  check_grad([x]) do |xs| weigh(try Tensor.rope(xs[0], Trace.constant(at), 10000.0, some(2), true, true)) end
+end
+
 def test_argmax_cuts_the_gradient() -> Result[Void]
   grads = try Trace.grad([try f64([0.5, -1.0, 2.0], [3])]) do |xs|
     index = try Tensor.to_dtype(try Tensor.argmax(xs[0]), Tensor.Dtype.F64)
@@ -493,4 +535,16 @@ def near(got: Tensor.Tensor, want: Tensor.Tensor, what: String) -> Result[Void]
   end
 
   ok()
+end
+
+## `count` values in `[-1, 1]` from a deterministic generator.
+def gen_floats(seed: Int, count: Int) -> List[Float]
+  s = seed * 7919 + 13
+  out: List[Float] = []
+  for _i in 0...count
+    s = (s * 1103515245 + 12345).bit_and(2147483647)
+    out = out.push((s.to_f / 2147483647.0) * 2.0 - 1.0)
+  end
+
+  out
 end

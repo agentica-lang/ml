@@ -75,13 +75,17 @@ enum {
   OP_CONCAT, /* ints: the axis, then 1 for a stack (each arg gains that axis) */
   OP_CONV1D, /* ints: stride, padding */
   OP_SCATTER_ADD, /* ints: the rows */
+  OP_PERMUTE,     /* ints: the axes, row-major */
+  OP_ATTENTION,   /* args: q, k, v, then an optional mask; ints: the scale times 1e9 */
+  OP_ROPE,        /* args: x, positions; ints: dims, neox, the base times 1e9, inverse */
+  OP_BATCH_MATMUL,
   OP_COUNT
 };
 
 static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
-  "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add",
+  "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -469,6 +473,46 @@ static struct ggml_tensor *scatter_add(struct entry *p, const struct gnode *indi
   return ggml_get_rows_back(p->ctx, flat, row_ids(p, indices, rows, guard), shape);
 }
 
+/* softmax(scale * q kᵀ + mask) v over q [B, H, Sq, D], k [B, Hkv, Sk, D] and
+   v [B, Hkv, Sk, Dv] (ne [D, Sq, H, B] and so on): two mul_mat and one
+   soft_max_ext. mul_mat repeats k and v over the query heads of a group
+   (ne[2] divides), which is grouped-query attention, and soft_max_ext takes
+   the scale and the additive mask (its ne[2] and ne[3] repeat). The caller has
+   checked every extent these asserts of ggml read. */
+static struct ggml_tensor *attention(struct entry *p, const struct gnode *q, const struct gnode *k, const struct gnode *v,
+                                     const struct gnode *mask, float scale) {
+  struct ggml_tensor *scores = ggml_mul_mat(p->ctx, dense(p, k), dense(p, q)); /* [Sk, Sq, H, B] */
+  struct ggml_tensor *weights = ggml_soft_max_ext(p->ctx, scores, mask != NULL ? dense(p, mask) : NULL, scale, 0.0f);
+  struct ggml_tensor *rows = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, v), 1, 0, 2, 3)); /* [Sk, Dv, Hkv, B] */
+
+  return ggml_mul_mat(p->ctx, rows, weights); /* [Dv, Sq, H, B] */
+}
+
+/* Whether an attention's arguments hold the shapes `attention` reads. */
+static bool attends(const struct gnode *q, const struct gnode *k, const struct gnode *v, const struct gnode *mask) {
+  if (q->rank != 4 || k->rank != 4 || v->rank != 4) return false;
+  if (k->ne[0] != q->ne[0] || k->ne[3] != q->ne[3] || v->ne[3] != q->ne[3]) return false;
+  if (v->ne[1] != k->ne[1] || v->ne[2] != k->ne[2] || q->ne[2] % k->ne[2] != 0) return false;
+  if (mask == NULL) return true;
+  return (mask->rank == 2 || mask->rank == 4) && mask->ne[0] == k->ne[1] && mask->ne[1] == q->ne[1] &&
+         (mask->ne[2] == 1 || mask->ne[2] == q->ne[2]) && (mask->ne[3] == 1 || mask->ne[3] == q->ne[3]);
+}
+
+/* Rotary embedding of x [..., S, D]. ggml wants the rows along ne[2] ([D, heads, S, batch]), so the
+   sequence axis is swapped with the one before it, rotated by ggml_rope_ext, and swapped back. The positions are F32
+   here and ggml takes I32; `inverse` negates them, which turns every pair the other way. */
+static struct ggml_tensor *rope(struct entry *p, const struct gnode *x, const struct gnode *positions, int dims,
+                                bool neox, float base, bool inverse) {
+  struct ggml_tensor *rows = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, x), 0, 2, 1, 3));
+  struct ggml_tensor *at = ggml_cont(p->ctx, dense(p, positions));
+  struct ggml_tensor *turned;
+
+  if (inverse) at = ggml_neg(p->ctx, at);
+  turned = ggml_rope_ext(p->ctx, rows, ggml_cast(p->ctx, at, GGML_TYPE_I32), NULL, dims,
+                         neox ? GGML_ROPE_TYPE_NEOX : GGML_ROPE_TYPE_NORMAL, 4096, base, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+  return ggml_cont(p->ctx, ggml_permute(p->ctx, turned, 0, 2, 1, 3));
+}
+
 /* Whether the args, of the output's rank (one less for a stack), match `ne`
    off the ggml axis `dim` and their extents on it add up to `ne[dim]`. */
 static bool joins(const struct entry *p, const int64_t *args, int nargs, int rank, int dim, bool stacked,
@@ -575,10 +619,12 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if (nargs > 1) b = &p->nodes[args[1]];
   if (nargs > 2) c = &p->nodes[args[2]];
   if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT || op == OP_GATHER ||
-      op == OP_SCATTER_ADD || op == OP_CONV1D) {
+      op == OP_SCATTER_ADD || op == OP_CONV1D || op == OP_ROPE || op == OP_BATCH_MATMUL) {
     if (nargs != 2) return tg_error(env, "a binary op takes 2 args");
   } else if (op == OP_WHERE) {
     if (nargs != 3) return tg_error(env, "where takes 3 args");
+  } else if (op == OP_ATTENTION) {
+    if (nargs != 3 && nargs != 4) return tg_error(env, "attention takes q, k, v and an optional mask");
   } else if (op == OP_CONCAT) {
     if (nargs < 1) return tg_error(env, "concat takes at least 1 arg");
   } else if (op > OP_FULL && op != OP_ARANGE && nargs != 1) {
@@ -751,6 +797,44 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         return tg_error(env, "concat: the args do not join into the recorded shape");
       }
       t = concat(p, args, nargs, rank - 1 - (int)ints[0], ints[1] != 0, n->ne);
+      break;
+    case OP_PERMUTE: {
+      int order[4] = {0, 1, 2, 3};
+      bool seen[4] = {false, false, false, false};
+
+      if (nints != rank || a->rank != rank) return tg_error(env, "permute takes one axis per axis of its source");
+      for (i = 0; i < rank; i++) {
+        if (ints[i] < 0 || ints[i] >= rank || seen[ints[i]]) return tg_error(env, "permute takes each axis once");
+        seen[ints[i]] = true;
+        order[rank - 1 - (int)ints[i]] = rank - 1 - i; /* source ggml axis -> its place in the answer */
+      }
+      t = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, a), order[0], order[1], order[2], order[3]));
+      break;
+    }
+    case OP_ATTENTION: {
+      const struct gnode *mask = nargs == 4 ? &p->nodes[args[3]] : NULL;
+
+      if (nints != 1) return tg_error(env, "attention takes its scale");
+      if (!attends(a, b, c, mask)) {
+        return tg_error(env, "attention takes q [B, H, Sq, D], k, v [B, Hkv, Sk, D | Dv] with Hkv dividing H, and a mask [Sq, Sk] or [B|1, H|1, Sq, Sk]");
+      }
+      t = attention(p, a, b, c, mask, (float)((double)ints[0] / 1e9));
+      break;
+    }
+    case OP_ROPE:
+      if (nints != 4 || a->rank < 2 || a->rank > 4 || ints[0] < 2 || ints[0] % 2 != 0 || ints[0] > a->ne[0]) {
+        return tg_error(env, "rope takes a tensor of rank 2 to 4, an even dims within its width, the layout and the base");
+      }
+      if (b->rank != 1 || b->ne[0] != a->ne[1]) return tg_error(env, "rope takes one position per row");
+      t = rope(p, a, b, (int)ints[0], ints[1] != 0, (float)((double)ints[2] / 1e9), ints[3] != 0);
+      break;
+    case OP_BATCH_MATMUL:
+      if (a->rank != rank || b->rank != rank || rank < 2 || a->ne[2] != b->ne[2] || a->ne[3] != b->ne[3] ||
+          a->ne[0] != b->ne[1]) {
+        return tg_error(env, "batch_matmul takes [B..., m, k] and [B..., k, n]");
+      }
+      /* like matmul: a · b is mul_mat(bᵀ, a), per batch */
+      t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, b), 1, 0, 2, 3)), dense(p, a));
       break;
     case OP_CONV1D:
       if (nints != 2 || ints[0] < 1 || ints[1] < 0) return tg_error(env, "conv1d takes a stride >= 1 and a padding >= 0");

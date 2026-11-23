@@ -166,3 +166,31 @@ def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> T
   shape = Shapes.avg_pool1d_output_shape(input.shape, kernel, stride, padding)
   record(Types.Op.AvgPool1d(kernel, stride, padding), [input], shape, input.dtype)
 end
+
+## A traced `permute`: the axes of `t` in the order `axes` names.
+def permute(t: Types.Tensor, axes: List[Int]) -> Types.Tensor
+  record(Types.Op.Permute(axes), [t], Shapes.permuted_shape(t.shape, axes), t.dtype)
+end
+
+## A traced `attention` over `[batch, heads, q_len, value_dim]`; the additive
+## `mask`, when there is one, is the fourth argument.
+def attention(
+  q: Types.Tensor,
+  k: Types.Tensor,
+  v: Types.Tensor,
+  mask: Optional[Types.Tensor],
+  scale: Float,
+) -> Types.Tensor
+  args = [q, k, v]
+  case mask
+    some(m) -> args = args.push(m)
+    none -> nil
+  end
+
+  record(Types.Op.Attention(scale), args, q.shape.take(3).push(v.shape[3]), q.dtype)
+end
+
+## A traced `rope` of `x`, whose shape it keeps.
+def rope(x: Types.Tensor, positions: Types.Tensor, base: Float, dims: Int, neox: Bool, inverse: Bool) -> Types.Tensor
+  record(Types.Op.Rope(base, dims, neox, inverse), [x, positions], x.shape, x.dtype)
+end

@@ -563,6 +563,54 @@ def transpose(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
   one(device, t.dtype, t.shape.reverse) do Raw.transpose(h) end
 end
 
+## The axes of `t` in the order `axes` names, as a new row-major tensor.
+def permute(device: Types.Device, t: Types.Tensor, axes: List[Int]) -> Result[Types.Tensor]
+  _ = try ready(device, "permute")
+  h = try handle_of(t)
+  one(device, t.dtype, TorchShapes.permuted_shape(t.shape, axes)) do Raw.permute(h, axes) end
+end
+
+## Scaled dot-product attention (`at::scaled_dot_product_attention`); the
+## kv heads are repeated up to the query heads first, since libtorch 2.4 has no
+## grouped-query form.
+def attention(
+  device: Types.Device,
+  q: Types.Tensor,
+  k: Types.Tensor,
+  v: Types.Tensor,
+  mask: Optional[Types.Tensor],
+  scale: Float,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "attention")
+  hq = try handle_of(q)
+  hk = try handle_of(k)
+  hv = try handle_of(v)
+  shape = q.shape.take(3).push(v.shape[3])
+  case mask
+    some(m) ->
+      hm = try handle_of(m)
+      one(device, q.dtype, shape) do Raw.attention_masked(hq, hk, hv, hm, scale) end
+    none -> one(device, q.dtype, shape) do Raw.attention(hq, hk, hv, scale) end
+  end
+end
+
+## Rotary position embedding, as a composite of libtorch ops over cosine and
+## sine tables made in doubles.
+def rope(
+  device: Types.Device,
+  x: Types.Tensor,
+  positions: Types.Tensor,
+  base: Float,
+  dims: Int,
+  neox: Bool,
+  inverse: Bool,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "rope")
+  hx = try handle_of(x)
+  hp = try handle_of(positions)
+  one(device, x.dtype, x.shape) do Raw.rope(hx, hp, base, dims, neox, inverse) end
+end
+
 ## `t` in `dtype`: float to int truncates towards zero, anything nonzero
 ## becomes `true`, an int width that cannot hold a value is an `error`.
 def to_dtype(device: Types.Device, t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
