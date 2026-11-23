@@ -19,7 +19,7 @@ Add the package with the repository, its folder as `subdir`, and a commit of `ma
 tensor = { git = "https://github.com/agentica-lang/ml", ref = "COMMIT", subdir = "tensor" }
 ```
 
-A package that depends on another, such as `nn` on `tensor`, pulls it in at the `ref` it writes, and today those pins are old: `tensor` and `nn` install correctly, but `train` (its `ref` of `tensor` lacks `stop_grad`) and `hub` and `asr` (their `ref` of `nn` lacks `Conv1d` and `DecoderBlock`) do not, until a follow-up bumps the pins. Inside the repository `tensor`, `nn`, `train`, `hub` and `asr` are members of one workspace and read each other from their folders; `whisper` is a project of its own.
+A package that depends on another, such as `nn` on `tensor`, pulls it in at the `ref` it writes. Inside the repository `tensor`, `nn`, `train`, `hub` and `asr` are members of one workspace and read each other from their folders; `whisper` is a project of its own.
 
 ## A first program
 

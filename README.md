@@ -37,10 +37,7 @@ pins its own Agentica version (`AGENTICA_VERSION`), and CI runs `check`,
 version.
 
 Outside the workspace a member is fetched at the `ref` it writes for the
-others, and today those pins are old: `tensor` and `nn` install correctly, but
-`train` (its `ref` of `tensor` lacks `stop_grad`) and `hub` and `asr` (their
-`ref` of `nn` lacks `Conv1d` and `DecoderBlock`) do not, until a follow-up
-bumps the pins.
+others.
 
 ```toml
 [dependencies]
