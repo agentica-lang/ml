@@ -118,7 +118,7 @@ Built only from §3.1, in `tensor/` (generic) or `nn/` (model-shaped):
   compositions over §3.1 (no `var`/`rsqrt` primitive is needed).
 - `gelu` is the user-facing name of `gelu_tanh_approx` (§3.1); the `erf` form
   cannot be expressed over §3.1, so `gelu_erf` is an op of its own: the
-  reference sums a series for `erf` (to about 1e-15), libtorch calls
+  reference sums a series for `erf` (to about 1e-14), libtorch calls
   `torch::gelu`. `silu` derives from `sigmoid` and `mul`.
 - `dot(a, b)` as `reshape` + `matmul`; `linear(x, w, b?)`, `embedding(ids,
   table)` via `matmul`/`gather`.

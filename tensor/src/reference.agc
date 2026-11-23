@@ -115,7 +115,7 @@ def sigmoid_ref(x: Float) -> Float
   1.0 / (1.0 + exp_ref(-x))
 end
 
-## `erf(z)`, pure Agentica, to about 1e-15: `2/sqrt(pi) exp(-z^2)` times the
+## `erf(z)`, pure Agentica, to about 1e-14: `2/sqrt(pi) exp(-z^2)` times the
 ## series `sum 2^n z^(2n+1) / (1 3 5 ... (2n+1))`, whose terms are all
 ## positive (no cancellation); past `|z| = 6` it is `±1` in doubles.
 def erf_ref(z: Float) -> Float

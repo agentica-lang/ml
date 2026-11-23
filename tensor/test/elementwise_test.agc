@@ -79,7 +79,7 @@ def test_log_of_a_saturated_exp_is_an_error() -> Result[Void]
 end
 
 ## Python's `math.erf` gives the expected values; the series is good to about
-## 1e-15, far tighter than the shared tolerance.
+## 1e-14, far tighter than the shared tolerance.
 def test_gelu_erf_matches_python_math_erf() -> Result[Void]
   a = try Support.f32([-6.0, -1.0, 0.0, 0.5, 1.75, 4.0, 9.0, -0.25], [8])
   want = [
