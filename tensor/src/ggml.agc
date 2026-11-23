@@ -3,10 +3,11 @@
 ## (`tensor/DESIGN.md` §2, §7, §8). It lives inside `tensor/` for the reason
 ## `src/torch.agc` does: `Handle.Ggml` names the resource of `ggml_native.agc`.
 ##
-## It creates tensors, uploads them and reads them back. ggml is fast when a
-## whole computation is one compiled graph (a Vulkan dispatch costs about
-## 2 ms, spike/ggml-graph/README.md), so ops run only there, from a traced
-## graph (`Trace`, `src/lower.agc`). Eagerly, every other primitive answers
+## It creates tensors, uploads them, reads them back and copies them between
+## devices (`to_device`). ggml is fast when a whole computation is one
+## compiled graph (a Vulkan dispatch costs about 2 ms,
+## spike/ggml-graph/README.md), so ops run only there, from a traced graph
+## (`Trace`, `src/lower.agc`). Eagerly, every other primitive answers
 ## `compiled_only(op)`: an error naming the op, never a wrong number and
 ## never a slow op-by-op path (§7).
 ##
@@ -87,6 +88,22 @@ def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   end
 
   ok(out)
+end
+
+## `t` copied to `device`: between ggml's CPU and a Vulkan device, or between
+## two Vulkan devices.
+def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
+  code = try code_of(device, "to_device")
+  h = try handle_of(t)
+  made("to_device", device, t.shape, t.dtype) do GgmlRaw.transfer(h, code) end
+end
+
+## Chooses fp16 `mul_mat` (`true`) or F32 (`false`, the default) for every
+## Vulkan device this process opens; an error once a ggml call fixed the
+## other one.
+def vulkan_fp16(enabled: Bool) -> Result[Void]
+  _ = try usable("vulkan_fp16")
+  GgmlRaw.vulkan_fp16(enabled)
 end
 
 ## The device's code for the native calls: `-1` for `Cpu`, the index for

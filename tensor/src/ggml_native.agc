@@ -39,6 +39,8 @@ extern module "ggml"
   ## Host readback: the row-major values as doubles, which the caller tags
   ## with the tensor's dtype.
   compute def readback(t: TensorHandle) -> Result[List[Float]]
+  ## A copy of `t` on `device`, of the same shape and storage.
+  compute def transfer(t: TensorHandle, device: Int) -> Result[TensorHandle]
 
   ## One compiled graph of the structural cache, held by one evaluation. The
   ## graph itself lives in the C cache for the process; the lease marks it
@@ -72,4 +74,9 @@ extern module "ggml"
   compute def run(lease: Lease, fills: List[Float]) -> Result[Void]
   ## How many graphs this process has compiled: the cache's misses.
   compute def compiles() -> Int
+  ## Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
+  ## Vulkan device this process opens. ggml reads it once, when it first
+  ## enumerates its devices, so a different choice after any other call of
+  ## this module (a CPU one included) is an error.
+  compute def vulkan_fp16(enabled: Bool) -> Result[Void]
 end

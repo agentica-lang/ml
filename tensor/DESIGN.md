@@ -151,7 +151,8 @@ Tensor.backend(t) -> Backend                      # no native call
   other in the same process. A backend value carries its device
   (`Backend.Torch(Device.Cpu)`);
   `Backend.Reference` has none. Batch lives in the shape, not in a global
-  either.
+  either. The one process-wide setting is `Tensor.vulkan_fp16`, because ggml
+  fixes it per process (§7).
 - Backend-module functions take the device as an explicit first argument
   (`Torch.matmul(device, a, b)`): dispatch unpacks it from the backend value
   (§7) and the tensor keeps no second copy of it.
@@ -242,11 +243,12 @@ end
 - **`Ggml` has no eager ops.** A Vulkan dispatch costs about 2 ms, so ggml is
   fast only when a whole computation is one compiled graph
   (`spike/ggml-graph/README.md`). Its arms create tensors (`zeros`, `ones`,
-  `empty`, `full`, `like`, `arange`, `scalar_to_tensor`, `from_list`), read
-  them back (`to_list`) and pass `stop_grad` through; every other primitive
-  answers `Ggml.compiled_only(op)`, an `error` that names the op and points at
-  `Trace`. Running each op as a one-node graph would work, but it is a slow
-  path nobody should train on, so it is not offered.
+  `empty`, `full`, `like`, `arange`, `scalar_to_tensor`, `from_list`), read them
+  back (`to_list`), copy them between devices (`to_device`) and pass `stop_grad`
+  through; every other primitive answers `Ggml.compiled_only(op)`, an `error`
+  that names the op and points at `Trace`. Running each op as a one-node graph
+  would work, but it is a slow path nobody should train on, so it is not
+  offered.
 - **A trace on `Ggml` is one compiled graph** (`src/lower.agc`,
   `native/ggml_graph.c`). `Trace.evaluate` sends every node the outputs reach
   to the C layer in id order and runs the result as one ggml graph; it never
@@ -288,10 +290,16 @@ end
   finite): enough for an
   MLP and softmax cross-entropy with their gradients. An output that holds
   an infinity or a NaN is an error.
-- Vulkan computes `mul_mat` in `F32`: ggml reads `GGML_VK_DISABLE_F16` once
-  per process, when it first enumerates its devices, and the C layer sets it
-  before its first registry call. fp16 would be faster and changes gradients
-  by up to about 10 % at MLP sizes (`spike/ggml-graph/README.md`).
+- Vulkan computes `mul_mat` in `F32` by default: ggml reads
+  `GGML_VK_DISABLE_F16` once per process, when it first enumerates its
+  devices, and the C layer sets it before its first registry call (any ggml
+  call, a CPU one or `Tensor.available` included). `Tensor.vulkan_fp16(true)`
+  before that opts in to fp16 `mul_mat`, process-wide (it is ggml's choice
+  per process, not per tensor, the one exception to §4's "never a global");
+  a different choice after it is an error, and on a build without Vulkan it
+  changes nothing. fp16 is 1.1–1.5× faster from batch 256 to 4096 and
+  changes gradients by up to about 10 % at MLP sizes (the spike's run B,
+  `spike/ggml-graph/README.md`).
 - The ggml module is `[native.ggml]`, `optional = true`, built from
   `native/ggml.c` and `native/ggml_graph.c` against the pinned
   `third_party/ggml`, which `tools/build-engine.sh` builds CPU-only (CI) or with
@@ -334,10 +342,12 @@ Usage for tensors:
   buffer, freed together by its free hook. The device itself is opened once
   per process and never closed: a buffer only needs its device's buffer type,
   which lives as long as the process. Every Vulkan buffer operation
-  (allocate, write, read, free, the free hook included) runs under one lock in
-  the C layer, so tasks on one device never overlap a transfer. A compiled step (later) will own its graph and the train state
-  in a resource of its own, which `fit` creates and closes; the tensors it
-  returns are fresh `Handle.Ggml` values (no donation).
+  (allocate, write, read, free) runs under one lock in the C layer, so tasks
+  on one device never overlap a transfer; a free hook never waits for it and
+  leaves the free to the next holder (§7). A compiled step (later) will own
+  its graph and the train state in a resource of its own, which `fit` creates
+  and closes; the tensors it returns are fresh `Handle.Ggml` values (no
+  donation).
 - `compute def` kernels only push data or return a resource; the loop lives
   in Agentica and the native side never calls back (existing FFI invariant).
 

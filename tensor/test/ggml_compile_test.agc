@@ -355,5 +355,9 @@ def test_vulkan_matches_the_reference_or_says_why_not() -> Result[Void]
 
   try mlp_parity(VULKAN)
   try ce_parity(VULKAN)
-  Test.eq(try System.env("GGML_VK_DISABLE_F16"), "1")
+  try Test.eq(try System.env("GGML_VK_DISABLE_F16"), "1")
+  case Tensor.vulkan_fp16(true)
+    ok(_) -> error("fp16 was chosen after a Vulkan device opened with F32")
+    error(e) -> Test.assert(e.message.include?("chose F32 mul_mat"), "the error said \"#{e.message}\"")
+  end
 end

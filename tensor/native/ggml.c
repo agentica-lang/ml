@@ -112,13 +112,19 @@ static void ggml_TensorHandle_free(void *state) {
 /* ggml-Vulkan converts F32 `mul_mat` inputs to fp16 on a device that has
    fp16, unless GGML_VK_DISABLE_F16 is set when ggml first enumerates its
    devices (any registry call does), and no per-op switch exists
-   (spike/ggml-graph/README.md). So the first registry call of this file sets
-   it, for the process: F32. Call under the device lock. */
+   (spike/ggml-graph/README.md). So the precision belongs to the process:
+   `ggml_vulkan_fp16` records the choice in `want_fp16`, and the first
+   registry call of this file sets the variable from it and fixes it. Call
+   under the device lock. */
+static bool want_fp16 = false;
 static bool precision_fixed = false;
 
 static void fix_precision(void) {
   if (precision_fixed) return;
-  setenv("GGML_VK_DISABLE_F16", "1", 1);
+  /* This runs on a compute-pool thread, under the device lock, before ggml
+     reads the variable; nothing else of this module reads the environment. */
+  if (want_fp16) unsetenv("GGML_VK_DISABLE_F16");
+  else setenv("GGML_VK_DISABLE_F16", "1", 1);
   precision_fixed = true;
 }
 
@@ -200,6 +206,21 @@ ggml_backend_t tg_backend(int64_t device, char *why, size_t len) {
   }
   backends[device + 1] = backend;
   return backend;
+}
+
+an_term ggml_vulkan_fp16(an_env *env, bool enabled) {
+  bool conflict, fixed;
+
+  tg_lock_device();
+  conflict = precision_fixed && want_fp16 != enabled;
+  fixed = want_fp16;
+  if (!conflict) want_fp16 = enabled;
+  tg_unlock_device();
+  if (conflict) {
+    return tg_error(env, fixed ? "this process chose fp16 mul_mat for Vulkan already; choose before the first ggml call"
+                               : "this process chose F32 mul_mat for Vulkan already; choose before the first ggml call");
+  }
+  return ggml_result_Void_ok(env, an_void(env));
 }
 
 static bool failed_with(an_term *failure, an_term term) {
@@ -362,6 +383,20 @@ an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double val
   if (bytes == NULL) return tg_error(env, "out of memory");
   for (i = 0; i < count; i++) put(bytes, i, type, value);
   return store(env, state, bytes, term);
+}
+
+an_term ggml_transfer(an_env *env, struct ggml_TensorHandle_state *t, int64_t device) {
+  an_term term, failure;
+  struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
+  bool vulkan;
+
+  if (t->t == NULL) return tg_error(env, "transfer of a tensor that was never made");
+  if (!tg_new_tensor(env, device, t->t->ne, t->t->type, state, &failure)) return failure;
+  vulkan = t->vulkan || state->vulkan;
+  lock_for(vulkan);
+  ggml_backend_tensor_copy(t->t, state->t);
+  unlock_for(vulkan);
+  return ggml_result_TensorHandle_ok(env, term);
 }
 
 an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t) {

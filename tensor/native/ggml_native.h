@@ -134,6 +134,9 @@ an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double val
    with the tensor's dtype. */
 an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t);
 
+/* A copy of `t` on `device`, of the same shape and storage. */
+an_term ggml_transfer(an_env *env, struct ggml_TensorHandle_state *t, int64_t device);
+
 /* A compiled graph cached under `key` on `device` that no one holds, or a
    new empty one with room for `capacity` nodes, to build with `node` and
    `compile`. */
@@ -168,6 +171,12 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
 
 /* How many graphs this process has compiled: the cache's misses. */
 an_term ggml_compiles(an_env *env);
+
+/* Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
+   Vulkan device this process opens. ggml reads it once, when it first
+   enumerates its devices, so a different choice after any other call of
+   this module (a CPU one included) is an error. */
+an_term ggml_vulkan_fp16(an_env *env, bool enabled);
 
 #ifdef __cplusplus
 }
@@ -415,6 +424,15 @@ static an_term ggml_native_readback(an_env *env, int argc, const an_term *argv) 
   return ggml_readback(env, a0);
 }
 
+static an_term ggml_native_transfer(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_TensorHandle_state *a0 = ggml_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  return ggml_transfer(env, a0, a1);
+}
+
 static an_term ggml_native_acquire(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   int64_t a0;
@@ -507,11 +525,19 @@ static an_term ggml_native_compiles(an_env *env, int argc, const an_term *argv) 
   return ggml_compiles(env);
 }
 
+static an_term ggml_native_vulkan_fp16(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  bool a0;
+  if (!an_get_bool(env, argv[0], &a0)) return an_badarg(env, 0);
+  return ggml_vulkan_fp16(env, a0);
+}
+
 static const an_function ggml_native_functions[] = {
   {"vulkan_devices", "() -> Int", ggml_native_vulkan_devices, AN_DIRTY},
   {"upload", "(Int, List[Int], List[Float], Bool) -> Result[TensorHandle]", ggml_native_upload, AN_DIRTY},
   {"filled", "(Int, List[Int], Float, Bool) -> Result[TensorHandle]", ggml_native_filled, AN_DIRTY},
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
+  {"transfer", "(TensorHandle, Int) -> Result[TensorHandle]", ggml_native_transfer, AN_DIRTY},
   {"acquire", "(Int, String, Int) -> Result[Lease]", ggml_native_acquire, AN_DIRTY},
   {"ready", "(Lease) -> Bool", ggml_native_ready, AN_DIRTY},
   {"node", "(Lease, Int, List[Int], List[Int], List[Int]) -> Result[Int]", ggml_native_node, AN_DIRTY},
@@ -520,6 +546,7 @@ static const an_function ggml_native_functions[] = {
   {"output", "(Lease, Int, Bool) -> Result[TensorHandle]", ggml_native_output, AN_DIRTY},
   {"run", "(Lease, List[Float]) -> Result[Void]", ggml_native_run, AN_DIRTY},
   {"compiles", "() -> Int", ggml_native_compiles, AN_DIRTY},
+  {"vulkan_fp16", "(Bool) -> Result[Void]", ggml_native_vulkan_fp16, AN_DIRTY},
 };
 
 /* Ends the module's one .c file: the tables and agentica_native_init. LOAD is NULL or a const char *(*)(void)
@@ -529,5 +556,5 @@ static const an_function ggml_native_functions[] = {
     {"TensorHandle", sizeof(struct ggml_TensorHandle_state), GGML_TensorHandle_FREE}, \
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 12, NULL, 0, ggml_native_resources, 2, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 14, NULL, 0, ggml_native_resources, 2, LOAD)
 #endif
