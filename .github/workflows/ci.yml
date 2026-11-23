@@ -151,8 +151,11 @@ jobs:
           done
 
       - name: Test
-        # A test gets 10M steps (the default is 1M): the gradient checks of
-        # nn/ and the reference backend's exhaustive properties cost more.
+        # A test file gets 10M x (its tests + 1) steps (the default is 1M x):
+        # the gradient checks of nn/ need about 4.2M (measured by bisection).
+        # The 10x loosens the runaway guard for every member; that is fine
+        # here, because the guard only catches an infinite loop, which still
+        # ends, and the job has its own timeout-minutes.
         run: agentica test --max-steps 10000000
 
       # A package with tools/fetch-model.sh validates against the pinned

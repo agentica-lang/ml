@@ -84,6 +84,8 @@ that are the layer's own (rank of `positional`, table length, heads).
   from checkpoints (`hub/`).
 - **`F32` only** for `init_*`, the compute dtype of `tensor/DESIGN.md` §2.
   Layers themselves take any float dtype (the gradient test uses `F64`).
+  The gradient tests need `agentica test --max-steps 10000000`: a bare
+  `agentica test` runs out of its 1M steps (per file, times its tests + 1).
 - **`gelu` does not run on libtorch** (`gelu_tanh_approx` is one of its three
   missing ops), so the libtorch comparisons use `relu` and `silu`. `gelu` is
   the tanh approximation, while Whisper uses the `erf` form: expect drift near
