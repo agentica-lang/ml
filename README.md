@@ -57,7 +57,7 @@ tolerances and the measured cost of the dependency.
 
 ## Checking the native C
 
-CI runs [cchecker](https://github.com/agentica-lang/cchecker) over the native C of `tensor/` (`ggml.c`, `ggml_graph.c`), `whisper/` and `asr/`: locks released on every path and taken in order (`tg_lock_device`, `cache_lock`, the model mutex), ownership, `gcc -fanalyzer` and clang-tidy. It fails on a finding that is not in `cchecker-baseline.json`. `torch.c` is left out: it is C++, and cchecker reads C.
+CI runs [cchecker](https://github.com/agentica-lang/cchecker) over the native C of `tensor/` (`ggml.c`, `ggml_graph.c`), `whisper/` and `asr/`: locks released on every path, and the ggml locks taken in order (device, cache, deferred), ownership, `gcc -fanalyzer` and clang-tidy. It fails on a finding that is not in `cchecker-baseline.json`. `torch.c` is left out: it is C++, and cchecker reads C.
 
 ```sh
 git submodule update --init third_party/ggml third_party/whisper.cpp

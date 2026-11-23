@@ -23,8 +23,13 @@ dir=build/cchecker/$CCHECKER_VERSION
 if [ ! -f "$dir/cchecker.agc" ]; then
   rm -rf "$dir" "$dir.tmp"
   mkdir -p build/cchecker
-  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$CCHECKER_VERSION" \
-    https://github.com/agentica-lang/cchecker "$dir.tmp"
+  for try in 1 2 3; do
+    rm -rf "$dir.tmp"
+    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$CCHECKER_VERSION" \
+      https://github.com/agentica-lang/cchecker "$dir.tmp" && break
+    [ "$try" -lt 3 ] || { echo "cchecker.sh: could not clone cchecker" >&2; exit 1; }
+    sleep 15
+  done
   [ "$(git -C "$dir.tmp" rev-parse HEAD)" = "$CCHECKER_COMMIT" ] || {
     echo "cchecker.sh: cchecker $CCHECKER_VERSION is not commit $CCHECKER_COMMIT" >&2
     rm -rf "$dir.tmp"
@@ -45,14 +50,14 @@ for engine in third_party/ggml/include third_party/whisper.cpp/include; do
   }
 done
 
-# One entry per file: the compiler, the flags, the package's native/ folder and the engine headers it links.
+# One entry per file (a new native .c file is added to the list below): the compiler, the flags, the package's native/ folder and the engine headers it links.
 db=build/cchecker/compile_commands.json
 sep='['
 {
   while read -r file includes; do
     args=
     for i in $includes; do args="$args, \"-I$i\""; done
-    printf '%s\n  {"directory": "%s", "file": "%s", "arguments": ["cc", "-std=gnu11", "-O2", "-Wall", "-fPIC", "-I%s"%s, "-c", "%s", "-o", "/dev/null"]}' \
+    printf '%s\n  {"directory": "%s", "file": "%s", "arguments": ["cc", "-std=c11", "-fvisibility=hidden", "-O2", "-Wall", "-fPIC", "-I%s"%s, "-c", "%s", "-o", "/dev/null"]}' \
       "$sep" "$root" "$file" "$native_include" "$args" "$file"
     sep=,
   done <<LIST
