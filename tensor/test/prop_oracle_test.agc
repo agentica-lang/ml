@@ -19,6 +19,12 @@ import Tensor from "../tensor"
 ## default, still far below any wrong operand or a doubled `exp`.
 LOOSE = 0.000001
 
+## `layer_norm` and `rms_norm` subtract a mean (or square a sum) and divide by a
+## square root in `F32`: the absolute error of an output near zero is about the
+## `F32` epsilon times the input magnitude over the spread, a few 1e-7, so both
+## the relative tolerance and the absolute floor are 1e-5.
+NORM = 0.00001
+
 ## For the ops whose dyadic inputs make them exact in `F32`: `Support.near?` then
 ## asks for equality.
 EXACT = 0.0
@@ -117,10 +123,10 @@ def binary(op: String, a: Tensor.Tensor, b: Tensor.Tensor) -> Result[Tensor.Tens
 end
 
 ## `op` on libtorch against `op` on the reference.
-def unary_agrees(op: String, spec: Support.Spec, rel: Float) -> Result[Void]
+def unary_agrees(op: String, spec: Support.Spec, rel: Float, floor: Float) -> Result[Void]
   ours = try unary(op, try Support.tensor(Conform.TORCH, spec))
   theirs = try unary(op, try Support.tensor(Conform.REF, spec))
-  Support.same(ours, theirs, op, rel)
+  Support.same(ours, theirs, op, rel, floor)
 end
 
 def binary_agrees(op: String, a: Support.Spec, b: Support.Spec, rel: Float) -> Result[Void]
@@ -129,12 +135,17 @@ def binary_agrees(op: String, a: Support.Spec, b: Support.Spec, rel: Float) -> R
   Support.same(ours, theirs, op, rel)
 end
 
-def unary_ops_agree(ops: List[String], gen: Prop.Gen[Support.Spec], rel: Float) -> Result[Void]
+def unary_ops_agree(
+  ops: List[String],
+  gen: Prop.Gen[Support.Spec],
+  rel: Float,
+  floor: Float = Conform.ABS,
+) -> Result[Void]
   return Conform.absent() if !Conform.available()
 
   run(gen) do |spec: Support.Spec|
     for op in ops
-      try unary_agrees(op, spec, rel)
+      try unary_agrees(op, spec, rel, floor)
     end
 
     ok()
@@ -170,7 +181,7 @@ def test_softmax_agrees_with_the_reference() -> Result[Void]
 end
 
 def test_normalizations_agree_with_the_reference() -> Result[Void]
-  unary_ops_agree(["layer_norm", "rms_norm"], specs(GRIDS, dyadic()), LOOSE)
+  unary_ops_agree(["layer_norm", "rms_norm"], specs(GRIDS, dyadic()), NORM, NORM)
 end
 
 def test_add_sub_and_mul_agree_with_the_reference() -> Result[Void]

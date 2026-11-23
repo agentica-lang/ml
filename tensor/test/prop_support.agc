@@ -73,13 +73,14 @@ end
 
 ## `Conform.close?` with the relative tolerance `rel`, and two NaNs are equal
 ## (an op that answers NaN on both sides agrees). `rel` of 0.0 asks for exact
-## equality, for the ops whose inputs make them exact.
-def near?(a: Float, b: Float, rel: Float) -> Bool
+## equality, for the ops whose inputs make them exact. Below `floor` in absolute
+## terms two values agree whatever `rel` says.
+def near?(a: Float, b: Float, rel: Float, floor: Float = Conform.ABS) -> Bool
   return true if a != a and b != b
   return a == b if rel == 0.0 or !Conform.finite?(a) or !Conform.finite?(b)
 
   gap = (a - b).abs
-  gap <= Conform.ABS or gap <= rel * (a.abs + b.abs)
+  gap <= floor or gap <= rel * (a.abs + b.abs)
 end
 
 ## What a test of the torch side proves: libtorch is among `backends()` where it
@@ -98,6 +99,7 @@ def holds(
   want: List[Float],
   what: String,
   rel: Float = Conform.REL,
+  floor: Float = Conform.ABS,
 ) -> Result[Void]
   return error("#{what}: shape #{Tensor.shape(t)}, expected #{shape}") if Tensor.shape(t) != shape
 
@@ -105,7 +107,7 @@ def holds(
   return error("#{what}: #{got.size} values, expected #{want.size}") if got.size != want.size
 
   for i in 0...want.size
-    return error("#{what}: value #{i} is #{got[i]}, expected #{want[i]}") if !near?(got[i], want[i], rel)
+    return error("#{what}: value #{i} is #{got[i]}, expected #{want[i]}") if !near?(got[i], want[i], rel, floor)
   end
 
   ok()
@@ -113,12 +115,18 @@ end
 
 ## `got` and `want` have the same shape, dtype and values (within the
 ## tolerance), as a plain `error`.
-def same(got: Tensor.Tensor, want: Tensor.Tensor, what: String, rel: Float = Conform.REL) -> Result[Void]
+def same(
+  got: Tensor.Tensor,
+  want: Tensor.Tensor,
+  what: String,
+  rel: Float = Conform.REL,
+  floor: Float = Conform.ABS,
+) -> Result[Void]
   if Tensor.dtype(got) != Tensor.dtype(want)
     return error("#{what}: dtype #{Tensor.dtype(got)}, expected #{Tensor.dtype(want)}")
   end
 
-  holds(got, Tensor.shape(want), try numbers(want), what, rel)
+  holds(got, Tensor.shape(want), try numbers(want), what, rel, floor)
 end
 
 ## The row-major coordinates of offset `n` in a block of `dims`.
