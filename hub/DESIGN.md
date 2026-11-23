@@ -73,18 +73,17 @@ The test fixtures drop the `model.` part of the prefix
 
 ## Cost
 
-Measured on the reference backend (Ryzen 5 3550H), F32 tensors:
+Measured on the machine of `benchmarks/README.md` (Ryzen 5 3550H), F32 weights:
 
-- `open` peaks near 2x the file size (the chunks read and their join), then
-  holds 1x: the buffer stays in the `Checkpoint`.
-- Decoding a tensor costs about 0.65 µs and 110 bytes of peak memory per
-  element (a `List[Values]`, then the reference's `List[Float]`).
-
-So Whisper tiny (39M parameters) fits, slowly, one tensor at a time, while
-Whisper medium in F32 (769M parameters, about 3 GB) is out of reach on the
-reference backend until `File.seek`
-([agentica#1927](https://github.com/agentica-lang/agentica/issues/1927))
-allows lazy reads and a native backend takes the bytes without the lists.
+- `open` reads the header only.
+- A float tensor on libtorch or ggml costs one `pread` and one copy into the
+  tensor's memory, and no Agentica value. Whisper tiny (151 MB) loads in about
+  0.4 s and peaks at 0.4-0.5 GB, against 23 s and 3 GB when each float went
+  through `Float.from_bits32` and a list. Whisper medium (3 GB of F32) loads in
+  about 8 s and the process peaks at 4 GB.
+- On the reference backend a float still costs about 0.65 µs and 110 bytes of
+  peak memory per element (a list of `Float`), and a read drops the bytes
+  before the tensor: it is for tests and small files.
 
 The tests use files of a few hundred bytes that `test/peer.py` (Python,
 `struct`, `json` and `math` only) writes at test time into a temporary
