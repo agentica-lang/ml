@@ -229,9 +229,10 @@ static struct ggml_context *new_context(size_t bytes) {
 }
 
 /* Room for the graph: a traced node lowers to a handful of ggml tensors at
-   most (a matmul's transpose and cont, a reduction's reshapes); `node` and
+   most (a matmul's transpose and cont, a reduction's reshapes; a `gather` or
+   `scatter_add` is the largest, about 14 with its index guard); `node` and
    `compile` check the room is there. */
-static size_t graph_size(int64_t capacity) { return (size_t)(capacity * 8 + 8 * MAX_OUTPUTS + 64); }
+static size_t graph_size(int64_t capacity) { return (size_t)(capacity * 16 + 8 * MAX_OUTPUTS + 64); }
 
 /* True when the graph's context has room for `tensors` more tensor headers
    and, before `compile`, for the graph itself. */
@@ -242,8 +243,8 @@ static bool room(struct entry *p, size_t tensors) {
 }
 
 /* The most nodes a graph takes. Its metadata is allocated up front, about
-   8 tensor headers (3 KB) per node, so this bounds one graph at about
-   200 MB of metadata; a traced MLP step is about a hundred nodes. */
+   16 tensor headers (6 KB) per node, so this bounds one graph at about
+   400 MB of metadata; a traced MLP step is about a hundred nodes. */
 #define MAX_NODES 65536
 
 /* A free cache slot, unlinking the least recently used graph nobody holds
@@ -724,17 +725,21 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       if (a->ne[a->rank - 1] > 16777216) {
         return tg_error(env, "gather from more than 2^24 rows is not lowered to ggml: F32 row ids are exact below that");
       }
+      if (volume(n->ne) != volume(b->ne) * (volume(a->ne) / a->ne[a->rank - 1])) {
+        return tg_error(env, "gather: the recorded shape is not the indices' shape followed by the source's rows");
+      }
       t = reshape(p, gather(p, a, (int)ints[0], b, &n->guard), n->ne);
       break;
     case OP_SCATTER_ADD:
-      if (nints != 1 || ints[0] < 1 || ints[0] != n->ne[n->rank - 1]) {
+      if (n->rank < 1 || nints != 1 || ints[0] < 1 || ints[0] != n->ne[n->rank - 1]) {
         return tg_error(env, "scatter_add takes the rows of its answer");
       }
       if (ints[0] > 16777216) {
         return tg_error(env, "scatter_add into more than 2^24 rows is not lowered to ggml: F32 row ids are exact below that");
       }
-      if (b->rank < a->rank || volume(b->ne) % volume(a->ne) != 0) {
-        return tg_error(env, "scatter_add takes updates that hold a row for each index");
+      if (b->rank < a->rank || volume(b->ne) % volume(a->ne) != 0 ||
+          volume(b->ne) / volume(a->ne) * ints[0] != volume(n->ne)) {
+        return tg_error(env, "scatter_add takes updates that hold a row for each index, and answers the rows of them");
       }
       t = reshape(p, scatter_add(p, a, b, ints[0], &n->guard), n->ne);
       break;
@@ -982,7 +987,7 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   struct device_state *d;
   float *values, *checks;
   double v;
-  int64_t i = 0;
+  int64_t i = 0, j;
   int next;
   const char *why = NULL;
   char text[160];
@@ -1031,8 +1036,11 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   if (why == NULL) {
     ggml_backend_tensor_get(p->checks, checks, 0, (size_t)(p->output_count + p->guard_count) * sizeof(float));
   }
-  for (i = p->output_count; why == NULL && i < p->output_count + p->guard_count; i++) {
-    if (checks[i] != 0.0f) why = "an index of gather or scatter_add is outside the rows of its table";
+  for (i = 0, j = p->output_count; why == NULL && i < p->count; i++) {
+    if (p->nodes[i].guard != NULL && checks[j++] != 0.0f) {
+      snprintf(text, sizeof text, "an index of %s is outside the rows of its table", op_names[p->nodes[i].op]);
+      why = text;
+    }
   }
   for (i = 0; why == NULL && i < p->output_count; i++) {
     if (!isfinite(checks[i])) {

@@ -334,7 +334,13 @@ end
   (ggml's `get_rows` over the source as rows, its indices clamped to them; an
   index outside the rows is an error after the run, counted in the graph; a
   source of more than 2^24 rows is an error), `scatter_add` (ggml's
-  `get_rows_back`, with the same index check and the same 2^24 limit), and
+  `get_rows_back`, with the same index check and the same 2^24 limit; its cost
+  is `O(k width)` on the CPU, but the Vulkan shader runs one thread per cell
+  of the answer and loops over all `k` indices, so there it is `O(rows k
+  width)`, with no `[rows, k]` grid in memory: the gradient of a lookup over a
+  50000 x 64 table and 4096 indices takes 14 ms on the CPU (1.7 s before) and
+  960 ms on the Vega iGPU (455 ms with the old one-hot `matmul`); at 10000 x
+  64 and 1024 indices, 58 ms against 30 ms), and
   `eq`, `lt` and `where`
   emulated in `F32` arithmetic (`eq` as `1 - step(|a - b|)`, exact for integers
   below 2^24 and true when an operand is NaN; `where` as `c·x + (1 - c)·y`,

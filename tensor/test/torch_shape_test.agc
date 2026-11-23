@@ -281,6 +281,37 @@ def test_scatter_add_agrees_with_the_reference() -> Result[Void]
   Conform.expect_floats(wide, [3.0, 4.0, 1.0, 2.0], "scatter_add a rank-2 index")
 end
 
+def test_scatter_add_in_f16_agrees_within_the_rounding_of_each_add() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+  values = data.map { |x| Tensor.Values.Float(x) }
+  ids = [1, 0, 1, 1]
+  ours = try Tensor.scatter_add(
+    try Conform.on_torch_i64(ids, [4]),
+    try Tensor.from_list(values, [4, 2], Tensor.Dtype.F16, Conform.TORCH),
+    2,
+  )
+
+  want = try Tensor.scatter_add(
+    try Conform.on_ref_i64(ids, [4]),
+    try Tensor.from_list(values, [4, 2], Tensor.Dtype.F16, Conform.REF),
+    2,
+  )
+
+  try Test.eq(Tensor.dtype(ours), Tensor.Dtype.F16)
+  got = try Conform.floats_of(ours)
+  exact = try Conform.floats_of(want)
+  try Test.eq(got.size, exact.size)
+  for i in 0...exact.size
+    if (got[i] - exact[i]).abs > 0.002
+      return error("scatter_add F16: value #{i} is #{got[i]}, the reference says #{exact[i]}")
+    end
+  end
+
+  ok()
+end
+
 def test_scatter_add_errors_agree_on_both_backends() -> Result[Void]
   return Conform.absent() if !Conform.available()
 

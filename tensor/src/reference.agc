@@ -1050,7 +1050,7 @@ def scatter_add(indices: Types.Tensor, updates: Types.Tensor, rows: Int) -> Resu
   at = 0
   for x in try data_of(indices)
     i = try x.to_i
-    return error("scatter_add needs indices in 0...#{rows}, got #{i}") if i < 0 or i >= rows
+    return error("scatter_add needs indices in [0, #{rows}), got #{i}") if i < 0 or i >= rows
     for k in 0...row
       out = out.set(i * row + k, out[i * row + k] + src[at * row + k])
     end
