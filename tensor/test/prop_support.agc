@@ -46,8 +46,7 @@ def volume(shape: List[Int]) -> Int = shape.reduce(1) do |acc: Int, d: Int| acc 
 
 ## `spec` as an `F32` tensor on `backend`.
 def tensor(backend: Tensor.Backend, spec: Spec) -> Result[Tensor.Tensor]
-  floats = spec.data.map do |x: Float| Tensor.Values.Float(x) end
-  Tensor.from_list(floats, spec.shape, Tensor.Dtype.F32, backend)
+  Tensor.floats(spec.data, spec.shape, backend)
 end
 
 ## Every value of `t` as a `Float`, whatever its dtype (an index tensor reads as

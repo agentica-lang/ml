@@ -19,10 +19,10 @@ import Tensor from "pkg/tensor/tensor"
 def main() -> Void
   ref = Tensor.Backend.Reference
   layer = Nn.init_dense(3, 2, 7, ref).unwrap!
-  x = Tensor.ones([4, 3], Tensor.Dtype.F32, ref).unwrap!
+  x = Tensor.ones([4, 3]).unwrap!
   puts(Tensor.shape(Nn.dense(layer, x).unwrap!))
   block = Nn.init_encoder_block(4, 2, 8, Nn.Activation.Gelu, 3, ref).unwrap!
-  h = Tensor.ones([1, 5, 4], Tensor.Dtype.F32, ref).unwrap!
+  h = Tensor.ones([1, 5, 4]).unwrap!
   puts(Tensor.shape(Nn.encoder_block(block, h).unwrap!))
 end
 ```

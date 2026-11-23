@@ -15,11 +15,16 @@ import Data from "pkg/train/data"
 import Tensor from "pkg/tensor/tensor"
 
 def main() -> Void
-  ref = Tensor.Backend.Reference
   xs = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
-  inputs = Tensor.from_list(xs.map { |x: Float| Tensor.Values.Float(x) }, [5, 2], Tensor.Dtype.F32, ref).unwrap!
-  targets = Tensor.from_list([0.0, 1.0, 2.0, 3.0, 4.0].map { |x: Float| Tensor.Values.Float(x) }, [5], Tensor.Dtype.F32, ref).unwrap!
-  loader = Data.Loader(dataset: Data.dataset(inputs, targets).unwrap!, batch_size: 2, shuffle: false, drop_last: true)
+  inputs = Tensor.floats(xs, [5, 2]).unwrap!
+  targets = Tensor.floats([0.0, 1.0, 2.0, 3.0, 4.0], [5]).unwrap!
+  dataset = Data.dataset(inputs, targets).unwrap!
+  loader = Data.Loader(
+    dataset: dataset,
+    batch_size: 2,
+    shuffle: false,
+    drop_last: true,
+  )
   puts(Data.count(loader))
   feed = Data.feed(loader, 2).unwrap!
   batch = Data.take(Data.epoch(feed, 1), 0).unwrap!

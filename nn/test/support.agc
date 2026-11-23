@@ -9,8 +9,7 @@ REF = Tensor.Backend.Reference
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
 
 def f32(data: List[Float], shape: List[Int], backend: Tensor.Backend = REF) -> Result[Tensor.Tensor]
-  floats = data.map do |x: Float| Tensor.Values.Float(x) end
-  Tensor.from_list(floats, shape, Tensor.Dtype.F32, backend)
+  Tensor.floats(data, shape, backend)
 end
 
 def floats_of(t: Tensor.Tensor) -> Result[List[Float]]

@@ -19,15 +19,15 @@ import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
 def main() -> Void
-  ref = Tensor.Backend.Reference
-  a = Tensor.from_list([1.0, 2.0, 3.0, 4.0].map { |x: Float| Tensor.Values.Float(x) }, [2, 2], Tensor.Dtype.F32, ref).unwrap!
-  b = Tensor.from_list([5.0, 6.0, 7.0, 8.0].map { |x: Float| Tensor.Values.Float(x) }, [2, 2], Tensor.Dtype.F32, ref).unwrap!
+  a = Tensor.floats([1.0, 2.0, 3.0, 4.0], [2, 2]).unwrap!
+  b = Tensor.floats([5.0, 6.0, 7.0, 8.0], [2, 2]).unwrap!
   puts(Tensor.to_list(Tensor.matmul(a, b).unwrap!).unwrap!)
-  both = Trace.value_and_grad([a]) do |ps| Tensor.sum(try Tensor.matmul(ps[0], Trace.constant(b))) end
+  both = Trace.value_and_grad([a]) do |ps|
+    Tensor.sum(try Tensor.matmul(ps[0], Trace.constant(b)))
+  end
   result = both.unwrap!
   puts(Tensor.to_list(result.value).unwrap!)
   puts(Tensor.to_list(result.grads[0]).unwrap!)
-  puts(Tensor.available(Tensor.Backend.Torch(Tensor.Device.Cpu)))
 end
 ```
 
@@ -35,7 +35,6 @@ end
 [Values.Float(19.0), Values.Float(22.0), Values.Float(43.0), Values.Float(50.0)]
 [Values.Float(134.0)]
 [Values.Float(11.0), Values.Float(15.0), Values.Float(11.0), Values.Float(15.0)]
-false
 ```
 
 ## Backends
@@ -61,7 +60,9 @@ libtorch and ggml are never vendored: `tensor/README.md` has the setup.
 ## Creating and reading
 
 - `zeros`, `ones`, `empty`, `full`, `like`, `arange` (integer dtypes only), `scalar_to_tensor`.
+- `floats(values, shape, backend)` makes an `F32` tensor from a `List[Float]`.
 - `from_list(values, shape, dtype, backend)` takes a `List[Values]` with one value per element of `shape`; `Values` is `Float`, `Int` or `Bool`.
+- `dtype` defaults to `F32` and `backend` to `Reference` in `zeros`, `ones`, `full` and `from_list`.
 - `to_list(t)` reads a tensor back as a `List[Values]`.
 - `shape`, `dtype` and `backend` read the fields of a tensor, with no call to a backend.
 

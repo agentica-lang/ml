@@ -123,8 +123,12 @@ end
 ## at MLP sizes (`tensor/README.md`, "The ggml backend").
 def vulkan_fp16(enabled: Bool) -> Result[Void] = Ggml.vulkan_fp16(enabled)
 
-## Creation: zeros of `shape`, `dtype` and `backend`.
-def zeros(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]
+## Creation: zeros of `shape`, `dtype` and `backend` (`F32` on `Reference` by default).
+def zeros(
+  shape: List[Int],
+  dtype: Types.Dtype = Types.Dtype.F32,
+  backend: Types.Backend = Types.Backend.Reference,
+) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
   case backend
     Types.Backend.Reference -> Reference.zeros(shape, dtype)
@@ -135,7 +139,11 @@ def zeros(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Resul
 end
 
 ## Creation: ones of `shape`, `dtype` and `backend`.
-def ones(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]
+def ones(
+  shape: List[Int],
+  dtype: Types.Dtype = Types.Dtype.F32,
+  backend: Types.Backend = Types.Backend.Reference,
+) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
   case backend
     Types.Backend.Reference -> Reference.ones(shape, dtype)
@@ -158,7 +166,12 @@ def empty(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Resul
 end
 
 ## Creation: every element `value` (tagged for `dtype`).
-def full(shape: List[Int], value: Types.Values, dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]
+def full(
+  shape: List[Int],
+  value: Types.Values,
+  dtype: Types.Dtype = Types.Dtype.F32,
+  backend: Types.Backend = Types.Backend.Reference,
+) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
   case backend
     Types.Backend.Reference -> Reference.full(shape, value, dtype)
@@ -205,8 +218,8 @@ end
 def from_list(
   data: List[Types.Values],
   shape: List[Int],
-  dtype: Types.Dtype,
-  backend: Types.Backend,
+  dtype: Types.Dtype = Types.Dtype.F32,
+  backend: Types.Backend = Types.Backend.Reference,
 ) -> Result[Types.Tensor]
   n = try Types.volume(shape)
   return error("from_list needs #{n} values for #{shape}, got #{data.size}") if data.size != n
@@ -216,6 +229,16 @@ def from_list(
     Types.Backend.Trace -> error("from_list makes no traced tensor: lift one with Trace.constant")
     Types.Backend.Ggml(device) -> Ggml.from_list(device, data, shape, dtype)
   end
+end
+
+## Creation: plain `values` as an `F32` tensor of `shape`, the short form of
+## `from_list` for floats.
+def floats(
+  values: List[Float],
+  shape: List[Int],
+  backend: Types.Backend = Types.Backend.Reference,
+) -> Result[Types.Tensor]
+  from_list(values.map { |x: Float| Types.Values.Float(x) }, shape, Types.Dtype.F32, backend)
 end
 
 ## Host readback: the values tagged with the tensor's dtype.
