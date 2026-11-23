@@ -602,6 +602,7 @@ def handle_of(t: Types.Tensor) -> Result[Raw.TensorHandle]
   case t.handle
     Types.Handle.Native(h) -> ok(h)
     Types.Handle.Plain(_) -> error("a Plain tensor has no native handle (backend #{Types.backend_name(t.backend)})")
+    Types.Handle.Traced(_) -> error("a traced tensor has no native handle")
   end
 end
 

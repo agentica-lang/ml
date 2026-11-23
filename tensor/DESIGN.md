@@ -58,8 +58,8 @@ Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool   # proposal
 Device  = Cpu | Cuda(Int)                                      # enum, proposal
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
-Backend = Reference | Torch(Device) | Xla(Device) | Candle(Device)   # enum, see §7
-Handle  = Native(TensorHandle) | Plain(Data)                   # enum, see §2
+Backend = Reference | Torch(Device) | Xla(Device) | Candle(Device) | Trace   # enum, see §7, §10
+Handle  = Native(TensorHandle) | Plain(Data) | Traced(Node)    # enum, see §2, §10
 Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 ```
 
@@ -239,10 +239,12 @@ r: Result[Tensor] = case a.backend
   Backend.Torch(device) -> Torch.matmul(device, a, b)      # src/torch.agc
   Backend.Xla(_) -> error("backend not available")         # module not written yet
   Backend.Candle(_) -> error("backend not available")      # module not written yet
+  Backend.Trace -> ok(Graph.record(Op.Matmul, [a, b], shape, a.dtype))   # §10
 end
 ```
 
-- The `case` is checked and exhaustive over all four variants, which is the
+- The `case` is checked and exhaustive over all five variants (`Trace`
+  records a node instead of computing, §10.1), which is the
   property this shape buys; `xla` and `candle` return `error` until their
   modules exist, so the arm set does not change when they land.
 - The `Torch` arm calls `src/torch.agc`, which calls the thirteen `compute
@@ -349,6 +351,97 @@ Proposed usage for tensors (needs sign-off):
   backend), ignoring its value, so it needs no rule either; `eq`, `lt` and
   `argmax` give `Bool`/integer values. That is why `stop_grad`, which cuts the
   trace too, enters §3.1 with them.
+
+### 10.1 How a function is traced (decided)
+
+Agentica has no macros (§7), so nothing rewrites a function the way `defn`
+does. A function is traced by **calling it with tracer values through the same
+API**, as Nx does with its `Expr` backend: `Backend.Trace` is a fifth arm of
+every dispatch `case`, and a tensor on it holds `Handle.Traced(Node)` instead
+of storage. `Trace.value_and_grad(params, &loss)` calls `loss` with `Trace`
+tensors; each `Tensor.*` call runs the wrapper's checks (§9) as it always does
+and then records a node, so trace time and eager time share every shape and
+dtype check by construction.
+
+Why this and not the alternatives:
+
+- **One API.** `nn/` layers and the derived ops of §3.2 (`softmax`,
+  `layer_norm`, attention) are written once, over `Tensor.*`, and run eagerly
+  for inference (no node per op, no trace) or traced for training.
+- **A separate traced API** (`Trace.add` over a type of its own) was the first
+  version and is rejected: every derived op and every `nn/` layer would be
+  written twice, and its shape checks would be a second copy of §9.
+- **A layer generic over an ops record** (`Ops[T]` of `Fn` fields, run on
+  `Tensor` or on a node type) also writes a layer once, but every call becomes
+  `o.matmul.call(x, w)` and the derived ops would be rewritten in that style;
+  the tracer arm gets the same for free.
+
+The price:
+
+- An op on a traced tensor that has no backward rule cannot be refused by the
+  checker. Today such an op answers `error("<op> cannot be traced yet")` at
+  trace time; an op recorded without a rule makes `gradients` answer an error
+  that names the op.
+- An eager tensor and a traced one never mix (`same_backend`): a tensor from
+  outside the function enters with `Trace.constant(t)`, explicitly.
+- `Backend` and `Handle` carry a variant that no compute backend handles; a
+  backend that reads a handle answers `error` on `Traced`.
+- A traced tensor has no values, so host readback and control flow that
+  depends on data cannot be traced: `to_list`, `top_k`, `beam_search`, a
+  decode loop, `if x > 0`. They stay outside the traced function.
+- A new op costs five places: its `Trace` arm, its `Op` variant and its
+  `op_name`, `apply` and `vjp` arms. The compiler enforces all of them
+  (exhaustive `case`).
+- The shape a `Trace` arm records is a second copy of the backend's shape
+  inference; `evaluate` checks every computed shape and dtype against the
+  recorded one and answers an error naming the op and node.
+- A `Constant` holds its tensor, so a graph with a native constant is tied to
+  the task that owns that handle (§8).
+- `f` is traced again on every call (each training step) until `jit` caches
+  a graph.
+
+### 10.2 The graph (decided)
+
+- A node is `Node { id, op, args }` behind a traced tensor, whose own `shape`
+  and `dtype` are the node's. Its arguments are traced tensors. The graph of a
+  function is what its output reaches; there is no graph object and no
+  mutable tape.
+- `id` comes from one run-wide counter (an `ATS` table in `src/graph.agc`), the
+  role `make_ref` plays in Nx: two uses of a value are one node, and since an
+  argument is always made before its user, sorting by `id` is a topological
+  order.
+- Shapes and dtypes are static, so a traced graph is the static-shape graph
+  `xla/` needs.
+- Leaves are `Input` (an argument of the traced function), `Constant(t)` (a
+  lifted tensor: data, labels) and `Full(value)` (`zeros`, `ones`, `full`,
+  `like`, `scalar_to_tensor` on `Trace`).
+- Every argument of `value_and_grad`/`grad` is differentiated; what is not a
+  parameter enters as a `Constant`.
+
+### 10.3 Gradients (decided)
+
+- `gradients(out, wrt)` is a **graph transformation**: it returns traced
+  tensors built with `Tensor.*`, so each backward rule is a composition of §3.1
+  primitives (`relu` uses `lt` and `where`; `broadcast_to` uses `sum` with
+  `keep_dims` and `reshape`). The gradient graph can be evaluated, inspected or
+  compiled like any other, and `wrt` may name any node, not only an input.
+- Cotangents flow only into arguments on a path to `wrt`; a `wrt` node the
+  output does not reach gets zeros. Comparisons and the condition of `where`
+  cut the gradient. `relu`'s derivative at `0` is `0`.
+- `evaluate` runs a graph through the public `Tensor.*` calls on the inputs'
+  backend, computing each node once; a lifted constant must live on that
+  backend. `value_and_grad` evaluates the output and its gradients in one
+  pass, so the backward reads the forward values it shares. Backends stay
+  forward-only.
+- First rules: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `relu`,
+  `matmul`, `transpose`, `sum`, `mean`, `broadcast_to`, `reshape` and `where`.
+  Each is tested against a central difference of the traced function on the
+  reference backend. On libtorch, the forward ops of a 2-layer MLP's gradient
+  graph are run and compared with the reference.
+- Still open: recording the rest of §3.1 (with or without a rule),
+  `stop_grad`, the rule of `where`'s condition for gradients of gradients,
+  `vmap`/`jit`, and how an evaluation's intermediate tensors map onto the
+  arenas of §8 (today they live until `evaluate` returns).
 
 ## 11. Conformance (proposal)
 

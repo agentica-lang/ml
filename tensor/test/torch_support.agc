@@ -89,6 +89,7 @@ def native_closed(t: Tensor.Tensor) -> Bool
   case t.handle
     Tensor.Handle.Native(h) -> Native.closed?(h)
     Tensor.Handle.Plain(_) -> false
+    Tensor.Handle.Traced(_) -> false
   end
 end
 

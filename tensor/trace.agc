@@ -1,0 +1,359 @@
+## Tracing and reverse-mode gradients (`tensor/DESIGN.md` §10).
+##
+## A function written against `tensor.agc` is traced by calling it with
+## tensors of the `Trace` backend: each `Tensor.*` call checks its arguments as
+## it always does and records a node instead of computing. `gradients` turns
+## the graph into the graph of its gradients, built with the same `Tensor.*`
+## calls, and `evaluate` runs any of those graphs on a real backend through
+## the public API, so every backend stays forward-only. `value_and_grad`,
+## `grad` and `eval` are the three entry points; a tensor from outside enters
+## a trace through `constant`.
+
+import Graph from "src/graph"
+import Tensor from "tensor"
+import Types from "src/types"
+
+## The value of a scalar function and its gradient for each argument, in
+## argument order.
+struct ValueAndGrad
+  value: Types.Tensor
+  grads: List[Types.Tensor]
+end
+
+## A tensor from outside the function as a node of the trace: data, labels,
+## any value the gradient is not taken for. A traced tensor is returned as it
+## is.
+def constant(t: Types.Tensor) -> Types.Tensor
+  return t if t.backend == Types.Backend.Trace
+  Graph.record(Types.Op.Constant(t), [], t.shape, t.dtype)
+end
+
+## The graph of the gradient of the traced scalar `out` for each traced tensor
+## of `wrt`, in order: a tensor `out` does not depend on gets zeros of its
+## shape. `out` is a float tensor of one element.
+def gradients(out: Types.Tensor, wrt: List[Types.Tensor]) -> Result[List[Types.Tensor]]
+  _ = try Graph.node_of(out)
+  if !Types.is_float_dtype(out.dtype) or try Types.volume(out.shape) != 1
+    return error("gradients needs a float scalar output, got #{Types.dtype_name(out.dtype)} #{out.shape}")
+  end
+
+  for w in wrt
+    _ = try Graph.node_of(w)
+  end
+
+  wanted = Set.new(wrt.map { |w| id_of(w) })
+  nodes = try reachable([out], Set.new([]))
+  needed: Set[Int] = Set.new([])
+  for t in nodes
+    args = try args_of(t)
+    depends = args.any? { |a| needed.include?(id_of(a)) }
+    if wanted.include?(id_of(t)) or depends
+      needed = needed.add(id_of(t))
+    end
+  end
+
+  cts: Map[Int, Types.Tensor] = {}
+  cts = cts.put(id_of(out), try Graph.filled(out.shape, 1.0, out.dtype))
+  for t in nodes.reverse
+    case cts.get(id_of(t))
+      some(ct) -> cts = try propagate(t, ct, needed, cts)
+      none -> nil
+    end
+  end
+
+  out_grads: List[Types.Tensor] = []
+  for w in wrt
+    case cts.get(id_of(w))
+      some(g) -> out_grads = out_grads.push(g)
+      none -> out_grads = out_grads.push(try Graph.filled(w.shape, 0.0, w.dtype))
+    end
+  end
+
+  ok(out_grads)
+end
+
+## Runs the traced tensors `outs` on `backend`. `env` holds the value of every
+## node already known (the inputs), keyed by node id; the walk stops there.
+def evaluate(
+  outs: List[Types.Tensor],
+  env: Map[Int, Types.Tensor],
+  backend: Types.Backend,
+) -> Result[List[Types.Tensor]]
+  values = env
+  for t in try reachable(outs, Set.new(env.keys))
+    values = values.put(id_of(t), try apply(t, values, backend))
+  end
+
+  ok(outs.map { |o| values[id_of(o)] })
+end
+
+## The number of distinct nodes `outs` reach: what `evaluate` computes, once
+## each.
+def node_count(outs: List[Types.Tensor]) -> Result[Int]
+  nodes = try reachable(outs, Set.new([]))
+  ok(nodes.size)
+end
+
+## Traces `f` over `args` and runs it on their backend: the value the same
+## `Tensor.*` calls give eagerly.
+def eval(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor]]) -> Result[Types.Tensor]
+  inputs = try inputs_for(args)
+  out = try f.call(inputs)
+  values = try evaluate([out], bind(inputs, args), args[0].backend)
+  ok(values[0])
+end
+
+## The value of the scalar function `f` at `args` and its gradient for every
+## argument. The trace is built once, the gradient graph is derived from it,
+## and one evaluation runs both, sharing the forward values.
+def value_and_grad(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor]]) -> Result[ValueAndGrad]
+  inputs = try inputs_for(args)
+  out = try f.call(inputs)
+  grads = try gradients(out, inputs)
+  values = try evaluate([out] + grads, bind(inputs, args), args[0].backend)
+  ok(ValueAndGrad(value: values[0], grads: values.drop(1)))
+end
+
+## The gradient of the scalar function `f` at `args`, one per argument.
+def grad(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor]]) -> Result[List[Types.Tensor]]
+  both = try value_and_grad(args, f)
+  ok(both.grads)
+end
+
+private
+
+## The id of a traced tensor's node; `-1` for a tensor that is not traced.
+def id_of(t: Types.Tensor) -> Int
+  case t.handle
+    Types.Handle.Traced(n) -> n.id
+    _ -> -1
+  end
+end
+
+## The arguments of a traced tensor's node.
+def args_of(t: Types.Tensor) -> Result[List[Types.Tensor]]
+  n = try Graph.node_of(t)
+  ok(n.args)
+end
+
+## One `Input` node per argument, with its shape and dtype; every argument on
+## one backend that computes.
+def inputs_for(args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
+  return error("a traced function needs at least one argument") if args.empty?
+  for t in args
+    return error("a traced function needs its arguments on one backend") if t.backend != args[0].backend
+  end
+
+  return error("a traced function needs computed arguments, got traced ones") if args[0].backend == Types.Backend.Trace
+  ok(args.map { |t| Graph.record(Types.Op.Input, [], t.shape, t.dtype) })
+end
+
+## The value of each input node, keyed by its id.
+def bind(inputs: List[Types.Tensor], args: List[Types.Tensor]) -> Map[Int, Types.Tensor]
+  env: Map[Int, Types.Tensor] = {}
+  for i in 0...inputs.size
+    env = env.put(id_of(inputs[i]), args[i])
+  end
+
+  env
+end
+
+## Every traced tensor `outs` reach, each node once, in id order (a
+## topological order: an argument is made before its user). The walk does not
+## enter a node of `known`. `stack[0...top]` is the work left.
+def reachable(outs: List[Types.Tensor], known: Set[Int]) -> Result[List[Types.Tensor]]
+  seen = known
+  found: List[Types.Tensor] = []
+  stack = outs
+  top = outs.size
+  while top > 0
+    top -= 1
+    t = stack[top]
+    args = try args_of(t)
+    if !seen.include?(id_of(t))
+      seen = seen.add(id_of(t))
+      found = found.push(t)
+      for a in args
+        if top < stack.size
+          stack = stack.set(top, a)
+        else
+          stack = stack.push(a)
+        end
+
+        top += 1
+      end
+    end
+  end
+
+  ok(found.sort_by { |t| id_of(t) })
+end
+
+## `cts` with the cotangent `ct` of `t` added to each argument of `t` that
+## leads to a tensor the gradient is taken for.
+def propagate(
+  t: Types.Tensor,
+  ct: Types.Tensor,
+  needed: Set[Int],
+  cts: Map[Int, Types.Tensor],
+) -> Result[Map[Int, Types.Tensor]]
+  n = try Graph.node_of(t)
+  out = cts
+  for i in 0...n.args.size
+    a = n.args[i]
+    if needed.include?(id_of(a))
+      case try vjp(t, n, ct, i)
+        some(part) -> out = out.put(id_of(a), try accumulate(out.get(id_of(a)), part))
+        none -> nil
+      end
+    end
+  end
+
+  ok(out)
+end
+
+## The sum of the cotangents reaching one node.
+def accumulate(prev: Optional[Types.Tensor], part: Types.Tensor) -> Result[Types.Tensor]
+  case prev
+    some(p) -> Tensor.add(p, part)
+    none -> ok(part)
+  end
+end
+
+## The cotangent of argument `i` of `t` (whose node is `n`), given the
+## cotangent `ct` of `t`: each op's backward rule, built with `Tensor.*` on
+## traced tensors. `none` cuts the gradient (a comparison, a condition).
+def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Optional[Types.Tensor]]
+  x = n.args[i]
+  case n.op
+    Types.Op.Input -> ok(none)
+    Types.Op.Constant(_) -> ok(none)
+    Types.Op.Full(_) -> ok(none)
+    Types.Op.Lt -> ok(none)
+    Types.Op.Where -> where_rule(n, ct, i)
+    Types.Op.Add -> ok(some(ct))
+    Types.Op.Sub -> part(sub_rule(ct, i))
+    Types.Op.Mul -> part(Tensor.mul(ct, n.args[1 - i]))
+    Types.Op.Div -> part(div_rule(t, n, ct, i))
+    Types.Op.Neg -> part(Tensor.neg(ct))
+    Types.Op.Exp -> part(Tensor.mul(ct, t))
+    Types.Op.Log -> part(Tensor.div(ct, x))
+    Types.Op.Relu -> part(relu_rule(x, ct))
+    Types.Op.Matmul -> part(matmul_rule(n, ct, i))
+    Types.Op.Transpose -> part(Tensor.transpose(ct))
+    Types.Op.Sum(axes, keep_dims) -> part(unreduce(ct, x.shape, axes, keep_dims))
+    Types.Op.Mean(axes, keep_dims) -> part(mean_rule(ct, x, axes, keep_dims))
+    Types.Op.BroadcastTo -> part(unbroadcast(ct, x.shape))
+    Types.Op.Reshape -> part(Tensor.reshape(ct, x.shape))
+  end
+end
+
+## A rule's tensor as a contribution.
+def part(r: Result[Types.Tensor]) -> Result[Optional[Types.Tensor]] = ok(some(try r))
+
+def sub_rule(ct: Types.Tensor, i: Int) -> Result[Types.Tensor]
+  return ok(ct) if i == 0
+  Tensor.neg(ct)
+end
+
+## `d(a/b)/da = 1/b`, `d(a/b)/db = -(a/b)/b`.
+def div_rule(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Types.Tensor]
+  return Tensor.div(ct, n.args[1]) if i == 0
+  Tensor.neg(try Tensor.mul(ct, try Tensor.div(t, n.args[1])))
+end
+
+## The cotangent where `x > 0`, zero elsewhere (`0` included).
+def relu_rule(x: Types.Tensor, ct: Types.Tensor) -> Result[Types.Tensor]
+  zeros = try Graph.filled(x.shape, 0.0, x.dtype)
+  Tensor.where(try Tensor.lt(zeros, x), ct, zeros)
+end
+
+def matmul_rule(n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Types.Tensor]
+  return Tensor.matmul(ct, try Tensor.transpose(n.args[1])) if i == 0
+  Tensor.matmul(try Tensor.transpose(n.args[0]), ct)
+end
+
+## The cotangent of the branch `cond` chose; the condition gets none.
+def where_rule(n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Optional[Types.Tensor]]
+  return ok(none) if i == 0
+  zeros = try Graph.filled(ct.shape, 0.0, ct.dtype)
+  return part(Tensor.where(n.args[0], ct, zeros)) if i == 1
+  part(Tensor.where(n.args[0], zeros, ct))
+end
+
+def mean_rule(ct: Types.Tensor, x: Types.Tensor, axes: List[Int], keep_dims: Bool) -> Result[Types.Tensor]
+  spread = try unreduce(ct, x.shape, axes, keep_dims)
+  count = Types.reduced_count(x.shape, axes).to_f
+  Tensor.div(spread, try Graph.filled(x.shape, count, x.dtype))
+end
+
+## The backward of a reduction: `ct` back to the input's rank, then widened
+## over the reduced axes.
+def unreduce(ct: Types.Tensor, shape: List[Int], axes: List[Int], keep_dims: Bool) -> Result[Types.Tensor]
+  return Tensor.broadcast_to(ct, shape) if keep_dims
+  Tensor.broadcast_to(try Tensor.reshape(ct, Types.reduced_shape(shape, axes, true)), shape)
+end
+
+## The backward of `broadcast_to`: `ct` summed over the axes the broadcast
+## added or widened from 1, then shaped as the original.
+def unbroadcast(ct: Types.Tensor, from: List[Int]) -> Result[Types.Tensor]
+  lead = ct.shape.size - from.size
+  axes: List[Int] = (0...lead).to_a
+  for i in 0...from.size
+    if from[i] == 1 and ct.shape[lead + i] != 1
+      axes = axes.push(lead + i)
+    end
+  end
+
+  return Tensor.reshape(ct, from) if axes.empty?
+  Tensor.reshape(try Tensor.sum(ct, some(axes), true), from)
+end
+
+## The value of `t` on `backend` from the values of its node's arguments, by
+## the public API. A lifted constant must live on `backend`.
+def apply(t: Types.Tensor, values: Map[Int, Types.Tensor], backend: Types.Backend) -> Result[Types.Tensor]
+  n = try Graph.node_of(t)
+  r = try compute(t, n, values, backend)
+  if r.shape != t.shape or r.dtype != t.dtype
+    return error(
+      "node #{n.id} (#{Types.op_name(n.op)}) computed #{Types.dtype_name(r.dtype)} #{r.shape}, the trace recorded #{Types.dtype_name(t.dtype)} #{t.shape}",
+    )
+  end
+
+  ok(r)
+end
+
+## The value of the node `n` behind `t`, by the public API.
+def compute(
+  t: Types.Tensor,
+  n: Types.Node,
+  values: Map[Int, Types.Tensor],
+  backend: Types.Backend,
+) -> Result[Types.Tensor]
+  args = n.args.map { |a| values[id_of(a)] }
+  case n.op
+    Types.Op.Input -> error("node #{n.id} is an input of another trace")
+    Types.Op.Constant(c) ->
+      if c.backend != backend
+        return error("a constant on #{Types.backend_name(c.backend)} in a trace run on #{Types.backend_name(backend)}")
+      end
+
+      ok(c)
+    Types.Op.Full(v) -> Tensor.full(t.shape, v, t.dtype, backend)
+    Types.Op.Add -> Tensor.add(args[0], args[1])
+    Types.Op.Sub -> Tensor.sub(args[0], args[1])
+    Types.Op.Mul -> Tensor.mul(args[0], args[1])
+    Types.Op.Div -> Tensor.div(args[0], args[1])
+    Types.Op.Neg -> Tensor.neg(args[0])
+    Types.Op.Exp -> Tensor.exp(args[0])
+    Types.Op.Log -> Tensor.log(args[0])
+    Types.Op.Relu -> Tensor.relu(args[0])
+    Types.Op.Matmul -> Tensor.matmul(args[0], args[1])
+    Types.Op.Transpose -> Tensor.transpose(args[0])
+    Types.Op.Sum(axes, keep_dims) -> Tensor.sum(args[0], some(axes), keep_dims)
+    Types.Op.Mean(axes, keep_dims) -> Tensor.mean(args[0], some(axes), keep_dims)
+    Types.Op.BroadcastTo -> Tensor.broadcast_to(args[0], t.shape)
+    Types.Op.Reshape -> Tensor.reshape(args[0], t.shape)
+    Types.Op.Lt -> Tensor.lt(args[0], args[1])
+    Types.Op.Where -> Tensor.where(args[0], args[1], args[2])
+  end
+end
