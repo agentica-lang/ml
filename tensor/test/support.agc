@@ -5,6 +5,16 @@ import Tensor from "../tensor"
 ## Two floats count as equal below this absolute gap.
 TOL = 0.000000001
 
+## True when the ggml CPU backend is there; with `TENSOR_REQUIRE_GGML` set, a missing one is an error, never a pass
+## (as in `ggml_compile_test.agc`).
+def ggml_present() -> Result[Bool]
+  return ok(true) if Tensor.available(Tensor.Backend.Ggml(Tensor.Device.Cpu))
+  flag = System.env("TENSOR_REQUIRE_GGML")
+  return ok(false) if !flag.ok?
+  return ok(false) if try flag == ""
+  error("ggml required but not built (TENSOR_REQUIRE_GGML is set)")
+end
+
 ## `data` as an `F32` tensor of `shape` on the reference backend.
 def f32(data: List[Float], shape: List[Int]) -> Result[Tensor.Tensor] = Tensor.floats(data, shape)
 
