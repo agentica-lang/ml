@@ -27,3 +27,14 @@ def test_load_model_errors_on_a_path_past_4096_bytes() -> Result[Void]
     error(e) -> Test.eq(e.message, "load_model takes a path of 4096 bytes at most")
   end
 end
+
+def test_language_name_spells_out_a_known_code() -> Result[Void]
+  try Test.eq(Whisper.language_name("es"), some("spanish"))
+  Test.eq(Whisper.language_name("en"), some("english"))
+end
+
+def test_language_name_is_none_for_an_unknown_code() -> Result[Void]
+  try Test.eq(Whisper.language_name("xx"), none)
+  try Test.eq(Whisper.language_name(""), none)
+  Test.eq(Whisper.language_name("auto"), none)
+end

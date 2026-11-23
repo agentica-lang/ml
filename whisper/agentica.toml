@@ -9,9 +9,11 @@ blank_line_after_end = true
 # (see its header comment); `build` compiles the thin C layer in native/ and
 # links the pinned whisper.cpp engine (tools/build-engine.sh). The engine's
 # headers come from C_INCLUDE_PATH and its static libraries from LIBRARY_PATH
-# (both printed by that script); only `-l` names can live here.
+# (both printed by that script); only `-l` names can live here, so the script
+# writes `libwhisper_engine.a`, a linker script that lists the CPU or the
+# Vulkan tree's archives.
 [native.whisper]
-build = { sources = ["native/whisper.c"], libs = ["whisper", "ggml", "ggml-base", "ggml-cpu", "stdc++", "m", "pthread"] }
+build = { sources = ["native/whisper.c"], libs = ["whisper_engine", "stdc++", "m", "pthread"] }
 
 [dependencies]
 native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.4.0", subdir = "native-gen" }

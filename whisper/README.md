@@ -6,10 +6,12 @@ chunking.
 
 - `whisper.agc` — `extern module "whisper"`: `load_model` reads a ggml/gguf
   file into a `Model` resource, `transcribe_with` decodes 16 kHz mono PCM
-  floats into timed `Segment`s as an `Options` asks (language, translation),
-  and `transcribe` is `join_text` of those segments with the default options.
-  All three run in the compute pool; the engine is CPU-only. One decode accepts
-  up to five minutes of audio.
+  floats into timed `Segment`s as an `Options` asks (language, translation,
+  beam search), `transcribe_detailed` adds each segment's tokens and
+  probabilities and the detected language, and `transcribe` is `join_text` of
+  the segments with the default options. They run in the compute pool, on the
+  GPU when the engine was built with Vulkan, else on the CPU. One decode
+  accepts up to five minutes of audio.
 - `mic.agc` — microphone capture: 16 kHz mono s16le PCM from a command run
   through `Process` (pinned `arecord` invocation, configurable), plus the
   `Source` abstraction (`Samples` for synthetic PCM in tests, `Command` for
@@ -24,13 +26,15 @@ chunking.
   and owns one whisper context plus a mutex per model; inference on one
   context is serialized, teardown frees the context and destroys the mutex.
 - `tools/build-engine.sh` — builds the pinned submodule at
-  `third_party/whisper.cpp` (CPU-only, static, PIC; needs cmake and a C/C++
-  compiler) and prints the `C_INCLUDE_PATH`/`LIBRARY_PATH` exports the
-  module's build needs.
+  `third_party/whisper.cpp` for the CPU, or with `vulkan` for the CPU and
+  Vulkan (static, PIC; needs cmake and a C/C++ compiler), and prints the
+  `C_INCLUDE_PATH`/`LIBRARY_PATH` exports the module's build needs.
 - `tools/fetch-model.sh` — downloads the two pinned multilingual models and
   checks their sha256 (see "Models" below). Weights never enter git
   (`models/` is ignored).
 - `live/transcribe_jfk.agc` — the English end-to-end check as a program.
+- `live/transcribe_detailed.agc` — the detailed decode as a program: language
+  detection, timed tokens, `max_len` segments and beam search.
 - `live/transcribe_spanish.agc` — the Spanish case: options, timed segments
   and translation, also as a program (see below).
 
@@ -56,11 +60,43 @@ end
   from the first sample (the engine's hundredths of a second, times ten), and
   the text of that stretch trimmed of surrounding whitespace, which may leave
   it empty.
-- `Options` is `language: String = ""` and `translate: Bool = false`.
+- `Options` is `language: String = ""` and `translate: Bool = false`, plus
+  `beam_size`, `token_timestamps`, `max_len` and `detect_language` (below).
   `""` keeps the engine default (English), `"auto"` detects the language from
   the audio, and a code such as `"es"` pins it (whisper.cpp's own codes, 32
   bytes at most). `translate: true` answers in English instead of the spoken
-  language, whichever `language` is pinned.
+  language, whichever `language` is pinned. `beam_size` from 2 to 8 decodes
+  with beam search; 0 (the default) or 1 decodes greedily.
+
+`transcribe_detailed(model, pcm, options)` runs the same decode and returns
+a `Transcript`, what an HTTP server such as whisper.cpp's `verbose_json` needs:
+
+```agc
+options = Whisper.Options(language: "auto", token_timestamps: true, max_len: 60, detect_language: true)
+transcript = try Whisper.transcribe_detailed(model, pcm, options)
+puts(Whisper.language_name(transcript.language))   # some("english")
+```
+
+- `Transcript` is `language` (the code decoded: the pinned one or the one
+  detected), `segments` and `detection`.
+- `SegmentDetail` is a `Segment` whose `text` is not trimmed, plus `tokens`,
+  `avg_logprob` (the tokens' log probabilities over the segment's token
+  count, special tokens included, as whisper.cpp's server computes it) and
+  `no_speech_probability`.
+- `Token` is `ids`, `text`, `probability` (of the first id),
+  `log_probability` (of all of them), `start_ms` and `end_ms`. Special tokens
+  are left out, and the tokens that together spell one UTF-8 character are
+  one `Token`. The times are -10 unless `token_timestamps` is on.
+- `max_len` (with `token_timestamps`) ends a segment once its text reaches
+  that many characters, on a token boundary, so a segment may end inside a
+  character: bytes that are not whole UTF-8 become U+FFFD, in tokens and
+  segments alike.
+- `detect_language: true` runs the encoder once more on the first 30 s to
+  fill `detection`: the most probable language code, its probability and the
+  probability of every language. Without it `detection` is none.
+
+`language_name(code)` is the engine's English name of a code (`"es"` is
+`"spanish"`), none for a code it does not know.
 
 `transcribe(model, pcm)` is `transcribe_with` with `Options()` followed by
 `join_text`:
@@ -165,8 +201,16 @@ agentica install
 sh tools/fetch-model.sh
 ```
 
-`tools/build-engine.sh` builds the pinned engine submodule (CPU-only,
-static; needs cmake and a C/C++ compiler) and prints the
+For the GPU, `sh tools/build-engine.sh vulkan` builds a second tree with
+ggml's Vulkan backend (it needs the Vulkan headers and loader, `glslc` and
+`SPIRV-Headers`; the script lists what is missing) and prints its exports
+instead. Both trees give the module one library, `whisper_engine`, a GNU ld
+linker script over the tree's archives, so one `agentica.toml` links either;
+the package cache keeps one module per tree. A model then loads on the first
+Vulkan device, and on the CPU when there is none.
+
+`tools/build-engine.sh` builds the pinned engine submodule (static; needs
+cmake and a C/C++ compiler) and prints the
 `C_INCLUDE_PATH`/`LIBRARY_PATH` exports; `agentica install` fetches
 native-gen (the locked dependency that regenerates the header). Any
 `agentica` invocation that builds the native module (`install`, `check` is
@@ -202,6 +246,7 @@ agentica deps/native-gen/cli.agc whisper.agc --output native/whisper_native.h --
 agentica test            # offline suite: test/ only, no model, no network
 agentica test live/      # model-bound runner checks (needs models/ggml-tiny.bin)
 agentica live/transcribe_jfk.agc       # English, real transcription (runs are not step-capped)
+agentica live/transcribe_detailed.agc  # tokens, detection, max_len and beam search
 agentica live/transcribe_spanish.agc   # Spanish, options and timed segments
 ```
 
@@ -226,6 +271,11 @@ one of them:
   - `live/transcribe_jfk.agc` (tiny): transcribes the 11 s English sample the
     whisper.cpp submodule carries and asserts the exact greedy transcript. A
     mismatch prints both texts and exits 1.
+  - `live/transcribe_detailed.agc` (tiny): the same sample through
+    `transcribe_detailed` with detection, token timestamps and `max_len: 60`,
+    asserting the detected language, several segments that their tokens
+    spell, ordered token times and probabilities in range, then one beam
+    search decode.
   - `live/transcribe_spanish.agc` (small, `language: "es"`, then `translate:
     true`): transcribes a 2.6 s Spanish fixture and asserts a structural
     contract (ordered ranges that cover the audio, non-empty text) plus two
@@ -243,10 +293,10 @@ one of them:
 
 One `transcribe_with` call takes 1–4 800 000 samples (five minutes at 16 kHz);
 more, none, or a non-finite sample is an error, never a halt, and so is a
-language code past 32 bytes or more than a megabyte of segment text.
-`load_model` copies paths of 4096 bytes at most. Greedy decoding with the
-library thread count: `Options` adds a language and a translation flag and
-nothing else. Every failure is an `error`; the native side frees the audio,
+language code past 32 bytes, a `beam_size` outside 0–8, a `max_len` outside
+0–100 000 or more than a megabyte of segment and token text. `load_model`
+copies paths of 4096 bytes at most. The library thread count and the engine's
+other defaults stay. Every failure is an `error`; the native side frees the audio,
 the language copy and the segment list on every path, and holds the per-model
 mutex only for the decode itself.
 
@@ -259,6 +309,8 @@ per-call bound and merges; window timestamps are absolute.
 
 ## Outside the repository checkout
 
-A package installed through `agentica install` carries only `native/`, so
-building from the submodule works for checkouts only. `[native.whisper]` has no
+A package installed through `agentica install` carries only `native/`: it
+builds against the engine that `C_INCLUDE_PATH` and `LIBRARY_PATH` name, so run
+`tools/build-engine.sh` from a checkout of this repository at the same commit
+and export what it prints before the first run. `[native.whisper]` has no
 `prebuilt` table: this package builds from source.
