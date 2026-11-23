@@ -1,5 +1,7 @@
-## Whisper's log-mel frontend in pure Agentica: 16 kHz mono samples to the
-## `[mels, frames]` log-mel spectrogram the encoder takes (`asr/DESIGN.md`).
+## Whisper's log-mel frontend: 16 kHz mono samples to the `[mels, frames]`
+## log-mel spectrogram the encoder takes (`asr/DESIGN.md`).
+
+import Mathx from "mathx"
 
 ## Samples per second.
 SAMPLE_RATE = 16000
@@ -14,19 +16,28 @@ FRAMES = 3000
 ## `frames * 160`, then a reflect-padded STFT (Hann window of 400, hop 160)
 ## gives `frames` power spectra, the Slaney mel filterbank, `log10`, a floor of
 ## the maximum minus 8 and `(x + 4) / 4`, as Whisper and Hugging Face do.
+## 3000 frames are Hugging Face's input features; fewer are the spectrogram of
+## that shorter segment (its own reflection and maximum), not a prefix of them.
 def log_mel(samples: List[Float], mels: Int, frames: Int = FRAMES) -> Result[List[Float]]
   return error("log_mel needs mels >= 1, got #{mels}") if mels < 1
   return error("log_mel needs frames >= 2, got #{frames}") if frames < 2
   size = frames * HOP
   x = samples.take(size)
+  heard = 0
+  for i in 0...x.size
+    return error("log_mel needs finite samples, got #{x[i]} at #{i}") if x[i] - x[i] != 0.0
+    if x[i] != 0.0
+      heard = i + 1
+    end
+  end
+
   x = x + List.repeat(0.0, size - x.size)
   half = N_FFT / 2
   padded = x.drop(1).take(half).reverse + x + x.drop(size - half - 1).take(half).reverse
-  # A frame that starts after the last sample is silent, as is every frame
-  # after it, unless the end reflection holds samples.
-  heard = samples.size.clamp(0, size)
+  # `padded` is zero from `half + heard` on, unless the end reflection holds a
+  # sample: then every frame that starts there or later is silent.
   silent = frames
-  if heard < size - half
+  if heard <= size - half - 1
     silent = (heard + half + HOP - 1) / HOP
   end
 
@@ -80,9 +91,6 @@ end
 private
 
 PI = 3.141592653589793
-LN2 = 0.6931471805599453
-LN10 = 2.302585092994046
-SQRT2 = 1.4142135623730951
 ## cos and sin of 2π/5 and 4π/5, for the radix-5 butterfly.
 C1 = 0.30901699437494745
 C2 = -0.8090169943749475
@@ -110,11 +118,13 @@ end
 def filters(mels: Int) -> List[Filter]
   bins = N_FFT / 2 + 1
   top = hz_to_mel((SAMPLE_RATE / 2).to_f)
-  points = (0...(mels + 2)).map do |i|
-    return mel_to_hz(top) if i == mels + 1
-
-    mel_to_hz((i.to_f * top) / (mels + 1).to_f)
+  # The last point is `top` itself, as numpy's `linspace` ends.
+  points: List[Float] = []
+  for i in 0...(mels + 1)
+    points = points.push(mel_to_hz((i.to_f * top) / (mels + 1).to_f))
   end
+
+  points = points.push(mel_to_hz(top))
 
   out: List[Filter] = []
   for m in 0...mels
@@ -352,32 +362,8 @@ end
 
 ## `cos` and `sin` of `2πj / n` for `j` in `0...n`.
 def cos_sin(n: Int) -> Spectrum
-  re: List[Float] = []
-  im: List[Float] = []
-  for j in 0...n
-    x = (2.0 * PI * j.to_f) / n.to_f
-    if x > PI
-      x -= 2.0 * PI
-    end
-
-    term = 1.0
-    c = 1.0
-    s = 0.0
-    for t in 1...40
-      term = (term * x) / t.to_f
-      case t % 4
-        0 -> c += term
-        1 -> s += term
-        2 -> c -= term
-        _ -> s -= term
-      end
-    end
-
-    re = re.push(c)
-    im = im.push(s)
-  end
-
-  Spectrum(re: re, im: im)
+  angles = (0...n).map { |j| (2.0 * PI * j.to_f) / n.to_f }
+  Spectrum(re: angles.map { |x| Mathx.cos(x) }, im: angles.map { |x| Mathx.sin(x) })
 end
 
 def larger(a: Float, b: Float) -> Float
@@ -393,113 +379,16 @@ end
 ## The Slaney mel scale: linear below 1 kHz, logarithmic above.
 def hz_to_mel(hz: Float) -> Float
   return (hz * 3.0) / 200.0 if hz < 1000.0
-  15.0 + (ln(hz / 1000.0) * 27.0) / ln(6.4)
+  15.0 + (Mathx.log(hz / 1000.0) * 27.0) / Mathx.log(6.4)
 end
 
 def mel_to_hz(mel: Float) -> Float
   return (mel * 200.0) / 3.0 if mel < 15.0
-  1000.0 * exp(((mel - 15.0) * ln(6.4)) / 27.0)
+  1000.0 * Mathx.exp(((mel - 15.0) * Mathx.log(6.4)) / 27.0)
 end
 
 ## `log10(max(x, 1e-10))`.
 def log10(x: Float) -> Float
   return -10.0 if x <= FLOOR
-  ln(x) / LN10
-end
-
-## The natural logarithm of a positive finite `x`: `x = m · 2^e` with `m` in
-## `[√½, √2)` (a ladder of powers of two), then the `atanh` series of
-## `(m - 1) / (m + 1)` (|y| < 0.172, so nine terms reach double precision).
-def ln(x: Float) -> Float
-  m = x
-  e = 0
-  while m >= 65536.0
-    m = m / 65536.0
-    e += 16
-  end
-
-  while m < 1.0 / 65536.0
-    m = m * 65536.0
-    e -= 16
-  end
-
-  if m >= 256.0
-    m = m / 256.0
-    e += 8
-  end
-
-  if m >= 16.0
-    m = m / 16.0
-    e += 4
-  end
-
-  if m >= 4.0
-    m = m / 4.0
-    e += 2
-  end
-
-  if m >= 2.0
-    m = m / 2.0
-    e += 1
-  end
-
-  if m < 1.0 / 128.0
-    m = m * 256.0
-    e -= 8
-  end
-
-  if m < 1.0 / 8.0
-    m = m * 16.0
-    e -= 4
-  end
-
-  if m < 0.5
-    m = m * 4.0
-    e -= 2
-  end
-
-  if m < 1.0
-    m = m * 2.0
-    e -= 1
-  end
-
-  if m >= SQRT2
-    m = m / 2.0
-    e += 1
-  end
-
-  if m < SQRT2 / 2.0
-    m = m * 2.0
-    e -= 1
-  end
-
-  y = (m - 1.0) / (m + 1.0)
-  z = y * y
-  series = (
-    1.0 +
-    z *
-    (
-      1.0 / 3.0 +
-      z *
-      (
-        1.0 / 5.0 +
-        z * (1.0 / 7.0 + z * (1.0 / 9.0 + z * (1.0 / 11.0 + z * (1.0 / 13.0 + z * (1.0 / 15.0 + z / 17.0)))))
-      )
-    )
-  )
-
-  2.0 * y * series + e.to_f * LN2
-end
-
-## `e^x` for a small `|x|` (the mel scale needs up to about 2.1): its Taylor
-## series.
-def exp(x: Float) -> Float
-  term = 1.0
-  total = 1.0
-  for t in 1...40
-    term = (term * x) / t.to_f
-    total += term
-  end
-
-  total
+  Mathx.log10(x)
 end

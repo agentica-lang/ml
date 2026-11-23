@@ -53,10 +53,12 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
 3000 frames), as Hugging Face's feature extractor does → a reflect-padded STFT
 (Hann window of 400, hop 160, the last frame dropped) → the power spectrum →
 the Slaney mel filterbank → `log10(max(x, 1e-10))` → a floor at the maximum
-minus 8 → `(x + 4) / 4`.
+minus 8 → `(x + 4) / 4`. Fewer than 3000 frames are the spectrogram of that
+shorter segment (its own end reflection and maximum), not a prefix of the 30 s
+one. A non-finite sample is an error.
 
-- **Pure Agentica lists**, not tensor ops: the work is an FFT per frame,
-  which the tensor API has no op for.
+- **Agentica lists**, not tensor ops: the work is an FFT per frame, which the
+  tensor API has no op for.
 - **The FFT is mixed radix** (decimation in time): radix 2 while the length
   is even, then radix 5, since 400 = 2^4 · 5^2. whisper.cpp splits 400 the
   same way down to 25 and then runs a direct DFT; padding to 512 would change
@@ -65,23 +67,28 @@ minus 8 → `(x + 4) / 4`.
 - **The mel filters are computed**, with librosa's formula (Slaney scale,
   Slaney area norm), which Whisper's `mel_filters.npz` and Hugging Face's
   extractor both use. That needs no file beside the checkpoint and gives 80 or
-  128 bins. `cos`, `sin`, `exp` and `log` are series in Agentica: the
-  language has only `Math.sqrt`, and `libm` through `extern` would make the
-  package native.
-- **Silent frames are skipped**: a frame that starts after the last sample is
-  `log10(1e-10)`, so a short clip costs only its own frames.
-- Measured: 30 s of audio (80 mels) takes 1.5 s on an idle Ryzen 5 3550H
-  (2.7 s under load; 350M VM steps),
-  2.6 s of speech about 0.2 s. Against Hugging Face's `WhisperFeatureExtractor`
-  on `whisper/live/fixtures/es-hola.wav` the largest gap is 8e-8 (80 and 128
-  mels). whisper.cpp keeps its mel internal (its `debug_mode` dump is not
-  wired), so it was not compared directly; it runs the same steps in floats.
+  128 bins.
+- **`exp`, `log`, `log10`, `sin` and `cos` come from libm** through
+  `mathx.agc`, a small required native module (`native/mathx.c`, built on
+  install). Temporary: Agentica's `Math` has only `sqrt`, and the module goes
+  once it has these (agentica-lang/agentica#1925). `test/mathx_test.agc`
+  checks it against Python's `math`.
+- **Silent frames are skipped**: a frame that starts after the last non-zero
+  sample is `log10(1e-10)` (unless the end reflection reaches a sample), so a
+  short clip costs only its own frames.
+- 30 s of audio takes about 1–2 s.
 
 `test/mel_test.agc` checks the output against `test/mel_peer.py`, the same
 steps in Python doubles with a direct DFT (standard library only); the gap is
-about 1e-13.
+about 1e-13. It also checks 200 values of Hugging Face's
+`WhisperFeatureExtractor` (its numpy path) for the first second of
+`whisper/live/fixtures/es-hola.wav`, at 80 and 128 mels, within 1e-6:
+`test/hf_golden.py` wrote `test/fixtures/hf_mel.json` once, by hand (it needs
+`transformers`, so the tests do not run it). whisper.cpp keeps its mel
+internal (its `debug_mode` dump is not wired), so it was not compared
+directly; it runs the same steps in floats.
 
-## Tests
+## Tests of the model
 
 The tests use a tiny random Whisper (d_model 4, 2 heads, one block each,
 3 mel bins, vocab 7, 6 frames) that `test/peer.py` (standard library only)
