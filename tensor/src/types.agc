@@ -290,3 +290,28 @@ def reduced_count(shape: List[Int], axes: List[Int]) -> Int
 
   total
 end
+
+## The name of `op` in error messages.
+def op_name(op: Op) -> String
+  case op
+    Op.Input -> "input"
+    Op.Constant(_) -> "constant"
+    Op.Full(_) -> "full"
+    Op.Add -> "add"
+    Op.Sub -> "sub"
+    Op.Mul -> "mul"
+    Op.Div -> "div"
+    Op.Neg -> "neg"
+    Op.Exp -> "exp"
+    Op.Log -> "log"
+    Op.Relu -> "relu"
+    Op.Matmul -> "matmul"
+    Op.Transpose -> "transpose"
+    Op.Sum(_, _) -> "sum"
+    Op.Mean(_, _) -> "mean"
+    Op.BroadcastTo -> "broadcast_to"
+    Op.Reshape -> "reshape"
+    Op.Lt -> "lt"
+    Op.Where -> "where"
+  end
+end

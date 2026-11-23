@@ -8,9 +8,9 @@
 ## `Torch` runs on libtorch through `src/torch.agc` and `src/native.agc`,
 ## `Xla`/`Candle` answer `error("backend not available")` until their modules
 ## exist, and `Trace` records a node of a traced graph after the same checks
-## (`src/graph.agc`, `trace.agc`, §10). With libtorch absent (the native module is `optional`) the `Torch`
-## arm answers `error("backend not available")` too, and `available/1` says so
-## before a call does.
+## (`src/graph.agc`, `trace.agc`, §10). With libtorch absent (the native
+## module is `optional`) the `Torch` arm answers `error("backend not
+## available")` too, and `available/1` says so before a call does.
 ##
 ## Rules this file enforces:
 ## - No operator overloading: `Tensor.add(a, b)` plus pipes, never `a + b`.
@@ -97,12 +97,13 @@ def backend(t: Types.Tensor) -> Types.Backend = t.backend
 ## when the native libtorch module is built (`[native.torch] optional = true` in
 ## `agentica.toml`), and `Xla`/`Candle` never, since their modules do not exist
 ## yet. A caller that needs to work on both asks this instead of catching the
-## `error("backend not available")` an op would answer.
+## `error("backend not available")` an op would answer. `Trace` is never
+## available: it records ops and computes nothing (`trace.agc`).
 def available(backend: Types.Backend) -> Bool
   case backend
     Types.Backend.Reference -> true
     Types.Backend.Torch(_) -> Torch.available()
-    Types.Backend.Trace -> true
+    Types.Backend.Trace -> false
     Types.Backend.Xla(_) -> false
     Types.Backend.Candle(_) -> false
   end

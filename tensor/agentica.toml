@@ -7,6 +7,7 @@ blank_line_after_end = true
 
 [dependencies]
 native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.4.0", subdir = "native-gen" }
+prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.4.2", subdir = "prop", group = "test" }
 
 # The libtorch backend's native side: a thin C++ layer over libtorch's C++ API,
 # declared by the `extern module "torch"` of `src/native.agc` and dispatched to
