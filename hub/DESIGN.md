@@ -30,9 +30,10 @@ Load.encoder_block(c, BlockNames { norm1, query, key, value, output, norm2, up, 
   `JSON.parse` keeps the last one.
 - **`open` reads the whole file**, since the File API has no seek or ranged
   read: a lazy read of one tensor would read the file again up to it. It
-  `stat`s the file first (at most 4 GiB), reads the 8-byte length and checks
-  it against the size, then the header, and only then the buffer; a file that
-  ends early or grows is refused. A tensor is decoded when asked for.
+  `stat`s the file first and refuses one over 4 GiB, which rules out the
+  5 GB and 10 GB shards Hugging Face writes by default. It reads the 8-byte
+  length and checks it against the size, then the header, and only then the
+  buffer; a file that ends early or grows is refused. A tensor is decoded when asked for.
 - **The index's `weight_map` decides.** A sharded checkpoint opens every
   shard it names; a shard must be a plain file name in the index's folder (no
   `/`, `\`, `..` or absolute path) and hold the tensors mapped to it. Symlinks

@@ -62,6 +62,8 @@ def tensor(shard: Shard, name: String, backend: Tensor.Backend) -> Result[Tensor
   Tensor.from_list(values, e.shape, DTYPES[e.dtype], backend)
 end
 
+private
+
 ## Parses and validates a header's JSON `text` over a buffer of `size` bytes.
 def parse(text: String, size: Int) -> Result[Shard]
   return error("the header does not start with {") if not text.start_with?("{")
@@ -85,13 +87,11 @@ def parse(text: String, size: Int) -> Result[Shard]
   ok(Shard(path: "", entries: entries, metadata: metadata, data: Bytes.concat([])))
 end
 
-private
-
 ## The header length is checked against the file's size before the header
 ## is read, and the header before the buffer is.
 def read(path: String) -> Result[Shard]
   size = (try File.stat(path)).size_bytes
-  return error("#{size} bytes is over the limit #{MAX_FILE}") if size > MAX_FILE
+  return error("file of #{size} bytes is over the limit #{MAX_FILE}") if size > MAX_FILE
   return error("#{size} bytes is too short for the header length") if size < 8
   File.open(path) do |f|
     n = try Binary.read_u64_le(try read_exact(f, 8), 0)
@@ -99,6 +99,8 @@ def read(path: String) -> Result[Shard]
     return error("the header length #{n} is past the end of the file") if n > size - 8
     shard = try parse(try String.from_bytes(try read_exact(f, n)), size - 8 - n)
     data = try read_exact(f, size - 8 - n)
+    # This and the "ended early" error of `read_exact` need a file that
+    # changes under the reader: no hermetic test reaches them.
     return error("the file grew while it was read") if not (try File.read_bytes(f, 1)).empty?
     ok(shard.with(path: path, data: data))
   end

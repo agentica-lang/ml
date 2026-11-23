@@ -7,6 +7,7 @@ or block. Writes that set into a new temporary folder and prints its path.
 
 import json
 import math
+import shutil
 import struct
 import sys
 import tempfile
@@ -75,6 +76,11 @@ def values_file(out):
            "ok": tensor("F32", [1], [1.0])})
     raw_header(out / "bad_bool.safetensors",
                b'{"b":{"dtype":"BOOL","shape":[2],"data_offsets":[0,2]}}', b"\x01\x02")
+    # Header and buffer both past the reader's 1 MiB chunk.
+    big = 2 * 1048576 + 5
+    header = {"big": entry("U8", [big], 0, big), "small": entry("I64", [2], big, big + 16)}
+    raw_header(out / "chunks.safetensors", json.dumps(header).encode() + b" " * 1048576,
+               bytes(i % 256 for i in range(big)) + struct.pack("<2q", 7, -9))
 
 
 def entry(dtype, shape, start, stop):
@@ -215,7 +221,11 @@ SETS = {"values": values_file, "malformed": malformed, "sharded": sharded,
 
 def main():
     out = Path(tempfile.mkdtemp(prefix="agentica-hub-"))
-    SETS[sys.argv[1]](out)
+    try:
+        SETS[sys.argv[1]](out)
+    except BaseException:
+        shutil.rmtree(out)
+        raise
     print(out)
 
 

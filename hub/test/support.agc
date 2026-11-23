@@ -14,10 +14,13 @@ def with_fixtures(set: String, body: Fn[String, Result[Void]]) -> Result[Void]
   out = try Process.output(p, 30000)
   code = try Process.wait(p, 30000)
   return error("peer.py exited with #{code}: #{out.stderr}") if code != 0
-  dir = out.stdout.strip
-  return error("peer.py printed no fixture folder: #{dir}") if not dir.include?("agentica-hub-")
+  dir = out.stdout.strip.split("\n").last
+  if not dir.start_with?("/") or not dir.split("/").last.start_with?("agentica-hub-")
+    return error("peer.py printed no fixture folder: #{dir}")
+  end
+
   result = body.call(dir)
-  try Path.remove(dir)
+  _ = Path.remove(dir)
   result
 end
 

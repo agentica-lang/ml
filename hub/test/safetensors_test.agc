@@ -29,6 +29,14 @@ def test_a_dtype_tensor_lacks_is_refused_alone() -> Result[Void]
   end
 end
 
+def test_a_header_and_buffer_past_one_chunk_read_whole() -> Result[Void]
+  S.with_fixtures("values") do |dir|
+    c = try Hub.open("#{dir}/chunks.safetensors")
+    try Test.eq(c.shards["chunks.safetensors"].data.size, 2 * 1048576 + 5 + 16)
+    Test.eq(try Tensor.to_list(try Hub.tensor(c, "small", S.REF)), [Tensor.Values.Int(7), Tensor.Values.Int(-9)])
+  end
+end
+
 def test_malformed_files_are_refused() -> Result[Void]
   S.with_fixtures("malformed") do |dir|
     cases = try JSON.decode(try S.json(dir, "malformed.json"), Map[String, String])
