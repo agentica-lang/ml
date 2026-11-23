@@ -49,9 +49,12 @@ struct Conv1d
   padding: Int
 end
 
+## `Gelu` is the tanh approximation; `GeluErf` the exact form (no gradient
+## through `Trace`).
 enum Activation
   Relu
   Gelu
+  GeluErf
   Silu
 end
 
@@ -145,6 +148,7 @@ def activate(a: Activation, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   case a
     Activation.Relu -> Tensor.relu(x)
     Activation.Gelu -> Tensor.gelu(x)
+    Activation.GeluErf -> Tensor.gelu_erf(x)
     Activation.Silu -> Tensor.silu(x)
   end
 end

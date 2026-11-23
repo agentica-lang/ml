@@ -142,6 +142,9 @@ an_term torch_tanh(an_env *env, struct torch_TensorHandle_state *a);
 /* The tanh approximation of GELU, elementwise, finite inputs only. */
 an_term torch_gelu_tanh_approx(an_env *env, struct torch_TensorHandle_state *a);
 
+/* The exact (erf) GELU, elementwise, finite inputs only. */
+an_term torch_gelu_erf(an_env *env, struct torch_TensorHandle_state *a);
+
 /* `a == b` elementwise as a `Bool` tensor, two tensors of one shape. */
 an_term torch_eq(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b);
 
@@ -534,6 +537,13 @@ static an_term torch_native_gelu_tanh_approx(an_env *env, int argc, const an_ter
   return torch_gelu_tanh_approx(env, a0);
 }
 
+static an_term torch_native_gelu_erf(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  return torch_gelu_erf(env, a0);
+}
+
 static an_term torch_native_eq(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
@@ -790,6 +800,7 @@ static const an_function torch_native_functions[] = {
   {"sigmoid", "(TensorHandle) -> Result[TensorHandle]", torch_native_sigmoid, AN_DIRTY},
   {"tanh", "(TensorHandle) -> Result[TensorHandle]", torch_native_tanh, AN_DIRTY},
   {"gelu_tanh_approx", "(TensorHandle) -> Result[TensorHandle]", torch_native_gelu_tanh_approx, AN_DIRTY},
+  {"gelu_erf", "(TensorHandle) -> Result[TensorHandle]", torch_native_gelu_erf, AN_DIRTY},
   {"eq", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_eq, AN_DIRTY},
   {"lt", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_lt, AN_DIRTY},
   {"where", "(TensorHandle, TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_where, AN_DIRTY},
@@ -820,5 +831,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 37, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 38, NULL, 0, torch_native_resources, 1, LOAD)
 #endif

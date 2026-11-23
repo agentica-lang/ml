@@ -88,11 +88,14 @@ end
 def test_activations_match_their_values_by_hand() -> Result[Void]
   x = try S.f32([1.0, -2.0, 0.0], [3])
   try Test.eq(try S.floats_of(try Nn.activate(Nn.Activation.Relu, x)), [1.0, 0.0, 0.0])
-  # silu(x) = x * sigmoid(x); gelu is the tanh approximation.
+  # silu(x) = x * sigmoid(x); gelu is the tanh approximation, the exact one
+  # is Python's `x * (1 + math.erf(x / sqrt(2))) / 2`.
   silu = [0.7310585786300049, -0.2384058440442351, 0.0]
   try S.expect_close(try S.floats_of(try Nn.activate(Nn.Activation.Silu, x)), silu, ABS, REL, "silu")
   gelu = [0.8411919906082768, -0.04540230591222494, 0.0]
-  S.expect_close(try S.floats_of(try Nn.activate(Nn.Activation.Gelu, x)), gelu, ABS, REL, "gelu")
+  try S.expect_close(try S.floats_of(try Nn.activate(Nn.Activation.Gelu, x)), gelu, ABS, REL, "gelu")
+  exact = [0.8413447460685429, -0.04550026389635842, 0.0]
+  S.expect_close(try S.floats_of(try Nn.activate(Nn.Activation.GeluErf, x)), exact, ABS, REL, "exact gelu")
 end
 
 def test_self_attention_matches_the_naive_heads_per_batch_item() -> Result[Void]

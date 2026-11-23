@@ -105,8 +105,9 @@ groups).
 Random: none (dropout is identity at inference).
 Movement: `to_dtype, to_device, copy, contiguous`.
 
-Deliberately missing: `softmax`, `layer_norm`, attention, the exact (`erf`)
-`gelu`, `silu`, beam search — all derived (§3.2).
+Deliberately missing: `softmax`, `layer_norm`, attention, `silu`, beam
+search — all derived (§3.2). The exact (`erf`) GELU is `gelu_erf`, outside
+this set: inference only (`Trace` refuses it, ggml does not compile it yet).
 
 ### 3.2 Derived ops (pure Agentica, backend-agnostic)
 
@@ -116,8 +117,9 @@ Built only from §3.1, in `tensor/` (generic) or `nn/` (model-shaped):
 - `layer_norm(x)`, `rms_norm(x)` from `mean`, `pow`, `sqrt` and `div`
   compositions over §3.1 (no `var`/`rsqrt` primitive is needed).
 - `gelu` is the user-facing name of `gelu_tanh_approx` (§3.1); the `erf` form
-  cannot be expressed over §3.1 and is not offered. `silu` derives from
-  `sigmoid` and `mul`.
+  cannot be expressed over §3.1, so `gelu_erf` is an op of its own: the
+  reference sums a series for `erf` (to about 1e-14), libtorch calls
+  `torch::gelu`. `silu` derives from `sigmoid` and `mul`.
 - `dot(a, b)` as `reshape` + `matmul`; `linear(x, w, b?)`, `embedding(ids,
   table)` via `matmul`/`gather`.
 - `multi_head_attention(q, k, v, heads, mask?)`: for each `(batch, head)` pair,

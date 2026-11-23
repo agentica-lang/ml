@@ -44,17 +44,18 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   passed in. `load` checks the conv, position and token tables against it.
 - **Conv padding is `tensor/`'s**: `Tensor.conv1d` takes `stride` and
   `padding`, so `Nn.Conv1d` adds only the bias.
-- **GELU is the tanh form** (`Tensor.gelu`); Whisper uses the exact `erf`
-  form. On the test model the drift is 1.7e-4 on the encoder output and
-  3.8e-5 on the logits.
+- **GELU follows `activation_function`**: `gelu` (every released Whisper
+  checkpoint) is the exact `erf` form, `Tensor.gelu_erf`; `gelu_new` is the
+  tanh form; anything else is an error. The test model checks both against
+  the peer.
 - **Positions are sliced**, not fixed: the encoder adds the first
   `ceil(frames / 2)` rows of its table (the decoder the first `t`), so a short input runs, where Hugging Face
   wants exactly `2 * max_source_positions` frames.
 - **The conv stem loops over the batch**: `transpose` reverses every axis.
   The token lookup flattens the ids to `[batch * t]` and reshapes back.
-- **What the model assumes**: the tensor names start with `model.`, the
-  activation is gelu and `scale_embedding` is false (true of the released
-  Whisper checkpoints; `config.json` is not checked for either). The tied
+- **What the model assumes**: the tensor names start with `model.` and
+  `scale_embedding` is false (true of the released Whisper checkpoints;
+  `config.json` is not checked for it). The tied
   output projection is a second, transposed copy of the vocab table.
 - **Reference and libtorch**: the model runs on both. The tiny test model
   matches the peer within 1e-5 on libtorch, which computes in F32.
@@ -214,9 +215,10 @@ against the tokenizer before the audio costs anything.
   it opened when it ends (the encoder output and the cross-attention cache).
   Each `step` hands only lists out of its arena (the logits and the new rows
   of the self-attention keys and values), builds the new cache from them
-  outside it, and the loop closes the cache it replaced. 224 forced steps of whisper-tiny take 0.12–0.14 s each with flat
-  memory (+5 MB); everything in one enclosing arena, they went from 1.5 s to
-  11.6 s a step by step 192, and memory grew by 760 MB.
+  outside it, and the loop closes the cache it replaced. 224 forced steps of
+  whisper-tiny take 0.12–0.14 s each with flat memory (+5 MB); everything in
+  one enclosing arena, they went from 1.5 s to 11.6 s a step by step 192, and
+  memory grew by 760 MB.
 
 Checked against Hugging Face's `generate` (transformers 4.46.3, greedy) on
 whisper-tiny: `tools/transcribe_check.agc` runs the five cases of
@@ -224,18 +226,18 @@ whisper-tiny: `tools/transcribe_check.agc` runs the five cases of
 and whisper.cpp's `samples/jfk.wav`: detected and named language, transcribe
 and translate, with and without timestamps). The token ids match exactly,
 and so do the text and the segments. The language probability is within
-4.1e-4 (es) and 1.2e-4 (en): the GELU here is the tanh form.
+1.3e-6 (es) and 1e-7 (en); with the tanh GELU it was 4.1e-4 and 1.2e-4.
 `test/transcribe_golden.py` wrote the golden once, by hand (it needs `torch`
 and `transformers`). The tests run neither: the checkpoint is not in git.
 
 Speed on this machine (Ryzen 5 3550H, shared with other jobs, so the numbers
-spread): libtorch takes 5.5–6 s for the 2.6 s of es-hola (a real-time factor
-of 2.1–2.3) and 7.1–9.3 s for the 11 s of jfk (0.64–0.84); about 3.5 s is the
+spread): libtorch takes 5.1–6 s for the 2.6 s of es-hola (a real-time factor
+of 1.9–2.3) and 7.1–9.3 s for the 11 s of jfk (0.64–0.84); about 3.5 s is the
 encoder over the 30 s window, of which 1.5–2 s is handing each block's output
 out of its arena as a list (the memory bullet above), and 0.12–0.14 s each
-decoder step. The
-reference backend gave the same ids for es-hola in 22 minutes (a real-time
-factor of about 500). Loading the checkpoint takes 25–40 s.
+decoder step. The reference backend gave the same ids for es-hola in 22
+minutes (a real-time factor of about 500). Loading the checkpoint takes 25–40
+s.
 
 ## Tests of the model
 

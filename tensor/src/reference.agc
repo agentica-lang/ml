@@ -32,6 +32,9 @@ SQRT2_OVER_PI = 0.7978845608028654
 
 ## The `gelu_tanh_approx` cubic constant.
 GELU_C = 0.044715
+## `2 / sqrt(pi)` and `1 / sqrt(2)`, for `erf_ref` and `gelu_erf`.
+TWO_OVER_SQRT_PI = 1.1283791670955126
+INV_SQRT2 = 0.7071067811865476
 
 ## Above this `exp_ref` answers `+inf` (as `1.0e308 * 10.0`).
 EXP_MAX = 709.0
@@ -110,6 +113,24 @@ def sigmoid_ref(x: Float) -> Float
   return 1.0 if x >= 30.0
   return 0.0 if x <= -30.0
   1.0 / (1.0 + exp_ref(-x))
+end
+
+## `erf(z)`, pure Agentica, to about 1e-14: `2/sqrt(pi) exp(-z^2)` times the
+## series `sum 2^n z^(2n+1) / (1 3 5 ... (2n+1))`, whose terms are all
+## positive (no cancellation); past `|z| = 6` it is `±1` in doubles.
+def erf_ref(z: Float) -> Float
+  return 1.0 if z >= 6.0
+  return -1.0 if z <= -6.0
+  term = z
+  total = z
+  n = 0
+  while term.abs > 1.0e-17 * total.abs
+    n += 1
+    term = (term * 2.0 * z * z) / (2 * n + 1).to_f
+    total = total + term
+  end
+
+  TWO_OVER_SQRT_PI * exp_ref(-z * z) * total
 end
 
 ## A `Reference` tensor of `shape` and `dtype` holding `values`.
@@ -442,6 +463,14 @@ def gelu_tanh_approx(t: Types.Tensor) -> Result[Types.Tensor]
   end
 
   ok(make(t.shape, t.dtype, out))
+end
+
+## The exact GELU, `x * (1 + erf(x / sqrt(2))) / 2`, elementwise.
+def gelu_erf(t: Types.Tensor) -> Result[Types.Tensor]
+  return error("gelu_erf needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
+
+  xs = try require_finite(try data_of(t), "gelu_erf")
+  ok(make(t.shape, t.dtype, xs.map { |x: Float| 0.5 * x * (1.0 + erf_ref(x * INV_SQRT2)) }))
 end
 
 ## Elementwise `a == b` as `1.0`/`0.0`, float or int dtypes.
