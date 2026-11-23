@@ -1,7 +1,7 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-23. `main` en `ff1f9a9`. Abierto: el primer PR de `nn/`
-(rama `nn`). Este fichero es el parte de estado: lo hecho, lo que
+Fecha: 2026-11-23. `main` en `3593184`. Abierto: el primer PR de `train/`
+(rama `train`). Este fichero es el parte de estado: lo hecho, lo que
 quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 `roadmap.md`; el contrato del tensor, en `tensor/DESIGN.md`.
 
@@ -15,6 +15,9 @@ quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 | `tensor/` M1: API en la raíz + `src/`, backend de referencia puro, guard de no finitos, 148 tests | `tensor/` | #10 |
 | `tensor/` M2 = **decisión (b′)**: el backend libtorch vive **dentro** de `tensor/` (`src/torch.agc`, `src/native.agc`, `native/torch.c`, `[native.torch] optional`), `Handle = Native(TensorHandle) \| Plain(Data)`, dispatch cableado en los 47 brazos | `tensor/` | #11 |
 | `tensor/`: cobertura **42/45 en libtorch, 45/45 en referencia**, con `div`, `conv1d`, `avg_pool1d` reales; `softmax`/`layer_norm`/atención ya corren en torch | `tensor/` | #13 |
+| `tensor/`: tracing y gradientes (§10): `Trace` como quinto brazo, `value_and_grad`, reglas de backward de las primeras ops, suite de paridad traced vs eager | `tensor/trace.agc`, `src/graph.agc` | #16, #18 |
+| `tensor/`: tests property-based con `prop` (órdenes de `axes`, `concat`, round trips de dtype, oráculo torch, conv/pool contra bucles) | `tensor/test/prop_*` | #17, #19 |
+| `nn/` primer PR: capas funcionales (`dense`, `layer_norm`, `embedding`, `attention`, `mlp`, `encoder_block`), init con semilla, solo forward; `dense` y `mlp` relu diferenciables vía `Trace` | `nn/` | #20 |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
 | Docs: `tensor/DESIGN.md` (contrato, sin fases), `roadmap.md` (orden e hitos), `README.md`, `.gitattributes`, CI matricial | raíz | #3, #6 |
@@ -41,37 +44,29 @@ quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 
 ## 2. En progreso (parado a propósito)
 
-- **`nn/` primer PR** (rama `nn`, worktree `../agentica-ml-nn`): capas
-  funcionales sobre `tensor/` (`dense` de cualquier rango, `layer_norm` afín,
-  `embedding` + posicional, `attention` con proyecciones, `mlp`,
-  `encoder_block` pre-norm), init con semilla (Park-Miller en Agentica), solo
-  forward. Probado contra un modelo ingenuo, referencia vs torch, y el
-  gradiente de `dense` vía `Trace`. Diseño en `nn/DESIGN.md`.
-
-- **`prop` para tests property-based de `tensor/`**: rama local
-  **`prop-tests`**, worktree `../agentica-ml-prop-tests`. Estado: solo
-  añadida la dependencia de grupo test
-  (`prop = { …, tag = "prop-0.4.2", group = "test" }`) y el lock; **sin
-  tests escritos**. El plan acordado, en el mensaje de lanzamiento:
-  `exhaustive` de permutaciones de `axes` (la clase de bug del `argmax`),
-  `associative` en `concat`, `roundtrip` por dtype, `oracle` referencia vs
-  torch con tolerancia, y `oracle` de `conv1d`/`avg_pool1d` contra un triple
-  loop ingenuo. Nada de esto está commiteado.
+- **`train/` primer PR** (rama `train`, worktree `../agentica-ml-train`):
+  `Loss.mse`, `Loss.binary_cross_entropy` (estable, solo ops con regla),
+  `Optim` (SGD con momentum, Adam) como funciones puras, y `Train.fit` sobre
+  `Trace.value_and_grad`. Criterio de salida: un MLP relu de `nn/` aprende
+  XOR en la referencia (golden de la curva) y libtorch la sigue a 1e-7.
+  Sin softmax cross-entropy: espera `stop_grad` o la regla de `max`. La raíz
+  del repo pasa a ser un workspace de Agentica (`agentica.toml` con
+  `[workspace]`): un paquete no raíz no puede tener deps `path`
+  (`PKG-ROOT-ONLY`). Diseño en `train/DESIGN.md`.
 
 Ningún subagente sigue corriendo.
 
 ## 3. Futuro planeado (orden propuesto)
 
-1. **`grad` y tracing** (§10 del diseño, hoy sin empezar). Es el valor
-   central del proyecto y lo que falta para `nn/` y `train/`. Sin esto, el
-   stack es un motor de inferencia.
-2. **Property tests con `prop`** (lo de arriba), antes de que crezca la
-   superficie de ops.
-3. **`nn/`**: primer PR abierto (ver §2, `nn/DESIGN.md`). Falta: decoder
-   (máscara causal, cross-attention), conv, `rms_norm`, y `gelu` en
-   libtorch (`gelu_tanh_approx`, en `tensor/`).
-4. **`train/`**: losses, SGD/Adam, loop; criterio: un MLP entrena
-   end-to-end sobre torch con la referencia como oráculo.
+1. **`grad`**: faltan reglas para el resto de §3.1 y `stop_grad` (lo que
+   esperan `softmax`, `layer_norm` y la softmax cross-entropy de `train/`).
+2. **`nn/`**: falta decoder (máscara causal, cross-attention), conv,
+   `rms_norm`, y `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
+3. **`train/`**: primer PR abierto (ver §2). Después: softmax
+   cross-entropy, shuffling, schedules, y aplanar structs de capas (pytrees)
+   cuando un modelo lo pida.
+4. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
+   época del XOR en la referencia).
 5. **`hub/`**: safetensors + descarga HF. Descargas con `http-client`
    `stream()` (redirects y retry incluidos), **nunca** `bond` (es solo
    servidor) ni `std/http download()` (tope 256 MiB, sin redirects).

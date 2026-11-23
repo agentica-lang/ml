@@ -1,0 +1,5 @@
+# The packages of this repository that depend on each other: a member reads
+# another member from its folder, with no fetch and no copy.
+[workspace]
+repository = "https://github.com/agentica-lang/ml"
+members = ["tensor", "nn", "train"]

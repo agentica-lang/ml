@@ -10,4 +10,7 @@ hash = "sha256:ab8003991f11a706b5fd396bd6f2792c6c6485c9010d84293e0139d164e20557"
 
 [[package]]
 name = "tensor"
-path = "../tensor"
+git = "https://github.com/agentica-lang/ml"
+subdir = "tensor"
+ref = "3593184a387c26069ca8b70d82b64a8877d2ca6e"
+workspace = true
