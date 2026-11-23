@@ -1,18 +1,11 @@
 name = "asr"
-agentica = "0.36.0"
+agentica = "0.37.0"
 
 # Every bare `end` is followed by an empty line (AGENTS.md).
 [style]
 blank_line_after_end = true
 
 [dependencies]
-native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.4.0", subdir = "native-gen" }
 tensor = { git = "https://github.com/agentica-lang/ml", ref = "3185826fd76079adad69f5158822c88b3e89cd5d", subdir = "tensor" }
 nn = { git = "https://github.com/agentica-lang/ml", ref = "49ca1c77e11c1e70e695f5e332592bb7db53f025", subdir = "nn" }
 hub = { git = "https://github.com/agentica-lang/ml", ref = "0db3d790591ca52fc211d27183e818223e66e1e9", subdir = "hub" }
-
-# libm's exp, log, log10, sin and cos for the log-mel frontend, declared by
-# `mathx.agc`. Required. Temporary: it goes once Agentica's `Math` has them
-# (agentica-lang/agentica#1925).
-[native.mathx]
-build = { sources = ["native/mathx.c"], libs = ["m"] }

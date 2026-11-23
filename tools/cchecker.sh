@@ -64,7 +64,6 @@ sep='['
 tensor/native/ggml.c tensor/native third_party/ggml/include
 tensor/native/ggml_graph.c tensor/native third_party/ggml/include
 whisper/native/whisper.c whisper/native third_party/whisper.cpp/include third_party/whisper.cpp/ggml/include
-asr/native/mathx.c asr/native
 LIST
   printf '\n]\n'
 } > "$db"

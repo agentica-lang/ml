@@ -5,7 +5,6 @@
 import Asr from "../asr"
 import Greedy from "../greedy"
 import Lower from "pkg/tensor/src/lower"
-import Mathx from "../mathx"
 import Mel from "../mel"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "../tokenizer"
@@ -196,8 +195,8 @@ def test_transcribe_matches_a_loop_over_the_full_decoder() -> Result[Void]
     scores = tok.languages.map { |l| first[l.id] }
     best = (0...scores.size).to_a.max_by { |i| scores[i] }.unwrap!
     try Test.eq(t.language, tok.languages[best].code)
-    try close_to(t.language_probability, Mathx.exp(scores[best]) / sum_exp(scores), "language probability")
-    try close_to(t.no_speech_prob, Mathx.exp(first[30]) / sum_exp(first), "no_speech_prob")
+    try close_to(t.language_probability, Math.exp(scores[best]) / sum_exp(scores), "language probability")
+    try close_to(t.no_speech_prob, Math.exp(first[30]) / sum_exp(first), "no_speech_prob")
 
     prompt = try Tokenizer.prompt(tok, some(t.language), Tokenizer.Job.Transcribe, true)
     rules = Greedy.rules(tok, some([1, 2]), some([4, 21]), true)
@@ -262,7 +261,7 @@ def last_logits(m: Asr.Model, tokens: List[Int], audio: Tensor.Tensor) -> Result
   ok(all.drop(all.size - m.config.vocab_size))
 end
 
-def sum_exp(xs: List[Float]) -> Float = xs.reduce(0.0) do |acc, x| acc + Mathx.exp(x) end
+def sum_exp(xs: List[Float]) -> Float = xs.reduce(0.0) do |acc, x| acc + Math.exp(x) end
 
 def close_to(got: Float, want: Float, what: String) -> Result[Void]
   Test.assert((got - want).abs <= 0.000000001 * (1.0 + want.abs), "#{what}: #{got}, expected #{want}")

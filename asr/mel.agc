@@ -1,8 +1,6 @@
 ## Whisper's log-mel frontend: 16 kHz mono samples to the `[mels, frames]`
 ## log-mel spectrogram the encoder takes (`asr/DESIGN.md`).
 
-import Mathx from "mathx"
-
 ## Samples per second.
 SAMPLE_RATE = 16000
 ## The STFT window and its hop, in samples.
@@ -370,7 +368,7 @@ end
 ## `cos` and `sin` of `2πj / n` for `j` in `0...n`.
 def cos_sin(n: Int) -> Spectrum
   angles = (0...n).map { |j| (2.0 * PI * j.to_f) / n.to_f }
-  Spectrum(re: angles.map { |x| Mathx.cos(x) }, im: angles.map { |x| Mathx.sin(x) })
+  Spectrum(re: angles.map { |x| Math.cos(x) }, im: angles.map { |x| Math.sin(x) })
 end
 
 def larger(a: Float, b: Float) -> Float
@@ -386,16 +384,16 @@ end
 ## The Slaney mel scale: linear below 1 kHz, logarithmic above.
 def hz_to_mel(hz: Float) -> Float
   return (hz * 3.0) / 200.0 if hz < 1000.0
-  15.0 + (Mathx.log(hz / 1000.0) * 27.0) / Mathx.log(6.4)
+  15.0 + (Math.log(hz / 1000.0) * 27.0) / Math.log(6.4)
 end
 
 def mel_to_hz(mel: Float) -> Float
   return (mel * 200.0) / 3.0 if mel < 15.0
-  1000.0 * Mathx.exp(((mel - 15.0) * Mathx.log(6.4)) / 27.0)
+  1000.0 * Math.exp(((mel - 15.0) * Math.log(6.4)) / 27.0)
 end
 
 ## `log10(max(x, 1e-10))`.
 def log10(x: Float) -> Float
   return -10.0 if x <= FLOOR
-  Mathx.log10(x)
+  Math.log10(x)
 end
