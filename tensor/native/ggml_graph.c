@@ -75,13 +75,14 @@ enum {
   OP_CONCAT, /* ints: the axis, then 1 for a stack (each arg gains that axis) */
   OP_CONV1D, /* ints: stride, padding */
   OP_SCATTER_ADD, /* ints: the rows */
+  OP_NORM,        /* a layer norm over the last axis; ints: eps as the bits of an F32 */
   OP_COUNT
 };
 
 static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
-  "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add",
+  "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "norm",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -745,6 +746,17 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       t = reshape(p, scatter_add(p, a, b, ints[0], &n->guard), n->ne);
       break;
     case OP_GELU_ERF: t = ggml_gelu_erf(p->ctx, dense(p, a)); break;
+    case OP_NORM: {
+      uint32_t bits;
+      float eps;
+
+      if (nints != 1 || ints[0] < 0 || ints[0] > UINT32_MAX) return tg_error(env, "a norm takes eps as the bits of an F32");
+      bits = (uint32_t)ints[0];
+      memcpy(&eps, &bits, sizeof eps);
+      if (!(eps > 0.0f)) return tg_error(env, "a norm takes an eps above 0");
+      t = ggml_norm(p->ctx, dense(p, a), eps);
+      break;
+    }
     case OP_CONCAT:
       if (nints != 2 || ints[0] < 0 || ints[0] >= rank) return tg_error(env, "concat takes an axis and the stack flag");
       if (!joins(p, args, nargs, rank, rank - 1 - (int)ints[0], ints[1] != 0, n->ne)) {
