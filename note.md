@@ -122,10 +122,6 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
 - `asr/mathx.agc` (módulo nativo sobre libm: `exp`, `log`, `log10`, `sin`,
   `cos`) es temporal: se quita cuando Agentica tenga esas funciones en `Math`
   (agentica#1925).
-- `Torch.full` (`tensor/src/torch.agc`) arma los valores con `List.repeat`
-  y los sube: por encima de 1 048 576 elementos la ejecución se para
-  (`RUNTIME-INVALID-COUNT`, no un `Result`), y cada `full` del optimizador
-  cruza el FFI cada paso (spike ggml-graph).
 - `conv1d`/`avg_pool1d` no soportan dilation ni groups (declarado).
 - `gelu_tanh_approx`, `batch_matmul` y `to_device` no están en libtorch
   (declarado en el README del paquete, con razón).
