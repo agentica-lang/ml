@@ -94,7 +94,7 @@ ml `b59c68c` (the head of `main` this was measured on), Agentica 0.37.0, the mea
 | sum of the parts | 1.47 M | 69.7 | 130.9 |
 | wall time of a step | | 69.9 | 132.0 |
 
-The earlier table in this file says 68 ms and 1.45 M VM steps for a CPU step, and this one 69.9 ms and 1.47 M. The VM steps are the same work: that table divides the 23 steps after the prompt (34.7 M), this one includes the prompt step, which has 4 tokens and costs a little more. The time differs by the machine (the other table is a single pass of `bench_transcribe.agc` on another run of the day; the same code measured 60 to 78 ms a step in different runs here). The parts add up to the wall time within 1 ms in this run; in an earlier one the bench did not close the self-attention caches, and 7 ms a step were unattributed (the memory the unclosed caches held until the garbage collector).
+The earlier table in this file says 68 ms and 1.45 M VM steps for a CPU step, and this one 69.9 ms and 1.47 M. The earlier table was measured on `ac1b402`; on `b59c68c` the same `bench_transcribe.agc` stage pass gives 1.46 M for the prompt step and 33.8 M for the 23 steps after it (1.47 M each) and 68 ms a step, so the VM steps moved with the code between the two commits and the time is within noise of this run (60 to 78 ms a step across runs of `bench_step.agc` on this machine, which is shared). The parts add up to the wall time within 1 ms in this run. In an earlier one `bench_step.agc` did not close the self-attention caches, and about 7 ms a step were unattributed.
 
 What this says:
 
