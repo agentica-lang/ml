@@ -4,7 +4,8 @@
 ## (`List[Float]`, C order) behind `Types.Handle.Plain`, and every op below
 ## builds a new immutable `Types.Tensor`. This module is the oracle the
 ## conformance suite of `tensor/DESIGN.md` §11 checks every future backend
-## against; `torch/` (M2) will implement this same operation set.
+## against. The libtorch backend (`src/torch.agc`) implements the same
+## operation set except two ops; `README.md` lists what is implemented.
 ##
 ## Errors are `Result`/`error`, never halts: the public wrappers in
 ## `tensor.agc` validate eagerly (`tensor/DESIGN.md` §9) and this module keeps

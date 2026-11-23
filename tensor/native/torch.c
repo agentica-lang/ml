@@ -327,7 +327,11 @@ an_term torch_create(an_env *env, torch_list_Int shape, torch_list_Float data, i
   if (!read_shape(env, shape, &dims, &failure)) return failure;
   if (!scalar_type_of(dtype, &scalar)) return error_text(env, "unknown dtype code " + std::to_string(dtype));
 
-  while ((code = torch_list_Float_next(env, &data, &x)) == 1) values.push_back(x);
+  try {
+    while ((code = torch_list_Float_next(env, &data, &x)) == 1) values.push_back(x);
+  } catch (...) {
+    return failed(env, "create");
+  }
   if (code < 0) return an_void(env);
 
   int64_t wanted = volume_of(dims);

@@ -48,7 +48,7 @@ if [ -z "${torch_dir:-}" ]; then
   echo "  (looked at TORCH_DIR, /opt/libtorch, /usr/local/libtorch, /usr/lib/libtorch," >&2
   echo "   $HOME/opt/libtorch and $HOME/libtorch, wanting include/torch/csrc/api/include/torch/torch.h)" >&2
   echo "  a CPU release: https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-2.4.1%2Bcpu.zip" >&2
-  echo "  without it the native 'torch' module stays unbuilt and the conformance tests self-skip" >&2
+  echo "  without it the native 'torch' module stays unbuilt and the conformance tests assert the absent state instead of comparing" >&2
   exit 1
 fi
 

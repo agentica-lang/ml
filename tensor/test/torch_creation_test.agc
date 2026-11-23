@@ -128,7 +128,9 @@ def test_a_value_of_the_wrong_class_is_an_error() -> Result[Void]
   try Test.error?(Tensor.from_list(ints, [1], Tensor.Dtype.F32, Conform.TORCH))
   try Test.error?(Tensor.from_list(ints, [1], Tensor.Dtype.F32, Conform.REF))
   try Test.error?(Tensor.full([1], Tensor.Values.Float(1.0), Tensor.Dtype.I64, Conform.TORCH))
-  Test.error?(Tensor.full([1], Tensor.Values.Bool(true), Tensor.Dtype.U8, Conform.TORCH))
+  try Test.error?(Tensor.full([1], Tensor.Values.Float(1.0), Tensor.Dtype.I64, Conform.REF))
+  try Test.error?(Tensor.full([1], Tensor.Values.Bool(true), Tensor.Dtype.U8, Conform.TORCH))
+  Test.error?(Tensor.full([1], Tensor.Values.Bool(true), Tensor.Dtype.U8, Conform.REF))
 end
 
 def test_arange_rejects_a_bad_dtype_or_step_on_both_backends() -> Result[Void]
