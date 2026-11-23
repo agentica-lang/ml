@@ -78,7 +78,9 @@ end
 ## What a traced node computes (`tensor/DESIGN.md` §10.2). `Input` is an
 ## argument of the traced function, `Constant` a tensor lifted into the trace,
 ## `Full` a fill of the node's shape; the shape-changing ops read their target
-## from the node's tensor.
+## from the node's tensor. Every op of §3.1 has a variant, so any traced
+## function runs forward; the ones with no backward rule yet make `gradients`
+## answer an error naming the op.
 enum Op
   Input
   Constant(Tensor)
@@ -99,6 +101,29 @@ enum Op
   Reshape
   Lt
   Where
+  Sqrt
+  Pow
+  Sigmoid
+  Tanh
+  Gelu
+  Eq
+  Clamp(Float, Float)
+  Max(List[Int], Bool)
+  Argmax(List[Int], Bool)
+  BatchMatmul
+  Squeeze(Optional[Int])
+  Unsqueeze(Int)
+  Slice(List[Int], List[Int])
+  Concat(Int)
+  Stack(Int)
+  Gather
+  ToDtype
+  ToDevice(Device)
+  Copy
+  Contiguous
+  Conv1d(Int, Int)
+  AvgPool1d(Int, Int, Int)
+  Arange(Int, Int, Int)
 end
 
 ## One node of a traced graph: unique `id` in the run, its op and its

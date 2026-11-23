@@ -225,8 +225,31 @@ def test_a_reshape_of_another_volume_fails_at_trace_time() -> Result[Void]
   Test.error?(Trace.grad([try f64([0.5, -1.0, 2.0, 0.3], [4])]) do |xs| Tensor.sum(try Tensor.reshape(xs[0], [3])) end)
 end
 
-def test_an_op_the_trace_cannot_record_is_an_error() -> Result[Void]
-  Test.error?(Trace.grad([try f64([0.5, -1.0], [2])]) do |xs| Tensor.sum(try Tensor.sqrt(xs[0])) end)
+def test_a_gradient_through_an_op_with_no_rule_names_the_op() -> Result[Void]
+  got = Trace.grad([try f64([0.5, 1.0], [2])]) do |xs| Tensor.sum(try Tensor.sqrt(xs[0])) end
+  case got
+    ok(_) -> error("sqrt has no backward rule, but the gradient was computed")
+    error(e) -> Test.assert(e.message.include?("sqrt"), "the error says \"#{e.message}\"")
+  end
+end
+
+def test_an_op_with_no_rule_off_the_gradient_path_is_fine() -> Result[Void]
+  shift = try f64([4.0, 9.0], [2])
+  grads = try Trace.grad([try f64([0.5, -1.0], [2])]) do |xs|
+    root = try Tensor.sqrt(Trace.constant(shift))
+    Tensor.sum(try Tensor.mul(xs[0], root))
+  end
+
+  Support.expect_floats(grads[0], [2.0, 3.0])
+end
+
+def test_argmax_cuts_the_gradient() -> Result[Void]
+  grads = try Trace.grad([try f64([0.5, -1.0, 2.0], [3])]) do |xs|
+    index = try Tensor.to_dtype(try Tensor.argmax(xs[0]), Tensor.Dtype.F64)
+    Tensor.sum(try Tensor.add(try Tensor.broadcast_to(index, [3]), xs[0]))
+  end
+
+  Support.expect_floats(grads[0], [1.0, 1.0, 1.0])
 end
 
 def test_an_eager_tensor_must_be_lifted_into_the_trace() -> Result[Void]
