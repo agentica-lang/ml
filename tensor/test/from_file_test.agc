@@ -8,6 +8,7 @@
 
 import Conform from "torch_support"
 import Tensor from "../tensor"
+import Trace from "../trace"
 
 CPU = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
@@ -82,35 +83,36 @@ def test_a_bad_range_is_an_error_on_each_backend() -> Result[Void]
   end
 end
 
-## One F16 range of more than the 1 MiB chunk the native readers widen at a time, from an odd offset,
-## made of finite halves of both signs.
-def test_a_range_of_several_chunks_reads_the_same_on_each_backend() -> Result[Void]
+## One F16 range of more than the 1 MiB chunk the native readers widen at a time, from an odd offset: the halves
+## 1, 2, 4 and 8 repeat, so a chunk read twice or skipped changes the sum, which stays exact in F32. Only the
+## native backends run it: the reference would spend the step budget on 524291 values.
+def test_a_range_of_several_chunks_sums_the_same_on_each_native_backend() -> Result[Void]
   count = 524291
-  bytes = [9].concat((0...(count * 2)).map { |i| chunk_byte(i) })
+  quad = [0, 60, 0, 64, 0, 68, 0, 72]
+  tail = [0, 60, 0, 64, 0, 68]
+  bytes = try Bytes.from_list([9])
+  chunks = List.repeat(try Bytes.from_list(quad), 131072)
+  data = Bytes.concat([bytes].concat(chunks).push(try Bytes.from_list(tail)))
   dir = "/tmp/agentica-from-file-#{Random.int(0, 999999999)}"
   try Dir.mkdir_private(dir, 5000)
   path = "#{dir}/chunks.bin"
   try File.open(path, "write", 5000) do |f|
-    try File.write_bytes(f, try Bytes.from_list(bytes), 5000)
+    try File.write_bytes(f, data, 5000)
     ok()
   end
 
-  want = try floats(try Tensor.from_file(path, 1, [count], Tensor.FloatFormat.F16, Conform.REF))
   for b in backends()
-    got = try floats(try Tensor.from_file(path, 1, [count], Tensor.FloatFormat.F16, b))
-    try Test.assert(got == want, "the range read differs on #{b}")
+    if b != Conform.REF
+      t = try Tensor.from_file(path, 1, [count], Tensor.FloatFormat.F16, b)
+      total = try Trace.eval([t], ->(xs: List[Tensor.Tensor]) { Tensor.sum(xs[0]) })
+      try Test.eq(try floats(total), [1966087.0])
+      last = try Tensor.from_file(path, 1 + 2 * 524288, [3], Tensor.FloatFormat.F16, b)
+      try Test.eq(try floats(last), [1.0, 2.0, 4.0])
+    end
   end
 
   _ = Path.remove(dir, 5000)
   ok()
-end
-
-## The low byte of a half is arbitrary; the high one keeps the exponent below 30, so no half is infinite or NaN.
-def chunk_byte(i: Int) -> Int
-  return (i * 7) % 256 if i % 2 == 0
-  high = (i / 2) % 124
-  return high + 128 if (i / 2) % 3 == 0
-  high
 end
 
 def floats(t: Tensor.Tensor) -> Result[List[Float]]
