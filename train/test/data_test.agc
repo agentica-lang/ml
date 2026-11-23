@@ -150,7 +150,8 @@ def test_a_failed_batch_comes_after_the_buffered_ones() -> Result[Void]
   sgd = Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.01))
   loader = Data.Loader(dataset: short, batch_size: 1, shuffle: false, prefetch: 4)
   fit = Train.fit(&linear, [try S.tensor([0.0, 0.0], [2, 1], Tensor.Dtype.F32)], loader, sgd, 1)
-  Test.assert(fit.message.start_with?("epoch 1, batch 3: "), "got #{fit.message}")
+  try Test.assert(fit.message.start_with?("epoch 1, batch 3: "), "got #{fit.message}")
+  Test.assert(fit.message.end_with?(want.message), "got #{fit.message}")
 end
 
 ## Batches a task freed (cancelled here, as a crash would end it) are an
