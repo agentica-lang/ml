@@ -42,7 +42,12 @@ answers whether this machine has it, and the dispatch arm answers
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
 - `test/` — the unit tests of the reference backend, and the libtorch
   conformance suite (`test/torch_*_test.agc`) that runs the same public call on
-  both backends and compares.
+  both backends and compares. `test/prop_*_test.agc` are the property tests
+  (`prop`, a test-group dependency): every ordering of the reduction `axes`
+  against a naive reduction, `concat` associativity, `from_list`/`to_list` per
+  dtype, the reference against libtorch within the tolerance below, and
+  `conv1d`/`avg_pool1d` against plain loops. Without libtorch the comparison
+  with it asserts that absence and the rest runs on the reference.
 
 The native module lives in this package rather than in a `torch/` of its own
 because a `resource` is nominal to the `extern module` block that declares it:
@@ -188,8 +193,8 @@ download it cannot pin by sha256 would be worse than not running. So:
   libtorch are the same one-line warning inside a green job.
 - what was run locally, by hand, with libtorch 2.4.1+cpu at `$HOME/opt/libtorch`:
   `agentica check`, `agentica fmt --check`, the header `--check`, `agentica
-  test` (321 tests: the reference suite plus the libtorch conformance suite)
-  and `agentica tools/bench.agc`.
+  test` (the reference suite, the libtorch conformance suite and the property
+  tests) and `agentica tools/bench.agc`.
 
 The exit is a **non-required** CI job that installs libtorch pinned by sha256
 and runs `agentica test` with `TORCH_DIR` set, so the build and the comparison
@@ -210,6 +215,11 @@ a == b                                when either side is not finite
 
 and requires exact equality for integer and `Bool` values, and exact shape and
 dtype equality.
+
+The property tests (`test/prop_oracle_test.agc`) use the same tolerance, and 1e-6
+relative for `exp`, `tanh`, `sigmoid`, `silu`, `log`, `sqrt`, `pow`, `softmax`
+and the norms: libtorch's vectorised math may be an ulp or two (1.2e-7 each)
+from the correctly rounded value.
 
 The reason for a tolerance at all: the reference computes in doubles
 (`DESIGN.md` §2 fixes `F32` as the compute dtype but the reference keeps its

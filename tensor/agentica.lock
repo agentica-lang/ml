@@ -7,3 +7,11 @@ subdir = "native-gen"
 tag = "native-gen-0.4.0"
 commit = "42a1fd2b39a08bc1524aa9c5a2d2525f0f29aba0"
 hash = "sha256:ab8003991f11a706b5fd396bd6f2792c6c6485c9010d84293e0139d164e20557"
+
+[[package]]
+name = "prop"
+git = "https://github.com/agentica-lang/packages"
+subdir = "prop"
+tag = "prop-0.4.2"
+commit = "6e90cee2207bce255455b14e025379d95a99a599"
+hash = "sha256:a5f4a0f1aefb90b51c750c015ccad6baaf1c273131db45d1b5d409ccd64f06b4"
