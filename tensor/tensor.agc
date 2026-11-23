@@ -78,7 +78,7 @@ export Types.Backend
 export Types.Data
 export Types.Device
 export Types.Dtype
-export Types.FileFormat
+export Types.FloatFormat
 export Types.Handle
 export Types.Tensor
 export Types.TopK
@@ -241,11 +241,15 @@ def from_file(
   path: String,
   offset: Int,
   shape: List[Int],
-  format: Types.FileFormat = Types.FileFormat.F32,
+  format: Types.FloatFormat = Types.FloatFormat.F32,
   backend: Types.Backend = Types.Backend.Reference,
 ) -> Result[Types.Tensor]
-  _ = try Types.volume(shape)
+  n = try Types.volume(shape)
   return error("from_file needs an offset of 0 or more, got #{offset}") if offset < 0
+  if n > (9223372036854775807 - offset) / Types.file_width(format)
+    return error("from_file: #{n} values at offset #{offset} reach past what an Int counts")
+  end
+
   case backend
     Types.Backend.Reference -> Reference.from_file(path, offset, shape, format)
     Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format)

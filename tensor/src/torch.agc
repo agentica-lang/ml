@@ -151,7 +151,7 @@ def from_file(
   path: String,
   offset: Int,
   shape: List[Int],
-  format: Types.FileFormat,
+  format: Types.FloatFormat,
 ) -> Result[Types.Tensor]
   _ = try ready(device, "from_file")
   one(device, Types.Dtype.F32, shape) do Raw.load(path, offset, shape, Types.file_code(format)) end

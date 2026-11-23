@@ -33,7 +33,7 @@ end
 
 ## The float formats `Tensor.from_file` reads: little-endian IEEE binary32,
 ## binary16 and bfloat16. The tensor it makes is `F32` whichever one it reads.
-enum FileFormat
+enum FloatFormat
   F32
   F16
   BF16
@@ -155,9 +155,14 @@ end
 
 ## The number of elements `shape` names: `1` for `[]`, the product otherwise.
 def volume(shape: List[Int]) -> Result[Int]
-  total = 1
   for d in shape
     return error("a shape holds no negative dimension, got #{shape}") if d < 0
+  end
+
+  return ok(0) if shape.include?(0)
+  total = 1
+  for d in shape
+    return error("a shape of #{shape} holds more elements than an Int counts") if total > 9223372036854775807 / d
     total = total * d
   end
 
@@ -165,20 +170,20 @@ def volume(shape: List[Int]) -> Result[Int]
 end
 
 ## The bytes of one element of `format`.
-def file_width(format: FileFormat) -> Int
+def file_width(format: FloatFormat) -> Int
   case format
-    FileFormat.F32 -> 4
-    FileFormat.F16 -> 2
-    FileFormat.BF16 -> 2
+    FloatFormat.F32 -> 4
+    FloatFormat.F16 -> 2
+    FloatFormat.BF16 -> 2
   end
 end
 
 ## The code the native layers read: `FF_*` in `native/float_file.h`.
-def file_code(format: FileFormat) -> Int
+def file_code(format: FloatFormat) -> Int
   case format
-    FileFormat.F32 -> 0
-    FileFormat.F16 -> 1
-    FileFormat.BF16 -> 2
+    FloatFormat.F32 -> 0
+    FloatFormat.F16 -> 1
+    FloatFormat.BF16 -> 2
   end
 end
 

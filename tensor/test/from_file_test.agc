@@ -47,16 +47,16 @@ end
 def test_every_format_reads_the_same_on_each_backend() -> Result[Void]
   with_file do |path|
     for b in backends()
-      f32 = try Tensor.from_file(path, 3, [3, 1], Tensor.FileFormat.F32, b)
+      f32 = try Tensor.from_file(path, 3, [3, 1], Tensor.FloatFormat.F32, b)
       try Test.eq(Tensor.dtype(f32), Tensor.Dtype.F32)
       try Test.eq(Tensor.shape(f32), [3, 1])
       try Test.eq(try floats(f32), [1.5, -2.25, 0.0])
-      f16 = try Tensor.from_file(path, 15, [5], Tensor.FileFormat.F16, b)
+      f16 = try Tensor.from_file(path, 15, [5], Tensor.FloatFormat.F16, b)
       try Test.eq(Tensor.dtype(f16), Tensor.Dtype.F32)
       try Test.eq(try floats(f16), [1.0, -2.0, 0.5, 1.0 / 16777216.0, 65504.0])
-      bf16 = try Tensor.from_file(path, 25, [1, 3], Tensor.FileFormat.BF16, b)
+      bf16 = try Tensor.from_file(path, 25, [1, 3], Tensor.FloatFormat.BF16, b)
       try Test.eq(try floats(bf16), [1.0, -3.0, 0.5])
-      empty = try Tensor.from_file(path, 31, [0, 4], Tensor.FileFormat.F32, b)
+      empty = try Tensor.from_file(path, 31, [0, 4], Tensor.FloatFormat.F32, b)
       try Test.eq(Tensor.shape(empty), [0, 4])
     end
 
@@ -67,17 +67,50 @@ end
 def test_a_bad_range_is_an_error_on_each_backend() -> Result[Void]
   with_file do |path|
     for b in backends()
-      try Test.error?(Tensor.from_file(path, 29, [3], Tensor.FileFormat.BF16, b))
-      try Test.error?(Tensor.from_file(path, 0, [8], Tensor.FileFormat.F32, b))
-      try Test.error?(Tensor.from_file(path, 32, [1], Tensor.FileFormat.BF16, b))
-      try Test.error?(Tensor.from_file(path, -1, [1], Tensor.FileFormat.F32, b))
-      try Test.error?(Tensor.from_file(path, 0, [-1], Tensor.FileFormat.F32, b))
-      try Test.error?(Tensor.from_file("#{path}.missing", 0, [1], Tensor.FileFormat.F32, b))
-      try Test.error?(Tensor.from_file(path.split("/").take(3).join("/"), 0, [1], Tensor.FileFormat.F32, b))
+      try Test.error?(Tensor.from_file(path, 29, [3], Tensor.FloatFormat.BF16, b))
+      try Test.error?(Tensor.from_file(path, 0, [8], Tensor.FloatFormat.F32, b))
+      try Test.error?(Tensor.from_file(path, 32, [1], Tensor.FloatFormat.BF16, b))
+      try Test.error?(Tensor.from_file(path, -1, [1], Tensor.FloatFormat.F32, b))
+      try Test.error?(Tensor.from_file(path, 0, [-1], Tensor.FloatFormat.F32, b))
+      try Test.error?(Tensor.from_file("#{path}.missing", 0, [1], Tensor.FloatFormat.F32, b))
+      try Test.error?(Tensor.from_file(path, 0, [4611686018427387904, 4], Tensor.FloatFormat.F32, b))
+      try Test.error?(Tensor.from_file(path, 9223372036854775807, [1], Tensor.FloatFormat.F32, b))
+      try Test.error?(Tensor.from_file(path.split("/").take(3).join("/"), 0, [1], Tensor.FloatFormat.F32, b))
     end
 
-    Test.error?(Tensor.from_file(path, 0, [1], Tensor.FileFormat.F32, Tensor.Backend.Trace))
+    Test.error?(Tensor.from_file(path, 0, [1], Tensor.FloatFormat.F32, Tensor.Backend.Trace))
   end
+end
+
+## One F16 range of more than the 1 MiB chunk the native readers widen at a time, from an odd offset,
+## made of finite halves of both signs.
+def test_a_range_of_several_chunks_reads_the_same_on_each_backend() -> Result[Void]
+  count = 524291
+  bytes = [9].concat((0...(count * 2)).map { |i| chunk_byte(i) })
+  dir = "/tmp/agentica-from-file-#{Random.int(0, 999999999)}"
+  try Dir.mkdir_private(dir, 5000)
+  path = "#{dir}/chunks.bin"
+  try File.open(path, "write", 5000) do |f|
+    try File.write_bytes(f, try Bytes.from_list(bytes), 5000)
+    ok()
+  end
+
+  want = try floats(try Tensor.from_file(path, 1, [count], Tensor.FloatFormat.F16, Conform.REF))
+  for b in backends()
+    got = try floats(try Tensor.from_file(path, 1, [count], Tensor.FloatFormat.F16, b))
+    try Test.assert(got == want, "the range read differs on #{b}")
+  end
+
+  _ = Path.remove(dir, 5000)
+  ok()
+end
+
+## The low byte of a half is arbitrary; the high one keeps the exponent below 30, so no half is infinite or NaN.
+def chunk_byte(i: Int) -> Int
+  return (i * 7) % 256 if i % 2 == 0
+  high = (i / 2) % 124
+  return high + 128 if (i / 2) % 3 == 0
+  high
 end
 
 def floats(t: Tensor.Tensor) -> Result[List[Float]]

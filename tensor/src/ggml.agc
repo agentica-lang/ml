@@ -85,7 +85,7 @@ def from_file(
   path: String,
   offset: Int,
   shape: List[Int],
-  format: Types.FileFormat,
+  format: Types.FloatFormat,
 ) -> Result[Types.Tensor]
   code = try ready(device, shape, Types.Dtype.F32, "from_file")
   made("from_file", device, shape, Types.Dtype.F32) do

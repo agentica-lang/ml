@@ -274,8 +274,9 @@ end
 ## Creation: the floats of `format` at byte `offset` of the file `path`, as an
 ## `F32` tensor of `shape`. The File API has no seek here, so the bytes before
 ## `offset` are read and dropped: this is the slow path, for the oracle and for
-## small files.
-def from_file(path: String, offset: Int, shape: List[Int], format: Types.FileFormat) -> Result[Types.Tensor]
+## small files. It is quadratic in the number of tensors read from one file,
+## and goes away with `File.seek` (ml#55).
+def from_file(path: String, offset: Int, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
   n = try Types.volume(shape)
   bytes = try read_range(path, offset, n * Types.file_width(format))
   values: List[Float] = []
@@ -1231,11 +1232,11 @@ def skip(f: File.Handle, count: Int) -> Result[Void]
 end
 
 ## Element `i` of `b`, read as `format` says.
-def file_float(b: Bytes, i: Int, format: Types.FileFormat) -> Float
+def file_float(b: Bytes, i: Int, format: Types.FloatFormat) -> Float
   case format
-    Types.FileFormat.F32 -> Float.from_bits32(u16(b, 4 * i).bit_or(u16(b, 4 * i + 2).shift_left(16)))
-    Types.FileFormat.F16 -> half(u16(b, 2 * i))
-    Types.FileFormat.BF16 -> Float.from_bits32(u16(b, 2 * i).shift_left(16))
+    Types.FloatFormat.F32 -> Float.from_bits32(u16(b, 4 * i).bit_or(u16(b, 4 * i + 2).shift_left(16)))
+    Types.FloatFormat.F16 -> half(u16(b, 2 * i))
+    Types.FloatFormat.BF16 -> Float.from_bits32(u16(b, 2 * i).shift_left(16))
   end
 end
 

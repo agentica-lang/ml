@@ -385,7 +385,7 @@ an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml
   float *host;
 
   if (!make_tensor(env, device, &shape, GGML_TYPE_F32, state, &failure)) return failure;
-  in_place = ggml_backend_buffer_is_host(state->buffer);
+  in_place = !state->vulkan && ggml_backend_buffer_is_host(state->buffer);
   host = in_place ? (float *)state->t->data : (float *)host_bytes(state->t);
   if (host == NULL) return tg_error(env, "out of memory");
   if (!ff_read(path.data, path.len, offset, ggml_nelements(state->t), format, host, why, sizeof why)) {

@@ -36,6 +36,17 @@ def test_the_native_backends_read_floats_from_the_file_as_the_reference_does() -
   end
 end
 
+def test_a_shape_that_overflows_an_int_is_no_crash() -> Result[Void]
+  S.with_fixtures("values") do |dir|
+    c = try Hub.open("#{dir}/hostile.safetensors")
+    for backend in [S.REF].concat(S.native())
+      _ = Hub.tensor(c, "h", backend)
+    end
+
+    ok()
+  end
+end
+
 def test_a_dtype_tensor_lacks_is_refused_alone() -> Result[Void]
   S.with_fixtures("values") do |dir|
     c = try Hub.open("#{dir}/u16.safetensors")

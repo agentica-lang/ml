@@ -29,7 +29,7 @@ DTYPES = {
 }
 
 ## The float formats a backend reads from the file itself.
-FORMATS = {"F32": Tensor.FileFormat.F32, "F16": Tensor.FileFormat.F16, "BF16": Tensor.FileFormat.BF16}
+FORMATS = {"F32": Tensor.FloatFormat.F32, "F16": Tensor.FloatFormat.F16, "BF16": Tensor.FloatFormat.BF16}
 
 ## A tensor of the header: `start` and `stop` index the data buffer.
 struct Entry

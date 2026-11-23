@@ -53,6 +53,9 @@ The test fixtures drop the `model.` part of the prefix
   seek, the bytes before it are read and dropped; those tensors are small
   (indices, masks). `File.seek` ([agentica#1927](https://github.com/agentica-lang/agentica/issues/1927),
   ml#55) will make that a seek.
+  A file replaced between `open` and `tensor` gives the weights of the new
+  file at the old offsets (wrong, not a crash: C checks the range against the
+  size of the file at each read). There is no stat or mtime check.
 - **The index's `weight_map` decides.** A sharded checkpoint opens every
   shard it names; a shard must be a plain file name in the index's folder (no
   `/`, `\`, `..` or absolute path) and hold the tensors mapped to it. Symlinks
@@ -77,10 +80,12 @@ Measured on the machine of `benchmarks/README.md` (Ryzen 5 3550H), F32 weights:
 
 - `open` reads the header only.
 - A float tensor on libtorch or ggml costs one `pread` and one copy into the
-  tensor's memory, and no Agentica value. Whisper tiny (151 MB) loads in about
-  0.4 s and peaks at 0.4-0.5 GB, against 23 s and 3 GB when each float went
-  through `Float.from_bits32` and a list. Whisper medium (3 GB of F32) loads in
-  about 8 s and the process peaks at 4 GB.
+  tensor's memory, and no Agentica value. Whisper tiny (151 MB) loads in
+  0.3-0.45 s and the process peaks under 0.5 GB while it loads, against 23 s
+  and 3 GB when each float went through `Float.from_bits32` and a list.
+  Whisper medium (3 GB of F32) loads in about 8 s on the CPU and 24 s on
+  Vulkan, and the process peaks at 4 GB on the CPU (the weights of Vulkan are
+  outside the process).
 - On the reference backend a float still costs about 0.65 µs and 110 bytes of
   peak memory per element (a list of `Float`), and a read drops the bytes
   before the tensor: it is for tests and small files.

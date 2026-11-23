@@ -17,8 +17,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
+#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "float_file.h reads the floats of a file in place: it needs a little-endian host"
+#endif
+#else
+#error "float_file.h cannot tell the byte order of this host"
+#endif
+
+#ifdef __cplusplus
+static_assert(sizeof(off_t) == 8, "float_file.h needs a 64-bit off_t");
+#else
+_Static_assert(sizeof(off_t) == 8, "float_file.h needs a 64-bit off_t");
 #endif
 
 /* The codes of `Types.file_code` in `src/types.agc`. */
@@ -73,6 +83,21 @@ static float ff_bfloat(uint16_t b) {
   return out;
 }
 
+/* What an `open` failure means, in words that do not need `strerror` (not thread safe). */
+static const char *ff_open_why(int err) {
+  switch (err) {
+    case ENOENT: return "no such file";
+    case EACCES: return "permission denied";
+    case EISDIR: return "is a directory";
+    case ENOTDIR: return "a part of the path is not a directory";
+    case ENAMETOOLONG: return "the name is too long";
+    case ELOOP: return "too many links";
+    case EMFILE:
+    case ENFILE: return "too many open files";
+    default: return "cannot be opened";
+  }
+}
+
 /* Reads exactly `len` bytes at `at` of `fd`. */
 static bool ff_pread(int fd, void *into, size_t len, int64_t at) {
   uint8_t *p = (uint8_t *)into;
@@ -120,12 +145,18 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
   memcpy(name, path, path_len);
   name[path_len] = '\0';
 
-  fd = open(name, O_RDONLY);
+  /* O_NONBLOCK so that opening a FIFO does not wait for a writer: the `S_ISREG` check refuses it next. */
+  fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
   if (fd < 0) {
-    snprintf(why, why_len, "cannot open %s: %s", name, strerror(errno));
+    snprintf(why, why_len, "cannot open %s: %s", name, ff_open_why(errno));
     return false;
   }
-  if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
+  if (fstat(fd, &info) != 0) {
+    close(fd);
+    snprintf(why, why_len, "cannot stat %s", name);
+    return false;
+  }
+  if (!S_ISREG(info.st_mode)) {
     close(fd);
     snprintf(why, why_len, "%s is not a regular file", name);
     return false;
@@ -152,7 +183,9 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
     return true;
   }
 
-  raw = (uint8_t *)calloc(1, FF_CHUNK);
+  /* the chunk, or all of a smaller range */
+  n = count < (int64_t)(FF_CHUNK / 2) ? (size_t)count : FF_CHUNK / 2;
+  raw = (uint8_t *)malloc(n * 2);
   if (raw == NULL) {
     close(fd);
     snprintf(why, why_len, "out of memory");

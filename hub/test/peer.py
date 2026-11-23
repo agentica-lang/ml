@@ -80,6 +80,9 @@ def values_file(out):
            "ok": tensor("F32", [1], [1.0])})
     raw_header(out / "bad_bool.safetensors",
                b'{"b":{"dtype":"BOOL","shape":[2],"data_offsets":[0,2]}}', b"\x01\x02")
+    # A shape whose first dimensions overflow an Int, made empty by its last one.
+    raw_header(out / "hostile.safetensors",
+               json.dumps({"h": entry("F32", [2**62, 4, 0], 0, 0)}).encode())
     # Header and buffer both past the reader's 1 MiB chunk.
     big = 2 * 1048576 + 5
     header = {"big": entry("U8", [big], 0, big), "small": entry("I64", [2], big, big + 16)}
