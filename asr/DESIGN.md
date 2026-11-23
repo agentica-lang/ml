@@ -17,6 +17,7 @@ Asr.open(path, backend) -> Result[Model]     a .safetensors or .index.json, conf
 Asr.load(checkpoint, config, backend) -> Result[Model]
 Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_model]
 Asr.decode(m, tokens [batch, t] integer, audio) -> logits [batch, t, vocab_size]
+Mel.log_mel(samples, mels, frames = 3000) -> Result[List[Float]]   row-major [mels, frames]
 ```
 
 Encoder: `conv1` (kernel 3, padding 1) → gelu → `conv2` (kernel 3, stride 2,
@@ -45,6 +46,42 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   output projection is a second, transposed copy of the vocab table.
 - **Reference only**: libtorch has no `gelu_tanh_approx`, so the
   model loads there and `encode` stops at the first gelu (a test asserts it).
+
+## The log-mel frontend (`mel.agc`)
+
+16 kHz mono samples, padded with zeros or trimmed to `frames * 160` (30 s for
+3000 frames), as Hugging Face's feature extractor does → a reflect-padded STFT
+(Hann window of 400, hop 160, the last frame dropped) → the power spectrum →
+the Slaney mel filterbank → `log10(max(x, 1e-10))` → a floor at the maximum
+minus 8 → `(x + 4) / 4`.
+
+- **Pure Agentica lists**, not tensor ops: the work is an FFT per frame,
+  which the tensor API has no op for.
+- **The FFT is mixed radix** (decimation in time): radix 2 while the length
+  is even, then radix 5, since 400 = 2^4 · 5^2. whisper.cpp splits 400 the
+  same way down to 25 and then runs a direct DFT; padding to 512 would change
+  the bins. Two real frames go through one complex FFT, as the real and the
+  imaginary part.
+- **The mel filters are computed**, with librosa's formula (Slaney scale,
+  Slaney area norm), which Whisper's `mel_filters.npz` and Hugging Face's
+  extractor both use. That needs no file beside the checkpoint and gives 80 or
+  128 bins. `cos`, `sin`, `exp` and `log` are series in Agentica: the
+  language has only `Math.sqrt`, and `libm` through `extern` would make the
+  package native.
+- **Silent frames are skipped**: a frame that starts after the last sample is
+  `log10(1e-10)`, so a short clip costs only its own frames.
+- Measured: 30 s of audio (80 mels) takes 1.5 s on an idle Ryzen 5 3550H
+  (2.7 s under load; 350M VM steps),
+  2.6 s of speech about 0.2 s. Against Hugging Face's `WhisperFeatureExtractor`
+  on `whisper/live/fixtures/es-hola.wav` the largest gap is 8e-8 (80 and 128
+  mels). whisper.cpp keeps its mel internal (its `debug_mode` dump is not
+  wired), so it was not compared directly; it runs the same steps in floats.
+
+`test/mel_test.agc` checks the output against `test/mel_peer.py`, the same
+steps in Python doubles with a direct DFT (standard library only); the gap is
+about 1e-13.
+
+## Tests
 
 The tests use a tiny random Whisper (d_model 4, 2 heads, one block each,
 3 mel bins, vocab 7, 6 frames) that `test/peer.py` (standard library only)
