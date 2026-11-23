@@ -120,12 +120,65 @@ def test_a_dataset_loads_from_safetensors() -> Result[Void]
   try File.write_bytes(f, file())
   try File.close(f)
   loaded = Data.load(path, "x", "y", S.REF)
+  unnamed = Data.load(path, "x", "z", S.REF)
   _ = Path.remove(path)
+  try Test.assert(!unnamed.ok?, "a missing tensor name is an error")
   d = try loaded
   try Test.eq([Tensor.shape(d.inputs), Tensor.shape(d.targets)], [[3, 2], [3]])
   try Test.eq(Data.size(d), 3)
   try Test.eq(try S.floats_of(d.targets), [0.5, 1.5, 2.5])
   Test.assert(!Data.load(path, "x", "y", S.REF).ok?, "a missing file is an error")
+end
+
+## Batch 3 of 10 fails (the targets hold 3 rows) behind three buffered ones:
+## those arrive whole, then the error, in its place.
+def test_a_failed_batch_comes_after_the_buffered_ones() -> Result[Void]
+  d = try rows(S.REF)
+  short = Data.Dataset(inputs: d.inputs, targets: try S.tensor([0.0, 10.0, 20.0], [3], Tensor.Dtype.F32))
+  feed = Data.epoch(try Data.feed(Data.Loader(dataset: short, batch_size: 1, shuffle: false, prefetch: 4), 1), 1)
+  got = firsts_three(feed)
+  failed = Data.take(feed, 3)
+  Data.stop(feed)
+  try Test.eq(try got, [0.0, 10.0, 20.0])
+  try Test.assert(!failed.ok?, "batch 3 is an error")
+
+  sgd = Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.01))
+  loader = Data.Loader(dataset: short, batch_size: 1, shuffle: false, prefetch: 4)
+  fit = Train.fit(&linear, [try S.tensor([0.0, 0.0], [2, 1], Tensor.Dtype.F32)], loader, sgd, 1)
+  Test.assert(fit.message.start_with?("epoch 1, batch 3: "), "got #{fit.message}")
+end
+
+## Batches a task freed (cancelled here, as a crash would end it) are an
+## error, not a dead batch.
+def test_a_freed_batch_is_an_error() -> Result[Void]
+  return torch_absent() if !Tensor.available(S.TORCH)
+  feed = try Data.feed(Data.Loader(dataset: try rows(S.TORCH), batch_size: 2, prefetch: 2), 1)
+  case feed.ahead
+    some(a) ->
+      while a.batches.empty?
+        Task.sleep(5)
+      end
+
+      Task.cancel(a.producer)
+      _ = Task.await(a.producer)
+    none -> return error("a prefetch feed has a task")
+  end
+
+  got = Data.take(feed, 0)
+  Data.stop(feed)
+  Test.assert(!got.ok? and got.message.include?("freed"), "got ok? #{got.ok?}: #{got.message}")
+end
+
+## The parameters a momentum SGD run made from an elementwise loss on the
+## batches stay usable after the prefetch task ended.
+def test_params_outlive_the_prefetch_task() -> Result[Void]
+  return torch_absent() if !Tensor.available(S.TORCH)
+  loader = Data.Loader(dataset: try rows(S.TORCH), batch_size: 3, drop_last: true, prefetch: 2)
+  sgd = Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.1, momentum: 0.9))
+  fit = try Train.fit(&elementwise, [try S.tensor([0.0, 0.0, 0.0], [3], Tensor.Dtype.F32, S.TORCH)], loader, sgd, 3)
+  p = fit.params[0]
+  try Test.eq((try Tensor.to_list(try Tensor.add(p, p))).size, 3)
+  Test.eq((try S.floats_of(p)).size, 3)
 end
 
 def test_a_dataset_needs_one_row_count() -> Result[Void]
@@ -141,6 +194,20 @@ def rows(backend: Tensor.Backend) -> Result[Data.Dataset]
     try S.tensor(inputs, [ROWS, 2], Tensor.Dtype.F32, backend),
     try S.tensor(targets, [ROWS], Tensor.Dtype.F32, backend),
   )
+end
+
+def firsts_three(feed: Data.Feed) -> Result[List[Float]]
+  out: List[Float] = []
+  for i in 0..2
+    out = out + try S.floats_of((try Data.take(feed, i)).targets)
+  end
+
+  ok(out)
+end
+
+## Without the native module, a tensor on libtorch is an error, not a halt.
+def torch_absent() -> Result[Void]
+  Test.assert(!S.tensor([1.0], [1], Tensor.Dtype.F32, S.TORCH).ok?, "a torch tensor without the module")
 end
 
 def backends() -> List[Tensor.Backend]
@@ -205,6 +272,8 @@ def linear(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
   rows = Tensor.shape(b.inputs)[0]
   Loss.mse(try Tensor.reshape(try Tensor.matmul(b.inputs, ps[0]), [rows]), b.targets)
 end
+
+def elementwise(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor] = Loss.mse(ps[0], b.targets)
 
 def wrong_shape(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor] = Tensor.matmul(b.inputs, ps[0])
 

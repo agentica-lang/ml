@@ -6,20 +6,27 @@
 ## With `prefetch > 0`, `feed` starts a task that builds the next batches while
 ## the caller trains and hands them over through a bounded channel. Its native
 ## tensors belong to that task, so they stay usable until `stop` ends it.
+##
+## The shuffle runs in VM steps (`O(N)` per epoch), so it counts against
+## `--max-steps` like any Agentica code.
 
 import Hub from "pkg/hub/hub"
 import Tensor from "pkg/tensor/tensor"
 
 ## The Park-Miller generator of `nn/init.agc`: reproducible, not statistical.
+## It draws row ids below `MODULUS - 1`, so a dataset holds fewer rows.
 MODULUS = 2147483647
 MULTIPLIER = 48271
 
 ## How long a wait on the prefetch channel lasts before it looks again.
 POLL_MS = 1000
 
+## `index` is the row ids a shuffled batch was gathered with, kept so that
+## `release` frees it too.
 struct Batch
   inputs: Tensor.Tensor
   targets: Tensor.Tensor
+  index: Optional[Tensor.Tensor] = none
 end
 
 struct Dataset
@@ -38,7 +45,8 @@ struct Loader
   prefetch: Int = 2
 end
 
-## The batches of a run: built on demand, or received from the prefetch task.
+## The batches of a run, a sequential stream: built on demand, or received
+## from the prefetch task in order.
 struct Feed
   loader: Loader
   order: List[Int]
@@ -78,7 +86,8 @@ def count(loader: Loader) -> Int
 end
 
 ## The rows of epoch `epoch` (from 1), in order: a permutation of `0...N` drawn
-## from the seed and the epoch, or `0...N` when not shuffled.
+## from the seed and the epoch, or `0...N` when not shuffled. `seed.abs` is
+## used, so `s` and `-s` are one seed (see `start` for the other limits).
 def order(loader: Loader, epoch: Int) -> List[Int]
   n = size(loader.dataset)
   rows = (0...n).to_a
@@ -103,9 +112,9 @@ def batch(loader: Loader, rows: List[Int], i: Int) -> Result[Batch]
   d = loader.dataset
   return ok(Batch(inputs: try window(d.inputs, from, to), targets: try window(d.targets, from, to))) if !loader.shuffle
 
-  picked = rows.drop(from).take(to - from).map { |r| Tensor.Values.Int(r) }
+  picked = (from...to).map { |k| Tensor.Values.Int(rows[k]) }
   at = try Tensor.from_list(picked, [to - from], Tensor.Dtype.I64, d.inputs.backend)
-  ok(Batch(inputs: try Tensor.gather(d.inputs, at), targets: try Tensor.gather(d.targets, at)))
+  ok(Batch(inputs: try Tensor.gather(d.inputs, at), targets: try Tensor.gather(d.targets, at), index: some(at)))
 end
 
 ## Starts the batches of `epochs` epochs; with `prefetch > 0` a task builds
@@ -113,6 +122,7 @@ end
 def feed(loader: Loader, epochs: Int) -> Result[Feed]
   return error("batch_size must be at least 1, got #{loader.batch_size}") if loader.batch_size < 1
   return error("prefetch must be 0 or more, got #{loader.prefetch}") if loader.prefetch < 0
+  return error("a loader takes fewer than #{MODULUS - 1} rows") if size(loader.dataset) >= MODULUS - 1
   return error("the loader makes no batch from #{size(loader.dataset)} rows") if count(loader) == 0
   return ok(Feed(loader: loader, order: [], ahead: none)) if loader.prefetch == 0
   batches: Channel[Result[Batch]] = Channel.new(loader.prefetch)
@@ -129,11 +139,13 @@ def epoch(f: Feed, epoch: Int) -> Feed
   end
 end
 
-## Batch `i` of the current epoch; the prefetch task gives them in order.
+## Batch `i` of the current epoch. Under prefetch `i` is not read: the task
+## gives the next batch of the stream, so take them in order. A batch whose
+## tensors were freed (the task ended without `stop`) is an error.
 def take(f: Feed, i: Int) -> Result[Batch]
   case f.ahead
     none -> batch(f.loader, f.order, i)
-    some(a) -> receive(a)
+    some(a) -> alive(try receive(a))
   end
 end
 
@@ -152,6 +164,10 @@ end
 def release(b: Batch) -> Void
   free(b.inputs)
   free(b.targets)
+  case b.index
+    some(t) -> free(t)
+    none -> nil
+  end
 end
 
 private
@@ -162,15 +178,20 @@ struct Job
   batches: Channel[Result[Batch]]
 end
 
-def receive(a: Ahead) -> Result[Batch]
-  while true
-    case a.batches.recv(POLL_MS)
-      ok(b) -> return b
-      error(_) -> return error("the prefetch task ended early") if a.batches.closed? and a.batches.empty?
-    end
+## Waits for the next item; an error once the channel is closed and drained.
+def receive(a: Ahead) -> Result[Result[Batch]]
+  got = a.batches.recv(POLL_MS)
+  while !got.ok? and !a.batches.closed?
+    got = a.batches.recv(POLL_MS)
   end
 
-  error("unreachable")
+  got
+end
+
+def alive(got: Result[Batch]) -> Result[Batch]
+  b = try got
+  return error("the batch was freed: its prefetch task ended") if closed?(b.inputs) or closed?(b.targets)
+  ok(b)
 end
 
 ## Builds every batch in order and sends it, an error included, then waits for
@@ -202,14 +223,12 @@ end
 
 ## Sends `item`, waiting for room; false once the consumer closed the channel.
 def hand(batches: Channel[Result[Batch]], item: Result[Batch]) -> Bool
-  while true
-    case batches.send(item, POLL_MS)
-      ok(_) -> return true
-      error(_) -> return false if batches.closed?
-    end
+  sent = batches.send(item, POLL_MS)
+  while !sent.ok? and !batches.closed?
+    sent = batches.send(item, POLL_MS)
   end
 
-  false
+  sent.ok?
 end
 
 ## Rows `from...to` of `t`, every other axis whole.
@@ -217,6 +236,13 @@ def window(t: Tensor.Tensor, from: Int, to: Int) -> Result[Tensor.Tensor]
   shape = Tensor.shape(t)
   starts = shape.map { |_| 0 }.set(0, from)
   Tensor.slice(t, starts, shape.set(0, to))
+end
+
+def closed?(t: Tensor.Tensor) -> Bool
+  case t.handle
+    Tensor.Handle.Native(h) -> Native.closed?(h)
+    _ -> false
+  end
 end
 
 def free(t: Tensor.Tensor) -> Void
@@ -227,9 +253,13 @@ def free(t: Tensor.Tensor) -> Void
 end
 
 ## A state in `1...MODULUS` for a seed and an epoch, warmed past the first
-## draws, which follow the seed linearly.
+## draws, which follow the seed linearly. Seeds below `2^20` and epochs below
+## `2048` give distinct states (the key `seed * 2048 + epoch` stays below
+## `MODULUS - 1` and the multiply is a bijection); larger ones wrap and may
+## repeat an order.
 def start(seed: Int, epoch: Int) -> Int
-  state = (seed.abs % (MODULUS - 1) + epoch * 7919) % (MODULUS - 1) + 1
+  key = (seed.abs % 1048576) * 2048 + epoch % 2048
+  state = key % (MODULUS - 1) + 1
   for _ in 0...4
     state = (state * MULTIPLIER) % MODULUS
   end

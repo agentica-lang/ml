@@ -4,7 +4,7 @@ version = 1
 name = "hub"
 git = "https://github.com/agentica-lang/ml"
 subdir = "hub"
-ref = "926da75e4a5da411b492857d3e819c64d723cc93"
+ref = "c9e23fbbdd759e447cc12852cdb715abd38d08ef"
 workspace = true
 
 [[package]]

@@ -25,7 +25,7 @@ Versions are prefixed tags, such as `tensor-0.1.0`.
 | `xla/` | XLA backend (JIT, like JAX), through the PJRT C API | `tensor`, a PJRT plugin |
 | `candle/` | candle backend (eager), through a thin C layer over Rust | `tensor`, candle |
 | `nn/` | functional layers, forward only: dense, layer norm, embeddings, attention, MLP, a transformer encoder block, seeded initializers | `tensor` |
-| `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam), a data loader (seeded shuffle, background prefetch), the training loop over `tensor/`'s gradients | `tensor`, `hub` |
+| `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam), a data loader (seeded shuffle, background prefetch), the training loop over `tensor/`'s gradients | `tensor`, `hub` (and `nn` through it) |
 | `hub/` | `safetensors` checkpoints (one file or sharded with an index) read in Agentica, and `nn` layers loaded from them by name; Hugging Face downloads later | `tensor`, `nn` |
 | `asr/` | Whisper's model forward (conv stem, encoder, decoder, tied logits) loaded from a Hugging Face checkpoint; inference only, no frontend or decoding loop yet | `tensor`, `nn`, `hub` |
 
