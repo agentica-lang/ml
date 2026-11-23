@@ -59,6 +59,8 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
   e = "#{PREFIX}encoder."
   d = "#{PREFIX}decoder."
   width = config.d_model
+  try expect_heads("encoder", width, config.encoder_attention_heads)
+  try expect_heads("decoder", width, config.decoder_attention_heads)
   conv1 = try Load.conv1d(c, "#{e}conv1", 1, 1, backend)
   try expect_shape("#{e}conv1.weight", conv1.weight, [width, config.num_mel_bins, 3])
   conv2 = try Load.conv1d(c, "#{e}conv2", 2, 1, backend)
@@ -103,9 +105,10 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
   )
 end
 
-## The encoder output `[batch, frames / 2, d_model]` of a log-mel batch
+## The encoder output `[batch, ceil(frames / 2), d_model]` of a log-mel batch
 ## `[batch, num_mel_bins, frames]`: two gelu convolutions (the second halves
 ## the frames), the positional table, the blocks and a final layer norm.
+## `ceil(frames / 2)` may not pass `max_source_positions`.
 def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(mel)
   if shape.size != 3 or shape[1] != m.config.num_mel_bins
@@ -130,23 +133,25 @@ end
 
 ## The logits `[batch, t, vocab_size]` of the integer token ids `[batch, t]`
 ## over `audio`, the output of `encode`. Every position is recomputed: no KV
-## cache.
+## cache. `t` may not pass `max_target_positions`.
 def decode(m: Model, tokens: Tensor.Tensor, audio: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(tokens)
   return error("decode needs token ids [batch, t], got #{shape}") if shape.size != 2
-  rows: List[Tensor.Tensor] = []
-  for b in 0...shape[0]
-    ids = try Tensor.reshape(try Tensor.slice(tokens, [b, 0], [b + 1, shape[1]]), [shape[1]])
-    rows = rows.push(try Nn.embedding(m.tokens, ids))
+  heard = Tensor.shape(audio)
+  if heard.size != 3 or heard[0] != shape[0] or heard[2] != m.config.d_model
+    return error("decode needs audio [#{shape[0]}, frames, #{m.config.d_model}] from encode, got #{heard}")
   end
 
-  h = try Nn.positional(m.decoder_positions, try Tensor.stack(rows, 0))
+  rows = try Nn.embedding(m.tokens, try Tensor.reshape(tokens, [shape[0] * shape[1]]))
+  h = try Nn.positional(m.decoder_positions, try Tensor.reshape(rows, [shape[0], shape[1], m.config.d_model]))
   for block in m.decoder
     h = try Nn.decoder_block(block, h, audio)
   end
 
   Nn.dense(m.logits, try Nn.layer_norm(m.decoder_norm, h))
 end
+
+private
 
 ## Whisper's names for encoder block `p` (`model.encoder.layers.N.`).
 def encoder_names(p: String) -> Load.BlockNames
@@ -181,7 +186,13 @@ def decoder_names(p: String) -> Load.DecoderBlockNames
   )
 end
 
-private
+def expect_heads(stack: String, width: Int, heads: Int) -> Result[Void]
+  if heads < 1 or width % heads != 0
+    return error("the #{stack} needs heads >= 1 dividing d_model #{width}, got #{heads}")
+  end
+
+  ok()
+end
 
 def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]
   return error("#{name}: the config needs #{want}, got #{Tensor.shape(t)}") if Tensor.shape(t) != want

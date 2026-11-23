@@ -13,8 +13,9 @@ TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
 ABS = 0.000000001
 REL = 0.000000001
 
-## Whisper's exact erf GELU against the tanh form here: the peer's two
-## forwards differ by 1.7e-4 on the encoder output and 3.8e-5 on the logits.
+## Whisper's exact erf GELU against the tanh form here: on this tiny random
+## model the peer's two forwards differ by 1.7e-4 on the encoder output and
+## 3.8e-5 on the logits; a real checkpoint may drift more.
 DRIFT = 0.0003
 
 private
@@ -27,12 +28,7 @@ def test_the_tiny_whisper_matches_the_peer() -> Result[Void]
     mel = try rows(try JSON.get(want, "mel"))
     audio = try Asr.encode(m, try f32(mel, [1, 3, 6]))
     try Test.eq(Tensor.shape(audio), [1, 3, 4])
-    ids: List[Tensor.Values] = []
-    for t in try JSON.list(try JSON.get(want, "tokens"))
-      ids = ids.push(Tensor.Values.Int(try JSON.int(t)))
-    end
-
-    logits = try Asr.decode(m, try Tensor.from_list(ids, [1, ids.size], Tensor.Dtype.I64, REF), audio)
+    logits = try Asr.decode(m, try ids(try ints(try JSON.get(want, "tokens")), [1, 4]), audio)
     try Test.eq(Tensor.shape(logits), [1, 4, 7])
     tanh = try JSON.get(want, "tanh")
     try expect_close(try floats_of(audio), try rows(try JSON.get(tanh, "encoder")), ABS, REL, "encoder")
@@ -40,6 +36,39 @@ def test_the_tiny_whisper_matches_the_peer() -> Result[Void]
     erf = try JSON.get(want, "erf")
     try expect_close(try floats_of(audio), try rows(try JSON.get(erf, "encoder")), DRIFT, 0.0, "erf encoder")
     expect_close(try floats_of(logits), try rows(try JSON.get(erf, "logits")), DRIFT, 0.0, "erf logits")
+  end
+end
+
+def test_a_batch_of_two_matches_the_peer_item_by_item() -> Result[Void]
+  with_fixtures do |dir|
+    want = try JSON.parse(try File.read_text("#{dir}/expected.json"))
+    m = try Asr.open("#{dir}/tiny/model.safetensors", REF)
+    mel = try rows(try JSON.get(want, "mel")) + try rows(try JSON.get(want, "second_mel"))
+    audio = try Asr.encode(m, try f32(mel, [2, 3, 6]))
+    tokens = try ints(try JSON.get(want, "tokens")) + try ints(try JSON.get(want, "second_tokens"))
+    logits = try Asr.decode(m, try ids(tokens, [2, 4]), audio)
+    try Test.eq([Tensor.shape(audio), Tensor.shape(logits)], [[2, 3, 4], [2, 4, 7]])
+    first = try JSON.get(want, "tanh")
+    second = try JSON.get(want, "second")
+    audio_want = try rows(try JSON.get(first, "encoder")) + try rows(try JSON.get(second, "encoder"))
+    try expect_close(try floats_of(audio), audio_want, ABS, REL, "batch encoder")
+    logits_want = try rows(try JSON.get(first, "logits")) + try rows(try JSON.get(second, "logits"))
+    expect_close(try floats_of(logits), logits_want, ABS, REL, "batch logits")
+  end
+end
+
+## 4 frames use 2 of the 3 encoder positions; 8 frames need 4, and 9 tokens
+## pass the 8 decoder positions.
+def test_positions_are_sliced_up_to_the_end_of_their_tables() -> Result[Void]
+  with_fixtures do |dir|
+    want = try JSON.parse(try File.read_text("#{dir}/expected.json"))
+    m = try Asr.open("#{dir}/tiny/model.safetensors", REF)
+    audio = try Asr.encode(m, try f32(try rows(try JSON.get(want, "short_mel")), [1, 3, 4]))
+    try Test.eq(Tensor.shape(audio), [1, 2, 4])
+    short = try rows(try JSON.get(try JSON.get(want, "short"), "encoder"))
+    try expect_close(try floats_of(audio), short, ABS, REL, "short encoder")
+    try Test.error?(Asr.encode(m, try f32((0...24).map { |i| i.to_f / 24.0 }, [1, 3, 8])))
+    Test.error?(Asr.decode(m, try ids((0...9).map { |i| i % 7 }, [1, 9]), audio))
   end
 end
 
@@ -94,6 +123,19 @@ def with_fixtures(body: Fn[String, Result[Void]]) -> Result[Void]
   result = body.call(dir)
   _ = Path.remove(dir)
   result
+end
+
+def ints(json: JSON.Value) -> Result[List[Int]]
+  out: List[Int] = []
+  for v in try JSON.list(json)
+    out = out.push(try JSON.int(v))
+  end
+
+  ok(out)
+end
+
+def ids(tokens: List[Int], shape: List[Int]) -> Result[Tensor.Tensor]
+  Tensor.from_list(tokens.map { |t: Int| Tensor.Values.Int(t) }, shape, Tensor.Dtype.I64, REF)
 end
 
 def f32(data: List[Float], shape: List[Int], backend: Tensor.Backend = REF) -> Result[Tensor.Tensor]

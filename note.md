@@ -67,7 +67,9 @@ Ningún subagente sigue corriendo.
    `rms_norm`, y `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
 3. **`asr/`** (Whisper vía B), después del primer PR: frontend log-mel,
    tokenizer, decodificación greedy y beam (sobre la caché KV), y la descarga
-   de pesos reales (con `hub/`). Fuera del primer PR por YAGNI.
+   de pesos reales (con `hub/`). Fuera del primer PR por YAGNI. Lo
+   siguiente: comparar con whisper-tiny real (hoy solo se compara con el peer
+   propio).
 4. **`train/`**: mergeado (#21); softmax cross-entropy mergeado (#24). Después:
    shuffling, schedules, y aplanar structs de capas (pytrees)
    cuando un modelo lo pida.

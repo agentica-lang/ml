@@ -15,7 +15,7 @@ struct Config   the fields of HF config.json: d_model, encoder_layers, decoder_l
 Asr.config(path) -> Result[Config]
 Asr.open(path, backend) -> Result[Model]     a .safetensors or .index.json, config.json beside it
 Asr.load(checkpoint, config, backend) -> Result[Model]
-Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, frames / 2, d_model]
+Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_model]
 Asr.decode(m, tokens [batch, t] integer, audio) -> logits [batch, t, vocab_size]
 ```
 
@@ -35,10 +35,14 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   form. On the test model the drift is 1.7e-4 on the encoder output and
   3.8e-5 on the logits.
 - **Positions are sliced**, not fixed: the encoder adds the first
-  `frames / 2` rows of its table, so a short input runs, where Hugging Face
+  `ceil(frames / 2)` rows of its table (the decoder the first `t`), so a short input runs, where Hugging Face
   wants exactly `2 * max_source_positions` frames.
-- **The batch is a loop**: `transpose` reverses every axis and `embedding`
-  takes rank-1 ids, so the conv stem and the token lookup run per item.
+- **The conv stem loops over the batch**: `transpose` reverses every axis.
+  The token lookup flattens the ids to `[batch * t]` and reshapes back.
+- **What the model assumes**: the tensor names start with `model.`, the
+  activation is gelu and `scale_embedding` is false (true of the released
+  Whisper checkpoints; `config.json` is not checked for either). The tied
+  output projection is a second, transposed copy of the vocab table.
 - **Reference only for now**: libtorch has no `gelu_tanh_approx`, so the
   model loads there and `encode` stops at the first gelu (a test asserts it).
 - **Left out**: the log-mel frontend, the tokenizer, greedy and beam
@@ -47,4 +51,5 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
 The tests use a tiny random Whisper (d_model 4, 2 heads, one block each,
 3 mel bins, vocab 7, 6 frames) that `test/peer.py` (standard library only)
 writes at test time with its config and its forward in doubles; run them
-from `asr/`.
+from `asr/`. The model is checked only against that peer, not yet against
+a real checkpoint.

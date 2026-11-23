@@ -4,6 +4,8 @@ forward pass in doubles. Standard library only.
 
 Usage: python3 peer.py. Writes `tiny/` (the model) and `missing/` (the same
 model without one tensor) into a new temporary folder and prints its path.
+`expected.json` holds two mels of 6 frames with their token rows, and a mel
+of 4 frames for the encoder alone.
 The forward runs twice: with the tanh GELU the Agentica model uses, and with
 the exact erf GELU Whisper uses, so the tests can measure the drift.
 """
@@ -25,6 +27,7 @@ CONFIG = {
 }
 FRAMES = 6
 TOKENS = [1, 5, 2, 6]
+SECOND_TOKENS = [3, 0, 4, 4]
 EPS = 1e-5
 MISSING = "model.decoder.layers.0.fc2.weight"
 
@@ -194,11 +197,20 @@ def whisper():
 
 def write(out):
     m = whisper()
-    mel = [[f32(m.rng.uniform(-1.5, 1.5)) for _ in range(FRAMES)] for _ in range(CONFIG["num_mel_bins"])]
-    expected = {"mel": mel, "tokens": TOKENS, "missing": MISSING}
+    bins = CONFIG["num_mel_bins"]
+
+    def mel(frames):
+        return [[f32(m.rng.uniform(-1.5, 1.5)) for _ in range(frames)] for _ in range(bins)]
+
+    first, second, short = mel(FRAMES), mel(FRAMES), mel(4)
+    expected = {"mel": first, "tokens": TOKENS, "missing": MISSING,
+                "second_mel": second, "second_tokens": SECOND_TOKENS, "short_mel": short}
     for name, gelu in [("tanh", gelu_tanh), ("erf", gelu_erf)]:
-        audio = m.encode(mel, gelu)
+        audio = m.encode(first, gelu)
         expected[name] = {"encoder": audio, "logits": m.decode(TOKENS, audio, gelu)}
+    audio = m.encode(second, gelu_tanh)
+    expected["second"] = {"encoder": audio, "logits": m.decode(SECOND_TOKENS, audio, gelu_tanh)}
+    expected["short"] = {"encoder": m.encode(short, gelu_tanh)}
     for folder, skip in [("tiny", ()), ("missing", (MISSING,))]:
         (out / folder).mkdir()
         m.save(out / folder / "model.safetensors", skip)

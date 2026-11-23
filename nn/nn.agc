@@ -128,6 +128,8 @@ def positional(p: Embedding, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   Tensor.add(x, try Tensor.broadcast_to(rows, shape))
 end
 
+## `Tensor.conv1d` with the layer's stride and padding, plus the bias of each
+## output channel: `[out, L_out]` or `[batch, out, L_out]`.
 def conv1d(p: Conv1d, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   y = try Tensor.conv1d(x, p.weight, p.stride, p.padding)
   case p.bias

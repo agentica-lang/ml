@@ -72,7 +72,7 @@ def test_embedding_and_positional_add_the_table_rows() -> Result[Void]
   end
 end
 
-def test_conv1d_adds_the_bias_per_output_channel() -> Result[Void]
+def test_conv1d_adds_the_bias_per_output_channel_when_there_is_one() -> Result[Void]
   weight = try S.f32([1.0, 2.0, -1.0, 0.5, 0.5, 0.5], [2, 1, 3])
   p = Nn.Conv1d(weight: weight, bias: some(try S.f32([10.0, -1.0], [2])), stride: 2, padding: 1)
   # Padded [0, 1, 2, 3, 4, 0]: windows [0, 1, 2] and [2, 3, 4].
@@ -80,7 +80,9 @@ def test_conv1d_adds_the_bias_per_output_channel() -> Result[Void]
   try Test.eq(try S.floats_of(try Nn.conv1d(p, try S.f32([1.0, 2.0, 3.0, 4.0], [1, 4]))), want)
   batched = try Nn.conv1d(p, try S.f32([1.0, 2.0, 3.0, 4.0], [1, 1, 4]))
   try Test.eq(Tensor.shape(batched), [1, 2, 2])
-  Test.eq(try S.floats_of(batched), want)
+  try Test.eq(try S.floats_of(batched), want)
+  bare = try Nn.conv1d(p.with(bias: none), try S.f32([1.0, 2.0, 3.0, 4.0], [1, 4]))
+  Test.eq(try S.floats_of(bare), [0.0, 4.0, 1.5, 4.5])
 end
 
 def test_activations_match_their_values_by_hand() -> Result[Void]
