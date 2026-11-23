@@ -21,6 +21,10 @@
 ##   before dispatch (§9); element domains (divisors, `log`/`sqrt`/`pow`
 ##   inputs, index bounds) and value-count matches live in the backend that
 ##   owns the storage, which is the only place that can see them.
+## - Reduction `axes` are a set: `none` is every axis, and a named list is
+##   sorted ascending in the wrapper before dispatch. `argmax` numbers the
+##   position inside a reduced block by that order, so sorting is what keeps
+##   the backends breaking a tie between two axes on the same element.
 ## - Dtypes: numeric compute is `F32`; `F16`/`F64` compute exactly in doubles
 ##   (a native `F32` backend rounds on its side, which is the tolerance the
 ##   conformance suite quotes).
@@ -46,13 +50,14 @@
 ## - There is no tracing and no `grad` in M1: every backward rule waits for
 ##   the graph of `tensor/DESIGN.md` §10 (`train/` is M4). Saying so here so
 ##   no caller mistakes a forward op for a differentiable one.
-## - `conv1d`/`avg_pool1d` name the §3.1 surface but answer
-##   `error("not implemented")`: no §3.2 op needs them, and §5 admits an op
-##   only for a consumer that does.
-## - The 45 names of §3.1 all exist below. `Reference` computes all of them
-##   except the two convolution/pooling stubs; the `Torch` arm computes the
-##   subset in `src/torch.agc` and answers
-##   `error("<op> is not implemented on the torch backend yet")` for the rest,
+## - `conv1d`/`avg_pool1d` take only what `tensor/DESIGN.md` §3.1 admits
+##   (stride and padding 1-D, no dilation and no groups); the wrapper
+##   validates their window arithmetic before dispatch, so both backends
+##   accept and refuse the same shapes.
+## - The 45 names of §3.1 all exist below. `Reference` computes all of them;
+##   the `Torch` arm computes everything but `gelu_tanh_approx`,
+##   `batch_matmul` and `to_device`, and answers
+##   `error("<op> is not implemented on the torch backend yet")` for those,
 ##   so the gap is a `Result` error naming the op, never a wrong number
 ##   (`README.md`, "What is implemented").
 
@@ -226,7 +231,7 @@ def sub(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(a, "sub")
   case a.backend
     Types.Backend.Reference -> Reference.sub(a, b)
-    Types.Backend.Torch(_) -> Torch.unsupported("sub")
+    Types.Backend.Torch(device) -> Torch.sub(device, a, b)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -254,7 +259,7 @@ def div(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(a, "div")
   case a.backend
     Types.Backend.Reference -> Reference.div(a, b)
-    Types.Backend.Torch(_) -> Torch.unsupported("div")
+    Types.Backend.Torch(device) -> Torch.div(device, a, b)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -265,7 +270,7 @@ def neg(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "neg")
   case t.backend
     Types.Backend.Reference -> Reference.neg(t)
-    Types.Backend.Torch(_) -> Torch.unsupported("neg")
+    Types.Backend.Torch(device) -> Torch.neg(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -298,7 +303,7 @@ def sqrt(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "sqrt")
   case t.backend
     Types.Backend.Reference -> Reference.sqrt(t)
-    Types.Backend.Torch(_) -> Torch.unsupported("sqrt")
+    Types.Backend.Torch(device) -> Torch.sqrt(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -313,7 +318,7 @@ def pow(base: Types.Tensor, exponent: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(base, "pow")
   case base.backend
     Types.Backend.Reference -> Reference.pow(base, exponent)
-    Types.Backend.Torch(_) -> Torch.unsupported("pow")
+    Types.Backend.Torch(device) -> Torch.pow(device, base, exponent)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -335,7 +340,7 @@ def sigmoid(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "sigmoid")
   case t.backend
     Types.Backend.Reference -> Reference.sigmoid(t)
-    Types.Backend.Torch(_) -> Torch.unsupported("sigmoid")
+    Types.Backend.Torch(device) -> Torch.sigmoid(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -346,7 +351,7 @@ def tanh(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "tanh")
   case t.backend
     Types.Backend.Reference -> Reference.tanh(t)
-    Types.Backend.Torch(_) -> Torch.unsupported("tanh")
+    Types.Backend.Torch(device) -> Torch.tanh(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -372,7 +377,7 @@ def eq(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_or_int(a, "eq")
   case a.backend
     Types.Backend.Reference -> Reference.eq(a, b)
-    Types.Backend.Torch(_) -> Torch.unsupported("eq")
+    Types.Backend.Torch(device) -> Torch.eq(device, a, b)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -386,7 +391,7 @@ def lt(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_or_int(a, "lt")
   case a.backend
     Types.Backend.Reference -> Reference.lt(a, b)
-    Types.Backend.Torch(_) -> Torch.unsupported("lt")
+    Types.Backend.Torch(device) -> Torch.lt(device, a, b)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -403,7 +408,7 @@ def where(cond: Types.Tensor, a: Types.Tensor, b: Types.Tensor) -> Result[Types.
   return error("where needs a condition of shape #{a.shape}, got #{cond.shape}") if cond.shape != a.shape
   case a.backend
     Types.Backend.Reference -> Reference.where(cond, a, b)
-    Types.Backend.Torch(_) -> Torch.unsupported("where")
+    Types.Backend.Torch(device) -> Torch.where(device, cond, a, b)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -415,19 +420,21 @@ def clamp(t: Types.Tensor, lo: Float, hi: Float) -> Result[Types.Tensor]
   _ = try float_only(t, "clamp")
   case t.backend
     Types.Backend.Reference -> Reference.clamp(t, lo, hi)
-    Types.Backend.Torch(_) -> Torch.unsupported("clamp")
+    Types.Backend.Torch(device) -> Torch.clamp(device, t, lo, hi)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
 end
 
-## Sums every element (`none`) or the named `axes`, float only.
+## Sums every element (`none`) or the named `axes`, float only. `axes` is a
+## set: the wrapper hands the backend the ascending order, which is the order
+## `argmax` numbers a reduced block by (`README.md`, "What is implemented").
 def sum(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = false) -> Result[Types.Tensor]
   _ = try float_only(t, "sum")
-  _ = try check_axes_option(axes, t.shape.size, "sum")
+  axs = try normalize_axes_option(axes, t.shape.size, "sum")
   case t.backend
-    Types.Backend.Reference -> Reference.sum(t, axes, keep_dims)
-    Types.Backend.Torch(device) -> Torch.sum(device, t, axes, keep_dims)
+    Types.Backend.Reference -> Reference.sum(t, axs, keep_dims)
+    Types.Backend.Torch(device) -> Torch.sum(device, t, axs, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -436,10 +443,10 @@ end
 ## `sum` divided by the reduced count, float only.
 def mean(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = false) -> Result[Types.Tensor]
   _ = try float_only(t, "mean")
-  _ = try check_axes_option(axes, t.shape.size, "mean")
+  axs = try normalize_axes_option(axes, t.shape.size, "mean")
   case t.backend
-    Types.Backend.Reference -> Reference.mean(t, axes, keep_dims)
-    Types.Backend.Torch(device) -> Torch.mean(device, t, axes, keep_dims)
+    Types.Backend.Reference -> Reference.mean(t, axs, keep_dims)
+    Types.Backend.Torch(device) -> Torch.mean(device, t, axs, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -448,22 +455,25 @@ end
 ## The largest value per reduced block, float only.
 def max(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = false) -> Result[Types.Tensor]
   _ = try float_only(t, "max")
-  _ = try check_axes_option(axes, t.shape.size, "max")
+  axs = try normalize_axes_option(axes, t.shape.size, "max")
   case t.backend
-    Types.Backend.Reference -> Reference.max(t, axes, keep_dims)
-    Types.Backend.Torch(_) -> Torch.unsupported("max")
+    Types.Backend.Reference -> Reference.max(t, axs, keep_dims)
+    Types.Backend.Torch(device) -> Torch.max(device, t, axs, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
 end
 
-## The index of the largest value per reduced block, as `I64`.
+## The index of the largest value per reduced block, as `I64`. The position is
+## the row-major offset inside the reduced block, numbered by the ascending
+## `axes`, and a tie keeps the lowest one — on both backends, because the
+## wrapper sorts the axes before dispatch.
 def argmax(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = false) -> Result[Types.Tensor]
   _ = try float_only(t, "argmax")
-  _ = try check_axes_option(axes, t.shape.size, "argmax")
+  axs = try normalize_axes_option(axes, t.shape.size, "argmax")
   case t.backend
-    Types.Backend.Reference -> Reference.argmax(t, axes, keep_dims)
-    Types.Backend.Torch(_) -> Torch.unsupported("argmax")
+    Types.Backend.Reference -> Reference.argmax(t, axs, keep_dims)
+    Types.Backend.Torch(device) -> Torch.argmax(device, t, axs, keep_dims)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -536,7 +546,7 @@ def squeeze(t: Types.Tensor, axis: Optional[Int] = none) -> Result[Types.Tensor]
   _ = try check_squeeze_axis(axis, t.shape, "squeeze")
   case t.backend
     Types.Backend.Reference -> Reference.squeeze(t, axis)
-    Types.Backend.Torch(_) -> Torch.unsupported("squeeze")
+    Types.Backend.Torch(device) -> Torch.squeeze(device, t, axis)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -547,7 +557,7 @@ def unsqueeze(t: Types.Tensor, axis: Int = 0) -> Result[Types.Tensor]
   return error("unsqueeze needs an axis in 0...#{t.shape.size}, got #{axis}") if axis < 0 or axis > t.shape.size
   case t.backend
     Types.Backend.Reference -> Reference.unsqueeze(t, axis)
-    Types.Backend.Torch(_) -> Torch.unsupported("unsqueeze")
+    Types.Backend.Torch(device) -> Torch.unsqueeze(device, t, axis)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -558,13 +568,15 @@ def slice(t: Types.Tensor, starts: List[Int], ends: List[Int]) -> Result[Types.T
   _ = try check_slice(starts, ends, t.shape, "slice")
   case t.backend
     Types.Backend.Reference -> Reference.slice(t, starts, ends)
-    Types.Backend.Torch(_) -> Torch.unsupported("slice")
+    Types.Backend.Torch(device) -> Torch.slice(device, t, starts, ends)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
 end
 
-## Joins `tensors` along `axis`: one shape but for `axis`, one dtype.
+## Joins `tensors` along `axis`: one rank, one dtype, every dimension but
+## `axis` equal. The wrapper checks all of it before dispatch (§9), so a
+## backend only re-checks what keeps its own indexing total.
 def concat(tensors: List[Types.Tensor], axis: Int) -> Result[Types.Tensor]
   return error("concat needs at least one tensor") if tensors.empty?
   first = tensors[0]
@@ -572,11 +584,14 @@ def concat(tensors: List[Types.Tensor], axis: Int) -> Result[Types.Tensor]
   return error("concat needs an axis in 0...#{rank}, got #{axis}") if axis < 0 or axis >= rank
   for t in tensors
     _ = try same_backend(first, t, "concat")
+    _ = try same_rank(first, t, "concat")
+    _ = try same_dtype(first, t, "concat")
+    _ = try same_other_dims(first, t, axis, "concat")
   end
 
   case first.backend
     Types.Backend.Reference -> Reference.concat(tensors, axis)
-    Types.Backend.Torch(_) -> Torch.unsupported("concat")
+    Types.Backend.Torch(device) -> Torch.concat(device, tensors, axis)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -589,11 +604,13 @@ def stack(tensors: List[Types.Tensor], axis: Int = 0) -> Result[Types.Tensor]
   return error("stack needs an axis in 0...#{first.shape.size}, got #{axis}") if axis < 0 or axis > first.shape.size
   for t in tensors
     _ = try same_backend(first, t, "stack")
+    _ = try same_shape(first, t, "stack")
+    _ = try same_dtype(first, t, "stack")
   end
 
   case first.backend
     Types.Backend.Reference -> Reference.stack(tensors, axis)
-    Types.Backend.Torch(_) -> Torch.unsupported("stack")
+    Types.Backend.Torch(device) -> Torch.stack(device, tensors, axis)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -604,7 +621,7 @@ def broadcast_to(t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
   _ = try check_broadcast(t.shape, shape, "broadcast_to")
   case t.backend
     Types.Backend.Reference -> Reference.broadcast_to(t, shape)
-    Types.Backend.Torch(_) -> Torch.unsupported("broadcast_to")
+    Types.Backend.Torch(device) -> Torch.broadcast_to(device, t, shape)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -620,7 +637,7 @@ def gather(source: Types.Tensor, indices: Types.Tensor) -> Result[Types.Tensor]
 
   case source.backend
     Types.Backend.Reference -> Reference.gather(source, indices)
-    Types.Backend.Torch(_) -> Torch.unsupported("gather")
+    Types.Backend.Torch(device) -> Torch.gather(device, source, indices)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -650,7 +667,7 @@ end
 def copy(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.copy(t)
-    Types.Backend.Torch(_) -> Torch.unsupported("copy")
+    Types.Backend.Torch(device) -> Torch.copy(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -661,31 +678,62 @@ end
 def contiguous(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.contiguous(t)
-    Types.Backend.Torch(_) -> Torch.unsupported("contiguous")
+    Types.Backend.Torch(device) -> Torch.contiguous(device, t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
 end
 
-## Not in M1: a 1-D convolution stem waits for a consumer that needs it.
-def conv1d(input: Types.Tensor, weight: Types.Tensor) -> Result[Types.Tensor]
+## Convolution: the cross-correlation of `input` with `weight` along its last
+## axis, moved by `stride`, with `padding` zeros on each side. No dilation and
+## no groups: `tensor/DESIGN.md` §3.1 admits stride/padding-1D and leaves the
+## rest to a consumer that needs it. `input` is `[C_in, L]` or
+## `[N, C_in, L]`, `weight` is `[C_out, C_in, K]`, and the answer is the
+## input's leading axes plus `[C_out, L_out]`, where
+## `L_out = (L + 2*padding - K) / stride + 1`. The window arithmetic is
+## validated here, before dispatch, so both backends refuse the same shapes.
+def conv1d(input: Types.Tensor, weight: Types.Tensor, stride: Int = 1, padding: Int = 0) -> Result[Types.Tensor]
   _ = try same_backend(input, weight, "conv1d")
+  _ = try same_dtype(input, weight, "conv1d")
   _ = try float_only(input, "conv1d")
   _ = try float_only(weight, "conv1d")
+  rank = input.shape.size
+  return error("conv1d needs a rank-2 or rank-3 input, got #{input.shape}") if rank < 2 or rank > 3
+  return error("conv1d needs a rank-3 weight, got #{weight.shape}") if weight.shape.size != 3
+  _ = try check_window(stride, padding, "conv1d")
+  channels = input.shape[rank - 2]
+  return error("conv1d needs #{channels} input channels, got #{weight.shape[1]}") if weight.shape[1] != channels
+  _ = try check_window_fits(input.shape[rank - 1], weight.shape[2], padding, "conv1d")
   case input.backend
-    Types.Backend.Reference -> Reference.conv1d(input, weight)
-    Types.Backend.Torch(_) -> Torch.unsupported("conv1d")
+    Types.Backend.Reference -> Reference.conv1d(input, weight, stride, padding)
+    Types.Backend.Torch(device) -> Torch.conv1d(device, input, weight, stride, padding)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
 end
 
-## Not in M1: `mean` over an explicit window covers the derived cases.
-def avg_pool1d(input: Types.Tensor) -> Result[Types.Tensor]
+## The mean over a window of `kernel` positions, moved by `stride`, with
+## `padding` zeros on each side; the divisor is always `kernel`
+## (`count_include_pad`), so a window that runs off the input averages over
+## the zeros it padded with. `input` is `[C, L]` or `[N, C, L]` and the
+## answer replaces `L` with `L_out = (L + 2*padding - kernel) / stride + 1`.
+## Padding stops at half the kernel: that is the window the libtorch kernel
+## admits, and the shared domain is validated here so both backends refuse the
+## same ones.
+def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int = 1, padding: Int = 0) -> Result[Types.Tensor]
   _ = try float_only(input, "avg_pool1d")
+  rank = input.shape.size
+  return error("avg_pool1d needs a rank-2 or rank-3 input, got #{input.shape}") if rank < 2 or rank > 3
+  return error("avg_pool1d needs kernel >= 1, got #{kernel}") if kernel < 1
+  _ = try check_window(stride, padding, "avg_pool1d")
+  if padding > kernel / 2
+    return error("avg_pool1d needs padding <= #{kernel / 2} for a kernel of #{kernel}, got #{padding}")
+  end
+
+  _ = try check_window_fits(input.shape[rank - 1], kernel, padding, "avg_pool1d")
   case input.backend
-    Types.Backend.Reference -> Reference.avg_pool1d(input)
-    Types.Backend.Torch(_) -> Torch.unsupported("avg_pool1d")
+    Types.Backend.Reference -> Reference.avg_pool1d(input, kernel, stride, padding)
+    Types.Backend.Torch(device) -> Torch.avg_pool1d(device, input, kernel, stride, padding)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -1002,6 +1050,43 @@ def same_dtype(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
   ok(true)
 end
 
+## Two tensors share their rank.
+def same_rank(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
+  return error("#{op} needs one rank, got #{a.shape} and #{b.shape}") if a.shape.size != b.shape.size
+  ok(true)
+end
+
+## Two tensors agree on every dimension but `axis`.
+def same_other_dims(a: Types.Tensor, b: Types.Tensor, axis: Int, op: String) -> Result[Bool]
+  for i in 0...a.shape.size
+    if i != axis and a.shape[i] != b.shape[i]
+      return error("#{op} needs dimension #{i} of size #{a.shape[i]}, got #{b.shape[i]}")
+    end
+  end
+
+  ok(true)
+end
+
+## The window of a convolution or a pooling moves by at least one position per
+## step, with a padding that is not negative.
+def check_window(stride: Int, padding: Int, op: String) -> Result[Bool]
+  return error("#{op} needs stride >= 1, got #{stride}") if stride < 1
+  return error("#{op} needs padding >= 0, got #{padding}") if padding < 0
+  ok(true)
+end
+
+## The input is not empty, and padded by `padding` zeros on each side it still
+## holds one whole window of `kernel` positions: below that the answer would
+## have no position.
+def check_window_fits(length: Int, kernel: Int, padding: Int, op: String) -> Result[Bool]
+  return error("#{op} needs a nonempty input, got #{length} positions") if length < 1
+  if length + 2 * padding < kernel
+    return error("#{op} needs a window of #{kernel} positions in #{length} padded to #{length + 2 * padding}")
+  end
+
+  ok(true)
+end
+
 ## `t` computes: float dtypes only.
 def float_only(t: Types.Tensor, op: String) -> Result[Bool]
   return error("#{op} needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
@@ -1018,10 +1103,18 @@ def float_or_int(t: Types.Tensor, op: String) -> Result[Bool]
 end
 
 ## `none` is every axis; entries name distinct axes of a rank-`rank` tensor.
-def check_axes_option(axes: Optional[List[Int]], rank: Int, op: String) -> Result[Bool]
+## The answer is what every backend takes: `none`, or the axes in ascending
+## order. Reductions are order-independent, but `argmax` numbers the position
+## inside a reduced block by the order of its axes, and the two backends walk
+## the tensor differently, so `some([2, 0])` would number `(i0=0, i2=1)` and
+## `(i0=1, i2=0)` the other way round on each side and break a tie between them
+## on different elements. Sorting here is the one place the rule lives.
+def normalize_axes_option(axes: Optional[List[Int]], rank: Int, op: String) -> Result[Optional[List[Int]]]
   case axes
-    some(given) -> check_axes(given, rank, op)
-    none -> ok(true)
+    some(given) ->
+      _ = try check_axes(given, rank, op)
+      ok(some(given.sort))
+    none -> ok(none)
   end
 end
 

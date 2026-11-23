@@ -27,21 +27,20 @@
 ##   value, so it leaves the arena; the arguments were opened by the caller and
 ##   are not this arena's to close. A caller that runs several ops per step
 ##   wraps them in one `Native.arena` of its own (`test/torch_lifetime_test.agc`).
-## - Non-finite values never enter `exp`/`log`: the native layer refuses them
-##   before touching its own numbers, because a wrapper cannot see stored
-##   values without a full readback.
+## - Non-finite values never enter a transcendental: `exp`, `log`, `sqrt`,
+##   `pow`, `sigmoid` and `tanh` refuse them in the native layer before it
+##   touches its own numbers, because a wrapper cannot see stored values
+##   without a full readback. `div` refuses a zero divisor the same way, and
+##   `log`/`sqrt`/`pow` refuse their out-of-domain inputs there too.
 ## - Numeric compute is `F32` (§2): the other dtypes exist for creation,
 ##   readback and `to_dtype`, and the arithmetic ops take float dtypes only,
 ##   exactly as `../tensor.agc`'s wrappers do.
 ##
 ## Not implemented, and answered with `unsupported` below so the dispatch arm
-## says so in one place: `sub`, `div`, `neg`, `sqrt`, `pow`, `sigmoid`, `tanh`,
-## `gelu_tanh_approx`, `eq`, `lt`, `where`, `clamp`, `max`, `argmax`,
-## `batch_matmul`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`,
-## `broadcast_to`, `gather`, `conv1d`, `avg_pool1d`, `to_device`, `copy`,
-## `contiguous`. Each is expressible in libtorch; none is among the thirteen
-## native calls this backend started with, and adding one is a native-side
-## change of its own (`README.md`, "What is implemented").
+## says so in one place: `gelu_tanh_approx`, `batch_matmul` and `to_device`.
+## Each is expressible in libtorch, none is among the ops this backend was
+## asked for, and nothing here claims it has one (`README.md`, "What is
+## implemented").
 
 import Raw from "native"
 import TorchDtypes from "torch_dtypes"
@@ -171,6 +170,15 @@ def add(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.
   one(device, a.dtype, a.shape) do Raw.add(ha, hb) end
 end
 
+## Elementwise `a - b`, float only, exact shapes.
+def sub(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "sub")
+  _ = try pair(a, b, "sub")
+  ha = try handle_of(a)
+  hb = try handle_of(b)
+  one(device, a.dtype, a.shape) do Raw.sub(ha, hb) end
+end
+
 ## Elementwise `a * b`, float only, exact shapes.
 def mul(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try ready(device, "mul")
@@ -178,6 +186,24 @@ def mul(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.
   ha = try handle_of(a)
   hb = try handle_of(b)
   one(device, a.dtype, a.shape) do Raw.mul(ha, hb) end
+end
+
+## Elementwise `a / b`, float only, exact shapes; a zero divisor is an
+## `error`, as in the reference, never an infinity the next op computes on.
+def div(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "div")
+  _ = try pair(a, b, "div")
+  ha = try handle_of(a)
+  hb = try handle_of(b)
+  one(device, a.dtype, a.shape) do Raw.div(ha, hb) end
+end
+
+## Elementwise `-a`, float only.
+def neg(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "neg")
+  _ = try float_only(t, "neg")
+  h = try handle_of(t)
+  one(device, t.dtype, t.shape) do Raw.neg(h) end
 end
 
 ## The rank-2 product `[rows, inner] . [inner, cols]`, float only.
@@ -219,6 +245,81 @@ def log(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
   one(device, t.dtype, t.shape) do Raw.log(h) end
 end
 
+## `sqrt(x)`, elementwise, float only; a non-finite input or one below zero
+## is an `error`.
+def sqrt(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "sqrt")
+  _ = try float_only(t, "sqrt")
+  h = try handle_of(t)
+  one(device, t.dtype, t.shape) do Raw.sqrt(h) end
+end
+
+## `base ** exponent`, elementwise, float only, exact shapes; a non-finite
+## input or a base at or below zero is an `error`, as in the reference.
+def pow(device: Types.Device, base: Types.Tensor, exponent: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "pow")
+  _ = try pair(base, exponent, "pow")
+  hb = try handle_of(base)
+  he = try handle_of(exponent)
+  one(device, base.dtype, base.shape) do Raw.pow(hb, he) end
+end
+
+## Sigmoid, elementwise, float only; a non-finite input is an `error`.
+def sigmoid(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "sigmoid")
+  _ = try float_only(t, "sigmoid")
+  h = try handle_of(t)
+  one(device, t.dtype, t.shape) do Raw.sigmoid(h) end
+end
+
+## Tanh, elementwise, float only; a non-finite input is an `error`.
+def tanh(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "tanh")
+  _ = try float_only(t, "tanh")
+  h = try handle_of(t)
+  one(device, t.dtype, t.shape) do Raw.tanh(h) end
+end
+
+## `a == b` elementwise as `Bool`, float or int dtypes, exact shapes.
+def eq(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "eq")
+  _ = try comparable(a, b, "eq")
+  ha = try handle_of(a)
+  hb = try handle_of(b)
+  one(device, Types.Dtype.Bool, a.shape) do Raw.eq(ha, hb) end
+end
+
+## `a < b` elementwise as `Bool`, float or int dtypes, exact shapes.
+def lt(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "lt")
+  _ = try comparable(a, b, "lt")
+  ha = try handle_of(a)
+  hb = try handle_of(b)
+  one(device, Types.Dtype.Bool, a.shape) do Raw.lt(ha, hb) end
+end
+
+## `cond ? a : b` elementwise: `cond` is `Bool`, `a` and `b` share shape and
+## dtype, every shape exact.
+def where(device: Types.Device, cond: Types.Tensor, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "where")
+  _ = try same_dtype(a, b, "where")
+  return error("where needs a Bool condition, got #{TorchDtypes.name(cond.dtype)}") if cond.dtype != Types.Dtype.Bool
+  return error("where needs a condition of shape #{a.shape}, got #{cond.shape}") if cond.shape != a.shape
+  hc = try handle_of(cond)
+  ha = try handle_of(a)
+  hb = try handle_of(b)
+  one(device, a.dtype, a.shape) do Raw.where(hc, ha, hb) end
+end
+
+## Elementwise clamp to `[lo, hi]`, float only.
+def clamp(device: Types.Device, t: Types.Tensor, lo: Float, hi: Float) -> Result[Types.Tensor]
+  _ = try ready(device, "clamp")
+  return error("clamp needs lo <= hi, got #{lo} and #{hi}") if lo > hi
+  _ = try float_only(t, "clamp")
+  h = try handle_of(t)
+  one(device, t.dtype, t.shape) do Raw.clamp(h, lo, hi) end
+end
+
 ## Sums the named `axes`, or every axis for `none`, float only.
 def sum(
   device: Types.Device,
@@ -249,6 +350,36 @@ def mean(
   one(device, t.dtype, TorchShapes.reduced_shape(t.shape, axs, keep_dims)) do Raw.mean(h, axs, keep_dims) end
 end
 
+## The largest value per reduced block, float only; an empty tensor is an
+## `error`, as in the reference.
+def max(
+  device: Types.Device,
+  t: Types.Tensor,
+  axes: Optional[List[Int]] = none,
+  keep_dims: Bool = false,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "max")
+  _ = try float_only(t, "max")
+  axs = try TorchShapes.normalize_axes(axes, t.shape.size, "max")
+  h = try handle_of(t)
+  one(device, t.dtype, TorchShapes.reduced_shape(t.shape, axs, keep_dims)) do Raw.max(h, axs, keep_dims) end
+end
+
+## The first position of the largest value per reduced block, as `I64`, with
+## the tie rule of the reference: the lowest position wins.
+def argmax(
+  device: Types.Device,
+  t: Types.Tensor,
+  axes: Optional[List[Int]] = none,
+  keep_dims: Bool = false,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "argmax")
+  _ = try float_only(t, "argmax")
+  axs = try TorchShapes.normalize_axes(axes, t.shape.size, "argmax")
+  h = try handle_of(t)
+  one(device, Types.Dtype.I64, TorchShapes.reduced_shape(t.shape, axs, keep_dims)) do Raw.argmax(h, axs, keep_dims) end
+end
+
 ## The same values with `shape`; the element counts must agree.
 def reshape(device: Types.Device, t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
   _ = try ready(device, "reshape")
@@ -257,6 +388,116 @@ def reshape(device: Types.Device, t: Types.Tensor, shape: List[Int]) -> Result[T
   return error("reshape needs #{n} values for #{shape}, got #{m}") if m != n
   h = try handle_of(t)
   one(device, t.dtype, shape) do Raw.reshape(h, shape) end
+end
+
+## Drops size-1 dimensions: every one for `none`, or the named `axis`, which
+## must be `1`.
+def squeeze(device: Types.Device, t: Types.Tensor, axis: Optional[Int]) -> Result[Types.Tensor]
+  _ = try ready(device, "squeeze")
+  axs = case axis
+    some(ax) ->
+      return error("squeeze needs an axis in 0...#{t.shape.size}, got #{ax}") if ax < 0 or ax >= t.shape.size
+      return error("squeeze needs a dimension of size 1 at #{ax}, got #{t.shape[ax]}") if t.shape[ax] != 1
+      [ax]
+    none -> []
+  end
+
+  h = try handle_of(t)
+  one(device, t.dtype, TorchShapes.squeezed_shape(t.shape, axs)) do Raw.squeeze(h, axs) end
+end
+
+## Inserts a size-1 dimension at `axis`.
+def unsqueeze(device: Types.Device, t: Types.Tensor, axis: Int) -> Result[Types.Tensor]
+  _ = try ready(device, "unsqueeze")
+  return error("unsqueeze needs an axis in 0...#{t.shape.size}, got #{axis}") if axis < 0 or axis > t.shape.size
+  h = try handle_of(t)
+  one(device, t.dtype, TorchShapes.unsqueezed_shape(t.shape, axis)) do Raw.unsqueeze(h, axis) end
+end
+
+## The `[starts[i], ends[i])` window per axis (no steps in M1).
+def slice(device: Types.Device, t: Types.Tensor, starts: List[Int], ends: List[Int]) -> Result[Types.Tensor]
+  _ = try ready(device, "slice")
+  rank = t.shape.size
+  return error("slice needs one start per axis, got #{starts} for #{t.shape}") if starts.size != rank
+  return error("slice needs one end per axis, got #{ends} for #{t.shape}") if ends.size != rank
+  shape: List[Int] = []
+  for i in 0...rank
+    if starts[i] < 0 or ends[i] < starts[i] or ends[i] > t.shape[i]
+      return error("slice needs 0 <= start <= end <= #{t.shape[i]}, got #{starts[i]}..#{ends[i]}")
+    end
+
+    shape = shape.push(ends[i] - starts[i])
+  end
+
+  h = try handle_of(t)
+  one(device, t.dtype, shape) do Raw.slice(h, starts, ends) end
+end
+
+## Joins `tensors` along `axis`: one rank, one dtype, every dimension but
+## `axis` equal. The native call joins two, so the fold is here: concatenation
+## along one axis is associative. One tensor is a `copy`, so the answer never
+## aliases an argument — the reference builds a new list for it too.
+def concat(device: Types.Device, tensors: List[Types.Tensor], axis: Int) -> Result[Types.Tensor]
+  _ = try ready(device, "concat")
+  return error("concat needs at least one tensor") if tensors.empty?
+  first = tensors[0]
+  rank = first.shape.size
+  return error("concat needs an axis in 0...#{rank}, got #{axis}") if axis < 0 or axis >= rank
+  return copy(device, first) if tensors.size == 1
+  joined = first
+  i = 1
+  while i < tensors.size
+    joined = try concat_two(device, joined, tensors[i], axis)
+    i += 1
+  end
+
+  ok(joined)
+end
+
+## Stacks `tensors` along a new `axis`: every shape and dtype equal, through
+## the same `unsqueeze` + `concat` the reference uses.
+def stack(device: Types.Device, tensors: List[Types.Tensor], axis: Int) -> Result[Types.Tensor]
+  _ = try ready(device, "stack")
+  return error("stack needs at least one tensor") if tensors.empty?
+  first = tensors[0]
+  return error("stack needs an axis in 0...#{first.shape.size}, got #{axis}") if axis < 0 or axis > first.shape.size
+  widened: List[Types.Tensor] = []
+  for t in tensors
+    return error("stack needs one shape, got #{first.shape} and #{t.shape}") if t.shape != first.shape
+    widened = widened.push(try unsqueeze(device, t, axis))
+  end
+
+  concat(device, widened, axis)
+end
+
+## Views `t` as `shape`: trailing axes align, size-1 dimensions widen.
+def broadcast_to(device: Types.Device, t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
+  _ = try ready(device, "broadcast_to")
+  _ = try TorchShapes.volume(shape)
+  rank = t.shape.size
+  return error("broadcast_to cannot drop axes, got #{t.shape} into #{shape}") if shape.size < rank
+  lead = shape.size - rank
+  for i in 0...rank
+    dim = t.shape[i]
+    want = shape[lead + i]
+    return error("broadcast_to needs #{dim} to stay #{dim} or widen from 1, got #{want}") if dim != want and dim != 1
+  end
+
+  h = try handle_of(t)
+  one(device, t.dtype, shape) do Raw.broadcast_to(h, shape) end
+end
+
+## Rows of `source` at integer `indices`: `indices.shape ++ source.shape[1:]`.
+def gather(device: Types.Device, source: Types.Tensor, indices: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "gather")
+  return error("gather needs a rank >= 1 source, got #{source.shape}") if source.shape.size < 1
+  if !TorchDtypes.is_int_dtype(indices.dtype)
+    return error("gather needs integer indices, got #{TorchDtypes.name(indices.dtype)}")
+  end
+
+  hs = try handle_of(source)
+  hi = try handle_of(indices)
+  one(device, source.dtype, TorchShapes.gathered_shape(source.shape, indices.shape)) do Raw.gather(hs, hi) end
 end
 
 ## Reverses every axis: rank 2 swaps rows and columns, a rank below 2 is
@@ -273,6 +514,83 @@ def to_dtype(device: Types.Device, t: Types.Tensor, dtype: Types.Dtype) -> Resul
   _ = try ready(device, "to_dtype")
   h = try handle_of(t)
   one(device, dtype, t.shape) do Raw.to_dtype(h, TorchDtypes.code(dtype)) end
+end
+
+## The identity move: a copy that shares no buffer with `t`.
+def copy(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "copy")
+  h = try handle_of(t)
+  one(device, t.dtype, t.shape) do Raw.copy(h) end
+end
+
+## `t` in row-major order: copied when libtorch holds a view, so the readback
+## is the order the reference produces.
+def contiguous(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "contiguous")
+  h = try handle_of(t)
+  one(device, t.dtype, t.shape) do Raw.contiguous(h) end
+end
+
+## The cross-correlation of `input` with `weight` over the last axis, moved by
+## `stride`, with `padding` zeros on each side.
+def conv1d(
+  device: Types.Device,
+  input: Types.Tensor,
+  weight: Types.Tensor,
+  stride: Int,
+  padding: Int,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "conv1d")
+  _ = try same_dtype(input, weight, "conv1d")
+  _ = try float_only(input, "conv1d")
+  _ = try float_only(weight, "conv1d")
+  rank = input.shape.size
+  return error("conv1d needs a rank-2 or rank-3 input, got #{input.shape}") if rank < 2 or rank > 3
+  return error("conv1d needs a rank-3 weight, got #{weight.shape}") if weight.shape.size != 3
+  return error("conv1d needs stride >= 1, got #{stride}") if stride < 1
+  return error("conv1d needs padding >= 0, got #{padding}") if padding < 0
+  channels = input.shape[rank - 2]
+  return error("conv1d needs #{channels} input channels, got #{weight.shape[1]}") if weight.shape[1] != channels
+  length = input.shape[rank - 1]
+  kernel = weight.shape[2]
+  if length + 2 * padding < kernel
+    return error("conv1d needs a window of #{kernel} positions in #{length} padded to #{length + 2 * padding}")
+  end
+
+  hi = try handle_of(input)
+  hw = try handle_of(weight)
+  out_shape = TorchShapes.conv1d_output_shape(input.shape, weight.shape[0], kernel, stride, padding)
+  one(device, input.dtype, out_shape) do Raw.conv1d(hi, hw, stride, padding) end
+end
+
+## The mean over a window of `kernel` positions, moved by `stride`, with
+## `padding` zeros on each side and a divisor of `kernel`.
+def avg_pool1d(
+  device: Types.Device,
+  input: Types.Tensor,
+  kernel: Int,
+  stride: Int,
+  padding: Int,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "avg_pool1d")
+  _ = try float_only(input, "avg_pool1d")
+  rank = input.shape.size
+  return error("avg_pool1d needs a rank-2 or rank-3 input, got #{input.shape}") if rank < 2 or rank > 3
+  return error("avg_pool1d needs kernel >= 1, got #{kernel}") if kernel < 1
+  return error("avg_pool1d needs stride >= 1, got #{stride}") if stride < 1
+  return error("avg_pool1d needs padding >= 0, got #{padding}") if padding < 0
+  if padding > kernel / 2
+    return error("avg_pool1d needs padding <= #{kernel / 2} for a kernel of #{kernel}, got #{padding}")
+  end
+
+  length = input.shape[rank - 1]
+  if length + 2 * padding < kernel
+    return error("avg_pool1d needs a window of #{kernel} positions in #{length} padded to #{length + 2 * padding}")
+  end
+
+  h = try handle_of(input)
+  out_shape = TorchShapes.avg_pool1d_output_shape(input.shape, kernel, stride, padding)
+  one(device, input.dtype, out_shape) do Raw.avg_pool1d(h, kernel, stride, padding) end
 end
 
 private
@@ -353,6 +671,33 @@ def pair(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
   try same_dtype(a, b, op)
   try float_only(a, op)
   ok(true)
+end
+
+## Two tensors that compare: one shape, one float or int dtype.
+def comparable(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
+  return error("#{op} needs two tensors of one shape, got #{a.shape} and #{b.shape}") if a.shape != b.shape
+  _ = try same_dtype(a, b, op)
+  if !TorchDtypes.is_float_dtype(a.dtype) and !TorchDtypes.is_int_dtype(a.dtype)
+    return error("#{op} needs a float or int dtype, got #{TorchDtypes.name(a.dtype)}")
+  end
+
+  ok(true)
+end
+
+## Two tensors joined along `axis`: one rank, one dtype, every other dimension
+## equal. `concat` folds these, and the native call re-checks them.
+def concat_two(device: Types.Device, a: Types.Tensor, b: Types.Tensor, axis: Int) -> Result[Types.Tensor]
+  _ = try same_dtype(a, b, "concat")
+  return error("concat needs one rank, got #{a.shape} and #{b.shape}") if a.shape.size != b.shape.size
+  for i in 0...a.shape.size
+    if i != axis and a.shape[i] != b.shape[i]
+      return error("concat needs dimension #{i} of size #{a.shape[i]}, got #{b.shape[i]}")
+    end
+  end
+
+  ha = try handle_of(a)
+  hb = try handle_of(b)
+  one(device, a.dtype, TorchShapes.concatenated_shape(a.shape, b.shape, axis)) do Raw.concat(ha, hb, axis) end
 end
 
 ## Two tensors share their dtype.

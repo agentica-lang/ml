@@ -69,14 +69,3 @@ def test_copy_and_contiguous_keep_the_values() -> Result[Void]
   try Support.expect_floats(try Tensor.copy(t), [1.0, 2.0])
   Support.expect_floats(try Tensor.contiguous(t), [1.0, 2.0])
 end
-
-def test_conv1d_is_not_implemented() -> Result[Void]
-  input = try Support.f32([1.0, 2.0, 3.0], [1, 1, 3])
-  weight = try Support.f32([1.0, 0.0], [1, 1, 2])
-  Test.error?(Tensor.conv1d(input, weight))
-end
-
-def test_avg_pool1d_is_not_implemented() -> Result[Void]
-  input = try Support.f32([1.0, 2.0, 3.0], [1, 1, 3])
-  Test.error?(Tensor.avg_pool1d(input))
-end
