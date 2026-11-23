@@ -3,10 +3,11 @@
 ## (`tensor/DESIGN.md` §2, §7, §8). It lives inside `tensor/` for the reason
 ## `src/torch.agc` does: `Handle.Ggml` names the resource of `ggml_native.agc`.
 ##
-## It creates tensors, uploads them and reads them back. ggml is fast when a
-## whole computation is one compiled graph (a Vulkan dispatch costs about
-## 2 ms, spike/ggml-graph/README.md), so ops run only there, from a traced
-## graph (`Trace`, `src/lower.agc`). Eagerly, every other primitive answers
+## It creates tensors, uploads them, reads them back and copies them between
+## devices (`to_device`). ggml is fast when a whole computation is one
+## compiled graph (a Vulkan dispatch costs about 2 ms,
+## spike/ggml-graph/README.md), so ops run only there, from a traced graph
+## (`Trace`, `src/lower.agc`). Eagerly, every other primitive answers
 ## `compiled_only(op)`: an error naming the op, never a wrong number and
 ## never a slow op-by-op path (§7).
 ##
@@ -100,9 +101,9 @@ end
 ## Chooses fp16 `mul_mat` (`true`) or F32 (`false`, the default) for every
 ## Vulkan device this process opens; an error once a ggml call fixed the
 ## other one.
-def prefer_fp16(enabled: Bool) -> Result[Void]
+def vulkan_fp16(enabled: Bool) -> Result[Void]
   _ = try usable("vulkan_fp16")
-  GgmlRaw.prefer_fp16(enabled)
+  GgmlRaw.vulkan_fp16(enabled)
 end
 
 ## The device's code for the native calls: `-1` for `Cpu`, the index for

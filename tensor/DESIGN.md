@@ -293,11 +293,13 @@ end
 - Vulkan computes `mul_mat` in `F32` by default: ggml reads
   `GGML_VK_DISABLE_F16` once per process, when it first enumerates its
   devices, and the C layer sets it before its first registry call (any ggml
-  call, `Tensor.available` included). `Tensor.vulkan_fp16(true)` before that
-  opts in to fp16 `mul_mat`, process-wide (it is ggml's choice per process,
-  not per tensor, the one exception to §4's "never a global"); a different
-  choice after it is an error. fp16 is 1.1–1.5× faster and changes gradients
-  by up to about 10 % at MLP sizes.
+  call, a CPU one or `Tensor.available` included). `Tensor.vulkan_fp16(true)`
+  before that opts in to fp16 `mul_mat`, process-wide (it is ggml's choice
+  per process, not per tensor, the one exception to §4's "never a global");
+  a different choice after it is an error, and on a build without Vulkan it
+  changes nothing. fp16 is 1.1–1.5× faster from batch 256 to 4096 and
+  changes gradients by up to about 10 % at MLP sizes (the spike's run B,
+  `spike/ggml-graph/README.md`).
 - The ggml module is `[native.ggml]`, `optional = true`, built from
   `native/ggml.c` and `native/ggml_graph.c` against the pinned
   `third_party/ggml`, which `tools/build-engine.sh` builds CPU-only (CI) or with
@@ -340,10 +342,12 @@ Usage for tensors:
   buffer, freed together by its free hook. The device itself is opened once
   per process and never closed: a buffer only needs its device's buffer type,
   which lives as long as the process. Every Vulkan buffer operation
-  (allocate, write, read, free, the free hook included) runs under one lock in
-  the C layer, so tasks on one device never overlap a transfer. A compiled step (later) will own its graph and the train state
-  in a resource of its own, which `fit` creates and closes; the tensors it
-  returns are fresh `Handle.Ggml` values (no donation).
+  (allocate, write, read, free) runs under one lock in the C layer, so tasks
+  on one device never overlap a transfer; a free hook never waits for it and
+  leaves the free to the next holder (§7). A compiled step (later) will own
+  its graph and the train state in a resource of its own, which `fit` creates
+  and closes; the tensors it returns are fresh `Handle.Ggml` values (no
+  donation).
 - `compute def` kernels only push data or return a resource; the loop lives
   in Agentica and the native side never calls back (existing FFI invariant).
 

@@ -62,8 +62,9 @@
 ##   `batch_matmul` and `to_device`, and answers
 ##   `error("<op> is not implemented on the torch backend yet")` for those,
 ##   so the gap is a `Result` error naming the op, never a wrong number
-##   (`README.md`, "What is implemented"). The `Ggml` arm creates and reads
-##   back, and answers `Ggml.compiled_only(op)` for every other primitive:
+##   (`README.md`, "What is implemented"). The `Ggml` arm creates, reads
+##   back and copies between devices (`to_device`), and answers
+##   `Ggml.compiled_only(op)` for every other primitive:
 ##   ggml runs ops only in a traced graph (`Trace`, `README.md`, "The ggml
 ##   backend").
 
@@ -116,10 +117,11 @@ end
 
 ## Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
 ## Vulkan device of the ggml backend in this process. ggml fixes the choice
-## at the process's first ggml call (`available` included), so a different
-## choice after that is an error. fp16 is faster and changes gradients by up to about 10 % at MLP
-## sizes (`tensor/README.md`, "The ggml backend").
-def vulkan_fp16(enabled: Bool) -> Result[Void] = Ggml.prefer_fp16(enabled)
+## at the process's first ggml call (a CPU one or `available` included), so
+## a different choice after that is an error. On a build without Vulkan it
+## changes nothing. fp16 is faster and changes gradients by up to about 10 %
+## at MLP sizes (`tensor/README.md`, "The ggml backend").
+def vulkan_fp16(enabled: Bool) -> Result[Void] = Ggml.vulkan_fp16(enabled)
 
 ## Creation: zeros of `shape`, `dtype` and `backend`.
 def zeros(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]

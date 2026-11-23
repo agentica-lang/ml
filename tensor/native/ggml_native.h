@@ -175,8 +175,8 @@ an_term ggml_compiles(an_env *env);
 /* Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
    Vulkan device this process opens. ggml reads it once, when it first
    enumerates its devices, so a different choice after any other call of
-   this module is an error. */
-an_term ggml_prefer_fp16(an_env *env, bool enabled);
+   this module (a CPU one included) is an error. */
+an_term ggml_vulkan_fp16(an_env *env, bool enabled);
 
 #ifdef __cplusplus
 }
@@ -525,11 +525,11 @@ static an_term ggml_native_compiles(an_env *env, int argc, const an_term *argv) 
   return ggml_compiles(env);
 }
 
-static an_term ggml_native_prefer_fp16(an_env *env, int argc, const an_term *argv) {
+static an_term ggml_native_vulkan_fp16(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   bool a0;
   if (!an_get_bool(env, argv[0], &a0)) return an_badarg(env, 0);
-  return ggml_prefer_fp16(env, a0);
+  return ggml_vulkan_fp16(env, a0);
 }
 
 static const an_function ggml_native_functions[] = {
@@ -546,7 +546,7 @@ static const an_function ggml_native_functions[] = {
   {"output", "(Lease, Int, Bool) -> Result[TensorHandle]", ggml_native_output, AN_DIRTY},
   {"run", "(Lease, List[Float]) -> Result[Void]", ggml_native_run, AN_DIRTY},
   {"compiles", "() -> Int", ggml_native_compiles, AN_DIRTY},
-  {"prefer_fp16", "(Bool) -> Result[Void]", ggml_native_prefer_fp16, AN_DIRTY},
+  {"vulkan_fp16", "(Bool) -> Result[Void]", ggml_native_vulkan_fp16, AN_DIRTY},
 };
 
 /* Ends the module's one .c file: the tables and agentica_native_init. LOAD is NULL or a const char *(*)(void)

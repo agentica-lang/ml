@@ -23,6 +23,7 @@ import Trace from "../trace"
 SIZES = [784, 512, 512, 10]
 CLASSES = 10
 LR = 0.01
+## Steps timed; the median drops the first two, so it is of 18.
 STEPS = 20
 
 struct Stepped
@@ -35,15 +36,19 @@ end
 def main() -> Void
   case run(System.args)
     ok(_) -> nil
-    error(e) -> IO.warn("bench-ggml: #{e.message}")
+    error(e) ->
+      IO.warn("bench-ggml: #{e.message}")
+      System.exit(1)
   end
 end
 
 def run(args: List[String]) -> Result[Void]
   return error("usage: bench-ggml.agc cpu|vulkan BATCH...") if args.size < 2
   device = Tensor.Device.Cpu
-  if args[0] == "vulkan"
-    device = Tensor.Device.Vulkan(0)
+  case args[0]
+    "cpu" -> nil
+    "vulkan" -> device = Tensor.Device.Vulkan(0)
+    _ -> return error("the device is cpu or vulkan, got #{args[0]}")
   end
 
   return error("ggml #{args[0]} is not available") if !Tensor.available(Tensor.Backend.Ggml(device))
