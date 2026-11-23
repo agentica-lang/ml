@@ -25,7 +25,7 @@ There are no releases yet: a project pins a member by a commit of `main`
 | `nn/` | functional layers, forward only: dense, layer norm, embeddings, convolution, attention, MLP, transformer encoder and decoder blocks, seeded initializers | `tensor` |
 | `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam), a data loader (seeded shuffle, background prefetch), the training loop over `tensor/`'s gradients | `tensor`, `hub` (and `nn` through it) |
 | `hub/` | `safetensors` checkpoints (one file or sharded with an index) read in Agentica, and `nn` layers loaded from them by name | `tensor`, `nn` |
-| `asr/` | Whisper's model forward (conv stem, encoder, decoder, tied logits) loaded from a Hugging Face checkpoint, its log-mel frontend and its tokenizer; inference only | `tensor`, `nn`, `hub`; a C compiler for `mathx`, a small libm module, temporary until Agentica's `Math` has `exp`, `log`, `log10`, `sin` and `cos` (agentica#1925) |
+| `asr/` | Whisper in Agentica: the model forward loaded from a Hugging Face checkpoint, its log-mel frontend, its tokenizer and `transcribe` (greedy decoding with a KV cache, language detection, timestamps, translation) for up to 30 s of audio; on the reference backend and libtorch | `tensor`, `nn`, `hub`; a C compiler for `mathx`, a small libm module, temporary until Agentica's `Math` has `exp`, `log`, `log10`, `sin` and `cos` (agentica#1925) |
 | `whisper/` | a binding over the pinned whisper.cpp engine, with WAV reading, microphone capture and long-audio chunking | whisper.cpp (a submodule), a C/C++ compiler |
 
 An inference app depends on `nn` and one backend; a training app adds `train`.

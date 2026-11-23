@@ -3,14 +3,17 @@
 ##
 ## `encode` turns a log-mel batch into the encoder output; `decode` turns
 ## token ids and that output into logits; `listen` and `step` decode one token
-## at a time with a KV cache. Inference only; the log-mel frontend is
-## `mel.agc`, the tokenizer `tokenizer.agc` and the rules of greedy decoding
-## `greedy.agc`.
+## at a time with a KV cache; `transcribe` runs the log-mel frontend
+## (`mel.agc`), the encoder and greedy decoding (`greedy.agc`) on up to 30 s of
+## audio. Inference only.
 
+import Greedy from "greedy"
 import Hub from "pkg/hub/hub"
 import Load from "pkg/hub/load"
 import Nn from "pkg/nn/nn"
+import Mel from "mel"
 import Tensor from "pkg/tensor/tensor"
+import Tokenizer from "tokenizer"
 
 ## Whisper's layer norms use PyTorch's default.
 EPS = 0.00001
@@ -29,6 +32,10 @@ struct Config
   vocab_size: Int
   max_source_positions: Int
   max_target_positions: Int
+  ## The ids greedy decoding never emits, and those it does not emit first;
+  ## `Greedy.rules` has the defaults.
+  suppress_tokens: Optional[List[Int]] = none
+  begin_suppress_tokens: Optional[List[Int]] = none
 end
 
 struct Model
@@ -72,6 +79,29 @@ struct Stepped
   ## The logits of the last token fed, one per vocabulary id.
   logits: List[Float]
   cache: Cache
+end
+
+## What `transcribe` does.
+struct Options
+  ## The language code, such as `es`; none detects it.
+  language: Optional[String] = none
+  ## Translate to English instead of transcribing.
+  translate: Bool = false
+  ## Timestamp tokens, and the segments they give.
+  timestamps: Bool = true
+  ## At most this many tokens after the prompt (OpenAI's `sample_len`).
+  max_tokens: Int = 224
+end
+
+struct Transcript
+  text: String
+  language: String
+  ## The softmax of `language` over the language tokens, one decoder step
+  ## after `<|startoftranscript|>`; 1.0 when `Options.language` named it.
+  language_probability: Float
+  ## The ids emitted after the prompt, without `<|endoftext|>`.
+  tokens: List[Int]
+  segments: List[Greedy.Segment]
 end
 
 ## Hugging Face's `config.json` at `path`.
@@ -269,7 +299,87 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
   end
 end
 
+## The text of `pcm` (16 kHz mono samples, about -1..1, at most one window:
+## 30 s for Whisper): the log-mel, the encoder and greedy decoding at
+## temperature 0 with OpenAI's rules (`Greedy`). Without a language in
+## `options`, one decoder step after `<|startoftranscript|>` picks the likeliest
+## language token.
+def transcribe(
+  m: Model,
+  tok: Tokenizer.Tokenizer,
+  pcm: List[Float],
+  options: Options = Options(),
+) -> Result[Transcript]
+  frames = 2 * m.config.max_source_positions
+  window = frames * HOP
+  if pcm.size > window
+    return error("transcribe takes at most #{window} samples (#{window / SAMPLE_RATE} s), got #{pcm.size}")
+  end
+
+  if tok.vocab_size != m.config.vocab_size
+    return error("the tokenizer has #{tok.vocab_size} ids and the model #{m.config.vocab_size}")
+  end
+
+  # On libtorch every tensor made here is freed at the end.
+  Native.arena do decoded(m, tok, pcm, options, frames) end
+end
+
 private
+
+## 16 kHz audio, and one log-mel frame every 160 samples (`mel.agc`).
+SAMPLE_RATE = 16000
+HOP = 160
+
+## `transcribe` once its arguments are checked.
+def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Options, frames: Int) -> Result[Transcript]
+  mels = m.config.num_mel_bins
+  backend = Tensor.backend(m.tokens.table)
+  features = try Mel.log_mel(pcm, mels, frames)
+  mel = try Tensor.from_list(features.map { |x| Tensor.Values.Float(x) }, [1, mels, frames], Tensor.Dtype.F32, backend)
+  cache = try listen(m, try encode(m, mel))
+
+  language = "en"
+  probability = 1.0
+  case options.language
+    some(code) -> language = code
+    none ->
+      if tok.multilingual
+        first = try step(m, cache, [tok.sot])
+        scores = tok.languages.map { |l| first.logits[l.id] }
+        best = Greedy.pick(scores)
+        language = tok.languages[best].code
+        probability = Greedy.probability(scores, best)
+      end
+  end
+
+  job = Tokenizer.Job.Transcribe
+  if options.translate
+    job = Tokenizer.Job.Translate
+  end
+
+  prompt = try Tokenizer.prompt(tok, some(language), job, options.timestamps)
+  rules = Greedy.rules(tok, m.config.suppress_tokens, m.config.begin_suppress_tokens, options.timestamps)
+  limit = [options.max_tokens, m.config.max_target_positions - prompt.size].min.unwrap!
+  stepped = try step(m, cache, prompt)
+  emitted: List[Int] = []
+  while emitted.size < limit
+    id = Greedy.pick(Greedy.allowed(rules, stepped.logits, emitted))
+    break if id == tok.eot
+    emitted = emitted.push(id)
+    break if emitted.size == limit
+    stepped = try step(m, stepped.cache, [id])
+  end
+
+  ok(
+    Transcript(
+      text: try Tokenizer.decode(tok, emitted),
+      language: language,
+      language_probability: probability,
+      tokens: emitted,
+      segments: try Greedy.segments(tok, emitted, pcm.size.to_f / SAMPLE_RATE.to_f),
+    ),
+  )
+end
 
 ## Attention of the queries `[n, d_model]` over one block's cached heads, as
 ## `Tensor.multi_head_attention` computes it, without slicing the keys and

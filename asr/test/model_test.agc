@@ -1,9 +1,11 @@
 ## A tiny random Whisper that the Python peer `peer.py` writes with Hugging
 ## Face's names: the encoder output and the logits match the peer's forward
-## in doubles. Run from `asr/`.
+## in doubles, and `transcribe` runs end to end. Run from `asr/`.
 
 import Asr from "../asr"
+import Greedy from "../greedy"
 import Tensor from "pkg/tensor/tensor"
+import Tokenizer from "../tokenizer"
 
 REF = Tensor.Backend.Reference
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
@@ -122,6 +124,32 @@ def test_the_kv_cache_steps_match_the_peer() -> Result[Void]
     try expect_close(next.logits, logits.drop(21), ABS, REL, "next")
     try Test.error?(Asr.step(m, prompt.cache, [1, 2]))
     Test.error?(Asr.step(m, cache, (0...9).map { |i| i % 7 }))
+  end
+end
+
+## The random `speech/` model says nothing sensible, but whatever it says
+## keeps OpenAI's rules: its config suppresses 1 and 2, the first token is a
+## timestamp (32 is `<|0.00|>`), the timestamps never decrease, and 13 tokens
+## fill its 16 positions after a prompt of 3.
+def test_transcribe_keeps_the_rules_end_to_end() -> Result[Void]
+  with_fixtures do |dir|
+    m = try Asr.open("#{dir}/speech/model.safetensors", REF)
+    tok = try Tokenizer.open("test/fixtures/tokenizer.json")
+    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    t = try Asr.transcribe(m, tok, pcm)
+    try Test.assert(["en", "es", "yue"].include?(t.language), "language #{t.language}")
+    try Test.assert(t.language_probability > 0.0 and t.language_probability <= 1.0, "p #{t.language_probability}")
+    try Test.assert(not t.tokens.empty? and t.tokens.size <= 13, "tokens #{t.tokens}")
+    try Test.assert(t.tokens[0] >= 32 and t.tokens.all? { |id| id != 1 and id != 2 }, "tokens #{t.tokens}")
+    stamps = t.tokens.select { |id| id >= 32 }
+    try Test.assert((1...stamps.size).all? { |i| stamps[i] >= stamps[i - 1] }, "stamps #{stamps}")
+    try Test.eq(t.text, try Tokenizer.decode(tok, t.tokens))
+    try Test.eq(t.segments, try Greedy.segments(tok, t.tokens, 0.06))
+
+    given = try Asr.transcribe(m, tok, pcm, Asr.Options(language: some("es"), translate: true, timestamps: false))
+    try Test.eq([given.language, given.language_probability.to_s], ["es", "1.0"])
+    try Test.error?(Asr.transcribe(m, tok, pcm + [0.0]))
+    Test.error?(Asr.transcribe(try Asr.open("#{dir}/tiny/model.safetensors", REF), tok, pcm))
   end
 end
 
