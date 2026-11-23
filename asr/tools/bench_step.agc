@@ -7,10 +7,12 @@
 ## subtracts the two reports. Manual, like bench_transcribe.agc. From `asr/`:
 ##
 ## ```sh
-## agentica tools/bench_step.agc MODEL_DIR WAV BACKEND LANGUAGE PASSES [TOKENS]
+## agentica tools/bench_step.agc MODEL_DIR WAV BACKEND LANGUAGE PASSES [TOKENS [pick]]
 ## ```
 ##
-## TOKENS is a comma-separated list of ids forced after the prompt (the default is jfk.wav's transcript).
+## TOKENS is a comma-separated list of ids forced after the prompt (the default is jfk.wav's transcript; `-` is the
+## default). With `pick` each step is `Asr.step_pick` with an all-zero mask: the choice runs on the device and only an
+## id and a log-probability come back, where the default `Asr.step` reads the logits.
 
 import Asr from "../asr"
 import Mel from "../mel"
@@ -31,13 +33,15 @@ def main() -> Void
 end
 
 def run(args: List[String]) -> Result[Void]
-  return error("usage: MODEL_DIR WAV BACKEND LANGUAGE PASSES [TOKENS]") if args.size < 5
+  return error("usage: MODEL_DIR WAV BACKEND LANGUAGE PASSES [TOKENS [pick]]") if args.size < 5
   passes = try args[4].to_i
   ids: List[Int] = []
   spelled = JFK
-  if args.size > 5
+  if args.size > 5 and args[5] != "-"
     spelled = args[5]
   end
+
+  pick = args.size > 6 and args[6] == "pick"
 
   for part in spelled.split(",")
     ids = ids.push(try part.to_i)
@@ -59,19 +63,40 @@ def run(args: List[String]) -> Result[Void]
 
   cache = try Asr.listen(m, try Asr.encode(m, mel))
   prompt = try Tokenizer.prompt(tok, some(args[3]), Tokenizer.Job.Transcribe, false)
+  mask = try Tensor.from_list(
+    List.repeat(Tensor.Values.Float(0.0), m.config.vocab_size),
+    [m.config.vocab_size],
+    Tensor.Dtype.F32,
+    Tensor.backend(m.tokens.table),
+  )
+
   total = 0
   count = 0
   # The first pass compiles the graphs, so it is a warm-up and is not in the mean.
   for pass in 0...passes
     started = Time.monotonic_ms()
-    stepped = try Asr.step(m, cache, prompt)
-    for id in ids
-      next = try Asr.step(m, stepped.cache, [id])
-      release(stepped.cache)
-      stepped = next
+    last = cache
+    if pick
+      stepped = try Asr.step_pick(m, cache, prompt, mask)
+      for id in ids
+        next = try Asr.step_pick(m, stepped.cache, [id], mask)
+        release(stepped.cache)
+        stepped = next
+      end
+
+      last = stepped.cache
+    else
+      stepped = try Asr.step(m, cache, prompt)
+      for id in ids
+        next = try Asr.step(m, stepped.cache, [id])
+        release(stepped.cache)
+        stepped = next
+      end
+
+      last = stepped.cache
     end
 
-    release(stepped.cache)
+    release(last)
     elapsed = Time.monotonic_ms() - started
     puts("pass\t#{elapsed}\t#{ids.size + 1}")
     if pass > 0

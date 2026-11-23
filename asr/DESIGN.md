@@ -19,6 +19,7 @@ Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_
 Asr.decode(m, tokens [batch, t] integer, audio) -> logits [batch, t, vocab_size]
 Asr.listen(m, audio [1, frames, d_model]) -> Result[Cache]     the cross-attention keys and values
 Asr.step(m, cache, ids) -> Result[Stepped]       the logits of the last id, and the cache
+Asr.step_pick(m, cache, ids, mask) -> Result[Picked]   the id and log-probability of the largest masked logit, and the cache
 Asr.transcribe(m, tok, pcm, options = Options()) -> Result[Transcript]
 struct Options      language (none: detect), translate, timestamps, max_tokens
 struct Transcript   text, language, language_probability, tokens, segments (start, stop, text)
@@ -190,6 +191,13 @@ does with `num_beams=1` and no sampling, and OpenAI's `transcribe` at
 temperature 0 inside one window. A named language and the job are checked
 against the tokenizer before the audio costs anything.
 
+- **Greedy decoding on the device.** Without timestamps (`Options.timestamps`
+  false), on ggml, `decide` calls `step_pick` with `Greedy.mask` (0 or
+  `FORBIDDEN` per id: the begin-suppressed ids for the first token, the
+  suppressed ids always), and only an id and a log-probability come back. With
+  timestamps, the default, the rules need the logits of every step, so
+  `step` and `Greedy.allowed` run as before. The step after
+  `<|startoftranscript|>` always reads its logits.
 - **The first step** feeds `<|startoftranscript|>` alone. `no_speech_prob` is
   the softmax of its logits at `<|nospeech|>` (`<|nocaptions|>` in the first
   checkpoints), as OpenAI's. Without `Options.language` it also detects the
@@ -219,7 +227,9 @@ against the tokenizer before the audio costs anything.
   not by pointing into another handle). So each encoder block runs in an arena
   that returns the block's output tensor, and the previous one is closed: the
   peak is one block. Each `step` returns the logits as a list and the new
-  self-attention keys and values as tensors; the loop closes the cache it
+  self-attention keys and values as tensors; `step_pick` returns the likeliest
+  id and its log-probability instead, and on ggml the logits never leave the
+  device (`Asr.picked`, in the step's graph); the loop closes the cache it
   replaced. A call runs in a task of its own, which closes what it opened when
   it ends (the encoder output and the cross-attention cache). Before 0.37.0
   an arena kept everything its result came from, so each block handed its

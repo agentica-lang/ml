@@ -77,6 +77,17 @@ def allowed(r: Rules, logits: List[Float], emitted: List[Int]) -> List[Float]
   timestamp_rules(r, out, emitted)
 end
 
+## The scores to add to a step's logits so that `allowed` without timestamp rules is the sum: 0 for an id that may be
+## emitted and `FORBIDDEN` for one that may not. `first` is for the first token after the prompt.
+def mask(r: Rules, size: Int, first: Bool) -> List[Float]
+  out = List.repeat(0.0, size)
+  if first
+    out = forbid(out, r.begin_suppress)
+  end
+
+  forbid(out, r.suppress)
+end
+
 ## The id of the largest logit; the first one on a tie.
 def pick(logits: List[Float]) -> Int
   best = 0
