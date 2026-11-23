@@ -129,7 +129,7 @@ struct device_state {
   struct entry *planned;
 };
 
-static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+CC_LOCK_LEVEL(2) CC_NO_SYSCALL_UNDER() static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct entry *cache[MAX_ENTRIES];
 static int64_t compile_count = 0, tick = 0;
 static struct device_state devices[9]; /* under the device lock */
@@ -181,7 +181,7 @@ static void destroy_later(void *e) { destroy((struct entry *)e); }
 
 /* Gives the graph back to the cache, or drops it when it never compiled or
    found no slot. A hook: it never waits for the device lock. */
-void ggml_Lease_free(void *state) {
+CC_SHORT void ggml_Lease_free(void *state) {
   struct ggml_Lease_state *self = (struct ggml_Lease_state *)state;
   int i, slot = -1;
   bool drop;

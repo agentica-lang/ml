@@ -346,7 +346,7 @@ struct whisper_text {
 };
 
 static bool whisper_text_reserve(struct whisper_text * text, size_t more) {
-  if (text->len + more <= text->cap) {
+  if (text->data != NULL && text->len + more <= text->cap) {
     return true;
   }
 
