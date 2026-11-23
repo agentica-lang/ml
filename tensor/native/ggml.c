@@ -168,7 +168,7 @@ an_term ggml_vulkan_devices(an_env *env) {
    with the reason in `why`. Call under the device lock. */
 static ggml_backend_dev_t device_of(int64_t device, char *why, size_t len) {
   ggml_backend_dev_t dev = NULL;
-  size_t n;
+  size_t n = 0;
 
   fix_precision();
   if (device == -1) {
