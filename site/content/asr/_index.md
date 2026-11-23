@@ -8,7 +8,7 @@ weight: 5
 
 ## Example
 
-Transcribe one clip in Spanish. The folder `whisper-tiny` holds `model.safetensors`, `config.json` and `tokenizer.json`, from a Hugging Face Whisper checkpoint. The samples are 16 kHz mono floats: one channel, 16 000 samples per second. You can read them with `Wav.load` from the `wav` module of the `whisper` package.
+Transcribe one clip in Spanish. The folder `whisper-tiny` holds `model.safetensors`, `config.json` and `tokenizer.json`, from a Hugging Face Whisper checkpoint. The samples are 16 kHz mono floats: one channel, 16 000 samples per second. You can read them with `Whisper.load` from the `whisper` package, which uses `Wav.load` from its `wav` module.
 
 ```agentica
 import Asr from "pkg/asr/asr"

@@ -56,7 +56,7 @@ It also needs a ggml model file. `tools/fetch-model.sh` downloads one.
 - One decode takes 1 to 4 800 000 samples, which is five minutes of 16 kHz audio. Longer input, empty input and non-finite samples are errors.
 - The language code is at most 32 bytes. `beam_size` is from 0 to 8, and `max_len` is from 0 to 100 000.
 - The text of one call is at most one megabyte.
-- A model runs one decode at a time. A lock (mutex) makes the other calls wait.
+- A model runs one decode at a time. A mutex makes other calls wait.
 - There are no partial results. Each decode returns its segments when it ends.
 - The package reads WAV files only at the rate and format above. It does not resample (change the sample rate).
 - Microphone capture needs `arecord`, the Linux recording tool, and a device. Nothing else in the package does.

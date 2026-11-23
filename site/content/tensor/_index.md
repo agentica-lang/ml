@@ -57,7 +57,7 @@ A tensor has a shape, a dtype (its number type, such as `F32`, a 32-bit float) a
 
 | Backend | Where it computes | Needs |
 |---|---|---|
-| `Backend.Reference` | Agentica code over lists of floats; the trusted answer that the other backends are checked against | nothing |
+| `Backend.Reference` | Agentica code over lists of floats; the answer the tests trust, and the other backends are checked against it | nothing |
 | `Backend.Torch(Device.Cpu)` | libtorch 2.4.1, one op at a time | libtorch (optional) |
 | `Backend.Ggml(Device.Cpu)` | ggml on the CPU | the ggml module (optional) |
 | `Backend.Ggml(Device.Vulkan(i))` | ggml on Vulkan device `i`, counted over the devices that are not a CPU | a ggml build with Vulkan |

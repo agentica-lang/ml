@@ -41,7 +41,7 @@ The shapes are the ones the layers take. `dense` takes any rank. Attention needs
 | `EncoderBlock` | two norms, attention, MLP | `encoder_block(p, x, mask?)`, pre-norm (normalizes before each part) |
 | `DecoderBlock` | three norms, self and cross attention, MLP | `decoder_block(p, x, memory)`, causal self attention, then cross attention |
 
-An activation is a function that bends the values, such as `relu`. The `Activation` type is one of these:
+An activation is a function applied to each value, such as `relu`. The `Activation` type is one of these:
 
 - `Relu` and `Silu`.
 - `Gelu`, a smooth activation in its tanh approximation. `Trace` can take its gradient.
@@ -59,9 +59,6 @@ import Tensor from "pkg/tensor/tensor"
 
 def main() -> Void
   ref = Tensor.Backend.Reference
-  layer = Nn.init_dense(3, 2, 7, ref).unwrap!
-  x = Tensor.ones([4, 3]).unwrap!
-  puts(Tensor.shape(Nn.dense(layer, x).unwrap!))
   block = Nn.init_encoder_block(4, 2, 8, Nn.Activation.Gelu, 3, ref).unwrap!
   h = Tensor.ones([1, 5, 4]).unwrap!
   puts(Tensor.shape(Nn.encoder_block(block, h).unwrap!))
@@ -69,7 +66,6 @@ end
 ```
 
 ```output
-[4, 2]
 [1, 5, 4]
 ```
 
@@ -90,12 +86,6 @@ Each layer has an `init_*` function. It takes a seed (a number that makes the ra
 - One seed gives the same `F32` values on every backend. The sub-layers of one block take their seeds from `Init.derive(seed, k)`.
 - The random generator only makes starting weights. Real weights come from a checkpoint, loaded with [hub](../hub/_index.md).
 
-## How it works
-
-A layer has no state of its own, and no layer changes in place. A model is a struct of layer structs, and a training step returns new ones.
-
-Every layer is made of `tensor` calls, so it runs on every backend that `tensor` has. On `Trace` tensors it records a graph, which `Trace.value_and_grad` differentiates. `nn` has no math of its own.
-
 ## Limits
 
 - `init_*` make `F32` tensors. The layers themselves take any float dtype.
@@ -104,3 +94,9 @@ Every layer is made of `tensor` calls, so it runs on every backend that `tensor`
 - `causal_mask` uses `-1e9` for a masked position, which assumes an `F32` or `F64` compute dtype.
 - `init_attention` needs a width that is divisible by the head count. `positional` refuses more positions than its table has.
 - `GeluErf` has no gradient through `Trace`.
+
+## How it works
+
+A layer has no state of its own, and no layer changes in place. A model is a struct of layer structs, and a training step returns new ones.
+
+Every layer is made of `tensor` calls, so it runs on every backend that `tensor` has. On `Trace` tensors it records a graph, which `Trace.value_and_grad` differentiates. `nn` has no math of its own.

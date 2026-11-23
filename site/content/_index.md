@@ -36,7 +36,7 @@ A gradient is built in Agentica. A function runs once on tracing tensors, which 
 
 There are three backends:
 
-- `Reference`: pure Agentica code. It is slow. It is the trusted answer that the tests check the other backends against.
+- `Reference`: pure Agentica code. It is slow. It is the answer the tests trust, and the other backends are checked against it.
 - `Torch`: libtorch (the C++ library under PyTorch), on the CPU.
 - `Ggml`: ggml (a small tensor library in C), on the CPU or on Vulkan (a GPU API). It runs a traced function as one compiled graph.
 
@@ -53,10 +53,8 @@ Each package has its own `agentica.toml`, the project file that lists dependenci
 Add the package to the `agentica.toml` of your project. Give the repository, its folder as `subdir`, and a commit of `main` as `ref`:
 
 ```toml
-[dependencies.tensor]
-git = "https://github.com/agentica-lang/ml"
-ref = "COMMIT"
-subdir = "tensor"
+[dependencies]
+tensor = { git = "https://github.com/agentica-lang/ml", ref = "COMMIT", subdir = "tensor" }
 ```
 
 Replace `COMMIT` with a commit ID from `main`.

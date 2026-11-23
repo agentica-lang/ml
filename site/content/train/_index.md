@@ -73,15 +73,15 @@ The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, par
 
 Parameters are a plain `List[Tensor.Tensor]`, the list that `Trace` takes. The loss rebuilds the layer structs from that list, for example `Nn.Dense(w: ps[0], b: some(ps[1]))`.
 
-## How it works
-
-A model here is a loss function of a parameter list and a batch. `Train.fit` traces that function, and an optimizer updates the parameters from its gradients.
-
-Each step is one traced evaluation. `fit` traces the loss, its gradients and the optimizer update, and runs them together. So the value, the gradients and the new parameters come from one run of the graph.
-
 ## Limits
 
 - Every step retraces the loss, so the trace cost is paid on each step. On the reference backend, one epoch of the 2-8-1 MLP of the XOR test, with four rows, costs about 75 000 VM steps.
 - The loss must return a float scalar. An op with no backward rule, listed on the [tensor page](../tensor/_index.md), makes `fit` fail.
 - On `Ggml`, the step is one compiled graph with at most 256 outputs: the loss, the new parameters and the optimizer's moments. That allows about 85 parameters with Adam, 127 with momentum SGD and 255 with plain SGD.
 - The losses and the optimizers use only ops that ggml supports, so a batch and its step run on `Ggml` when the dataset is on `Ggml`.
+
+## How it works
+
+A model here is a loss function of a parameter list and a batch. `Train.fit` traces that function, and an optimizer updates the parameters from its gradients.
+
+Each step is one traced evaluation. `fit` traces the loss, its gradients and the optimizer update, and runs them together. So the value, the gradients and the new parameters come from one run of the graph.
