@@ -54,3 +54,18 @@ by this repository: without it, everything still checks, formats and tests,
 and `Backend.Torch` answers `error("backend not available")`.
 [`tensor/README.md`](tensor/README.md) has the setup, the coverage table, the
 tolerances and the measured cost of the dependency.
+
+## Checking the native C
+
+CI runs [cchecker](https://github.com/agentica-lang/cchecker) over the native C of `tensor/` (`ggml.c`, `ggml_graph.c`), `whisper/` and `asr/`: locks released on every path and taken in order (`tg_lock_device`, `cache_lock`, the model mutex), ownership, `gcc -fanalyzer` and clang-tidy. It fails on a finding that is not in `cchecker-baseline.json`. `torch.c` is left out: it is C++, and cchecker reads C.
+
+```sh
+git submodule update --init third_party/ggml third_party/whisper.cpp
+make cchecker CCHECKER_FLAGS="--gcc gcc-14 --clang clang-19 --clang-tidy clang-tidy-19 --strict-baseline"   # what CI runs
+```
+
+It needs gcc 10+, clang, clang-tidy and the pinned `agentica` on PATH. No engine is built: the database (`build/cchecker/`, made by `tools/cchecker.sh`) only needs the headers of the submodules and of `agentica`. The version of cchecker is pinned in `tools/cchecker.sh`; the settings are `cchecker.toml`.
+
+- Mark what cchecker cannot see with the macros of `tensor/native/cchecker.h` (a copy of cchecker's `include/cchecker.h`, empty in a normal build), for example `CC_ACQUIRES` on a function that returns with a lock held.
+- A false positive of one line gets `// cchecker: ignore CODE: reason` next to it.
+- To accept a finding, run `make cchecker-update-baseline`, review the diff of `cchecker-baseline.json`, and write the reason in `cchecker.toml` and in the PR.

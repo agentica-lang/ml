@@ -10,3 +10,4 @@ models/
 site/public/
 site/resources/
 .hugo_build.lock
+/build/
