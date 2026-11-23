@@ -180,7 +180,11 @@ def ggml(backend: Raw.Backend, init: Step.Init, mode: String, batch: Int) -> Res
       "  once: trace+grad+optimizer #{ms(t1 - t0)} ms, lower #{ms(t2 - t1)} ms, compile #{ms(t3 - t2)} ms (C #{ms(stats[3])}), upload params #{ms(t4 - t3)} ms",
     )
 
-    puts("  graph: #{stats[0]} ggml nodes, leaves #{mib(stats[1])} MiB, compute buffer #{mib(stats[2])} MiB")
+    traced = built.reduce(0) do |acc, b| acc + b.index.size end
+    puts(
+      "  graph: #{traced} traced nodes, #{stats[0]} ggml nodes, leaves #{mib(stats[1])} MiB, compute buffer #{mib(stats[2])} MiB",
+    )
+
     ok()
   end
 end

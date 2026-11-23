@@ -24,6 +24,7 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
 | `nn/` decoder: `causal_mask`, `DecoderBlock` pre-norm como Whisper; `Load.decoder_block` en `hub/` | `nn/`, `hub/` | #26 |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
+| Spike ggml-graph: un paso de entrenamiento trazado (forward, backward, SGD/Adam) bajado a **un** grafo ggml, construido una vez, en la iGPU por Vulkan | `spike/ggml-graph/` | #30 |
 | Docs: `tensor/DESIGN.md` (contrato, sin fases), `roadmap.md` (orden e hitos), `README.md`, `.gitattributes`, CI matricial | raíz | #3, #6 |
 
 ### Medidas que importan (esta máquina: Ryzen 5 3550H, Vega iGPU RADV, AVX2+FMA, **sin AVX512**)
@@ -36,6 +37,15 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
   pide batching/compilación de grafo. Es el primer dato objetivo a favor
   del backend JIT.
 - AVX512 no es alcanzable aquí: el techo real es AVX2.
+- **Un paso compilado a un grafo ggml sí sirve en la iGPU** (spike
+  ggml-graph, MLP 784→512→512→10, SGD): 4.7 / 5.6–6.7 / 14–16 / 45–51 ms
+  por paso a batch 64 / 256 / 1024 / 4096, contra 3.1–3.9 / 11 / 41–48 /
+  144–170 de libtorch C++ en CPU: gana **1.6–3.7× desde batch 256**, pierde
+  a 64. Ninguna op del paso falta en Vulkan. Trazar, derivar y bajar cuesta
+  2–6 ms una vez; luego un paso es una llamada FFI.
+- `Train.fit` sobre libtorch hoy: 42–105 ms por paso (op a op, y el
+  optimizador materializa cada `full` por FFI); a batch 4096 se para: el
+  `full` de torch usa `List.repeat`, que tiene tope de 1 048 576.
 
 ### Fuera de este repo
 
@@ -74,16 +84,24 @@ Ningún subagente sigue corriendo.
    shuffling, schedules, y aplanar structs de capas (pytrees)
    cuando un modelo lo pida.
 5. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
-   época del XOR en la referencia).
+   época del XOR en la referencia). El spike ggml-graph mide retrazar el
+   paso de un MLP en 1–3 ms: basta una caché por estructura del grafo
+   (ops, formas; no valores de `full` ni de constantes), sin API `jit`.
 6. **`hub/`**: primer PR mergeado (#23). Falta la descarga HF, con `http-client`
    `stream()` (redirects y retry incluidos), **nunca** `bond` (es solo
    servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
    Resume/progreso/sha256 hay que construirlos.
-7. **Batching de grafo / JIT**: justificado por los 2 ms por dispatch. Es
-   el camino para que la iGPU sirva, y el mismo mecanismo que `xla/`
-   (PJRT) necesitaría.
-8. **Backend Vulkan/iGPU** como backend real, ya con batching; requiere
-   añadir una variante a `Device` (hoy `Cpu | Cuda(Int)`).
+7. **Batching de grafo / JIT**: justificado por los 2 ms por dispatch y
+   **probado** por el spike ggml-graph (#30): el grafo que `Trace` ya
+   graba se baja entero a ggml. Es el mismo mecanismo que `xla/` (PJRT)
+   necesitaría.
+8. **Backend Vulkan/iGPU** como backend real (diseño y PRs en
+   `spike/ggml-graph/README.md`): `Device.Vulkan(Int)`, `Backend.Ggml(Device)`
+   y `Handle.Ggml` en `tensor/` como (b′) hasta #1918; `Trace.evaluate` sobre
+   `Ggml` compila el grafo entero con caché por estructura; `Train.fit` mete
+   el optimizador en el mismo grafo y deja parámetros y momentos en el
+   backend. Decidir fp16 (`mul_mat` de Vulkan, 1.3× a 4096) o fp32 con
+   tolerancia por dispositivo.
 9. **`candle/`** (eager, Rust) y/o **ggml** como backend general.
 10. **dGPU CUDA**: build CUDA de libtorch, `Device.Cuda(Int)`, `to_device`,
    y un job de CI no requerido (no se puede bajar en cada push).
@@ -100,6 +118,10 @@ Ningún subagente sigue corriendo.
 - **ml#12**: menores de `tensor/` (comentarios obsoletos, `catch` de OOM,
   dos aserciones, y el límite de CI que no compila el C++).
 - **agentica#1918**: el cambio de lenguaje.
+- `Torch.full` (`tensor/src/torch.agc`) arma los valores con `List.repeat`
+  y los sube: por encima de 1 048 576 elementos la ejecución se para
+  (`RUNTIME-INVALID-COUNT`, no un `Result`), y cada `full` del optimizador
+  cruza el FFI cada paso (spike ggml-graph).
 - `conv1d`/`avg_pool1d` no soportan dilation ni groups (declarado).
 - `gelu_tanh_approx`, `batch_matmul` y `to_device` no están en libtorch
   (declarado en el README del paquete, con razón).
