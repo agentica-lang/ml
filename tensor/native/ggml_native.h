@@ -126,6 +126,12 @@ an_term ggml_vulkan_devices(an_env *env);
    `data`, one value per element. */
 an_term ggml_upload(an_env *env, int64_t device, ggml_list_Int shape, ggml_list_Float data, bool int32);
 
+/* An F32 tensor of the row-major `shape` on `device` from the little-endian
+   floats of `format` (a code of `Types.file_code`) that start at byte `offset`
+   of the file `path`. C reads the file itself, so no value crosses as a
+   list; a range past the end of the file is an error. */
+an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml_list_Int shape, int64_t format);
+
 /* A tensor of `shape` on `device` with every element `value`, filled in C,
    so a large fill never crosses as a list. */
 an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double value, bool int32);
@@ -402,6 +408,24 @@ static an_term ggml_native_upload(an_env *env, int argc, const an_term *argv) {
   return ggml_upload(env, a0, a1, a2, a3);
 }
 
+static an_term ggml_native_load(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  int64_t a0;
+  if (!an_get_int(env, argv[0], &a0)) return an_badarg(env, 0);
+  ng_str a1;
+  if (!an_get_string(env, argv[1], &a1.data, &a1.len)) return an_badarg(env, 1);
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  ggml_list_Int a3;
+  if (!ggml_native_open_list_Int(env, argv[3], &a3, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 3);
+  a3.argument = 4;
+  int64_t a4;
+  if (!an_get_int(env, argv[4], &a4)) return an_badarg(env, 4);
+  return ggml_load(env, a0, a1, a2, a3, a4);
+}
+
 static an_term ggml_native_filled(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   ng_fail fail;
@@ -538,6 +562,7 @@ static an_term ggml_native_vulkan_fp16(an_env *env, int argc, const an_term *arg
 static const an_function ggml_native_functions[] = {
   {"vulkan_devices", "() -> Int", ggml_native_vulkan_devices, AN_DIRTY},
   {"upload", "(Int, List[Int], List[Float], Bool) -> Result[TensorHandle]", ggml_native_upload, AN_DIRTY},
+  {"load", "(Int, String, Int, List[Int], Int) -> Result[TensorHandle]", ggml_native_load, AN_DIRTY},
   {"filled", "(Int, List[Int], Float, Bool) -> Result[TensorHandle]", ggml_native_filled, AN_DIRTY},
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
   {"transfer", "(TensorHandle, Int) -> Result[TensorHandle]", ggml_native_transfer, AN_DIRTY},
@@ -559,5 +584,5 @@ static const an_function ggml_native_functions[] = {
     {"TensorHandle", sizeof(struct ggml_TensorHandle_state), GGML_TensorHandle_FREE}, \
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 14, NULL, 0, ggml_native_resources, 2, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 15, NULL, 0, ggml_native_resources, 2, LOAD)
 #endif

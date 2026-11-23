@@ -1,4 +1,4 @@
-## The native side of the libtorch backend: the thirty-six calls of
+## The native side of the libtorch backend: the thirty-seven calls of
 ## `native/torch.c`, a thin C++ layer over libtorch's C++ API (as `tch-rs` is),
 ## behind the `extern module` block below.
 ##
@@ -44,6 +44,11 @@ extern module "torch"
   ## (`TorchDtypes.code`). The values cross as doubles; an integer dtype must hold
   ## integral values in range, which the callers of `create` check first.
   compute def create(shape: List[Int], data: List[Float], dtype: Int) -> Result[TensorHandle]
+  ## An `F32` tensor of `shape` from the little-endian floats of `format` (a
+  ## code of `Types.file_code`) that start at byte `offset` of the file `path`.
+  ## C reads the file into the tensor's own memory, so no value crosses as a
+  ## list; a range past the end of the file is an error.
+  compute def load(path: String, offset: Int, shape: List[Int], format: Int) -> Result[TensorHandle]
   ## Elementwise `a + b`, two tensors of one shape.
   compute def add(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## Elementwise `a * b`, two tensors of one shape.

@@ -20,6 +20,7 @@
    header again. */
 #define TORCH_NATIVE_IMPLEMENTATION
 #include "torch_native.h"
+#include "float_file.h"
 
 #include <torch/torch.h>
 
@@ -332,6 +333,25 @@ an_term torch_create(an_env *env, torch_list_Int shape, torch_list_Float data, i
     return ok_tensor(env, built);
   } catch (...) {
     return failed(env, "create");
+  }
+}
+
+an_term torch_load(an_env *env, ng_str path, int64_t offset, torch_list_Int shape, int64_t format) {
+  std::vector<int64_t> dims;
+  an_term failure;
+  char why[FF_PATH_MAX + 160];
+
+  if (!read_shape(env, shape, &dims, &failure)) return failure;
+
+  try {
+    /* The file is read into the tensor's own memory. */
+    torch::Tensor built = torch::empty(dims, torch::TensorOptions().dtype(torch::kFloat32));
+    if (!ff_read(path.data, path.len, offset, built.numel(), format, built.data_ptr<float>(), why, sizeof why)) {
+      return error_text(env, why);
+    }
+    return ok_tensor(env, built);
+  } catch (...) {
+    return failed(env, "load");
   }
 }
 

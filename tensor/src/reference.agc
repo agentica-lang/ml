@@ -271,6 +271,21 @@ def from_list(data: List[Types.Values], shape: List[Int], dtype: Types.Dtype) ->
   ok(make(shape, dtype, values))
 end
 
+## Creation: the floats of `format` at byte `offset` of the file `path`, as an
+## `F32` tensor of `shape`. The File API has no seek here, so the bytes before
+## `offset` are read and dropped: this is the slow path, for the oracle and for
+## small files.
+def from_file(path: String, offset: Int, shape: List[Int], format: Types.FileFormat) -> Result[Types.Tensor]
+  n = try Types.volume(shape)
+  bytes = try read_range(path, offset, n * Types.file_width(format))
+  values: List[Float] = []
+  for i in 0...n
+    values = values.push(file_float(bytes, i, format))
+  end
+
+  ok(make(shape, Types.Dtype.F32, values))
+end
+
 ## Readback: the values tagged with the tensor's dtype.
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   out: List[Types.Values] = []
@@ -1176,6 +1191,71 @@ def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> R
 end
 
 private
+
+## The bytes read at a time by `read_range`.
+CHUNK = 1048576
+
+## `length` bytes at `offset` of `path`: an `error` for a file that is too short.
+def read_range(path: String, offset: Int, length: Int) -> Result[Bytes]
+  return error("from_file: the offset is #{offset}, not 0 or more") if offset < 0
+  size = (try File.stat(path)).size_bytes
+  if offset + length > size
+    return error("#{path} has #{size} bytes: the range of #{length} bytes at #{offset} ends past them")
+  end
+
+  File.open(path) do |f|
+    try skip(f, offset)
+    parts: List[Bytes] = []
+    left = length
+    while left > 0
+      chunk = try File.read_bytes(f, [left, CHUNK].min.unwrap!)
+      return error("#{path} ended while it was read") if chunk.empty?
+      parts = parts.push(chunk)
+      left = left - chunk.size
+    end
+
+    ok(Bytes.concat(parts))
+  end
+end
+
+## Reads and drops `count` bytes of `f`.
+def skip(f: File.Handle, count: Int) -> Result[Void]
+  left = count
+  while left > 0
+    chunk = try File.read_bytes(f, [left, CHUNK].min.unwrap!)
+    return error("the file ended #{left} bytes early") if chunk.empty?
+    left = left - chunk.size
+  end
+
+  ok()
+end
+
+## Element `i` of `b`, read as `format` says.
+def file_float(b: Bytes, i: Int, format: Types.FileFormat) -> Float
+  case format
+    Types.FileFormat.F32 -> Float.from_bits32(u16(b, 4 * i).bit_or(u16(b, 4 * i + 2).shift_left(16)))
+    Types.FileFormat.F16 -> half(u16(b, 2 * i))
+    Types.FileFormat.BF16 -> Float.from_bits32(u16(b, 2 * i).shift_left(16))
+  end
+end
+
+def u16(b: Bytes, at: Int) -> Int = b[at].bit_or(b[at + 1].shift_left(8))
+
+## IEEE binary16 to a Float, rebuilt as binary64 bits (exact).
+def half(bits: Int) -> Float
+  sign = bits.shift_right(15).shift_left(63)
+  exp = bits.shift_right(10).bit_and(0x1F)
+  mant = bits.bit_and(0x3FF)
+  if exp == 0
+    # Subnormal: mant * 2^-24.
+    m = mant.to_f * Float.from_bits((1023 - 24).shift_left(52))
+    return -m if sign != 0
+    return m
+  end
+
+  return Float.from_bits(sign.bit_or(0x7FF0000000000000).bit_or(mant.shift_left(42))) if exp == 31
+  Float.from_bits(sign.bit_or((exp - 15 + 1023).shift_left(52)).bit_or(mant.shift_left(42)))
+end
 
 ## One value across the dtype move of `to_dtype`.
 def convert_one(x: Float, from: Types.Dtype, to: Types.Dtype) -> Result[Float]

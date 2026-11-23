@@ -144,6 +144,19 @@ def from_list(
   from_values("from_list", device, shape, dtype, values)
 end
 
+## Creation: an `F32` tensor of `shape` from the floats of `format` at byte
+## `offset` of the file `path`, read by C into the tensor's own memory.
+def from_file(
+  device: Types.Device,
+  path: String,
+  offset: Int,
+  shape: List[Int],
+  format: Types.FileFormat,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "from_file")
+  one(device, Types.Dtype.F32, shape) do Raw.load(path, offset, shape, Types.file_code(format)) end
+end
+
 ## Host readback: the row-major values tagged with `t`'s dtype. This is the
 ## reference's `to_list` for this backend: the boundary carries doubles, so the
 ## tagging happens here, as the reference tags its own storage.

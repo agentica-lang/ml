@@ -33,6 +33,11 @@ extern module "ggml"
   ## A tensor of the row-major `shape` (rank 4 at most) on `device`, holding
   ## `data`, one value per element.
   compute def upload(device: Int, shape: List[Int], data: List[Float], int32: Bool) -> Result[TensorHandle]
+  ## An F32 tensor of the row-major `shape` on `device` from the little-endian
+  ## floats of `format` (a code of `Types.file_code`) that start at byte `offset`
+  ## of the file `path`. C reads the file itself, so no value crosses as a
+  ## list; a range past the end of the file is an error.
+  compute def load(device: Int, path: String, offset: Int, shape: List[Int], format: Int) -> Result[TensorHandle]
   ## A tensor of `shape` on `device` with every element `value`, filled in C,
   ## so a large fill never crosses as a list.
   compute def filled(device: Int, shape: List[Int], value: Float, int32: Bool) -> Result[TensorHandle]

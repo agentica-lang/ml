@@ -31,6 +31,14 @@ enum Dtype
   Bool
 end
 
+## The float formats `Tensor.from_file` reads: little-endian IEEE binary32,
+## binary16 and bfloat16. The tensor it makes is `F32` whichever one it reads.
+enum FileFormat
+  F32
+  F16
+  BF16
+end
+
 ## Where a backend computes: the host CPU, or the Vulkan device of that index
 ## (ggml's numbering). `Reference` and `Torch` serve `Cpu` only.
 enum Device
@@ -154,6 +162,24 @@ def volume(shape: List[Int]) -> Result[Int]
   end
 
   ok(total)
+end
+
+## The bytes of one element of `format`.
+def file_width(format: FileFormat) -> Int
+  case format
+    FileFormat.F32 -> 4
+    FileFormat.F16 -> 2
+    FileFormat.BF16 -> 2
+  end
+end
+
+## The code the native layers read: `FF_*` in `native/float_file.h`.
+def file_code(format: FileFormat) -> Int
+  case format
+    FileFormat.F32 -> 0
+    FileFormat.F16 -> 1
+    FileFormat.BF16 -> 2
+  end
 end
 
 ## True for the dtypes that hold non-integer numerics.
