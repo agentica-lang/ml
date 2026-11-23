@@ -5,7 +5,8 @@
 ## token ids and that output into logits; `listen` and `step` decode one token
 ## at a time with a KV cache; `transcribe` runs the log-mel frontend
 ## (`mel.agc`), the encoder and greedy decoding (`greedy.agc`) on up to 30 s of
-## audio. Inference only.
+## audio. Inference only. On `Ggml` each stage and each step is one compiled
+## graph of the model's tensors as trace constants.
 
 import Greedy from "greedy"
 import Hub from "pkg/hub/hub"
@@ -14,6 +15,7 @@ import Nn from "pkg/nn/nn"
 import Mel from "mel"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "tokenizer"
+import Trace from "pkg/tensor/trace"
 
 ## Whisper's layer norms use PyTorch's default.
 EPS = 0.00001
@@ -78,6 +80,16 @@ end
 struct Heard
   keys: List[Tensor.Tensor]
   values: List[Tensor.Tensor]
+end
+
+## One step's forward: the logits of the last token, and per decoder block
+## the self-attention keys and values of the new tokens (`keys`, `values`)
+## and of all of them (`own`).
+struct Forward
+  logits: Tensor.Tensor
+  keys: List[Tensor.Tensor]
+  values: List[Tensor.Tensor]
+  own: List[Kv]
 end
 
 ## What one step's arena hands back: the last logits, and per block the new
@@ -179,7 +191,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
       decoder_positions: decoder_positions,
       decoder: decoder,
       decoder_norm: try Load.layer_norm(c, "#{d}layer_norm", EPS, backend),
-      logits: Nn.Dense(w: try Tensor.transpose(tokens.table), b: none),
+      logits: Nn.Dense(w: try Load.transposed(tokens.table), b: none),
     ),
   )
 end
@@ -194,33 +206,17 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
     return error("encode needs [batch, #{m.config.num_mel_bins}, frames], got #{shape}")
   end
 
-  # Each stage hands only a list out of its arena (as `step` does) and the
-  # previous stage's tensor is closed, so a block's intermediates die with it.
+  # The previous stage's tensor is closed, so a block's intermediates die
+  # with it (`staged`).
   out = [shape[0], (shape[2] + 1) / 2, m.config.d_model]
-  start: Result[List[Tensor.Values]] = Native.arena do
-    items: List[Tensor.Tensor] = []
-    for b in 0...shape[0]
-      one = try Tensor.reshape(try Tensor.slice(mel, [b, 0, 0], [b + 1, shape[1], shape[2]]), [shape[1], shape[2]])
-      x = try Nn.activate(m.activation, try Nn.conv1d(m.conv1, one))
-      x = try Nn.activate(m.activation, try Nn.conv1d(m.conv2, x))
-      items = items.push(try Tensor.transpose(x))
-    end
-
-    Tensor.to_list(try Nn.positional(m.encoder_positions, try Tensor.stack(items, 0)))
-  end
-
-  h = try rebuilt(start, out, m.encoder_positions.table)
-  for block in m.encoder
-    done: Result[List[Tensor.Values]] = Native.arena do Tensor.to_list(try Nn.encoder_block(block, h)) end
-
-    fresh = try rebuilt(done, out, h)
+  h = try staged(m, mel, out, &stem)
+  for i in 0...m.encoder.size
+    fresh = try staged(m, h, out, ->(model: Model, x: Tensor.Tensor) { Nn.encoder_block(model.encoder[i], x) })
     close([h])
     h = fresh
   end
 
-  normed: Result[List[Tensor.Values]] = Native.arena do Tensor.to_list(try Nn.layer_norm(m.encoder_norm, h)) end
-
-  audio = try rebuilt(normed, out, h)
+  audio = try staged(m, h, out, ->(model: Model, x: Tensor.Tensor) { Nn.layer_norm(model.encoder_norm, x) })
   close([h])
   ok(audio)
 end
@@ -253,22 +249,13 @@ def listen(m: Model, audio: Tensor.Tensor) -> Result[Cache]
     return error("listen needs audio [1, frames, #{m.config.d_model}] from encode, got #{heard}")
   end
 
-  frames = heard[1]
-  d = m.config.d_model
+  heads = try run(m, [audio], &split_heads)
   cross: List[Heard] = []
+  at = 0
   for block in m.decoder
-    a = block.cross_attention
-    k = try Tensor.reshape(try Nn.dense(a.key, audio), [frames, d])
-    v = try Tensor.reshape(try Nn.dense(a.value, audio), [frames, d])
-    width = d / a.heads
-    keys: List[Tensor.Tensor] = []
-    values: List[Tensor.Tensor] = []
-    for h in 0...a.heads
-      keys = keys.push(try Tensor.transpose(try Tensor.slice(k, [0, h * width], [frames, (h + 1) * width])))
-      values = values.push(try Tensor.slice(v, [0, h * width], [frames, (h + 1) * width]))
-    end
-
-    cross = cross.push(Heard(keys: keys, values: values))
+    n = block.cross_attention.heads
+    cross = cross.push(Heard(keys: heads.drop(at).take(n), values: heads.drop(at + n).take(n)))
+    at += 2 * n
   end
 
   ok(Cache(cross: cross, own: [], length: 0))
@@ -289,52 +276,32 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
 
   d = m.config.d_model
   backend = Tensor.backend(m.tokens.table)
+  values = ids.map { |i| Tensor.Values.Int(i) }
+  if compiled(backend)
+    at = try Tensor.from_list(values, [n], Tensor.Dtype.I32, backend)
+    got = Trace.eval_many([at], ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), traced_cache(cache), xs[0]) })
+    close([at])
+    outs = try got
+    layers = m.decoder.size
+    own = (0...layers).map { |i| Kv(key: outs[1 + i], value: outs[1 + layers + i]) }
+    logits = try floats(outs[0])
+    close([outs[0]])
+    return ok(Stepped(logits: logits, cache: Cache(cross: cache.cross, own: own, length: cache.length + n)))
+  end
+
   # The arena hands back only lists: an arena keeps the resource its value
   # holds and everything that resource comes from, all the way up, so a
   # returned tensor would keep the step's intermediates.
   grown: Result[Grown] = Native.arena do
-    rows = try Nn.embedding(
-      m.tokens,
-      try Tensor.from_list(ids.map { |i| Tensor.Values.Int(i) }, [n], Tensor.Dtype.I64, backend),
-    )
-
-    positions = try Tensor.slice(m.decoder_positions.table, [cache.length, 0], [cache.length + n, d])
-    h = try Tensor.reshape(try Tensor.add(rows, positions), [1, n, d])
-    mask: Optional[Tensor.Tensor] = none
-    if n > 1
-      mask = some(try Nn.causal_mask(n, Tensor.dtype(h), backend))
-    end
-
+    f = try forward(m, cache, try Tensor.from_list(values, [n], Tensor.Dtype.I32, backend))
     keys: List[List[Float]] = []
-    values: List[List[Float]] = []
-    for i in 0...m.decoder.size
-      block = m.decoder[i]
-      a = block.self_attention
-      x = try Nn.layer_norm(block.norm1, h)
-      k = try Nn.dense(a.key, x)
-      v = try Nn.dense(a.value, x)
-      keys = keys.push(try floats(k))
-      values = values.push(try floats(v))
-      if cache.length > 0
-        k = try Tensor.concat([cache.own[i].key, k], 1)
-        v = try Tensor.concat([cache.own[i].value, v], 1)
-      end
-
-      h = try Tensor.add(
-        h,
-        try Nn.dense(a.output, try Tensor.multi_head_attention(try Nn.dense(a.query, x), k, v, a.heads, mask)),
-      )
-
-      c = block.cross_attention
-      x = try Nn.layer_norm(block.norm2, h)
-      heard = try attend(try Tensor.reshape(try Nn.dense(c.query, x), [n, d]), cache.cross[i])
-      h = try Tensor.add(h, try Nn.dense(c.output, try Tensor.reshape(heard, [1, n, d])))
-      h = try Tensor.add(h, try Nn.mlp(block.mlp, try Nn.layer_norm(block.norm3, h)))
+    rows: List[List[Float]] = []
+    for i in 0...f.keys.size
+      keys = keys.push(try floats(f.keys[i]))
+      rows = rows.push(try floats(f.values[i]))
     end
 
-    last = try Tensor.slice(h, [0, n - 1, 0], [1, n, d])
-    logits = try Nn.dense(m.logits, try Nn.layer_norm(m.decoder_norm, last))
-    ok(Grown(logits: try floats(logits), keys: keys, values: values))
+    ok(Grown(logits: try floats(f.logits), keys: keys, values: rows))
   end
 
   g = try grown
@@ -477,15 +444,209 @@ end
 ## The self-attention keys and values `cache` holds.
 def kept(cache: Cache) -> List[Tensor.Tensor] = cache.own.flat_map { |kv| [kv.key, kv.value] }
 
-## Closes the libtorch tensors of `ts` now, not at the end of an arena; the
-## other backends have nothing to close.
+## Closes the libtorch and ggml tensors of `ts` now, not at the end of an
+## arena; the reference has nothing to close.
 def close(ts: List[Tensor.Tensor]) -> Void
   for t in ts
     case t.handle
       Tensor.Handle.Native(h) -> Native.close(h)
+      Tensor.Handle.Ggml(h) -> Native.close(h)
       _ -> nil
     end
   end
+end
+
+## Whether `backend` computes only compiled graphs (`Ggml`).
+def compiled(backend: Tensor.Backend) -> Bool
+  case backend
+    Tensor.Backend.Ggml(_) -> true
+    _ -> false
+  end
+end
+
+## `f` of the model and `args`; on `Ggml` one compiled graph of the traced
+## model.
+def run(
+  m: Model,
+  args: List[Tensor.Tensor],
+  f: Fn[Model, List[Tensor.Tensor], Result[List[Tensor.Tensor]]],
+) -> Result[List[Tensor.Tensor]]
+  if compiled(Tensor.backend(args[0]))
+    return Trace.eval_many(args, ->(xs: List[Tensor.Tensor]) { f.call(traced(m), xs) })
+  end
+
+  f.call(m, args)
+end
+
+## `f` of the model and `x`, a tensor of `shape`. On `Ggml` it is one compiled
+## graph; elsewhere it runs in an arena that hands out only a list, so its
+## intermediates die with the arena (agentica#1932: a returned tensor would
+## keep them).
+def staged(
+  m: Model,
+  x: Tensor.Tensor,
+  shape: List[Int],
+  f: Fn[Model, Tensor.Tensor, Result[Tensor.Tensor]],
+) -> Result[Tensor.Tensor]
+  return Trace.eval([x], ->(xs: List[Tensor.Tensor]) { f.call(traced(m), xs[0]) }) if compiled(Tensor.backend(x))
+  values: Result[List[Tensor.Values]] = Native.arena do Tensor.to_list(try f.call(m, x)) end
+  Tensor.from_list(try values, shape, Tensor.dtype(x), Tensor.backend(x))
+end
+
+## The conv stem of the encoder over a log-mel batch, with the positions
+## added: two gelu convolutions, the second halving the frames.
+def stem(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(mel)
+  items: List[Tensor.Tensor] = []
+  for b in 0...shape[0]
+    one = try Tensor.reshape(try Tensor.slice(mel, [b, 0, 0], [b + 1, shape[1], shape[2]]), [shape[1], shape[2]])
+    x = try Nn.activate(m.activation, try Nn.conv1d(m.conv1, one))
+    x = try Nn.activate(m.activation, try Nn.conv1d(m.conv2, x))
+    items = items.push(try Tensor.transpose(x))
+  end
+
+  Nn.positional(m.encoder_positions, try Tensor.stack(items, 0))
+end
+
+## Per decoder block, the cross-attention keys of each head over the encoder
+## output `xs[0]` (transposed), then the values of each head.
+def split_heads(m: Model, xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  audio = xs[0]
+  frames = Tensor.shape(audio)[1]
+  d = m.config.d_model
+  out: List[Tensor.Tensor] = []
+  for block in m.decoder
+    a = block.cross_attention
+    k = try Tensor.reshape(try Nn.dense(a.key, audio), [frames, d])
+    v = try Tensor.reshape(try Nn.dense(a.value, audio), [frames, d])
+    width = d / a.heads
+    keys: List[Tensor.Tensor] = []
+    values: List[Tensor.Tensor] = []
+    for h in 0...a.heads
+      keys = keys.push(try Tensor.transpose(try Tensor.slice(k, [0, h * width], [frames, (h + 1) * width])))
+      values = values.push(try Tensor.slice(v, [0, h * width], [frames, (h + 1) * width]))
+    end
+
+    out = out + keys + values
+  end
+
+  ok(out)
+end
+
+## The forward of the integer ids `ids` (`[n]`) after the tokens of `cache`.
+def forward(m: Model, cache: Cache, ids: Tensor.Tensor) -> Result[Forward]
+  n = Tensor.shape(ids)[0]
+  d = m.config.d_model
+  rows = try Nn.embedding(m.tokens, ids)
+  positions = try Tensor.slice(m.decoder_positions.table, [cache.length, 0], [cache.length + n, d])
+  h = try Tensor.reshape(try Tensor.add(rows, positions), [1, n, d])
+  mask: Optional[Tensor.Tensor] = none
+  if n > 1
+    mask = some(try Nn.causal_mask(n, Tensor.dtype(h), Tensor.backend(h)))
+  end
+
+  keys: List[Tensor.Tensor] = []
+  values: List[Tensor.Tensor] = []
+  own: List[Kv] = []
+  for i in 0...m.decoder.size
+    block = m.decoder[i]
+    a = block.self_attention
+    x = try Nn.layer_norm(block.norm1, h)
+    k = try Nn.dense(a.key, x)
+    v = try Nn.dense(a.value, x)
+    keys = keys.push(k)
+    values = values.push(v)
+    if cache.length > 0
+      k = try Tensor.concat([cache.own[i].key, k], 1)
+      v = try Tensor.concat([cache.own[i].value, v], 1)
+    end
+
+    own = own.push(Kv(key: k, value: v))
+    h = try Tensor.add(
+      h,
+      try Nn.dense(a.output, try Tensor.multi_head_attention(try Nn.dense(a.query, x), k, v, a.heads, mask)),
+    )
+
+    c = block.cross_attention
+    x = try Nn.layer_norm(block.norm2, h)
+    heard = try attend(try Tensor.reshape(try Nn.dense(c.query, x), [n, d]), cache.cross[i])
+    h = try Tensor.add(h, try Nn.dense(c.output, try Tensor.reshape(heard, [1, n, d])))
+    h = try Tensor.add(h, try Nn.mlp(block.mlp, try Nn.layer_norm(block.norm3, h)))
+  end
+
+  last = try Tensor.slice(h, [0, n - 1, 0], [1, n, d])
+  logits = try Nn.dense(m.logits, try Nn.layer_norm(m.decoder_norm, last))
+  ok(Forward(logits: logits, keys: keys, values: values, own: own))
+end
+
+## A step as one graph: the logits, then the keys of every block, then the
+## values.
+def stepped_graph(m: Model, cache: Cache, ids: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
+  f = try forward(m, cache, ids)
+  ok([f.logits] + f.own.map { |kv| kv.key } + f.own.map { |kv| kv.value })
+end
+
+## `m` with every tensor a constant of the current trace.
+def traced(m: Model) -> Model
+  m.with(
+    conv1: m.conv1.with(weight: Trace.constant(m.conv1.weight), bias: lifted(m.conv1.bias)),
+    conv2: m.conv2.with(weight: Trace.constant(m.conv2.weight), bias: lifted(m.conv2.bias)),
+    encoder_positions: Nn.Embedding(table: Trace.constant(m.encoder_positions.table)),
+    encoder: m.encoder.map { |b| traced_encoder(b) },
+    encoder_norm: traced_norm(m.encoder_norm),
+    tokens: Nn.Embedding(table: Trace.constant(m.tokens.table)),
+    decoder_positions: Nn.Embedding(table: Trace.constant(m.decoder_positions.table)),
+    decoder: m.decoder.map { |b| traced_decoder(b) },
+    decoder_norm: traced_norm(m.decoder_norm),
+    logits: traced_dense(m.logits),
+  )
+end
+
+def traced_encoder(b: Nn.EncoderBlock) -> Nn.EncoderBlock
+  Nn.EncoderBlock(
+    norm1: traced_norm(b.norm1),
+    attention: traced_attention(b.attention),
+    norm2: traced_norm(b.norm2),
+    mlp: traced_mlp(b.mlp),
+  )
+end
+
+def traced_decoder(b: Nn.DecoderBlock) -> Nn.DecoderBlock
+  Nn.DecoderBlock(
+    norm1: traced_norm(b.norm1),
+    self_attention: traced_attention(b.self_attention),
+    norm2: traced_norm(b.norm2),
+    cross_attention: traced_attention(b.cross_attention),
+    norm3: traced_norm(b.norm3),
+    mlp: traced_mlp(b.mlp),
+  )
+end
+
+def traced_attention(a: Nn.Attention) -> Nn.Attention
+  a.with(
+    query: traced_dense(a.query),
+    key: traced_dense(a.key),
+    value: traced_dense(a.value),
+    output: traced_dense(a.output),
+  )
+end
+
+def traced_mlp(p: Nn.Mlp) -> Nn.Mlp = p.with(up: traced_dense(p.up), down: traced_dense(p.down))
+
+def traced_dense(p: Nn.Dense) -> Nn.Dense = Nn.Dense(w: Trace.constant(p.w), b: lifted(p.b))
+
+def traced_norm(p: Nn.LayerNorm) -> Nn.LayerNorm = p.with(gamma: Trace.constant(p.gamma), beta: Trace.constant(p.beta))
+
+def lifted(t: Optional[Tensor.Tensor]) -> Optional[Tensor.Tensor] = t.map { |x| Trace.constant(x) }
+
+## `c` with every tensor a constant of the current trace.
+def traced_cache(c: Cache) -> Cache
+  c.with(
+    cross: c.cross.map { |h|
+      Heard(keys: h.keys.map { |t| Trace.constant(t) }, values: h.values.map { |t| Trace.constant(t) })
+    },
+    own: c.own.map { |kv| Kv(key: Trace.constant(kv.key), value: Trace.constant(kv.value)) },
+  )
 end
 
 ## Attention of the queries `[n, d_model]` over one block's cached heads, as
@@ -508,12 +669,6 @@ def attend(queries: Tensor.Tensor, heard: Heard) -> Result[Tensor.Tensor]
   end
 
   Tensor.concat(parts, 1)
-end
-
-## `values`, what an arena handed out, as a tensor of `shape` with the dtype
-## and backend of `like`.
-def rebuilt(values: Result[List[Tensor.Values]], shape: List[Int], like: Tensor.Tensor) -> Result[Tensor.Tensor]
-  Tensor.from_list(try values, shape, Tensor.dtype(like), Tensor.backend(like))
 end
 
 def floats(t: Tensor.Tensor) -> Result[List[Float]]

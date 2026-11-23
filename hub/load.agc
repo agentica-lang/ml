@@ -8,6 +8,7 @@
 import Hub from "hub"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
 
 ## The prefix of every layer of one encoder block.
 struct BlockNames
@@ -55,7 +56,13 @@ end
 
 def dense(c: Hub.Checkpoint, prefix: String, backend: Tensor.Backend) -> Result[Nn.Dense]
   w = try weight(c, "#{prefix}.weight", 2, backend)
-  ok(Nn.Dense(w: try Tensor.transpose(w), b: try bias(c, prefix, Tensor.shape(w)[0], backend)))
+  ok(Nn.Dense(w: try transposed(w), b: try bias(c, prefix, Tensor.shape(w)[0], backend)))
+end
+
+## `t` transposed, through a trace: a backend that computes only whole graphs
+## (`Ggml`) loads too.
+def transposed(t: Tensor.Tensor) -> Result[Tensor.Tensor]
+  Trace.eval([t], ->(xs: List[Tensor.Tensor]) { Tensor.transpose(xs[0]) })
 end
 
 ## A conv layer: `{prefix}.weight` `[out, in, kernel]`, as stored; `{prefix}.bias` if present.

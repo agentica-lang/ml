@@ -87,8 +87,8 @@ shape/dtype, plus its error paths.
 
 Plus the two host-crossing functions §4 names, `from_list` and `to_list`
 (readback), which are not primitives.
-`gelu_erf`, the exact GELU, is outside §3.1: it runs on both backends for
-inference, `Trace` refuses it and ggml does not compile it yet.
+`gelu_erf`, the exact GELU, is outside §3.1: it runs on every backend for
+inference, and `Trace` records it without a gradient.
 
 Why those two are out:
 
@@ -226,7 +226,8 @@ the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan device.
 and of the cross-entropy against the reference within 1e-6 (relative to the
 largest value), on the CPU backend and on Vulkan, that a retrace with new values
 compiles nothing, `slice` and `gather` (an index outside the rows is an error),
-and the refusals. `test/ggml_turns_test.agc`, in a process of its own, that a
+`concat` and `stack` on every axis, the ops of Whisper's forward (`conv1d`,
+`gelu_erf`, layer norm, softmax, masked attention) and the refusals. `test/ggml_turns_test.agc`, in a process of its own, that a
 graph without fills does not write into the buffer the shared allocator freed
 when a larger graph grew it. `test/ggml_vulkan_mlp_test.agc` checks the
 benchmark's 784 → 512 → 512 → 10 model at batch 256 on Vulkan against ggml's CPU

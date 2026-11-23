@@ -188,7 +188,7 @@ end
 def causal_mask(size: Int, dtype: Tensor.Dtype, backend: Tensor.Backend) -> Result[Tensor.Tensor]
   return error("causal_mask needs size >= 1, got #{size}") if size < 1
   square = [size, size]
-  positions = try Tensor.arange(0, size, 1, Tensor.Dtype.I64, backend)
+  positions = try Tensor.arange(0, size, 1, Tensor.Dtype.I32, backend)
   rows = try Tensor.broadcast_to(try Tensor.reshape(positions, [size, 1]), square)
   cols = try Tensor.broadcast_to(try Tensor.reshape(positions, [1, size]), square)
   blocked = try Tensor.full(square, Tensor.Values.Float(MASKED), dtype, backend)
