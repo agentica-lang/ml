@@ -220,9 +220,12 @@ def test_step_pick_matches_greedy_over_the_logits() -> Result[Void]
       emitted = [got.id]
       plain = logits
       picked = got
+      spent: List[Tensor.Tensor] = []
       for _ in 0...10
         plain = try Asr.step(m, plain.cache, [emitted.last])
-        picked = try Asr.step_pick(m, picked.cache, [emitted.last], rest)
+        before = picked
+        picked = try Asr.step_pick(m, before.cache, [emitted.last], rest, spent)
+        spent = before.cache.own.flat_map { |kv| [kv.key, kv.value] }
         try agrees(
           picked.id,
           picked.logprob,

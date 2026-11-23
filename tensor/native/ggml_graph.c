@@ -140,6 +140,9 @@ struct device_state {
   struct entry *planned;
 };
 
+/* Lock order: the device lock (1), then cache_lock (2), then the deferred list's lock (3). Pins and the pin count of an
+   entry are under cache_lock alone; the memory of a tensor that the last holder lets go of is queued (level 3) and freed at
+   the next hold of the device lock. */
 CC_LOCK_LEVEL(2) CC_NO_SYSCALL_UNDER() static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct entry *cache[MAX_ENTRIES];
 static int64_t compile_count = 0, tick = 0;
