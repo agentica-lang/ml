@@ -30,6 +30,18 @@ A step takes the keys and values of the cache it replaces (`spare`) and writes t
 
 Every difference is inside the run-to-run noise of this machine (a few percent, 20 percent for es-hola on the CPU). The allocation of 24 small tensors a step was already cheap, as the earlier table said (0.02 to 0.7 ms); the change is kept for what it fixes, not for speed: the tensors a run reads are held until it ends, and the cache never takes a decoder step's graph out from under it. The device is still the cost.
 
+### With the timestamp rules on the device
+
+The default, `Options.timestamps` true, applied Whisper's timestamp rules on the host over the 51,865 logits of every step. They now run in the step's graph (`Asr.scored`, from four numbers per step, `Greedy.state`), so the default path reads an id and a log-probability like the one without timestamps. `Asr.step` and `Greedy.allowed` stay as the reference, and a test compares the graph with them after each kind of history. Whole transcriptions with timestamps, `bench_transcribe.agc ... stamps`, median of 5 runs (medium 2), ml `ba20280`'s parent (`d688a31`, #81) against this branch in one session:
+
+| RTF | jfk before | jfk after | es-hola before | es-hola after |
+|---|---|---|---|---|
+| tiny ggml CPU | 0.367 | 0.318 | 1.055 | 0.935 |
+| tiny ggml Vulkan | 0.429 | 0.328 | 1.122 | 0.878 |
+| medium ggml Vulkan | 2.67 | 2.54 | 7.60 | 7.39 |
+
+The machine was slower in that session than in the ones above, so compare the two columns, not the tables. Tokens, text and `avg_logprob` are those of the Hugging Face goldens on ggml CPU and Vulkan for the three cases with timestamps.
+
 The real-time factor is the run time over the clip length, so lower is better. The load is the time from the file to a model ready to transcribe.
 
 | Row | RTF jfk | RTF es-hola | Load | Peak memory | Tokens against Hugging Face |
