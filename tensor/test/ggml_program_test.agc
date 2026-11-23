@@ -5,6 +5,8 @@
 ## Without the ggml module the ggml checks pass by asserting nothing, unless `TENSOR_REQUIRE_GGML` is set (CI sets it),
 ## and then they fail.
 
+import Ggml from "../src/ggml"
+import GgmlRaw from "../src/ggml_native"
 import Lower from "../src/lower"
 import Tensor from "../tensor"
 import Trace from "../trace"
@@ -321,4 +323,139 @@ def test_outputs_are_written_into_the_tensors_given() -> Result[Void]
   end
 
   refused(Trace.run(compiled, args, [some(args[0])]), "output 0")
+end
+
+## 33 compiled functions of other shapes, all pinned: the 33rd finds no slot to pin and still compiles and runs, as an
+## ordinary graph.
+def test_more_pins_than_slots_still_compile_and_run() -> Result[Void]
+  return ok() if !try present()
+
+  made: List[Trace.Compiled] = []
+  for k in 2...35
+    made = made.push(try Trace.compile(specs_of(try pair(CPU, 1, k)), counted("many")))
+  end
+
+  for i in 0...made.size
+    got = try Trace.run(made[i], try pair(CPU, 2, 2 + i))
+    want = try Trace.eval_many(try pair(REF, 2, 2 + i), counted("many-reference"))
+    g = try gap(got[0], want[0])
+    try Test.assert(g < 0.00001, "function #{i} differs from the reference by #{g}")
+  end
+
+  for c in made
+    Trace.close(c)
+  end
+
+  ok()
+end
+
+## The pin belongs to the task that compiled: once it ends, the graph can be evicted and a run builds it again.
+def test_a_pin_ends_with_its_task() -> Result[Void]
+  return ok() if !try present()
+
+  specs = specs_of(try pair(CPU, 1, 11))
+  owner = Task.spawn do Trace.compile(specs, counted("owner")) end
+  compiled = try Task.await(owner)
+  for k in 300...340
+    try ramp(k)
+  end
+
+  before = try Lower.compiles()
+  _ = try Trace.run(compiled, try pair(CPU, 2, 11))
+  Test.eq(try Lower.compiles(), before + 1)
+end
+
+## Closing a tensor after it is bound, even in the middle of the run, leaves the run its memory.
+def test_a_tensor_closed_after_the_bind_still_serves_the_run() -> Result[Void]
+  return ok() if !try present()
+
+  args = try pair(CPU, 1, 12)
+  compiled = try Trace.compile(specs_of(args), counted("raw"))
+  want = try values((try Trace.run(compiled, args))[0])
+  p = compiled.program.unwrap!
+  got: Result[List[Float]] = Native.arena do
+    code = try Ggml.code_of(p.device, "test")
+    lease = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1, p.keep)
+    for i in 0...p.leaves.size
+      try GgmlRaw.bind(lease, i, try Ggml.handle_of(args[p.leaves[i].input]))
+    end
+
+    out = try GgmlRaw.output(lease, 0, false)
+    Native.close(try Ggml.handle_of(args[0]))
+    Native.close(try Ggml.handle_of(args[1]))
+    try GgmlRaw.run(lease, p.fills)
+    result = Ggml.tensor_of(p.device, p.shapes[0], p.dtypes[0], out)
+    xs = try values(result)
+    Native.close(lease)
+    ok(xs)
+  end
+
+  have = try got
+  try Test.eq(have.size, want.size)
+  for i in 0...have.size
+    try Test.assert((have[i] - want[i]).abs < TOL, "value #{i}: #{have[i]}, wanted #{want[i]}")
+  end
+
+  ok()
+end
+
+## An I32 output written into a tensor that its owner closes before the run: the copy back still has its target.
+def test_an_i32_output_into_a_closed_tensor_does_not_crash() -> Result[Void]
+  return ok() if !try present()
+
+  x = try Tensor.from_list((0...6).map { |i| Tensor.Values.Int(i) }, [6], Tensor.Dtype.I32, CPU)
+  compiled = try Trace.compile(specs_of([x]), ->(a: List[Tensor.Tensor]) { ok([try Tensor.reshape(a[0], [2, 3])]) })
+
+  p = compiled.program.unwrap!
+  target = try Tensor.zeros([2, 3], Tensor.Dtype.I32, CPU)
+  run: Result[Void] = Native.arena do
+    code = try Ggml.code_of(p.device, "test")
+    lease = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1, p.keep)
+    for i in 0...p.leaves.size
+      try GgmlRaw.bind(lease, i, try Ggml.handle_of(x))
+    end
+
+    try GgmlRaw.output_into(lease, 0, try Ggml.handle_of(target))
+    Native.close(try Ggml.handle_of(target))
+    try GgmlRaw.run(lease, p.fills)
+    Native.close(lease)
+    ok()
+  end
+
+  run
+end
+
+## What `into` refuses, each with an error that names the output.
+def test_into_refuses_what_cannot_take_an_output() -> Result[Void]
+  return ok() if !try present()
+
+  args = try pair(CPU, 1, 5)
+  compiled = try Trace.compile(specs_of(args), counted("into-refusals"))
+  spare = try Tensor.zeros([3, 5], Tensor.Dtype.F32, CPU)
+  try refused(Trace.run(compiled, args, [some(try Tensor.zeros([3, 5], Tensor.Dtype.I32, CPU))]), "output 0")
+  try refused(Trace.run(compiled, args, [some(try Tensor.zeros([3, 5], Tensor.Dtype.F32, REF))]), "output 0")
+  try refused(Trace.run(compiled, args, [some(try Tensor.zeros([5, 3], Tensor.Dtype.F32, CPU))]), "output 0")
+  try refused(Trace.run(compiled, args, [some(spare), some(spare)]), "one entry per output")
+  try refused(Trace.run(compiled, args, [some(args[0])]), "an input")
+  closed = try Tensor.zeros([3, 5], Tensor.Dtype.F32, CPU)
+  Native.close(try Ggml.handle_of(closed))
+  try refused(Trace.run(compiled, args, [some(closed)]), "closed")
+  reference = try Trace.compile(specs_of(try pair(REF, 1, 5)), counted("into-reference"))
+  try refused(Trace.run(reference, try pair(REF, 1, 5), [some(spare)]), "ggml")
+
+  weight = try floats(uniform(15, 7), [3, 5], CPU)
+  fixed = try Trace.compile(
+    specs_of([args[0]]),
+    ->(a: List[Tensor.Tensor]) { ok([try Tensor.add(a[0], Trace.constant(weight))]) },
+  )
+
+  try refused(Trace.run(fixed, [args[0]], [some(weight)]), "an input")
+  twice = try Trace.compile(
+    specs_of([args[0]]),
+    ->(a: List[Tensor.Tensor]) { ok([try Tensor.add(a[0], a[0]), try Tensor.mul(a[0], a[0])]) },
+  )
+
+  try refused(Trace.run(twice, [args[0]], [some(spare), some(spare)]), "another output")
+  got = try Trace.run(compiled, args, [some(spare)])
+  Test.assert(try gap(got[0], spare) == 0.0, "an accepted output was not written")
 end

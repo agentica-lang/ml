@@ -4,6 +4,7 @@
 
 import Asr from "../asr"
 import Greedy from "../greedy"
+import Ggml from "pkg/tensor/src/ggml"
 import Lower from "pkg/tensor/src/lower"
 import Mel from "../mel"
 import Tensor from "pkg/tensor/tensor"
@@ -235,6 +236,37 @@ def test_step_pick_matches_greedy_over_the_logits() -> Result[Void]
 
         emitted = emitted.push(picked.id)
       end
+    end
+
+    ok()
+  end
+end
+
+## A step writes its cache into `spare` when the capacity is the same (the tensors stay open and the logits are the same as
+## without it), and closes `spare` when the capacity grows.
+def test_a_spare_cache_is_reused_at_the_same_capacity_and_closed_at_a_new_one() -> Result[Void]
+  with_fixtures do |dir|
+    for backend in try ggml_backends()
+      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      audio = try Asr.encode(m, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
+      cache = try Asr.listen(m, audio)
+      older = (try Asr.step(m, cache, [5, 6, 4])).cache
+      newer = (try Asr.step(m, older, [1])).cache
+      spare = older.own.flat_map { |kv| [kv.key, kv.value] }
+      plain = try Asr.step(m, newer, [2])
+      reused = try Asr.step(m, newer, [2], spare)
+      try Test.eq(reused.logits, plain.logits)
+      try Test.assert(!Native.closed?(try Ggml.handle_of(spare[0])), "a spare of the same capacity was closed")
+      try Test.eq(Native.closed?(try Ggml.handle_of(reused.cache.own[0].key)), false)
+
+      grown = reused.cache
+      while grown.length < 8
+        grown = (try Asr.step(m, grown, [3])).cache
+      end
+
+      old = newer.own.flat_map { |kv| [kv.key, kv.value] }
+      _ = try Asr.step(m, grown, [3], old)
+      try Test.assert(Native.closed?(try Ggml.handle_of(old[0])), "a spare of another capacity stayed open")
     end
 
     ok()

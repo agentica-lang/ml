@@ -157,13 +157,15 @@ def spec_of(t: Types.Tensor) -> Spec = Spec(shape: t.shape, dtype: t.dtype, back
 
 ## Traces `f` once over inputs of `specs` and lowers it, so that `run` neither
 ## traces nor plans. On `Ggml` the function is one ggml graph, built now and
-## pinned in the structural cache of the process (32 graphs): the cache never
-## evicts it while the result lives, so `run` always finds it, and sends the
-## nodes again only when another run holds it at that moment. The pin belongs
-## to the task that compiles, like any native resource: it ends with that
-## task or at `close`, and the graph then stays in the cache as any other. On
-## the other backends the result is the traced graph, evaluated node by node
-## on every run.
+## pinned in the structural cache of the process (32 graphs), so that the cache
+## does not evict it while the pin lives: `run` finds it, and sends the nodes
+## again only when another run holds it at that moment. The pin belongs to the
+## task that compiles, like any native resource: it ends with that task or at
+## `close`, and the graph then stays in the cache as any other, evictable. When
+## no slot is free (every graph is in use or pinned), nothing is pinned and the
+## function runs as an ordinary graph: the compile does not fail. On the other
+## backends the result is the traced graph, evaluated node by node on every
+## run.
 ##
 ## What `f` reads from outside the inputs enters through `constant`, and is
 ## fixed: the same tensors, bound again on every run. A run holds their memory

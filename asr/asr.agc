@@ -265,6 +265,11 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
 
   audio = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.layer_norm(model.encoder_norm, x) })
   close([h])
+  case blocks
+    some(b) -> Trace.close(b)
+    none -> nil
+  end
+
   ok(audio)
 end
 
@@ -321,9 +326,14 @@ def step(m: Model, cache: Cache, ids: List[Int], spare: List[Tensor.Tensor] = []
   backend = Tensor.backend(m.tokens.table)
   if compiled(backend)
     a = try advance(m, cache, ids, none, spare)
-    logits = try System.Profile.measure("ml.readback") do floats(a.first) end
+    read = System.Profile.measure("ml.readback") do floats(a.first) end
     close([a.first])
-    return ok(Stepped(logits: logits, cache: a.cache))
+    case read
+      ok(logits) -> return ok(Stepped(logits: logits, cache: a.cache))
+      error(e) ->
+        close(kept(a.cache))
+        return error(e)
+    end
   end
 
   close(spare)
@@ -534,7 +544,7 @@ def decide(
       picked = next
     end
 
-    close(kept(picked.cache))
+    finish(picked.cache)
     close(spent)
     close([first, rest])
     return ok(Decided(tokens: emitted, logprob: logprob))
@@ -553,9 +563,18 @@ def decide(
     stepped = next
   end
 
-  close(kept(stepped.cache))
+  finish(stepped.cache)
   close(spent)
   ok(Decided(tokens: emitted, logprob: logprob))
+end
+
+## Closes the tensors of `cache` and ends the pins of its compiled steps, which the cache's task would end at its own
+## end otherwise.
+def finish(cache: Cache) -> Void
+  close(kept(cache))
+  for key in cache.graphs.keys
+    Trace.close(cache.graphs[key])
+  end
 end
 
 ## `r`, closing `held` first when it is an error.
@@ -917,7 +936,7 @@ def advance(
     ok([at, try Tensor.from_list(where, [n], Tensor.Dtype.I32, backend)])
   end
 
-  fed = try made
+  fed = try guard(made, spare)
   head = 2
   picking = false
   case mask
@@ -961,7 +980,8 @@ def advance(
     into: List[Optional[Tensor.Tensor]] = []
     if reuse
       lead: List[Optional[Tensor.Tensor]] = [none]
-      into = lead + spare.map { |t| some(t) }
+      layers = spare.size / 2
+      into = lead + (0...layers).map { |i| some(spare[2 * i]) } + (0...layers).map { |i| some(spare[2 * i + 1]) }
     end
 
     got = Trace.run(graphs[key], fed + step_inputs(cache), into)

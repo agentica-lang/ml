@@ -291,18 +291,26 @@ end
 - **No copies in or out.** For one run only, an `F32` leaf points at the
   caller's tensor and an `F32` output at a fresh tensor the run writes (or at
   one that exists, `Trace.run`'s `into`); after the run the graph points at
-  nothing again, so the cache keeps no caller tensor alive. A tensor's memory
-  is a refcounted `tg_storage`: the handle holds one count, and every bind
-  takes another until the lease ends, so closing a handle in the middle of a
-  run frees the memory after the run, never under it.
+  nothing again, so the cache keeps no caller tensor alive. Only an `I32` leaf
+  or output is copied, converted through a buffer of the graph's own. A cached
+  graph owns its fills and its finiteness checks; the intermediates live in
+  one allocator per device that every graph shares, re-planned when another
+  graph ran last. That allocator keeps the largest buffer any graph needed
+  until the process ends.
+- **Tensor memory.** It is a refcounted `tg_storage`: the handle holds one
+  count, and a bind takes another. The graph lets go of its counts when the
+  run ends, or at the end of the lease if the run never happens (a failed
+  bind, say). So closing a handle in the middle of a run frees the memory
+  after the run, never under it. An `I32` output in `into` keeps the tensor it
+  copies back to by the same count. `output_into` refuses a tensor that is
+  another port of the same run (an input, a constant or another output).
 - **Pins.** `Trace.compile` pins its graph (`ggml_pin`, a `Pin` resource):
   `free_slot` skips an entry with `pins > 0`, so eviction never takes it. The
-  count is under `cache_lock` alone; the free hook of a `Pin` takes that lock
-  and never waits for the device lock. Only an `I32` leaf or output is copied, converted through a
-  buffer of the graph's own. A cached graph owns its fills and its finiteness
-  checks; the intermediates live in one allocator per device that every
-  graph shares, re-planned when another graph ran last. That allocator keeps
-  the largest buffer any graph needed until the process ends.
+  count is under `cache_lock` alone, and the free hook of a `Pin` takes that
+  lock and never waits for the device lock. A graph that has no slot (all 32
+  are in use or pinned) gets a pin that holds nothing and runs as an ordinary
+  graph, so a compile never fails for want of a slot. The pin ends with the
+  task that made it, or at `Trace.close`.
 - **Locks.** Builds, runs and Vulkan buffer operations hold one device lock,
   so CPU and Vulkan graphs run one at a time (enough for one iGPU; a lock per
   device can come later). The cache's own lock is held briefly, and a free

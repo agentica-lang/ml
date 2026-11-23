@@ -202,7 +202,9 @@ def execute(
             )
           end
 
-          try GgmlRaw.output_into(lease, i, try Ggml.handle_of(t))
+          held = try Ggml.handle_of(t)
+          return error("#{op}: output #{i}, a tensor given in `into`, is closed") if Native.closed?(held)
+          try GgmlRaw.output_into(lease, i, held)
           out = out.push(t)
         none ->
           h = try GgmlRaw.output(lease, i, p.dtypes[i] == Types.Dtype.I32)
