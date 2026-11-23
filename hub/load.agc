@@ -55,17 +55,14 @@ end
 
 def dense(c: Hub.Checkpoint, prefix: String, backend: Tensor.Backend) -> Result[Nn.Dense]
   w = try weight(c, "#{prefix}.weight", 2, backend)
-  b: Optional[Tensor.Tensor] = none
-  if Hub.has?(c, "#{prefix}.bias")
-    bias = try weight(c, "#{prefix}.bias", 1, backend)
-    if Tensor.shape(bias)[0] != Tensor.shape(w)[0]
-      return error("#{prefix}.bias: needs [#{Tensor.shape(w)[0]}], got #{Tensor.shape(bias)}")
-    end
+  ok(Nn.Dense(w: try Tensor.transpose(w), b: try bias(c, prefix, Tensor.shape(w)[0], backend)))
+end
 
-    b = some(bias)
-  end
-
-  ok(Nn.Dense(w: try Tensor.transpose(w), b: b))
+## A conv layer: `{prefix}.weight` `[out, in, kernel]`, as stored; `{prefix}.bias` if present.
+def conv1d(c: Hub.Checkpoint, prefix: String, stride: Int, padding: Int, backend: Tensor.Backend) -> Result[Nn.Conv1d]
+  w = try weight(c, "#{prefix}.weight", 3, backend)
+  b = try bias(c, prefix, Tensor.shape(w)[0], backend)
+  ok(Nn.Conv1d(weight: w, bias: b, stride: stride, padding: padding))
 end
 
 def layer_norm(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Backend) -> Result[Nn.LayerNorm]
@@ -137,6 +134,14 @@ def decoder_block(
 end
 
 private
+
+## `{prefix}.bias` of `[rows]`, or `none` when the checkpoint has none.
+def bias(c: Hub.Checkpoint, prefix: String, rows: Int, backend: Tensor.Backend) -> Result[Optional[Tensor.Tensor]]
+  return ok(none) if not Hub.has?(c, "#{prefix}.bias")
+  b = try weight(c, "#{prefix}.bias", 1, backend)
+  return error("#{prefix}.bias: needs [#{rows}], got #{Tensor.shape(b)}") if Tensor.shape(b)[0] != rows
+  ok(some(b))
+end
 
 ## The four projections of one attention, by prefix.
 def attention(

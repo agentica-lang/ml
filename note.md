@@ -1,9 +1,10 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-23. `main` en `5c02eb7` (reglas de backward mergeadas, #24).
-Abierto: el decoder de `nn/` (#26). Este fichero es el parte de estado: lo
-hecho, lo que quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
-`roadmap.md`; el contrato del tensor, en `tensor/DESIGN.md`.
+Fecha: 2026-11-23. `main` en `c9e23fb` (decoder de `nn/` mergeado, #26).
+Abierto: Whisper vía B, primer PR (`asr/`, rama `asr`). Este fichero es el
+parte de estado: lo hecho, lo que quedó a medias al parar, y lo planeado. El
+plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
+`tensor/DESIGN.md`.
 
 ## 1. Hecho (mergeado en `main`)
 
@@ -20,6 +21,7 @@ hecho, lo que quedó a medias al parar, y lo planeado. El plan de ejecución sig
 | `nn/` primer PR: capas funcionales (`dense`, `layer_norm`, `embedding`, `attention`, `mlp`, `encoder_block`), init con semilla, solo forward; `dense` y `mlp` relu diferenciables vía `Trace` | `nn/` | #20 |
 | `train/` primer PR: `Loss.mse`, `Loss.binary_cross_entropy`, `Optim` (SGD, Adam) puros, `Train.fit` sobre `Trace.value_and_grad`; la raíz pasa a ser un workspace | `train/`, `agentica.toml` | #21 |
 | `tensor/`: `stop_grad` y reglas de backward de `sqrt`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `max`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `gather`; `softmax`, `layer_norm`, atención y `embedding` diferenciables; `Loss.cross_entropy` | `tensor/`, `train/` | #24 |
+| `nn/` decoder: `causal_mask`, `DecoderBlock` pre-norm como Whisper; `Load.decoder_block` en `hub/` | `nn/`, `hub/` | #26 |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
 | Docs: `tensor/DESIGN.md` (contrato, sin fases), `roadmap.md` (orden e hitos), `README.md`, `.gitattributes`, CI matricial | raíz | #3, #6 |
@@ -46,11 +48,12 @@ hecho, lo que quedó a medias al parar, y lo planeado. El plan de ejecución sig
 
 ## 2. En progreso (parado a propósito)
 
-- **Decoder de `nn/`** (rama `decoder`, PR #26): `Nn.causal_mask` (sesgo
-  aditivo `[t, t]` hecho con `arange`, `lt` y `where`), `DecoderBlock` y
-  `Nn.decoder_block(p, x, memory)` pre-norm como Whisper (self-attention
-  causal, cross-attention con `Nn.attention` sobre la salida del encoder,
-  MLP), y `Load.decoder_block` en `hub/` con los nombres de Whisper.
+- **Whisper vía B, primer PR** (rama `asr`): el miembro `asr/` con el
+  forward de Whisper (stem conv, encoder, decoder, logits atados) cargado
+  con los nombres de HF y el `config.json`; `Nn.Conv1d` y `Load.conv1d`.
+  Solo referencia: en libtorch falta `gelu_tanh_approx`. La deriva de la
+  GELU tanh frente a la erf, medida en el modelo de test: 1.7e-4 (encoder),
+  3.8e-5 (logits).
 
 Ningún subagente sigue corriendo.
 
@@ -59,28 +62,30 @@ Ningún subagente sigue corriendo.
 1. **`grad`**: faltan reglas para `pow`, `clamp`, `batch_matmul`,
    `to_dtype` entre floats, `conv1d` y `avg_pool1d`, y el scatter-add de
    `gather` (ml#25).
-2. **`nn/`**: decoder en #26. Siguiente: caché KV (con ella, un `mask`
-   opcional en `decoder_block` para padding) y bucle de decodificación
-   (greedy sobre `decoder_block`), luego conv, `rms_norm`, y `gelu` en
-   libtorch (`gelu_tanh_approx`, en `tensor/`).
-3. **`train/`**: mergeado (#21); softmax cross-entropy mergeado (#24). Después:
+2. **`nn/`**: decoder mergeado (#26), conv en `asr`. Siguiente: caché KV
+   (con ella, un `mask` opcional en `decoder_block` para padding), luego
+   `rms_norm`, y `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
+3. **`asr/`** (Whisper vía B), después del primer PR: frontend log-mel,
+   tokenizer, decodificación greedy y beam (sobre la caché KV), y la descarga
+   de pesos reales (con `hub/`). Fuera del primer PR por YAGNI.
+4. **`train/`**: mergeado (#21); softmax cross-entropy mergeado (#24). Después:
    shuffling, schedules, y aplanar structs de capas (pytrees)
    cuando un modelo lo pida.
-4. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
+5. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
    época del XOR en la referencia).
-5. **`hub/`**: primer PR mergeado (#23). Falta la descarga HF, con `http-client`
+6. **`hub/`**: primer PR mergeado (#23). Falta la descarga HF, con `http-client`
    `stream()` (redirects y retry incluidos), **nunca** `bond` (es solo
    servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
    Resume/progreso/sha256 hay que construirlos.
-6. **Batching de grafo / JIT**: justificado por los 2 ms por dispatch. Es
+7. **Batching de grafo / JIT**: justificado por los 2 ms por dispatch. Es
    el camino para que la iGPU sirva, y el mismo mecanismo que `xla/`
    (PJRT) necesitaría.
-7. **Backend Vulkan/iGPU** como backend real, ya con batching; requiere
+8. **Backend Vulkan/iGPU** como backend real, ya con batching; requiere
    añadir una variante a `Device` (hoy `Cpu | Cuda(Int)`).
-8. **`candle/`** (eager, Rust) y/o **ggml** como backend general.
-9. **dGPU CUDA**: build CUDA de libtorch, `Device.Cuda(Int)`, `to_device`,
+9. **`candle/`** (eager, Rust) y/o **ggml** como backend general.
+10. **dGPU CUDA**: build CUDA de libtorch, `Device.Cuda(Int)`, `to_device`,
    y un job de CI no requerido (no se puede bajar en cada push).
-10. Cuando cierre **#1918**: evaluar volver a la opción **A** (tabla de
+11. Cuando cierre **#1918**: evaluar volver a la opción **A** (tabla de
     `Fn` por backend), que deja `tensor/` sin nativo. Con un solo backend
     no compensa; con dos o más, sí.
 
