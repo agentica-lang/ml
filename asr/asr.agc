@@ -128,6 +128,14 @@ struct Picked
   cache: Cache
 end
 
+## The timestamp rules of a `step_pick`: `rules`, and `state`, `Greedy.state` of the tokens emitted so far as an
+## `F32` tensor of 4 on the step's backend, which the caller closes. The rules of one cache must not change between its
+## steps.
+struct Stamps
+  rules: Greedy.Rules
+  state: Tensor.Tensor
+end
+
 ## What one compiled-backend step gives: its first output (the logits, or the
 ## id and its log-probability) and the cache after it.
 struct Advanced
@@ -325,7 +333,7 @@ def step(m: Model, cache: Cache, ids: List[Int], spare: List[Tensor.Tensor] = []
   try guard(checked(m, cache, ids), spare)
   backend = Tensor.backend(m.tokens.table)
   if compiled(backend)
-    a = try advance(m, cache, ids, none, spare)
+    a = try advance(m, cache, ids, none, spare, none)
     read = System.Profile.measure("ml.readback") do floats(a.first) end
     close([a.first])
     case read
@@ -356,13 +364,15 @@ end
 ## `step` for greedy decoding: the id with the largest logit once `mask` (`[vocab_size]`, `F32`: 0 for a token that
 ## may be emitted, `Greedy.FORBIDDEN` for one that may not) is added, the first one on a tie, and its log-probability
 ## under the masked logits. On `Ggml` the choice runs in the step's graph, so only those two numbers leave the device,
-## not the logits. `spare` is as for `step`.
+## not the logits. With `stamps` the timestamp rules are applied too (`Greedy.allowed` with `timestamps`), in the graph.
+## `spare` is as for `step`.
 def step_pick(
   m: Model,
   cache: Cache,
   ids: List[Int],
   mask: Tensor.Tensor,
   spare: List[Tensor.Tensor] = [],
+  stamps: Optional[Stamps] = none,
 ) -> Result[Picked]
   try guard(checked(m, cache, ids), spare)
   backend = Tensor.backend(m.tokens.table)
@@ -373,7 +383,7 @@ def step_pick(
   end
 
   if compiled(backend)
-    a = try advance(m, cache, ids, some(mask), spare)
+    a = try advance(m, cache, ids, some(mask), spare, stamps)
     read = System.Profile.measure("ml.readback") do floats(a.first) end
     close([a.first])
     case read
@@ -394,7 +404,7 @@ def step_pick(
   close(spare)
   grown: Result[Grown] = Native.arena do
     f = try forward(m, cache, try ids_of(ids, backend))
-    pair = try floats(try picked(f.logits, mask))
+    pair = try floats(try picked(try scored(f.logits, mask, stamps)))
     ok(Grown(logits: pair, own: f.own))
   end
 
@@ -514,9 +524,9 @@ def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Optio
   )
 end
 
-## Greedy decoding of up to `limit` ids after `prompt`, with the rules `rules`. Without timestamp rules on `Ggml` the
-## choice is made in each step's graph (`step_pick`), and only an id and a log-probability leave the device; with
-## them, or elsewhere, the logits come back to `Greedy`.
+## Greedy decoding of up to `limit` ids after `prompt`, with the rules `rules`. On `Ggml` the choice, timestamp rules
+## included, is made in each step's graph (`step_pick`), and only an id and a log-probability leave the device;
+## elsewhere the logits come back to `Greedy`.
 def decide(
   m: Model,
   tok: Tokenizer.Tokenizer,
@@ -529,17 +539,21 @@ def decide(
   emitted: List[Int] = []
   logprob = 0.0
   spent: List[Tensor.Tensor] = []
-  if compiled(backend) and not rules.timestamps
+  if compiled(backend)
     size = m.config.vocab_size
     first = try masked(Greedy.mask(rules, size, true), backend)
     rest = try masked(Greedy.mask(rules, size, false), backend)
-    picked = try guard(step_pick(m, cache, prompt, first), [first, rest])
+    picked = try guard(pick_next(m, rules, cache, prompt, first, [], emitted), [first, rest])
     while emitted.size < limit
       logprob += picked.logprob
       break if picked.id == tok.eot
       emitted = emitted.push(picked.id)
       break if emitted.size == limit
-      next = try guard(step_pick(m, picked.cache, [picked.id], rest, spent), kept(picked.cache) + [first, rest])
+      next = try guard(
+        pick_next(m, rules, picked.cache, [picked.id], rest, spent, emitted),
+        kept(picked.cache) + [first, rest],
+      )
+
       spent = kept(picked.cache)
       picked = next
     end
@@ -575,6 +589,23 @@ def finish(cache: Cache) -> Void
   for key in cache.graphs.keys
     Trace.close(cache.graphs[key])
   end
+end
+
+## `step_pick` with the timestamp rules of `rules`, if it has them, over the tokens `emitted` so far.
+def pick_next(
+  m: Model,
+  rules: Greedy.Rules,
+  cache: Cache,
+  ids: List[Int],
+  mask: Tensor.Tensor,
+  spare: List[Tensor.Tensor],
+  emitted: List[Int],
+) -> Result[Picked]
+  return step_pick(m, cache, ids, mask, spare) if not rules.timestamps
+  state = try guard(masked(Greedy.state(rules, emitted), Tensor.backend(mask)), spare)
+  got = step_pick(m, cache, ids, mask, spare, some(Stamps(rules: rules, state: state)))
+  close([state])
+  got
 end
 
 ## `r`, closing `held` first when it is an error.
@@ -745,19 +776,26 @@ def forward(m: Model, cache: Cache, ids: Tensor.Tensor, slots: Optional[Slots] =
   ok(Forward(logits: logits, keys: keys, values: values, own: own))
 end
 
-## A step as one graph: the logits (or, when `picking`, the pick of `xs[2]`'s mask), then the keys of every block,
-## then the values.
+## A step as one graph: the logits (or, when `picking`, the pick of `xs[2]`'s mask, with the timestamp rules `stamps`
+## over `xs[3]`'s state), then the keys of every block, then the values.
 def stepped_graph(
   m: Model,
   cache: Cache,
   xs: List[Tensor.Tensor],
   room: Int,
   picking: Bool,
+  stamps: Optional[Greedy.Rules],
 ) -> Result[List[Tensor.Tensor]]
   f = try forward(m, cache, xs[0], some(Slots(positions: xs[1], capacity: room)))
   head = f.logits
   if picking
-    head = try picked(f.logits, xs[2])
+    over: Optional[Stamps] = none
+    case stamps
+      some(r) -> over = some(Stamps(rules: r, state: xs[3]))
+      none -> nil
+    end
+
+    head = try picked(try scored(f.logits, xs[2], over))
   end
 
   ok([head] + f.own.map { |kv| kv.key } + f.own.map { |kv| kv.value })
@@ -927,6 +965,7 @@ def advance(
   ids: List[Int],
   mask: Optional[Tensor.Tensor],
   spare: List[Tensor.Tensor],
+  stamps: Optional[Stamps],
 ) -> Result[Advanced]
   n = ids.size
   backend = Tensor.backend(m.tokens.table)
@@ -939,11 +978,20 @@ def advance(
   fed = try guard(made, spare)
   head = 2
   picking = false
+  rules: Optional[Greedy.Rules] = none
   case mask
     some(t) ->
       fed = fed.push(t)
       head = 3
       picking = true
+    none -> nil
+  end
+
+  case stamps
+    some(st) ->
+      fed = fed.push(st.state)
+      head += 1
+      rules = some(st.rules)
     none -> nil
   end
 
@@ -956,12 +1004,12 @@ def advance(
   end
 
   if n == 1 and cache.length > 0
-    key = "#{Tensor.shape(cache.own[0].key)[1]} #{room} #{picking}"
+    key = "#{Tensor.shape(cache.own[0].key)[1]} #{room} #{picking} #{stamped(rules)}"
     if !graphs.has_key?(key)
       built = Trace.compile(
         (fed + step_inputs(cache)).map { |t| Trace.spec_of(t) },
         ->(xs: List[Tensor.Tensor]) {
-          stepped_graph(traced(m), cache_over(cache, xs.drop(head)), xs.take(head), room, picking)
+          stepped_graph(traced(m), cache_over(cache, xs.drop(head)), xs.take(head), room, picking, rules)
         },
       )
 
@@ -991,7 +1039,7 @@ def advance(
   else
     got = Trace.eval_many(
       fed,
-      ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), traced_cache(cache), xs, room, picking) },
+      ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), traced_cache(cache), xs, room, picking, rules) },
     )
   end
 
@@ -1012,14 +1060,80 @@ def fits(spare: List[Tensor.Tensor], cache: Cache, room: Int) -> Bool
   }
 end
 
-## The id and the log-probability of the likeliest token of `logits` once `mask` is added, as `[2]` floats (the id
-## is exact in F32 below 2^24): the first id of the maximum, found as `v` minus the largest of `v - id` over the
-## ids that hold it, and `log(sum(exp(x - max)))` for the log-probability of the maximum, which is its negative.
-def picked(logits: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Tensor.Tensor]
+## What identifies the timestamp rules in the key of a compiled step.
+def stamped(rules: Optional[Greedy.Rules]) -> String
+  case rules
+    some(r) -> "#{r.timestamp_begin} #{r.eot} #{r.max_initial}"
+    none -> "-"
+  end
+end
+
+## The scores a step picks from: `logits` with `mask` added, and with `stamps` Whisper's timestamp rules as
+## `Greedy.allowed` applies them, built from `Greedy.state`'s four numbers: the timestamps below the first one that may
+## come, all of them, the text tokens before `eot`, and (for the first token) the text tokens and the timestamps after
+## `max_initial` are forbidden; and when the timestamps together are likelier than the best text token, no text token
+## may come. A forbidden id adds `FORBIDDEN`, so the score is never above what the host's `FORBIDDEN` replaces.
+def scored(logits: Tensor.Tensor, mask: Tensor.Tensor, stamps: Optional[Stamps]) -> Result[Tensor.Tensor]
   v = Tensor.shape(mask)[0]
-  dtype = Tensor.dtype(logits)
-  backend = Tensor.backend(logits)
-  scores = try Tensor.add(try Tensor.reshape(logits, [v]), mask)
+  x = try Tensor.add(try Tensor.reshape(logits, [v]), mask)
+  case stamps
+    none -> ok(x)
+    some(st) ->
+      r = st.rules
+      dtype = Tensor.dtype(logits)
+      backend = Tensor.backend(logits)
+      ids = try Tensor.to_dtype(try Tensor.arange(0, v, 1, Tensor.Dtype.I32, backend), dtype)
+      one = try Tensor.full([v], Tensor.Values.Float(1.0), dtype, backend)
+      zero = try Tensor.full([v], Tensor.Values.Float(0.0), dtype, backend)
+      text = try below(ids, r.timestamp_begin)
+      stamp = try Tensor.sub(one, text)
+      early = try Tensor.to_dtype(try Tensor.lt(ids, try state_at(st.state, 0, v)), dtype)
+      late = try Tensor.sub(one, try below(ids, r.timestamp_begin + r.max_initial + 1))
+      banned = try Tensor.add(
+        try Tensor.add(try Tensor.mul(stamp, early), try Tensor.mul(stamp, try state_at(st.state, 1, v))),
+        try Tensor.add(
+          try Tensor.mul(try state_at(st.state, 2, v), try below(ids, r.eot)),
+          try Tensor.mul(try state_at(st.state, 3, v), try Tensor.add(text, late)),
+        ),
+      )
+
+      forbidden = try Tensor.full([v], Tensor.Values.Float(Greedy.FORBIDDEN), dtype, backend)
+      x = try Tensor.add(x, try Tensor.mul(try Tensor.to_dtype(try Tensor.lt(zero, banned), dtype), forbidden))
+      begin = r.timestamp_begin
+      spoken = try Tensor.slice(x, [0], [begin])
+      stamps_x = try Tensor.slice(x, [begin], [v])
+      top = try Tensor.max(stamps_x, some([0]), true)
+      sum = try Tensor.sum(
+        try Tensor.exp(try Tensor.sub(stamps_x, try Tensor.broadcast_to(top, [v - begin]))),
+        some([0]),
+        true,
+      )
+
+      together = try Tensor.add(top, try Tensor.log(sum))
+      likelier = try Tensor.to_dtype(try Tensor.lt(try Tensor.max(spoken, some([0]), true), together), dtype)
+      cut = try Tensor.mul(try Tensor.mul(try Tensor.broadcast_to(likelier, [v]), text), forbidden)
+      Tensor.add(x, cut)
+  end
+end
+
+## 1 where `ids` is below `n`, 0 elsewhere.
+def below(ids: Tensor.Tensor, n: Int) -> Result[Tensor.Tensor]
+  at = try Tensor.full(Tensor.shape(ids), Tensor.Values.Float(n.to_f), Tensor.dtype(ids), Tensor.backend(ids))
+  Tensor.to_dtype(try Tensor.lt(ids, at), Tensor.dtype(ids))
+end
+
+## Number `k` of `state`, repeated `v` times.
+def state_at(state: Tensor.Tensor, k: Int, v: Int) -> Result[Tensor.Tensor]
+  Tensor.broadcast_to(try Tensor.slice(state, [k], [k + 1]), [v])
+end
+
+## The id and the log-probability of the likeliest token of `scores`, as `[2]` floats (the id is exact in F32 below
+## 2^24): the first id of the maximum, found as `v` minus the largest of `v - id` over the ids that hold it, and
+## `log(sum(exp(x - max)))` for the log-probability of the maximum, which is its negative.
+def picked(scores: Tensor.Tensor) -> Result[Tensor.Tensor]
+  v = Tensor.shape(scores)[0]
+  dtype = Tensor.dtype(scores)
+  backend = Tensor.backend(scores)
   top = try Tensor.broadcast_to(try Tensor.max(scores, some([0]), true), [v])
   hit = try Tensor.to_dtype(try Tensor.eq(scores, top), dtype)
   ids = try Tensor.to_dtype(try Tensor.arange(0, v, 1, Tensor.Dtype.I32, backend), dtype)

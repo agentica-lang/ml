@@ -273,6 +273,48 @@ def test_a_spare_cache_is_reused_at_the_same_capacity_and_closed_at_a_new_one() 
   end
 end
 
+## The timestamp rules run in the graph: after every kind of history (nothing, a lone timestamp, a pair, text then a
+## timestamp, a timestamp then text, a pair then text) `step_pick` with `Asr.Stamps` gives the id and the log-probability
+## that `Greedy.allowed` gives over the logits of `step`.
+def test_step_pick_applies_the_timestamp_rules_in_the_graph() -> Result[Void]
+  with_fixtures do |dir|
+    rules = Greedy.Rules(
+      suppress: [0],
+      begin_suppress: [1],
+      eot: 1,
+      no_timestamps: 2,
+      timestamp_begin: 3,
+      timestamps: true,
+      max_initial: 2,
+    )
+
+    nothing: List[Int] = []
+    histories = [nothing, [3], [4, 5], [0, 3], [3, 0], [0, 3, 4], [3, 4, 0], [0, 0], [4, 4, 0, 5], [6]]
+    for backend in [REF] + try ggml_backends()
+      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      audio = try Asr.encode(m, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
+      cache = try Asr.listen(m, audio)
+      start = try Asr.step(m, cache, [5, 6, 4])
+      for i in 0...histories.size
+        history = histories[i]
+        feed = [(i + 4) % 7]
+        plain = try Asr.step(m, start.cache, feed)
+        first = try masked(Greedy.mask(rules, m.config.vocab_size, history.empty?), backend)
+        state = try masked(Greedy.state(rules, history), backend)
+        got = try Asr.step_pick(m, start.cache, feed, first, [], some(Asr.Stamps(rules: rules, state: state)))
+        try agrees(
+          got.id,
+          got.logprob,
+          Greedy.allowed(rules, plain.logits, history),
+          "history #{history} on #{backend}",
+        )
+      end
+    end
+
+    ok()
+  end
+end
+
 def masked(values: List[Float], backend: Tensor.Backend) -> Result[Tensor.Tensor] = f32(values, [values.size], backend)
 
 ## `id` and `logprob` are the first largest of `allowed` and its log-probability.

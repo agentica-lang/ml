@@ -77,15 +77,38 @@ def allowed(r: Rules, logits: List[Float], emitted: List[Int]) -> List[Float]
   timestamp_rules(r, out, emitted)
 end
 
-## The scores to add to a step's logits so that `allowed` without timestamp rules is the sum: 0 for an id that may be
-## emitted and `FORBIDDEN` for one that may not. `first` is for the first token after the prompt.
+## The scores to add to a step's logits so that `allowed` is the sum, but for the rules that depend on the tokens so
+## far, which are `state`'s: 0 for an id that may be emitted and `FORBIDDEN` for one that may not. `first` is for the
+## first token after the prompt. With timestamp rules `<|notimestamps|>` is forbidden too.
 def mask(r: Rules, size: Int, first: Bool) -> List[Float]
   out = List.repeat(0.0, size)
   if first
     out = forbid(out, r.begin_suppress)
   end
 
-  forbid(out, r.suppress)
+  out = forbid(out, r.suppress)
+  return out if not r.timestamps
+  forbid(out, [r.no_timestamps])
+end
+
+## What the timestamp rules read of the tokens `emitted` so far, as four floats a graph can take
+## (`Asr.picked`): the first id of a timestamp that may still come (`timestamp_begin` when any may), 1 when no
+## timestamp may come (the last two tokens are timestamps), 1 when no text token
+## may come (the last one is a timestamp that opens a pair), and 1 for the first token.
+def state(r: Rules, emitted: List[Int]) -> List[Float]
+  n = emitted.size
+  last = n >= 1 and emitted[n - 1] >= r.timestamp_begin
+  penultimate = n < 2 or emitted[n - 2] >= r.timestamp_begin
+  floor = r.timestamp_begin
+  stamps = emitted.select { |id| id >= r.timestamp_begin }
+  if not stamps.empty?
+    floor = stamps.last
+    if not last or penultimate
+      floor += 1
+    end
+  end
+
+  [floor.to_f, flag(last and penultimate), flag(last and not penultimate), flag(n == 0)]
 end
 
 ## The id of the largest logit; the first one on a tie.
@@ -190,6 +213,11 @@ def log_sum_exp(xs: List[Float]) -> Float
   end
 
   top + Math.log(sum)
+end
+
+def flag(on: Bool) -> Float
+  return 1.0 if on
+  0.0
 end
 
 def forbid(logits: List[Float], ids: List[Int]) -> List[Float]
