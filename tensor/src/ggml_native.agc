@@ -38,6 +38,10 @@ extern module "ggml"
   ## of the file `path`. C reads the file itself, so no value crosses as a
   ## list; a range past the end of the file is an error.
   compute def load(device: Int, path: String, offset: Int, shape: List[Int], format: Int) -> Result[TensorHandle]
+  ## The same from `data`, the bytes of the range that Agentica read
+  ## (`TENSOR_LOAD=agentica`): the call reads them in place and widens them into
+  ## the buffer. `data` must be exactly the range, or the call is an error.
+  compute def from_bytes(device: Int, data: Bytes, shape: List[Int], format: Int) -> Result[TensorHandle]
   ## A tensor of `shape` on `device` with every element `value`, filled in C,
   ## so a large fill never crosses as a list.
   compute def filled(device: Int, shape: List[Int], value: Float, int32: Bool) -> Result[TensorHandle]

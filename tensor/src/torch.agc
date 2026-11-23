@@ -41,6 +41,7 @@
 ## asked for, and nothing here claims it has one (`README.md`, "What is
 ## implemented").
 
+import FileRange from "file_range"
 import Raw from "native"
 import TorchDtypes from "torch_dtypes"
 import TorchShapes from "torch_shapes"
@@ -145,7 +146,8 @@ def from_list(
 end
 
 ## Creation: an `F32` tensor of `shape` from the floats of `format` at byte
-## `offset` of the file `path`, read by C into the tensor's own memory.
+## `offset` of the file `path`, read by C into the tensor's own memory; with
+## `TENSOR_LOAD=agentica` Agentica reads the range and C widens the bytes.
 def from_file(
   device: Types.Device,
   path: String,
@@ -154,6 +156,12 @@ def from_file(
   format: Types.FloatFormat,
 ) -> Result[Types.Tensor]
   _ = try ready(device, "from_file")
+  if FileRange.agentica_read?()
+    n = try Types.volume(shape)
+    bytes = try FileRange.read_range(path, offset, n * Types.file_width(format))
+    return one(device, Types.Dtype.F32, shape) do Raw.from_bytes(bytes, shape, Types.file_code(format)) end
+  end
+
   one(device, Types.Dtype.F32, shape) do Raw.load(path, offset, shape, Types.file_code(format)) end
 end
 

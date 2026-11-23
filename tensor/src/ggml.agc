@@ -17,6 +17,7 @@
 ##
 ## Lifetimes (§8): one `Native.arena` per call, as in `src/torch.agc`.
 
+import FileRange from "file_range"
 import GgmlRaw from "ggml_native"
 import Types from "types"
 
@@ -79,7 +80,8 @@ def from_list(
 end
 
 ## Creation: an `F32` tensor of `shape` from the floats of `format` at byte
-## `offset` of the file `path`, read by C; on Vulkan through one host copy.
+## `offset` of the file `path`, read by C; on Vulkan through one host copy. With
+## `TENSOR_LOAD=agentica` Agentica reads the range and C widens the bytes.
 def from_file(
   device: Types.Device,
   path: String,
@@ -88,6 +90,14 @@ def from_file(
   format: Types.FloatFormat,
 ) -> Result[Types.Tensor]
   code = try ready(device, shape, Types.Dtype.F32, "from_file")
+  if FileRange.agentica_read?()
+    n = try Types.volume(shape)
+    bytes = try FileRange.read_range(path, offset, n * Types.file_width(format))
+    return made("from_file", device, shape, Types.Dtype.F32) do
+      GgmlRaw.from_bytes(code, bytes, shape, Types.file_code(format))
+    end
+  end
+
   made("from_file", device, shape, Types.Dtype.F32) do
     GgmlRaw.load(code, path, offset, shape, Types.file_code(format))
   end

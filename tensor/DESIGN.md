@@ -153,9 +153,17 @@ Tensor.backend(t) -> Backend                      # no native call
   and BF16 widened in chunks) and no value crosses as a list. The tensor is
   `F32`, the compute dtype (§2); a short file, a bad offset or a missing file
   is an `error`, checked in C against the size of the file. `Reference` reads
-  the bytes in Agentica and drops the ones before `offset`, which is slow on
-  a large file. ggml takes it through one host copy on Vulkan. Native API 1.4
-  is enough: a `String` goes in, no `File.seek`.
+  the bytes in Agentica (`File.seek` and `File.read_bytes`, `src/file_range.agc`)
+  and decodes them there, which is slow on a large file. ggml takes it through
+  one host copy on Vulkan.
+- `TENSOR_LOAD=agentica` (an environment variable) makes the native
+  backends take the Agentica read too: Agentica reads the range and passes
+  the `Bytes` to the native `from_bytes`, which reads them in place
+  (`an_get_bytes`, no copy on entry) and widens them into the backend buffer
+  with the same code as `pread`'s. It is for small models, where the read in
+  Agentica costs little: it is slower and peaks higher than the native `pread`
+  (whisper-tiny on libtorch: 0.5-0.6 s and 0.54 GB, against 0.33-0.36 s and
+  0.42-0.49 GB). The default stays the native `pread`.
 - Every fallible op returns `Result`; shape/dtype mismatches are `error`,
   never a halt. Introspection is free (fields, no FFI round-trip).
 - Device is explicit, never a global: dispatch is **by value** (`t.backend`),

@@ -7,6 +7,7 @@
 ## availability of each is asserted by its own test file.
 
 import Conform from "torch_support"
+import FileRange from "../src/file_range"
 import Tensor from "../tensor"
 import Trace from "../trace"
 
@@ -59,6 +60,24 @@ def test_every_format_reads_the_same_on_each_backend() -> Result[Void]
       try Test.eq(try floats(bf16), [1.0, -3.0, 0.5])
       empty = try Tensor.from_file(path, 31, [0, 4], Tensor.FloatFormat.F32, b)
       try Test.eq(Tensor.shape(empty), [0, 4])
+    end
+
+    ok()
+  end
+end
+
+## `TENSOR_LOAD` is what turns the Agentica read on, so a misspelled name in CI
+## fails here instead of testing the native path twice.
+def test_the_agentica_read_follows_tensor_load() -> Result[Void]
+  Test.eq(FileRange.agentica_read?(), System.env("TENSOR_LOAD") == ok("agentica"))
+end
+
+## A zero beside dimensions whose product overflows an Int is an empty tensor,
+## not a crash.
+def test_a_shape_that_overflows_an_int_is_no_crash() -> Result[Void]
+  with_file do |path|
+    for b in backends()
+      _ = Tensor.from_file(path, 31, [4294967296, 4294967296, 0], Tensor.FloatFormat.F32, b)
     end
 
     ok()
