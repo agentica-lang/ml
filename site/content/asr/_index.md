@@ -71,8 +71,6 @@ end
 
 `asr` runs on the reference backend and on libtorch. See the [tensor page](../tensor/_index.md) for the backends.
 
-Its `mathx` module is a small native module over libm (the C math library). A C compiler is needed to build the package. The module is temporary, until Agentica's `Math` has `exp`, `log`, `log10`, `sin` and `cos` (agentica#1925).
-
 A window is 2 * `max_source_positions` frames of 160 samples. For Whisper's checkpoints that is 30 seconds of 16 kHz audio.
 
 `tools/transcribe_check.agc` compares the cases of `test/fixtures/transcribe_golden.json` with a real whisper-tiny checkpoint. It is run by hand, not by the tests. Against Hugging Face's `generate` on whisper-tiny, the token ids match.

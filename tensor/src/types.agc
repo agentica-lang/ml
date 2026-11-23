@@ -142,7 +142,7 @@ end
 ## One node of a traced graph: unique `id` in the run, its op and its
 ## arguments, which are traced tensors themselves.
 struct Node
-  id: Int
+  id: Ref
   op: Op
   args: List[Tensor]
 end

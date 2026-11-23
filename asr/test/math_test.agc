@@ -1,6 +1,4 @@
-## The libm functions of `mathx` against Python's `math`. Run from `asr/`.
-
-import Mathx from "../mathx"
+## Agentica's `Math` functions against Python's `math`. Run from `asr/`.
 
 INPUTS = [0.001, 0.5, 1.0, 2.0, 3.7, 6.4, 100.0, 701.5]
 PEER = (
@@ -9,18 +7,18 @@ PEER = (
 
 private
 
-def test_mathx_matches_python_math() -> Result[Void]
+def test_math_matches_python_math() -> Result[Void]
   p = try Process.spawn_captured("python3", ["-I", "-c", PEER, JSON.encode(INPUTS)])
   out = try Process.output(p, 30000)
   code = try Process.wait(p, 30000)
   return error("python3 exited with #{code}: #{out.stderr}") if code != 0
   want = try JSON.list(try JSON.parse(out.stdout))
   got = [
-    INPUTS.map { |x| Mathx.exp(x) },
-    INPUTS.map { |x| Mathx.log(x) },
-    INPUTS.map { |x| Mathx.log10(x) },
-    INPUTS.map { |x| Mathx.sin(x) },
-    INPUTS.map { |x| Mathx.cos(x) },
+    INPUTS.map { |x| Math.exp(x) },
+    INPUTS.map { |x| Math.log(x) },
+    INPUTS.map { |x| Math.log10(x) },
+    INPUTS.map { |x| Math.sin(x) },
+    INPUTS.map { |x| Math.cos(x) },
   ]
 
   try Test.eq(want.size, got.size)

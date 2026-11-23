@@ -2,20 +2,28 @@
 ## of `../tensor.agc` call these after the wrapper's checks, so a traced op is
 ## checked exactly as an eager one and only records a node.
 ##
-## A node's `id` is unique within a run and grows with creation, so an
-## argument always has a smaller id than its user: sorting by id is a
+## A node's `id` is a `Ref`: unique within a run and ordered by creation, so
+## an argument always has a smaller id than its user: sorting by id is a
 ## topological order, and two uses of one value are one node.
 
 import Shapes from "torch_shapes"
 import Types from "types"
 
-## The source of node ids: the one counter every trace of a run shares.
-IDS: ATS[String, Int] = ATS.new()
+## The id no node has, for a tensor that is not traced.
+UNTRACED: Ref = Ref.new()
 
 ## A traced tensor of `shape` and `dtype` whose node computes `op` over `args`.
 def record(op: Types.Op, args: List[Types.Tensor], shape: List[Int], dtype: Types.Dtype) -> Types.Tensor
-  node = Types.Node(id: IDS.add("next", 1), op: op, args: args)
+  node = Types.Node(id: Ref.new(), op: op, args: args)
   Types.Tensor(shape: shape, dtype: dtype, backend: Types.Backend.Trace, handle: Types.Handle.Traced(node))
+end
+
+## The id of a traced tensor's node; `UNTRACED` for a tensor that is not traced.
+def id_of(t: Types.Tensor) -> Ref
+  case t.handle
+    Types.Handle.Traced(n) -> n.id
+    _ -> UNTRACED
+  end
 end
 
 ## The node behind a traced tensor.

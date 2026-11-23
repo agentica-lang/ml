@@ -91,11 +91,8 @@ one. Samples are about -1..1: a non-finite one, or one past 1e150, is an error.
   Slaney area norm), which Whisper's `mel_filters.npz` and Hugging Face's
   extractor both use. That needs no file beside the checkpoint and gives 80 or
   128 bins.
-- **`exp`, `log`, `log10`, `sin` and `cos` come from libm** through
-  `mathx.agc`, a small required native module (`native/mathx.c`, built on
-  install). Temporary: Agentica's `Math` has only `sqrt`, and the module goes
-  once it has these (agentica-lang/agentica#1925). `test/mathx_test.agc`
-  checks it against Python's `math`.
+- **`exp`, `log`, `log10`, `sin` and `cos` come from Agentica's `Math`**
+  (0.37.0). `test/math_test.agc` checks them against Python's `math`.
 - **Silent frames are skipped**: a frame that starts after the last non-zero
   sample is `log10(1e-10)` (unless the end reflection reaches a sample), so a
   short clip costs only its own frames.

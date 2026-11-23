@@ -3,7 +3,6 @@
 ## the start, the suppressed tokens and the timestamp rules; then the pick and
 ## the segments of the emitted tokens. Plain lists, no tensors.
 
-import Mathx from "mathx"
 import Tokenizer from "tokenizer"
 
 ## The score of a token the rules forbid: finite, so the sums stay finite,
@@ -125,7 +124,7 @@ def segments(
 end
 
 ## The softmax of `logits` at `i`, in doubles.
-def probability(logits: List[Float], i: Int) -> Float = Mathx.exp(log_probability(logits, i))
+def probability(logits: List[Float], i: Int) -> Float = Math.exp(log_probability(logits, i))
 
 ## The log-softmax of `logits` at `i`, in doubles.
 def log_probability(logits: List[Float], i: Int) -> Float = logits[i] - log_sum_exp(logits)
@@ -176,10 +175,10 @@ def log_sum_exp(xs: List[Float]) -> Float
   top = xs.max.unwrap_or(FORBIDDEN)
   sum = 0.0
   for x in xs
-    sum += Mathx.exp(x - top)
+    sum += Math.exp(x - top)
   end
 
-  top + Mathx.log(sum)
+  top + Math.log(sum)
 end
 
 def forbid(logits: List[Float], ids: List[Int]) -> List[Float]
