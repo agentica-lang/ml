@@ -246,6 +246,19 @@ def test_tanh_agrees_with_the_reference() -> Result[Void]
   )
 end
 
+def test_gelu_tanh_approx_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [-6.0, -1.0, 0.0, 0.5, 4.0, 9.0]
+  try Conform.agrees(
+    try Tensor.gelu_tanh_approx(try Conform.on_torch(data, [2, 3])),
+    try Tensor.gelu_tanh_approx(try Conform.on_ref(data, [2, 3])),
+    "gelu_tanh_approx",
+  )
+
+  Test.error?(Tensor.gelu_tanh_approx(try Tensor.exp(try Conform.on_torch([1000.0], [1]))))
+end
+
 def test_sigmoid_and_tanh_refuse_a_non_finite_input_on_both_backends() -> Result[Void]
   return Conform.absent() if !Conform.available()
 

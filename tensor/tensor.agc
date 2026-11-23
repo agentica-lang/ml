@@ -58,8 +58,8 @@
 ##   validates their window arithmetic before dispatch, so both backends
 ##   accept and refuse the same shapes.
 ## - The 45 names of §3.1 all exist below. `Reference` computes all of them;
-##   the `Torch` arm computes everything but `gelu_tanh_approx`,
-##   `batch_matmul` and `to_device`, and answers
+##   the `Torch` arm computes everything but `batch_matmul` and
+##   `to_device`, and answers
 ##   `error("<op> is not implemented on the torch backend yet")` for those,
 ##   so the gap is a `Result` error naming the op, never a wrong number
 ##   (`README.md`, "What is implemented"). The `Ggml` arm creates and reads
@@ -372,7 +372,7 @@ def gelu_tanh_approx(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "gelu_tanh_approx")
   case t.backend
     Types.Backend.Reference -> Reference.gelu_tanh_approx(t)
-    Types.Backend.Torch(_) -> Torch.unsupported("gelu_tanh_approx")
+    Types.Backend.Torch(device) -> Torch.gelu_tanh_approx(device, t)
     Types.Backend.Trace -> Graph.same(Types.Op.Gelu, [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("gelu_tanh_approx")
   end
@@ -911,10 +911,13 @@ def multi_head_attention(
   for bb in 0...b
     head_ctx: List[Types.Tensor] = []
     for h in 0...heads
+      # The query is scaled before the product, as Whisper does: a constant
+      # of the `[sq, sk]` scores would pass `List.repeat`'s cap at 1500
+      # positions.
       qbh = try reshape(try slice(query, [bb, 0, h * dh], [bb + 1, sq, (h + 1) * dh]), [sq, dh])
+      qbh = try mul(qbh, try full([sq, dh], Types.Values.Float(scale), query.dtype, query.backend))
       kbh = try reshape(try slice(key, [bb, 0, h * dh], [bb + 1, sk, (h + 1) * dh]), [sk, dh])
-      scores = try matmul(qbh, try transpose(kbh))
-      scaled = try mul(scores, try full(scores.shape, Types.Values.Float(scale), query.dtype, query.backend))
+      scaled = try matmul(qbh, try transpose(kbh))
       biased = case widened
         some(w) -> try add(scaled, try reshape(try slice(w, [bb, h, 0, 0], [bb + 1, h + 1, sq, sk]), [sq, sk]))
         none -> scaled
