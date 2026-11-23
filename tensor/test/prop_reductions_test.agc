@@ -26,30 +26,22 @@ struct Reduced
   values: List[Float]
 end
 
-## One op on one shape per test because a test file's step budget is 1M steps x
-## (tests + 1) and the reference is slow. Merge them into one test per shape
-## when agentica#1917 makes the step budget configurable.
-def test_sum_over_every_ordering_of_the_axes_of_a_2_1_3_tensor() -> Result[Void] = exhaust("sum", [2, 1, 3])
+def test_every_reduction_over_every_ordering_of_the_axes_of_a_2_1_3_tensor() -> Result[Void] = exhaust_all([2, 1, 3])
 
-def test_mean_over_every_ordering_of_the_axes_of_a_2_1_3_tensor() -> Result[Void] = exhaust("mean", [2, 1, 3])
-
-def test_max_over_every_ordering_of_the_axes_of_a_2_1_3_tensor() -> Result[Void] = exhaust("max", [2, 1, 3])
-
-def test_argmax_over_every_ordering_of_the_axes_of_a_2_1_3_tensor() -> Result[Void] = exhaust("argmax", [2, 1, 3])
-
-def test_sum_over_every_ordering_of_the_axes_of_a_2_3_2_tensor() -> Result[Void] = exhaust("sum", [2, 3, 2])
-
-def test_mean_over_every_ordering_of_the_axes_of_a_2_3_2_tensor() -> Result[Void] = exhaust("mean", [2, 3, 2])
-
-def test_max_over_every_ordering_of_the_axes_of_a_2_3_2_tensor() -> Result[Void] = exhaust("max", [2, 3, 2])
-
-def test_argmax_over_every_ordering_of_the_axes_of_a_2_3_2_tensor() -> Result[Void] = exhaust("argmax", [2, 3, 2])
+def test_every_reduction_over_every_ordering_of_the_axes_of_a_2_3_2_tensor() -> Result[Void] = exhaust_all([2, 3, 2])
 
 def test_the_torch_side_is_compared_or_absent() -> Result[Void] = Support.torch_is_compared_or_absent()
 
+def exhaust_all(shape: List[Int]) -> Result[Void]
+  for op in ["sum", "mean", "max", "argmax"]
+    try exhaust(op, shape)
+  end
+
+  ok()
+end
+
 ## `op` over every ordering of every subset of the axes of `shape` (and `none`),
-## for every pattern. Each test has a step budget and the reference is slow, so
-## a test is one op on one shape.
+## for every pattern.
 def exhaust(op: String, shape: List[Int]) -> Result[Void]
   gen = Prop.pair(Prop.one_of(arrangements([0, 1, 2])), Prop.one_of(PATTERNS))
   Prop.exhaustive(gen, 1) do |c: Prop.Pair[Optional[List[Int]], Int]| law(op, shape, c.first, c.second) end

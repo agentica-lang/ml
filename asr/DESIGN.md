@@ -1,9 +1,9 @@
 # asr — design
 
-Whisper's model forward in Agentica (Vía B of `roadmap.md` §4), inference
+Whisper's model forward in Agentica (Via B of `roadmap.md`), inference
 only, over `tensor/`, `nn/` and `hub/`. Weights come from a Hugging Face
 checkpoint with the names `WhisperForConditionalGeneration` stores
-(`model.encoder.*`, `model.decoder.*`). `whisper/` is Vía A, the whisper.cpp
+(`model.encoder.*`, `model.decoder.*`). `whisper/` is Via A, the whisper.cpp
 binding; this package does not touch it.
 
 ## API
@@ -43,10 +43,8 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   activation is gelu and `scale_embedding` is false (true of the released
   Whisper checkpoints; `config.json` is not checked for either). The tied
   output projection is a second, transposed copy of the vocab table.
-- **Reference only for now**: libtorch has no `gelu_tanh_approx`, so the
+- **Reference only**: libtorch has no `gelu_tanh_approx`, so the
   model loads there and `encode` stops at the first gelu (a test asserts it).
-- **Left out**: the log-mel frontend, the tokenizer, greedy and beam
-  decoding, a KV cache and downloading real weights.
 
 The tests use a tiny random Whisper (d_model 4, 2 heads, one block each,
 3 mel bins, vocab 7, 6 frames) that `test/peer.py` (standard library only)

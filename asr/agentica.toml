@@ -1,11 +1,11 @@
 name = "asr"
-agentica = "0.35.0"
+agentica = "0.36.0"
 
 # Every bare `end` is followed by an empty line (AGENTS.md).
 [style]
 blank_line_after_end = true
 
 [dependencies]
-tensor = { git = "https://github.com/agentica-lang/ml", ref = "926da75e4a5da411b492857d3e819c64d723cc93", subdir = "tensor" }
-nn = { git = "https://github.com/agentica-lang/ml", ref = "926da75e4a5da411b492857d3e819c64d723cc93", subdir = "nn" }
-hub = { git = "https://github.com/agentica-lang/ml", ref = "c9e23fbbdd759e447cc12852cdb715abd38d08ef", subdir = "hub" }
+tensor = { git = "https://github.com/agentica-lang/ml", ref = "3185826fd76079adad69f5158822c88b3e89cd5d", subdir = "tensor" }
+nn = { git = "https://github.com/agentica-lang/ml", ref = "49ca1c77e11c1e70e695f5e332592bb7db53f025", subdir = "nn" }
+hub = { git = "https://github.com/agentica-lang/ml", ref = "0db3d790591ca52fc211d27183e818223e66e1e9", subdir = "hub" }

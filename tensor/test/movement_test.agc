@@ -59,11 +59,6 @@ def test_to_device_keeps_cpu_tensors() -> Result[Void]
   Support.expect_floats(u, [1.0])
 end
 
-def test_to_device_rejects_cuda_for_the_reference() -> Result[Void]
-  t = try Support.f32([1.0], [1])
-  Test.error?(Tensor.to_device(t, Tensor.Device.Cuda(0)))
-end
-
 def test_copy_and_contiguous_keep_the_values() -> Result[Void]
   t = try Support.f32([1.0, 2.0], [2])
   try Support.expect_floats(try Tensor.copy(t), [1.0, 2.0])

@@ -1,10 +1,9 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-23. `main` en `c9e23fb` (decoder de `nn/` mergeado, #26).
-Abierto: Whisper vía B, primer PR (`asr/`, rama `asr`). Este fichero es el
-parte de estado: lo hecho, lo que quedó a medias al parar, y lo planeado. El
-plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
-`tensor/DESIGN.md`.
+Fecha: 2026-11-23. `main` en `33fc239` (loader de `train/` mergeado, #28).
+Este fichero es el parte de estado: lo hecho, lo que sigue abierto y lo
+planeado. El plan de ejecución sigue en `roadmap.md`; el contrato del tensor,
+en `tensor/DESIGN.md`.
 
 ## 1. Hecho (mergeado en `main`)
 
@@ -14,14 +13,18 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
 | `whisper/`: idioma (`es`/`auto`), `translate`, segmentos con timestamps en ms, `transcribe` = join puro | `whisper/whisper.agc` | #7 |
 | `whisper/`: micrófono por `Process` (`arecord`) + audio largo con VAD, ventanas con solape y dedupe | `whisper/mic.agc`, `stream.agc` | #9 |
 | `tensor/` M1: API en la raíz + `src/`, backend de referencia puro, guard de no finitos, 148 tests | `tensor/` | #10 |
-| `tensor/` M2 = **decisión (b′)**: el backend libtorch vive **dentro** de `tensor/` (`src/torch.agc`, `src/native.agc`, `native/torch.c`, `[native.torch] optional`), `Handle = Native(TensorHandle) \| Plain(Data)`, dispatch cableado en los 47 brazos | `tensor/` | #11 |
+| `tensor/` M2 = **decisión (b′)**: el backend libtorch vive **dentro** de `tensor/` (`src/torch.agc`, `src/native.agc`, `native/torch.c`, `[native.torch] optional`), `Handle = Native(TensorHandle) \| Plain(Data)`, dispatch cableado en cada brazo | `tensor/` | #11 |
 | `tensor/`: cobertura **42/45 en libtorch, 45/45 en referencia**, con `div`, `conv1d`, `avg_pool1d` reales; `softmax`/`layer_norm`/atención ya corren en torch | `tensor/` | #13 |
 | `tensor/`: tracing y gradientes (§10): `Trace` como quinto brazo, `value_and_grad`, reglas de backward de las primeras ops, suite de paridad traced vs eager | `tensor/trace.agc`, `src/graph.agc` | #16, #18 |
 | `tensor/`: tests property-based con `prop` (órdenes de `axes`, `concat`, round trips de dtype, oráculo torch, conv/pool contra bucles) | `tensor/test/prop_*` | #17, #19 |
 | `nn/` primer PR: capas funcionales (`dense`, `layer_norm`, `embedding`, `attention`, `mlp`, `encoder_block`), init con semilla, solo forward; `dense` y `mlp` relu diferenciables vía `Trace` | `nn/` | #20 |
 | `train/` primer PR: `Loss.mse`, `Loss.binary_cross_entropy`, `Optim` (SGD, Adam) puros, `Train.fit` sobre `Trace.value_and_grad`; la raíz pasa a ser un workspace | `train/`, `agentica.toml` | #21 |
 | `tensor/`: `stop_grad` y reglas de backward de `sqrt`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `max`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `gather`; `softmax`, `layer_norm`, atención y `embedding` diferenciables; `Loss.cross_entropy` | `tensor/`, `train/` | #24 |
+| `train/` loader: `Data` (dataset en memoria o de un safetensors, barajado con semilla por época, `drop_last`, un `gather` por batch), prefetch en un `Task` con `Channel` acotado; `fit` toma un `Data.Loader` | `train/data.agc` | (este PR) |
 | `nn/` decoder: `causal_mask`, `DecoderBlock` pre-norm como Whisper; `Load.decoder_block` en `hub/` | `nn/`, `hub/` | #26 |
+| `asr/` (Whisper vía B): forward del modelo (stem conv, encoder, decoder, logits atados) cargado con los nombres de HF y el `config.json`; `Nn.Conv1d` y `Load.conv1d`. Solo referencia: en libtorch falta `gelu_tanh_approx`; deriva de la GELU tanh frente a la erf en el modelo de test: 1.7e-4 (encoder), 3.8e-5 (logits) | `asr/`, `nn/`, `hub/` | #27 |
+| Todos los miembros en agentica 0.36.0; `agentica test --max-steps` por archivo en CI, sin los apaños del presupuesto de pasos; pins entre miembros al día (instalan desde fuera del workspace); checks de gradiente completos en `nn/` | `*/AGENTICA_VERSION`, `.github/workflows/ci.yml` | (este PR) |
+| `tensor/`: fuera los stubs `Backend.Xla`/`Candle` y `Device.Cuda` (sin módulo, solo devolvían `error`); `Device` queda con el brazo `Cpu` | `tensor/` | (este PR) |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
 | Spike ggml-graph: un paso de entrenamiento trazado (forward, backward, SGD/Adam) bajado a **un** grafo ggml, construido una vez, en la iGPU por Vulkan | `spike/ggml-graph/` | #30 |
@@ -34,8 +37,7 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
   **pierde por debajo** (256³: 2.9× más lenta).
 - `mul_mat` de ggml CPU es 1.5–3.4× más lento que el BLAS de libtorch.
 - Consecuencia de diseño: **Vulkan no puede ser un backend op-por-op**;
-  pide batching/compilación de grafo. Es el primer dato objetivo a favor
-  del backend JIT.
+  pide batching de grafo.
 - AVX512 no es alcanzable aquí: el techo real es AVX2.
 - **Un paso compilado a un grafo ggml sí sirve en la iGPU** (spike
   ggml-graph, MLP 784→512→512→10, SGD). Con `mul_mat` F32 (el default):
@@ -59,60 +61,41 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
   con la regla de hoy, el caso de `ml`, la propuesta, los cinco invariantes
   y lo decidido en contra.
 
-## 2. En progreso (parado a propósito)
+## 2. En progreso
 
-- **Whisper vía B, primer PR** (rama `asr`): el miembro `asr/` con el
-  forward de Whisper (stem conv, encoder, decoder, logits atados) cargado
-  con los nombres de HF y el `config.json`; `Nn.Conv1d` y `Load.conv1d`.
-  Solo referencia: en libtorch falta `gelu_tanh_approx`. La deriva de la
-  GELU tanh frente a la erf, medida en el modelo de test: 1.7e-4 (encoder),
-  3.8e-5 (logits).
+Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
 
-Ningún subagente sigue corriendo.
-
-## 3. Futuro planeado (orden propuesto)
+## 3. Siguientes pasos
 
 1. **`grad`**: faltan reglas para `pow`, `clamp`, `batch_matmul`,
    `to_dtype` entre floats, `conv1d` y `avg_pool1d`, y el scatter-add de
    `gather` (ml#25).
-2. **`nn/`**: decoder mergeado (#26), conv en `asr`. Siguiente: caché KV
-   (con ella, un `mask` opcional en `decoder_block` para padding), luego
-   `rms_norm`, y `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
-3. **`asr/`** (Whisper vía B), después del primer PR: frontend log-mel,
-   tokenizer, decodificación greedy y beam (sobre la caché KV), y la descarga
-   de pesos reales (con `hub/`). Fuera del primer PR por YAGNI. Lo
-   siguiente: comparar con whisper-tiny real (hoy solo se compara con el peer
-   propio).
-4. **`train/`**: mergeado (#21); softmax cross-entropy mergeado (#24). Después:
-   shuffling, schedules, y aplanar structs de capas (pytrees)
-   cuando un modelo lo pida.
-5. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
-   época del XOR en la referencia). El spike ggml-graph mide retrazar el
-   paso de un MLP (pérdida, gradientes y optimizador) en 0.6–2.0 ms: basta una caché por estructura del grafo
-   (ops, formas; no valores de `full` ni de constantes), sin API `jit`.
-6. **`hub/`**: primer PR mergeado (#23). Falta la descarga HF, con `http-client`
-   `stream()` (redirects y retry incluidos), **nunca** `bond` (es solo
-   servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
-   Resume/progreso/sha256 hay que construirlos.
-7. **Batching de grafo / JIT**: justificado por los 2 ms por dispatch y
-   **probado** por el spike ggml-graph (#30): el grafo que `Trace` ya
-   graba se baja entero a ggml. Es el mismo mecanismo que `xla/` (PJRT)
-   necesitaría.
-8. **Backend Vulkan/iGPU** como backend real (diseño y PRs en
+2. **`nn/`**: caché KV (con ella, un `mask` opcional en `decoder_block`), y
+   `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
+3. **`asr/`**: frontend log-mel, tokenizer y decodificación; después, comparar
+   con whisper-tiny real (hoy solo se compara con el peer propio).
+4. **`train/`**: schedules, y aplanar structs de capas (pytrees) cuando un
+   modelo lo pida. El prefetch solo oculta el coste de armar el batch; un
+   tensor nativo muere con el task que lo hizo.
+5. **`hub/`**: descarga HF con `http-client` `stream()`, **nunca** `bond` (es
+   solo servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
+6. **CI**: un job no requerido con libtorch pineado por sha256.
+7. **`jit`/caché del grafo**: `fit` retraza cada paso. El spike ggml-graph
+   mide retrazar el paso de un MLP (pérdida, gradientes y optimizador) en
+   0.6–2.0 ms: basta una caché por estructura del grafo (ops, formas; no
+   valores de `full` ni de constantes), sin API `jit`.
+8. **Batching de grafo**: justificado por los 2 ms por dispatch y
+   **probado** por el spike ggml-graph (#30): el grafo que `Trace` ya graba
+   se baja entero a ggml.
+9. **Backend Vulkan/iGPU** como backend real (diseño y PRs en
    `spike/ggml-graph/README.md`): `Device.Vulkan(Int)`, `Backend.Ggml(Device)`
-   y `Handle.Ggml` en `tensor/` como (b′) hasta #1918; `Trace.evaluate` sobre
-   `Ggml` compila el grafo entero con caché por estructura; `Train.fit` mete
-   el optimizador en el mismo grafo y deja parámetros y momentos en el
-   backend en un estado de entrenamiento que `fit` posee y nunca devuelve;
-   al final devuelve tensores nuevos (sin donación). `mul_mat` F32 por
-   defecto; fp16 opcional y por proceso (1.1–1.5×, con error en los
-   gradientes).
-9. **`candle/`** (eager, Rust) y/o **ggml** como backend general.
-10. **dGPU CUDA**: build CUDA de libtorch, `Device.Cuda(Int)`, `to_device`,
-   y un job de CI no requerido (no se puede bajar en cada push).
-11. Cuando cierre **#1918**: evaluar volver a la opción **A** (tabla de
-    `Fn` por backend), que deja `tensor/` sin nativo. Con un solo backend
-    no compensa; con dos o más, sí.
+   y `Handle.Ggml` en `tensor/` como (b′) hasta #1918; `Train.fit` compila
+   pérdida, gradientes y optimizador en un grafo con caché por estructura y
+   deja parámetros y momentos en un estado de entrenamiento que `fit` posee
+   y nunca devuelve; al final devuelve tensores nuevos (sin donación).
+   `mul_mat` F32 por defecto; fp16 opcional y por proceso (1.1–1.5×, con
+   error en los gradientes).
+10. Cuando cierre **#1918**: mover el backend libtorch a un paquete `torch/`.
 
 ## 4. Deuda y issues abiertos
 
@@ -144,22 +127,3 @@ Ningún subagente sigue corriendo.
   visible, así que los skips deben ser estructurales (aserción del estado
   ausente), no un `puts` y `ok`.
 - **Vulkan no está en CI** (no hay driver pineable): el spike es local.
-
-## 6. Cómo reanudar
-
-- Un lane = una rama y un worktree hermano: `git worktree add
-  ../agentica-ml-<tema> -b <tema> origin/main`. Un solo escritor por
-  worktree.
-- Se pasa modelo explícito: ejecutores `opencode-go/deepseek-v4.1-flash`,
-  revisores `opencode-go/glm-5.3-flash`. **Omitir `model` NO hereda el de la
-  sesión**: resuelve al `defaultModel` de `~/.pi/agent/settings.json`.
-- Loop por PR: rama → PR → review de un agente fresco → un batch de fixes
-  (críticos y mayores, más menores baratos) → CI verde → review otra vez →
-  merge **solo con el ok del dueño**. Menores no bloquean: van a un issue.
-- `git push` por https da 403 con el PAT; empujar con
-  `git push git@github.com:agentica-lang/ml.git <rama>`.
-- Cada paquete valida con `agentica check`, `agentica fmt --check`, el
-  `--check` del header de native-gen, y `agentica test`
-  (`agentica install` antes si hay dependencias).
-- Antes de tocar `tensor/`, leer `tensor/DESIGN.md`. Cambiar el contrato
-  exige actualizarlo en el mismo PR; el roadmap no entra en el DESIGN.

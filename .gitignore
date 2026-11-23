@@ -5,3 +5,8 @@ _build/
 *.agcb
 # Downloaded model weights: never enter git (see whisper/tools/fetch-model.sh).
 models/
+
+# The documentation site: the Hugo output (make site).
+site/public/
+site/resources/
+.hugo_build.lock

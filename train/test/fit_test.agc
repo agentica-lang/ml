@@ -4,6 +4,7 @@
 ## installed, the second test asserts that absence instead. `nn` is a test
 ## dependency, so the model lives here, in a test file.
 
+import Data from "../data"
 import Loss from "../loss"
 import Nn from "pkg/nn/nn"
 import Optim from "../optim"
@@ -14,9 +15,8 @@ import Train from "../train"
 ## The XOR run: a 2-8-1 relu MLP from `nn/`, made from seed 1, trained by
 ## Adam (`lr` 0.2) on the four XOR rows for 20 full-batch epochs with binary
 ## cross-entropy. `HISTORY` is its loss per epoch on the reference: the golden
-## the reference reproduces and libtorch follows. Twenty epochs is what this
-## file's step budget allows with the libtorch run beside it (an epoch costs
-## about 75,000 VM steps on the reference, 45,000 on libtorch).
+## the reference reproduces and libtorch follows. An epoch costs about 75,000
+## VM steps on the reference, 45,000 on libtorch.
 EPOCHS = 20
 HISTORY = [
   0.668955092647425,
@@ -65,7 +65,7 @@ def test_the_xor_run_on_libtorch_follows_the_reference() -> Result[Void]
 end
 
 def classifies(fit: Train.Fit, backend: Tensor.Backend) -> Result[Void]
-  logits = try S.floats_of(try model(fit.params, (try batch(backend)).inputs))
+  logits = try S.floats_of(try model(fit.params, (try rows(backend)).inputs))
   Test.eq(logits.map { |z| z > 0.0 }, [false, true, true, false])
 end
 
@@ -86,15 +86,21 @@ def xor(backend: Tensor.Backend, on_epoch: Optional[Fn[Train.Epoch, Void]] = non
   down = try Nn.init_dense(8, 1, 2, backend)
   params = [up.w, up.b.unwrap!, down.w, down.b.unwrap!]
   adam = Optim.Optimizer.Adam(Optim.Adam(lr: 0.2))
-  Train.fit(&loss, params, [try batch(backend)], adam, EPOCHS, on_epoch)
+  Train.fit(
+    &loss,
+    params,
+    Data.Loader(dataset: try rows(backend), batch_size: 4, shuffle: false),
+    adam,
+    EPOCHS,
+    on_epoch,
+  )
 end
 
-def batch(backend: Tensor.Backend) -> Result[Train.Batch]
-  ok(
-    Train.Batch(
-      inputs: try S.tensor([0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0], [4, 2], Tensor.Dtype.F32, backend),
-      targets: try S.tensor([0.0, 1.0, 1.0, 0.0], [4, 1], Tensor.Dtype.F32, backend),
-    ),
+## The four XOR rows, one full batch through the loader's prefetch task.
+def rows(backend: Tensor.Backend) -> Result[Data.Dataset]
+  Data.dataset(
+    try S.tensor([0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0], [4, 2], Tensor.Dtype.F32, backend),
+    try S.tensor([0.0, 1.0, 1.0, 0.0], [4, 1], Tensor.Dtype.F32, backend),
   )
 end
 
@@ -105,6 +111,6 @@ def model(ps: List[Tensor.Tensor], x: Tensor.Tensor) -> Result[Tensor.Tensor]
   Nn.mlp(Nn.Mlp(up: up, down: down, activation: Nn.Activation.Relu), x)
 end
 
-def loss(ps: List[Tensor.Tensor], b: Train.Batch) -> Result[Tensor.Tensor]
+def loss(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
   Loss.binary_cross_entropy(try model(ps, b.inputs), b.targets)
 end
