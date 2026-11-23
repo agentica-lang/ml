@@ -3,6 +3,7 @@
 #ifndef TENSOR_GGML_SHARED_H
 #define TENSOR_GGML_SHARED_H
 
+#include "cchecker.h"
 #include "ggml_native.h"
 
 #include "ggml-backend.h"
@@ -21,8 +22,9 @@ struct ggml_TensorHandle_state {
    run and every Vulkan buffer operation. Taking it first does the frees that
    free hooks deferred (`tg_defer`), since a hook must never wait for a graph.
    CPU and Vulkan graphs share it, so they run one at a time. */
-void tg_lock_device(void);
-void tg_unlock_device(void);
+CC_LOCK_LEVEL(1) extern pthread_mutex_t tg_device_lock;
+CC_ACQUIRES(tg_device_lock) void tg_lock_device(void);
+CC_RELEASES(tg_device_lock) void tg_unlock_device(void);
 
 /* A queued `fn(arg)`, embedded in what it frees so queuing needs no memory. */
 struct deferred {

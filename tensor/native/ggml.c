@@ -26,12 +26,12 @@
 #include <string.h>
 #include <unistd.h>
 
-static pthread_mutex_t device_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t tg_device_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Frees that wait for the device lock. A free hook runs on the scheduler, so
    it must never wait for a graph to finish: it queues its work here, and the
    next holder of the device lock does it. */
-static pthread_mutex_t deferred_lock = PTHREAD_MUTEX_INITIALIZER;
+CC_LOCK_LEVEL(3) CC_NO_SYSCALL_UNDER() static pthread_mutex_t deferred_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct deferred *deferred_head = NULL;
 
 void tg_defer(struct deferred *d) {
@@ -44,7 +44,7 @@ void tg_defer(struct deferred *d) {
 void tg_lock_device(void) {
   struct deferred *d, *next;
 
-  pthread_mutex_lock(&device_lock);
+  pthread_mutex_lock(&tg_device_lock);
   pthread_mutex_lock(&deferred_lock);
   d = deferred_head;
   deferred_head = NULL;
@@ -55,18 +55,19 @@ void tg_lock_device(void) {
   }
 }
 
-void tg_unlock_device(void) { pthread_mutex_unlock(&device_lock); }
+void tg_unlock_device(void) { pthread_mutex_unlock(&tg_device_lock); }
 
 /* A CPU buffer is plain memory: Vulkan buffer operations take the lock, CPU
    uploads and readbacks do not, so CPU tensors move while a graph runs. Making
    a tensor (`tg_new_tensor`) waits for the lock even on the CPU, to look the
    device up. */
-static void lock_for(bool vulkan) {
+CC_ACQUIRES_IF(tg_device_lock, *held) static void lock_for(bool vulkan, bool *held) {
+  *held = vulkan;
   if (vulkan) tg_lock_device();
 }
 
-static void unlock_for(bool vulkan) {
-  if (vulkan) tg_unlock_device();
+CC_RELEASES_IF(tg_device_lock, held) static void unlock_for(bool held) {
+  if (held) tg_unlock_device();
 }
 
 /* What a freed tensor handle leaves behind. */
@@ -168,7 +169,7 @@ an_term ggml_vulkan_devices(an_env *env) {
    with the reason in `why`. Call under the device lock. */
 static ggml_backend_dev_t device_of(int64_t device, char *why, size_t len) {
   ggml_backend_dev_t dev = NULL;
-  size_t n;
+  size_t n = 0;
 
   fix_precision();
   if (device == -1) {
@@ -240,6 +241,7 @@ bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_t
   struct ggml_init_params params;
   size_t size;
   enum ggml_status placed;
+  bool held;
 
   tg_lock_device();
   dev = device_of(device, why, sizeof why);
@@ -261,12 +263,12 @@ bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_t
     return failed(env, failure, "the tensor is larger than the device's largest buffer");
   }
   if (size < ggml_backend_buft_get_alignment(buft)) size = ggml_backend_buft_get_alignment(buft);
-  lock_for(state->vulkan);
+  lock_for(state->vulkan, &held);
   state->buffer = ggml_backend_buft_alloc_buffer(buft, size);
   placed = state->buffer == NULL ? GGML_STATUS_ALLOC_FAILED
                                  : ggml_backend_tensor_alloc(state->buffer, state->t,
                                                              ggml_backend_buffer_get_base(state->buffer));
-  unlock_for(state->vulkan);
+  unlock_for(held);
   if (state->buffer == NULL) return failed(env, failure, "the device could not allocate the tensor");
   if (placed != GGML_STATUS_SUCCESS) return failed(env, failure, "the device could not place the tensor in its buffer");
   return true;
@@ -338,9 +340,11 @@ static void put(void *bytes, int64_t i, enum ggml_type type, double v) {
 
 /* Copies `bytes` into the tensor and answers it. */
 static an_term store(an_env *env, struct ggml_TensorHandle_state *state, void *bytes, an_term term) {
-  lock_for(state->vulkan);
+  bool held;
+
+  lock_for(state->vulkan, &held);
   ggml_backend_tensor_set(state->t, bytes, 0, ggml_nbytes(state->t));
-  unlock_for(state->vulkan);
+  unlock_for(held);
   free(bytes);
   return ggml_result_TensorHandle_ok(env, term);
 }
@@ -388,20 +392,21 @@ an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double val
 an_term ggml_transfer(an_env *env, struct ggml_TensorHandle_state *t, int64_t device) {
   an_term term, failure;
   struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
-  bool vulkan;
+  bool vulkan, held;
 
   if (t->t == NULL) return tg_error(env, "transfer of a tensor that was never made");
   if (!tg_new_tensor(env, device, t->t->ne, t->t->type, state, &failure)) return failure;
   vulkan = t->vulkan || state->vulkan;
-  lock_for(vulkan);
+  lock_for(vulkan, &held);
   ggml_backend_tensor_copy(t->t, state->t);
-  unlock_for(vulkan);
+  unlock_for(held);
   return ggml_result_TensorHandle_ok(env, term);
 }
 
 an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t) {
   int64_t count, i;
   void *bytes;
+  bool held;
   ggml_list_Float_builder out;
   an_term list;
 
@@ -409,9 +414,9 @@ an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t) {
   count = ggml_nelements(t->t);
   bytes = host_bytes(t->t);
   if (bytes == NULL) return tg_error(env, "out of memory");
-  lock_for(t->vulkan);
+  lock_for(t->vulkan, &held);
   ggml_backend_tensor_get(t->t, bytes, 0, ggml_nbytes(t->t));
-  unlock_for(t->vulkan);
+  unlock_for(held);
   ggml_list_Float_begin(env, &out, (size_t)count);
   for (i = 0; i < count; i++) {
     if (t->t->type == GGML_TYPE_I32) ggml_list_Float_push(env, &out, (double)((int32_t *)bytes)[i]);

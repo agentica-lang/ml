@@ -201,9 +201,42 @@ jobs:
             agentica "$program"
           done
 
+  # cchecker over the native C (tensor/, whisper/, asr/): the project rules for locks and ownership, gcc -fanalyzer and
+  # clang-tidy, against cchecker-baseline.json. A new finding, a stale ignore or a tool error fails it. The analyzers
+  # word their messages differently between versions and the baseline matches by message, so it runs gcc 14 and
+  # clang 19, the versions of the baseline. Only the headers of the submodules are read: no engine is built.
+  cchecker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: recursive
+
+      - name: Read the pinned Agentica version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version sha256 _ < tensor/AGENTICA_VERSION
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Agentica release
+        uses: agentica-lang/setup-agentica@v1
+        with:
+          version: ${{ steps.pin.outputs.version }}
+          sha256: ${{ steps.pin.outputs.sha256 }}
+
+      - name: gcc 14, clang 19 and clang-tidy 19
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-14 clang-19 clang-tidy-19
+
+      - name: make cchecker
+        run: make cchecker CCHECKER_FLAGS="--gcc gcc-14 --clang clang-19 --clang-tidy clang-tidy-19 --strict-baseline"
+
   # `test` is the required check, so it carries the result of the other jobs.
   test:
-    needs: [plan, packages]
+    needs: [plan, packages, cchecker]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -212,6 +245,7 @@ jobs:
         env:
           PLAN: ${{ needs.plan.result }}
           PACKAGES: ${{ needs.packages.result }}
+          CCHECKER: ${{ needs.cchecker.result }}
         run: |
-          echo "plan: $PLAN, packages: $PACKAGES"
-          [ "$PLAN" = success ] && [[ "$PACKAGES" =~ ^(success|skipped)$ ]]
+          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER"
+          [ "$PLAN" = success ] && [[ "$PACKAGES" =~ ^(success|skipped)$ ]] && [ "$CCHECKER" = success ]

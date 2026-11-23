@@ -1,8 +1,10 @@
-.PHONY: help site site-serve site-tools
+.PHONY: help site site-serve site-tools cchecker cchecker-update-baseline
 
 help:
 	@echo "site       build the documentation site into site/public"
 	@echo "site-serve serve the site on localhost for a preview"
+	@echo "cchecker   check the native C (locks, ownership, gcc -fanalyzer, clang-tidy) against cchecker-baseline.json"
+	@echo "cchecker-update-baseline   accept today's findings of cchecker"
 
 # The documentation site (Hugo): the look, the layouts and the highlighter come from the docs theme, the submodule
 # site/themes/docs-theme; the pages are the README.md and DESIGN.md files of the packages (mounted in site/hugo.toml),
@@ -31,3 +33,14 @@ site: site-tools $(THEME)/highlight/node_modules
 # Agentica blocks stay plain here: the highlighter runs in `make site`.
 site-serve: site-tools
 	$(HUGO) server --source site
+
+# cchecker over the native C of tensor/, whisper/ and asr/ (tools/cchecker.sh; the README says how). It needs gcc 10+,
+# clang, clang-tidy, the submodules and the pinned `agentica` on PATH. CCHECKER_FLAGS: `--gcc gcc-14 --clang clang-19
+# --clang-tidy clang-tidy-19` runs the versions of the baseline.
+CCHECKER_FLAGS ?=
+
+cchecker:
+	sh tools/cchecker.sh $(CCHECKER_FLAGS)
+
+cchecker-update-baseline:
+	sh tools/cchecker.sh --update-baseline $(CCHECKER_FLAGS)
