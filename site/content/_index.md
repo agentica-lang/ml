@@ -4,7 +4,7 @@ title: Agentica ML
 
 Machine learning for [Agentica](https://github.com/agentica-lang/agentica): tensors, training and inference in a functional style, in the manner of JAX and Nx. Values are immutable, an op returns a new tensor, and a training step returns new parameters. The code is in [agentica-lang/ml](https://github.com/agentica-lang/ml), one folder per package.
 
-Every backend only computes forward. `grad` is written in Agentica: a function is traced into a graph of tensor ops, and the gradient graph is built from it. There are two backends today: a pure Agentica reference that is the oracle for the tests, and libtorch on the CPU.
+Every backend only computes forward. `grad` is written in Agentica: a function is traced into a graph of tensor ops, and the gradient graph is built from it. There are three backends: `Reference`, a pure Agentica backend that is the oracle for the tests; `Torch`, libtorch on the CPU; and `Ggml`, on the CPU or Vulkan, which runs a traced function as one compiled graph. The [tensor page](tensor/_index.md) has their limits.
 
 ## Status
 

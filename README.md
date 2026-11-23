@@ -29,6 +29,17 @@ There are no releases yet: a project pins a member by a commit of `main`
 | `whisper/` | a binding over the pinned whisper.cpp engine, with WAV reading, microphone capture and long-audio chunking | whisper.cpp (a submodule), a C/C++ compiler |
 
 An inference app depends on `nn` and one backend; a training app adds `train`.
+
+Each package has a page on the site with its API and its limits:
+
+- [tensor](https://www.agentica-lang.com/ml/tensor/)
+- [nn](https://www.agentica-lang.com/ml/nn/)
+- [train](https://www.agentica-lang.com/ml/train/), with its
+  [data loader](https://www.agentica-lang.com/ml/train/data/)
+- [hub](https://www.agentica-lang.com/ml/hub/)
+- [asr](https://www.agentica-lang.com/ml/asr/)
+- [whisper](https://www.agentica-lang.com/ml/whisper/)
+
 Inside this repository `tensor`, `nn`, `train`, `hub` and `asr` are members of
 one Agentica workspace (the root `agentica.toml`), so they read each other from
 their folders; `whisper` is a project of its own, not a member. Each package
