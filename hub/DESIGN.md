@@ -1,8 +1,7 @@
 # hub — design
 
 Checkpoints in safetensors files, read in Agentica, and `nn/` layers built
-from them by tensor name. Local files only: downloading from the Hugging Face
-hub comes in a later PR. Depends on `tensor/` and `nn/`.
+from them by tensor name. Local files only. Depends on `tensor/` and `nn/`.
 
 ## API
 
@@ -65,8 +64,6 @@ The test fixtures drop the `model.` part of the prefix
   `F32` (`tensor/DESIGN.md` §6); a dense weight stored `[out, in]` becomes
   `nn/`'s `[in, out]`; a missing bias is `none` (Whisper's `k_proj`). Names
   are the caller's: Whisper's or BERT's live with the model code.
-- **Left out until a client needs them:** downloads, `mmap` and writing
-  safetensors.
 
 ## Cost
 

@@ -67,8 +67,8 @@ that are the layer's own (rank of `positional`, table length, heads).
   constant, never differentiated. `MASKED` is `-1e9`, not `-inf`: finite, and
   far enough down that its softmax weight is `0`. It assumes an `F32` or `F64`
   compute dtype and a row with at least one key it may see (the causal mask
-  always leaves the diagonal). No KV cache and no decode loop
-  yet: each call recomputes every position.
+  always leaves the diagonal). There is no KV cache and no decode loop: each
+  call recomputes every position.
 - **Weights are `[in, out]`** (`x w`, as `Tensor.linear` takes them).
   Hugging Face and PyTorch checkpoints store `[out, in]`, so `hub/` transposes
   at load time.
@@ -84,9 +84,7 @@ that are the layer's own (rank of `positional`, table length, heads).
   from checkpoints (`hub/`).
 - **`F32` only** for `init_*`, the compute dtype of `tensor/DESIGN.md` §2.
   Layers themselves take any float dtype (the gradient test uses `F64`).
-- **Left out until a client needs them:** dropout (identity at inference,
-  `Tensor.dropout` is there), a KV cache and a decode loop,
-  `rms_norm`. `gelu` does not run on libtorch yet
-  (`gelu_tanh_approx` is one of its three missing ops), so the libtorch
-  comparisons use `relu` and `silu`. `gelu` is the tanh approximation, while
-  Whisper uses the `erf` form: expect drift near 1e-3 on real checkpoints.
+- **`gelu` does not run on libtorch** (`gelu_tanh_approx` is one of its three
+  missing ops), so the libtorch comparisons use `relu` and `silu`. `gelu` is
+  the tanh approximation, while Whisper uses the `erf` form: expect drift near
+  1e-3 on real checkpoints.

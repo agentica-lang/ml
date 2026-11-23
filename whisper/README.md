@@ -1,6 +1,6 @@
 # whisper
 
-Speech-to-text in Agentica (Via A of `roadmap.md`): a thin binding over the
+Speech-to-text in Agentica (Via A of the [roadmap](../roadmap.md)): a thin binding over the
 pinned whisper.cpp engine, file input plus microphone capture and long-audio
 chunking.
 
@@ -8,12 +8,12 @@ chunking.
   file into a `Model` resource, `transcribe_with` decodes 16 kHz mono PCM
   floats into timed `Segment`s as an `Options` asks (language, translation),
   and `transcribe` is `join_text` of those segments with the default options.
-  All three run in the compute pool; the engine is CPU-only. Untouched by
-  the capture/streaming lane: one decode, five minutes at most.
+  All three run in the compute pool; the engine is CPU-only. One decode accepts
+  up to five minutes of audio.
 - `mic.agc` — microphone capture: 16 kHz mono s16le PCM from a command run
   through `Process` (pinned `arecord` invocation, configurable), plus the
   `Source` abstraction (`Samples` for synthetic PCM in tests, `Command` for
-  a live capture). No native audio module: `Process` is the transport.
+  a live capture). There is no native audio module: `Process` is the transport.
 - `stream.agc` — long-audio transcription: a PCM stream cut into bounded
   windows with overlap, gated by pure-Agentica RMS energy VAD, each window
   decoded by `transcribe_with` (the long work stays in the compute pool)
@@ -95,7 +95,7 @@ samples = try Mic.capture(Mic.default_capture())
   -r 16000 -c 1 -b 16 -e signed-integer -` or `ffmpeg -f alsa -i default
   -ar 16000 -ac 1 -f s16le -` (both untested here: only `arecord` is
   pinned). Nothing here resamples: the command must output 16 kHz mono
-  s16le, which `-r 16000 -c 1` (or the equivalent flags) ask the tool for.
+  s16le.
 - The capture reads standard output in ~1 s chunks until the cap or the end
   of the output, then closes the process on every path (a read timeout kills
   it first), and decodes with `Mic.decode_s16le`. The tool's standard error
@@ -145,17 +145,13 @@ segments = try Stream.transcribe_stream(model, Mic.Source.Samples(pcm), Stream.d
   same stripped text (case aside). Distinct hypotheses in the overlap are
   all kept: the merge never drops words, it only drops copies.
 - Latency is the sum of the window decodes, and every returned segment is
-  final (each window is decoded whole): there are no partial hypotheses.
-  The merge only dedupes same-text overlaps: the same speech transcribed
-  with different words in two windows is kept twice, by design (dropping
-  words is worse than doubling them).
-  What is not implemented: true low-latency streaming (no incremental
-  `Channel` of segments: one would need a producer task outliving the call,
-  which breaks this package's rule that no call leaves a task or a process
-  running), barge-in, and resampling of arbitrary device rates. The capture
-  spawns one command with no process group: invoke the tool directly rather
-  than through a `sh -c` wrapper with grandchildren, since closing kills the
-  direct child only and descendants may outlive it (see `Process` `pgroup`).
+  final (each window is decoded whole): there are no partial hypotheses. The
+  merge only dedupes same-text overlaps: the same speech transcribed with
+  different words in two windows is kept twice, by design (dropping words is
+  worse than doubling them).
+- The capture spawns one command with no process group: invoke the tool
+  directly rather than through a `sh -c` wrapper with grandchildren, since
+  closing kills the direct child only (see `Process` `pgroup`).
 
 ## Local setup
 
@@ -211,101 +207,37 @@ agentica live/transcribe_spanish.agc   # Spanish, options and timed segments
 
 ## What each layer covers
 
-The three layers differ in what they are allowed to need, so a failure points
-at one of them:
+The layers differ in what they are allowed to need, so a failure points at
+one of them:
 
-- **Model-free and offline** (`agentica test`, 43 tests): the WAV reader on
-  synthetic fixtures (formats, chunks, errors, file round-trip), the binding's
-  pure half (`Options` defaults, `join_text` on hand-built `Segment`s:
-  trimming, dropped empty segments, one space between, `""` for none), the
-  native error paths with no model (a missing file names itself in the
-  error; a path past 4096 bytes is refused), the capture layer with no
-  device (the pinned `arecord` invocation, the s16le conversion down to the
-  odd byte, the fake `Source`, a missing command as
-  `process: executable is unavailable`, the bound and timeout guards, and
-  the exit-status paths over synthetic shell commands: clean exit returns
-  partial audio, a failing exit discards it, the cap kills without checking),
-  and the streaming layer with no model (the default walk and its validation,
-  RMS/is-speech/has-speech on synthetic frames including the threshold edge,
-  window boundaries with overlap, short tails and short streams, timestamp
-  offsetting, same-text overlap dedupe with distinct and disjoint text kept,
-  empty text dropped, an exact duplicate, and an end-to-end offset-plus-merge
-  over a non-zero window start). It still links the built engine, so CI builds
-  it first; no weights, no device and no network are involved (the shell
-  commands are hermetic: `printf`, `head`, `/dev/zero`), which is why it
-  runs before the download.
-- **Live, model-bound** (`agentica test live/`, 6 tests, needs the downloaded
-  tiny model): real weights load through the FFI, real inference on 0.1 s of
-  silence returns the empty string from both `transcribe` and
-  `transcribe_with` + `join_text`, and empty audio is refused with its
-  message; plus the streaming layer against the real engine (several silent
-  windows over a fake `Source` transcribe to no segments, with overlap and a
-  short tail covered) and the microphone test below.
+- **Model-free and offline** (`agentica test`): the WAV reader on synthetic
+  fixtures, the binding's pure half (`Options` defaults, `join_text`), the
+  native error paths with no model, the capture layer with no device
+  (hermetic shell commands: `printf`, `head`, `/dev/zero`), and the streaming
+  layer with no model (the walk, the energy gate, window boundaries, offsets,
+  the merge). It links the built engine, so CI builds it first.
+- **Live, model-bound** (`agentica test live/`, needs the tiny model): real
+  weights load through the FFI, real inference on 0.1 s of silence returns the
+  empty string, empty audio is refused, and the streaming layer runs against
+  the real engine.
 - **Live programs** (`live/transcribe_*.agc`, need the models plus the engine;
   CI runs each one), because decoding a real sample costs far more steps than
-  one test file may spend (1 M × tests), while runs are not step-capped:
-  - `live/transcribe_jfk.agc` (tiny, `language` default): transcribes the
-    11 s English sample the whisper.cpp submodule carries and asserts the
-    exact greedy transcript ("And so my fellow Americans ask not what your
-    country can do for you, ask what you can do for your country."). Greedy
-    decoding is the argmax at every step over pinned weights and pinned PCM,
-    so the bytes are fixed; a mismatch prints both texts and exits 1.
-  - `live/transcribe_spanish.agc` (small, `language: "es"`, then
-    `translate: true`): transcribes a 2.6 s Spanish fixture and asserts the
-    structural contract plus two words, not a transcript. The contract is:
-    at least one segment; every segment a range with `start_ms < end_ms`;
-    segments ordered, none starting before the one it follows; the first
-    starting within 500 ms of the audio's start and the last ending within
-    500 ms of its end, so the segments cover the audio it heard; and the
-    joined text non-empty. The words are the two the fixture opens and closes
-    on ("hola", "español", case aside). The translated pass asserts the other
-    `Options` field is wired: non-empty English ("hello", "spanish"). An exact
-    Spanish transcript is deliberately not pinned: the fixture is short and
-    synthesised, so which words survive is the one thing not worth betting on.
-- **Live, microphone** (`live/mic_live_test.agc`, 1 test, no model): where
-  a capture command and a device exist it captures half a second and asserts
-  the sample count; everywhere else it prints its SKIP lines and passes, so
-  CI never depends on hardware:
-
-  ```text
-  SKIP: no microphone or capture tool on this machine (<reason>)
-  SKIP: this test only runs where a capture command and a device exist; see README
-  ```
-- Deliberately untested, and why: non-finite samples (no NaN/Inf value is
-  reachable from pure Agentica — division by zero is a runtime error and the
-  WAV reader only yields finite floats), the five-minute input bound (covering
-  it needs a 4.8 M-element list; the walk over such audio is proven by the
-  window boundary tests, and the live stream tests keep their windows small
-  because one test file shares 1 M steps per test), the language-code bound
-  and the megabyte text cap (each needs input or a decode nothing in the
-  suite reaches). The guards stay as cheap defense at the FFI boundary.
-
-### What CI proves, and what needs a human with a mic
-
-CI (no microphone, no sound card) proves everything above except live
-capture: the offline suite, the tiny-model live tests (including the stream
-walk over silent windows), the SKIP path of the microphone test (it passes),
-and both transcription programs. The runner shows passing tests as PASS
-only, so the SKIP text is not visible in CI logs: the honesty is structural,
-not printed — the test only skips on the device-less errors (a missing
-command, no audio, a command that died mid-capture, a hung read) and fails
-on anything else, so a broken capture cannot masquerade as "no microphone".
-A human with a mic proves the rest by running
-`agentica test live/mic_live_test.agc` where a capture command and a device
-exist: the test then takes the capture path and asserts the samples. CI must
-never gate on that path, and the test must never pass silently on it.
-
-### The Spanish fixture
-
-`live/fixtures/es-hola.wav` is 84 KB: 2.647 s of mono 16-bit PCM at 16 kHz,
-the sentence "Hola, esto es una prueba de audio en español." It was
-synthesised for this test with piper (`piper-tts`, MIT) and its
-`es_ES-davefx-medium` Spanish voice, then resampled to 16 kHz; no third-party
-recording is redistributed, the words are this package's own, and it is small
-enough to stay in git. A recording of a real speaker would validate more, but
-it would need a licence to redistribute and would not fit the 100 KB budget;
-synthesising at test time would need a TTS dependency in CI. Hence the
-structural assertion above rather than a pinned transcript.
+  one test file may spend:
+  - `live/transcribe_jfk.agc` (tiny): transcribes the 11 s English sample the
+    whisper.cpp submodule carries and asserts the exact greedy transcript. A
+    mismatch prints both texts and exits 1.
+  - `live/transcribe_spanish.agc` (small, `language: "es"`, then `translate:
+    true`): transcribes a 2.6 s Spanish fixture and asserts a structural
+    contract (ordered ranges that cover the audio, non-empty text) plus two
+    words, not a transcript: the fixture is short and synthesised
+    (`live/fixtures/es-hola.wav`, made with piper `es_ES-davefx-medium`, MIT),
+    so which words survive is not worth betting on.
+- **Live, microphone** (`live/mic_live_test.agc`, no model): where a capture
+  command and a device exist it captures half a second and asserts the sample
+  count; everywhere else it prints its SKIP lines and passes, so CI never
+  depends on hardware. The test skips only on the device-less errors (a
+  missing command, no audio, a command that died mid-capture, a hung read) and
+  fails on anything else. A human with a mic runs it to prove the capture path.
 
 ## Bounds and errors
 
@@ -320,23 +252,13 @@ mutex only for the decode itself.
 
 One `Mic.capture` keeps 1–4 800 000 samples (five minutes at most) with a
 timeout of at least 1 ms per read; a missing command, a timed-out read, no
-audio at all, or a command that died mid-capture (nonzero exit on the natural
-end of its output) is an `error`, and the device process is closed on every
-path, so no call leaves a process running. Partial audio is returned only
-when the command exited 0; a nonzero exit discards it, and the cap path
-kills deliberately without checking the status. One `Stream.transcribe_stream`
-checks its walk first (`window_s` 1..300 s, `overlap_s` inside its window,
-`frame_ms` 1..1000 ms, `threshold` 0.0..1.0), refuses empty input, then
-decodes each speech window within the per-call bound and merges. Window
-timestamps are absolute (each window's start in milliseconds is added to its
-segments); the merge is deterministic (sorted by start, same stripped text
-in an overlap kept once, earliest wins). `transcribe` and `transcribe_with`
-keep their exact behavior: the stream only calls them.
+audio at all, or a command that died mid-capture is an `error`, and the device
+process is closed on every path. One `Stream.transcribe_stream` checks its walk
+first, refuses empty input, then decodes each speech window within the
+per-call bound and merges; window timestamps are absolute.
 
 ## Outside the repository checkout
 
-A package installed through `agentica install` carries only `native/` (and
-`live/` scripts read nothing outside the checkout), so building from the
-submodule works for checkouts only. Downstream users need the prebuilt
-libraries of `[native.whisper]` (one row per target, built from this source);
-publishing them is the follow-up — this package builds from source.
+A package installed through `agentica install` carries only `native/`, so
+building from the submodule works for checkouts only. `[native.whisper]` has no
+`prebuilt` table: this package builds from source.
