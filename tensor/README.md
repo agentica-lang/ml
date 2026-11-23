@@ -136,7 +136,7 @@ built and tested against:
 unzip libtorch-cxx11-abi-shared-with-deps-2.4.1+cpu.zip -d "$HOME/opt"
 export TORCH_DIR="$HOME/opt/libtorch"
 eval "$(sh tools/build-torch.sh)"   # in the shell that runs agentica
-agentica test                        # builds the module on first use
+agentica test --max-steps 10000000                     # builds the module on first use
 agentica tools/bench.agc
 ```
 
