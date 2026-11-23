@@ -21,8 +21,9 @@ the grad-in-Agentica decision),
   graph (ml#1 key decision, as Nx does), so per-backend autograd is out.
 - The backend interface is small, and one shared conformance suite checks
   every backend against the reference (§11).
-- **`tensor/` declares the native module of every backend it dispatches to.**
-  A `Tensor` carries the backend's handle, and a native handle is a
+- **`tensor/` declares the native module of every backend it dispatches to**
+  (`torch`, and `ggml` for `Backend.Ggml`). A `Tensor` carries the backend's
+  handle, and a native handle is a
   `resource`: resources are nominal to the `extern module` block that declares
   them and cannot cross into another module, so `Handle` (§2) can only name a
   handle type declared in this package, and the `Torch` arm of §7 can only
@@ -39,24 +40,28 @@ the grad-in-Agentica decision),
 
 ```text
 Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool
-Device  = Cpu                                                  # enum; one arm, the only device
+Device  = Cpu | Vulkan(Int)                                    # enum; Vulkan(i): ggml's device i
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
-Backend = Reference | Torch(Device) | Trace                    # enum, see §7, §10
-Handle  = Native(TensorHandle) | Plain(Data) | Traced(Node)    # enum, see §2, §10
+Backend = Reference | Torch(Device) | Trace | Ggml(Device)     # enum, see §7, §10
+Handle  = Native(TensorHandle) | Plain(Data) | Traced(Node)
+        | Ggml(ggml TensorHandle)                              # enum, see §2, §8, §10
 Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 ```
 
-- `Device` has one arm on purpose: `Backend.Torch(Device)` and every backend
-  function take the device explicitly (§4), and a second device, if one ever
-  serves, adds an arm without changing a signature. Dropping the enum would
-  rewrite them all for no gain.
+- `Device` names where a backend computes: `Cpu`, or `Vulkan(i)`, the Vulkan
+  device `i` in ggml's numbering. `Backend.Torch(Device)`, `Backend.Ggml(Device)`
+  and every backend function take the device explicitly (§4). `Torch` and
+  `Reference` serve `Cpu` only and answer `error` for `Vulkan`; `Ggml` serves
+  both.
 - `Tensor` values are **immutable**; every op returns a new `Tensor`.
   A training step returns new parameters.
 - `handle` is `Native(TensorHandle)` on the libtorch backend (a
   `struct NAME_state *` + thread-safe `NAME_FREE`, C data only, never terms;
-  valid only during the call, never stored) and `Plain(Data)` on `reference`,
-  where `Data` is plain Agentica data. `TensorHandle` is the resource the
+  valid only during the call, never stored), `Ggml(TensorHandle)` on the ggml
+  backend (the resource of `extern module "ggml"` in `src/ggml_native.agc`: a
+  ggml context and the backend buffer of one tensor on its device), and
+  `Plain(Data)` on `reference`, where `Data` is plain Agentica data. `TensorHandle` is the resource the
   `extern module "torch"` block of `src/native.agc` declares: a resource is
   nominal to its block, so the handle type has to be the concrete one and it
   has to live in this package (§7). A backend that only reads a handle it did
@@ -195,12 +200,13 @@ r: Result[Tensor] = case a.backend
   Backend.Reference -> Reference.matmul(a, b)              # src/reference.agc
   Backend.Torch(device) -> Torch.matmul(device, a, b)      # src/torch.agc
   Backend.Trace -> ok(Graph.record(Op.Matmul, [a, b], shape, a.dtype))   # §10
+  Backend.Ggml(_) -> Ggml.compiled_only("matmul")          # src/ggml.agc
 end
 ```
 
-- The `case` is checked and exhaustive over all three variants, which is the
-  property this shape buys: two compute backends (`Reference`, `Torch`) and the
-  `Trace` recorder (it records a node instead of computing, §10.1).
+- The `case` is checked and exhaustive over all four variants, which is the
+  property this shape buys: two compute backends (`Reference`, `Torch`), the
+  `Trace` recorder (it records a node instead of computing, §10.1), and `Ggml`.
 - The `Torch` arm calls `src/torch.agc`, which calls the `compute
   def`s of `extern module "torch"` (`src/native.agc`). Both files live in this
   package, and they have to: the arm needs the module's signatures, and the
@@ -233,6 +239,27 @@ end
   `tch-rs` does), declared as `[native.torch]`. Heavy third parties (ML
   engines, models) enter only as pinned git submodules under `third_party/`,
   never vendored.
+- **`Ggml` has no eager ops.** A Vulkan dispatch costs about 2 ms, so ggml is
+  fast only when a whole training step is one compiled graph
+  (`spike/ggml-graph/README.md`). Its arms create tensors (`zeros`, `ones`,
+  `empty`, `full`, `like`, `arange`, `scalar_to_tensor`, `from_list`), read
+  them back (`to_list`) and pass `stop_grad` through; every other primitive
+  answers `Ggml.compiled_only(op)`, an `error` that names the op and points at
+  `Trace`. A traced graph will compile to one ggml graph in a later step,
+  which also changes §10.3's "`evaluate` runs a graph through the public
+  `Tensor.*` calls" for this backend. Running each op as a one-node graph
+  would work, but it is a slow path nobody should train on, so it is not
+  offered.
+- The ggml module is `[native.ggml]`, `optional = true`, built from
+  `native/ggml.c` against the pinned `third_party/ggml`, which
+  `tools/build-engine.sh` builds CPU-only (CI) or with Vulkan (local). The
+  build table names one library, a linker script that script writes, so one
+  table links either tree; the C layer finds Vulkan devices through ggml's
+  backend registry at run time. `Tensor.available(Backend.Ggml(device))` is
+  `true` when the module is built and, for `Vulkan(i)`, ggml sees device `i`;
+  it opens no device. ggml stores `F32` and `I32`; `Bool`, `I8`, `I16` and
+  `U8` are stored as `F32` (exact for them), and `F16`, `F64`, `I64` and a
+  rank above 4 are refused.
 
 ## 8. Tensor lifetime
 
@@ -260,6 +287,15 @@ Usage for tensors:
   arena of its own (`test/torch_lifetime_test.agc`).
 - Only the returned `Tensor`(s) leave the arena; views keep their buffers
   through the rule above, so there is no explicit `keep` call.
+- `Handle.Ggml` follows the same rules: each creation call of `src/ggml.agc`
+  opens its own arena, and the resource owns one ggml context and one backend
+  buffer, freed together by its free hook. The device itself is opened once
+  per process and never closed: a buffer only needs its device's buffer type,
+  which lives as long as the process. Every Vulkan buffer operation
+  (allocate, write, read, free, the free hook included) runs under one lock in
+  the C layer, so tasks on one device never overlap a transfer. A compiled step (later) will own its graph and the train state
+  in a resource of its own, which `fit` creates and closes; the tensors it
+  returns are fresh `Handle.Ggml` values (no donation).
 - `compute def` kernels only push data or return a resource; the loop lives
   in Agentica and the native side never calls back (existing FFI invariant).
 

@@ -1,8 +1,8 @@
 ## Shared types of the `tensor/` package (`tensor/DESIGN.md` §2).
 ##
-## This module imports one thing: `src/native.agc`, the `extern module "torch"`
-## declaration whose `TensorHandle` resource the `Native` arm of `Handle`
-## names. Agentica resources are nominal to the block that declares them, so
+## This module imports two things: `src/native.agc` and `src/ggml_native.agc`,
+## the `extern module` declarations whose `TensorHandle` resources the
+## `Native` and `Ggml` arms of `Handle` name. Agentica resources are nominal to the block that declares them, so
 ## the backend's handle type has to be visible here for a `Tensor` to carry one
 ## (`tensor/DESIGN.md` §2, §7; agentica-lang/agentica#1918 is the way out).
 ## Everything else about this module is unchanged: the reference backend
@@ -16,6 +16,7 @@
 ## hold exactly integral values; `Bool` holds `1.0`/`0.0`. `Values` is the
 ## dtype-tagged crossing type for `from_list`/`to_list` only.
 
+import GgmlRaw from "ggml_native"
 import Raw from "native"
 
 enum Dtype
@@ -30,14 +31,18 @@ enum Dtype
   Bool
 end
 
+## Where a backend computes: the host CPU, or the Vulkan device of that index
+## (ggml's numbering). `Reference` and `Torch` serve `Cpu` only.
 enum Device
   Cpu
+  Vulkan(Int)
 end
 
 enum Backend
   Reference
   Torch(Device)
   Trace
+  Ggml(Device)
 end
 
 ## Plain Agentica backing store: the row-major values of one tensor.
@@ -47,14 +52,15 @@ end
 
 ## How a tensor's values are held. `Plain` is the reference backend, which
 ## owns Agentica data and needs no arena; `Native` is a handle of the libtorch
-## backend, owned by the task that made it and closed by the arena it was made
-## in, `Native.close`, or the end of the task (`tensor/DESIGN.md` §8). The
-## handle is the resource of the `torch` module, so it is typed by that
-## module's declaration and not by an opaque resource.
+## backend and `Ggml` one of the ggml backend, each owned by the task that made
+## it and closed by the arena it was made in, `Native.close`, or the end of the
+## task (`tensor/DESIGN.md` §8). Each handle is the resource of its module, so
+## it is typed by that module's declaration and not by an opaque resource.
 enum Handle
   Plain(Data)
   Native(Raw.TensorHandle)
   Traced(Node)
+  Ggml(GgmlRaw.TensorHandle)
 end
 
 ## One dtype-tagged value: the element type of `from_list`/`to_list`.
@@ -196,6 +202,7 @@ def is_finite(x: Float) -> Bool = x - x == 0.0
 def device_name(device: Device) -> String
   case device
     Device.Cpu -> "Cpu"
+    Device.Vulkan(i) -> "Vulkan(#{i})"
   end
 end
 
@@ -205,6 +212,7 @@ def backend_name(backend: Backend) -> String
     Backend.Reference -> "Reference"
     Backend.Torch(device) -> "Torch(#{device_name(device)})"
     Backend.Trace -> "Trace"
+    Backend.Ggml(device) -> "Ggml(#{device_name(device)})"
   end
 end
 

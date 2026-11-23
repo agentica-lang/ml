@@ -25,6 +25,7 @@ en `tensor/DESIGN.md`.
 | `asr/` (Whisper vía B): forward del modelo (stem conv, encoder, decoder, logits atados) cargado con los nombres de HF y el `config.json`; `Nn.Conv1d` y `Load.conv1d`. Solo referencia: en libtorch falta `gelu_tanh_approx`; deriva de la GELU tanh frente a la erf en el modelo de test: 1.7e-4 (encoder), 3.8e-5 (logits) | `asr/`, `nn/`, `hub/` | #27 |
 | Todos los miembros en agentica 0.36.0; `agentica test --max-steps` por archivo en CI, sin los apaños del presupuesto de pasos; pins entre miembros al día (instalan desde fuera del workspace); checks de gradiente completos en `nn/` | `*/AGENTICA_VERSION`, `.github/workflows/ci.yml` | (este PR) |
 | `tensor/`: fuera los stubs `Backend.Xla`/`Candle` y `Device.Cuda` (sin módulo, solo devolvían `error`); `Device` queda con el brazo `Cpu` | `tensor/` | (este PR) |
+| `tensor/` backend ggml, PR 1 de 6: `Device.Vulkan(Int)`, `Backend.Ggml(Device)`, `Handle.Ggml`; módulo nativo `ggml` opcional sobre `third_party/ggml`; crear, subir y leer en CPU y Vulkan, cualquier otra op da un error que apunta a `Trace`; CI compila ggml CPU (`tools/build-engine.sh`) | `tensor/` | (este PR) |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
 | Spike ggml-graph: un paso de entrenamiento trazado (forward, backward, SGD/Adam) bajado a **un** grafo ggml, construido una vez, en la iGPU por Vulkan | `spike/ggml-graph/` | #30 |
@@ -88,13 +89,18 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
    **probado** por el spike ggml-graph (#30): el grafo que `Trace` ya graba
    se baja entero a ggml.
 9. **Backend Vulkan/iGPU** como backend real (diseño y PRs en
-   `spike/ggml-graph/README.md`): `Device.Vulkan(Int)`, `Backend.Ggml(Device)`
-   y `Handle.Ggml` en `tensor/` como (b′) hasta #1918; `Train.fit` compila
+   `spike/ggml-graph/README.md`): el PR 1 (tipos, módulo, build) está hecho;
+   sigue el PR 2, el compilador del grafo con caché por estructura. `Train.fit` compila
    pérdida, gradientes y optimizador en un grafo con caché por estructura y
    deja parámetros y momentos en un estado de entrenamiento que `fit` posee
    y nunca devuelve; al final devuelve tensores nuevos (sin donación).
    `mul_mat` F32 por defecto; fp16 opcional y por proceso (1.1–1.5×, con
    error en los gradientes).
+   Notas para el PR 2: los intermedios del grafo compilado necesitan un
+   `ggml_gallocr` compartido (no un buffer por tensor, como en el PR 1), y
+   la elección fp16/F32 de Vulkan (`GGML_VK_DISABLE_F16`, por proceso) llega
+   con él. Un programa que enlace `whisper` y `tensor_ggml` lleva dos copias
+   de los símbolos de ggml (cada módulo enlaza ggml estático).
 10. Cuando cierre **#1918**: mover el backend libtorch a un paquete `torch/`.
 
 ## 4. Deuda y issues abiertos
@@ -126,4 +132,6 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
 - **El runner solo imprime PASS**: un test que hace SKIP no deja rastro
   visible, así que los skips deben ser estructurales (aserción del estado
   ausente), no un `puts` y `ok`.
-- **Vulkan no está en CI** (no hay driver pineable): el spike es local.
+- **Vulkan no está en CI** (no hay driver pineable): el CI compila ggml solo
+  CPU y corre allí los tests de `Backend.Ggml(Device.Cpu)`; los de Vulkan
+  corren en local y, sin dispositivo, afirman el estado ausente.

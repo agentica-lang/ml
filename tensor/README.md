@@ -3,8 +3,9 @@
 Functional tensors over pluggable backends: the public API (`tensor.agc`), a
 pure-Agentica **reference** backend that is the oracle, and the **libtorch
 (CPU, eager)** backend behind `extern module "torch"` and a thin C++ layer over
-libtorch's C++ API (as `tch-rs` is, in spirit). The contract is
-[`DESIGN.md`](DESIGN.md).
+libtorch's C++ API (as `tch-rs` is, in spirit), and the **ggml** backend (CPU
+and Vulkan) behind `extern module "ggml"`, which creates and reads back tensors
+until its graph compiler lands. The contract is [`DESIGN.md`](DESIGN.md).
 
 libtorch is a **system dependency**, never vendored and never downloaded by
 this repository: `tools/build-torch.sh` finds it through `TORCH_DIR`, or in
@@ -43,6 +44,11 @@ answers whether this machine has it, and the dispatch arm answers
   table cannot name (`TORCH_DIR`, `CC` with the rpath, `CPLUS_INCLUDE_PATH`,
   `LIBRARY_PATH`, `LD_LIBRARY_PATH`). Without a libtorch it exits 1 and says
   what it looked for.
+- `src/ggml.agc`, `src/ggml_native.agc`, `native/ggml.c` — the ggml backend
+  (CPU and Vulkan): creation, upload and readback over the pinned
+  `third_party/ggml`; see "The ggml backend" below.
+- `tools/build-engine.sh` — builds ggml (CPU, or CPU + Vulkan) and prints its
+  exports; CI runs it.
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
 - `test/` — the unit tests of the reference backend, the libtorch conformance
   suite (`test/torch_*_test.agc`) that runs the same public call on both
@@ -160,6 +166,52 @@ that `Tensor.available(...)` is false and that the dispatch arm answers an
 **that warning line is the signal that the conformance comparison did NOT
 run**.
 
+## The ggml backend
+
+`Backend.Ggml(Device.Cpu)` is ggml's CPU backend and
+`Backend.Ggml(Device.Vulkan(i))` the Vulkan device `i` (on this machine, the
+Vega iGPU through RADV). ggml is the pinned submodule `third_party/ggml`, built
+here and never vendored:
+
+```sh
+git -C .. submodule update --init third_party/ggml
+eval "$(sh tools/build-engine.sh | grep '^export ')"          # CPU only, about a minute cold
+eval "$(JOBS=2 sh tools/build-engine.sh vulkan | grep '^export ')"   # CPU + Vulkan
+eval "$(sh tools/build-torch.sh)"   # optional, after it: both modules then build with g++
+agentica test --max-steps 10000000
+```
+
+The script runs on Linux x86_64 only (a GNU ld linker script, AVX2 flags) and
+fails early elsewhere. The Vulkan build needs the Vulkan headers and loader, `glslc` and
+`SPIRV-Headers` (`libvulkan-dev`, `glslc`, `spirv-headers`, or a Vulkan SDK in
+`$VULKAN_SDK` or `$HOME/.local/vulkan-sdk/usr`); the script lists what is
+missing. The exports are `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` (g++ ignores
+the first) and `LIBRARY_PATH`. The last one points at the build tree, where the
+script writes `libtensor_ggml.a`: a linker script naming ggml's archives, plus
+`ggml-vulkan` and the Vulkan loader for the Vulkan tree. `agentica.toml` links
+that one name, so one build table serves both trees, and `native/ggml.c` finds
+Vulkan through ggml's backend registry at run time, so it has no `#ifdef`.
+The package cache keys a module on those paths, not on the libraries in them:
+after a bump of the ggml pin, run the script again and remove the cached build
+(`rm -rf ~/.cache/agentica/pkg/native-build`) so the module links the new ggml.
+
+What it does today: `zeros`, `ones`, `empty`, `full`, `like`, `arange`,
+`scalar_to_tensor`, `from_list` and `to_list`, plus `stop_grad` (the
+identity). Every other op answers an error naming it and pointing at `Trace`:
+ggml is fast only when a whole step is one compiled graph, and that compiler is
+the next step (`DESIGN.md` §7). ggml holds `F32` and `I32`; `Bool`, `I8`, `I16`
+and `U8` are held as `F32`, which is exact for them; `F16`, `F64` and `I64` are
+refused, and so is a rank above 4. A fill is made in C, so it has no
+`List.repeat` cap. Vulkan buffer operations (allocate, write, read, free) run
+under one lock, so tasks can share a device. `Device.Vulkan(i)` counts only
+devices that are not a CPU (a software rasterizer is skipped).
+
+`test/ggml_test.agc` round-trips every creation call against the reference on
+the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan
+device. Without the module, or without a Vulkan device, it asserts the absent
+state instead. With `TENSOR_REQUIRE_GGML` set (CI sets it for this package) a
+missing module fails the checks instead of passing them.
+
 ## CI
 
 `.github/workflows/ci.yml` has one generic job per package folder. It runs
@@ -176,6 +228,10 @@ run**.
   libtorch are the same one-line warning inside a green job.
 - The libtorch comparison runs locally, with libtorch 2.4.1+cpu at
   `$HOME/opt/libtorch`.
+- CI **does** build ggml's CPU backend (`tools/build-engine.sh`, the
+  workflow's engine step), so `native/ggml.c` compiles and the ggml CPU
+  checks run there; `TENSOR_REQUIRE_GGML=1` makes a module that did not build
+  fail them. Vulkan runs locally only: no hosted runner has a device.
 
 ## Tolerances, and why
 
