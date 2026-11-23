@@ -93,7 +93,8 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
    `spike/ggml-graph/README.md`): el PR 1 (tipos, módulo, build) y el PR 2
    (compilador del grafo con caché por estructura, `Trace.evaluate`) están
    hechos; siguen fp16 opcional, `to_device` y las medidas (PR 2b), y el
-   PR 3, el paso de entrenamiento en un grafo con estado. `Train.fit` compila
+   PR 3, el paso de entrenamiento en un grafo con estado. `Train.fit`
+   compila
    pérdida, gradientes y optimizador en un grafo con caché por estructura y
    deja parámetros y momentos en un estado de entrenamiento que `fit` posee
    y nunca devuelve; al final devuelve tensores nuevos (sin donación).
@@ -101,8 +102,8 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
    error en los gradientes).
    Notas para el PR 3: escrituras de vuelta a los parámetros (con las
    comprobaciones de swap y doble escritura del spike) y el optimizador en
-   el mismo grafo. Un programa que enlace `whisper` y `tensor_ggml` lleva dos copias
-   de los símbolos de ggml (cada módulo enlaza ggml estático).
+   el mismo grafo. Un programa que enlace `whisper` y `tensor_ggml` lleva
+   dos copias de los símbolos de ggml (cada módulo enlaza ggml estático).
 10. Cuando cierre **#1918**: mover el backend libtorch a un paquete `torch/`.
 
 ## 4. Deuda y issues abiertos

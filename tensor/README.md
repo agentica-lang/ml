@@ -199,23 +199,23 @@ after a bump of the ggml pin, run the script again and remove the cached build
 
 What it does: `zeros`, `ones`, `empty`, `full`, `like`, `arange`,
 `scalar_to_tensor`, `from_list` and `to_list` eagerly, plus `stop_grad` (the
-identity). Every other op answers an error naming it and
-pointing at `Trace`: ggml is fast only when a whole computation is one graph.
-`Trace.eval`, `Trace.value_and_grad` and `Trace.grad` on `Ggml` tensors lower
-the whole traced graph, forward and backward, to one ggml graph and run it
-(`DESIGN.md` §7). The graph is cached by its structure (ops, shapes, dtypes,
-integer parameters), not by the values of its inputs, constants or fills, so
-a training loop that retraces every step compiles once. Inputs are read in
-place and outputs written into fresh tensors, with no copy. The ops lowered
-are those of an MLP and softmax cross-entropy with their gradients (the list
-is in §7); any other op, a dtype `F32` does not hold exactly and an output
-that is not finite are errors. Vulkan computes `mul_mat` in `F32` (ggml's
-fp16 changes gradients by up to about 10 % at MLP sizes). ggml holds `F32` and `I32`; `Bool`, `I8`, `I16`
-and `U8` are held as `F32`, which is exact for them; `F16`, `F64` and `I64` are
-refused, and so is a rank above 4. A fill is made in C, so it has no
-`List.repeat` cap. Vulkan buffer operations (allocate, write, read, free) run
-under one lock, so tasks can share a device. `Device.Vulkan(i)` counts only
-devices that are not a CPU (a software rasterizer is skipped).
+identity). Every other op answers an error naming it and pointing at `Trace`:
+ggml is fast only when a whole computation is one graph. `Trace.eval`,
+`Trace.value_and_grad` and `Trace.grad` on `Ggml` tensors lower the whole traced
+graph, forward and backward, to one ggml graph and run it (`DESIGN.md` §7). The
+graph is cached by its structure (ops, shapes, dtypes, integer parameters), not
+by the values of its inputs, constants or fills, so a training loop that
+retraces every step compiles once. Inputs are read in place and outputs written
+into fresh tensors, with no copy. The ops lowered are those of an MLP and
+softmax cross-entropy with their gradients (the list is in §7); any other op, a
+dtype `F32` does not hold exactly and an output that is not finite are errors.
+Vulkan computes `mul_mat` in `F32` (ggml's fp16 changes gradients by up to about
+10 % at MLP sizes). ggml holds `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are
+held as `F32`, which is exact for them; `F16`, `F64` and `I64` are refused, and
+so is a rank above 4. A fill is made in C, so it has no `List.repeat` cap.
+Vulkan buffer operations (allocate, write, read, free) run under one lock, so
+tasks can share a device. `Device.Vulkan(i)` counts only devices that are not a
+CPU (a software rasterizer is skipped).
 
 `test/ggml_test.agc` round-trips every creation call against the reference on
 the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan
