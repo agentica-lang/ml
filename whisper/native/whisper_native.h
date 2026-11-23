@@ -34,7 +34,7 @@ typedef struct {
 enum { WHISPER_TYPE_Options = 0, WHISPER_TYPE_Segment = 1, WHISPER_TYPE_Transcript = 2, WHISPER_TYPE_SegmentDetail = 3, WHISPER_TYPE_Detection = 4, WHISPER_TYPE_Token = 5 };
 
 /* The fields of Options, in declared order. */
-enum { WHISPER_Options_language = 0, WHISPER_Options_translate = 1, WHISPER_Options_beam_size = 2, WHISPER_Options_token_timestamps = 3, WHISPER_Options_max_len = 4, WHISPER_Options_detect_language = 5 };
+enum { WHISPER_Options_language = 0, WHISPER_Options_translate = 1, WHISPER_Options_beam_size = 2, WHISPER_Options_token_timestamps = 3, WHISPER_Options_max_len = 4, WHISPER_Options_language_probabilities = 5 };
 
 /* The fields of Segment, in declared order. */
 enum { WHISPER_Segment_start_ms = 0, WHISPER_Segment_end_ms = 1, WHISPER_Segment_text = 2 };
@@ -81,7 +81,7 @@ typedef struct {
   int64_t beam_size;
   bool token_timestamps;
   int64_t max_len;
-  bool detect_language;
+  bool language_probabilities;
 } whisper_Options;
 bool whisper_Options_get(an_env *env, an_term t, whisper_Options *out);
 
@@ -335,7 +335,7 @@ static bool whisper_native_get_Options(an_env *env, an_term t, whisper_Options *
   if (!an_get_field(env, t, WHISPER_TYPE_Options, 4, &x)) return ng_expected(fail, "Options");
   if (!an_get_int(env, x, &out->max_len)) return ng_leaf(fail, "Int", "max_len");
   if (!an_get_field(env, t, WHISPER_TYPE_Options, 5, &x)) return ng_expected(fail, "Options");
-  if (!an_get_bool(env, x, &out->detect_language)) return ng_leaf(fail, "Bool", "detect_language");
+  if (!an_get_bool(env, x, &out->language_probabilities)) return ng_leaf(fail, "Bool", "language_probabilities");
   return true;
 }
 
@@ -532,7 +532,7 @@ static const an_function whisper_native_functions[] = {
 };
 
 static const an_type whisper_native_types[] = {
-  {"Options", AN_STRUCT, "language: String, translate: Bool, beam_size: Int, token_timestamps: Bool, max_len: Int, detect_language: Bool"},
+  {"Options", AN_STRUCT, "language: String, translate: Bool, beam_size: Int, token_timestamps: Bool, max_len: Int, language_probabilities: Bool"},
   {"Segment", AN_STRUCT, "start_ms: Int, end_ms: Int, text: String"},
   {"Transcript", AN_STRUCT, "language: String, segments: List[SegmentDetail], detection: Optional[Detection]"},
   {"SegmentDetail", AN_STRUCT, "start_ms: Int, end_ms: Int, text: String, tokens: List[Token], avg_logprob: Float, no_speech_probability: Float"},

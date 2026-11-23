@@ -61,18 +61,23 @@ end
   the text of that stretch trimmed of surrounding whitespace, which may leave
   it empty.
 - `Options` is `language: String = ""` and `translate: Bool = false`, plus
-  `beam_size`, `token_timestamps`, `max_len` and `detect_language` (below).
+  `beam_size`, `token_timestamps`, `max_len` and `language_probabilities` (below).
   `""` keeps the engine default (English), `"auto"` detects the language from
   the audio, and a code such as `"es"` pins it (whisper.cpp's own codes, 32
-  bytes at most). `translate: true` answers in English instead of the spoken
-  language, whichever `language` is pinned. `beam_size` from 2 to 8 decodes
-  with beam search; 0 (the default) or 1 decodes greedily.
+  bytes at most; an unknown code is an error). `translate: true` answers in
+  English instead of the spoken language, whichever `language` is pinned.
+  `beam_size` from 2 to 8 decodes with beam search; 0 (the default) or 1
+  decodes greedily. An English-only model (`.en`) always decodes English and
+  never translates, as whisper.cpp's server does.
 
 `transcribe_detailed(model, pcm, options)` runs the same decode and returns
-a `Transcript`, what an HTTP server such as whisper.cpp's `verbose_json` needs:
+a `Transcript`, what an HTTP server such as whisper.cpp's `verbose_json` needs.
+To get the segments and tokens that server gives, send its options:
+`token_timestamps: true`, `max_len: 60` and `language_probabilities: true`
+(below):
 
 ```agc
-options = Whisper.Options(language: "auto", token_timestamps: true, max_len: 60, detect_language: true)
+options = Whisper.Options(language: "auto", token_timestamps: true, max_len: 60, language_probabilities: true)
 transcript = try Whisper.transcribe_detailed(model, pcm, options)
 puts(Whisper.language_name(transcript.language))   # some("english")
 ```
@@ -87,13 +92,17 @@ puts(Whisper.language_name(transcript.language))   # some("english")
   `log_probability` (of all of them), `start_ms` and `end_ms`. Special tokens
   are left out, and the tokens that together spell one UTF-8 character are
   one `Token`. The times are -10 unless `token_timestamps` is on.
-- `max_len` (with `token_timestamps`) ends a segment once its text reaches
-  that many characters, on a token boundary, so a segment may end inside a
-  character: bytes that are not whole UTF-8 become U+FFFD, in tokens and
-  segments alike.
-- `detect_language: true` runs the encoder once more on the first 30 s to
-  fill `detection`: the most probable language code, its probability and the
-  probability of every language. Without it `detection` is none.
+- `max_len` (with `token_timestamps`) cuts the segments on token boundaries
+  so that each holds at most that many characters (one longer token stays
+  whole). A cut may fall inside a character: each maximal ill-formed UTF-8
+  subpart becomes one U+FFFD, in tokens and segments alike, as the server's
+  JSON writer does.
+- `language_probabilities: true` runs the encoder once more on the first 30 s
+  to fill `detection`: the most probable language code, its probability and
+  the probability of every language. Without it, or with an English-only
+  model, `detection` is none. On very short audio (well under a second) the
+  detection still runs on 30 s of mostly padding, so its probabilities say
+  little.
 
 `language_name(code)` is the engine's English name of a code (`"es"` is
 `"spanish"`), none for a code it does not know.
@@ -207,7 +216,12 @@ ggml's Vulkan backend (it needs the Vulkan headers and loader, `glslc` and
 instead. Both trees give the module one library, `whisper_engine`, a GNU ld
 linker script over the tree's archives, so one `agentica.toml` links either;
 the package cache keeps one module per tree. A model then loads on the first
-Vulkan device, and on the CPU when there is none.
+Vulkan device, and on the CPU when there is none. The script works on Linux
+x86_64 only, for both trees (the GROUP linker script is GNU ld's, and the
+flags pin AVX2).
+
+One program links one ggml: `tensor/`'s ggml module or this engine's, never
+both, since each carries its own copy of ggml's symbols and backends.
 
 `tools/build-engine.sh` builds the pinned engine submodule (static; needs
 cmake and a C/C++ compiler) and prints the
@@ -248,7 +262,12 @@ agentica test live/      # model-bound runner checks (needs models/ggml-tiny.bin
 agentica live/transcribe_jfk.agc       # English, real transcription (runs are not step-capped)
 agentica live/transcribe_detailed.agc  # tokens, detection, max_len and beam search
 agentica live/transcribe_spanish.agc   # Spanish, options and timed segments
+agentica live/server_parity.agc path/to/ggml-medium.bin   # by hand: agreement with whisper.cpp's server
 ```
+
+CI runs all of these but the last on the CPU tree. The Vulkan tree and
+`live/server_parity.agc` are tested only locally (CI has no GPU and does not
+fetch the medium model).
 
 ## What each layer covers
 
@@ -282,6 +301,15 @@ one of them:
     words, not a transcript: the fixture is short and synthesised
     (`live/fixtures/es-hola.wav`, made with piper `es_ES-davefx-medium`, MIT),
     so which words survive is not worth betting on.
+- **Agreement with whisper.cpp's server** (`live/server_parity.agc`, by hand,
+  needs the medium model): `jfk.wav` and the Spanish fixture against the
+  `verbose_json` answers that a whisper.cpp server with the same model gave
+  (`live/fixtures/server-*-medium.json`): the languages, the detected
+  probability and the top three languages, each segment's text, times, token
+  ids, `avg_logprob` and `no_speech_prob`, and each token's text (non-ASCII
+  included) and probability, within a tolerance. It passes on the CPU and
+  the Vulkan tree. Token times are not compared: they move by up to 0.7 s
+  between backends.
 - **Live, microphone** (`live/mic_live_test.agc`, no model): where a capture
   command and a device exist it captures half a second and asserts the sample
   count; everywhere else it prints its SKIP lines and passes, so CI never
@@ -294,11 +322,13 @@ one of them:
 One `transcribe_with` call takes 1–4 800 000 samples (five minutes at 16 kHz);
 more, none, or a non-finite sample is an error, never a halt, and so is a
 language code past 32 bytes, a `beam_size` outside 0–8, a `max_len` outside
-0–100 000 or more than a megabyte of segment and token text. `load_model`
-copies paths of 4096 bytes at most. The library thread count and the engine's
-other defaults stay. Every failure is an `error`; the native side frees the audio,
-the language copy and the segment list on every path, and holds the per-model
-mutex only for the decode itself.
+0–100 000, an unknown language code, or more than a megabyte of text (the
+segments' text, plus the tokens' for `transcribe_detailed`). `load_model`
+copies paths of 4096 bytes at most. The library thread count and the
+engine's other defaults stay. Every failure is an `error`; the native side
+frees the audio and the text buffers on every path, and holds the per-model
+mutex for the decode, the detection and the copy of the results, nothing
+else.
 
 One `Mic.capture` keeps 1–4 800 000 samples (five minutes at most) with a
 timeout of at least 1 ms per read; a missing command, a timed-out read, no

@@ -122,6 +122,19 @@ static bool whisper_is_space(char c) {
   return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
 }
 
+/* Whether CODE is "auto" or a language code the engine knows. */
+static bool whisper_known_language(ng_str code) {
+  char copy[WHISPER_LANG_MAX + 1];
+
+  if (code.len > WHISPER_LANG_MAX || memchr(code.data, '\0', code.len) != NULL) {
+    return false;
+  }
+
+  memcpy(copy, code.data, code.len);
+  copy[code.len] = '\0';
+  return strcmp(copy, "auto") == 0 || whisper_lang_id(copy) >= 0;
+}
+
 /* The checks every decode shares, before any work: the message of the first
    one that fails, or NULL. */
 static const char * whisper_check_call(const struct whisper_Model_state * model, const whisper_list_Float * pcm,
@@ -140,6 +153,10 @@ static const char * whisper_check_call(const struct whisper_Model_state * model,
 
   if (options->language.len > WHISPER_LANG_MAX) {
     return "transcribe_with takes a language code of 32 bytes at most";
+  }
+
+  if (options->language.len > 0 && !whisper_known_language(options->language)) {
+    return "transcribe_with does not know that language code";
   }
 
   if (options->beam_size < 0 || options->beam_size > WHISPER_MAX_BEAMS) {
@@ -196,7 +213,8 @@ static const char * whisper_take_samples(an_env * env, whisper_list_Float * pcm,
    while a String argument is UTF-8 with no NUL at its end, so the copy gives
    it one. "" keeps the library default ("en"), and "auto" or a code such as
    "es" goes through as it is (the engine reads "auto" as detection). */
-static struct whisper_full_params whisper_params_for(const whisper_Options * options, char * language) {
+static struct whisper_full_params whisper_params_for(struct whisper_context * ctx, const whisper_Options * options,
+                                                     char * language) {
   bool beam = options->beam_size > 1;
   struct whisper_full_params wparams =
       whisper_full_default_params(beam ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY);
@@ -220,6 +238,13 @@ static struct whisper_full_params whisper_params_for(const whisper_Options * opt
     memcpy(language, options->language.data, options->language.len);
     language[options->language.len] = '\0';
     wparams.language = language;
+  }
+
+  /* An English-only model (`.en`) decodes English and cannot translate,
+     whatever the options say: whisper.cpp's server does the same. */
+  if (!whisper_is_multilingual(ctx)) {
+    wparams.language = "en";
+    wparams.translate = false;
   }
 
   return wparams;
@@ -247,7 +272,7 @@ an_term whisper_transcribe_with(an_env *env, struct whisper_Model_state *model, 
   }
 
   char language[WHISPER_LANG_MAX + 1];
-  struct whisper_full_params wparams = whisper_params_for(&options, language);
+  struct whisper_full_params wparams = whisper_params_for(model->ctx, &options, language);
 
   if (pthread_mutex_lock(&model->mutex) != 0) {
     free(samples);
@@ -342,20 +367,23 @@ static bool whisper_text_reserve(struct whisper_text * text, size_t more) {
   return true;
 }
 
-/* The length of the well-formed UTF-8 sequence at IN (LEN bytes left), or 0
-   when it is not one: an overlong form, a surrogate, past U+10FFFF or cut. */
-static size_t whisper_utf8_sequence(const unsigned char * in, size_t len) {
+/* The length of the UTF-8 sequence at IN (LEN bytes left): *VALID says
+   whether it is well-formed. An ill-formed one is its maximal subpart (a lead
+   byte and the continuation bytes it allows, cut short), or one byte that
+   starts nothing: what Unicode replaces with one U+FFFD, as nlohmann's
+   `replace` (whisper.cpp's server) does. */
+static size_t whisper_utf8_sequence(const unsigned char * in, size_t len, bool * valid) {
   unsigned char c = in[0];
-
-  if (c < 0x80) {
-    return 1;
-  }
-
   size_t need = 0;
   unsigned char low = 0x80;
   unsigned char high = 0xBF;
 
-  if (c >= 0xC2 && c <= 0xDF) {
+  *valid = false;
+
+  if (c < 0x80) {
+    *valid = true;
+    return 1;
+  } else if (c >= 0xC2 && c <= 0xDF) {
     need = 2;
   } else if (c >= 0xE0 && c <= 0xEF) {
     need = 3;
@@ -366,48 +394,54 @@ static size_t whisper_utf8_sequence(const unsigned char * in, size_t len) {
     low = c == 0xF0 ? 0x90 : 0x80;
     high = c == 0xF4 ? 0x8F : 0xBF;
   } else {
-    return 0;
+    return 1;
   }
 
-  if (len < need || in[1] < low || in[1] > high) {
-    return 0;
-  }
+  size_t k = 1;
 
-  for (size_t k = 2; k < need; k++) {
-    if (in[k] < 0x80 || in[k] > 0xBF) {
-      return 0;
+  while (k < need && k < len) {
+    unsigned char lo = k == 1 ? low : 0x80;
+    unsigned char hi = k == 1 ? high : 0xBF;
+
+    if (in[k] < lo || in[k] > hi) {
+      break;
     }
+
+    k++;
   }
 
-  return need;
+  *valid = k == need;
+  return k;
 }
 
-/* Replaces TEXT with its bytes as valid UTF-8: each byte that starts no
-   well-formed sequence becomes U+FFFD, as whisper.cpp's server writes it. The
-   engine cuts text on token boundaries, which may fall inside a character.
-   SCRATCH holds the copy; false when it runs out of memory. */
+/* Replaces TEXT with its bytes as valid UTF-8: each maximal ill-formed
+   subpart becomes one U+FFFD. The engine cuts text on token boundaries, which
+   may fall inside a character. SCRATCH holds the copy; false when it runs out
+   of memory. */
 static bool whisper_utf8_clean(struct whisper_text * scratch, const char * in, size_t len, ng_str * out) {
   scratch->len = 0;
 
   for (size_t at = 0; at < len;) {
-    size_t n = whisper_utf8_sequence((const unsigned char *)in + at, len - at);
+    bool valid = false;
+    size_t n = whisper_utf8_sequence((const unsigned char *)in + at, len - at, &valid);
 
-    if (!whisper_text_reserve(scratch, n > 0 ? n : 3)) {
+    if (!whisper_text_reserve(scratch, valid ? n : 3)) {
       return false;
     }
 
-    if (n > 0) {
+    if (valid) {
       memcpy(scratch->data + scratch->len, in + at, n);
       scratch->len += n;
-      at += n;
     } else {
       memcpy(scratch->data + scratch->len, "\xEF\xBF\xBD", 3);
       scratch->len += 3;
-      at += 1;
     }
+
+    at += n;
   }
 
-  *out = (ng_str){scratch->data, scratch->len};
+  /* an_string takes "" for no bytes, never a NULL buffer. */
+  *out = scratch->len > 0 ? (ng_str){scratch->data, scratch->len} : (ng_str){"", 0};
   return true;
 }
 
@@ -637,7 +671,7 @@ an_term whisper_transcribe_detailed(an_env *env, struct whisper_Model_state *mod
   }
 
   char language[WHISPER_LANG_MAX + 1];
-  struct whisper_full_params wparams = whisper_params_for(&options, language);
+  struct whisper_full_params wparams = whisper_params_for(model->ctx, &options, language);
 
   if (pthread_mutex_lock(&model->mutex) != 0) {
     free(samples);
@@ -657,7 +691,8 @@ an_term whisper_transcribe_detailed(an_env *env, struct whisper_Model_state *mod
 
   transcript.detection = an_none(env);
 
-  if (rc == 0 && options.detect_language) {
+  /* An English-only model detects nothing: detection stays none. */
+  if (rc == 0 && options.language_probabilities && whisper_is_multilingual(model->ctx)) {
     rc = whisper_detection(env, model->ctx, wparams.n_threads, &transcript.detection);
   }
 

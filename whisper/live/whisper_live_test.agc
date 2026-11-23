@@ -58,14 +58,14 @@ def test_detailed_silence_detects_a_language_and_has_no_text() -> Result[Void]
   end
 
   model = try Whisper.load_model(MODEL_PATH)
-  options = Whisper.Options(language: "auto", detect_language: true)
+  options = Whisper.Options(language: "auto", language_probabilities: true)
   transcript = try Whisper.transcribe_detailed(model, zeros, options)
   case transcript.detection
     some(detection) ->
       try Test.eq(detection.probabilities.get(detection.language), some(detection.probability))
       Test.assert(transcript.segments.all? do |segment| segment.text.strip.empty? end, "silence gave text")
 
-    none -> Test.assert(false, "detect_language gave no detection")
+    none -> Test.assert(false, "language_probabilities gave no detection")
   end
 end
 
@@ -88,5 +88,13 @@ def test_transcribe_errors_on_a_negative_max_len() -> Result[Void]
   case Whisper.transcribe_with(model, [0.0], Whisper.Options(max_len: -1))
     ok(_) -> Test.assert(false, "transcribe_with took a negative max_len")
     error(e) -> Test.eq(e.message, "transcribe_with takes a max_len from 0 to 100000")
+  end
+end
+
+def test_transcribe_errors_on_an_unknown_language() -> Result[Void]
+  model = try Whisper.load_model(MODEL_PATH)
+  case Whisper.transcribe_detailed(model, [0.0], Whisper.Options(language: "xx"))
+    ok(_) -> Test.assert(false, "transcribe_detailed took the language xx")
+    error(e) -> Test.eq(e.message, "transcribe_with does not know that language code")
   end
 end

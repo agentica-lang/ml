@@ -35,7 +35,9 @@ export Wav.load
 ## `Options()` is the engine's own default (English, greedy, no translation).
 struct Options
   ## The language of the speech. `""` keeps the engine default (English),
-  ## `"auto"` detects it from the audio, and a code such as `"es"` pins it.
+  ## `"auto"` detects it from the audio, and a code such as `"es"` pins it;
+  ## a code the engine does not know is an error. An English-only model
+  ## (`.en`) always decodes English and never translates.
   language: String = ""
   ## Translate to English instead of transcribing in the spoken language.
   translate: Bool = false
@@ -43,13 +45,15 @@ struct Options
   beam_size: Int = 0
   ## Times each token (`Token.start_ms` and `end_ms` of `transcribe_detailed`).
   token_timestamps: Bool = false
-  ## With `token_timestamps`, ends a segment once its text reaches this many
-  ## characters, on a token boundary; 0 is no limit.
+  ## With `token_timestamps`, cuts the segments on token boundaries so that
+  ## each holds at most this many characters (a single longer token stays
+  ## whole); 0 is no limit. whisper.cpp's server uses 60 for `verbose_json`.
   max_len: Int = 0
   ## Also detects the language of the first 30 s of audio, whatever
-  ## `language` pins, and returns it in `Transcript.detection`. It runs the
-  ## encoder once more.
-  detect_language: Bool = false
+  ## `language` pins, and returns every language's probability in
+  ## `Transcript.detection`. It runs the encoder once more; an English-only
+  ## model gives no detection.
+  language_probabilities: Bool = false
 end
 
 ## One stretch of transcribed audio, timed by the engine: `start_ms` and
@@ -109,7 +113,8 @@ struct Transcript
   ## The language decoded, as a code: the pinned one, or the one detected.
   language: String
   segments: List[SegmentDetail]
-  ## The detection, when `Options.detect_language` asked for it.
+  ## The detection, when `Options.language_probabilities` asked for it and the
+  ## model is multilingual.
   detection: Optional[Detection]
 end
 

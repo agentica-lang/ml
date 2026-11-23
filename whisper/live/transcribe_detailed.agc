@@ -16,9 +16,9 @@ import Whisper from "../whisper"
 SAMPLE_PATH = "../third_party/whisper.cpp/samples/jfk.wav"
 MODEL_PATH = "models/ggml-tiny.bin"
 
-## The longest segment text `max_len: 60` allows: 60 characters plus the
-## token that crossed the limit, which the engine keeps whole.
-MAX_SEGMENT_CHARS = 80
+## The longest segment text `max_len: 60` allows: the engine cuts before the
+## token that would pass it (no token of this sample is longer).
+MAX_SEGMENT_CHARS = 60
 
 def main() -> Void
   case run()
@@ -32,10 +32,10 @@ end
 def run() -> Result[Void]
   pcm = try Whisper.load(SAMPLE_PATH)
   model = try Whisper.load_model(MODEL_PATH)
-  options = Whisper.Options(language: "auto", token_timestamps: true, max_len: 60, detect_language: true)
+  options = Whisper.Options(language: "auto", token_timestamps: true, max_len: 60, language_probabilities: true)
   transcript = try Whisper.transcribe_detailed(model, pcm, options)
   try expect(transcript.language == "en", "decoded language #{transcript.language}, want en")
-  detection = try transcript.detection.to_result("detect_language gave no detection")
+  detection = try transcript.detection.to_result("language_probabilities gave no detection")
   try expect(detection.language == "en", "detected #{detection.language}, want en")
   try expect(detection.probability > 0.5, "en has probability #{detection.probability}")
   try expect(transcript.segments.size > 1, "max_len 60 left #{transcript.segments.size} segment")
