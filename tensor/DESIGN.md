@@ -379,9 +379,9 @@ Why this and not the alternatives:
 The price:
 
 - An op on a traced tensor that has no backward rule cannot be refused by the
-  checker. Today such an op answers `error("<op> cannot be traced yet")` at
-  trace time; an op recorded without a rule makes `gradients` answer an error
-  that names the op.
+  checker. Every op of §3.1 records a node, so any traced function runs
+  forward; a gradient that has to pass through an op with no rule makes
+  `gradients` answer `error("<op> has no backward rule yet")`, at run time.
 - An eager tensor and a traced one never mix (`same_backend`): a tensor from
   outside the function enters with `Trace.constant(t)`, explicitly.
 - `Backend` and `Handle` carry a variant that no compute backend handles; a
@@ -426,22 +426,31 @@ The price:
   `keep_dims` and `reshape`). The gradient graph can be evaluated, inspected or
   compiled like any other, and `wrt` may name any node, not only an input.
 - Cotangents flow only into arguments on a path to `wrt`; a `wrt` node the
-  output does not reach gets zeros. Comparisons and the condition of `where`
-  cut the gradient. `relu`'s derivative at `0` is `0`.
+  output does not reach gets zeros. A node that is not float (`eq`, `lt`,
+  `argmax`, `arange`, an integer `to_dtype`) carries no gradient, so
+  comparisons and index ops cut it, and so does the condition of `where`.
+  `relu`'s derivative at `0` is `0`.
 - `evaluate` runs a graph through the public `Tensor.*` calls on the inputs'
   backend, computing each node once; a lifted constant must live on that
   backend. `value_and_grad` evaluates the output and its gradients in one
   pass, so the backward reads the forward values it shares. Backends stay
   forward-only.
 - First rules: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `relu`,
-  `matmul`, `transpose`, `sum`, `mean`, `broadcast_to`, `reshape` and `where`.
-  Each is tested against a central difference of the traced function on the
-  reference backend. On libtorch, the forward ops of a 2-layer MLP's gradient
-  graph are run and compared with the reference.
-- Still open: recording the rest of §3.1 (with or without a rule),
-  `stop_grad`, the rule of `where`'s condition for gradients of gradients,
-  `vmap`/`jit`, and how an evaluation's intermediate tensors map onto the
-  arenas of §8 (today they live until `evaluate` returns).
+  `matmul`, `transpose`, `sum`, `mean`, `broadcast_to`, `reshape`, `where`,
+  and the identity of `copy`, `contiguous` and `to_device` to `Cpu` (every
+  backend that computes today is on `Cpu`; a move across devices answers an
+  error). Each is tested against a central difference of the traced
+  function on the reference backend. On libtorch, the forward ops of a
+  2-layer MLP's gradient graph are run and compared with the reference.
+- A parity suite runs every op of §3.1 traced (`Trace.eval`) and eagerly over
+  good and bad inputs: both fail, or both give the same shape, dtype and
+  values, and the shape and dtype a trace records are the eager ones.
+- Still open: rules for the rest of §3.1; `stop_grad`, which `softmax` waits
+  for (its max-subtraction goes through `max`, which has no rule, and needs
+  no gradient); `to_dtype` between float dtypes (a precision cast); the rule
+  of `where`'s condition for gradients of gradients; `vmap`/`jit`; and how an
+  evaluation's intermediate tensors map onto the arenas of §8 (today they
+  live until `evaluate` returns).
 
 ## 11. Conformance (proposal)
 

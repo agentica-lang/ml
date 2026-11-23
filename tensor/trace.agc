@@ -47,7 +47,7 @@ def gradients(out: Types.Tensor, wrt: List[Types.Tensor]) -> Result[List[Types.T
   for t in nodes
     args = try args_of(t)
     depends = args.any? { |a| needed.include?(id_of(a)) }
-    if wanted.include?(id_of(t)) or depends
+    if Types.is_float_dtype(t.dtype) and (wanted.include?(id_of(t)) or depends)
       needed = needed.add(id_of(t))
     end
   end
@@ -244,8 +244,37 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.Mean(axes, keep_dims) -> part(mean_rule(ct, x, axes, keep_dims))
     Types.Op.BroadcastTo -> part(unbroadcast(ct, x.shape))
     Types.Op.Reshape -> part(Tensor.reshape(ct, x.shape))
+    Types.Op.Copy -> ok(some(ct))
+    Types.Op.Contiguous -> ok(some(ct))
+    # Every backend that computes today lives on `Cpu`, so a move to `Cpu`
+    # stays on its device.
+    Types.Op.ToDevice(Types.Device.Cpu) -> ok(some(ct))
+    Types.Op.ToDevice(_) -> error("to_device has no backward rule across devices yet")
+    Types.Op.Eq -> ok(none)
+    Types.Op.Argmax(_, _) -> ok(none)
+    Types.Op.Arange(_, _, _) -> ok(none)
+    Types.Op.Sqrt -> no_rule("sqrt")
+    Types.Op.Pow -> no_rule("pow")
+    Types.Op.Sigmoid -> no_rule("sigmoid")
+    Types.Op.Tanh -> no_rule("tanh")
+    Types.Op.Gelu -> no_rule("gelu_tanh_approx")
+    Types.Op.Clamp(_, _) -> no_rule("clamp")
+    Types.Op.Max(_, _) -> no_rule("max")
+    Types.Op.BatchMatmul -> no_rule("batch_matmul")
+    Types.Op.Squeeze(_) -> no_rule("squeeze")
+    Types.Op.Unsqueeze(_) -> no_rule("unsqueeze")
+    Types.Op.Slice(_, _) -> no_rule("slice")
+    Types.Op.Concat(_) -> no_rule("concat")
+    Types.Op.Stack(_) -> no_rule("stack")
+    Types.Op.Gather -> no_rule("gather")
+    Types.Op.ToDtype -> no_rule("to_dtype")
+    Types.Op.Conv1d(_, _) -> no_rule("conv1d")
+    Types.Op.AvgPool1d(_, _, _) -> no_rule("avg_pool1d")
   end
 end
+
+## The answer of an op the gradient has to pass through but has no rule for.
+def no_rule(op: String) -> Result[Optional[Types.Tensor]] = error("#{op} has no backward rule yet")
 
 ## A rule's tensor as a contribution.
 def part(r: Result[Types.Tensor]) -> Result[Optional[Types.Tensor]] = ok(some(try r))
@@ -355,5 +384,28 @@ def compute(
     Types.Op.Reshape -> Tensor.reshape(args[0], t.shape)
     Types.Op.Lt -> Tensor.lt(args[0], args[1])
     Types.Op.Where -> Tensor.where(args[0], args[1], args[2])
+    Types.Op.Sqrt -> Tensor.sqrt(args[0])
+    Types.Op.Pow -> Tensor.pow(args[0], args[1])
+    Types.Op.Sigmoid -> Tensor.sigmoid(args[0])
+    Types.Op.Tanh -> Tensor.tanh(args[0])
+    Types.Op.Gelu -> Tensor.gelu_tanh_approx(args[0])
+    Types.Op.Eq -> Tensor.eq(args[0], args[1])
+    Types.Op.Clamp(lo, hi) -> Tensor.clamp(args[0], lo, hi)
+    Types.Op.Max(axes, keep_dims) -> Tensor.max(args[0], some(axes), keep_dims)
+    Types.Op.Argmax(axes, keep_dims) -> Tensor.argmax(args[0], some(axes), keep_dims)
+    Types.Op.BatchMatmul -> Tensor.batch_matmul(args[0], args[1])
+    Types.Op.Squeeze(axis) -> Tensor.squeeze(args[0], axis)
+    Types.Op.Unsqueeze(axis) -> Tensor.unsqueeze(args[0], axis)
+    Types.Op.Slice(starts, ends) -> Tensor.slice(args[0], starts, ends)
+    Types.Op.Concat(axis) -> Tensor.concat(args, axis)
+    Types.Op.Stack(axis) -> Tensor.stack(args, axis)
+    Types.Op.Gather -> Tensor.gather(args[0], args[1])
+    Types.Op.ToDtype -> Tensor.to_dtype(args[0], t.dtype)
+    Types.Op.ToDevice(device) -> Tensor.to_device(args[0], device)
+    Types.Op.Copy -> Tensor.copy(args[0])
+    Types.Op.Contiguous -> Tensor.contiguous(args[0])
+    Types.Op.Conv1d(stride, padding) -> Tensor.conv1d(args[0], args[1], stride, padding)
+    Types.Op.AvgPool1d(kernel, stride, padding) -> Tensor.avg_pool1d(args[0], kernel, stride, padding)
+    Types.Op.Arange(start, stop, step) -> Tensor.arange(start, stop, step, t.dtype, backend)
   end
 end

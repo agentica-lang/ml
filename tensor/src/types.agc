@@ -78,7 +78,9 @@ end
 ## What a traced node computes (`tensor/DESIGN.md` §10.2). `Input` is an
 ## argument of the traced function, `Constant` a tensor lifted into the trace,
 ## `Full` a fill of the node's shape; the shape-changing ops read their target
-## from the node's tensor.
+## from the node's tensor. Every op of §3.1 has a variant, so any traced
+## function runs forward; the ones with no backward rule yet make `gradients`
+## answer an error naming the op.
 enum Op
   Input
   Constant(Tensor)
@@ -99,6 +101,29 @@ enum Op
   Reshape
   Lt
   Where
+  Sqrt
+  Pow
+  Sigmoid
+  Tanh
+  Gelu
+  Eq
+  Clamp(Float, Float)
+  Max(List[Int], Bool)
+  Argmax(List[Int], Bool)
+  BatchMatmul
+  Squeeze(Optional[Int])
+  Unsqueeze(Int)
+  Slice(List[Int], List[Int])
+  Concat(Int)
+  Stack(Int)
+  Gather
+  ToDtype
+  ToDevice(Device)
+  Copy
+  Contiguous
+  Conv1d(Int, Int)
+  AvgPool1d(Int, Int, Int)
+  Arange(Int, Int, Int)
 end
 
 ## One node of a traced graph: unique `id` in the run, its op and its
@@ -288,5 +313,28 @@ def op_name(op: Op) -> String
     Op.Reshape -> "reshape"
     Op.Lt -> "lt"
     Op.Where -> "where"
+    Op.Sqrt -> "sqrt"
+    Op.Pow -> "pow"
+    Op.Sigmoid -> "sigmoid"
+    Op.Tanh -> "tanh"
+    Op.Gelu -> "gelu_tanh_approx"
+    Op.Eq -> "eq"
+    Op.Clamp(_, _) -> "clamp"
+    Op.Max(_, _) -> "max"
+    Op.Argmax(_, _) -> "argmax"
+    Op.BatchMatmul -> "batch_matmul"
+    Op.Squeeze(_) -> "squeeze"
+    Op.Unsqueeze(_) -> "unsqueeze"
+    Op.Slice(_, _) -> "slice"
+    Op.Concat(_) -> "concat"
+    Op.Stack(_) -> "stack"
+    Op.Gather -> "gather"
+    Op.ToDtype -> "to_dtype"
+    Op.ToDevice(_) -> "to_device"
+    Op.Copy -> "copy"
+    Op.Contiguous -> "contiguous"
+    Op.Conv1d(_, _) -> "conv1d"
+    Op.AvgPool1d(_, _, _) -> "avg_pool1d"
+    Op.Arange(_, _, _) -> "arange"
   end
 end

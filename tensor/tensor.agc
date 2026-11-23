@@ -50,8 +50,8 @@
 ##   own (`src/torch.agc`); arenas are never faked for `Plain`.
 ## - Every backend is forward-only. On `Trace` tensors an op records a node;
 ##   `trace.agc` derives the gradient graph and runs it (`tensor/DESIGN.md`
-##   §10). An op the trace cannot record yet answers
-##   `error("<op> cannot be traced yet")`.
+##   §10). Every op records; one with no backward rule yet makes
+##   `gradients` answer an error naming it.
 ## - `conv1d`/`avg_pool1d` take only what `tensor/DESIGN.md` §3.1 admits
 ##   (stride and padding 1-D, no dilation and no groups); the wrapper
 ##   validates their window arithmetic before dispatch, so both backends
@@ -177,7 +177,7 @@ def arange(start: Int, stop: Int, step: Int, dtype: Types.Dtype, backend: Types.
   case backend
     Types.Backend.Reference -> Reference.arange(start, stop, step, dtype)
     Types.Backend.Torch(device) -> Torch.arange(device, start, stop, step, dtype)
-    Types.Backend.Trace -> Graph.untraceable("arange")
+    Types.Backend.Trace -> ok(Graph.arange(start, stop, step, dtype))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -325,7 +325,7 @@ def sqrt(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.sqrt(t)
     Types.Backend.Torch(device) -> Torch.sqrt(device, t)
-    Types.Backend.Trace -> Graph.untraceable("sqrt")
+    Types.Backend.Trace -> Graph.same(Types.Op.Sqrt, [t], t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -341,7 +341,7 @@ def pow(base: Types.Tensor, exponent: Types.Tensor) -> Result[Types.Tensor]
   case base.backend
     Types.Backend.Reference -> Reference.pow(base, exponent)
     Types.Backend.Torch(device) -> Torch.pow(device, base, exponent)
-    Types.Backend.Trace -> Graph.untraceable("pow")
+    Types.Backend.Trace -> Graph.same(Types.Op.Pow, [base, exponent], base)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -365,7 +365,7 @@ def sigmoid(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.sigmoid(t)
     Types.Backend.Torch(device) -> Torch.sigmoid(device, t)
-    Types.Backend.Trace -> Graph.untraceable("sigmoid")
+    Types.Backend.Trace -> Graph.same(Types.Op.Sigmoid, [t], t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -377,7 +377,7 @@ def tanh(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.tanh(t)
     Types.Backend.Torch(device) -> Torch.tanh(device, t)
-    Types.Backend.Trace -> Graph.untraceable("tanh")
+    Types.Backend.Trace -> Graph.same(Types.Op.Tanh, [t], t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -390,7 +390,7 @@ def gelu_tanh_approx(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.gelu_tanh_approx(t)
     Types.Backend.Torch(_) -> Torch.unsupported("gelu_tanh_approx")
-    Types.Backend.Trace -> Graph.untraceable("gelu_tanh_approx")
+    Types.Backend.Trace -> Graph.same(Types.Op.Gelu, [t], t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -405,7 +405,7 @@ def eq(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   case a.backend
     Types.Backend.Reference -> Reference.eq(a, b)
     Types.Backend.Torch(device) -> Torch.eq(device, a, b)
-    Types.Backend.Trace -> Graph.untraceable("eq")
+    Types.Backend.Trace -> ok(Graph.record(Types.Op.Eq, [a, b], a.shape, Types.Dtype.Bool))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -451,7 +451,7 @@ def clamp(t: Types.Tensor, lo: Float, hi: Float) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.clamp(t, lo, hi)
     Types.Backend.Torch(device) -> Torch.clamp(device, t, lo, hi)
-    Types.Backend.Trace -> Graph.untraceable("clamp")
+    Types.Backend.Trace -> Graph.same(Types.Op.Clamp(lo, hi), [t], t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -492,7 +492,7 @@ def max(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = fal
   case t.backend
     Types.Backend.Reference -> Reference.max(t, axs, keep_dims)
     Types.Backend.Torch(device) -> Torch.max(device, t, axs, keep_dims)
-    Types.Backend.Trace -> Graph.untraceable("max")
+    Types.Backend.Trace -> ok(Graph.reduced(false, t, axs, keep_dims))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -508,7 +508,7 @@ def argmax(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = 
   case t.backend
     Types.Backend.Reference -> Reference.argmax(t, axs, keep_dims)
     Types.Backend.Torch(device) -> Torch.argmax(device, t, axs, keep_dims)
-    Types.Backend.Trace -> Graph.untraceable("argmax")
+    Types.Backend.Trace -> ok(Graph.reduced(true, t, axs, keep_dims))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -550,7 +550,7 @@ def batch_matmul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   case a.backend
     Types.Backend.Reference -> Reference.batch_matmul(a, b)
     Types.Backend.Torch(_) -> Torch.unsupported("batch_matmul")
-    Types.Backend.Trace -> Graph.untraceable("batch_matmul")
+    Types.Backend.Trace -> ok(Graph.batch_matmul(a, b))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -586,7 +586,7 @@ def squeeze(t: Types.Tensor, axis: Optional[Int] = none) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.squeeze(t, axis)
     Types.Backend.Torch(device) -> Torch.squeeze(device, t, axis)
-    Types.Backend.Trace -> Graph.untraceable("squeeze")
+    Types.Backend.Trace -> ok(Graph.squeeze(t, axis))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -598,7 +598,7 @@ def unsqueeze(t: Types.Tensor, axis: Int = 0) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.unsqueeze(t, axis)
     Types.Backend.Torch(device) -> Torch.unsqueeze(device, t, axis)
-    Types.Backend.Trace -> Graph.untraceable("unsqueeze")
+    Types.Backend.Trace -> ok(Graph.unsqueeze(t, axis))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -610,7 +610,7 @@ def slice(t: Types.Tensor, starts: List[Int], ends: List[Int]) -> Result[Types.T
   case t.backend
     Types.Backend.Reference -> Reference.slice(t, starts, ends)
     Types.Backend.Torch(device) -> Torch.slice(device, t, starts, ends)
-    Types.Backend.Trace -> Graph.untraceable("slice")
+    Types.Backend.Trace -> ok(Graph.slice(t, starts, ends))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -634,7 +634,7 @@ def concat(tensors: List[Types.Tensor], axis: Int) -> Result[Types.Tensor]
   case first.backend
     Types.Backend.Reference -> Reference.concat(tensors, axis)
     Types.Backend.Torch(device) -> Torch.concat(device, tensors, axis)
-    Types.Backend.Trace -> Graph.untraceable("concat")
+    Types.Backend.Trace -> ok(Graph.concat(tensors, axis))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -654,7 +654,7 @@ def stack(tensors: List[Types.Tensor], axis: Int = 0) -> Result[Types.Tensor]
   case first.backend
     Types.Backend.Reference -> Reference.stack(tensors, axis)
     Types.Backend.Torch(device) -> Torch.stack(device, tensors, axis)
-    Types.Backend.Trace -> Graph.untraceable("stack")
+    Types.Backend.Trace -> ok(Graph.stack(tensors, axis))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -683,7 +683,7 @@ def gather(source: Types.Tensor, indices: Types.Tensor) -> Result[Types.Tensor]
   case source.backend
     Types.Backend.Reference -> Reference.gather(source, indices)
     Types.Backend.Torch(device) -> Torch.gather(device, source, indices)
-    Types.Backend.Trace -> Graph.untraceable("gather")
+    Types.Backend.Trace -> ok(Graph.gather(source, indices))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -694,7 +694,7 @@ def to_dtype(t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.to_dtype(t, dtype)
     Types.Backend.Torch(device) -> Torch.to_dtype(device, t, dtype)
-    Types.Backend.Trace -> Graph.untraceable("to_dtype")
+    Types.Backend.Trace -> ok(Graph.record(Types.Op.ToDtype, [t], t.shape, dtype))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -705,7 +705,7 @@ def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.to_device(t, device)
     Types.Backend.Torch(_) -> Torch.unsupported("to_device")
-    Types.Backend.Trace -> Graph.untraceable("to_device")
+    Types.Backend.Trace -> Graph.same(Types.Op.ToDevice(device), [t], t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -716,7 +716,7 @@ def copy(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.copy(t)
     Types.Backend.Torch(device) -> Torch.copy(device, t)
-    Types.Backend.Trace -> Graph.untraceable("copy")
+    Types.Backend.Trace -> Graph.same(Types.Op.Copy, [t], t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -728,7 +728,7 @@ def contiguous(t: Types.Tensor) -> Result[Types.Tensor]
   case t.backend
     Types.Backend.Reference -> Reference.contiguous(t)
     Types.Backend.Torch(device) -> Torch.contiguous(device, t)
-    Types.Backend.Trace -> Graph.untraceable("contiguous")
+    Types.Backend.Trace -> Graph.same(Types.Op.Contiguous, [t], t)
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -757,7 +757,7 @@ def conv1d(input: Types.Tensor, weight: Types.Tensor, stride: Int = 1, padding: 
   case input.backend
     Types.Backend.Reference -> Reference.conv1d(input, weight, stride, padding)
     Types.Backend.Torch(device) -> Torch.conv1d(device, input, weight, stride, padding)
-    Types.Backend.Trace -> Graph.untraceable("conv1d")
+    Types.Backend.Trace -> ok(Graph.conv1d(input, weight, stride, padding))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
@@ -785,7 +785,7 @@ def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int = 1, padding: Int =
   case input.backend
     Types.Backend.Reference -> Reference.avg_pool1d(input, kernel, stride, padding)
     Types.Backend.Torch(device) -> Torch.avg_pool1d(device, input, kernel, stride, padding)
-    Types.Backend.Trace -> Graph.untraceable("avg_pool1d")
+    Types.Backend.Trace -> ok(Graph.avg_pool1d(input, kernel, stride, padding))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end
