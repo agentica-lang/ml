@@ -1,7 +1,7 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-22. `main` en `233f1a7`. Sin PRs abiertos en
-`agentica-lang/ml`. Este fichero es el parte de estado: lo hecho, lo que
+Fecha: 2026-11-23. `main` en `ff1f9a9`. Abierto: el primer PR de `nn/`
+(rama `nn`). Este fichero es el parte de estado: lo hecho, lo que
 quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 `roadmap.md`; el contrato del tensor, en `tensor/DESIGN.md`.
 
@@ -41,6 +41,13 @@ quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 
 ## 2. En progreso (parado a propósito)
 
+- **`nn/` primer PR** (rama `nn`, worktree `../agentica-ml-nn`): capas
+  funcionales sobre `tensor/` (`dense` de cualquier rango, `layer_norm` afín,
+  `embedding` + posicional, `attention` con proyecciones, `mlp`,
+  `encoder_block` pre-norm), init con semilla (Park-Miller en Agentica), solo
+  forward. Probado contra un modelo ingenuo, referencia vs torch, y el
+  gradiente de `dense` vía `Trace`. Diseño en `nn/DESIGN.md`.
+
 - **`prop` para tests property-based de `tensor/`**: rama local
   **`prop-tests`**, worktree `../agentica-ml-prop-tests`. Estado: solo
   añadida la dependencia de grupo test
@@ -60,8 +67,9 @@ Ningún subagente sigue corriendo.
    stack es un motor de inferencia.
 2. **Property tests con `prop`** (lo de arriba), antes de que crezca la
    superficie de ops.
-3. **`nn/`**: capas funcionales sobre `tensor/` (dense, conv, norm,
-   embeddings, activaciones), solo forward.
+3. **`nn/`**: primer PR abierto (ver §2, `nn/DESIGN.md`). Falta: decoder
+   (máscara causal, cross-attention), conv, `rms_norm`, y `gelu` en
+   libtorch (`gelu_tanh_approx`, en `tensor/`).
 4. **`train/`**: losses, SGD/Adam, loop; criterio: un MLP entrena
    end-to-end sobre torch con la referencia como oráculo.
 5. **`hub/`**: safetensors + descarga HF. Descargas con `http-client`
