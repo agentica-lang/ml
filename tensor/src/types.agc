@@ -109,6 +109,7 @@ enum Op
   Sigmoid
   Tanh
   Gelu
+  GeluErf
   Eq
   Clamp(Float, Float)
   Max(List[Int], Bool)
@@ -321,6 +322,7 @@ def op_name(op: Op) -> String
     Op.Sigmoid -> "sigmoid"
     Op.Tanh -> "tanh"
     Op.Gelu -> "gelu_tanh_approx"
+    Op.GeluErf -> "gelu_erf"
     Op.Eq -> "eq"
     Op.Clamp(_, _) -> "clamp"
     Op.Max(_, _) -> "max"

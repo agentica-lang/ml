@@ -81,14 +81,16 @@ end
 ## node already known (the inputs), keyed by node id; the walk stops there.
 ## A backend that compiles (`Ggml`) runs the whole graph as one graph of its
 ## own and never calls `Tensor.*`; every other backend computes node by node
-## through the public API (§10.3).
+## through the public API (§10.3). With `keep` false, a graph `Ggml` compiles
+## for this call takes no slot of its cache (a graph used once).
 def evaluate(
   outs: List[Types.Tensor],
   env: Map[Int, Types.Tensor],
   backend: Types.Backend,
+  keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
   case backend
-    Types.Backend.Ggml(device) -> return Lower.evaluate(outs, env, device)
+    Types.Backend.Ggml(device) -> return Lower.evaluate(outs, env, device, keep)
     _ -> nil
   end
 
@@ -117,14 +119,16 @@ def eval(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor
 end
 
 ## Traces `f` over `args` and runs every tensor it answers in one evaluation
-## on their backend: on `Ggml`, one compiled graph.
+## on their backend: on `Ggml`, one compiled graph, kept in the cache unless
+## `keep` is false.
 def eval_many(
   args: List[Types.Tensor],
   f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]],
+  keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
   inputs = try inputs_for(args)
   outs = try f.call(inputs)
-  evaluate(outs, bind(inputs, args), args[0].backend)
+  evaluate(outs, bind(inputs, args), args[0].backend, keep)
 end
 
 ## The value of the scalar function `f` at `args` and its gradient for every
@@ -283,6 +287,7 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.Sigmoid -> part(Tensor.mul(ct, try Tensor.mul(t, try one_minus(t))))
     Types.Op.Tanh -> part(Tensor.mul(ct, try one_minus(try Tensor.mul(t, t))))
     Types.Op.Gelu -> part(Tensor.mul(ct, try gelu_slope(x)))
+    Types.Op.GeluErf -> no_rule("gelu_erf")
     Types.Op.Clamp(_, _) -> no_rule("clamp")
     Types.Op.Max(axes, keep_dims) -> part(max_rule(t, x, ct, axes, keep_dims))
     Types.Op.BatchMatmul -> no_rule("batch_matmul")
@@ -508,6 +513,7 @@ def compute(
     Types.Op.Sigmoid -> Tensor.sigmoid(args[0])
     Types.Op.Tanh -> Tensor.tanh(args[0])
     Types.Op.Gelu -> Tensor.gelu_tanh_approx(args[0])
+    Types.Op.GeluErf -> Tensor.gelu_erf(args[0])
     Types.Op.Eq -> Tensor.eq(args[0], args[1])
     Types.Op.Clamp(lo, hi) -> Tensor.clamp(args[0], lo, hi)
     Types.Op.Max(axes, keep_dims) -> Tensor.max(args[0], some(axes), keep_dims)

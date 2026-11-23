@@ -57,8 +57,15 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   `scale_embedding` is false (true of the released Whisper checkpoints;
   `config.json` is not checked for it). The tied
   output projection is a second, transposed copy of the vocab table.
-- **Reference and libtorch**: the model runs on both. The tiny test model
-  matches the peer within 1e-5 on libtorch, which computes in F32.
+- **Reference, libtorch and ggml**: the model runs on all three. The tiny
+  test model matches the peer within 1e-5 on libtorch and on ggml, which
+  compute in F32. On `Ggml` (the CPU or Vulkan) each encoder stage, each
+  decoder block of `listen` (2 outputs per head, under ggml's 256) and each
+  `step` is one compiled graph, with the model's tensors and the cache as
+  trace constants. The cache grows by a row each step, so each step compiles
+  a graph of its own, used once: it takes no slot of the graph cache, which
+  keeps the encoder's and `listen`'s for the next call. The token ids are
+  I32, which ggml holds.
 
 ## The log-mel frontend (`mel.agc`)
 
@@ -237,7 +244,17 @@ encoder over the 30 s window, of which 1.5–2 s is handing each block's output
 out of its arena as a list (the memory bullet above), and 0.12–0.14 s each
 decoder step. The reference backend gave the same ids for es-hola in 22
 minutes (a real-time factor of about 500). Loading the checkpoint takes 25–40
-s.
+s. On ggml the five cases give the same ids, the text and the segments too.
+In one run after another (a quiet machine), the real-time factor was:
+
+| backend | es-hola (2.6 s) | jfk (11 s) |
+|---|---|---|
+| libtorch, CPU | 1.94–2.13 | 0.61–0.66 |
+| ggml, CPU | 0.96–1.24 | 0.36–0.39 |
+| ggml, Vulkan (Vega iGPU) | 1.07–1.24 | 0.44–0.51 |
+
+With another job on the CPU, ggml's CPU threads slow down most: 7–14 for
+es-hola in one such run.
 
 ## Tests of the model
 

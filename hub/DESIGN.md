@@ -62,8 +62,9 @@ The test fixtures drop the `model.` part of the prefix
   2^53 loses precision there.
 - **The loader converts and transposes, nothing else.** Float weights become
   `F32` (`tensor/DESIGN.md` §6); a dense weight stored `[out, in]` becomes
-  `nn/`'s `[in, out]`; a missing bias is `none` (Whisper's `k_proj`). Names
-  are the caller's: Whisper's or BERT's live with the model code.
+  `nn/`'s `[in, out]`, transposed through a trace so that `Ggml` loads it too; a
+  missing bias is `none` (Whisper's `k_proj`). Names are the caller's: Whisper's
+  or BERT's live with the model code.
 
 ## Cost
 

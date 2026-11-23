@@ -70,13 +70,16 @@ enum {
   OP_WHERE,
   OP_SLICE,  /* ints: the starts, row-major */
   OP_GATHER, /* ints: the source's rank */
+  OP_GELU_ERF,
+  OP_CONCAT, /* ints: the axis, then 1 for a stack (each arg gains that axis) */
+  OP_CONV1D, /* ints: stride, padding */
   OP_COUNT
 };
 
 static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
-  "slice", "gather",
+  "slice", "gather", "gelu_erf", "concat", "conv1d",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -100,6 +103,7 @@ struct gnode {
 };
 
 #define MAX_OUTPUTS 256
+#define MAX_ARGS 256
 #define MAX_ENTRIES 32
 
 /* One graph of the cache. */
@@ -275,7 +279,7 @@ static struct entry *cached(int64_t device, ng_str key) {
   return e;
 }
 
-an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity) {
+an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity, bool keep) {
   an_term term;
   struct ggml_Lease_state *lease = ggml_Lease_new(env, &term);
   struct entry *e, *victim;
@@ -320,8 +324,9 @@ an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity) 
   e->in_use = true;
   pthread_mutex_lock(&cache_lock);
   e->used = ++tick;
-  i = free_slot(&victim);
-  if (i >= 0) cache[i] = e; /* every slot held: the graph lives for this lease only */
+  victim = NULL;
+  i = keep ? free_slot(&victim) : -1;
+  if (i >= 0) cache[i] = e; /* no slot: the graph lives for this lease only */
   pthread_mutex_unlock(&cache_lock);
   if (victim != NULL) destroy(victim);
   tg_unlock_device();
@@ -436,6 +441,62 @@ static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, i
   return ggml_get_rows(p->ctx, table, ggml_cast(p->ctx, clamped, GGML_TYPE_I32));
 }
 
+/* Whether the args, of the output's rank (one less for a stack), match `ne`
+   off the ggml axis `dim` and their extents on it add up to `ne[dim]`. */
+static bool joins(const struct entry *p, const int64_t *args, int nargs, int rank, int dim, bool stacked,
+                  const int64_t ne[4]) {
+  int64_t total = 0;
+  int i, d;
+
+  for (i = 0; i < nargs; i++) {
+    const struct gnode *x = &p->nodes[args[i]];
+
+    if (x->rank != (stacked ? rank - 1 : rank)) return false;
+    for (d = 0; d < 4; d++) {
+      if (d == dim) continue;
+      if (stacked ? x->ne[d < dim ? d : d - 1] != ne[d] : x->ne[d] != ne[d]) return false;
+    }
+    total += stacked ? 1 : x->ne[dim];
+  }
+  return total == ne[dim];
+}
+
+/* The args joined along the ggml axis `dim` into `ne`; a stacked arg gains
+   that axis (extent 1) first. */
+static struct ggml_tensor *concat(struct entry *p, const int64_t *args, int nargs, int dim, bool stacked,
+                                  const int64_t ne[4]) {
+  struct ggml_tensor *out = NULL;
+  int i;
+
+  for (i = 0; i < nargs; i++) {
+    const struct gnode *x = &p->nodes[args[i]];
+    int64_t part[4] = {ne[0], ne[1], ne[2], ne[3]};
+    struct ggml_tensor *t;
+
+    part[dim] = stacked ? 1 : x->ne[dim];
+    t = reshape(p, dense(p, x), part);
+    out = out == NULL ? t : ggml_concat(p->ctx, out, t, dim);
+  }
+  return out;
+}
+
+/* `input` ([C_in, L] or [B, C_in, L] row-major) convolved with `weight`
+   ([C_out, C_in, K]): im2col in F32 (ggml_conv_1d's own path makes it F16),
+   then one mul_mat; [L_out * B, C_out] is permuted to [B, C_out, L_out]. */
+static struct ggml_tensor *conv1d(struct entry *p, const struct gnode *input, const struct gnode *weight, int stride,
+                                  int padding) {
+  struct ggml_tensor *kernel = dense(p, weight);
+  struct ggml_tensor *cols = ggml_im2col(p->ctx, kernel, dense(p, input), stride, 0, padding, 0, 1, 0, false, GGML_TYPE_F32);
+  int64_t out_len = cols->ne[1], batch = cols->ne[2], out_channels = kernel->ne[2];
+  struct ggml_tensor *t = ggml_mul_mat(p->ctx, ggml_reshape_2d(p->ctx, cols, cols->ne[0], out_len * batch),
+                                       ggml_reshape_2d(p->ctx, kernel, kernel->ne[0] * kernel->ne[1], out_channels));
+
+  t = ggml_reshape_3d(p->ctx, t, out_len, batch, out_channels);
+  if (batch > 1) t = ggml_cont(p->ctx, ggml_permute(p->ctx, t, 0, 2, 1, 3));
+  else t = ggml_reshape_3d(p->ctx, t, out_len, out_channels, 1);
+  return t;
+}
+
 /* Reads up to `max` ints; -2 when there are more, -1 when the cursor failed
    (the error is raised already), 0 when done. */
 static int read_ints(an_env *env, ggml_list_Int *list, int64_t *out, int max, int *n) {
@@ -456,7 +517,7 @@ static an_term bad_list(an_env *env, int r, const char *text) { return r == -1 ?
 an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_list_Int args_list,
                   ggml_list_Int shape_list, ggml_list_Int ints_list) {
   struct entry *p = lease->e;
-  int64_t args[3], shape[4], ints[8];
+  int64_t args[MAX_ARGS], shape[4], ints[8];
   int nargs, rank, nints, i, r;
   struct gnode *n;
   const struct gnode *a = NULL, *b = NULL, *c = NULL;
@@ -466,13 +527,13 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if (p == NULL || p->compiled || p->graph != NULL) return tg_error(env, "the graph is compiled already, or its compile failed");
   if (p->count >= p->capacity) return tg_error(env, "the graph is full");
   if (op < 0 || op >= OP_COUNT) return tg_error(env, "unknown op code");
-  if ((r = read_ints(env, &args_list, args, 3, &nargs)) != 0) return bad_list(env, r, "a node takes at most 3 args");
+  if ((r = read_ints(env, &args_list, args, MAX_ARGS, &nargs)) != 0) return bad_list(env, r, "a node takes at most 256 args");
   if ((r = read_ints(env, &shape_list, shape, 4, &rank)) != 0) return bad_list(env, r, "ggml tensors have rank <= 4");
   if ((r = read_ints(env, &ints_list, ints, 8, &nints)) != 0) return bad_list(env, r, "a node takes at most 8 ints");
   for (i = 0; i < nargs; i++) {
     if (args[i] < 0 || args[i] >= p->count) return tg_error(env, "an arg is not an earlier node");
   }
-  if (!room(p, 24)) return tg_error(env, "the graph ran out of room: it lowers to more ggml tensors than its capacity allows");
+  if (!room(p, 24 + 4 * (size_t)nargs)) return tg_error(env, "the graph ran out of room: it lowers to more ggml tensors than its capacity allows");
   {
     int64_t elements = 1;
 
@@ -485,10 +546,13 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if (nargs > 0) a = &p->nodes[args[0]];
   if (nargs > 1) b = &p->nodes[args[1]];
   if (nargs > 2) c = &p->nodes[args[2]];
-  if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT || op == OP_GATHER) {
+  if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT || op == OP_GATHER ||
+      op == OP_CONV1D) {
     if (nargs != 2) return tg_error(env, "a binary op takes 2 args");
   } else if (op == OP_WHERE) {
     if (nargs != 3) return tg_error(env, "where takes 3 args");
+  } else if (op == OP_CONCAT) {
+    if (nargs < 1) return tg_error(env, "concat takes at least 1 arg");
   } else if (op > OP_FULL && op != OP_ARANGE && nargs != 1) {
     return tg_error(env, "a unary op takes 1 arg");
   }
@@ -635,6 +699,21 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         return tg_error(env, "gather from more than 2^24 rows is not lowered to ggml: F32 row ids are exact below that");
       }
       t = reshape(p, gather(p, a, (int)ints[0], b, &n->guard), n->ne);
+      break;
+    case OP_GELU_ERF: t = ggml_gelu_erf(p->ctx, dense(p, a)); break;
+    case OP_CONCAT:
+      if (nints != 2 || ints[0] < 0 || ints[0] >= rank) return tg_error(env, "concat takes an axis and the stack flag");
+      if (!joins(p, args, nargs, rank, rank - 1 - (int)ints[0], ints[1] != 0, n->ne)) {
+        return tg_error(env, "concat: the args do not join into the recorded shape");
+      }
+      t = concat(p, args, nargs, rank - 1 - (int)ints[0], ints[1] != 0, n->ne);
+      break;
+    case OP_CONV1D:
+      if (nints != 2 || ints[0] < 1 || ints[1] < 0) return tg_error(env, "conv1d takes a stride >= 1 and a padding >= 0");
+      if ((a->rank != 2 && a->rank != 3) || b->rank != 3 || a->ne[1] != b->ne[1]) {
+        return tg_error(env, "conv1d takes an input [C, L] or [B, C, L] and a weight [O, C, K]");
+      }
+      t = conv1d(p, a, b, (int)ints[0], (int)ints[1]);
       break;
   }
   if (t == NULL) {

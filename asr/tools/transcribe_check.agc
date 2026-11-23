@@ -5,12 +5,13 @@
 ## the tests (the checkpoint is not in git). From `asr/`:
 ##
 ## ```sh
-## agentica tools/transcribe_check.agc MODEL_DIR ES_HOLA_WAV JFK_WAV [reference] [CASE]
+## agentica tools/transcribe_check.agc MODEL_DIR ES_HOLA_WAV JFK_WAV [BACKEND] [CASE]
 ## ```
 ##
 ## MODEL_DIR holds `model.safetensors`, `config.json` and `tokenizer.json`.
-## libtorch is the default backend; `reference` runs the pure one (slow), and
-## CASE runs only that case's index.
+## BACKEND is `torch` (libtorch, the default), `reference` (the pure one,
+## slow), `ggml` (ggml on the CPU) or `vulkan` (ggml on Vulkan device 0); CASE
+## runs only that case's index.
 
 import Asr from "../asr"
 import Tensor from "pkg/tensor/tensor"
@@ -58,13 +59,14 @@ def main() -> Void
 end
 
 def run(args: List[String]) -> Result[Bool]
-  return error("usage: MODEL_DIR ES_HOLA_WAV JFK_WAV [reference] [CASE]") if args.size < 3
-  backend = Tensor.Backend.Torch(Tensor.Device.Cpu)
-  if args.size > 3 and args[3] == "reference"
-    backend = Tensor.Backend.Reference
+  return error("usage: MODEL_DIR ES_HOLA_WAV JFK_WAV [BACKEND] [CASE]") if args.size < 3
+  name = "torch"
+  if args.size > 3
+    name = args[3]
   end
 
-  return error("libtorch is not available") if not Tensor.available(backend)
+  backend = try backend_of(name)
+  return error("#{backend} is not available") if not Tensor.available(backend)
   started = Time.monotonic_ms()
   m = try Asr.open("#{args[0]}/model.safetensors", backend)
   tok = try Tokenizer.open("#{args[0]}/tokenizer.json")
@@ -104,6 +106,16 @@ def run(args: List[String]) -> Result[Bool]
   end
 
   ok(all)
+end
+
+def backend_of(name: String) -> Result[Tensor.Backend]
+  case name
+    "torch" -> ok(Tensor.Backend.Torch(Tensor.Device.Cpu))
+    "reference" -> ok(Tensor.Backend.Reference)
+    "ggml" -> ok(Tensor.Backend.Ggml(Tensor.Device.Cpu))
+    "vulkan" -> ok(Tensor.Backend.Ggml(Tensor.Device.Vulkan(0)))
+    _ -> error("BACKEND is torch, reference, ggml or vulkan, got #{name}")
+  end
 end
 
 def verdict(same: Bool) -> String

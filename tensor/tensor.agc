@@ -412,14 +412,15 @@ def gelu_tanh_approx(t: Types.Tensor) -> Result[Types.Tensor]
 end
 
 ## The exact GELU, `x * (1 + erf(x / sqrt(2))) / 2`, as Whisper and BERT use
-## it. Not a §3.1 primitive: `Trace` has no gradient for it (train with
-## `gelu_tanh_approx`), and the ggml backend does not compile it yet.
+## it. Not a §3.1 primitive and inference only: `Trace` records it (so the
+## ggml backend compiles it) but has no gradient for it (train with
+## `gelu_tanh_approx`).
 def gelu_erf(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "gelu_erf")
   case t.backend
     Types.Backend.Reference -> Reference.gelu_erf(t)
     Types.Backend.Torch(device) -> Torch.gelu_erf(device, t)
-    Types.Backend.Trace -> error("gelu_erf is not traced: train with gelu_tanh_approx")
+    Types.Backend.Trace -> Graph.same(Types.Op.GeluErf, [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("gelu_erf")
   end
 end

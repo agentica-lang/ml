@@ -76,6 +76,7 @@ def all_cases() -> Result[List[Case]]
     Case(name: "sigmoid", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.sigmoid(x[0]) }),
     Case(name: "tanh", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.tanh(x[0]) }),
     Case(name: "gelu", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.gelu_tanh_approx(x[0]) }),
+    Case(name: "gelu_erf", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.gelu_erf(x[0]) }),
     Case(name: "eq", args: [v, w], f: ->(x: List[Tensor.Tensor]) { Tensor.eq(x[0], x[1]) }),
     Case(name: "lt", args: [v, w], f: ->(x: List[Tensor.Tensor]) { Tensor.lt(x[0], x[1]) }),
     Case(
