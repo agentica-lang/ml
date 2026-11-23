@@ -99,6 +99,7 @@ struct gnode {
 
 /* One graph of the cache. */
 struct entry {
+  struct deferred link; /* to destroy it from a free hook */
   char *key;
   int64_t device;
   ggml_backend_t backend;  /* the device's, open for the process */
@@ -195,7 +196,11 @@ void ggml_Lease_free(void *state) {
   drop = !self->e->compiled || slot < 0;
   if (drop && slot >= 0) cache[slot] = NULL;
   pthread_mutex_unlock(&cache_lock);
-  if (drop) tg_defer(destroy_later, self->e);
+  if (drop) {
+    self->e->link.fn = destroy_later;
+    self->e->link.arg = self->e;
+    tg_defer(&self->e->link);
+  }
   self->e = NULL;
 }
 
@@ -226,17 +231,19 @@ static bool room(struct entry *p, size_t tensors) {
    200 MB of metadata; a traced MLP step is about a hundred nodes. */
 #define MAX_NODES 65536
 
-/* A free cache slot, evicting the least recently used graph nobody holds.
-   Call under the device lock and cache_lock. */
-static int free_slot(void) {
+/* A free cache slot, unlinking the least recently used graph nobody holds
+   into `victim` for the caller to destroy; -1 when every slot is held. Call
+   under cache_lock. */
+static int free_slot(struct entry **victim) {
   int i, oldest = -1;
 
+  *victim = NULL;
   for (i = 0; i < MAX_ENTRIES; i++) {
     if (cache[i] == NULL) return i;
     if (!cache[i]->in_use && (oldest < 0 || cache[i]->used < cache[oldest]->used)) oldest = i;
   }
   if (oldest >= 0) {
-    destroy(cache[oldest]);
+    *victim = cache[oldest];
     cache[oldest] = NULL;
   }
   return oldest;
@@ -266,7 +273,7 @@ static struct entry *cached(int64_t device, ng_str key) {
 an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity) {
   an_term term;
   struct ggml_Lease_state *lease = ggml_Lease_new(env, &term);
-  struct entry *e;
+  struct entry *e, *victim;
   ggml_backend_t backend;
   char why[160];
   size_t size;
@@ -308,9 +315,10 @@ an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity) 
   e->in_use = true;
   pthread_mutex_lock(&cache_lock);
   e->used = ++tick;
-  i = free_slot();
+  i = free_slot(&victim);
   if (i >= 0) cache[i] = e; /* every slot held: the graph lives for this lease only */
   pthread_mutex_unlock(&cache_lock);
+  if (victim != NULL) destroy(victim);
   tg_unlock_device();
   lease->e = e;
   return ggml_result_Lease_ok(env, term);
@@ -551,7 +559,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
     case OP_ARANGE:
       if (nints != 3) return tg_error(env, "arange takes start, stop and step");
       if (ints[2] <= 0 || ints[1] <= ints[0]) return tg_error(env, "arange with a step <= 0 or no values is not lowered to ggml");
-      if (ints[0] <= -16777216 || ints[1] >= 16777216) return tg_error(env, "arange beyond 2^24 is not exact in F32");
+      if (ints[0] < -16777216 || ints[1] > 16777216) return tg_error(env, "arange beyond 2^24 is not exact in F32");
       t = ggml_arange(p->ctx, (float)ints[0], (float)ints[1], (float)ints[2]);
       break;
     case OP_EQ:

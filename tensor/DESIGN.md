@@ -283,8 +283,9 @@ end
   `squeeze`, `unsqueeze`, `broadcast_to`, `sum`, `mean` and `max` over a
   leading or trailing block of axes, `stop_grad`, `copy`, `contiguous`,
   `arange`, and `eq`, `lt` and `where` emulated in `F32` arithmetic (`eq` as
-  `1 - step(|a - b|)`, exact for integers below 2^24; `where` as
-  `c·x + (1 - c)·y`, exact only when both branches are finite): enough for an
+  `1 - step(|a - b|)`, exact for integers below 2^24 and true when an operand
+  is NaN; `where` as `c·x + (1 - c)·y`, exact only when both branches are
+  finite): enough for an
   MLP and softmax cross-entropy with their gradients. An output that holds
   an infinity or a NaN is an error.
 - Vulkan computes `mul_mat` in `F32`: ggml reads `GGML_VK_DISABLE_F16` once

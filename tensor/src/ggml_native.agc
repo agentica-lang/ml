@@ -59,8 +59,9 @@ extern module "ggml"
   ## node against the backend. A failed compile leaves the graph unusable.
   compute def compile(lease: Lease, outputs: List[Int]) -> Result[Void]
   ## Makes `t` the leaf `slot` for the next run (leaves count in the order
-  ## they were sent): an F32 tensor is read in place, another one is
-  ## converted into the leaf's own memory now.
+  ## they were sent): an F32 tensor is read in place, so the caller keeps
+  ## `t` alive until `run` returns; another one is converted into the
+  ## leaf's own memory now.
   compute def bind(lease: Lease, slot: Int, t: TensorHandle) -> Result[Void]
   ## A fresh tensor that the next run writes output `output` into, stored as
   ## I32 when `int32` says so.
