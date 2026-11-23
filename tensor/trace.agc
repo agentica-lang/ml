@@ -6,8 +6,8 @@
 ## the graph into the graph of its gradients, built with the same `Tensor.*`
 ## calls, and `evaluate` runs any of those graphs on a real backend through
 ## the public API, so every backend stays forward-only. `value_and_grad`,
-## `grad` and `eval` are the three entry points; a tensor from outside enters
-## a trace through `constant`.
+## `grad`, `eval` and `eval_many` are the entry points; a tensor from outside
+## enters a trace through `constant`.
 
 import Graph from "src/graph"
 import Lower from "src/lower"
@@ -114,6 +114,17 @@ def eval(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor
   out = try f.call(inputs)
   values = try evaluate([out], bind(inputs, args), args[0].backend)
   ok(values[0])
+end
+
+## Traces `f` over `args` and runs every tensor it answers in one evaluation
+## on their backend: on `Ggml`, one compiled graph.
+def eval_many(
+  args: List[Types.Tensor],
+  f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]],
+) -> Result[List[Types.Tensor]]
+  inputs = try inputs_for(args)
+  outs = try f.call(inputs)
+  evaluate(outs, bind(inputs, args), args[0].backend)
 end
 
 ## The value of the scalar function `f` at `args` and its gradient for every

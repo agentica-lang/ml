@@ -1,7 +1,8 @@
 ## The exit criterion of `train/` (roadmap, phase 4): a relu MLP from `nn/`
-## learns XOR on the reference, and the same seeded run on libtorch follows
-## the reference's loss curve within `F32` drift. Where libtorch is not
-## installed, the second test asserts that absence instead. `nn` is a test
+## learns XOR on the reference, and the same seeded run on libtorch follows the
+## reference's loss curve within `F32` drift. Where libtorch is not installed,
+## the second test asserts that absence instead. On ggml, where each step is one
+## compiled graph, the run follows it within the same drift. `nn` is a test
 ## dependency, so the model lives here, in a test file.
 
 import Data from "../data"
@@ -10,13 +11,14 @@ import Nn from "pkg/nn/nn"
 import Optim from "../optim"
 import S from "support"
 import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
 import Train from "../train"
 
 ## The XOR run: a 2-8-1 relu MLP from `nn/`, made from seed 1, trained by
 ## Adam (`lr` 0.2) on the four XOR rows for 20 full-batch epochs with binary
 ## cross-entropy. `HISTORY` is its loss per epoch on the reference: the golden
-## the reference reproduces and libtorch follows. An epoch costs about 75,000
-## VM steps on the reference, 45,000 on libtorch.
+## the reference reproduces and libtorch follows. An epoch costs about 100,000
+## VM steps on the reference, 70,000 on libtorch.
 EPOCHS = 20
 HISTORY = [
   0.668955092647425,
@@ -64,8 +66,21 @@ def test_the_xor_run_on_libtorch_follows_the_reference() -> Result[Void]
   classifies(fit, S.TORCH)
 end
 
+def test_the_xor_run_on_ggml_follows_the_reference() -> Result[Void]
+  for backend in try S.ggml_backends()
+    fit = try xor(backend)
+    try S.expect_close(fit.history, HISTORY, 0.000001, 0.00001, "loss history on #{backend}")
+    try classifies(fit, backend)
+  end
+
+  ok()
+end
+
+## The trained model, traced so that it runs on ggml too, gives the XOR of
+## each row.
 def classifies(fit: Train.Fit, backend: Tensor.Backend) -> Result[Void]
-  logits = try S.floats_of(try model(fit.params, (try rows(backend)).inputs))
+  args = fit.params + [(try rows(backend)).inputs]
+  logits = try S.floats_of(try Trace.eval(args, ->(xs: List[Tensor.Tensor]) { model(xs.take(4), xs[4]) }))
   Test.eq(logits.map { |z| z > 0.0 }, [false, true, true, false])
 end
 

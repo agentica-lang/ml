@@ -1,10 +1,8 @@
 ## The SGD step of an MLP classifier (784 → 512 → 512 → 10, synthetic data,
-## softmax cross-entropy) through the public API on the ggml backend:
-## `Trace.value_and_grad` for the loss and gradients, then one `Trace.eval`
-## per parameter for the update (`Trace.eval` has one output). Each is traced
-## again every step and runs as one compiled graph from the cache, so a step
-## is seven traces in Agentica, seven cache hits, the copies in and out, and
-## seven graphs on the device.
+## softmax cross-entropy) through the public API on the ggml backend, as
+## `Train.fit` takes it: one `Trace.eval_many` traces the loss, its gradients
+## and the update, and runs them as one compiled graph from the cache. So a
+## step is one trace in Agentica, one cache hit and one graph on the device.
 ##
 ## ```sh
 ## eval "$(sh tools/build-engine.sh vulkan | grep '^export ')"
@@ -13,7 +11,7 @@
 ## ```
 ##
 ## Times are wall clock (`Time.monotonic_ns`), the median of the steps after
-## two warm ones; the first step, which compiles the graphs, is printed apart.
+## two warm ones; the first step, which compiles the graph, is printed apart.
 
 import Lower from "../src/lower"
 import Types from "../src/types"
@@ -29,8 +27,6 @@ STEPS = 20
 struct Stepped
   params: List[Tensor.Tensor]
   loss: Float
-  ## Nanoseconds of `value_and_grad`, the rest of the step being the update.
-  grad_ns: Int
 end
 
 def main() -> Void
@@ -74,21 +70,18 @@ def bench(device: Tensor.Device, batch: Int) -> Result[Void]
   t1 = Time.monotonic_ns()
   params = first.params
   times: List[Int] = []
-  grads: List[Int] = []
   loss = first.loss
   for _ in 0...STEPS
     s0 = Time.monotonic_ns()
     s = try step(params, x, y)
     times = times.push(Time.monotonic_ns() - s0)
-    grads = grads.push(s.grad_ns)
     params = s.params
     loss = s.loss
   end
 
   puts(
     "#{Types.device_name(device)} batch #{batch}: first step #{format("%.1f", (t1 - t0).to_f / 1000000.0)} ms " +
-    "(#{(try Lower.compiles()) - compiled} graphs compiled), then #{format("%.2f", median_ms(times))} ms per step, " +
-    "#{format("%.2f", median_ms(grads))} of it value_and_grad; " +
+    "(#{(try Lower.compiles()) - compiled} graphs compiled), then #{format("%.2f", median_ms(times))} ms per step; " +
     "loss #{format("%.4f", first.loss)} -> #{format("%.4f", loss)}",
   )
 
@@ -102,25 +95,27 @@ def median_ms(ns: List[Int]) -> Float
 end
 
 def step(params: List[Tensor.Tensor], x: Tensor.Tensor, y: Tensor.Tensor) -> Result[Stepped]
-  t0 = Time.monotonic_ns()
-  vg = try Trace.value_and_grad(params + [x, y], &loss_of)
-  grad_ns = Time.monotonic_ns() - t0
-  updated: List[Tensor.Tensor] = []
-  for i in 0...params.size
-    updated = updated.push(try Trace.eval([params[i], vg.grads[i]], &sgd))
-  end
-
-  v = try Tensor.to_list(try Tensor.to_device(vg.value, Tensor.Device.Cpu))
+  outs = try Trace.eval_many(params + [x, y], &sgd_step)
+  v = try Tensor.to_list(try Tensor.to_device(outs[0], Tensor.Device.Cpu))
   case v[0]
-    Tensor.Values.Float(f) -> ok(Stepped(params: updated, loss: f, grad_ns: grad_ns))
+    Tensor.Values.Float(f) -> ok(Stepped(params: outs.drop(1), loss: f))
     _ -> error("the loss is not a float")
   end
 end
 
-## `p - LR * g` over `[p, g]`.
-def sgd(a: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
-  rate = try Tensor.full(Tensor.shape(a[0]), Tensor.Values.Float(LR), Tensor.Dtype.F32, Tensor.backend(a[0]))
-  Tensor.sub(a[0], try Tensor.mul(a[1], rate))
+## The loss over `[w1, b1, w2, b2, w3, b3, x, y]`, then each parameter
+## `p - LR * g`.
+def sgd_step(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  ps = a.take(a.size - 2)
+  loss = try loss_of(a)
+  grads = try Trace.gradients(loss, ps)
+  out = [loss]
+  for i in 0...ps.size
+    rate = try Tensor.full(Tensor.shape(ps[i]), Tensor.Values.Float(LR), Tensor.Dtype.F32, Tensor.backend(ps[i]))
+    out = out.push(try Tensor.sub(ps[i], try Tensor.mul(grads[i], rate)))
+  end
+
+  ok(out)
 end
 
 ## The loss of the MLP over `[w1, b1, w2, b2, w3, b3, x, y]`.
