@@ -48,8 +48,8 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   activation is gelu and `scale_embedding` is false (true of the released
   Whisper checkpoints; `config.json` is not checked for either). The tied
   output projection is a second, transposed copy of the vocab table.
-- **Reference only**: libtorch has no `gelu_tanh_approx`, so the
-  model loads there and `encode` stops at the first gelu (a test asserts it).
+- **Reference and libtorch**: the model runs on both. The tiny test model
+  matches the peer within 1e-5 on libtorch, which computes in F32.
 
 ## The log-mel frontend (`mel.agc`)
 

@@ -358,3 +358,18 @@ def test_greedy_step_refuses_a_non_positive_temperature_on_both_backends() -> Re
   try Test.error?(Tensor.greedy_step(try Conform.on_torch(logits, [2]), some(0.0)))
   Test.error?(Tensor.greedy_step(try Conform.on_ref(logits, [2]), some(0.0)))
 end
+
+## 1100 queries over 1100 keys are 1 210 000 scores, past `List.repeat`'s cap
+## of 1 048 576: the scale goes on the query, so Whisper's 1500 encoder
+## positions run. Every key is the same, so each output row is the mean value.
+def test_attention_runs_past_a_million_scores() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  n = 1100
+  q = try Conform.on_torch((0...n).map { |i| (i % 7).to_f }, [1, n, 1])
+  k = try Conform.on_torch(List.repeat(1.0, n), [1, n, 1])
+  v = try Conform.on_torch((0...n).map { |i| (i % 2).to_f }, [1, n, 1])
+  out = try Conform.floats_of(try Tensor.multi_head_attention(q, k, v, 1))
+  try Test.eq(out.size, n)
+  Test.assert((out[0] - 0.5).abs < 0.0001 and (out[n - 1] - 0.5).abs < 0.0001, "got #{out[0]} and #{out[n - 1]}")
+end

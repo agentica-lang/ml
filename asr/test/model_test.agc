@@ -18,6 +18,9 @@ REL = 0.000000001
 ## 3.8e-5 on the logits; a real checkpoint may drift more.
 DRIFT = 0.0003
 
+## libtorch's F32 against the peer's doubles.
+F32 = 0.00001
+
 private
 
 def test_the_tiny_whisper_matches_the_peer() -> Result[Void]
@@ -82,30 +85,25 @@ def test_a_missing_tensor_is_named() -> Result[Void]
   end
 end
 
-## libtorch has no `gelu_tanh_approx` yet (`tensor/README.md`): the model
-## loads there and the encoder stops at the first gelu. Without the native
-## module, loading is the error.
-def test_on_libtorch_the_encoder_stops_at_gelu() -> Result[Void]
+## libtorch computes in F32, the peer in doubles. Without the native module,
+## loading is the error.
+def test_on_libtorch_the_tiny_whisper_matches_the_peer() -> Result[Void]
   with_fixtures do |dir|
     loaded = Asr.open("#{dir}/tiny/model.safetensors", TORCH)
     return Test.error?(loaded) if not Tensor.available(TORCH)
 
-    stopped: Result[Void] = Native.arena do
+    want = try JSON.parse(try File.read_text("#{dir}/expected.json"))
+    matched: Result[Void] = Native.arena do
       m = try loaded
-      case Asr.encode(
-        m,
-        try f32(
-          [0.5, -1.0, 0.25, 1.0, 0.0, -0.5, 0.5, -1.0, 0.25, 1.0, 0.0, -0.5, 0.5, -1.0, 0.25, 1.0, 0.0, -0.5],
-          [1, 3, 6],
-          TORCH,
-        ),
-      )
-        ok(_) -> error("the encoder ran on libtorch: drop this test and compare with the peer")
-        error(e) -> Test.assert(e.message.include?("gelu_tanh_approx"), "unexpected error: #{e.message}")
-      end
+      audio = try Asr.encode(m, try f32(try rows(try JSON.get(want, "mel")), [1, 3, 6], TORCH))
+      tokens = try ids(try ints(try JSON.get(want, "tokens")), [1, 4], TORCH)
+      logits = try Asr.decode(m, tokens, audio)
+      tanh = try JSON.get(want, "tanh")
+      try expect_close(try floats_of(audio), try rows(try JSON.get(tanh, "encoder")), F32, F32, "torch encoder")
+      expect_close(try floats_of(logits), try rows(try JSON.get(tanh, "logits")), F32, F32, "torch logits")
     end
 
-    stopped
+    matched
   end
 end
 
@@ -134,8 +132,8 @@ def ints(json: JSON.Value) -> Result[List[Int]]
   ok(out)
 end
 
-def ids(tokens: List[Int], shape: List[Int]) -> Result[Tensor.Tensor]
-  Tensor.from_list(tokens.map { |t: Int| Tensor.Values.Int(t) }, shape, Tensor.Dtype.I64, REF)
+def ids(tokens: List[Int], shape: List[Int], backend: Tensor.Backend = REF) -> Result[Tensor.Tensor]
+  Tensor.from_list(tokens.map { |t: Int| Tensor.Values.Int(t) }, shape, Tensor.Dtype.I64, backend)
 end
 
 def f32(data: List[Float], shape: List[Int], backend: Tensor.Backend = REF) -> Result[Tensor.Tensor]

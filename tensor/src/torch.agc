@@ -36,7 +36,7 @@
 ##   exactly as `../tensor.agc`'s wrappers do.
 ##
 ## Not implemented, and answered with `unsupported` below so the dispatch arm
-## says so in one place: `gelu_tanh_approx`, `batch_matmul` and `to_device`.
+## says so in one place: `batch_matmul` and `to_device`.
 ## Each is expressible in libtorch, none is among the ops this backend was
 ## asked for, and nothing here claims it has one (`README.md`, "What is
 ## implemented").
@@ -277,6 +277,15 @@ def tanh(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "tanh")
   h = try handle_of(t)
   one(device, t.dtype, t.shape) do Raw.tanh(h) end
+end
+
+## The tanh approximation of GELU, float only; a non-finite input is an
+## `error`.
+def gelu_tanh_approx(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "gelu_tanh_approx")
+  _ = try float_only(t, "gelu_tanh_approx")
+  h = try handle_of(t)
+  one(device, t.dtype, t.shape) do Raw.gelu_tanh_approx(h) end
 end
 
 ## `a == b` elementwise as `Bool`, float or int dtypes, exact shapes.

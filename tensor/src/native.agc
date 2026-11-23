@@ -73,6 +73,8 @@ extern module "torch"
   compute def sigmoid(a: TensorHandle) -> Result[TensorHandle]
   ## Tanh, elementwise, finite inputs only.
   compute def tanh(a: TensorHandle) -> Result[TensorHandle]
+  ## The tanh approximation of GELU, elementwise, finite inputs only.
+  compute def gelu_tanh_approx(a: TensorHandle) -> Result[TensorHandle]
   ## `a == b` elementwise as a `Bool` tensor, two tensors of one shape.
   compute def eq(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## `a < b` elementwise as a `Bool` tensor, two tensors of one shape.

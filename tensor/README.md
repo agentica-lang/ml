@@ -69,16 +69,16 @@ change that lets the backend move out into its own package again.
 ## What is implemented, and what is not
 
 `DESIGN.md` §3.1 names 45 primitives. Both backends compute them: the
-**reference computes all 45**, and the **libtorch backend implements 42** and
+**reference computes all 45**, and the **libtorch backend implements 43** and
 answers `error("<op> is not implemented on the torch backend yet (see tensor/README.md)")` for the
-other three, so the gap is an error naming the op, never a wrong number. Every
+other two, so the gap is an error naming the op, never a wrong number. Every
 implemented one is checked against the reference on the same inputs, values and
 shape/dtype, plus its error paths.
 
 | §3.1 group | Implemented on libtorch | Not implemented |
 |---|---|---|
 | Creation (7) | `zeros`, `ones`, `empty`, `full`, `like`, `arange`, `scalar_to_tensor` | — |
-| Elementwise (17) | `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `sqrt`, `pow`, `relu`, `sigmoid`, `tanh`, `eq`, `lt`, `where`, `clamp` | `gelu_tanh_approx` |
+| Elementwise (17) | `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `sqrt`, `pow`, `relu`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `eq`, `lt`, `where`, `clamp` | — |
 | Reductions (4) | `sum`, `mean`, `max`, `argmax` (each with `axes` and `keep_dims`) | — |
 | Linear algebra (3) | `matmul`, `transpose` | `batch_matmul` |
 | Shape (8) | `reshape`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `broadcast_to`, `gather` | — |
@@ -88,13 +88,8 @@ shape/dtype, plus its error paths.
 Plus the two host-crossing functions §4 names, `from_list` and `to_list`
 (readback), which are not primitives.
 
-Why those three are out:
+Why those two are out:
 
-- **`gelu_tanh_approx`** is one libtorch call (`at::gelu(..., "tanh")`), but
-  no test pins it against the reference. Everything else a transformer block
-  uses is in: the composite conformance checks run `softmax`, `layer_norm`,
-  `rms_norm`, `silu`, the masked and unmasked `multi_head_attention` and
-  `greedy_step` on **both** backends.
 - **`batch_matmul`** is expressible (`at::matmul` already takes a batch) and
   untested. `multi_head_attention` does not need it: it splits heads into
   rank-2 `matmul` calls (§3.2).
