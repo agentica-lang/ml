@@ -6,10 +6,14 @@ name: CI
 # Models and weights never enter git: tests use synthetic fixtures, and a
 # package that needs a model downloads its pinned one explicitly (see the
 # engine/model steps of the packages job).
+# A change to docs alone (Markdown, site/) runs no CI: the Pages workflow
+# builds the site.
 on:
   push:
     branches: [main]
+    paths-ignore: ['**/*.md', 'site/**']
   pull_request:
+    paths-ignore: ['**/*.md', 'site/**']
 
 permissions:
   contents: read
