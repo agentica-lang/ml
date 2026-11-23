@@ -15,6 +15,11 @@ import Tensor from "pkg/tensor/tensor"
 ## The `eps` a fresh `LayerNorm` gets.
 LAYER_NORM_EPS = 0.00001
 
+## The bias `causal_mask` adds where a query must not see a key: finite, so
+## no infinity enters the graph, and far enough below any score that its
+## softmax weight is zero.
+MASKED = -1000000000.0
+
 ## `y = x w + b` over the last axis: `w` is `[inputs, outputs]`, `b` is
 ## `[outputs]`.
 struct Dense
@@ -64,6 +69,19 @@ struct EncoderBlock
   norm1: LayerNorm
   attention: Attention
   norm2: LayerNorm
+  mlp: Mlp
+end
+
+## A pre-norm transformer decoder block, as Whisper's decoder runs it:
+## `h = x + self_attention(norm1(x))` under a causal mask, then
+## `h = h + cross_attention(norm2(h), memory)` over the encoder output, then
+## `h + mlp(norm3(h))`.
+struct DecoderBlock
+  norm1: LayerNorm
+  self_attention: Attention
+  norm2: LayerNorm
+  cross_attention: Attention
+  norm3: LayerNorm
   mlp: Mlp
 end
 
@@ -137,6 +155,31 @@ def encoder_block(p: EncoderBlock, x: Tensor.Tensor, mask: Optional[Tensor.Tenso
   Tensor.add(h, try mlp(p.mlp, try layer_norm(p.norm2, h)))
 end
 
+## The additive `[size, size]` mask that keeps query `i` off the keys after
+## it: `0.0` where `key <= i`, `MASKED` above the diagonal. It is the `mask`
+## of `attention`, built from `arange`, `lt` and `where`, so on `Trace` it is
+## a constant, never differentiated.
+def causal_mask(size: Int, dtype: Tensor.Dtype, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  return error("causal_mask needs size >= 1, got #{size}") if size < 1
+  square = [size, size]
+  positions = try Tensor.arange(0, size, 1, Tensor.Dtype.I64, backend)
+  rows = try Tensor.broadcast_to(try Tensor.reshape(positions, [size, 1]), square)
+  cols = try Tensor.broadcast_to(try Tensor.reshape(positions, [1, size]), square)
+  blocked = try Tensor.full(square, Tensor.Values.Float(MASKED), dtype, backend)
+  Tensor.where(try Tensor.lt(rows, cols), blocked, try Tensor.zeros(square, dtype, backend))
+end
+
+## `x` (`[batch, t, width]`) attends to itself causally and then to `memory`,
+## the encoder output (`[batch, s, width]`; `s` may differ from `t`).
+def decoder_block(p: DecoderBlock, x: Tensor.Tensor, memory: Tensor.Tensor) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(x)
+  return error("decoder_block needs a rank-3 input, got #{shape}") if shape.size != 3
+  mask = try causal_mask(shape[1], Tensor.dtype(x), Tensor.backend(x))
+  h = try Tensor.add(x, try self_attention(p.self_attention, try layer_norm(p.norm1, x), some(mask)))
+  h = try Tensor.add(h, try attention(p.cross_attention, try layer_norm(p.norm2, h), memory))
+  Tensor.add(h, try mlp(p.mlp, try layer_norm(p.norm3, h)))
+end
+
 ## A `Dense` with a Glorot-uniform weight and a zero bias.
 def init_dense(inputs: Int, outputs: Int, seed: Int, backend: Tensor.Backend) -> Result[Dense]
   w = try Init.glorot_uniform([inputs, outputs], seed, backend)
@@ -189,6 +232,26 @@ def init_encoder_block(
       attention: try init_attention(width, heads, Init.derive(seed, 0), backend),
       norm2: try init_layer_norm(width, backend),
       mlp: try init_mlp(width, hidden, activation, Init.derive(seed, 1), backend),
+    ),
+  )
+end
+
+def init_decoder_block(
+  width: Int,
+  heads: Int,
+  hidden: Int,
+  activation: Activation,
+  seed: Int,
+  backend: Tensor.Backend,
+) -> Result[DecoderBlock]
+  ok(
+    DecoderBlock(
+      norm1: try init_layer_norm(width, backend),
+      self_attention: try init_attention(width, heads, Init.derive(seed, 0), backend),
+      norm2: try init_layer_norm(width, backend),
+      cross_attention: try init_attention(width, heads, Init.derive(seed, 1), backend),
+      norm3: try init_layer_norm(width, backend),
+      mlp: try init_mlp(width, hidden, activation, Init.derive(seed, 2), backend),
     ),
   )
 end

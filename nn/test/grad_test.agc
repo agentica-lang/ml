@@ -60,6 +60,25 @@ def test_the_gradient_through_a_gelu_encoder_block_matches_a_central_difference(
   check(args, ->(ps: List[Tensor.Tensor]) { block_loss(ps, fixed.map { |t| Trace.constant(t) }) })
 end
 
+## The input of a decoder block, then its encoder output (keys and values of
+## the cross-attention), each in a test of its own: every value costs two more
+## passes, and each test adds to the file's step budget. The block's `F32`
+## weights enter as `F64` constants.
+def test_the_gradient_of_a_decoder_block_input_matches_a_central_difference() -> Result[Void]
+  memory = Trace.constant(try filler([1, 3, 2], 9))
+  block = try lift_block(try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF))
+  check(
+    [try filler([1, 2, 2], 10)],
+    ->(ps: List[Tensor.Tensor]) { squared(try Nn.decoder_block(block, ps[0], memory)) },
+  )
+end
+
+def test_the_gradient_of_a_decoder_block_memory_matches_a_central_difference() -> Result[Void]
+  x = Trace.constant(try filler([1, 1, 2], 10))
+  block = try lift_block(try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF))
+  check([try filler([1, 2, 2], 9)], ->(ps: List[Tensor.Tensor]) { squared(try Nn.decoder_block(block, x, ps[0])) })
+end
+
 ## `sum(encoder_block(x)^2)` with a gelu `mlp` and bias-free weights, for
 ## `ps = [x, norm1 gamma]`: the gradient of `x` crosses every layer of the
 ## block. `fixed` holds the query, key, value and output weights, the `mlp`
@@ -124,6 +143,44 @@ def mlp_loss(ps: List[Tensor.Tensor], x: Tensor.Tensor) -> Result[Tensor.Tensor]
   )
 
   squared(try Nn.mlp(m, Trace.constant(x)))
+end
+
+def lift(t: Tensor.Tensor) -> Result[Tensor.Tensor] = ok(Trace.constant(try Tensor.to_dtype(t, Tensor.Dtype.F64)))
+
+def lift_dense(d: Nn.Dense) -> Result[Nn.Dense]
+  b: Optional[Tensor.Tensor] = case d.b
+    some(t) -> some(try lift(t))
+    none -> none
+  end
+
+  ok(Nn.Dense(w: try lift(d.w), b: b))
+end
+
+def lift_norm(n: Nn.LayerNorm) -> Result[Nn.LayerNorm] = ok(n.with(gamma: try lift(n.gamma), beta: try lift(n.beta)))
+
+def lift_attention(a: Nn.Attention) -> Result[Nn.Attention]
+  ok(
+    a.with(
+      query: try lift_dense(a.query),
+      key: try lift_dense(a.key),
+      value: try lift_dense(a.value),
+      output: try lift_dense(a.output),
+    ),
+  )
+end
+
+## The block with every weight as an `F64` `Trace` constant.
+def lift_block(p: Nn.DecoderBlock) -> Result[Nn.DecoderBlock]
+  ok(
+    Nn.DecoderBlock(
+      norm1: try lift_norm(p.norm1),
+      self_attention: try lift_attention(p.self_attention),
+      norm2: try lift_norm(p.norm2),
+      cross_attention: try lift_attention(p.cross_attention),
+      norm3: try lift_norm(p.norm3),
+      mlp: p.mlp.with(up: try lift_dense(p.mlp.up), down: try lift_dense(p.mlp.down)),
+    ),
+  )
 end
 
 def squared(y: Tensor.Tensor) -> Result[Tensor.Tensor] = Tensor.sum(try Tensor.mul(y, y))

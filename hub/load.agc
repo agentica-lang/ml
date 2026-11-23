@@ -21,6 +21,25 @@ struct BlockNames
   down: String
 end
 
+## The prefix of every layer of one decoder block: self-attention
+## (`query`...`output`), cross-attention over the encoder output
+## (`cross_query`...`cross_output`), and the `mlp`.
+struct DecoderBlockNames
+  norm1: String
+  query: String
+  key: String
+  value: String
+  output: String
+  norm2: String
+  cross_query: String
+  cross_key: String
+  cross_value: String
+  cross_output: String
+  norm3: String
+  up: String
+  down: String
+end
+
 ## The float tensor `name` as `F32`, of `rank`.
 def weight(c: Hub.Checkpoint, name: String, rank: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
   t = try Hub.tensor(c, name, backend)
@@ -71,24 +90,71 @@ def encoder_block(
   eps: Float,
   backend: Tensor.Backend,
 ) -> Result[Nn.EncoderBlock]
-  attention = Nn.Attention(
-    query: try dense(c, names.query, backend),
-    key: try dense(c, names.key, backend),
-    value: try dense(c, names.value, backend),
-    output: try dense(c, names.output, backend),
-    heads: heads,
-  )
-
   ok(
     Nn.EncoderBlock(
       norm1: try layer_norm(c, names.norm1, eps, backend),
-      attention: attention,
+      attention: try attention(c, names.query, names.key, names.value, names.output, heads, backend),
       norm2: try layer_norm(c, names.norm2, eps, backend),
       mlp: Nn.Mlp(
         up: try dense(c, names.up, backend),
         down: try dense(c, names.down, backend),
         activation: activation,
       ),
+    ),
+  )
+end
+
+def decoder_block(
+  c: Hub.Checkpoint,
+  names: DecoderBlockNames,
+  heads: Int,
+  activation: Nn.Activation,
+  eps: Float,
+  backend: Tensor.Backend,
+) -> Result[Nn.DecoderBlock]
+  ok(
+    Nn.DecoderBlock(
+      norm1: try layer_norm(c, names.norm1, eps, backend),
+      self_attention: try attention(c, names.query, names.key, names.value, names.output, heads, backend),
+      norm2: try layer_norm(c, names.norm2, eps, backend),
+      cross_attention: try attention(
+        c,
+        names.cross_query,
+        names.cross_key,
+        names.cross_value,
+        names.cross_output,
+        heads,
+        backend,
+      ),
+      norm3: try layer_norm(c, names.norm3, eps, backend),
+      mlp: Nn.Mlp(
+        up: try dense(c, names.up, backend),
+        down: try dense(c, names.down, backend),
+        activation: activation,
+      ),
+    ),
+  )
+end
+
+private
+
+## The four projections of one attention, by prefix.
+def attention(
+  c: Hub.Checkpoint,
+  query: String,
+  key: String,
+  value: String,
+  output: String,
+  heads: Int,
+  backend: Tensor.Backend,
+) -> Result[Nn.Attention]
+  ok(
+    Nn.Attention(
+      query: try dense(c, query, backend),
+      key: try dense(c, key, backend),
+      value: try dense(c, value, backend),
+      output: try dense(c, output, backend),
+      heads: heads,
     ),
   )
 end

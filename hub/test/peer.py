@@ -1,8 +1,8 @@
 """The independent peer of the hub/ tests: writes safetensors files with the
 standard library alone (struct + json) and the values a reader must find.
 
-Usage: python3 peer.py SET, with SET one of values, malformed, sharded, layer
-or block. Writes that set into a new temporary folder and prints its path.
+Usage: python3 peer.py SET, with SET one of values, malformed, sharded, layer,
+block or decoder. Writes that set into a new temporary folder and prints its path.
 """
 
 import json
@@ -180,43 +180,121 @@ def layer(out):
     (out / "layer.json").write_text(json.dumps({"x": x, "y": y, "eps": eps}))
 
 
-def block(out):
-    """One Whisper-style encoder block (width 4, hidden 8), every layer with
-    its own weights; `k_proj` has no bias, as in Whisper. The expected values
-    are each dense weight transposed to [in, out]."""
-    tensors, dense, norm = {}, {}, {}
+class Weights:
+    """Dense layers stored [out, in] and layer norms with deterministic
+    values, and what the loader must find: each dense weight transposed to
+    [in, out]. Every value is a multiple of 1/8, exact in F32."""
 
-    def add_dense(name, rows, cols, k, bias=True):
+    def __init__(self):
+        self.tensors, self.dense, self.norm = {}, {}, {}
+
+    def add_dense(self, name, rows, cols, k, bias=True):
         w = [((i * 7 + k * 13) % 23 - 11) / 8 for i in range(rows * cols)]
-        tensors[name + ".weight"] = tensor("F32", [rows, cols], w)
+        self.tensors[name + ".weight"] = tensor("F32", [rows, cols], w)
         b = [(i - k) / 4 for i in range(rows)] if bias else None
         if bias:
-            tensors[name + ".bias"] = tensor("F32", [rows], b)
-        dense[name] = {"w": [w[o * cols + i] for i in range(cols) for o in range(rows)], "b": b}
+            self.tensors[name + ".bias"] = tensor("F32", [rows], b)
+        self.dense[name] = {"w": [w[o * cols + i] for i in range(cols) for o in range(rows)], "b": b}
 
-    def add_norm(name, k):
+    def add_norm(self, name, k):
         gamma, beta = [1 + (k + i) / 4 for i in range(4)], [(k - i) / 8 for i in range(4)]
-        tensors[name + ".weight"] = tensor("F32", [4], gamma)
-        tensors[name + ".bias"] = tensor("F64", [4], beta)
-        norm[name] = {"gamma": gamma, "beta": beta}
+        self.tensors[name + ".weight"] = tensor("F32", [4], gamma)
+        self.tensors[name + ".bias"] = tensor("F64", [4], beta)
+        self.norm[name] = {"gamma": gamma, "beta": beta}
 
+    def add_attention(self, prefix, k):
+        """Whisper's q/k/v/out projections; `k_proj` has no bias."""
+        for j, part in enumerate(["q_proj", "k_proj", "v_proj", "out_proj"]):
+            self.add_dense(prefix + part, 4, 4, k + j, bias=part != "k_proj")
+
+    def expected(self):
+        return {"dense": self.dense, "norm": self.norm}
+
+    # The forward pass, in doubles, over the [in, out] weights.
+
+    def linear(self, name, x):
+        d = self.dense[name]
+        cols = len(d["w"]) // len(x[0])
+        b = d["b"] or [0.0] * cols
+        return [[sum(row[i] * d["w"][i * cols + o] for i in range(len(row))) + b[o]
+                 for o in range(cols)] for row in x]
+
+    def layer_norm(self, name, x, eps):
+        n = self.norm[name]
+        out = []
+        for row in x:
+            mu = sum(row) / len(row)
+            sd = math.sqrt(sum((v - mu) ** 2 for v in row) / len(row) + eps)
+            out.append([(v - mu) / sd * g + b for v, g, b in zip(row, n["gamma"], n["beta"])])
+        return out
+
+    def attention(self, prefix, xq, xkv, heads, causal):
+        """A blocked key (after the query, when causal) gets no weight."""
+        q = self.linear(prefix + "q_proj", xq)
+        k = self.linear(prefix + "k_proj", xkv)
+        v = self.linear(prefix + "v_proj", xkv)
+        dh = len(q[0]) // heads
+        ctx = [[] for _ in xq]
+        for h in range(heads):
+            cols = range(h * dh, (h + 1) * dh)
+            for i in range(len(xq)):
+                seen = range(i + 1) if causal else range(len(xkv))
+                scores = [sum(q[i][c] * k[j][c] for c in cols) / math.sqrt(dh) for j in seen]
+                top = max(scores)
+                e = [math.exp(s - top) for s in scores]
+                ctx[i] += [sum(e[n] * v[j][c] for n, j in enumerate(seen)) / sum(e) for c in cols]
+        return self.linear(prefix + "out_proj", ctx)
+
+
+def plus(a, b):
+    return [[x + y for x, y in zip(ra, rb)] for ra, rb in zip(a, b)]
+
+
+def block(out):
+    """One Whisper-style encoder block (width 4, hidden 8), every layer with
+    its own weights."""
+    w = Weights()
     p = "encoder.layers.0."
-    add_norm(p + "self_attn_layer_norm", 0)
-    add_dense(p + "self_attn.q_proj", 4, 4, 1)
-    add_dense(p + "self_attn.k_proj", 4, 4, 2, bias=False)
-    add_dense(p + "self_attn.v_proj", 4, 4, 3)
-    add_dense(p + "self_attn.out_proj", 4, 4, 4)
-    add_norm(p + "final_layer_norm", 5)
-    add_dense(p + "fc1", 8, 4, 6)
-    add_dense(p + "fc2", 4, 8, 7)
+    w.add_norm(p + "self_attn_layer_norm", 0)
+    w.add_attention(p + "self_attn.", 1)
+    w.add_norm(p + "final_layer_norm", 5)
+    w.add_dense(p + "fc1", 8, 4, 6)
+    w.add_dense(p + "fc2", 4, 8, 7)
     embed = [(i % 9 - 4) / 2 for i in range(24)]
-    tensors["encoder.embed_positions.weight"] = tensor("F16", [6, 4], embed)
-    write(out / "block.safetensors", tensors)
-    (out / "block.json").write_text(json.dumps({"dense": dense, "norm": norm, "embed": embed}))
+    w.tensors["encoder.embed_positions.weight"] = tensor("F16", [6, 4], embed)
+    write(out / "block.safetensors", w.tensors)
+    (out / "block.json").write_text(json.dumps({**w.expected(), "embed": embed}))
+
+
+def decoder(out):
+    """One Whisper-style decoder block (width 4, 2 heads, hidden 8, relu)
+    and its forward pass: 3 decoder positions over 5 encoder positions."""
+    w = Weights()
+    p = "decoder.layers.0."
+    w.add_norm(p + "self_attn_layer_norm", 0)
+    w.add_attention(p + "self_attn.", 1)
+    w.add_norm(p + "encoder_attn_layer_norm", 2)
+    w.add_attention(p + "encoder_attn.", 5)
+    w.add_norm(p + "final_layer_norm", 3)
+    w.add_dense(p + "fc1", 8, 4, 9)
+    w.add_dense(p + "fc2", 4, 8, 10)
+    write(out / "decoder.safetensors", w.tensors)
+    eps = 1e-5
+    x = [[((i * 4 + c) * 5 % 13 - 6) / 8 for c in range(4)] for i in range(3)]
+    memory = [[((i * 4 + c) * 3 % 11 - 5) / 8 for c in range(4)] for i in range(5)]
+    n = w.layer_norm(p + "self_attn_layer_norm", x, eps)
+    h = plus(x, w.attention(p + "self_attn.", n, n, 2, True))
+    n = w.layer_norm(p + "encoder_attn_layer_norm", h, eps)
+    h = plus(h, w.attention(p + "encoder_attn.", n, memory, 2, False))
+    n = w.layer_norm(p + "final_layer_norm", h, eps)
+    up = [[max(v, 0.0) for v in row] for row in w.linear(p + "fc1", n)]
+    y = plus(h, w.linear(p + "fc2", up))
+    expected = {**w.expected(), "x": x, "memory": memory, "y": y, "eps": eps}
+    (out / "decoder.json").write_text(json.dumps(expected))
 
 
 SETS = {"values": values_file, "malformed": malformed, "sharded": sharded,
-        "layer": layer, "block": block}
+        "layer": layer, "block": block, "decoder": decoder}
 
 
 def main():
