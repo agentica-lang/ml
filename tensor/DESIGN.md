@@ -281,6 +281,13 @@ end
   nothing. The cache holds 32 graphs and evicts the least recently used one
   nobody runs. A graph that will not run again (`eval_many` with `keep`
   false) takes no slot and is dropped after its run.
+  `Trace.compile` does the tracing and the lowering (`Lower.program`: the
+  nodes, the key, where each leaf's tensor comes from, the fills) once, and
+  `Trace.run` is `Lower.execute` over it: it acquires the graph by the key it
+  already has, sends the nodes only when the cache lost the graph or another
+  run holds it, binds the leaves (an input by its position, a constant to the
+  tensor it was traced with) and runs. `Trace.evaluate` is the same two steps
+  for one call.
 - **No copies in or out.** For one run only, an `F32` leaf points at the
   caller's tensor and an `F32` output at a fresh tensor the run writes; after
   the run the graph points at nothing again, so the cache keeps no caller

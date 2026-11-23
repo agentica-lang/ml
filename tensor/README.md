@@ -25,6 +25,8 @@ answers whether this machine has it, and the dispatch arm answers
   `eval_many` (several outputs, one evaluation) call a function written against
   `tensor.agc` with tensors of the `Trace` backend, derive the gradient graph
   with the same ops and run it on a real backend (`DESIGN.md` §10).
+  `compile` and `run` trace and lower a function once, for inputs of fixed
+  shapes, and run it many times.
   `src/graph.agc` is the recording side the `Trace` arms call.
 - `src/reference.agc` — the reference backend, pure Agentica over
   `List[Float]`; the oracle every other backend is checked against.

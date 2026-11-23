@@ -25,6 +25,24 @@ struct ValueAndGrad
   grads: List[Types.Tensor]
 end
 
+## What a compiled graph takes for one input: the shape, the dtype and the
+## backend of the tensor `run` must be given.
+struct Spec
+  shape: List[Int]
+  dtype: Types.Dtype
+  backend: Types.Backend
+end
+
+## A function traced and lowered once for inputs of fixed shapes (`compile`),
+## to run any number of times (`run`).
+struct Compiled
+  specs: List[Spec]
+  inputs: List[Types.Tensor]
+  outs: List[Types.Tensor]
+  backend: Types.Backend
+  program: Optional[Lower.Program]
+end
+
 ## A tensor from outside the function as a node of the trace: data, labels,
 ## any value the gradient is not taken for. A traced tensor is returned as it
 ## is.
@@ -131,6 +149,55 @@ def eval_many(
   evaluate(outs, bind(inputs, args), args[0].backend, keep)
 end
 
+## The spec of the tensor `t`.
+def spec_of(t: Types.Tensor) -> Spec = Spec(shape: t.shape, dtype: t.dtype, backend: t.backend)
+
+## Traces `f` once over inputs of `specs` and lowers it, so that `run` neither
+## traces nor plans. On `Ggml` the function is one ggml graph (kept in the
+## cache unless `keep` is false, as in `eval_many`); on the other backends it
+## is the traced graph, evaluated node by node on every run.
+##
+## What `f` reads from outside the inputs enters through `constant`, and is
+## fixed for the life of the result: the same tensors, bound again on every
+## run. Whatever changes between runs (the weights of a training step, a KV
+## cache) must be an input. `f` may build any graph, a gradient (`gradients`)
+## and an update of the parameters included, and answers every tensor `run`
+## gives back.
+def compile(
+  specs: List[Spec],
+  f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]],
+  keep: Bool = true,
+) -> Result[Compiled]
+  return error("a compiled function needs at least one input") if specs.empty?
+  backend = specs[0].backend
+  for s in specs
+    return error("a compiled function needs its inputs on one backend") if s.backend != backend
+  end
+
+  return error("a compiled function needs computed inputs, got traced ones") if backend == Types.Backend.Trace
+  inputs = specs.map { |s| Graph.record(Types.Op.Input, [], s.shape, s.dtype) }
+  outs = try System.Profile.measure("ml.trace") do f.call(inputs) end
+  lowered: Optional[Lower.Program] = none
+  case backend
+    Types.Backend.Ggml(device) -> lowered = some(try Lower.program(outs, inputs, device, keep))
+    _ -> nil
+  end
+
+  ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: lowered))
+end
+
+## One run of `compiled` over `args`, which must match its specs (shape,
+## dtype and backend, one tensor per spec): the tensors `f` answered, with
+## the semantics of `eval_many`. Any number of tasks may run one compiled
+## function; on `Ggml` a graph in use by one run is built again for another.
+def run(compiled: Compiled, args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
+  try matches(compiled.specs, args)
+  case compiled.program
+    some(p) -> Lower.execute(p, args)
+    none -> evaluate(compiled.outs, bind(compiled.inputs, args), compiled.backend)
+  end
+end
+
 ## The value of the scalar function `f` at `args` and its gradient for every
 ## argument. The trace is built once, the gradient graph is derived from it,
 ## and one evaluation runs both, sharing the forward values.
@@ -149,6 +216,24 @@ def grad(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor
 end
 
 private
+
+## An error unless `args` are the tensors `specs` describe.
+def matches(specs: List[Spec], args: List[Types.Tensor]) -> Result[Void]
+  return error("a compiled function takes #{specs.size} inputs, got #{args.size}") if args.size != specs.size
+
+  for i in 0...specs.size
+    s = specs[i]
+    t = args[i]
+    if t.shape != s.shape or t.dtype != s.dtype or t.backend != s.backend
+      return error(
+        "input #{i}: the compiled function takes #{Types.dtype_name(s.dtype)} #{s.shape} on #{Types.backend_name(s.backend)}, " +
+        "got #{Types.dtype_name(t.dtype)} #{t.shape} on #{Types.backend_name(t.backend)}",
+      )
+    end
+  end
+
+  ok()
+end
 
 ## The arguments of a traced tensor's node.
 def args_of(t: Types.Tensor) -> Result[List[Types.Tensor]]

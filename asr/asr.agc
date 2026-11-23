@@ -76,6 +76,10 @@ struct Cache
   cross: List[Heard]
   own: List[Kv]
   length: Int
+  ## On `Ggml`, the one-token steps already compiled (`Trace.compile`), by
+  ## the rows of `own` and of the step's capacity, so a later step of the
+  ## same capacity neither traces nor plans.
+  graphs: Map[String, Trace.Compiled] = {}
 end
 
 ## One block's cross-attention keys and values, split by head: `keys[h]` is
@@ -265,7 +269,7 @@ def listen(m: Model, audio: Tensor.Tensor) -> Result[Cache]
     cross = cross.push(Heard(keys: heads.take(n), values: heads.drop(n)))
   end
 
-  ok(Cache(cross: cross, own: [], length: 0))
+  ok(Cache(cross: cross, own: [], length: 0, graphs: {}))
 end
 
 ## `ids` fed after the tokens of `cache`: the logits of the last one, as
@@ -291,21 +295,35 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
     end
 
     fed = try made
-    at = fed[0]
-    positions = fed[1]
     room = capacity(cache.length + n, m.config.max_target_positions)
-    got = Trace.eval_many(
-      [at, positions],
-      ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), traced_cache(cache), xs, room) },
-    )
+    graphs = cache.graphs
+    got: Result[List[Tensor.Tensor]] = error("no step ran")
+    if n == 1 and cache.length > 0
+      key = "#{Tensor.shape(cache.own[0].key)[1]} #{room}"
+      if !graphs.has_key?(key)
+        graphs = graphs.put(key, try Trace.compile(
+          (fed + step_inputs(cache)).map { |t| Trace.spec_of(t) },
+          ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), cache_over(cache, xs.drop(2)), xs.take(2), room) },
+        ))
+      end
 
-    close([at, positions])
+      got = Trace.run(graphs[key], fed + step_inputs(cache))
+    else
+      got = Trace.eval_many(
+        fed,
+        ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), traced_cache(cache), xs, room) },
+      )
+    end
+
+    close(fed)
     outs = try got
     layers = m.decoder.size
     own = (0...layers).map { |i| Kv(key: outs[1 + i], value: outs[1 + layers + i]) }
     logits = try System.Profile.measure("ml.readback") do floats(outs[0]) end
     close([outs[0]])
-    return ok(Stepped(logits: logits, cache: Cache(cross: cache.cross, own: own, length: cache.length + n)))
+    return ok(
+      Stepped(logits: logits, cache: Cache(cross: cache.cross, own: own, length: cache.length + n, graphs: graphs)),
+    )
   end
 
   # The arena keeps the new keys and values alone (the libtorch ops are
@@ -316,7 +334,7 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
   end
 
   g = try grown
-  ok(Stepped(logits: g.logits, cache: Cache(cross: cache.cross, own: g.own, length: cache.length + n)))
+  ok(Stepped(logits: g.logits, cache: Cache(cross: cache.cross, own: g.own, length: cache.length + n, graphs: {})))
 end
 
 ## The text of `pcm` (16 kHz mono samples, about -1..1, at most one window:
@@ -720,6 +738,31 @@ def traced_cache(c: Cache) -> Cache
     },
     own: c.own.map { |kv| Kv(key: Trace.constant(kv.key), value: Trace.constant(kv.value)) },
   )
+end
+
+## The tensors of `c` a compiled step takes after the ids and the positions:
+## per decoder block the cross-attention keys then values of every head, then
+## the self-attention keys and values.
+def step_inputs(c: Cache) -> List[Tensor.Tensor]
+  c.cross.flat_map { |h| h.keys + h.values } + kept(c)
+end
+
+## `c` with its tensors replaced, in the order of `step_inputs`, by `xs`.
+def cache_over(c: Cache, xs: List[Tensor.Tensor]) -> Cache
+  at = 0
+  cross: List[Heard] = []
+  for h in c.cross
+    n = h.keys.size
+    cross = cross.push(Heard(keys: xs.drop(at).take(n), values: xs.drop(at + n).take(n)))
+    at += 2 * n
+  end
+
+  own: List[Kv] = []
+  for i in 0...c.own.size
+    own = own.push(Kv(key: xs[at + 2 * i], value: xs[at + 2 * i + 1]))
+  end
+
+  c.with(cross: cross, own: own)
 end
 
 ## Attention of the queries `[n, d_model]` over one block's cached heads, as
