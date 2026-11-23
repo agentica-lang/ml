@@ -131,8 +131,12 @@ an_term ggmlgraph_result_list_Int_ok(an_env *env, an_term value);
 /* The CPU backend with `threads` threads. */
 an_term ggmlgraph_backend_cpu(an_env *env, int64_t threads);
 
-/* Vulkan device 0, failing unless it is Vulkan and not a CPU. */
-an_term ggmlgraph_backend_vulkan(an_env *env);
+/* Vulkan device 0, failing unless it is Vulkan and not a CPU. `mul_mat` is
+   F32 unless `fp16` lets ggml convert its inputs to fp16 (its default on
+   this iGPU). ggml reads the choice when it first opens the device, so the
+   first call fixes it for the process and a later call that asks for the
+   other one is an error. */
+an_term ggmlgraph_backend_vulkan(an_env *env, bool fp16);
 
 /* `"name — description (type)"` of the backend's device. */
 an_term ggmlgraph_describe(an_env *env, struct ggmlgraph_Backend_state *backend);
@@ -148,7 +152,8 @@ an_term ggmlgraph_program(an_env *env, struct ggmlgraph_Backend_state *backend, 
 an_term ggmlgraph_node(an_env *env, struct ggmlgraph_Program_state *p, int64_t op, ggmlgraph_list_Int args, ggmlgraph_list_Int shape, ggmlgraph_list_Int ints, double value);
 
 /* Points the leaf `node` of `p` at the leaf `source` of `other`, so two
-   programs share one buffer (the two-graph optimizer). */
+   programs share one buffer (the two-graph optimizer). `other` must stay
+   open while `p` is used: `Lower.Built` keeps it. */
 an_term ggmlgraph_share(an_env *env, struct ggmlgraph_Program_state *p, int64_t node, struct ggmlgraph_Program_state *other, int64_t source);
 
 /* Builds the graph of `outputs` and of the writebacks (pairs of a state
@@ -159,6 +164,14 @@ an_term ggmlgraph_compile(an_env *env, struct ggmlgraph_Program_state *p, ggmlgr
 /* Uploads row-major `values` into the leaf `node`. */
 an_term ggmlgraph_set(an_env *env, struct ggmlgraph_Program_state *p, int64_t node, ggmlgraph_list_Float values);
 
+/* Fills the leaf `node` with values uniform in `[-scale, scale)` from
+   `seed`, made in C: a parameter of the benchmark's size costs no list. */
+an_term ggmlgraph_fill(an_env *env, struct ggmlgraph_Program_state *p, int64_t node, int64_t seed, double scale);
+
+/* `max |a - b| / max |b|` between node `node` of `p` and node `other_node`
+   of `other`, both read back; an error on any non-finite value. */
+an_term ggmlgraph_gap(an_env *env, struct ggmlgraph_Program_state *p, int64_t node, struct ggmlgraph_Program_state *other, int64_t other_node);
+
 /* `count` host batches of synthetic data for the leaves `x` (`[b, d]`
    floats) and `y` (`[b]` labels below `classes`), made in C from `seed`. */
 an_term ggmlgraph_batches(an_env *env, struct ggmlgraph_Program_state *p, int64_t x, int64_t y, int64_t classes, int64_t count, int64_t seed);
@@ -167,7 +180,8 @@ an_term ggmlgraph_batches(an_env *env, struct ggmlgraph_Program_state *p, int64_
    the graph, waits, and answers the first output's first value (the loss). */
 an_term ggmlgraph_run(an_env *env, struct ggmlgraph_Program_state *p, int64_t batch);
 
-/* The values of node `node` after the last run. */
+/* The values of node `node` after the last run: an output, a state or an
+   input. */
 an_term ggmlgraph_read(an_env *env, struct ggmlgraph_Program_state *p, int64_t node);
 
 /* What the program costs: graph nodes, leaf bytes, compute buffer bytes,
@@ -402,8 +416,9 @@ static an_term ggmlgraph_native_backend_cpu(an_env *env, int argc, const an_term
 
 static an_term ggmlgraph_native_backend_vulkan(an_env *env, int argc, const an_term *argv) {
   (void)argc;
-  (void)argv;
-  return ggmlgraph_backend_vulkan(env);
+  bool a0;
+  if (!an_get_bool(env, argv[0], &a0)) return an_badarg(env, 0);
+  return ggmlgraph_backend_vulkan(env, a0);
 }
 
 static an_term ggmlgraph_native_describe(an_env *env, int argc, const an_term *argv) {
@@ -489,6 +504,32 @@ static an_term ggmlgraph_native_set(an_env *env, int argc, const an_term *argv) 
   return ggmlgraph_set(env, a0, a1, a2);
 }
 
+static an_term ggmlgraph_native_fill(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggmlgraph_Program_state *a0 = ggmlgraph_Program_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  double a3;
+  if (!an_get_float(env, argv[3], &a3)) return an_badarg(env, 3);
+  return ggmlgraph_fill(env, a0, a1, a2, a3);
+}
+
+static an_term ggmlgraph_native_gap(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggmlgraph_Program_state *a0 = ggmlgraph_Program_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  struct ggmlgraph_Program_state *a2 = ggmlgraph_Program_get(env, argv[2]);
+  if (!a2) return an_badarg(env, 2);
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  return ggmlgraph_gap(env, a0, a1, a2, a3);
+}
+
 static an_term ggmlgraph_native_batches(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct ggmlgraph_Program_state *a0 = ggmlgraph_Program_get(env, argv[0]);
@@ -533,13 +574,15 @@ static an_term ggmlgraph_native_stats(an_env *env, int argc, const an_term *argv
 
 static const an_function ggmlgraph_native_functions[] = {
   {"backend_cpu", "(Int) -> Result[Backend]", ggmlgraph_native_backend_cpu, AN_DIRTY},
-  {"backend_vulkan", "() -> Result[Backend]", ggmlgraph_native_backend_vulkan, AN_DIRTY},
+  {"backend_vulkan", "(Bool) -> Result[Backend]", ggmlgraph_native_backend_vulkan, AN_DIRTY},
   {"describe", "(Backend) -> Result[String]", ggmlgraph_native_describe, AN_DIRTY},
   {"program", "(Backend, Int) -> Result[Program]", ggmlgraph_native_program, AN_DIRTY},
   {"node", "(Program, Int, List[Int], List[Int], List[Int], Float) -> Result[Int]", ggmlgraph_native_node, AN_DIRTY},
   {"share", "(Program, Int, Program, Int) -> Result[Void]", ggmlgraph_native_share, AN_DIRTY},
   {"compile", "(Program, List[Int], List[Int]) -> Result[Void]", ggmlgraph_native_compile, AN_DIRTY},
   {"set", "(Program, Int, List[Float]) -> Result[Void]", ggmlgraph_native_set, AN_DIRTY},
+  {"fill", "(Program, Int, Int, Float) -> Result[Void]", ggmlgraph_native_fill, AN_DIRTY},
+  {"gap", "(Program, Int, Program, Int) -> Result[Float]", ggmlgraph_native_gap, AN_DIRTY},
   {"batches", "(Program, Int, Int, Int, Int, Int) -> Result[Void]", ggmlgraph_native_batches, AN_DIRTY},
   {"run", "(Program, Int) -> Result[Float]", ggmlgraph_native_run, AN_DIRTY},
   {"read", "(Program, Int) -> Result[List[Float]]", ggmlgraph_native_read, AN_DIRTY},
@@ -553,5 +596,5 @@ static const an_function ggmlgraph_native_functions[] = {
     {"Backend", sizeof(struct ggmlgraph_Backend_state), GGMLGRAPH_Backend_FREE}, \
     {"Program", sizeof(struct ggmlgraph_Program_state), GGMLGRAPH_Program_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggmlgraph", ggmlgraph_native_functions, 12, NULL, 0, ggmlgraph_native_resources, 2, LOAD)
+  AN_MODULE_TABLES("ggmlgraph", ggmlgraph_native_functions, 14, NULL, 0, ggmlgraph_native_resources, 2, LOAD)
 #endif

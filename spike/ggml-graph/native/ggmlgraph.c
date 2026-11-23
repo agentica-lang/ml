@@ -27,6 +27,7 @@
 #include "ggml-vulkan.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -110,6 +111,7 @@ struct ggmlgraph_Program_state {
   float *xs, *ys; /* a benchmark's host batches */
   int64_t x_node, y_node, batch_count;
   int64_t compile_ns, runs, upload_ns, compute_ns;
+  int compiled; /* compile succeeded; a failed compile leaves 0 for good */
 };
 
 static void ggmlgraph_Program_free(void *state) {
@@ -159,12 +161,27 @@ an_term ggmlgraph_backend_cpu(an_env *env, int64_t threads) {
   return ggmlgraph_result_Backend_ok(env, term);
 }
 
-an_term ggmlgraph_backend_vulkan(an_env *env) {
+/* ggml-Vulkan converts F32 `mul_mat` inputs to fp16 on a device that has
+   fp16, unless GGML_VK_DISABLE_F16 is set when the device is first opened.
+   No per-op switch works here: `ggml_prec_set_acc(F32)` changes nothing, and
+   `ggml_prec_set_src(F32)` makes the backend refuse the op. So the precision
+   is chosen once per process, by the first `backend_vulkan`. */
+static int vulkan_fp16 = -1;
+
+an_term ggmlgraph_backend_vulkan(an_env *env, bool fp16) {
   an_term term;
   struct ggmlgraph_Backend_state *state;
   ggml_backend_t backend;
   ggml_backend_dev_t device;
 
+  if (vulkan_fp16 == -1) {
+    if (fp16) unsetenv("GGML_VK_DISABLE_F16");
+    else setenv("GGML_VK_DISABLE_F16", "1", 1);
+    vulkan_fp16 = fp16;
+  } else if (vulkan_fp16 != (int)fp16) {
+    return error_text(env, vulkan_fp16 ? "this process opened Vulkan with fp16 mul_mat already"
+                                       : "this process opened Vulkan with F32 mul_mat already");
+  }
   if (ggml_backend_vk_get_device_count() < 1) return error_text(env, "no Vulkan device");
   backend = ggml_backend_vk_init(0);
   if (backend == NULL) return error_text(env, "ggml_backend_vk_init(0) returned no backend");
@@ -304,7 +321,7 @@ an_term ggmlgraph_node(an_env *env, struct ggmlgraph_Program_state *p, int64_t o
   struct ggml_tensor *t = NULL;
   char text[256];
 
-  if (p->graph != NULL) return error_text(env, "the program is compiled already");
+  if (p->graph != NULL) return error_text(env, "the program is compiled already, or its compile failed");
   if (p->count >= p->capacity) return error_text(env, "the program is full");
   if (op < 0 || op >= OP_COUNT) return error_text(env, "unknown op code");
   if ((r = read_ints(env, &args_list, args, 3, &nargs)) != 0) return r == -1 ? an_void(env) : error_text(env, "a node takes at most 3 args");
@@ -358,10 +375,7 @@ an_term ggmlgraph_node(an_env *env, struct ggmlgraph_Program_state *p, int64_t o
       /* ggml_mul_mat(x, y) is y · xᵀ in row-major terms, so a · b is
          mul_mat(bᵀ, a). When b is a transpose (the backward's ct · wᵀ), bᵀ
          is its argument and no copy is made. */
-      if (a->op == OP_TRANSPOSE && getenv("GGMLGRAPH_OUT_PROD") != NULL) {
-        /* aᵀ · b as ggml's outer-product sum: the weight gradient, no copy */
-        t = ggml_out_prod(p->ctx, dense(p, b), dense(p, &p->nodes[a->arg]));
-      } else if (b->op == OP_TRANSPOSE) {
+      if (b->op == OP_TRANSPOSE) {
         t = ggml_mul_mat(p->ctx, dense(p, &p->nodes[b->arg]), dense(p, a));
       } else {
         t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b))), dense(p, a));
@@ -460,7 +474,7 @@ an_term ggmlgraph_share(an_env *env, struct ggmlgraph_Program_state *p, int64_t 
   struct ggml_tensor *mine, *theirs;
 
   if (p->graph != NULL) return error_text(env, "share before compile");
-  if (other->graph == NULL) return error_text(env, "share from a compiled program");
+  if (!other->compiled) return error_text(env, "share from a compiled program");
   if (p->backend != other->backend) return error_text(env, "shared leaves live on one backend");
   if (node < 0 || node >= p->count || source < 0 || source >= other->count) return error_text(env, "no such node");
   if (p->nodes[node].op != OP_STATE && p->nodes[node].op != OP_INPUT) return error_text(env, "only a leaf is shared");
@@ -481,7 +495,7 @@ an_term ggmlgraph_compile(an_env *env, struct ggmlgraph_Program_state *p, ggmlgr
   char text[256];
   struct ggml_tensor *leaf;
 
-  if (p->graph != NULL) return error_text(env, "the program is compiled already");
+  if (p->graph != NULL) return error_text(env, "the program is compiled already, or its compile failed");
   if ((r = read_ints(env, &outputs, outs, MAX_OUTPUTS, &nouts)) != 0) return r == -1 ? an_void(env) : error_text(env, "at most 16 outputs");
   if ((r = read_ints(env, &writebacks, pairs, 2 * 64, &npairs)) != 0) return r == -1 ? an_void(env) : error_text(env, "at most 64 writebacks");
   if (npairs % 2 != 0) return error_text(env, "writebacks come in pairs");
@@ -491,6 +505,19 @@ an_term ggmlgraph_compile(an_env *env, struct ggmlgraph_Program_state *p, ggmlgr
   for (i = 0; i < npairs; i++) {
     if (pairs[i] < 0 || pairs[i] >= p->count) return error_text(env, "a writeback names no node");
     if (i % 2 == 0 && p->nodes[pairs[i]].op != OP_STATE) return error_text(env, "a writeback goes to a state leaf");
+  }
+  for (i = 0; i < npairs; i += 2) {
+    int j;
+
+    if (volume(p->nodes[pairs[i]].ne) != volume(p->nodes[pairs[i + 1]].ne)) {
+      return error_text(env, "a writeback's value has another element count than its state");
+    }
+    /* a value that is a written state would read it after its own write
+       (a swap): the result would depend on the order of the copies */
+    for (j = 0; j < npairs; j += 2) {
+      if (pairs[i + 1] == pairs[j]) return error_text(env, "a writeback's value is a state another writeback replaces");
+      if (j != i && pairs[i] == pairs[j]) return error_text(env, "a state takes two writebacks");
+    }
   }
 
   p->graph = ggml_new_graph_custom(p->ctx, graph_size(p->capacity), false);
@@ -540,6 +567,7 @@ an_term ggmlgraph_compile(an_env *env, struct ggmlgraph_Program_state *p, ggmlgr
   p->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(p->backend));
   if (p->galloc == NULL || !ggml_gallocr_alloc_graph(p->galloc, p->graph)) return error_text(env, "allocating the graph failed");
   p->compile_ns = now_ns() - start;
+  p->compiled = 1;
   return ggmlgraph_result_Void_ok(env, an_void(env));
 }
 
@@ -556,7 +584,7 @@ an_term ggmlgraph_set(an_env *env, struct ggmlgraph_Program_state *p, int64_t no
   double v;
   int next;
 
-  if (p->graph == NULL) return error_text(env, "set after compile");
+  if (!p->compiled) return error_text(env, "set after a successful compile");
   if (n == NULL) return error_text(env, "set takes a leaf");
   count = volume(n->ne);
   host = (float *)malloc((size_t)count * sizeof(float));
@@ -579,6 +607,53 @@ an_term ggmlgraph_set(an_env *env, struct ggmlgraph_Program_state *p, int64_t no
 static float next_uniform(uint64_t *s) {
   *s = *s * 6364136223846793005ULL + 1442695040888963407ULL;
   return (float)((*s >> 40) & 0xFFFFFF) / 16777216.0f;
+}
+
+an_term ggmlgraph_fill(an_env *env, struct ggmlgraph_Program_state *p, int64_t node, int64_t seed, double scale) {
+  struct gnode *n = leaf_of(p, node);
+  uint64_t s = (uint64_t)seed;
+  int64_t count, i;
+  float *host;
+
+  if (!p->compiled) return error_text(env, "fill after a successful compile");
+  if (n == NULL) return error_text(env, "fill takes a leaf");
+  count = volume(n->ne);
+  host = (float *)malloc((size_t)count * sizeof(float));
+  if (host == NULL) return error_text(env, "out of memory");
+  for (i = 0; i < count; i++) host[i] = (next_uniform(&s) * 2.0f - 1.0f) * (float)scale;
+  ggml_backend_tensor_set(n->t, host, 0, (size_t)count * sizeof(float));
+  free(host);
+  return ggmlgraph_result_Void_ok(env, an_void(env));
+}
+
+/* The node's values on the host, or NULL with `*why` set. */
+static float *host_copy(struct ggmlgraph_Program_state *p, int64_t node, int64_t *count, const char **why);
+
+an_term ggmlgraph_gap(an_env *env, struct ggmlgraph_Program_state *p, int64_t node,
+                      struct ggmlgraph_Program_state *other, int64_t other_node) {
+  int64_t n, m, i;
+  const char *why = NULL;
+  float *a = host_copy(p, node, &n, &why), *b = NULL;
+  double scale = 1e-6, diff = 0.0;
+
+  if (a != NULL) b = host_copy(other, other_node, &m, &why);
+  if (a == NULL || b == NULL) {
+    free(a);
+    return error_text(env, why);
+  }
+  if (n != m) why = "gap compares nodes of different sizes";
+  for (i = 0; why == NULL && i < n; i++) {
+    if (!isfinite(a[i]) || !isfinite(b[i])) {
+      why = "gap found a value that is not finite";
+      break;
+    }
+    if (fabs(b[i]) > scale) scale = fabs(b[i]);
+    if (fabs((double)a[i] - b[i]) > diff) diff = fabs((double)a[i] - b[i]);
+  }
+  free(a);
+  free(b);
+  if (why != NULL) return error_text(env, why);
+  return ggmlgraph_result_Float_ok(env, diff / scale);
 }
 
 an_term ggmlgraph_batches(an_env *env, struct ggmlgraph_Program_state *p, int64_t x, int64_t y, int64_t classes,
@@ -608,7 +683,8 @@ an_term ggmlgraph_run(an_env *env, struct ggmlgraph_Program_state *p, int64_t ba
   int64_t t0, t1, t2;
   float loss = 0.0f;
 
-  if (p->graph == NULL) return error_text(env, "run a compiled program");
+  if (!p->compiled) return error_text(env, "run a compiled program");
+  if (batch < 0) return error_text(env, "run takes a batch index >= 0");
   t0 = now_ns();
   if (p->batch_count > 0) {
     struct gnode *xn = &p->nodes[p->x_node], *yn = &p->nodes[p->y_node];
@@ -630,17 +706,49 @@ an_term ggmlgraph_run(an_env *env, struct ggmlgraph_Program_state *p, int64_t ba
   return ggmlgraph_result_Float_ok(env, (double)loss);
 }
 
+/* An output, a state or an input: the nodes whose memory the graph
+   allocator does not reuse. */
+static int readable(const struct ggmlgraph_Program_state *p, int64_t node) {
+  int64_t i;
+
+  if (p->nodes[node].op == OP_STATE || p->nodes[node].op == OP_INPUT) return 1;
+  for (i = 0; i < p->output_count; i++) {
+    if (p->outputs[i] == node) return 1;
+  }
+  return 0;
+}
+
+static float *host_copy(struct ggmlgraph_Program_state *p, int64_t node, int64_t *count, const char **why) {
+  float *host;
+
+  if (!p->compiled) {
+    *why = "read a compiled program";
+    return NULL;
+  }
+  if (node < 0 || node >= p->count || !readable(p, node)) {
+    *why = "read an output, a state or an input";
+    return NULL;
+  }
+  *count = ggml_nelements(p->nodes[node].t);
+  host = (float *)malloc((size_t)*count * sizeof(float));
+  if (host == NULL) {
+    *why = "out of memory";
+    return NULL;
+  }
+  ggml_backend_tensor_get(p->nodes[node].t, host, 0, (size_t)*count * sizeof(float));
+  return host;
+}
+
 an_term ggmlgraph_read(an_env *env, struct ggmlgraph_Program_state *p, int64_t node) {
   ggmlgraph_list_Float_builder list;
   struct ggml_tensor *t;
   int64_t count, i;
   float *host;
 
-  if (p->graph == NULL) return error_text(env, "read a compiled program");
+  if (!p->compiled) return error_text(env, "read a compiled program");
   if (node < 0 || node >= p->count) return error_text(env, "no such node");
+  if (!readable(p, node)) return error_text(env, "read an output, a state or an input");
   t = p->nodes[node].t;
-  if (t->data == NULL) return error_text(env, "the node is not in the graph");
-  if (p->nodes[node].lazy) return error_text(env, "read an output, a state or an input");
   count = ggml_nelements(t);
   host = (float *)malloc((size_t)count * sizeof(float));
   if (host == NULL) return error_text(env, "out of memory");
@@ -655,7 +763,7 @@ an_term ggmlgraph_stats(an_env *env, struct ggmlgraph_Program_state *p) {
   ggmlgraph_list_Int_builder list;
 
   ggmlgraph_list_Int_begin(env, &list, 7);
-  ggmlgraph_list_Int_push(env, &list, p->graph != NULL ? ggml_graph_n_nodes(p->graph) : 0);
+  ggmlgraph_list_Int_push(env, &list, p->compiled ? ggml_graph_n_nodes(p->graph) : 0);
   ggmlgraph_list_Int_push(env, &list, p->leaf_buffer != NULL ? (int64_t)ggml_backend_buffer_get_size(p->leaf_buffer) : 0);
   ggmlgraph_list_Int_push(env, &list, p->galloc != NULL ? (int64_t)ggml_gallocr_get_buffer_size(p->galloc, 0) : 0);
   ggmlgraph_list_Int_push(env, &list, p->compile_ns);

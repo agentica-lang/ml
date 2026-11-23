@@ -38,11 +38,14 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
   del backend JIT.
 - AVX512 no es alcanzable aquí: el techo real es AVX2.
 - **Un paso compilado a un grafo ggml sí sirve en la iGPU** (spike
-  ggml-graph, MLP 784→512→512→10, SGD): 4.7 / 5.6–6.7 / 14–16 / 45–51 ms
-  por paso a batch 64 / 256 / 1024 / 4096, contra 3.1–3.9 / 11 / 41–48 /
-  144–170 de libtorch C++ en CPU: gana **1.6–3.7× desde batch 256**, pierde
-  a 64. Ninguna op del paso falta en Vulkan. Trazar, derivar y bajar cuesta
-  2–6 ms una vez; luego un paso es una llamada FFI.
+  ggml-graph, MLP 784→512→512→10, SGD). Con `mul_mat` F32 (el default):
+  4.5–4.6 / 7.2–7.3 / 18.9 / 68 ms por paso a batch 64 / 256 / 1024 / 4096.
+  Contra el mejor libtorch C++ en CPU de cada corrida (4 u 8 hilos; máquina
+  ociosa / cargada) gana **1.2–1.5× a 256, 1.5–2.2× a 1024 y 1.8–2.1× a
+  4096**, y pierde 1.4–1.6× a 64. Con fp16 (opcional): 1.5–1.9×, 2.1–2.9× y
+  2.7–3.2×, pero un tensor de gradientes sale con un 10 % de error a esas
+  formas. Ninguna op del paso falta en Vulkan. Trazar, derivar y bajar
+  cuesta 2–6 ms una vez; luego un paso es una llamada FFI.
 - `Train.fit` sobre libtorch hoy: 42–105 ms por paso (op a op, y el
   optimizador materializa cada `full` por FFI); a batch 4096 se para: el
   `full` de torch usa `List.repeat`, que tiene tope de 1 048 576.
@@ -85,7 +88,7 @@ Ningún subagente sigue corriendo.
    cuando un modelo lo pida.
 5. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
    época del XOR en la referencia). El spike ggml-graph mide retrazar el
-   paso de un MLP en 1–3 ms: basta una caché por estructura del grafo
+   paso de un MLP (pérdida, gradientes y optimizador) en 0.6–2.0 ms: basta una caché por estructura del grafo
    (ops, formas; no valores de `full` ni de constantes), sin API `jit`.
 6. **`hub/`**: primer PR mergeado (#23). Falta la descarga HF, con `http-client`
    `stream()` (redirects y retry incluidos), **nunca** `bond` (es solo
@@ -100,8 +103,10 @@ Ningún subagente sigue corriendo.
    y `Handle.Ggml` en `tensor/` como (b′) hasta #1918; `Trace.evaluate` sobre
    `Ggml` compila el grafo entero con caché por estructura; `Train.fit` mete
    el optimizador en el mismo grafo y deja parámetros y momentos en el
-   backend. Decidir fp16 (`mul_mat` de Vulkan, 1.3× a 4096) o fp32 con
-   tolerancia por dispositivo.
+   backend en un estado de entrenamiento que `fit` posee y nunca devuelve;
+   al final devuelve tensores nuevos (sin donación). `mul_mat` F32 por
+   defecto; fp16 opcional y por proceso (1.1–1.5×, con error en los
+   gradientes).
 9. **`candle/`** (eager, Rust) y/o **ggml** como backend general.
 10. **dGPU CUDA**: build CUDA de libtorch, `Device.Cuda(Int)`, `to_device`,
    y un job de CI no requerido (no se puede bajar en cada push).

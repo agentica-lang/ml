@@ -56,9 +56,13 @@ struct Step
 end
 
 ## A program whose nodes are sent but which is not compiled yet. `states` and
-## `inputs` are the program indices of `Step.states` and `Step.inputs`.
+## `inputs` are the program indices of `Step.states` and `Step.inputs`. The C
+## side borrows the backend and the buffers of the programs it shares leaves
+## with, so `Built` holds both: they stay open while it is reachable.
 struct Built
   program: Raw.Program
+  backend: Raw.Backend
+  keep: List[Raw.Program]
   step: Step
   index: Map[Int, Int]
   states: List[Int]
@@ -106,7 +110,18 @@ def build(backend: Raw.Backend, step: Step) -> Result[Built]
 
   states = step.states.map { |s| index[id_unchecked(s)] }
   inputs = step.inputs.map { |s| index[id_unchecked(s)] }
-  ok(Built(program: p, step: step, index: index, states: states, inputs: inputs, fixed: fixed))
+  ok(
+    Built(
+      program: p,
+      backend: backend,
+      keep: [],
+      step: step,
+      index: index,
+      states: states,
+      inputs: inputs,
+      fixed: fixed,
+    ),
+  )
 end
 
 ## Compiles a built program and sets its fixed constants.
@@ -127,6 +142,16 @@ end
 
 ## `build` and then `compile`.
 def lower(backend: Raw.Backend, step: Step) -> Result[Built] = compile(try build(backend, step))
+
+## `b` with its state `k` pointing at the state `k` of the compiled `from`,
+## for every state of `b`; `b` keeps `from` open.
+def share_states(b: Built, from: Built) -> Result[Built]
+  for k in 0...b.states.size
+    try Raw.share(b.program, b.states[k], from.program, from.states[k])
+  end
+
+  ok(b.with(keep: b.keep.push(from.program)))
+end
 
 ## The program index of a traced tensor of the step.
 def index_of(b: Built, t: Tensor.Tensor) -> Result[Int]
@@ -197,8 +222,8 @@ end
 
 ## One node to the program; answers its index.
 def emit(p: Raw.Program, t: Tensor.Tensor, n: Types.Node, index: Map[Int, Int], slots: Map[Int, Int]) -> Result[Int]
-  if !Types.is_float_dtype(t.dtype) and !Types.is_int_dtype(t.dtype) and t.dtype != Types.Dtype.Bool
-    return error("node #{n.id} has dtype #{Types.dtype_name(t.dtype)}")
+  if !exact(t.dtype)
+    return error("node #{n.id} has dtype #{Types.dtype_name(t.dtype)}, which F32 does not hold exactly")
   end
 
   args = n.args.map { |a| index[id_unchecked(a)] }
@@ -218,6 +243,21 @@ def emit(p: Raw.Program, t: Tensor.Tensor, n: Types.Node, index: Map[Int, Int], 
   Raw.node(p, op, args, t.shape, ints, value)
 end
 
+## A dtype whose values F32 holds exactly here: F32 itself, `Bool` as 0/1,
+## and integers of up to 32 bits (exact below 2^24, which labels and `arange`
+## positions are). `I64`, `F64` and `F16` are refused.
+def exact(dtype: Types.Dtype) -> Bool
+  case dtype
+    Types.Dtype.F32 -> true
+    Types.Dtype.Bool -> true
+    Types.Dtype.I8 -> true
+    Types.Dtype.I16 -> true
+    Types.Dtype.I32 -> true
+    Types.Dtype.U8 -> true
+    _ -> false
+  end
+end
+
 ## The ggml op code of a node, or an error naming the op this lowering does
 ## not have.
 def code(t: Tensor.Tensor, n: Types.Node) -> Result[Int]
@@ -227,7 +267,9 @@ def code(t: Tensor.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Add -> ok(ADD)
     Types.Op.Sub -> ok(SUB)
     Types.Op.Mul -> ok(MUL)
-    Types.Op.Div -> ok(DIV)
+    Types.Op.Div ->
+      return error("node #{n.id}: an integer div truncates, which F32 does not") if t.dtype != Types.Dtype.F32
+      ok(DIV)
     Types.Op.Neg -> ok(NEG)
     Types.Op.Exp -> ok(EXP)
     Types.Op.Log -> ok(LOG)
@@ -249,13 +291,14 @@ def code(t: Tensor.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Contiguous -> ok(IDENTITY)
     Types.Op.ToDevice(Types.Device.Cpu) -> ok(IDENTITY)
     # Every value is F32 on the ggml side: a mask or an integer turned into
-    # a float is the same number, a float turned into an integer is not.
+    # a float is the same number; a float turned into an integer, an integer
+    # into a mask (`!= 0`) or one integer width into another (a range check)
+    # is not.
     Types.Op.ToDtype ->
-      if !Types.is_float_dtype(t.dtype) and Types.is_float_dtype(n.args[0].dtype)
-        return error("node #{n.id}: to_dtype from a float to #{Types.dtype_name(t.dtype)} is not lowered")
-      end
-
-      ok(IDENTITY)
+      from = n.args[0].dtype
+      return ok(IDENTITY) if t.dtype == from or t.dtype == Types.Dtype.F32
+      return ok(IDENTITY) if from == Types.Dtype.Bool and Types.is_int_dtype(t.dtype)
+      error("node #{n.id}: to_dtype from #{Types.dtype_name(from)} to #{Types.dtype_name(t.dtype)} is not lowered")
     Types.Op.Arange(_, _, _) -> ok(ARANGE)
     Types.Op.Eq -> ok(EQ)
     Types.Op.Lt -> ok(LT)

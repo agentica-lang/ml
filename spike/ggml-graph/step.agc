@@ -91,7 +91,7 @@ def floats(values: List[Float], shape: List[Int], backend: Tensor.Backend) -> Re
 end
 
 def ints(values: List[Int], backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  Tensor.from_list(values.map { |v| Tensor.Values.Int(v) }, [values.size], Tensor.Dtype.I64, backend)
+  Tensor.from_list(values.map { |v| Tensor.Values.Int(v) }, [values.size], Tensor.Dtype.I32, backend)
 end
 
 def params_on(i: Init, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]

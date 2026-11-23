@@ -1,11 +1,16 @@
 ## Training-step time of an MLP classifier (784 → 512 → 512 → 10, synthetic
 ## data, softmax cross-entropy) at large batches, on one backend per run:
 ##
-## - `cpu` (8 threads, `cpuN` for N), `vulkan`: the step traced once, lowered to ONE ggml graph, built
-##   and allocated once, then run once per step (the batch is uploaded each
-##   step from host memory, the parameters never leave the backend);
+## - `cpu` (8 threads, `cpuN` for N), `vulkan` (F32 `mul_mat`, the default),
+##   `vulkan16` (fp16 `mul_mat`, opt-in): the step traced once, lowered to ONE
+##   ggml graph, built and allocated once, then run once per step (the batch
+##   is uploaded each step from host memory, the parameters never leave the
+##   backend);
 ## - `torch`, `reference`: the step `Train.fit` runs today, traced again every
 ##   step and evaluated op by op through `tensor/`.
+##
+## Every row prints the loss of the first and the last step it ran: a step
+## that computes garbage fast shows there.
 ##
 ## ```sh
 ## eval "$(sh ../ggml-vulkan/tools/build-ggml.sh | grep '^export ')"
@@ -39,10 +44,11 @@ struct Times
   median_ns: Int
   min_ns: Int
   steps: Int
+  last_loss: Float
 end
 
 struct Runner
-  programs: List[Raw.Program]
+  programs: List[Lower.Built]
   inputs: List[Int]
   adam: Optim.Adam
   with_adam: Bool
@@ -51,6 +57,7 @@ end
 struct EagerStep
   params: List[Tensor.Tensor]
   state: Optim.State
+  loss: Float
   trace_ns: Int
   eval_ns: Int
   update_ns: Int
@@ -64,7 +71,7 @@ def main() -> Void
 end
 
 def run(args: List[String]) -> Result[Void]
-  return error("usage: bench.agc cpu|cpuN|vulkan|torch|reference sgd|two|adam BATCH...") if args.size < 3
+  return error("usage: bench.agc cpu|cpuN|vulkan|vulkan16|torch|reference sgd|two|adam BATCH...") if args.size < 3
   which = args[0]
   mode = args[1]
   batches: List[Int] = []
@@ -74,14 +81,15 @@ def run(args: List[String]) -> Result[Void]
 
   init = Step.init(SIZES, 1)
   puts("# #{which}, #{mode}, MLP #{SIZES}, #{CLASSES} classes")
-  if which.start_with?("cpu") or which == "vulkan"
+  if which.start_with?("cpu") or which.start_with?("vulkan")
     return ok() if !loaded()
     backend = try Raw.backend_cpu(try threads(which))
-    if which == "vulkan"
-      backend = try Raw.backend_vulkan()
+    if which.start_with?("vulkan")
+      backend = try Raw.backend_vulkan(which == "vulkan16")
     end
 
-    puts("# #{try Raw.describe(backend)}")
+    fp16 = which == "vulkan16"
+    puts("# #{try Raw.describe(backend)}, fp16 mul_mat: #{fp16}")
     for b in batches
       try ggml(backend, init, mode, b)
     end
@@ -102,7 +110,7 @@ end
 
 ## `cpu` is 8 threads, `cpuN` is N.
 def threads(which: String) -> Result[Int]
-  return ok(8) if which == "cpu" or which == "vulkan"
+  return ok(8) if !which.start_with?("cpu") or which == "cpu"
   String.slice(which, 3, which.length - 3).to_i
 end
 
@@ -119,7 +127,7 @@ def ggml(backend: Raw.Backend, init: Step.Init, mode: String, batch: Int) -> Res
   Native.arena do
     shapes = init.shapes.map { |s| Step.placeholder(s, Tensor.Dtype.F32) }
     x = Step.placeholder([batch, SIZES[0]], Tensor.Dtype.F32)
-    y = Step.placeholder([batch], Tensor.Dtype.I64)
+    y = Step.placeholder([batch], Tensor.Dtype.I32)
     o = Optim.Adam(lr: 0.001)
     t0 = Time.monotonic_ns()
     steps: List[Lower.Step] = []
@@ -140,14 +148,9 @@ def ggml(backend: Raw.Backend, init: Step.Init, mode: String, batch: Int) -> Res
 
     t2 = Time.monotonic_ns()
     main = try Lower.compile(built[0])
-    programs = [main.program]
+    programs = [main]
     if built.size == 2
-      update = built[1]
-      for k in 0...update.states.size
-        try Raw.share(update.program, update.states[k], main.program, main.states[k])
-      end
-
-      programs = programs.push((try Lower.compile(update)).program)
+      programs = programs.push(try Lower.compile(try Lower.share_states(built[1], main)))
     end
 
     t3 = Time.monotonic_ns()
@@ -160,6 +163,7 @@ def ggml(backend: Raw.Backend, init: Step.Init, mode: String, batch: Int) -> Res
     stats = try Raw.stats(main.program)
     run_step = Runner(programs: programs, inputs: main.inputs, adam: o, with_adam: mode == "adam")
     first = try timed_once(run_step, 0)
+    first_loss = try step_loss(run_step)
     for i in 1..2
       _ = try step_once(run_step, i)
     end
@@ -172,6 +176,7 @@ def ggml(backend: Raw.Backend, init: Step.Init, mode: String, batch: Int) -> Res
       "batch #{batch}: #{ms(times.median_ns)} ms/step (min #{ms(times.min_ns)}, #{times.steps} steps), #{rate(batch, times.median_ns)} samples/s",
     )
 
+    puts("  loss: first step #{format("%.6f", first_loss)}, last #{format("%.6f", times.last_loss)}")
     puts(
       "  per step in C: upload #{ms(((after[5] - before[5]).to_f / runs).to_i!)} ms, compute+wait #{ms(((after[6] - before[6]).to_f / runs).to_i!)} ms; first step #{ms(first)} ms",
     )
@@ -204,6 +209,7 @@ def eager(backend: Tensor.Backend, init: Step.Init, mode: String, batch: Int) ->
     eval_ns = 0
     update_ns = 0
     times: List[Int] = []
+    losses: List[Float] = []
     start = Time.monotonic_ns()
     i = 0
     while i < MIN_STEPS or (Time.monotonic_ns() - start < BUDGET_NS and i < MAX_STEPS)
@@ -220,18 +226,19 @@ def eager(backend: Tensor.Backend, init: Step.Init, mode: String, batch: Int) ->
 
       params = done.params
       state = done.state
+      losses = losses.push(done.loss)
       i += 1
       break if i == 1 and t4 - t0 > BUDGET_NS
     end
 
     n = [times.size, 1].max.unwrap_or(1)
-    t = summary(times)
+    t = summary(times, losses.last)
     puts(
       "batch #{batch}: #{ms(t.median_ns)} ms/step (min #{ms(t.min_ns)}, #{t.steps} steps), #{rate(batch, t.median_ns)} samples/s",
     )
 
     puts(
-      "  per step: trace+grad #{ms(trace_ns / n)} ms, evaluate #{ms(eval_ns / n)} ms, optimizer #{ms(update_ns / n)} ms",
+      "  loss: first step #{format("%.6f", losses[0])}, last #{format("%.6f", losses.last)}; per step: trace+grad #{ms(trace_ns / n)} ms, evaluate #{ms(eval_ns / n)} ms, optimizer #{ms(update_ns / n)} ms",
     )
 
     ok()
@@ -247,11 +254,19 @@ def one_eager(params: List[Tensor.Tensor], x: Tensor.Tensor, y: Tensor.Tensor, s
     grads = try Trace.gradients(l, ps)
     t1 = Time.monotonic_ns()
     values = try Trace.evaluate([l] + grads, {}, Tensor.backend(params[0]))
-    _ = try Tensor.to_list(values[0])
     t2 = Time.monotonic_ns()
     next = try Optim.step(state, params, values.drop(1))
     t3 = Time.monotonic_ns()
-    ok(EagerStep(params: next.params, state: next.state, trace_ns: t1 - t0, eval_ns: t2 - t1, update_ns: t3 - t2))
+    ok(
+      EagerStep(
+        params: next.params,
+        state: next.state,
+        loss: try scalar(values[0]),
+        trace_ns: t1 - t0,
+        eval_ns: t2 - t1,
+        update_ns: t3 - t2,
+      ),
+    )
   end
 end
 
@@ -260,13 +275,13 @@ end
 def step_once(r: Runner, i: Int) -> Result[Float]
   if r.with_adam
     scalars = Step.adam_scalars(r.adam, i + 1)
-    try Raw.set(r.programs[0], r.inputs[2], [scalars[0]])
-    try Raw.set(r.programs[0], r.inputs[3], [scalars[1]])
+    try Raw.set(r.programs[0].program, r.inputs[2], [scalars[0]])
+    try Raw.set(r.programs[0].program, r.inputs[3], [scalars[1]])
   end
 
-  loss = try Raw.run(r.programs[0], i)
+  loss = try Raw.run(r.programs[0].program, i)
   for p in r.programs.drop(1)
-    _ = try Raw.run(p, i)
+    _ = try Raw.run(p.program, i)
   end
 
   ok(loss)
@@ -278,6 +293,13 @@ def timed_once(f: Runner, i: Int) -> Result[Int]
   ok(Time.monotonic_ns() - t0)
 end
 
+## The loss of the step that just ran: the program's first output.
+def step_loss(f: Runner) -> Result[Float]
+  main = f.programs[0]
+  values = try Raw.read(main.program, try Lower.index_of(main, main.step.outputs[0]))
+  ok(values[0])
+end
+
 def timed(f: Runner, from: Int) -> Result[Times]
   times: List[Int] = []
   start = Time.monotonic_ns()
@@ -287,13 +309,21 @@ def timed(f: Runner, from: Int) -> Result[Times]
     i += 1
   end
 
-  ok(summary(times))
+  ok(summary(times, try step_loss(f)))
 end
 
-def summary(times: List[Int]) -> Times
+def summary(times: List[Int], last_loss: Float) -> Times
   sorted = times.sort
-  return Times(median_ns: 0, min_ns: 0, steps: 0) if sorted.empty?
-  Times(median_ns: sorted[sorted.size / 2], min_ns: sorted[0], steps: sorted.size)
+  return Times(median_ns: 0, min_ns: 0, steps: 0, last_loss: last_loss) if sorted.empty?
+  Times(median_ns: sorted[sorted.size / 2], min_ns: sorted[0], steps: sorted.size, last_loss: last_loss)
+end
+
+def scalar(t: Tensor.Tensor) -> Result[Float]
+  values = try Tensor.to_list(t)
+  case values[0]
+    Tensor.Values.Float(f) -> ok(f)
+    _ -> error("the loss is not a float")
+  end
 end
 
 def ms(ns: Int) -> String = format("%.2f", ns.to_f / 1000000.0)
