@@ -338,6 +338,18 @@ eleven calls after one warm-up; the GFLOPS is the median's:
 | 1024³ | 102 (92) · 21 | 33.2 (28.1) · 65 | 18.1 (11.3) · 118 | 18.4 (13.9) · 117 | 48.7 (44.3) · 44 | **17.6** (15.9) · 122 |
 | 512×2048, k=512 | 47.9 (44.2) · 22 | 17.8 (14.6) · 60 | **5.8** (5.5) · 185 | 6.8 (6.3) · 158 | 24.6 (22.7) · 44 | 11.8 (9.6) · 91 |
 
+The two halves of the table are not the same measurement, and the difference is
+in every ggml cell: a ggml row is one module call **plus** the `Native.close`
+of the result tensor, so the FFI crossing and the free of the result's backend
+buffer are inside the number, while a libtorch row is one `torch::matmul` in a
+plain C++ program with no FFI and the result freed after the timed region.
+That asymmetry is deliberate — what a backend behind the boundary costs is the
+question — and it is small next to the gaps the table is read for: the empty
+graph above prices one dispatch at 6 µs on the CPU (M0 measured 8–15 µs for a
+`compute def` including its resource allocate/free), against margins of 1.5×
+or more in every cell where it could matter. It is stated so no reader has to
+assume it.
+
 Across runs (5 runs for the ggml CPU columns, 3 for each Vulkan column, 2 for
 libtorch), the spread was: Vulkan ±2 % on every shape except 1024³
 (17.6–18.4 ms median, 11.3–11.8 ms min); ggml CPU 8 threads 0.88–8.76 ms at
@@ -347,10 +359,12 @@ libtorch), the spread was: Vulkan ±2 % on every shape except 1024³
 
 ### What the iGPU is doing inside
 
-`GGML_VK_PERF_LOGGER=1 agentica bench.agc vulkan` prints ggml's own per-node
-GPU time from Vulkan timestamp queries. The difference between it and the
-wall-clock row is the dispatch, and the sequence across repeats is the clock
-ramp:
+Two commands produce this table, one per column: `GGML_VK_PERF_LOGGER=1
+agentica bench.agc vulkan` prints ggml's own per-node GPU time from Vulkan
+timestamp queries (the GPU column, one line per call, in call order), and
+`agentica bench.agc vulkan` gives the wall-clock medians of the table above
+(the wall column). The difference between the columns is the dispatch, and the
+sequence across repeats inside each column is the clock ramp:
 
 | shape | GPU time per call, in order | wall clock (median) |
 |---|---|---|
@@ -358,7 +372,13 @@ ramp:
 | 512³ | 2689, 2686, 2637, 2850, 2679, 2696, 2733, 2718 µs | 4.63 ms |
 | 1024³ | 17860, 18729, 16204, **11978, 10141 µs** | 18.1 ms |
 | 512×2048, k=512 | 6167, 5835, 5499, 5196, 4928, 4747, 4550, **4394 µs** | 5.8 ms |
-| 512³, after the table (warm-up block) | 1886, 1330, 1346, 1361, 1398, 1421, 1432, 1483, 1507, 1524 µs | 2.5–2.7 ms |
+| 512³, the `warmup()` block after the table | 1886, 1330, 1346, 1361, 1398, 1421, 1432, 1483, 1507, 1524 µs | 2.5–2.7 ms |
+
+The last row is the `warmup()` block of `bench.agc`, the ten calls it prints
+after the table, and its two columns come from the two commands above: the GPU
+times are that run's `GGML_VK_PERF_LOGGER` lines for those ten calls, and the
+wall clock is the block's own printout — `warmup()` times wall clock and reads
+no GPU timestamps, so its column is not a second GPU column.
 
 Three things are in that table:
 
@@ -418,14 +438,17 @@ to be fast in.**
    of four sizes, ties one and loses one.** 1024³: 18.1 ms against 33.2 ms (1.8×);
    512×2048: 5.8 ms against 17.8 ms (3.1×); 512³: 4.63 ms against 4.57 ms (a
    tie, and the CPU's min is better); 256³: 2.66 ms against 0.93 ms (the CPU
-   wins 2.9×). The iGPU wins once an op carries roughly a gigaflop of work
-   (512×2048 is 1.07 GFLOP and wins 3.1×) and ties below that.
+   wins 2.9×). The iGPU needs roughly a gigaflop in the op to win: it wins at
+   1.07 GFLOP (512×2048, 3.1×) and 2.1 GFLOP (1024³, 1.8×), ties at 0.27 GFLOP
+   (512³), and loses below that (256³ is 0.034 GFLOP, and the CPU wins it
+   2.9×).
 2. **Against libtorch CPU at 8 threads it wins one of four sizes.** 512×2048:
    5.8 ms against 11.8 ms (2×); 1024³: 18.1 against 17.6 ms (a tie); 512³:
    4.63 against 2.83 ms (libtorch 1.6× faster); 256³: 2.66 against 0.27 ms
-   (libtorch 10× faster). ggml's own CPU `mul_mat` is 2–4× slower than
-   libtorch's (which uses a tuned BLAS), so "the iGPU beats ggml on the CPU"
-   is a weaker statement than it looks.
+   (libtorch 10× faster). ggml's own CPU `mul_mat` is 1.5–3.4× slower than
+   libtorch's on these shapes at 8 threads (1.9–2.7× at one thread; libtorch
+   uses a tuned BLAS), so "the iGPU beats ggml on the CPU" is a weaker
+   statement than it looks.
 3. **The fp16 default is doing real work in those numbers.** With
    `GGML_VK_DISABLE_F16=1` the iGPU loses 512³ outright (7.38 ms against
    4.57 ms for 8-thread AVX2) and gains nothing at 1024³ (18.4 vs 18.1 ms) or
@@ -619,7 +642,8 @@ If a Vulkan/ggml backend is wanted:
    readback. `tools/probe-dispatch.c` is the shape of the first benchmark for
    it.
 3. If the answer is "op-by-op": keep Vulkan out, and keep the CPU backend
-   (libtorch's BLAS beats ggml's CPU `mul_mat` by 2–4× on the same shapes).
+   (libtorch's BLAS beats ggml's CPU `mul_mat` by 1.5–3.4× on the same shapes
+   at 8 threads, 1.9–2.7× at one).
 4. Whatever the answer: the fourteen missing or narrower §3.1 primitives are a wrapper's
    work, not ggml's, and the fp16 default is a conformance decision that
    cannot be left implicit.
