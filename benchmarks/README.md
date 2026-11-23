@@ -73,27 +73,34 @@ Reading it:
 
 ### Where a decoder step goes
 
-`asr/tools/bench_step.agc` runs the prompt and the 23 tokens of jfk through `Asr.step` over and over (the audio goes through the encoder once), and `benchmarks/step_profile.py` subtracts a run with no steps from one with steps. The sections are `System.Profile.measure` labels in `Trace.eval_many`, `Lower.evaluate` and `Asr.step` (they cost one block call when the profile is off). Whisper-tiny, jfk, the mean of 96 steps after a warm-up pass, ml `b59c68c`, Agentica 0.37.0. The milliseconds come from `Time.monotonic_ns` timers around the same sections in a run without the profile; the VM steps are exact.
+Whisper-tiny, jfk, ggml CPU and Vulkan. `asr/tools/bench_step.agc` loads the model, runs the log-mel, the encoder and the cross-attention cache once, then runs the prompt and the 23 tokens of jfk through `Asr.step` (24 steps) PASSES times, closing each step's caches as `Asr.transcribe` does. The first pass is a warm-up; the per-step wall time is the mean of the other passes. With 5 passes that is 96 timed steps (4 passes of 24), out of 120 steps run.
 
-| Part of a step | VM steps before | VM steps after | CPU before, ms | CPU after, ms | Vulkan before, ms | Vulkan after, ms |
-|---|---|---|---|---|---|---|
-| tracing (`traced(m)`, `stepped_graph`: about 1,400 nodes) | 0.19 M | 0.05 M | 2.1 | 0.6 | 3.2 | 1.0 |
-| cache key and lowering (`Lower.plan`, `Lower.program`) | 0.23 M | 0.06 M | 7.0 | 1.7 | 10.7 | 2.4 |
-| lease lookup by the key | 0 | 0 | 0.1 | 0.05 | 0.1 | 0.07 |
-| input upload (the id and the position, 8 bytes, 2 calls) | 0 | 0 | 0.1 | 0.1 | 0.6 | 0.7 |
-| binding 147 leaves (weights, caches), read in place, no copy | 0.003 M | 0.005 M | 0.8 | 0.9 | 2.2 | 2.4 |
-| native execution (`run`: allocator, compute, finiteness checks, copy-out) | 0 | 0 | 40.7 | 43.1 | 80.4 | 78.3 |
-| read-back (51,865 logits, 207 KB, as a `List[Float]`, then each as a `Tensor.Values.Float`, then as a `Float`) | 1.04 M | 1.04 M | 19.6 | 19.6 | 30.9 | 32.7 |
-| sum of the parts | 1.47 M | 1.15 M | 70.4 | 66.1 | 128.2 | 117.6 |
-| wall time of a step | | | 77.6 | 67.1 | 129.7 | 120.0 |
+Two things are measured, from the same commit:
 
-"Before" is `Trace.eval_many` on every step, "after" is `Trace.compile` and `Trace.run` (this change): the decoder step is traced and planned once for each pair of cache rows and capacity (5 graphs for the 24 steps of jfk, 8, 16 and 32 rows), so the tracing and planning rows are those 5 compilations spread over 24 steps, and a step that finds its graph costs nothing there. The encoder blocks share one compiled graph, with the weights as inputs.
+- **VM steps** (exact) and **where the time goes** (profile on, so the VM runs slower): `AGENTICA_VM_TRACE=profile AGENTICA_VM_TRACE_FILE=REPORT agentica tools/bench_step.agc MODEL_DIR WAV ggml en PASSES`, once with PASSES 0 and once with 5, then `python3 -I benchmarks/step_profile.py BASE FULL 120`. 120 is the steps the 5-pass run has more than the 0-pass run (5 passes of 24).
+- **Milliseconds**, with the profile off: `benchmarks/step_timers.sh apply` swaps the `System.Profile.measure` labels for `Time.monotonic_ns` timers (it edits the tree; `revert` undoes it) and `bench_step.agc` then prints `probe NAME NS` totals, again for PASSES 0 and 5; a section's ms per step is the difference over 120 steps. The same script makes `ggml_run` print its allocator and compute times when `TG_TIME` is set. The `ml.*` labels (in `Trace.eval_many`, `Lower.evaluate` and `Asr.step`) also count the encoder's and the cross-attention cache's evaluations, which the 0-pass run holds too, so the subtraction removes them; `ml.compile` of the warm-up pass lands in the steps (it is 0.1 calls a step).
+
+ml `b59c68c` (the head of `main` this was measured on), Agentica 0.37.0, the means of those 120 steps (the wall time is the mean of the 96 timed ones). The ms are rounded one by one, so a column's parts may not add to its sum; the VM steps are rounded to 0.01 M.
+
+| Part of a step | VM steps | ggml CPU, ms | ggml Vulkan, ms |
+|---|---|---|---|
+| tracing (`traced(m)` and `stepped_graph`: about 1,400 nodes recorded) | 0.19 M | 2.2 | 3.8 |
+| cache key and lowering (`Lower.plan`: walk, sort, one string per node, joined) | 0.23 M | 7.2 | 11.3 |
+| lease lookup (`acquire` by the key string) | 0 | 0.1 | 0.1 |
+| input upload (the id and the position, 8 bytes in 2 calls) | 0 | 0.1 | 1.1 |
+| binding (147 leaves, weights and caches, read in place, no copy) | 0.003 M | 0.9 | 2.3 |
+| native execution (`run`: allocator, compute, finiteness checks, copy-out) | 0 | 40.7 | 80.5 |
+| read-back (the 51,865 logits, 207 KB, as a `List[Float]`, then each as a `Tensor.Values.Float`, then as a `Float`) | 1.04 M | 18.7 | 31.8 |
+| sum of the parts | 1.47 M | 69.7 | 130.9 |
+| wall time of a step | | 69.9 | 132.0 |
+
+The earlier table in this file says 68 ms and 1.45 M VM steps for a CPU step, and this one 69.9 ms and 1.47 M. The earlier table was measured on `ac1b402`; on `b59c68c` the same `bench_transcribe.agc` stage pass gives 1.46 M for the prompt step and 33.8 M for the 23 steps after it (1.47 M each) and 68 ms a step, so the VM steps moved with the code between the two commits and the time is within noise of this run (60 to 78 ms a step across runs of `bench_step.agc` on this machine, which is shared). The parts add up to the wall time within 1 ms in this run. In an earlier one `bench_step.agc` did not close the self-attention caches, and about 7 ms a step were unattributed.
 
 What this says:
 
-- **The read-back is the largest VM cost, not the tracing.** 1.04 M of the 1.47 M steps, and 20 to 31 ms, are the logits crossing as a list and being converted twice. `Trace.compile` took the tracing and the planning from 9 ms to 2 ms on the CPU and from 14 ms to 3 ms on Vulkan; the read-back (argmax on the device) is next.
-- **Nothing big is uploaded.** The step feeds 8 bytes. The weights and both caches are bound where they are (`bind` makes no copy for an F32 tensor). Each step makes 9 fresh output tensors: the logits (207 KB) and 8 self-attention caches of `capacity x 384` floats (up to 393 KB in all at capacity 32), allocated and written by the graph. Only the logits come back to the host.
-- **The device part is what remains**: 41 ms on the CPU (28 ms of ggml compute by a timer in `ggml_run`, the rest the allocator, the finiteness check and the call) and 80 ms on Vulkan, for a graph of 1,377 ggml nodes. That is 58 us a node on Vulkan, so the node count is the lever there (whisper.cpp's decoder step is 7 and 11 ms).
+- **The read-back is the largest VM cost, not the tracing.** 1.04 M of the 1.47 M VM steps, and 19 to 32 ms, are the logits crossing as a list and being converted twice. The planning (key and lowering) is the second, then the tracing; together the VM work that an unchanged graph repeats (tracing, planning, read-back) is 28 ms on the CPU and 47 ms on Vulkan, the rest being native.
+- **Nothing big is uploaded.** The step feeds 8 bytes. The weights and both caches are bound where they are (`bind` makes no copy for an F32 tensor). Each step makes 9 fresh output tensors: the logits (207 KB) and 8 self-attention caches of `capacity x 384` floats (393 KB in all at capacity 32), allocated and written by the graph. Only the logits come back to the host.
+- **The device part is what remains**: 41 ms on the CPU and 81 ms on Vulkan for a graph of 1,377 ggml nodes. `ggml_run` times show ggml's compute is 39.0 ms on the CPU and 80.3 ms on Vulkan, and its allocator 0.4 and 0.7 ms, so the rest of `run` is under 2 ms. That is 58 us a node on Vulkan, so the node count is the lever there (whisper.cpp's decoder step is 7 and 11 ms).
 
 ## Whisper-medium, ours only
 
