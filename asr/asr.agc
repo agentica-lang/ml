@@ -352,9 +352,21 @@ def step_pick(m: Model, cache: Cache, ids: List[Int], mask: Tensor.Tensor) -> Re
 
   if compiled(backend)
     a = try advance(m, cache, ids, some(mask))
-    pair = try System.Profile.measure("ml.readback") do floats(a.first) end
+    read = System.Profile.measure("ml.readback") do floats(a.first) end
     close([a.first])
-    return ok(Picked(id: try pair[0].to_i, logprob: pair[1], cache: a.cache))
+    case read
+      ok(pair) ->
+        case chosen_id(pair[0], want[0])
+          ok(id) -> return ok(Picked(id: id, logprob: pair[1], cache: a.cache))
+          error(e) ->
+            close(kept(a.cache))
+            return error(e.message)
+        end
+
+      error(e) ->
+        close(kept(a.cache))
+        return error(e.message)
+    end
   end
 
   grown: Result[Grown] = Native.arena do
@@ -364,8 +376,14 @@ def step_pick(m: Model, cache: Cache, ids: List[Int], mask: Tensor.Tensor) -> Re
   end
 
   g = try grown
-  next = Cache(cross: cache.cross, own: g.own, length: cache.length + ids.size, graphs: {})
-  ok(Picked(id: try g.logits[0].to_i, logprob: g.logits[1], cache: next))
+  id = try chosen_id(g.logits[0], want[0])
+  ok(
+    Picked(
+      id: id,
+      logprob: g.logits[1],
+      cache: Cache(cross: cache.cross, own: g.own, length: cache.length + ids.size, graphs: {}),
+    ),
+  )
 end
 
 ## The text of `pcm` (16 kHz mono samples, about -1..1, at most one window:
@@ -491,13 +509,13 @@ def decide(
     size = m.config.vocab_size
     first = try masked(Greedy.mask(rules, size, true), backend)
     rest = try masked(Greedy.mask(rules, size, false), backend)
-    picked = try step_pick(m, cache, prompt, first)
+    picked = try guard(step_pick(m, cache, prompt, first), [first, rest])
     while emitted.size < limit
       logprob += picked.logprob
       break if picked.id == tok.eot
       emitted = emitted.push(picked.id)
       break if emitted.size == limit
-      next = try step_pick(m, picked.cache, [picked.id], rest)
+      next = try guard(step_pick(m, picked.cache, [picked.id], rest), kept(picked.cache) + [first, rest])
       close(kept(picked.cache))
       picked = next
     end
@@ -515,13 +533,23 @@ def decide(
     break if id == tok.eot
     emitted = emitted.push(id)
     break if emitted.size == limit
-    next = try step(m, stepped.cache, [id])
+    next = try guard(step(m, stepped.cache, [id]), kept(stepped.cache))
     close(kept(stepped.cache))
     stepped = next
   end
 
   close(kept(stepped.cache))
   ok(Decided(tokens: emitted, logprob: logprob))
+end
+
+## `r`, closing `held` first when it is an error.
+def guard[T](r: Result[T], held: List[Tensor.Tensor]) -> Result[T]
+  case r
+    ok(v) -> ok(v)
+    error(e) ->
+      close(held)
+      error(e.message)
+  end
 end
 
 def masked(values: List[Float], backend: Tensor.Backend) -> Result[Tensor.Tensor]
@@ -829,6 +857,14 @@ def traced_cache(c: Cache) -> Cache
     },
     own: c.own.map { |kv| Kv(key: Trace.constant(kv.key), value: Trace.constant(kv.value)) },
   )
+end
+
+## The id the graph found as an `Int`; an error when it is no id of the vocabulary, which is what a NaN in the logits
+## gives (no score equals the maximum).
+def chosen_id(found: Float, size: Int) -> Result[Int]
+  id = try found.to_i
+  return error("the pick found no id in a vocabulary of #{size}: the logits hold a NaN") if id < 0 or id >= size
+  ok(id)
 end
 
 ## An error unless `ids` may follow `cache`.
