@@ -336,9 +336,11 @@ def test_softmax_matches_a_central_difference() -> Result[Void]
   check_grad([x]) do |xs| weigh(try Tensor.softmax(xs[0], 0)) end
 end
 
-def test_layer_norm_matches_a_central_difference() -> Result[Void]
+def test_layer_norm_and_rms_norm_match_a_central_difference() -> Result[Void]
   x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.4, 0.9], [2, 4])
-  check_grad([x]) do |xs| weigh(try Tensor.layer_norm(xs[0], 0.00001)) end
+  try check_grad([x]) do |xs| weigh(try Tensor.layer_norm(xs[0], 0.00001)) end
+
+  check_grad([x]) do |xs| weigh(try Tensor.rms_norm(xs[0], 0.00001)) end
 end
 
 def test_multi_head_attention_matches_a_central_difference() -> Result[Void]

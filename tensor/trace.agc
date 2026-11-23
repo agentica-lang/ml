@@ -14,8 +14,8 @@ import Tensor from "tensor"
 import Types from "src/types"
 
 ## The constants of `gelu_tanh_approx` (`src/reference.agc`).
-GELU_C = 0.7978845608028654
-GELU_K = 0.044715
+SQRT2_OVER_PI = 0.7978845608028654
+GELU_CUBIC = 0.044715
 
 ## The value of a scalar function and its gradient for each argument, in
 ## argument order.
@@ -351,13 +351,13 @@ def one_minus(t: Types.Tensor) -> Result[Types.Tensor] = Tensor.sub(try const(t,
 ## `u = c (x + k x^3)`: `0.5 (1 + tanh u) + 0.5 x (1 - tanh^2 u) c (1 + 3 k x^2)`.
 def gelu_slope(x: Types.Tensor) -> Result[Types.Tensor]
   x2 = try Tensor.mul(x, x)
-  inner = try Tensor.add(x, try Tensor.mul(try const(x, GELU_K), try Tensor.mul(x, x2)))
-  th = try Tensor.tanh(try Tensor.mul(try const(x, GELU_C), inner))
+  inner = try Tensor.add(x, try Tensor.mul(try const(x, GELU_CUBIC), try Tensor.mul(x, x2)))
+  th = try Tensor.tanh(try Tensor.mul(try const(x, SQRT2_OVER_PI), inner))
   half = try const(x, 0.5)
   outer = try Tensor.mul(half, try Tensor.add(try const(x, 1.0), th))
   du = try Tensor.mul(
-    try const(x, GELU_C),
-    try Tensor.add(try const(x, 1.0), try Tensor.mul(try const(x, 3.0 * GELU_K), x2)),
+    try const(x, SQRT2_OVER_PI),
+    try Tensor.add(try const(x, 1.0), try Tensor.mul(try const(x, 3.0 * GELU_CUBIC), x2)),
   )
 
   Tensor.add(outer, try Tensor.mul(try Tensor.mul(half, x), try Tensor.mul(try one_minus(try Tensor.mul(th, th)), du)))
@@ -374,7 +374,7 @@ def max_rule(
   keep_dims: Bool,
 ) -> Result[Types.Tensor]
   hit = try Tensor.eq(x, try unreduce(t, x.shape, axes, keep_dims))
-  mask = try Tensor.where(hit, try const(x, 1.0), try const(x, 0.0))
+  mask = try Tensor.to_dtype(hit, x.dtype)
   count = try Tensor.broadcast_to(try Tensor.sum(mask, some(axes), true), x.shape)
   spread = try unreduce(ct, x.shape, axes, keep_dims)
   Tensor.div(try Tensor.mul(spread, mask), count)
@@ -422,7 +422,7 @@ end
 ## The backward of `gather`: each row of `ct` added into the row of `source`
 ## it was read from, as `onehot . ct` where
 ## `onehot[r, k] = (indices[k] == r)`. A repeated index sums its rows. It
-## costs a `[rows, k]` mask, which a scatter-add primitive would avoid.
+## costs `[rows, k]` grids, which a scatter-add primitive would avoid (ml#25).
 def gather_rule(source: Types.Tensor, indices: Types.Tensor, ct: Types.Tensor) -> Result[Types.Tensor]
   rows = source.shape[0]
   k = try Types.volume(indices.shape)
@@ -432,8 +432,7 @@ def gather_rule(source: Types.Tensor, indices: Types.Tensor, ct: Types.Tensor) -
   positions = try Tensor.arange(0, rows, 1, indices.dtype, Types.Backend.Trace)
   r = try Tensor.broadcast_to(try Tensor.reshape(positions, [rows, 1]), grid)
   c = try Tensor.broadcast_to(try Tensor.reshape(indices, [1, k]), grid)
-  zeros = try Graph.filled(grid, 0.0, ct.dtype)
-  onehot = try Tensor.where(try Tensor.eq(r, c), try Graph.filled(grid, 1.0, ct.dtype), zeros)
+  onehot = try Tensor.to_dtype(try Tensor.eq(r, c), ct.dtype)
   Tensor.reshape(try Tensor.matmul(onehot, try Tensor.reshape(ct, [k, width])), source.shape)
 end
 

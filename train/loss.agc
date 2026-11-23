@@ -28,8 +28,8 @@ end
 ## class `labels` (`[batch]`): the mean of `-log softmax(z)[label]`. The
 ## log-softmax subtracts the row maximum as a `stop_grad` constant, so it is
 ## stable and its gradient is `(softmax(z) - onehot) / batch`. A label outside
-## `0...classes` matches no class and adds `0`: inside a trace the labels have
-## no values to check.
+## `0...classes` is an error in an eager call; traced labels (`Trace.constant`
+## included) are not checked, and such a label adds `0`.
 def cross_entropy(logits: Tensor.Tensor, labels: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(logits)
   return error("cross_entropy needs [batch, classes] logits, got #{shape}") if shape.size != 2
@@ -37,6 +37,7 @@ def cross_entropy(logits: Tensor.Tensor, labels: Tensor.Tensor) -> Result[Tensor
     return error("cross_entropy needs [#{shape[0]}] labels, got #{Tensor.shape(labels)}")
   end
 
+  _ = try check_labels(labels, shape[1])
   top = try Tensor.stop_grad(try Tensor.max(logits, some([1]), true))
   shifted = try Tensor.sub(logits, try Tensor.broadcast_to(top, shape))
   total = try Tensor.sum(try Tensor.exp(shifted), some([1]), true)
@@ -50,4 +51,20 @@ def cross_entropy(logits: Tensor.Tensor, labels: Tensor.Tensor) -> Result[Tensor
   zeros = try Tensor.full(shape, Tensor.Values.Float(0.0), Tensor.dtype(logits), Tensor.backend(logits))
   picked = try Tensor.where(hit, log_probs, zeros)
   Tensor.neg(try Tensor.mean(try Tensor.sum(picked, some([1]))))
+end
+
+private
+
+## Every label in `0...classes`, for labels that hold values.
+def check_labels(labels: Tensor.Tensor, classes: Int) -> Result[Bool]
+  return ok(true) if Tensor.backend(labels) == Tensor.Backend.Trace
+  for v in try Tensor.to_list(labels)
+    case v
+      Tensor.Values.Int(c) ->
+        return error("cross_entropy needs labels in 0...#{classes}, got #{c}") if c < 0 or c >= classes
+      _ -> return error("cross_entropy needs integer labels")
+    end
+  end
+
+  ok(true)
 end

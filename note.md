@@ -44,26 +44,26 @@ quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 
 ## 2. En progreso (parado a propósito)
 
-- **`train/` primer PR** (rama `train`, worktree `../agentica-ml-train`):
-  `Loss.mse`, `Loss.binary_cross_entropy` (estable, solo ops con regla),
-  `Optim` (SGD con momentum, Adam) como funciones puras, y `Train.fit` sobre
-  `Trace.value_and_grad`. Criterio de salida: un MLP relu de `nn/` aprende
-  XOR en la referencia (golden de la curva) y libtorch la sigue a 1e-7.
-  Sin softmax cross-entropy: espera `stop_grad` o la regla de `max`. La raíz
-  del repo pasa a ser un workspace de Agentica (`agentica.toml` con
-  `[workspace]`): un paquete no raíz no puede tener deps `path`
-  (`PKG-ROOT-ONLY`). Diseño en `train/DESIGN.md`.
+- **Reglas de backward** (rama `grad-rules`, PR #24): `stop_grad` (op de
+  wrapper, sin primitiva de backend) y reglas para `sqrt`, `sigmoid`, `tanh`,
+  `gelu_tanh_approx`, `max` (empates a partes iguales), `squeeze`,
+  `unsqueeze`, `slice`, `concat`, `stack` y `gather` (one-hot `matmul`; el
+  scatter-add es ml#25). Con ellas `softmax`, `layer_norm`, `rms_norm`,
+  atención, `embedding`, `positional` y `silu`/`gelu` son diferenciables, y
+  `train/` gana `Loss.cross_entropy` (labels enteros, estable vía
+  `stop_grad`).
 
 Ningún subagente sigue corriendo.
 
 ## 3. Futuro planeado (orden propuesto)
 
-1. **`grad`**: faltan reglas para el resto de §3.1 y `stop_grad` (lo que
-   esperan `softmax`, `layer_norm` y la softmax cross-entropy de `train/`).
+1. **`grad`**: faltan reglas para `pow`, `clamp`, `batch_matmul`,
+   `to_dtype` entre floats, `conv1d` y `avg_pool1d`, y el scatter-add de
+   `gather` (ml#25).
 2. **`nn/`**: falta decoder (máscara causal, cross-attention), conv,
    `rms_norm`, y `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
-3. **`train/`**: primer PR abierto (ver §2). Después: softmax
-   cross-entropy, shuffling, schedules, y aplanar structs de capas (pytrees)
+3. **`train/`**: mergeado (#21); softmax cross-entropy en #24. Después:
+   shuffling, schedules, y aplanar structs de capas (pytrees)
    cuando un modelo lo pida.
 4. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
    época del XOR en la referencia).

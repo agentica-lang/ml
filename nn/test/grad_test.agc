@@ -1,7 +1,7 @@
 ## `nn/` composes with `Trace`: the gradient of a scalar loss through `dense`
-## (on a rank-3 input, so its fold and unfold are traced), a relu `mlp`,
-## `embedding` with `positional`, and a gelu encoder block matches a central
-## difference of the same loss.
+## (on a rank-3 input, so its fold and unfold are traced), a relu and a silu
+## `mlp`, `embedding` with `positional`, and a gelu encoder block matches a
+## central difference of the same loss.
 
 import Nn from "../nn"
 import S from "support"
@@ -93,6 +93,22 @@ end
 def filler(shape: List[Int], seed: Int) -> Result[Tensor.Tensor]
   n = shape.reduce(1) do |acc, d| acc * d end
   f64((0...n).to_a.map { |j| 0.1 * ((j * 7 + seed * 3) % 11 - 5).to_f + 0.05 * seed.to_f }, shape)
+end
+
+def test_the_gradient_through_a_silu_mlp_matches_a_central_difference() -> Result[Void]
+  x = try f64(X_DATA, [2, 2, 3])
+  args = [
+    try f64([0.2, -0.4, 0.7, 0.1, -0.3, 0.6, 0.5, -0.2, 0.4, 0.3, -0.6, 0.8], [3, 4]),
+    try f64([0.3, -0.5, 0.2, 0.6, 0.1, -0.4, -0.2, 0.7, 0.5, 0.4, -0.3, 0.1], [4, 3]),
+  ]
+
+  check(
+    args,
+    ->(ps: List[Tensor.Tensor]) {
+      m = Nn.Mlp(up: Nn.Dense(w: ps[0], b: none), down: Nn.Dense(w: ps[1], b: none), activation: Nn.Activation.Silu)
+      squared(try Nn.mlp(m, Trace.constant(x)))
+    },
+  )
 end
 
 ## `sum(dense(x)^2)` for the weight and bias in `ps`.

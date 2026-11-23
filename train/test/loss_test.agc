@@ -73,6 +73,19 @@ def test_the_cross_entropy_gradient_matches_a_central_difference() -> Result[Voi
   check(logits, ->(ps: List[Tensor.Tensor]) { Loss.cross_entropy(ps[0], Trace.constant(labels)) })
 end
 
+def test_cross_entropy_refuses_a_label_out_of_range() -> Result[Void]
+  logits = try S.tensor([0.3, -1.2, 2.5, 0.7, -0.4, 1.1], [2, 3])
+  try Test.error?(Loss.cross_entropy(logits, try labels_of([1, 3])))
+
+  Test.error?(Loss.cross_entropy(logits, try labels_of([-1, 0])))
+end
+
+def test_cross_entropy_refuses_bad_shapes() -> Result[Void]
+  try Test.error?(Loss.cross_entropy(try S.tensor([0.3, -1.2, 2.5], [3]), try labels_of([1])))
+
+  Test.error?(Loss.cross_entropy(try S.tensor([0.3, -1.2, 2.5, 0.7, -0.4, 1.1], [2, 3]), try labels_of([1, 0, 2])))
+end
+
 def labels_of(classes: List[Int]) -> Result[Tensor.Tensor]
   Tensor.from_list(classes.map { |c| Tensor.Values.Int(c) }, [classes.size], Tensor.Dtype.I64, S.REF)
 end

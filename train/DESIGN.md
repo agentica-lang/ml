@@ -45,8 +45,13 @@ Train.fit(loss, params, batches, optimizer, epochs, on_epoch?) -> Result[Fit { p
   `[batch, classes]` and `labels` are `[batch]` class ids. The log-softmax
   subtracts the row maximum through `Tensor.stop_grad`, so it is stable and
   its gradient is `(softmax - onehot) / batch`. The one-hot mask is built in
-  the graph (`arange`, `eq`, `where`): inside a trace the labels have no
-  values, so a label outside `0...classes` is not refused; it adds `0`.
+  the graph (`arange`, `eq`, `where`). A label outside `0...classes` is an
+  error in an eager call. Traced labels, those `fit` lifts with
+  `Trace.constant` included, are not checked, and such a label adds `0`.
+- **Embedding gradients cost `[rows, k]`.** The backward of `gather` (an
+  embedding lookup) is a one-hot `matmul`: four `[rows, k]` intermediates,
+  about 800 MB each for a 50k vocabulary over 4096 tokens at `F32`, plus
+  `O(rows k width)`. A scatter-add primitive would fix it (ml#25).
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on
   libtorch and only the new state, parameters and loss leave it
