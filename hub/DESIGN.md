@@ -9,7 +9,7 @@ from them by tensor name. Local files only. Depends on `tensor/` and `nn/`.
 Hub.open(path) -> Result[Checkpoint]        a .safetensors file, or a sharded .index.json
 Hub.names(c) -> List[String]                sorted
 Hub.has?(c, name) -> Bool
-Hub.tensor(c, name, backend) -> Result[Tensor]   the file's dtype
+Hub.tensor(c, name, backend) -> Result[Tensor]   F32/F16/BF16 as F32, else the file's dtype
 Hub.metadata(c) -> Map[file, Map[String, String]]   each shard's __metadata__
 
 Load.dense(c, prefix, backend)          {prefix}.weight [out, in] -> w [in, out]; {prefix}.bias if present
@@ -43,21 +43,26 @@ The test fixtures drop the `model.` part of the prefix
   shape, and offsets that tile the buffer (sorted, no gap, overlap or tail).
   An error names the file and the tensor. A repeated key cannot be seen:
   `JSON.parse` keeps the last one.
-- **`open` reads the whole file**, since the File API has no seek or ranged
-  read: a lazy read of one tensor would read the file again up to it. It
-  `stat`s the file first and refuses one over 4 GiB, which rules out the
-  5 GB and 10 GB shards Hugging Face writes by default. It reads the 8-byte
-  length and checks it against the size, then the header, and only then the
-  buffer; a file that ends early or grows is refused. A tensor is decoded when asked for.
+- **`open` reads the header and no data.** It `stat`s the file, reads the
+  8-byte length and checks it against the size, then the header, and keeps
+  where the data starts (`Shard.base`). A tensor is read when asked for, so
+  the size of the file is no limit. An F32, F16 or BF16 tensor goes to
+  `Tensor.from_file`: the backend reads its byte range itself, with no
+  Agentica list in between, and checks the range against the file again. Any
+  other dtype is read here, and since the File API of Agentica 0.36 has no
+  seek, the bytes before it are read and dropped; those tensors are small
+  (indices, masks). `File.seek` ([agentica#1927](https://github.com/agentica-lang/agentica/issues/1927),
+  ml#55) will make that a seek.
 - **The index's `weight_map` decides.** A sharded checkpoint opens every
   shard it names; a shard must be a plain file name in the index's folder (no
   `/`, `\`, `..` or absolute path) and hold the tensors mapped to it. Symlinks
   are followed on purpose: the Hugging Face cache links its snapshot files to
   blobs. Shards and a single file are keyed by file name.
-- **Dtypes are `tensor/`'s**: `F32`, `F16`, `F64`, `I8`, `I16`, `I32`,
-  `I64`, `U8` and `BOOL` decode bit for bit. `BF16`, the wider unsigned types
-  and the 8-bit floats have no `tensor/` dtype: the file opens, and only that
-  tensor is refused. Infinities and NaN decode, but a NaN payload is not
+- **Dtypes**: `F32`, `F16` and `BF16` load as `F32`, the compute dtype,
+  exactly (`tensor/DESIGN.md` §2). `F64`, `I8`, `I16`, `I32`, `I64`, `U8` and
+  `BOOL` keep their `tensor/` dtype and decode bit for bit. The wider unsigned
+  types and the 8-bit floats have no `tensor/` dtype: the file opens, and only
+  that tensor is refused. Infinities and NaN decode, but a NaN payload is not
   kept bit for bit. The reference backend holds doubles, so an `I64` past
   2^53 loses precision there.
 - **The loader converts and transposes, nothing else.** Float weights become

@@ -85,8 +85,8 @@ shape/dtype, plus its error paths.
 | Convolution/pooling (2) | `conv1d` (`stride`, `padding`), `avg_pool1d` (`kernel`, `stride`, `padding`) | — |
 | Movement (4) | `to_dtype`, `copy`, `contiguous` | `to_device` |
 
-Plus the two host-crossing functions §4 names, `from_list` and `to_list`
-(readback), which are not primitives.
+Plus the host-crossing functions §4 names, `from_list`, `from_file` and
+`to_list` (readback), which are not primitives.
 `gelu_erf`, the exact GELU, is outside §3.1: it runs on every backend for
 inference, and `Trace` records it without a gradient.
 

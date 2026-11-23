@@ -96,7 +96,7 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
   char name[FF_PATH_MAX];
   struct stat info;
   size_t width = ff_width(format), step, i, n;
-  int64_t done = 0;
+  int64_t done = 0, bytes;
   uint8_t *raw;
   int fd;
 
@@ -130,10 +130,11 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
     snprintf(why, why_len, "%s is not a regular file", name);
     return false;
   }
-  if (offset + count * (int64_t)width > (int64_t)info.st_size) {
+  bytes = count * (int64_t)width;
+  if (offset + bytes > (int64_t)info.st_size) {
     close(fd);
     snprintf(why, why_len, "%s has %lld bytes: the range of %lld bytes at %lld ends past them", name,
-             (long long)info.st_size, (long long)(count * (int64_t)width), (long long)offset);
+             (long long)info.st_size, (long long)bytes, (long long)offset);
     return false;
   }
   if (count == 0) {
@@ -151,7 +152,7 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
     return true;
   }
 
-  raw = (uint8_t *)malloc(FF_CHUNK);
+  raw = (uint8_t *)calloc(1, FF_CHUNK);
   if (raw == NULL) {
     close(fd);
     snprintf(why, why_len, "out of memory");
