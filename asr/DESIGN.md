@@ -71,12 +71,17 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   transcription compiles a few graphs and the next one none. The compiled
   steps and the encoder block are kept by the model (`Model.plans`, a channel
   of one value that holds the map, which a task takes and puts back at once),
-  so every transcription of a model, from any task, traces and plans each of
-  them once: `planned` looks the key up, and compiles and stores on a miss.
-  The kept copy has no pin (that stays with the task that compiled), so a run
-  of it builds the graph again if the cache lost it. If the task that loaded
-  the model has ended, its channel is closed and every call compiles, as
-  before. The token ids and positions are I32, which ggml holds.
+  named by their kind and the shapes and dtypes of their inputs, so audio of
+  another length gets its own. Every transcription of a model, from any task,
+  finds them: `planned` looks the name up, and compiles and stores on a miss.
+  Two tasks that miss the same name both compile, and one copy is kept. The
+  kept copy has no pin (that stays with the task that compiled), so a run of
+  it builds the graph again if the cache lost it. The map has no bound: a
+  caller that sends many shapes through `encode` adds an entry for each. A task
+  cancelled while it holds the map loses it; the next caller whose take times
+  out (50 ms; a slow holder takes the same path) puts a new, empty map in the
+  channel, which costs one round of compiles. A channel that was closed makes
+  every call compile, as before. The token ids and positions are I32, which ggml holds.
 
 ## The log-mel frontend (`mel.agc`)
 

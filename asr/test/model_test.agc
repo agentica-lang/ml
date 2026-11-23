@@ -44,6 +44,68 @@ def test_the_compiled_steps_are_shared_by_every_decoding_of_a_model() -> Result[
   end
 end
 
+## The compiled steps are named by the shapes of their inputs: audio of another length on the same model gets steps of
+## its own, and the first audio still gets its own.
+def test_the_compiled_steps_follow_the_audio_length() -> Result[Void]
+  with_fixtures do |dir|
+    for backend in try ggml_backends()
+      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      longer = try Asr.encode(m, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
+      shorter = try Asr.encode(m, try f32((0...12).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 4], backend))
+      a = try decoded(m, longer)
+      b = try decoded(m, shorter)
+      try Test.eq(try decoded(m, shorter), b)
+      try Test.eq(try decoded(m, longer), a)
+      fresh = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      try Test.eq(try decoded(fresh, shorter), b)
+    end
+
+    ok()
+  end
+end
+
+## The steps one task compiled serve the others: after a decoding in a task, the caller's is warm, and three tasks at
+## once agree with each other and leave the map whole, so a fourth decoding is warm too.
+def test_the_compiled_steps_are_shared_between_tasks() -> Result[Void]
+  with_fixtures do |dir|
+    for backend in try ggml_backends()
+      opened = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      audio = try Asr.encode(opened, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
+      cold = try steps_of(try Asr.open("#{dir}/speech/model.safetensors", backend), audio)
+      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      first = try Task.await(Task.spawn do decoded(m, audio) end)
+      try Test.assert(try steps_of(m, audio) * 2 < cold, "the caller did not find what the task compiled")
+      other = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      tasks = (0...3).to_a.map { |_| Task.spawn do decoded(other, audio) end }
+      for t in tasks
+        try Test.eq(try Task.await(t), first)
+      end
+
+      try Test.assert(try steps_of(other, audio) * 2 < cold, "the map did not survive three tasks")
+    end
+
+    ok()
+  end
+end
+
+## A task cancelled while it holds the map loses it: the next caller puts a new one in, so that the model compiles
+## again once and then is warm again.
+def test_a_lost_map_is_put_back() -> Result[Void]
+  with_fixtures do |dir|
+    for backend in try ggml_backends()
+      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      audio = try Asr.encode(m, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
+      cold = try steps_of(m, audio)
+      try Test.assert(try steps_of(m, audio) * 2 < cold, "no warm decoding before the loss")
+      _ = Channel.recv(m.plans, 0)
+      try Test.assert(try steps_of(m, audio) * 2 > cold, "the lost map was not rebuilt from empty")
+      try Test.assert(try steps_of(m, audio) * 2 < cold, "not warm after the map was put back")
+    end
+
+    ok()
+  end
+end
+
 private
 
 ## A vocabulary of 16: text 0..4, `eot` 5, specials 6..9 (`<|notimestamps|>` is 9, 7 is suppressed), timestamps 10..15,
@@ -450,6 +512,13 @@ def ruled(
   end
 
   ok()
+end
+
+## The VM steps of one decoding in this task.
+def steps_of(m: Asr.Model, audio: Tensor.Tensor) -> Result[Int]
+  before = System.Profile.steps()
+  _ = try decoded(m, audio)
+  ok(System.Profile.steps() - before)
 end
 
 ## The logits of ten steps after a prompt.

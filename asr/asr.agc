@@ -79,9 +79,11 @@ struct Cache
   cross: List[Heard]
   own: List[Kv]
   length: Int
-  ## On `Ggml`, the one-token steps already compiled (`Trace.compile`), by
-  ## the rows of `own` and of the step's capacity, so a later step of the
-  ## same capacity neither traces nor plans.
+  ## On `Ggml`, the compiled one-token steps this cache has used, by the
+  ## rows of `own` and of the step's capacity, so a later step of the same
+  ## capacity neither traces nor plans. The model keeps its own copies for
+  ## the other caches (`Model.plans`); a function compiled here holds its pin
+  ## until `finish`.
   graphs: Map[String, Trace.Compiled] = {}
 end
 
@@ -546,6 +548,8 @@ end
 
 private
 
+## How long a task waits for the model's map, which is held for a few VM steps.
+PLANS_WAIT_MS = 50
 ## 16 kHz audio, and one log-mel frame every 160 samples (`mel.agc`).
 SAMPLE_RATE = 16000
 HOP = 160
@@ -1174,30 +1178,45 @@ def shared_plans() -> Result[Channel[Map[String, Trace.Compiled]]]
   ok(cell)
 end
 
-## The function `key` of `m`, compiled for `specs` and `f` once for every transcription of the model: looked up in the
-## model's map first, and compiled (then put there) on a miss. The copy kept has no pin, which stays with the task that
-## compiled; a run of it builds the graph again if the cache has lost it. A map that cannot be taken (the task that loaded
-## the model has ended and closed the channel) is a miss every time.
+## The function `key` of `m` for `specs` (the key and the shapes and dtypes of the inputs name it), compiled with `f` on a
+## miss and put in the model's map, so that later transcriptions, in any task, find it. The copy kept has no pin, which
+## stays with the task that compiled; a run of it builds the graph again if the cache has lost it. Two tasks that miss the
+## same key both compile, and one copy is kept. The map has no bound: a caller that sends many shapes through `encode`
+## adds an entry for each. A task that is cancelled while it holds the map loses it, so a `recv` that times out (a
+## holder that is slow takes the same path) puts a new, empty map back; with capacity one a second map cannot be made,
+## and a slow holder whose `send` then fails costs one compile.
 def planned(
   m: Model,
   key: String,
   specs: List[Trace.Spec],
   f: Fn[List[Tensor.Tensor], Result[List[Tensor.Tensor]]],
 ) -> Result[Trace.Compiled]
-  taken = m.plans.recv(1000)
-  if taken.ok?
-    plans = taken.unwrap!
-    _ = m.plans.send(plans, 1000)
-    return ok(plans[key]) if plans.has_key?(key)
+  named = "#{key} #{specs.map { |sp| "#{sp.shape} #{sp.dtype}" }.join(" ")}"
+  case take_plans(m)
+    some(known) ->
+      _ = m.plans.send(known, 0)
+      return ok(known[named]) if known.has_key?(named)
+    none -> nil
   end
 
   compiled = try Trace.compile(specs, f)
-  again = m.plans.recv(1000)
-  if again.ok?
-    _ = m.plans.send(again.unwrap!.put(key, compiled.with(pin: none)), 1000)
+  case take_plans(m)
+    some(kept) -> _ = m.plans.send(kept.put(named, compiled.with(pin: none)), 0)
+    none -> nil
   end
 
   ok(compiled)
+end
+
+## The model's map, whose token the caller must put back. When it cannot be taken in time, an empty map is put in the
+## channel in its place (see `planned`) and the answer is `none`.
+def take_plans(m: Model) -> Optional[Map[String, Trace.Compiled]]
+  taken = m.plans.recv(PLANS_WAIT_MS)
+  return some(taken.unwrap!) if taken.ok?
+
+  empty: Map[String, Trace.Compiled] = {}
+  _ = m.plans.send(empty, 0)
+  none
 end
 
 ## What identifies the timestamp rules in the key of a compiled step.
