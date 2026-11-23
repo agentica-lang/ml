@@ -13,13 +13,14 @@ def test_every_dtype_reads_as_the_peer_wrote_it() -> Result[Void]
   S.with_fixtures("values") do |dir|
     c = try Hub.open("#{dir}/values.safetensors")
     try same_as_peer(c, try S.json(dir, "values.json"))
-    try Test.eq(Hub.metadata(c)["#{dir}/values.safetensors"], {"format": "pt"})
-    Test.eq(Tensor.shape(try Hub.tensor(c, "empty", S.REF)), [0, 3])
+    try Test.eq(Hub.metadata(c)["values.safetensors"], {"format": "pt"})
+    try Test.eq(Tensor.shape(try Hub.tensor(c, "empty", S.REF)), [0, 3])
+    Test.eq(Tensor.shape(try Hub.tensor(c, "empty_last", S.REF)), [3, 0])
   end
 end
 
 def test_a_dtype_tensor_lacks_is_refused_alone() -> Result[Void]
-  S.with_fixtures("bf16") do |dir|
+  S.with_fixtures("values") do |dir|
     c = try Hub.open("#{dir}/bf16.safetensors")
     try expect_error(Hub.tensor(c, "w", S.REF), "BF16")
     try Test.eq(try Tensor.to_list(try Hub.tensor(c, "ok", S.REF)), [Tensor.Values.Float(1.0)])
@@ -31,7 +32,7 @@ end
 def test_malformed_files_are_refused() -> Result[Void]
   S.with_fixtures("malformed") do |dir|
     cases = try JSON.decode(try S.json(dir, "malformed.json"), Map[String, String])
-    try Test.eq(cases.size, 18)
+    try Test.eq(cases.size, 21)
     for file in cases.keys
       try expect_error(Hub.open("#{dir}/#{file}"), cases[file])
     end
@@ -47,9 +48,13 @@ def test_a_sharded_index_reads_each_shard() -> Result[Void]
     try Test.eq(Hub.names(c), ["enc.a", "enc.b", "enc.c"])
     try same_as_peer(c, try S.json(dir, "sharded.json"))
     try expect_error(Hub.tensor(c, "enc.z", S.REF), "no tensor enc.z")
-    try expect_error(Hub.open("#{dir}/missing.index.json"), "not in its shard")
-    try expect_error(Hub.open("#{dir}/escape.index.json"), "not a file name")
-    expect_error(Hub.open("#{dir}/absent.index.json"), "model-00003-of-00002")
+    bad = try JSON.decode(try S.json(dir, "bad_index.json"), Map[String, String])
+    try Test.eq(bad.size, 6)
+    for file in bad.keys
+      try expect_error(Hub.open("#{dir}/#{file}"), bad[file])
+    end
+
+    ok()
   end
 end
 
@@ -68,25 +73,48 @@ def same_as_peer(c: Hub.Checkpoint, expected: JSON.Value) -> Result[Void]
     t = try Hub.tensor(c, name, S.REF)
     try Test.eq(Tensor.dtype(t), Safetensors.DTYPES[try JSON.string(try JSON.get(want, "dtype"))])
     try Test.eq(Tensor.shape(t), try JSON.decode(try JSON.get(want, "shape"), List[Int]))
-    try Test.eq(try Tensor.to_list(t), try values(try JSON.get(want, "values"), Tensor.dtype(t)))
+    try Test.eq(bits(try Tensor.to_list(t)), bits(try values(try JSON.get(want, "values"), Tensor.dtype(t))))
   end
 
   ok()
 end
 
+## The peer's values: floats come as text, so `inf` and `nan` fit in JSON.
 def values(json: JSON.Value, dtype: Tensor.Dtype) -> Result[List[Tensor.Values]]
   out: List[Tensor.Values] = []
   for v in try JSON.list(json)
     case dtype
-      Tensor.Dtype.F32 -> out = out.push(Tensor.Values.Float(try JSON.float(v)))
-      Tensor.Dtype.F16 -> out = out.push(Tensor.Values.Float(try JSON.float(v)))
-      Tensor.Dtype.F64 -> out = out.push(Tensor.Values.Float(try JSON.float(v)))
+      Tensor.Dtype.F32 -> out = out.push(Tensor.Values.Float(try float(try JSON.string(v))))
+      Tensor.Dtype.F16 -> out = out.push(Tensor.Values.Float(try float(try JSON.string(v))))
+      Tensor.Dtype.F64 -> out = out.push(Tensor.Values.Float(try float(try JSON.string(v))))
       Tensor.Dtype.Bool -> out = out.push(Tensor.Values.Bool(try JSON.bool(v)))
       _ -> out = out.push(Tensor.Values.Int(try JSON.int(v)))
     end
   end
 
   ok(out)
+end
+
+def float(text: String) -> Result[Float]
+  inf = Float.from_bits(0x7FF0000000000000)
+  case text
+    "inf" -> ok(inf)
+    "-inf" -> ok(-inf)
+    "nan" -> ok(inf - inf)
+    _ -> text.to_f
+  end
+end
+
+## Floats as their bits, so `-0.0` differs from `0.0` and NaN equals NaN
+## (`to_bits` gives every NaN one pattern: payloads are not compared).
+def bits(vs: List[Tensor.Values]) -> List[String]
+  vs.map do |v|
+    case v
+      Tensor.Values.Float(f) -> "f#{Float.to_bits(f)}"
+      Tensor.Values.Int(i) -> "i#{i}"
+      Tensor.Values.Bool(b) -> "b#{b}"
+    end
+  end
 end
 
 def expect_error[T](r: Result[T], phrase: String) -> Result[Void]

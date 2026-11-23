@@ -1,29 +1,24 @@
 ## Shared helpers of the `hub/` tests (not a test file itself): the Python
-## peer `peer.py` writes the fixtures and the values it expects into a fresh
-## folder, which each test removes when it ends.
+## peer `peer.py` writes one set of fixtures and the values it expects into a
+## new temporary folder, which each test removes when it ends. Run the tests
+## from `hub/`.
 
 import Tensor from "pkg/tensor/tensor"
 
 REF = Tensor.Backend.Reference
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
 
-## Runs `body` on a folder of fresh fixtures, then removes the folder.
-def with_fixtures(tag: String, body: Fn[String, Result[Void]]) -> Result[Void]
-  tmp = System.env("TMPDIR").unwrap_or("")
-  dir = "#{if_empty(tmp, "/tmp")}/agentica-hub-#{System.pid}-#{tag}"
-  try Path.remove(dir)
-  p = try Process.spawn_captured("python3", ["-I", "test/peer.py", dir])
+## Runs `body` on the folder the peer wrote `set` into, then removes it.
+def with_fixtures(set: String, body: Fn[String, Result[Void]]) -> Result[Void]
+  p = try Process.spawn_captured("python3", ["-I", "test/peer.py", set])
   out = try Process.output(p, 30000)
   code = try Process.wait(p, 30000)
   return error("peer.py exited with #{code}: #{out.stderr}") if code != 0
+  dir = out.stdout.strip
+  return error("peer.py printed no fixture folder: #{dir}") if not dir.include?("agentica-hub-")
   result = body.call(dir)
   try Path.remove(dir)
   result
-end
-
-def if_empty(s: String, default: String) -> String
-  return default if s.empty?
-  s
 end
 
 ## The JSON document `file` of the folder.

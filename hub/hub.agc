@@ -7,7 +7,8 @@
 import Safetensors from "safetensors"
 import Tensor from "pkg/tensor/tensor"
 
-## A checkpoint: its shards by file name and the file of every tensor.
+## A checkpoint: its shards by file name (no folder) and the file of every
+## tensor.
 struct Checkpoint
   shards: Map[String, Safetensors.Shard]
   weight_map: Map[String, String]
@@ -22,16 +23,17 @@ end
 def open(path: String) -> Result[Checkpoint]
   return open_index(path) if path.end_with?(".json")
   shard = try Safetensors.open(path)
+  file = path.split("/").last
   weight_map: Map[String, String] = {}
   for name in shard.entries.keys
-    weight_map = weight_map.put(name, path)
+    weight_map = weight_map.put(name, file)
   end
 
-  ok(Checkpoint(shards: {path: shard}, weight_map: weight_map))
+  ok(Checkpoint(shards: {file: shard}, weight_map: weight_map))
 end
 
 def open_index(path: String) -> Result[Checkpoint]
-  index = try Safetensors.within(path, JSON.decode(try File.read_text(path), Index))
+  index = try within(path, JSON.decode(try File.read_text(path), Index))
 
   parts = path.split("/")
   dir = parts.take(parts.size - 1).push("").join("/")
@@ -71,4 +73,14 @@ def metadata(c: Checkpoint) -> Map[String, Map[String, String]]
   end
 
   out
+end
+
+private
+
+## `r`, with `prefix: ` before its error.
+def within[T](prefix: String, r: Result[T]) -> Result[T]
+  case r
+    ok(v) -> ok(v)
+    error(e) -> error("#{prefix}: #{e.message}")
+  end
 end

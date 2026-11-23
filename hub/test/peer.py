@@ -1,13 +1,15 @@
 """The independent peer of the hub/ tests: writes safetensors files with the
 standard library alone (struct + json) and the values a reader must find.
 
-Usage: python3 peer.py OUT_DIR
+Usage: python3 peer.py SET, with SET one of values, malformed, sharded, layer
+or block. Writes that set into a new temporary folder and prints its path.
 """
 
 import json
 import math
 import struct
 import sys
+import tempfile
 from pathlib import Path
 
 FORMATS = {"F32": "f", "F16": "e", "F64": "d", "I64": "q", "I32": "i",
@@ -40,17 +42,20 @@ def raw_header(path, text, data=b""):
 
 
 def decoded(t):
+    """Floats as text ("inf", "-inf", "nan" or repr), so JSON can hold them."""
     n = len(t["raw"]) // struct.calcsize(FORMATS[t["dtype"]])
-    values = struct.unpack("<%d%s" % (n, FORMATS[t["dtype"]]), t["raw"])
-    return {"dtype": t["dtype"], "shape": t["shape"], "values": list(values)}
+    values = list(struct.unpack("<%d%s" % (n, FORMATS[t["dtype"]]), t["raw"]))
+    if t["dtype"] in ("F32", "F16", "F64"):
+        values = [repr(v) for v in values]
+    return {"dtype": t["dtype"], "shape": t["shape"], "values": values}
 
 
 def values_file(out):
-    half_bits = [0x3C00, 0xC000, 0x0001, 0x83FF, 0x7BFF, 0x8000, 0x3555]
+    half_bits = [0x3C00, 0xC000, 0x0001, 0x83FF, 0x7BFF, 0x8000, 0x3555, 0x7C00, 0xFC00, 0x7E00]
     halves = [struct.unpack("<e", struct.pack("<H", b))[0] for b in half_bits]
     tensors = {
         "f32": tensor("F32", [2, 3], [1.5, -2.25, 0.1, 3.4e38, -0.0, 1e-40]),
-        "f16": tensor("F16", [7], halves),
+        "f16": tensor("F16", [10], halves),
         "f64": tensor("F64", [2], [0.1, -1e300]),
         "i64": tensor("I64", [3], [-2**63, 2**53, -5]),
         "i32": tensor("I32", [2, 2], [-2**31, 2**31 - 1, 0, -7]),
@@ -60,6 +65,7 @@ def values_file(out):
         "bool": tensor("BOOL", [3], [True, False, True]),
         "scalar": tensor("F32", [], [2.5]),
         "empty": tensor("F32", [0, 3], []),
+        "empty_last": tensor("F32", [3, 0], []),
     }
     write(out / "values.safetensors", tensors, {"format": "pt"})
     expected = {name: decoded(t) for name, t in tensors.items()}
@@ -87,9 +93,12 @@ def malformed(out):
         "unknown_dtype": ({"a": entry("X9", [1], 0, 1)}, "unknown dtype X9", b"\x00"),
         "missing_shape": ({"a": {"dtype": "F32", "data_offsets": [0, 4]}}, "tensor a", b"\0" * 4),
         "negative_dim": ({"a": entry("F32", [-1], 0, 4)}, "negative dimension", b"\0" * 4),
-        "reversed": ({"a": entry("F32", [0], 4, 0)}, "outside", b"\0" * 4),
+        "negative_start": ({"a": entry("F32", [1], -4, 0)}, "outside", b"\0" * 4),
+        "three_offsets": ({"a": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4, 8]}}, "[begin, end]", b"\0" * 4),
+        "zero_header": (None, "does not start with {", struct.pack("<Q", 0)),
+        "leading_space": (b' {"a": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}', "does not start with {", b"\0" * 4),
+        "metadata_list": ({"__metadata__": ["k"]}, "__metadata__", b""),
         "out_of_range": ({"a": entry("F32", [2], 0, 8)}, "outside", b"\0" * 4),
-        "size_mismatch": ({"a": entry("F32", [3], 0, 8)}, "does not fit", b"\0" * 8),
         "gap": ({"a": entry("F32", [1], 0, 4), "b": entry("F32", [1], 8, 12)}, "gap", b"\0" * 12),
         "overlap": ({"a": entry("F32", [2], 0, 8), "b": entry("F32", [2], 4, 12)}, "overlaps", b"\0" * 12),
         "tail": ({"a": entry("F32", [1], 0, 4)}, "cover 4 of the 8", b"\0" * 8),
@@ -121,12 +130,18 @@ def sharded(out):
     expected = {n: decoded(t) for n, t in {**one, **two}.items()}
     (out / "sharded.json").write_text(json.dumps(expected))
     bad = {
-        "missing": {"enc.z": "model-00001-of-00002.safetensors"},
-        "escape": {"enc.a": "../model-00001-of-00002.safetensors"},
-        "absent": {"enc.a": "model-00003-of-00002.safetensors"},
+        "missing": ("enc.z", "model-00001-of-00002.safetensors", "not in its shard"),
+        "escape": ("enc.a", "../model-00001-of-00002.safetensors", "not a file name"),
+        "absolute": ("enc.a", str(out / "model-00001-of-00002.safetensors"), "not a file name"),
+        "backslash": ("enc.a", "a\\b.safetensors", "not a file name"),
+        "dotdot": ("enc.a", "..", "not a file name"),
+        "absent": ("enc.a", "model-00003-of-00002.safetensors", "model-00003-of-00002"),
     }
-    for name, wm in bad.items():
-        (out / ("%s.index.json" % name)).write_text(json.dumps({"weight_map": wm}))
+    phrases = {}
+    for name, (tensor_name, file, phrase) in bad.items():
+        (out / ("%s.index.json" % name)).write_text(json.dumps({"weight_map": {tensor_name: file}}))
+        phrases["%s.index.json" % name] = phrase
+    (out / "bad_index.json").write_text(json.dumps(phrases))
 
 
 def f32(x):
@@ -160,35 +175,48 @@ def layer(out):
 
 
 def block(out):
-    """One Whisper-style encoder block (width 4, hidden 8): `k_proj` has no
-    bias, as in Whisper."""
-    def dense(name, rows, cols, bias=True):
-        n = rows * cols
-        ts = {name + ".weight": tensor("F32", [rows, cols], [((i * 7) % 11 - 5) / 10 for i in range(n)])}
-        if bias:
-            ts[name + ".bias"] = tensor("F32", [rows], [i / 10 for i in range(rows)])
-        return ts
+    """One Whisper-style encoder block (width 4, hidden 8), every layer with
+    its own weights; `k_proj` has no bias, as in Whisper. The expected values
+    are each dense weight transposed to [in, out]."""
+    tensors, dense, norm = {}, {}, {}
 
-    def norm(name):
-        return {name + ".weight": tensor("F32", [4], [1.0] * 4),
-                name + ".bias": tensor("F32", [4], [0.0] * 4)}
+    def add_dense(name, rows, cols, k, bias=True):
+        w = [((i * 7 + k * 13) % 23 - 11) / 8 for i in range(rows * cols)]
+        tensors[name + ".weight"] = tensor("F32", [rows, cols], w)
+        b = [(i - k) / 4 for i in range(rows)] if bias else None
+        if bias:
+            tensors[name + ".bias"] = tensor("F32", [rows], b)
+        dense[name] = {"w": [w[o * cols + i] for i in range(cols) for o in range(rows)], "b": b}
+
+    def add_norm(name, k):
+        gamma, beta = [1 + (k + i) / 4 for i in range(4)], [(k - i) / 8 for i in range(4)]
+        tensors[name + ".weight"] = tensor("F32", [4], gamma)
+        tensors[name + ".bias"] = tensor("F64", [4], beta)
+        norm[name] = {"gamma": gamma, "beta": beta}
 
     p = "encoder.layers.0."
-    tensors = {**norm(p + "self_attn_layer_norm"), **dense(p + "self_attn.q_proj", 4, 4),
-               **dense(p + "self_attn.k_proj", 4, 4, bias=False), **dense(p + "self_attn.v_proj", 4, 4),
-               **dense(p + "self_attn.out_proj", 4, 4), **norm(p + "final_layer_norm"),
-               **dense(p + "fc1", 8, 4), **dense(p + "fc2", 4, 8)}
+    add_norm(p + "self_attn_layer_norm", 0)
+    add_dense(p + "self_attn.q_proj", 4, 4, 1)
+    add_dense(p + "self_attn.k_proj", 4, 4, 2, bias=False)
+    add_dense(p + "self_attn.v_proj", 4, 4, 3)
+    add_dense(p + "self_attn.out_proj", 4, 4, 4)
+    add_norm(p + "final_layer_norm", 5)
+    add_dense(p + "fc1", 8, 4, 6)
+    add_dense(p + "fc2", 4, 8, 7)
+    embed = [(i % 9 - 4) / 2 for i in range(24)]
+    tensors["encoder.embed_positions.weight"] = tensor("F16", [6, 4], embed)
     write(out / "block.safetensors", tensors)
+    (out / "block.json").write_text(json.dumps({"dense": dense, "norm": norm, "embed": embed}))
+
+
+SETS = {"values": values_file, "malformed": malformed, "sharded": sharded,
+        "layer": layer, "block": block}
 
 
 def main():
-    out = Path(sys.argv[1])
-    out.mkdir(parents=True, exist_ok=True)
-    values_file(out)
-    malformed(out)
-    sharded(out)
-    layer(out)
-    block(out)
+    out = Path(tempfile.mkdtemp(prefix="agentica-hub-"))
+    SETS[sys.argv[1]](out)
+    print(out)
 
 
 if __name__ == "__main__":

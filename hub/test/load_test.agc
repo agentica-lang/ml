@@ -33,7 +33,7 @@ def test_dense_and_layer_norm_match_the_peer() -> Result[Void]
 end
 
 def test_dense_and_layer_norm_match_the_peer_on_libtorch() -> Result[Void]
-  S.with_fixtures("torch") do |dir|
+  S.with_fixtures("layer") do |dir|
     c = try Hub.open("#{dir}/layer.safetensors")
     return expect_absent(Load.dense(c, "enc.fc", S.TORCH)) if not Tensor.available(S.TORCH)
 
@@ -50,7 +50,7 @@ def test_dense_and_layer_norm_match_the_peer_on_libtorch() -> Result[Void]
 end
 
 def test_a_weight_of_the_wrong_kind_is_refused() -> Result[Void]
-  S.with_fixtures("refuse") do |dir|
+  S.with_fixtures("layer") do |dir|
     c = try Hub.open("#{dir}/layer.safetensors")
     try Test.error?(Load.embedding(c, "enc.ids", S.REF))
     try Test.error?(Load.dense(c, "enc.fc.bias", S.REF))
@@ -58,9 +58,10 @@ def test_a_weight_of_the_wrong_kind_is_refused() -> Result[Void]
   end
 end
 
-def test_a_whisper_style_encoder_block_loads_and_runs() -> Result[Void]
+def test_a_whisper_style_encoder_block_loads_layer_by_layer() -> Result[Void]
   S.with_fixtures("block") do |dir|
     c = try Hub.open("#{dir}/block.safetensors")
+    want = try S.json(dir, "block.json")
     p = "encoder.layers.0."
     names = Load.BlockNames(
       norm1: "#{p}self_attn_layer_norm",
@@ -74,10 +75,28 @@ def test_a_whisper_style_encoder_block_loads_and_runs() -> Result[Void]
     )
 
     block = try Load.encoder_block(c, names, 2, Nn.Activation.Relu, 0.00001, S.REF)
-    try Test.eq(block.attention.key.b.some?, false)
+    a = block.attention
+    prefixes = [names.query, names.key, names.value, names.output, names.up, names.down]
+    denses = [a.query, a.key, a.value, a.output, block.mlp.up, block.mlp.down]
+    for i in 0...denses.size
+      try same_dense(denses[i], try JSON.get(try JSON.get(want, "dense"), prefixes[i]))
+    end
+
+    try same_norm(block.norm1, try JSON.get(try JSON.get(want, "norm"), names.norm1))
+    try same_norm(block.norm2, try JSON.get(try JSON.get(want, "norm"), names.norm2))
     try Test.eq(Tensor.shape(block.mlp.up.w), [4, 8])
     x = try S.f32((0...12).map { |i| i.to_f / 10.0 }, [1, 3, 4], S.REF)
     Test.eq(Tensor.shape(try Nn.encoder_block(block, x)), [1, 3, 4])
+  end
+end
+
+def test_an_embedding_table_loads_as_stored() -> Result[Void]
+  S.with_fixtures("block") do |dir|
+    c = try Hub.open("#{dir}/block.safetensors")
+    e = try Load.embedding(c, "encoder.embed_positions.weight", S.REF)
+    try Test.eq(Tensor.shape(e.table), [6, 4])
+    try Test.eq(Tensor.dtype(e.table), Tensor.Dtype.F32)
+    Test.eq(try S.floats_of(e.table), try S.floats(try JSON.get(try S.json(dir, "block.json"), "embed")))
   end
 end
 
@@ -92,4 +111,19 @@ def expect_absent(r: Result[Nn.Dense]) -> Result[Void]
     ok(_) -> error("a torch layer loaded without the native module")
     error(_) -> ok()
   end
+end
+
+## `d.w` is the peer's weight transposed, and `d.b` its bias or `none`.
+def same_dense(d: Nn.Dense, want: JSON.Value) -> Result[Void]
+  try Test.eq(try S.floats_of(d.w), try S.floats(try JSON.get(want, "w")))
+  b = try JSON.get(want, "b")
+  case d.b
+    some(t) -> Test.eq(try S.floats_of(t), try S.floats(b))
+    none -> Test.assert(JSON.null?(b), "a bias the peer wrote did not load")
+  end
+end
+
+def same_norm(n: Nn.LayerNorm, want: JSON.Value) -> Result[Void]
+  try Test.eq(try S.floats_of(n.gamma), try S.floats(try JSON.get(want, "gamma")))
+  Test.eq(try S.floats_of(n.beta), try S.floats(try JSON.get(want, "beta")))
 end

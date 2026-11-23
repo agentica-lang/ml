@@ -29,14 +29,20 @@ Load.encoder_block(c, BlockNames { norm1, query, key, value, output, norm2, up, 
   An error names the file and the tensor. A repeated key cannot be seen:
   `JSON.parse` keeps the last one.
 - **`open` reads the whole file**, since the File API has no seek or ranged
-  read: a lazy read of one tensor would read the file again up to it. A
-  tensor is decoded when asked for. A sharded checkpoint opens every shard
-  its `weight_map` names; a shard must be a plain file name in the index's
-  folder, and hold the tensors mapped to it.
+  read: a lazy read of one tensor would read the file again up to it. It
+  `stat`s the file first (at most 4 GiB), reads the 8-byte length and checks
+  it against the size, then the header, and only then the buffer; a file that
+  ends early or grows is refused. A tensor is decoded when asked for.
+- **The index's `weight_map` decides.** A sharded checkpoint opens every
+  shard it names; a shard must be a plain file name in the index's folder (no
+  `/`, `\`, `..` or absolute path) and hold the tensors mapped to it. Symlinks
+  are followed on purpose: the Hugging Face cache links its snapshot files to
+  blobs. Shards and a single file are keyed by file name.
 - **Dtypes are `tensor/`'s**: `F32`, `F16`, `F64`, `I8`, `I16`, `I32`,
   `I64`, `U8` and `BOOL` decode bit for bit. `BF16`, the wider unsigned types
   and the 8-bit floats have no `tensor/` dtype: the file opens, and only that
-  tensor is refused. The reference backend holds doubles, so an `I64` past
+  tensor is refused. Infinities and NaN decode, but a NaN payload is not
+  kept bit for bit. The reference backend holds doubles, so an `I64` past
   2^53 loses precision there.
 - **The loader converts and transposes, nothing else.** Float weights become
   `F32` (`tensor/DESIGN.md` §6); a dense weight stored `[out, in]` becomes
@@ -47,8 +53,19 @@ Load.encoder_block(c, BlockNames { norm1, query, key, value, output, norm2, up, 
 
 ## Cost
 
-Decoding is Agentica code per element, and the reference backend holds a
-`List[Float]`, so a large checkpoint costs memory and time well above its
-file size. The tests use files of a few hundred bytes that `test/peer.py`
-(Python, `struct` and `json` only) writes at test time into a temporary
-folder; run them from `hub/`.
+Measured on the reference backend (Ryzen 5 3550H), F32 tensors:
+
+- `open` peaks near 2x the file size (the chunks read and their join), then
+  holds 1x: the buffer stays in the `Checkpoint`.
+- Decoding a tensor costs about 0.65 µs and 110 bytes of peak memory per
+  element (a `List[Values]`, then the reference's `List[Float]`).
+
+So Whisper tiny (39M parameters) fits, slowly, one tensor at a time, while
+Whisper medium in F32 (769M parameters, about 3 GB) is out of reach on the
+reference backend until `File.seek`
+([agentica#1927](https://github.com/agentica-lang/agentica/issues/1927))
+allows lazy reads and a native backend takes the bytes without the lists.
+
+The tests use files of a few hundred bytes that `test/peer.py` (Python,
+`struct` and `json` only) writes at test time into a temporary folder; run
+them from `hub/`.
