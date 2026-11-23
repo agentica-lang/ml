@@ -4,6 +4,7 @@
 
 import Asr from "../asr"
 import Greedy from "../greedy"
+import Lower from "pkg/tensor/src/lower"
 import Mathx from "../mathx"
 import Mel from "../mel"
 import Tensor from "pkg/tensor/tensor"
@@ -140,7 +141,8 @@ end
 
 ## On ggml (its CPU backend and Vulkan, where built) each encoder stage and
 ## each step is one compiled graph: the cached steps match the peer, and
-## `transcribe` emits the reference's tokens.
+## `transcribe` emits the reference's tokens. The padded cache grows from 8
+## to 16 rows on the way, and a second call compiles no graph.
 def test_on_ggml_the_steps_and_transcribe_match() -> Result[Void]
   with_fixtures do |dir|
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
@@ -148,8 +150,14 @@ def test_on_ggml_the_steps_and_transcribe_match() -> Result[Void]
     want = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", REF), tok, pcm)
     for backend in try ggml_backends()
       try kv_steps(try Asr.open("#{dir}/tiny/model.safetensors", backend), dir, backend, F32, F32)
-      got = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", backend), tok, pcm)
+      speech = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      got = try Asr.transcribe(speech, tok, pcm)
       try Test.eq(got.tokens, want.tokens)
+      try Test.assert(got.tokens.size > 5, "the padded cache grows past 8 rows: #{got.tokens}")
+      compiled = try Lower.compiles()
+      again = try Asr.transcribe(speech, tok, pcm)
+      try Test.eq(again.tokens, want.tokens)
+      try Test.eq(try Lower.compiles(), compiled)
     end
 
     ok()

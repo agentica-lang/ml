@@ -1,7 +1,8 @@
 ## Transcribes the clips of `test/fixtures/transcribe_golden.json` with a real
 ## whisper-tiny and compares them with what Hugging Face answered: the token
 ## ids exactly, the text and the segments, the language and its probability
-## within 1e-5. It prints the real-time factor of each case. Manual, not run by
+## within 1e-5. It prints the real-time factor of each case and, on ggml, the
+## graphs it compiled. Manual, not run by
 ## the tests (the checkpoint is not in git). From `asr/`:
 ##
 ## ```sh
@@ -14,6 +15,7 @@
 ## runs only that case's index.
 
 import Asr from "../asr"
+import Lower from "pkg/tensor/src/lower"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "../tokenizer"
 
@@ -79,9 +81,11 @@ def run(args: List[String]) -> Result[Bool]
     c = golden.cases[i]
     pcm = clips.get(c.clip).unwrap_or([])
     options = Asr.Options(language: c.language, translate: c.task == "translate", timestamps: c.timestamps)
+    compiled = try compiles(backend)
     started = Time.monotonic_ms()
     got = try Asr.transcribe(m, tok, pcm, options)
     ms = Time.monotonic_ms() - started
+    compiled = try compiles(backend) - compiled
     rtf = ms.to_f / 1000.0 / (pcm.size.to_f / 16000.0)
     gap = (got.language_probability - c.probability).abs
     if c.language != none
@@ -92,7 +96,7 @@ def run(args: List[String]) -> Result[Bool]
     same = got.tokens == c.tokens and got.text == c.text and got.language == c.detected and gap <= CLOSE
     same = same and spans == c.segments
     puts("case #{i} #{c.clip} #{c.language.unwrap_or("auto")} #{c.task} timestamps=#{c.timestamps}: #{verdict(same)}")
-    puts("  #{ms} ms, real-time factor #{rtf}")
+    puts("  #{ms} ms, real-time factor #{rtf}, #{compiled} graphs compiled")
     puts("  language #{got.language} p=#{got.language_probability} (Hugging Face #{c.detected} p=#{c.probability})")
     puts("  text #{got.text}")
     puts("  avg_logprob #{got.avg_logprob}, no_speech_prob #{got.no_speech_prob}")
@@ -115,6 +119,14 @@ def backend_of(name: String) -> Result[Tensor.Backend]
     "ggml" -> ok(Tensor.Backend.Ggml(Tensor.Device.Cpu))
     "vulkan" -> ok(Tensor.Backend.Ggml(Tensor.Device.Vulkan(0)))
     _ -> error("BACKEND is torch, reference, ggml or vulkan, got #{name}")
+  end
+end
+
+## The graphs ggml compiled so far in this process; 0 off ggml.
+def compiles(backend: Tensor.Backend) -> Result[Int]
+  case backend
+    Tensor.Backend.Ggml(_) -> Lower.compiles()
+    _ -> ok(0)
   end
 end
 
