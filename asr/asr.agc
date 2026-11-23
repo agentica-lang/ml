@@ -280,7 +280,7 @@ def attend(queries: Tensor.Tensor, heard: Heard) -> Result[Tensor.Tensor]
   scale = try Tensor.full(
     [n, width],
     Tensor.Values.Float(1.0 / Math.sqrt(width.to_f)),
-    Tensor.Dtype.F32,
+    Tensor.dtype(queries),
     Tensor.backend(queries),
   )
 

@@ -33,9 +33,11 @@ struct Segment
 end
 
 ## The rules for `tok`, with the token ids `suppress` and `begin_suppress`
-## from the config when it has them. Without them, the special tokens between
-## `sot` and `<|notimestamps|>` are suppressed, and the blank (`Ġ`) and `eot`
-## at the start, as OpenAI does.
+## from the config when it has them. Without `suppress`, only the special
+## tokens are suppressed (`sot` and those from `<|translate|>` to just before
+## `<|notimestamps|>`), not OpenAI's list of non-speech symbols, which needs
+## the encoder of the tokenizer. Without `begin_suppress`, the blank (`Ġ`) and
+## `eot` are not emitted first, as OpenAI does.
 def rules(
   tok: Tokenizer.Tokenizer,
   suppress: Optional[List[Int]],
@@ -85,9 +87,11 @@ def pick(logits: List[Float]) -> Int
 end
 
 ## The segments of the emitted tokens of one window of `duration` seconds: a
-## timestamp opens a segment and the next one closes it. Text with no closing
-## timestamp ends at `duration`; with no timestamps at all, the whole text is
-## one segment from 0. A segment with no text is left out.
+## timestamp opens a segment and the next one closes it. Text after an opening
+## timestamp with no closing one starts at that timestamp, as Hugging Face
+## does (OpenAI starts it at 0), and ends at `duration`; text before any
+## timestamp starts at 0, and with no timestamps at all the whole text is one
+## segment from 0. A segment with no text is left out.
 def segments(tok: Tokenizer.Tokenizer, emitted: List[Int], duration: Float) -> Result[List[Segment]]
   out: List[Segment] = []
   start: Optional[Float] = none

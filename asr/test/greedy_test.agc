@@ -86,5 +86,6 @@ def test_timestamps_give_segments() -> Result[Void]
 
   try Test.eq(try Greedy.segments(tok, [4, 6], 1.5), [Greedy.Segment(start: 0.0, stop: 1.5, text: "Hola mundo")])
   try Test.eq(try Greedy.segments(tok, [33, 4], 1.5), [Greedy.Segment(start: 0.02, stop: 1.5, text: "Hola")])
+  try Test.eq(try Greedy.segments(tok, [32, 4, 33], 1.5), [Greedy.Segment(start: 0.0, stop: 0.02, text: "Hola")])
   Test.eq(try Greedy.segments(tok, [], 1.5), [])
 end
