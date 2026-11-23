@@ -261,7 +261,8 @@ end
   without it), and that string is the key of a process-wide cache: a retrace
   of the same function with new data, constants or fill values compiles
   nothing. The cache holds 32 graphs and evicts the least recently used one
-  nobody runs.
+  nobody runs. A graph that will not run again (`eval_many` with `keep`
+  false) takes no slot and is dropped after its run.
 - **No copies in or out.** For one run only, an `F32` leaf points at the
   caller's tensor and an `F32` output at a fresh tensor the run writes; after
   the run the graph points at nothing again, so the cache keeps no caller

@@ -279,7 +279,7 @@ static struct entry *cached(int64_t device, ng_str key) {
   return e;
 }
 
-an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity) {
+an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity, bool keep) {
   an_term term;
   struct ggml_Lease_state *lease = ggml_Lease_new(env, &term);
   struct entry *e, *victim;
@@ -324,8 +324,9 @@ an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity) 
   e->in_use = true;
   pthread_mutex_lock(&cache_lock);
   e->used = ++tick;
-  i = free_slot(&victim);
-  if (i >= 0) cache[i] = e; /* every slot held: the graph lives for this lease only */
+  victim = NULL;
+  i = keep ? free_slot(&victim) : -1;
+  if (i >= 0) cache[i] = e; /* no slot: the graph lives for this lease only */
   pthread_mutex_unlock(&cache_lock);
   if (victim != NULL) destroy(victim);
   tg_unlock_device();
@@ -438,6 +439,26 @@ static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, i
 
   *guard = ggml_sum(p->ctx, ggml_add(p->ctx, below, above));
   return ggml_get_rows(p->ctx, table, ggml_cast(p->ctx, clamped, GGML_TYPE_I32));
+}
+
+/* Whether the args, of the output's rank (one less for a stack), match `ne`
+   off the ggml axis `dim` and their extents on it add up to `ne[dim]`. */
+static bool joins(const struct entry *p, const int64_t *args, int nargs, int rank, int dim, bool stacked,
+                  const int64_t ne[4]) {
+  int64_t total = 0;
+  int i, d;
+
+  for (i = 0; i < nargs; i++) {
+    const struct gnode *x = &p->nodes[args[i]];
+
+    if (x->rank != (stacked ? rank - 1 : rank)) return false;
+    for (d = 0; d < 4; d++) {
+      if (d == dim) continue;
+      if (stacked ? x->ne[d < dim ? d : d - 1] != ne[d] : x->ne[d] != ne[d]) return false;
+    }
+    total += stacked ? 1 : x->ne[dim];
+  }
+  return total == ne[dim];
 }
 
 /* The args joined along the ggml axis `dim` into `ne`; a stacked arg gains
@@ -682,10 +703,16 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
     case OP_GELU_ERF: t = ggml_gelu_erf(p->ctx, dense(p, a)); break;
     case OP_CONCAT:
       if (nints != 2 || ints[0] < 0 || ints[0] >= rank) return tg_error(env, "concat takes an axis and the stack flag");
+      if (!joins(p, args, nargs, rank, rank - 1 - (int)ints[0], ints[1] != 0, n->ne)) {
+        return tg_error(env, "concat: the args do not join into the recorded shape");
+      }
       t = concat(p, args, nargs, rank - 1 - (int)ints[0], ints[1] != 0, n->ne);
       break;
     case OP_CONV1D:
       if (nints != 2 || ints[0] < 1 || ints[1] < 0) return tg_error(env, "conv1d takes a stride >= 1 and a padding >= 0");
+      if ((a->rank != 2 && a->rank != 3) || b->rank != 3 || a->ne[1] != b->ne[1]) {
+        return tg_error(env, "conv1d takes an input [C, L] or [B, C, L] and a weight [O, C, K]");
+      }
       t = conv1d(p, a, b, (int)ints[0], (int)ints[1]);
       break;
   }

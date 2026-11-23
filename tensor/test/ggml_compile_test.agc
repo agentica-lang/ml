@@ -212,6 +212,23 @@ def test_an_mlp_and_its_gradients_match_the_reference_on_the_cpu() -> Result[Voi
   ce_parity(CPU)
 end
 
+## A graph evaluated with `keep` false takes no cache slot: the same graph
+## compiles again on the next call, and once kept it compiles no more.
+def test_a_graph_not_kept_compiles_on_every_call() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  x = try floats(uniform(21, 9, 1.0), [7, 3], CPU)
+  start = try Lower.compiles()
+  _ = try Trace.eval_many([x], &sigmoids, false)
+  _ = try Trace.eval_many([x], &sigmoids, false)
+  try Test.eq(try Lower.compiles(), start + 2)
+  _ = try Trace.eval_many([x], &sigmoids)
+  _ = try Trace.eval_many([x], &sigmoids)
+  Test.eq(try Lower.compiles(), start + 3)
+end
+
+def sigmoids(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]] = ok([try Tensor.sigmoid(xs[0])])
+
 def test_a_retrace_with_new_values_compiles_nothing() -> Result[Void]
   return ok() if !try present(CPU)
 

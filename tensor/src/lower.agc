@@ -71,12 +71,18 @@ struct Plan
 end
 
 ## Runs the traced tensors `outs` on `Ggml(device)` as one graph. `env` holds
-## the value of every input node, keyed by node id.
-def evaluate(outs: List[Types.Tensor], env: Map[Int, Types.Tensor], device: Types.Device) -> Result[List[Types.Tensor]]
+## the value of every input node, keyed by node id. With `keep` false a graph
+## compiled here takes no slot of the structural cache.
+def evaluate(
+  outs: List[Types.Tensor],
+  env: Map[Int, Types.Tensor],
+  device: Types.Device,
+  keep: Bool = true,
+) -> Result[List[Types.Tensor]]
   code = try Ggml.code_of(device, "evaluate")
   p = try plan(outs, env, Types.Backend.Ggml(device))
   Native.arena do
-    lease = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1)
+    lease = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1, keep)
     if !GgmlRaw.ready(lease)
       for l in p.nodes
         _ = try GgmlRaw.node(lease, l.op, l.args, l.shape, l.ints)

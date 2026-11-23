@@ -49,8 +49,9 @@ extern module "ggml"
   resource Lease
   ## A compiled graph cached under `key` on `device` that no one holds, or a
   ## new empty one with room for `capacity` nodes, to build with `node` and
-  ## `compile`.
-  compute def acquire(device: Int, key: String, capacity: Int) -> Result[Lease]
+  ## `compile`. A new graph with `keep` false takes no cache slot: it is
+  ## dropped when its lease is freed.
+  compute def acquire(device: Int, key: String, capacity: Int, keep: Bool) -> Result[Lease]
   ## True when the leased graph is compiled: a cache hit.
   compute def ready(lease: Lease) -> Bool
   ## Appends one node and answers its index: `op` is a code of

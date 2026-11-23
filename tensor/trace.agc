@@ -81,14 +81,16 @@ end
 ## node already known (the inputs), keyed by node id; the walk stops there.
 ## A backend that compiles (`Ggml`) runs the whole graph as one graph of its
 ## own and never calls `Tensor.*`; every other backend computes node by node
-## through the public API (§10.3).
+## through the public API (§10.3). With `keep` false, a graph `Ggml` compiles
+## for this call takes no slot of its cache (a graph used once).
 def evaluate(
   outs: List[Types.Tensor],
   env: Map[Int, Types.Tensor],
   backend: Types.Backend,
+  keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
   case backend
-    Types.Backend.Ggml(device) -> return Lower.evaluate(outs, env, device)
+    Types.Backend.Ggml(device) -> return Lower.evaluate(outs, env, device, keep)
     _ -> nil
   end
 
@@ -117,14 +119,16 @@ def eval(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor
 end
 
 ## Traces `f` over `args` and runs every tensor it answers in one evaluation
-## on their backend: on `Ggml`, one compiled graph.
+## on their backend: on `Ggml`, one compiled graph, kept in the cache unless
+## `keep` is false.
 def eval_many(
   args: List[Types.Tensor],
   f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]],
+  keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
   inputs = try inputs_for(args)
   outs = try f.call(inputs)
-  evaluate(outs, bind(inputs, args), args[0].backend)
+  evaluate(outs, bind(inputs, args), args[0].backend, keep)
 end
 
 ## The value of the scalar function `f` at `args` and its gradient for every

@@ -249,13 +249,12 @@ def listen(m: Model, audio: Tensor.Tensor) -> Result[Cache]
     return error("listen needs audio [1, frames, #{m.config.d_model}] from encode, got #{heard}")
   end
 
-  heads = try run(m, [audio], &split_heads)
+  # One graph per block keeps each under ggml's 256 outputs: 2 per head.
   cross: List[Heard] = []
-  at = 0
-  for block in m.decoder
-    n = block.cross_attention.heads
-    cross = cross.push(Heard(keys: heads.drop(at).take(n), values: heads.drop(at + n).take(n)))
-    at += 2 * n
+  for i in 0...m.decoder.size
+    heads = try run(m, [audio], ->(model: Model, xs: List[Tensor.Tensor]) { split_heads(model.decoder[i], xs[0]) })
+    n = m.decoder[i].cross_attention.heads
+    cross = cross.push(Heard(keys: heads.take(n), values: heads.drop(n)))
   end
 
   ok(Cache(cross: cross, own: [], length: 0))
@@ -279,7 +278,14 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
   values = ids.map { |i| Tensor.Values.Int(i) }
   if compiled(backend)
     at = try Tensor.from_list(values, [n], Tensor.Dtype.I32, backend)
-    got = Trace.eval_many([at], ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), traced_cache(cache), xs[0]) })
+    # The cache's length is in the graph's shape, so a step's graph is used
+    # once: it takes no slot of the graph cache, which keeps the encoder's.
+    got = Trace.eval_many(
+      [at],
+      ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), traced_cache(cache), xs[0]) },
+      false,
+    )
+
     close([at])
     outs = try got
     layers = m.decoder.size
@@ -508,29 +514,23 @@ def stem(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
   Nn.positional(m.encoder_positions, try Tensor.stack(items, 0))
 end
 
-## Per decoder block, the cross-attention keys of each head over the encoder
-## output `xs[0]` (transposed), then the values of each head.
-def split_heads(m: Model, xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
-  audio = xs[0]
+## The cross-attention keys of each head of `block` over the encoder output
+## `audio` (transposed), then the values of each head.
+def split_heads(block: Nn.DecoderBlock, audio: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
   frames = Tensor.shape(audio)[1]
-  d = m.config.d_model
-  out: List[Tensor.Tensor] = []
-  for block in m.decoder
-    a = block.cross_attention
-    k = try Tensor.reshape(try Nn.dense(a.key, audio), [frames, d])
-    v = try Tensor.reshape(try Nn.dense(a.value, audio), [frames, d])
-    width = d / a.heads
-    keys: List[Tensor.Tensor] = []
-    values: List[Tensor.Tensor] = []
-    for h in 0...a.heads
-      keys = keys.push(try Tensor.transpose(try Tensor.slice(k, [0, h * width], [frames, (h + 1) * width])))
-      values = values.push(try Tensor.slice(v, [0, h * width], [frames, (h + 1) * width]))
-    end
-
-    out = out + keys + values
+  d = Tensor.shape(audio)[2]
+  a = block.cross_attention
+  k = try Tensor.reshape(try Nn.dense(a.key, audio), [frames, d])
+  v = try Tensor.reshape(try Nn.dense(a.value, audio), [frames, d])
+  width = d / a.heads
+  keys: List[Tensor.Tensor] = []
+  values: List[Tensor.Tensor] = []
+  for h in 0...a.heads
+    keys = keys.push(try Tensor.transpose(try Tensor.slice(k, [0, h * width], [frames, (h + 1) * width])))
+    values = values.push(try Tensor.slice(v, [0, h * width], [frames, (h + 1) * width]))
   end
 
-  ok(out)
+  ok(keys + values)
 end
 
 ## The forward of the integer ids `ids` (`[n]`) after the tokens of `cache`.

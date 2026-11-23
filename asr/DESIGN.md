@@ -59,10 +59,13 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   output projection is a second, transposed copy of the vocab table.
 - **Reference, libtorch and ggml**: the model runs on all three. The tiny
   test model matches the peer within 1e-5 on libtorch and on ggml, which
-  compute in F32. On `Ggml` (the CPU or Vulkan) each encoder stage, `listen`
-  and each `step` is one compiled graph, with the model's tensors and the
-  cache as trace constants; the cache grows by a row each step, so each step
-  compiles a graph of its own. The token ids are I32, which ggml holds.
+  compute in F32. On `Ggml` (the CPU or Vulkan) each encoder stage, each
+  decoder block of `listen` (2 outputs per head, under ggml's 256) and each
+  `step` is one compiled graph, with the model's tensors and the cache as
+  trace constants. The cache grows by a row each step, so each step compiles
+  a graph of its own, used once: it takes no slot of the graph cache, which
+  keeps the encoder's and `listen`'s for the next call. The token ids are
+  I32, which ggml holds.
 
 ## The log-mel frontend (`mel.agc`)
 
