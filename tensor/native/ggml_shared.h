@@ -24,8 +24,15 @@ struct ggml_TensorHandle_state {
 void tg_lock_device(void);
 void tg_unlock_device(void);
 
-/* Runs `fn(arg)` under the device lock, at the next time anyone takes it. */
-void tg_defer(void (*fn)(void *), void *arg);
+/* A queued `fn(arg)`, embedded in what it frees so queuing needs no memory. */
+struct deferred {
+  void (*fn)(void *);
+  void *arg;
+  struct deferred *next;
+};
+
+/* Runs `d->fn(d->arg)` under the device lock, the next time anyone takes it. */
+void tg_defer(struct deferred *d);
 
 an_term tg_error(an_env *env, const char *message);
 

@@ -31,25 +31,10 @@ static pthread_mutex_t device_lock = PTHREAD_MUTEX_INITIALIZER;
 /* Frees that wait for the device lock. A free hook runs on the scheduler, so
    it must never wait for a graph to finish: it queues its work here, and the
    next holder of the device lock does it. */
-struct deferred {
-  void (*fn)(void *);
-  void *arg;
-  struct deferred *next;
-};
 static pthread_mutex_t deferred_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct deferred *deferred_head = NULL;
 
-void tg_defer(void (*fn)(void *), void *arg) {
-  struct deferred *d = (struct deferred *)malloc(sizeof *d);
-
-  if (d == NULL) { /* no memory to queue it: do it now and wait */
-    tg_lock_device();
-    fn(arg);
-    tg_unlock_device();
-    return;
-  }
-  d->fn = fn;
-  d->arg = arg;
+void tg_defer(struct deferred *d) {
   pthread_mutex_lock(&deferred_lock);
   d->next = deferred_head;
   deferred_head = d;
@@ -65,16 +50,17 @@ void tg_lock_device(void) {
   deferred_head = NULL;
   pthread_mutex_unlock(&deferred_lock);
   for (; d != NULL; d = next) {
-    next = d->next;
+    next = d->next; /* `fn` may free the node itself */
     d->fn(d->arg);
-    free(d);
   }
 }
 
 void tg_unlock_device(void) { pthread_mutex_unlock(&device_lock); }
 
-/* A CPU buffer is plain memory: only Vulkan buffer operations take the lock,
-   so CPU tensors move while a graph runs. */
+/* A CPU buffer is plain memory: Vulkan buffer operations take the lock, CPU
+   uploads and readbacks do not, so CPU tensors move while a graph runs. Making
+   a tensor (`tg_new_tensor`) waits for the lock even on the CPU, to look the
+   device up. */
 static void lock_for(bool vulkan) {
   if (vulkan) tg_lock_device();
 }
@@ -85,6 +71,7 @@ static void unlock_for(bool vulkan) {
 
 /* What a freed tensor handle leaves behind. */
 struct remains {
+  struct deferred link;
   ggml_backend_buffer_t buffer;
   struct ggml_context *ctx;
 };
@@ -104,6 +91,7 @@ static void ggml_TensorHandle_free(void *state) {
   if (self->buffer != NULL || self->ctx != NULL) {
     r = (struct remains *)malloc(sizeof *r);
     if (r == NULL) {
+      /* no memory to queue the free: do it now, waiting for the lock */
       tg_lock_device();
       if (self->buffer != NULL) ggml_backend_buffer_free(self->buffer);
       if (self->ctx != NULL) ggml_free(self->ctx);
@@ -111,7 +99,9 @@ static void ggml_TensorHandle_free(void *state) {
     } else {
       r->buffer = self->buffer;
       r->ctx = self->ctx;
-      tg_defer(free_remains, r);
+      r->link.fn = free_remains;
+      r->link.arg = r;
+      tg_defer(&r->link);
     }
   }
   memset(self, 0, sizeof *self);

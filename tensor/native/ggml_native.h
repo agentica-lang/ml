@@ -155,8 +155,9 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs);
 
 /* Makes `t` the leaf `slot` for the next run (leaves count in the order
-   they were sent): an F32 tensor is read in place, another one is
-   converted into the leaf's own memory now. */
+   they were sent): an F32 tensor is read in place, so the caller keeps
+   `t` alive until `run` returns; another one is converted into the
+   leaf's own memory now. */
 an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, struct ggml_TensorHandle_state *t);
 
 /* A fresh tensor that the next run writes output `output` into, stored as

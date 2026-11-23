@@ -3,12 +3,12 @@
 ## (`tensor/DESIGN.md` §2, §7, §8). It lives inside `tensor/` for the reason
 ## `src/torch.agc` does: `Handle.Ggml` names the resource of `ggml_native.agc`.
 ##
-## It creates tensors, uploads them and reads them back; it runs no op.
-## ggml is fast when a whole step is one compiled graph (a Vulkan dispatch
-## costs about 2 ms, spike/ggml-graph/README.md), so its ops will run there,
-## from a traced graph (`Trace`). Until that compiler exists every other
-## primitive answers `compiled_only(op)`: an error naming the op, never a
-## wrong number and never a slow op-by-op path (§7).
+## It creates tensors, uploads them and reads them back. ggml is fast when a
+## whole computation is one compiled graph (a Vulkan dispatch costs about
+## 2 ms, spike/ggml-graph/README.md), so ops run only there, from a traced
+## graph (`Trace`, `src/lower.agc`). Eagerly, every other primitive answers
+## `compiled_only(op)`: an error naming the op, never a wrong number and
+## never a slow op-by-op path (§7).
 ##
 ## Storage: ggml holds `F32` and `I32`. `Bool`, `I8`, `I16` and `U8` are held
 ## as `F32`, which represents each of their values exactly; `F16`, `F64` and
@@ -32,8 +32,8 @@ end
 ## The answer of every primitive the ggml backend has no eager form of.
 def compiled_only(op: String) -> Result[Types.Tensor]
   error(
-    "#{op} does not run eagerly on the ggml backend: ggml computes whole traced graphs (Trace), " +
-    "which tensor/ does not compile yet (tensor/DESIGN.md §7)",
+    "#{op} does not run eagerly on the ggml backend: ggml computes whole traced graphs " +
+    "(Trace.eval, Trace.value_and_grad; tensor/DESIGN.md §7)",
   )
 end
 
