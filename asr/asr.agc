@@ -2,8 +2,8 @@
 ## `hub/`, loaded from a Hugging Face checkpoint (`asr/DESIGN.md`).
 ##
 ## `encode` turns a log-mel batch into the encoder output; `decode` turns
-## token ids and that output into logits. Inference only: no frontend, no
-## tokenizer, no decoding loop.
+## token ids and that output into logits. Inference only; the log-mel frontend
+## is `mel.agc`. No tokenizer and no decoding loop yet.
 
 import Hub from "pkg/hub/hub"
 import Load from "pkg/hub/load"
