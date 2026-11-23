@@ -41,7 +41,7 @@ end
 - `Asr.transcribe(model, tok, pcm, options)` runs the whole pipeline on one clip and gives a `Result` of `Transcript`.
 - `Tokenizer.open(path)` reads a `tokenizer.json`.
 - `Asr.encode(model, mel)` and `Asr.decode(model, tokens, audio)` are the model's forward passes (one run of the network), for callers who want the parts.
-- `Asr.listen`, `Asr.step`, `Asr.step_pick` and the `Cache` they use decode one token at a time. The cache is a KV cache: it keeps the past keys and values, so earlier tokens are not computed again. `Asr.step` gives the logits of the last token; `Asr.step_pick(model, cache, ids, mask)` adds `mask` to them (0 for an id that may be emitted, a very negative number for one that may not) and gives the first largest id and its log-probability as a `Picked`; with `stamps` (an `Asr.Stamps`) it applies Whisper's timestamp rules in the graph too.
+- `Asr.listen`, `Asr.step`, `Asr.step_pick` and the `Cache` they use decode one token at a time. The cache is a KV cache: it keeps the past keys and values, so earlier tokens are not computed again. `Asr.step` gives the logits of the last token; `Asr.step_pick(model, cache, ids, mask)` adds `mask` to them (0 for an id that may be emitted, a very negative number for one that may not) and gives the first largest id and its log-probability as a `Picked`; with `stamps`, an `Asr.Stamps(rules, state)`, it applies Whisper's timestamp rules in the graph too: `rules` are the `Greedy.Rules`, and `state` is `Greedy.state(rules, emitted)` as an F32 tensor of 4 on the model's backend, made for each step and closed by the caller.
 
 `Asr.Options` has these fields:
 

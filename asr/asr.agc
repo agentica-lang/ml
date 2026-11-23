@@ -129,8 +129,7 @@ struct Picked
 end
 
 ## The timestamp rules of a `step_pick`: `rules`, and `state`, `Greedy.state` of the tokens emitted so far as an
-## `F32` tensor of 4 on the step's backend, which the caller closes. The rules of one cache must not change between its
-## steps.
+## `F32` tensor of 4 on the step's backend, which the caller closes.
 struct Stamps
   rules: Greedy.Rules
   state: Tensor.Tensor
@@ -277,14 +276,14 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
     h = fresh
   end
 
-  audio = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.layer_norm(model.encoder_norm, x) })
+  normed = staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.layer_norm(model.encoder_norm, x) })
   close([h])
   case blocks
     some(b) -> Trace.close(b)
     none -> nil
   end
 
-  ok(audio)
+  normed
 end
 
 ## The logits `[batch, t, vocab_size]` of the integer token ids `[batch, t]`
@@ -388,6 +387,20 @@ def step_pick(
     return error("step_pick needs an F32 mask of #{want}, got #{Tensor.shape(mask)}")
   end
 
+  case stamps
+    some(st) ->
+      if (
+        Tensor.shape(st.state) != [4] or
+        Tensor.dtype(st.state) != Tensor.Dtype.F32 or
+        Tensor.backend(st.state) != backend
+      )
+        close(spare)
+        return error("step_pick needs an F32 state of [4] on the model's backend, got #{Tensor.shape(st.state)}")
+      end
+
+    none -> nil
+  end
+
   if compiled(backend)
     a = try advance(m, cache, ids, some(mask), spare, stamps)
     read = System.Profile.measure("ml.readback") do floats(a.first) end
@@ -458,6 +471,71 @@ def transcribe(
   # closes what it opened, the encoder output and the cache included.
   call = Task.spawn do decoded(m, tok, pcm, options, frames) end
   Task.await(call)
+end
+
+## The scores a step picks from: `logits` with `mask` added, and with `stamps` Whisper's timestamp rules as
+## `Greedy.allowed` applies them, built from `Greedy.state`'s four numbers: the timestamps below the first one that may
+## come, all of them, the text tokens before `eot`, and (for the first token) the text tokens and the timestamps after
+## `max_initial` are forbidden; and when the timestamps together are likelier than the best text token, no text token
+## may come. A forbidden id adds `FORBIDDEN`, so the score is never above what the host's `FORBIDDEN` replaces.
+def scored(logits: Tensor.Tensor, mask: Tensor.Tensor, stamps: Optional[Stamps]) -> Result[Tensor.Tensor]
+  v = Tensor.shape(mask)[0]
+  x = try Tensor.add(try Tensor.reshape(logits, [v]), mask)
+  case stamps
+    none -> ok(x)
+    some(st) ->
+      r = st.rules
+      dtype = Tensor.dtype(logits)
+      backend = Tensor.backend(logits)
+      ids = try Tensor.to_dtype(try Tensor.arange(0, v, 1, Tensor.Dtype.I32, backend), dtype)
+      one = try Tensor.full([v], Tensor.Values.Float(1.0), dtype, backend)
+      zero = try Tensor.full([v], Tensor.Values.Float(0.0), dtype, backend)
+      text = try below(ids, r.timestamp_begin)
+      stamp = try Tensor.sub(one, text)
+      early = try Tensor.to_dtype(try Tensor.lt(ids, try state_at(st.state, 0, v)), dtype)
+      late = try Tensor.sub(one, try below(ids, r.timestamp_begin + r.max_initial + 1))
+      banned = try Tensor.add(
+        try Tensor.add(try Tensor.mul(stamp, early), try Tensor.mul(stamp, try state_at(st.state, 1, v))),
+        try Tensor.add(
+          try Tensor.mul(try state_at(st.state, 2, v), try below(ids, r.eot)),
+          try Tensor.mul(try state_at(st.state, 3, v), try Tensor.add(text, late)),
+        ),
+      )
+
+      forbidden = try Tensor.full([v], Tensor.Values.Float(Greedy.FORBIDDEN), dtype, backend)
+      x = try Tensor.add(x, try Tensor.mul(try Tensor.to_dtype(try Tensor.lt(zero, banned), dtype), forbidden))
+      begin = r.timestamp_begin
+      spoken = try Tensor.slice(x, [0], [begin])
+      stamps_x = try Tensor.slice(x, [begin], [v])
+      top = try Tensor.max(stamps_x, some([0]), true)
+      sum = try Tensor.sum(
+        try Tensor.exp(try Tensor.sub(stamps_x, try Tensor.broadcast_to(top, [v - begin]))),
+        some([0]),
+        true,
+      )
+
+      together = try Tensor.add(top, try Tensor.log(sum))
+      likelier = try Tensor.to_dtype(try Tensor.lt(try Tensor.max(spoken, some([0]), true), together), dtype)
+      cut = try Tensor.mul(try Tensor.mul(try Tensor.broadcast_to(likelier, [v]), text), forbidden)
+      Tensor.add(x, cut)
+  end
+end
+
+## The id and the log-probability of the likeliest token of `scores`, as `[2]` floats (the id is exact in F32 below
+## 2^24): the first id of the maximum, found as `v` minus the largest of `v - id` over the ids that hold it, and
+## `log(sum(exp(x - max)))` for the log-probability of the maximum, which is its negative.
+def picked(scores: Tensor.Tensor) -> Result[Tensor.Tensor]
+  v = Tensor.shape(scores)[0]
+  dtype = Tensor.dtype(scores)
+  backend = Tensor.backend(scores)
+  top = try Tensor.broadcast_to(try Tensor.max(scores, some([0]), true), [v])
+  hit = try Tensor.to_dtype(try Tensor.eq(scores, top), dtype)
+  ids = try Tensor.to_dtype(try Tensor.arange(0, v, 1, Tensor.Dtype.I32, backend), dtype)
+  count = try Tensor.full([v], Tensor.Values.Float(v.to_f), dtype, backend)
+  best = try Tensor.max(try Tensor.mul(hit, try Tensor.sub(count, ids)), some([0]), true)
+  id = try Tensor.sub(try Tensor.full([1], Tensor.Values.Float(v.to_f), dtype, backend), best)
+  total = try Tensor.sum(try Tensor.exp(try Tensor.sub(scores, top)), some([0]), true)
+  Tensor.concat([id, try Tensor.neg(try Tensor.log(total))], 0)
 end
 
 private
@@ -1051,8 +1129,11 @@ def advance(
     end
 
     got = Trace.run(graphs[key], fed + step_inputs(cache), into)
-    if reuse and !got.ok?
-      close(spare)
+    if !got.ok?
+      Trace.close(graphs[key])
+      if reuse
+        close(spare)
+      end
     end
   else
     got = Trace.eval_many(
@@ -1086,54 +1167,6 @@ def stamped(rules: Optional[Greedy.Rules]) -> String
   end
 end
 
-## The scores a step picks from: `logits` with `mask` added, and with `stamps` Whisper's timestamp rules as
-## `Greedy.allowed` applies them, built from `Greedy.state`'s four numbers: the timestamps below the first one that may
-## come, all of them, the text tokens before `eot`, and (for the first token) the text tokens and the timestamps after
-## `max_initial` are forbidden; and when the timestamps together are likelier than the best text token, no text token
-## may come. A forbidden id adds `FORBIDDEN`, so the score is never above what the host's `FORBIDDEN` replaces.
-def scored(logits: Tensor.Tensor, mask: Tensor.Tensor, stamps: Optional[Stamps]) -> Result[Tensor.Tensor]
-  v = Tensor.shape(mask)[0]
-  x = try Tensor.add(try Tensor.reshape(logits, [v]), mask)
-  case stamps
-    none -> ok(x)
-    some(st) ->
-      r = st.rules
-      dtype = Tensor.dtype(logits)
-      backend = Tensor.backend(logits)
-      ids = try Tensor.to_dtype(try Tensor.arange(0, v, 1, Tensor.Dtype.I32, backend), dtype)
-      one = try Tensor.full([v], Tensor.Values.Float(1.0), dtype, backend)
-      zero = try Tensor.full([v], Tensor.Values.Float(0.0), dtype, backend)
-      text = try below(ids, r.timestamp_begin)
-      stamp = try Tensor.sub(one, text)
-      early = try Tensor.to_dtype(try Tensor.lt(ids, try state_at(st.state, 0, v)), dtype)
-      late = try Tensor.sub(one, try below(ids, r.timestamp_begin + r.max_initial + 1))
-      banned = try Tensor.add(
-        try Tensor.add(try Tensor.mul(stamp, early), try Tensor.mul(stamp, try state_at(st.state, 1, v))),
-        try Tensor.add(
-          try Tensor.mul(try state_at(st.state, 2, v), try below(ids, r.eot)),
-          try Tensor.mul(try state_at(st.state, 3, v), try Tensor.add(text, late)),
-        ),
-      )
-
-      forbidden = try Tensor.full([v], Tensor.Values.Float(Greedy.FORBIDDEN), dtype, backend)
-      x = try Tensor.add(x, try Tensor.mul(try Tensor.to_dtype(try Tensor.lt(zero, banned), dtype), forbidden))
-      begin = r.timestamp_begin
-      spoken = try Tensor.slice(x, [0], [begin])
-      stamps_x = try Tensor.slice(x, [begin], [v])
-      top = try Tensor.max(stamps_x, some([0]), true)
-      sum = try Tensor.sum(
-        try Tensor.exp(try Tensor.sub(stamps_x, try Tensor.broadcast_to(top, [v - begin]))),
-        some([0]),
-        true,
-      )
-
-      together = try Tensor.add(top, try Tensor.log(sum))
-      likelier = try Tensor.to_dtype(try Tensor.lt(try Tensor.max(spoken, some([0]), true), together), dtype)
-      cut = try Tensor.mul(try Tensor.mul(try Tensor.broadcast_to(likelier, [v]), text), forbidden)
-      Tensor.add(x, cut)
-  end
-end
-
 ## 1 where `ids` is below `n`, 0 elsewhere.
 def below(ids: Tensor.Tensor, n: Int) -> Result[Tensor.Tensor]
   at = try Tensor.full(Tensor.shape(ids), Tensor.Values.Float(n.to_f), Tensor.dtype(ids), Tensor.backend(ids))
@@ -1143,23 +1176,6 @@ end
 ## Number `k` of `state`, repeated `v` times.
 def state_at(state: Tensor.Tensor, k: Int, v: Int) -> Result[Tensor.Tensor]
   Tensor.broadcast_to(try Tensor.slice(state, [k], [k + 1]), [v])
-end
-
-## The id and the log-probability of the likeliest token of `scores`, as `[2]` floats (the id is exact in F32 below
-## 2^24): the first id of the maximum, found as `v` minus the largest of `v - id` over the ids that hold it, and
-## `log(sum(exp(x - max)))` for the log-probability of the maximum, which is its negative.
-def picked(scores: Tensor.Tensor) -> Result[Tensor.Tensor]
-  v = Tensor.shape(scores)[0]
-  dtype = Tensor.dtype(scores)
-  backend = Tensor.backend(scores)
-  top = try Tensor.broadcast_to(try Tensor.max(scores, some([0]), true), [v])
-  hit = try Tensor.to_dtype(try Tensor.eq(scores, top), dtype)
-  ids = try Tensor.to_dtype(try Tensor.arange(0, v, 1, Tensor.Dtype.I32, backend), dtype)
-  count = try Tensor.full([v], Tensor.Values.Float(v.to_f), dtype, backend)
-  best = try Tensor.max(try Tensor.mul(hit, try Tensor.sub(count, ids)), some([0]), true)
-  id = try Tensor.sub(try Tensor.full([1], Tensor.Values.Float(v.to_f), dtype, backend), best)
-  total = try Tensor.sum(try Tensor.exp(try Tensor.sub(scores, top)), some([0]), true)
-  Tensor.concat([id, try Tensor.neg(try Tensor.log(total))], 0)
 end
 
 ## The tensors of `c` a compiled step takes after the ids and the positions:

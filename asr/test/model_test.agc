@@ -9,6 +9,7 @@ import Lower from "pkg/tensor/src/lower"
 import Mel from "../mel"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "../tokenizer"
+import Trace from "pkg/tensor/trace"
 
 REF = Tensor.Backend.Reference
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
@@ -23,6 +24,18 @@ REL = 0.000000001
 F32 = 0.00001
 
 private
+
+## A vocabulary of 16: text 0..4, `eot` 5, specials 6..9 (`<|notimestamps|>` is 9, 7 is suppressed), timestamps 10..15,
+## the first one at most 12; 3 and `eot` do not come first.
+RULES = Greedy.Rules(
+  suppress: [7],
+  begin_suppress: [3, 5],
+  eot: 5,
+  no_timestamps: 9,
+  timestamp_begin: 10,
+  timestamps: true,
+  max_initial: 2,
+)
 
 def test_the_tiny_whisper_matches_the_peer() -> Result[Void]
   with_fixtures do |dir|
@@ -273,8 +286,83 @@ def test_a_spare_cache_is_reused_at_the_same_capacity_and_closed_at_a_new_one() 
   end
 end
 
-## The timestamp rules run in the graph: after every kind of history (nothing, a lone timestamp, a pair, text then a
-## timestamp, a timestamp then text, a pair then text) `step_pick` with `Asr.Stamps` gives the id and the log-probability
+## The timestamp rules in the graph, branch by branch, over logits made by hand (`Asr.scored`, then `Asr.picked`): each
+## case gives the id and the log-probability that `Greedy.allowed` gives, and where `differs` the largest logit is another
+## id, so the branch decides the pick.
+def test_the_graph_applies_each_timestamp_rule() -> Result[Void]
+  base = List.repeat(-5.0, 16)
+  opening: List[Int] = []
+  for backend in [REF] + try ggml_backends()
+    # the first token: no text, no timestamp after the first second
+    try ruled(backend, opening, base.set(2, 9.0).set(11, 1.0), true, "first, no text")
+    try ruled(backend, opening, base.set(14, 9.0).set(11, 1.0), true, "first, the initial maximum")
+    # a lone timestamp: no timestamp may follow
+    try ruled(backend, [10], base.set(12, 9.0).set(2, 1.0), true, "a lone timestamp")
+    # a timestamp after text opens a pair: no text before `eot`, `eot` or a timestamp from the same time on
+    try ruled(backend, [1, 10], base.set(2, 9.0).set(5, 4.0), true, "a pair opened, no text")
+    try ruled(backend, [2, 12], base.set(11, 9.0).set(12, 5.0).set(5, 4.0), true, "a pair closes on the same time")
+    # a pair closed: the next one starts later
+    try ruled(backend, [1, 12, 2], base.set(11, 9.0).set(13, 2.0).set(2, 1.0), true, "a new pair starts later")
+    # the timestamps together against the best text token
+    together = (
+      base.set(2, 3.0)
+        .set(9, 9.0)
+        .set(10, 2.5)
+        .set(11, 2.5)
+        .set(12, 2.5)
+        .set(13, 2.5)
+        .set(14, 2.5)
+        .set(15, 2.5)
+    )
+
+    try ruled(backend, [2], together, true, "timestamps likelier together than the best text")
+    try ruled(backend, [2], together.set(2, 5.0).set(9, -5.0), false, "text likelier than the timestamps together")
+  end
+
+  ok()
+end
+
+## The model's step with the same rules on its own logits: `step_pick` with `Asr.Stamps` after ten histories gives the
+## id and log-probability of `Greedy.allowed` over the logits of `step`, on the reference and on ggml.
+def test_step_pick_with_stamps_agrees_with_the_host_rules_over_the_logits() -> Result[Void]
+  with_fixtures do |dir|
+    rules = Greedy.Rules(
+      suppress: [0],
+      begin_suppress: [3, 1],
+      eot: 3,
+      no_timestamps: 4,
+      timestamp_begin: 5,
+      timestamps: true,
+      max_initial: 2,
+    )
+
+    nothing: List[Int] = []
+    histories = [nothing, [5], [6, 7], [1, 5], [5, 1], [1, 5, 6], [5, 6, 2], [1, 2], [6, 6, 2, 7], [9]]
+    for backend in [REF] + try ggml_backends()
+      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      audio = try Asr.encode(m, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
+      cache = try Asr.listen(m, audio)
+      start = try Asr.step(m, cache, [5, 6, 4])
+      for i in 0...histories.size
+        history = histories[i]
+        feed = [(i + 4) % 7]
+        plain = try Asr.step(m, start.cache, feed)
+        first = try masked(Greedy.mask(rules, m.config.vocab_size, history.empty?), backend)
+        state = try masked(Greedy.state(rules, history), backend)
+        got = try Asr.step_pick(m, start.cache, feed, first, [], some(Asr.Stamps(rules: rules, state: state)))
+        try agrees(
+          got.id,
+          got.logprob,
+          Greedy.allowed(rules, plain.logits, history),
+          "history #{history} on #{backend}",
+        )
+      end
+    end
+
+    ok()
+  end
+end
+
 ## that `Greedy.allowed` gives over the logits of `step`.
 def test_step_pick_applies_the_timestamp_rules_in_the_graph() -> Result[Void]
   with_fixtures do |dir|
@@ -313,6 +401,34 @@ def test_step_pick_applies_the_timestamp_rules_in_the_graph() -> Result[Void]
 
     ok()
   end
+end
+
+## The pick of the graph over `logits` after `history`, against `Greedy.allowed`; when `differs`, also another id than the
+## largest logit.
+def ruled(
+  backend: Tensor.Backend,
+  history: List[Int],
+  logits: List[Float],
+  differs: Bool,
+  what: String,
+) -> Result[Void]
+  size = logits.size
+  mask = try masked(Greedy.mask(RULES, size, history.empty?), backend)
+  state = try masked(Greedy.state(RULES, history), backend)
+  out = try Trace.eval_many(
+    [try f32(logits, [1, size], backend), mask, state],
+    ->(xs: List[Tensor.Tensor]) {
+      ok([try Asr.picked(try Asr.scored(xs[0], xs[1], some(Asr.Stamps(rules: RULES, state: xs[2]))))])
+    },
+  )
+
+  pair = try floats_of(out[0])
+  try agrees(try pair[0].to_i, pair[1], Greedy.allowed(RULES, logits, history), "#{what} on #{backend}")
+  if differs
+    try Test.assert(try pair[0].to_i != Greedy.pick(logits), "#{what}: the rules did not change the pick")
+  end
+
+  ok()
 end
 
 def masked(values: List[Float], backend: Tensor.Backend) -> Result[Tensor.Tensor] = f32(values, [values.size], backend)

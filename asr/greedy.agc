@@ -91,24 +91,14 @@ def mask(r: Rules, size: Int, first: Bool) -> List[Float]
   forbid(out, [r.no_timestamps])
 end
 
-## What the timestamp rules read of the tokens `emitted` so far, as four floats a graph can take
-## (`Asr.picked`): the first id of a timestamp that may still come (`timestamp_begin` when any may), 1 when no
-## timestamp may come (the last two tokens are timestamps), 1 when no text token
-## may come (the last one is a timestamp that opens a pair), and 1 for the first token.
+## What the timestamp rules read of the tokens `emitted` so far, as four floats a graph can take (`Asr.scored`):
+## - the first id of a timestamp that may still come (`timestamp_begin` when any may);
+## - 1 when no timestamp may come: the last token is a timestamp and so is the one before it, or it is the only token;
+## - 1 when no text token below `eot` may come (`eot` itself may): the last token is a timestamp that opens a pair;
+## - 1 for the first token.
 def state(r: Rules, emitted: List[Int]) -> List[Float]
-  n = emitted.size
-  last = n >= 1 and emitted[n - 1] >= r.timestamp_begin
-  penultimate = n < 2 or emitted[n - 2] >= r.timestamp_begin
-  floor = r.timestamp_begin
-  stamps = emitted.select { |id| id >= r.timestamp_begin }
-  if not stamps.empty?
-    floor = stamps.last
-    if not last or penultimate
-      floor += 1
-    end
-  end
-
-  [floor.to_f, flag(last and penultimate), flag(last and not penultimate), flag(n == 0)]
+  t = tail(r, emitted)
+  [t.floor.to_f, flag(t.last and t.penultimate), flag(t.last and not t.penultimate), flag(emitted.empty?)]
 end
 
 ## The id of the largest logit; the first one on a tie.
@@ -168,6 +158,14 @@ private
 ## OpenAI's `max_initial_timestamp` of 1 s.
 MAX_INITIAL = 50
 
+## What the timestamp rules read of the end of `emitted`: whether the last token is a timestamp, whether the one
+## before it is (or there is none), and the first timestamp that may come.
+struct Tail
+  last: Bool
+  penultimate: Bool
+  floor: Int
+end
+
 ## OpenAI's `ApplyTimestampRules`: timestamps come in pairs (except right
 ## before `eot`), never decrease, the first one is at most `max_initial`, and
 ## when the timestamps together are likelier than the best text token, a
@@ -175,25 +173,14 @@ MAX_INITIAL = 50
 def timestamp_rules(r: Rules, logits: List[Float], emitted: List[Int]) -> List[Float]
   out = logits.set(r.no_timestamps, FORBIDDEN)
   n = emitted.size
-  last = n >= 1 and emitted[n - 1] >= r.timestamp_begin
-  penultimate = n < 2 or emitted[n - 2] >= r.timestamp_begin
-  if last and penultimate
+  t = tail(r, emitted)
+  if t.last and t.penultimate
     out = forbid_range(out, r.timestamp_begin, out.size)
-  elsif last
+  elsif t.last
     out = forbid_range(out, 0, r.eot)
   end
 
-  stamps = emitted.select { |id| id >= r.timestamp_begin }
-  if not stamps.empty?
-    # A pair may close on the same time it opened; a new one starts later.
-    floor = stamps.last
-    if not last or penultimate
-      floor += 1
-    end
-
-    out = forbid_range(out, r.timestamp_begin, floor)
-  end
-
+  out = forbid_range(out, r.timestamp_begin, t.floor)
   if n == 0
     out = forbid_range(out, 0, r.timestamp_begin)
     out = forbid_range(out, r.timestamp_begin + r.max_initial + 1, out.size)
@@ -202,6 +189,23 @@ def timestamp_rules(r: Rules, logits: List[Float], emitted: List[Int]) -> List[F
   text = out.take(r.timestamp_begin).max.unwrap_or(FORBIDDEN)
   return forbid_range(out, 0, r.timestamp_begin) if log_sum_exp(out.drop(r.timestamp_begin)) > text
   out
+end
+
+## A pair may close on the same time it opened; a new one starts later.
+def tail(r: Rules, emitted: List[Int]) -> Tail
+  n = emitted.size
+  last = n >= 1 and emitted[n - 1] >= r.timestamp_begin
+  penultimate = n < 2 or emitted[n - 2] >= r.timestamp_begin
+  floor = r.timestamp_begin
+  stamps = emitted.select { |id| id >= r.timestamp_begin }
+  if not stamps.empty?
+    floor = stamps.last
+    if not last or penultimate
+      floor += 1
+    end
+  end
+
+  Tail(last: last, penultimate: penultimate, floor: floor)
 end
 
 ## `log(sum(exp(xs)))`, shifted by the maximum.

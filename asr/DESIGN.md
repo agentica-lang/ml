@@ -196,14 +196,17 @@ against the tokenizer before the audio costs anything.
   first token, the suppressed ids always, `<|notimestamps|>` with timestamps),
   and only an id and a log-probability come back. The timestamp rules depend
   on the tokens so far, so `Greedy.state` turns them into four numbers per
-  step (the first timestamp that may still come, no timestamp may come, no
-  text may come, first token) that `Asr.scored` reads in the graph, with the
-  rule that no text token may come when the timestamps together are likelier
-  than the best one (a log-sum-exp over the timestamp range against the
-  maximum over the text). `Greedy.allowed` stays the reference: a test checks
-  the graph against it after each kind of history. The step after
-  `<|startoftranscript|>` always reads its logits, for `no_speech_prob` and
-  the language.
+  step: the first timestamp that may still come; 1 when no timestamp may come
+  (the last two tokens are timestamps, or the only one is); 1 when no text
+  token below `eot` may come (a timestamp opened a pair; `eot` may); 1 for
+  the first token. `Asr.scored` reads them in the graph, with the rule that
+  no text token may come when the timestamps together are likelier than the
+  best text token (a log-sum-exp over the timestamp range against the
+  maximum over the text). `Greedy.allowed` stays the reference. The tests
+  check the graph against it on hand-made logits, one case per rule, where
+  each rule changes the pick from the largest logit, and `step_pick` over ten
+  histories of the tiny model. The step after `<|startoftranscript|>` always
+  reads its logits, for `no_speech_prob` and the language.
 - **The first step** feeds `<|startoftranscript|>` alone. `no_speech_prob` is
   the softmax of its logits at `<|nospeech|>` (`<|nocaptions|>` in the first
   checkpoints), as OpenAI's. Without `Options.language` it also detects the
