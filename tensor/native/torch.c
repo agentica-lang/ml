@@ -346,6 +346,21 @@ an_term torch_create(an_env *env, torch_list_Int shape, torch_list_Float data, i
   }
 }
 
+an_term torch_fill(an_env *env, torch_list_Int shape, double value, int64_t dtype) {
+  std::vector<int64_t> dims;
+  torch::ScalarType scalar;
+  an_term failure;
+
+  if (!read_shape(env, shape, &dims, &failure)) return failure;
+  if (!scalar_type_of(dtype, &scalar)) return error_text(env, "unknown dtype code " + std::to_string(dtype));
+
+  try {
+    return ok_tensor(env, torch::full(dims, value, torch::TensorOptions().dtype(scalar)));
+  } catch (...) {
+    return failed(env, "fill");
+  }
+}
+
 an_term torch_load(an_env *env, ng_str path, int64_t offset, torch_list_Int shape, int64_t format) {
   std::vector<int64_t> dims;
   an_term failure;

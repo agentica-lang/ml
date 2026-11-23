@@ -44,6 +44,11 @@ extern module "torch"
   ## (`TorchDtypes.code`). The values cross as doubles; an integer dtype must hold
   ## integral values in range, which the callers of `create` check first.
   compute def create(shape: List[Int], data: List[Float], dtype: Int) -> Result[TensorHandle]
+  ## A tensor of `shape` whose every element is `value`, in the dtype `dtype`
+  ## names (`TorchDtypes.code`). No list crosses, so the element count is not
+  ## capped by one. An integer dtype must get an integral `value` in range,
+  ## which the callers of `fill` check first.
+  compute def fill(shape: List[Int], value: Float, dtype: Int) -> Result[TensorHandle]
   ## An `F32` tensor of `shape` from the little-endian floats of `format` (a
   ## code of `Types.file_code`) that start at byte `offset` of the file `path`.
   ## C reads the file into the tensor's own memory, so no value crosses as a

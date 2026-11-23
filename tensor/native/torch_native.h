@@ -97,6 +97,12 @@ an_term torch_result_list_Float_ok(an_env *env, an_term value);
    integral values in range, which the callers of `create` check first. */
 an_term torch_create(an_env *env, torch_list_Int shape, torch_list_Float data, int64_t dtype);
 
+/* A tensor of `shape` whose every element is `value`, in the dtype `dtype`
+   names (`TorchDtypes.code`). No list crosses, so the element count is not
+   capped by one. An integer dtype must get an integral `value` in range,
+   which the callers of `fill` check first. */
+an_term torch_fill(an_env *env, torch_list_Int shape, double value, int64_t dtype);
+
 /* An `F32` tensor of `shape` from the little-endian floats of `format` (a
    code of `Types.file_code`) that start at byte `offset` of the file `path`.
    C reads the file into the tensor's own memory, so no value crosses as a
@@ -437,6 +443,20 @@ static an_term torch_native_create(an_env *env, int argc, const an_term *argv) {
   int64_t a2;
   if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
   return torch_create(env, a0, a1, a2);
+}
+
+static an_term torch_native_fill(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  torch_list_Int a0;
+  if (!torch_native_open_list_Int(env, argv[0], &a0, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 0);
+  a0.argument = 1;
+  double a1;
+  if (!an_get_float(env, argv[1], &a1)) return an_badarg(env, 1);
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  return torch_fill(env, a0, a1, a2);
 }
 
 static an_term torch_native_load(an_env *env, int argc, const an_term *argv) {
@@ -828,6 +848,7 @@ static an_term torch_native_readback(an_env *env, int argc, const an_term *argv)
 
 static const an_function torch_native_functions[] = {
   {"create", "(List[Int], List[Float], Int) -> Result[TensorHandle]", torch_native_create, AN_DIRTY},
+  {"fill", "(List[Int], Float, Int) -> Result[TensorHandle]", torch_native_fill, AN_DIRTY},
   {"load", "(String, Int, List[Int], Int) -> Result[TensorHandle]", torch_native_load, AN_DIRTY},
   {"from_bytes", "(Bytes, List[Int], Int) -> Result[TensorHandle]", torch_native_from_bytes, AN_DIRTY},
   {"add", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_add, AN_DIRTY},
@@ -875,5 +896,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 40, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 41, NULL, 0, torch_native_resources, 1, LOAD)
 #endif

@@ -63,38 +63,33 @@ end
 ## Creation: zeros of `shape` and `dtype` on `device`.
 def zeros(device: Types.Device, shape: List[Int], dtype: Types.Dtype) -> Result[Types.Tensor]
   _ = try ready(device, "zeros")
-  n = try TorchShapes.volume(shape)
-  from_values("zeros", device, shape, dtype, List.repeat(0.0, n))
+  filled("zeros", device, shape, dtype, 0.0)
 end
 
 ## Creation: ones of `shape` and `dtype` on `device`.
 def ones(device: Types.Device, shape: List[Int], dtype: Types.Dtype) -> Result[Types.Tensor]
   _ = try ready(device, "ones")
-  n = try TorchShapes.volume(shape)
-  from_values("ones", device, shape, dtype, List.repeat(1.0, n))
+  filled("ones", device, shape, dtype, 1.0)
 end
 
 ## Creation: `empty` is deterministic zeros, as in the reference: there is no
 ## uninitialized memory to expose over a boundary that fills every element.
 def empty(device: Types.Device, shape: List[Int], dtype: Types.Dtype) -> Result[Types.Tensor]
   _ = try ready(device, "empty")
-  n = try TorchShapes.volume(shape)
-  from_values("empty", device, shape, dtype, List.repeat(0.0, n))
+  filled("empty", device, shape, dtype, 0.0)
 end
 
 ## Creation: every element `value` (tagged for `dtype`).
 def full(device: Types.Device, shape: List[Int], value: Types.Values, dtype: Types.Dtype) -> Result[Types.Tensor]
   _ = try ready(device, "full")
-  n = try TorchShapes.volume(shape)
   x = try TorchDtypes.value_to_float(value, dtype)
-  from_values("full", device, shape, dtype, List.repeat(x, n))
+  filled("full", device, shape, dtype, x)
 end
 
 ## Creation: zeros of the shape and dtype of `t`; its values are not read.
 def like(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
   _ = try ready(device, "like")
-  n = try TorchShapes.volume(t.shape)
-  from_values("like", device, t.shape, t.dtype, List.repeat(0.0, n))
+  filled("like", device, t.shape, t.dtype, 0.0)
 end
 
 ## Creation: `start, start + step, ...` below `stop` (above for `step < 0`),
@@ -677,6 +672,17 @@ def from_values(
   _ = try usable(op)
   Native.arena do
     h = try Raw.create(shape, values, TorchDtypes.code(dtype))
+    ok(tensor_of(device, shape, dtype, h))
+  end
+end
+
+## A tensor of `shape` with every element `x`, made natively: no list of `x`
+## crosses, so the element count has no cap.
+def filled(op: String, device: Types.Device, shape: List[Int], dtype: Types.Dtype, x: Float) -> Result[Types.Tensor]
+  _ = try usable(op)
+  _ = try TorchShapes.volume(shape)
+  Native.arena do
+    h = try Raw.fill(shape, x, TorchDtypes.code(dtype))
     ok(tensor_of(device, shape, dtype, h))
   end
 end

@@ -36,6 +36,17 @@ def test_full_repeats_the_value() -> Result[Void]
   Conform.agrees(try Tensor.full([2, 2], value, Tensor.Dtype.F32, Conform.TORCH), theirs, "full")
 end
 
+def test_zeros_and_full_are_not_capped_at_two_to_the_twentieth() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  zeros = try Tensor.zeros([1048577], Tensor.Dtype.F32, Conform.TORCH)
+  try Test.eq(Tensor.shape(zeros), [1048577])
+  try Conform.expect_floats(try Tensor.sum(zeros), [0.0], "sum of zeros")
+  threes = try Tensor.full([2, 1048576], Tensor.Values.Float(3.0), Tensor.Dtype.F32, Conform.TORCH)
+  try Test.eq(Tensor.shape(threes), [2, 1048576])
+  Conform.expect_floats(try Tensor.sum(threes), [6291456.0], "sum of threes")
+end
+
 def test_like_keeps_shape_and_dtype() -> Result[Void]
   return Conform.absent() if !Conform.available()
 
