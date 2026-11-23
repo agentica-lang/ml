@@ -15,9 +15,11 @@ ids on the test clips) and `whisper/` (a binding over whisper.cpp).
 
 Works, but slow: `asr/` on ggml. Its tokens match, but on the test clips it
 runs about 3.5 to 5 times slower than whisper.cpp on CPU and about 10 times
-slower on Vulkan. Its libtorch run is slower still. The numbers and the machine
-are in [`benchmarks/README.md`](benchmarks/README.md); the work is in
-[ml#64](https://github.com/agentica-lang/ml/issues/64).
+slower on Vulkan. On libtorch, the real-time factor on jfk went from 0.67 to
+0.34 with [ml#70](https://github.com/agentica-lang/ml/pull/70); the libtorch
+rows of [`benchmarks/README.md`](benchmarks/README.md) predate that change. The
+numbers and the machine are in [`benchmarks/README.md`](benchmarks/README.md);
+the work is in [ml#64](https://github.com/agentica-lang/ml/issues/64).
 
 Not yet: training benchmarks and metrics
 ([ml#50](https://github.com/agentica-lang/ml/issues/50),
@@ -76,7 +78,7 @@ tensor = { git = "https://github.com/agentica-lang/ml", ref = "COMMIT", subdir =
 The libtorch backend ships **inside `tensor/`**, not as a `torch/` package,
 because a native handle is a `resource` that is nominal to its `extern module`
 ([`tensor/DESIGN.md`](tensor/DESIGN.md) §1, §7;
-[agentica-lang/agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
+[ml#15](https://github.com/agentica-lang/ml/issues/15)
 moves it out). libtorch is `optional = true` and never vendored or downloaded
 by this repository: without it, everything still checks, formats and tests,
 and `Backend.Torch` answers `error("backend not available")`.
