@@ -46,6 +46,8 @@ ARANGE = 21
 EQ = 22
 LT = 23
 WHERE = 24
+SLICE = 25
+GATHER = 26
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -146,6 +148,8 @@ def plan(outs: List[Types.Tensor], env: Map[Int, Types.Tensor], backend: Types.B
       Types.Op.Mean(axes, _) -> ints = [n.args[0].shape.size] + axes
       Types.Op.Max(axes, _) -> ints = [n.args[0].shape.size] + axes
       Types.Op.Arange(start, stop, step) -> ints = [start, stop, step]
+      Types.Op.Slice(starts, _) -> ints = starts
+      Types.Op.Gather -> ints = [n.args[0].shape.size]
       _ -> nil
     end
 
@@ -259,6 +263,8 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Eq -> ok(EQ)
     Types.Op.Lt -> ok(LT)
     Types.Op.Where -> ok(WHERE)
+    Types.Op.Slice(_, _) -> ok(SLICE)
+    Types.Op.Gather -> ok(GATHER)
     _ -> error("node #{n.id}: #{Types.op_name(n.op)} is not lowered to ggml yet")
   end
 end

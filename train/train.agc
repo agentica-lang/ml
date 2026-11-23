@@ -1,11 +1,13 @@
 ## The `train/` package: losses (`loss.agc`), optimizers (`optim.agc`) and
-## `fit`, a minimal training loop over `Trace.value_and_grad`
+## `fit`, a minimal training loop over `tensor/`'s tracing
 ## (`train/DESIGN.md`).
 ##
-## A model is a loss function of a parameter list and a batch. `fit` traces it
-## on every step with the parameters as inputs and the batch as constants,
-## evaluates the loss and its gradients on the parameters' backend, and hands
-## them to the optimizer. The batches come from a `Data.Loader` (`data.agc`).
+## A model is a loss function of a parameter list and a batch. `fit` traces
+## one training step on every batch, with the parameters and the optimizer
+## state as inputs and the batch as constants: the loss, its gradients and the
+## optimizer's update, run as one evaluation on the parameters' backend (one
+## compiled graph on `Ggml`). The batches come from a `Data.Loader`
+## (`data.agc`).
 
 import Data from "data"
 import Optim from "optim"
@@ -108,14 +110,34 @@ def step(
   batch: Data.Batch,
 ) -> Result[Stepped]
   Native.arena do
-    traced = ->(ps: List[Tensor.Tensor]) {
-      loss.call(ps, Data.Batch(inputs: Trace.constant(batch.inputs), targets: Trace.constant(batch.targets)))
-    }
+    n = params.size
+    k = state.first.size
+    outs = try Trace.eval_many(
+      params + state.first + state.second,
+      ->(xs: List[Tensor.Tensor]) { traced_step(loss, state, batch, n, k, xs) },
+    )
 
-    both = try Trace.value_and_grad(params, traced)
-    value = try scalar(both.value)
-    ok(Stepped(step: try Optim.step(state, params, both.grads), loss: value))
+    moved = state.with(steps: state.steps + 1, first: outs.drop(1 + n).take(k), second: outs.drop(1 + n + k))
+    ok(Stepped(step: Optim.Step(state: moved, params: outs.drop(1).take(n)), loss: try scalar(outs[0])))
   end
+end
+
+## The traced step over `xs`, the `n` parameters then the optimizer's `k`
+## first and its second moments: the loss, then the new parameters, first
+## and second moments.
+def traced_step(
+  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  state: Optim.State,
+  batch: Data.Batch,
+  n: Int,
+  k: Int,
+  xs: List[Tensor.Tensor],
+) -> Result[List[Tensor.Tensor]]
+  ps = xs.take(n)
+  value = try loss.call(ps, Data.Batch(inputs: Trace.constant(batch.inputs), targets: Trace.constant(batch.targets)))
+  grads = try Trace.gradients(value, ps)
+  stepped = try Optim.step(state.with(first: xs.drop(n).take(k), second: xs.drop(n + k)), ps, grads)
+  ok([value] + stepped.params + stepped.state.first + stepped.state.second)
 end
 
 def scalar(t: Tensor.Tensor) -> Result[Float]

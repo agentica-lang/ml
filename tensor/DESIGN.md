@@ -286,12 +286,15 @@ end
   `log`, `relu`, `sqrt`, `sigmoid`, `tanh`, `matmul`, `transpose`, `reshape`,
   `squeeze`, `unsqueeze`, `broadcast_to`, `sum`, `mean` and `max` over a
   leading or trailing block of axes, `stop_grad`, `copy`, `contiguous`,
-  `arange`, and `eq`, `lt` and `where` emulated in `F32` arithmetic (`eq` as
+  `arange`, `slice`, `gather` (ggml's `get_rows` over the source as rows,
+  its indices clamped to them; an index outside the rows is an error after
+  the run, counted in the graph; a source of more than 2^24 rows is an
+  error), and `eq`, `lt` and `where` emulated in `F32` arithmetic (`eq` as
   `1 - step(|a - b|)`, exact for integers below 2^24 and true when an operand
   is NaN; `where` as `c·x + (1 - c)·y`, exact only when both branches are
-  finite): enough for an
-  MLP and softmax cross-entropy with their gradients. An output that holds
-  an infinity or a NaN is an error.
+  finite): enough for an MLP and softmax cross-entropy with their gradients,
+  and for a training step and its batch. An output that holds an infinity or a NaN is an error. A
+  graph has at most 256 outputs.
 - Vulkan computes `mul_mat` in `F32` by default: ggml reads
   `GGML_VK_DISABLE_F16` once per process, when it first enumerates its
   devices, and the C layer sets it before its first registry call (any ggml
@@ -347,9 +350,9 @@ Usage for tensors:
   which lives as long as the process. Every Vulkan buffer operation
   (allocate, write, read, free) runs under one lock in the C layer, so tasks
   on one device never overlap a transfer; a free hook never waits for it and
-  leaves the free to the next holder (§7). A compiled step (later) will own
-  its graph and the train state in a resource of its own, which `fit` creates
-  and closes; the tensors it returns are fresh `Handle.Ggml` values (no
+  leaves the free to the next holder (§7). `fit`'s training step is one
+  evaluation (`Trace.eval_many`): it reads the parameters and the optimizer
+  state in place and writes the new ones into fresh `Handle.Ggml` tensors (no
   donation).
 - `compute def` kernels only push data or return a resource; the loop lives
   in Agentica and the native side never calls back (existing FFI invariant).
@@ -468,7 +471,9 @@ The price:
   that compiles (`Ggml`) runs the whole graph as one graph of its own and does
   not go through `Tensor.*` (§7), so it supports the ops its lowering knows and
   answers an error naming any other. `value_and_grad` evaluates the output and
-  its gradients in one pass, so the backward reads the forward values it shares.
+  its gradients in one pass, so the backward reads the forward values it shares;
+  `eval_many` evaluates every tensor a traced function answers in one pass (a
+  training step: the loss, the new parameters and the optimizer state).
   Backends stay forward-only.
 - First rules: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `relu`,
   `matmul`, `transpose`, `sum`, `mean`, `broadcast_to`, `reshape`, `where`,

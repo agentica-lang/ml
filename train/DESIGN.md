@@ -1,7 +1,7 @@
 # train — design
 
 Losses, optimizers, a data loader and a minimal training loop over
-`tensor/`'s `Trace.value_and_grad` (`tensor/DESIGN.md` §10). Depends on
+`tensor/`'s tracing (`tensor/DESIGN.md` §10). Depends on
 `tensor/` and `hub/` (a dataset from a safetensors file); `nn/` is a test
 dependency (`group = "test"`), used by the XOR test.
 
@@ -31,8 +31,8 @@ Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Resu
 
 ## Decisions
 
-- **Parameters are a `List[Tensor]`.** That is what `Trace.value_and_grad`
-  takes, so `fit` hands it over unchanged. The loss function rebuilds the `nn/`
+- **Parameters are a `List[Tensor]`.** That is what `Trace` takes, so `fit`
+  hands it over unchanged. The loss function rebuilds the `nn/`
   structs from the list (`Nn.Dense(w: ps[0], b: some(ps[1]))`), which costs a
   struct per step and no copy. Flattening any struct of layers on its own
   (JAX's pytrees) waits for a model with enough layers to need it.
@@ -40,11 +40,19 @@ Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Resu
   `targets` in `Trace.constant`, so the loss function sees traced tensors
   everywhere and is written once, as it would be eagerly.
 - **Optimizers are pure.** `step` takes the state, the parameters and the
-  gradients and answers new ones; nothing mutates. Updates run eagerly on the
-  parameters' backend, with scalars as `Tensor.full` of the parameter's shape
-  (`tensor/` ops take exact shapes). Adam's bias correction needs `beta^t`;
-  Agentica has no `Float` power, so `optim.agc` computes it by squaring.
-  SGD's momentum is PyTorch's form (`v = m v + g`, `p -= lr v`).
+  gradients and answers new ones; nothing mutates. Updates are `Tensor.*`
+  calls, with scalars as `Tensor.full` of the parameter's shape (`tensor/` ops
+  take exact shapes), so they run eagerly or traced. Adam's bias correction
+  needs `beta^t`; Agentica has no `Float` power, so `optim.agc` computes it by
+  squaring. SGD's momentum is PyTorch's form (`v = m v + g`, `p -= lr v`).
+- **A step is one traced evaluation.** `fit` traces the loss, its gradients
+  (`Trace.gradients`) and `Optim.step` over the parameters and the optimizer
+  state, and runs them with one `Trace.eval_many`: on `Ggml` one compiled
+  graph, which the structural cache compiles once per batch shape (a last
+  partial batch is a second graph). The step count stays on the host, so
+  Adam's bias correction is a fill, set per run. A ggml graph has at most 256
+  outputs, the loss and the new tensors, so a step on `Ggml` takes at most 85
+  parameters with Adam, 127 with momentum SGD and 255 with plain SGD.
 - **Binary cross-entropy is built from ops that have backward rules.** It is
   `relu(z) + log(1 + exp(-|z|)) - t z`, stable for any `z`, with
   `|z| = 2 relu(z) - z`: `relu`'s derivative at `0` is `0`, and with this form
@@ -71,9 +79,12 @@ Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Resu
   epochs below 2048 give distinct starting states; larger ones wrap, `s` and
   `-s` are one seed, and a dataset holds fewer than `2^31 - 2` rows. The
   shuffle runs in VM steps, `O(N)` per epoch, and counts against
-  `--max-steps`. A shuffled batch is one
-  `from_list` of its row ids and one `gather` per tensor; an unshuffled one is
-  one `slice`. The last partial batch is kept unless `drop_last`.
+  `--max-steps`. A batch is one `from_list` of its `I32` row ids (in order
+  when not shuffled) and one `gather` per tensor, both in one
+  `Trace.eval_many`, so a backend that computes only whole graphs (`Ggml`)
+  makes batches too, with one compiled graph per batch shape. On `Ggml` a
+  dataset holds at most 2^24 rows, the row ids F32 counts exactly. The last
+  partial batch is kept unless `drop_last`.
 - **Prefetch is a task and a bounded channel.** With `prefetch = K > 0`,
   `Data.feed` starts a task that builds the batches of every epoch in order and
   sends them through a channel of capacity `K`, so it stays at most `K` batches
@@ -94,11 +105,11 @@ Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Resu
 
 ## Cost
 
-`fit` traces the loss again on every step (`tensor/DESIGN.md` §10.1). On the
+`fit` traces the step again on every batch (`tensor/DESIGN.md` §10.1). On the
 reference backend an epoch of the XOR test (a 2-8-1 relu MLP, four rows)
-costs about 75,000 VM steps, most of it the evaluation of the forward and
-gradient graphs, so the test trains for 20 epochs. On libtorch an epoch costs
-about 45,000.
+costs about 100,000 VM steps, most of it the evaluation of the forward,
+gradient and update graphs, so the test trains for 20 epochs. On libtorch an
+epoch costs about 70,000.
 
 Prefetch hides the cost of building a batch, not more. Measured once with a
 throwaway benchmark (libtorch, 16384 rows of 32, batches of 2048, about 3 ms
