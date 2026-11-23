@@ -128,9 +128,3 @@ def test_arange_rejects_a_bad_dtype_or_step_on_both_backends() -> Result[Void]
   try Test.error?(Tensor.arange(0, 3, 0, Tensor.Dtype.I64, Conform.TORCH))
   Test.error?(Tensor.arange(0, 3, 0, Tensor.Dtype.I64, Conform.REF))
 end
-
-def test_cuda_is_not_served() -> Result[Void]
-  return Conform.absent() if !Conform.available()
-
-  Test.error?(Tensor.zeros([2], Tensor.Dtype.F32, Tensor.Backend.Torch(Tensor.Device.Cuda(0))))
-end

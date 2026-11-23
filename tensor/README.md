@@ -19,8 +19,7 @@ answers whether this machine has it, and the dispatch arm answers
   halt), validates shape/dtype/backend/device before it dispatches
   (`DESIGN.md` §9), and dispatches by value over the `Backend` arms: two
   compute backends (`Reference`, `Torch`), the `Trace` recorder that records a
-  node instead of computing (§7, §10), and the stubs `Xla` and `Candle`, which
-  answer `error`.
+  node instead of computing (§7, §10).
 - `trace.agc` — tracing and gradients: `value_and_grad`, `grad` and `eval`
   call a function written against `tensor.agc` with tensors of the `Trace`
   backend, derive the gradient graph with the same ops and run it on a real
@@ -91,8 +90,7 @@ Why those three are out:
   untested. `multi_head_attention` does not need it: it splits heads into
   rank-2 `matmul` calls (§3.2).
 - **`to_device`** would only move a tensor to the one device this CPU release
-  serves, which is the identity; a `Cuda` device is already an `error`
-  (`<op> runs on Cpu only`).
+  serves, which is the identity; `Device` has only `Cpu`.
 
 `conv1d`/`avg_pool1d` take the window `DESIGN.md` §3.1 admits and no more:
 `stride` ≥ 1 and `padding` ≥ 0, no dilation, no groups. `avg_pool1d` also caps

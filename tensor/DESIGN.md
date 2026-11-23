@@ -39,14 +39,18 @@ the grad-in-Agentica decision),
 
 ```text
 Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool
-Device  = Cpu | Cuda(Int)                                      # enum; only Cpu computes
+Device  = Cpu                                                  # enum; one arm, the only device
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
-Backend = Reference | Torch(Device) | Xla(Device) | Candle(Device) | Trace   # enum, see §7, §10; Xla and Candle are stubs
+Backend = Reference | Torch(Device) | Trace                    # enum, see §7, §10
 Handle  = Native(TensorHandle) | Plain(Data) | Traced(Node)    # enum, see §2, §10
 Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 ```
 
+- `Device` has one arm on purpose: `Backend.Torch(Device)` and every backend
+  function take the device explicitly (§4), and a second device, if one ever
+  serves, adds an arm without changing a signature. Dropping the enum would
+  rewrite them all for no gain.
 - `Tensor` values are **immutable**; every op returns a new `Tensor`.
   A training step returns new parameters.
 - `handle` is `Native(TensorHandle)` on the libtorch backend (a
@@ -140,7 +144,7 @@ Tensor.backend(t) -> Backend                      # no native call
 - Device is explicit, never a global: dispatch is **by value** (`t.backend`),
   not by global config, so `reference` (oracle) and `torch` can check each
   other in the same process. A backend value carries its device
-  (`Backend.Torch(Device.Cpu)`, `Backend.Torch(Device.Cuda(0))`);
+  (`Backend.Torch(Device.Cpu)`);
   `Backend.Reference` has none. Batch lives in the shape, not in a global
   either.
 - Backend-module functions take the device as an explicit first argument
@@ -190,16 +194,13 @@ set:
 r: Result[Tensor] = case a.backend
   Backend.Reference -> Reference.matmul(a, b)              # src/reference.agc
   Backend.Torch(device) -> Torch.matmul(device, a, b)      # src/torch.agc
-  Backend.Xla(_) -> error("backend not available")         # stub: no module
-  Backend.Candle(_) -> error("backend not available")      # stub: no module
   Backend.Trace -> ok(Graph.record(Op.Matmul, [a, b], shape, a.dtype))   # §10
 end
 ```
 
-- The `case` is checked and exhaustive over all five variants, which is the
-  property this shape buys. Two compute backends (`Reference`, `Torch`), the
-  `Trace` recorder (it records a node instead of computing, §10.1), and two
-  stubs: `Xla` and `Candle` have no module and only answer `error`.
+- The `case` is checked and exhaustive over all three variants, which is the
+  property this shape buys: two compute backends (`Reference`, `Torch`) and the
+  `Trace` recorder (it records a node instead of computing, §10.1).
 - The `Torch` arm calls `src/torch.agc`, which calls the `compute
   def`s of `extern module "torch"` (`src/native.agc`). Both files live in this
   package, and they have to: the arm needs the module's signatures, and the
@@ -217,8 +218,9 @@ end
 - The module is `optional = true` and built from `native/torch.c` on first
   use, with libtorch found by the environment (`tools/build-torch.sh`). Where
   it is not built, `Backend.Torch(device)` answers
-  `error("backend not available")` and `Tensor.available(Backend.Torch(device))` is `false`, so
-  a caller can choose a backend without catching that error.
+  `error("backend not available")` and
+  `Tensor.available(Backend.Torch(device))` is `false`, so a caller can choose a
+  backend without catching that error.
 - Why this shape: Agentica is static and already checks before running
   (no `defn` macros as in `Nx.Defn`); an enum + `case` keeps dispatch
   visible to the checker and lets `reference` and `torch` coexist by value

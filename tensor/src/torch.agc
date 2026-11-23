@@ -21,8 +21,7 @@
 ##   backend owes, never the only check, and `native/torch.c` re-checks the
 ##   ones libtorch would otherwise answer wrongly (broadcasting, wrapping).
 ## - Device is explicit, never global (§4): every function takes it first.
-##   `Cpu` is the only device libtorch's CPU release serves, so `Cuda` is an
-##   `error`.
+##   `Cpu` is the only device libtorch's CPU release serves.
 ## - Lifetimes (§8): one `Native.arena` per call. The result is the block's
 ##   value, so it leaves the arena; the arguments were opened by the caller and
 ##   are not this arena's to close. A caller that runs several ops per step
@@ -610,13 +609,12 @@ end
 def ready(device: Types.Device, op: String) -> Result[Bool]
   case device
     Types.Device.Cpu -> usable(op)
-    Types.Device.Cuda(n) -> error("#{op} runs on Cpu only, got Cuda(#{n})")
   end
 end
 
 ## The native module is loaded: a checkout without libtorch says so here,
-## before any call would halt with `RUNTIME-NATIVE-LOAD`. The message is the
-## one the unwritten backends answer with, plus where to look.
+## before any call would halt with `RUNTIME-NATIVE-LOAD`. The message says
+## where to look.
 def usable(op: String) -> Result[Bool]
   opened = Native.load("torch")
   return ok(true) if opened.ok?

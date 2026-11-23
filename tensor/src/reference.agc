@@ -1010,7 +1010,6 @@ end
 def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
   case device
     Types.Device.Cpu -> ok(make(t.shape, t.dtype, try data_of(t)))
-    Types.Device.Cuda(n) -> error("reference tensors live on Cpu, not Cuda(#{n})")
   end
 end
 

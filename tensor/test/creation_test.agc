@@ -113,16 +113,3 @@ def test_zeros_on_torch_answers_the_module_state() -> Result[Void]
     error(e) -> Test.assert(e.message.include?("backend not available"), "the Torch arm said \"#{e.message}\"")
   end
 end
-
-def test_ones_on_xla_is_not_available() -> Result[Void]
-  Test.error?(Tensor.ones([1], Tensor.Dtype.F32, Tensor.Backend.Xla(Tensor.Device.Cpu)))
-end
-
-def test_from_list_on_candle_is_not_available() -> Result[Void]
-  vals = [Tensor.Values.Float(1.0)]
-  Test.error?(Tensor.from_list(vals, [1], Tensor.Dtype.F32, Tensor.Backend.Candle(Tensor.Device.Cpu)))
-end
-
-def test_cuda_construction_is_an_error() -> Result[Void]
-  Test.error?(Tensor.zeros([1], Tensor.Dtype.F32, Tensor.Backend.Torch(Tensor.Device.Cuda(0))))
-end

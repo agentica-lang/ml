@@ -26,8 +26,3 @@ end
 def test_the_reference_backend_is_always_available() -> Result[Void]
   Test.assert(Tensor.available(Conform.REF), "the reference backend must always be available")
 end
-
-def test_the_unwritten_backends_are_not_available() -> Result[Void]
-  try Test.assert(!Tensor.available(Tensor.Backend.Xla(Tensor.Device.Cpu)), "xla is not written yet")
-  Test.assert(!Tensor.available(Tensor.Backend.Candle(Tensor.Device.Cpu)), "candle is not written yet")
-end
