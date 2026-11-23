@@ -8,6 +8,7 @@
 import Hub from "hub"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
 
 ## The prefix of every layer of one encoder block.
 struct BlockNames
@@ -55,7 +56,16 @@ end
 
 def dense(c: Hub.Checkpoint, prefix: String, backend: Tensor.Backend) -> Result[Nn.Dense]
   w = try weight(c, "#{prefix}.weight", 2, backend)
-  ok(Nn.Dense(w: try Tensor.transpose(w), b: try bias(c, prefix, Tensor.shape(w)[0], backend)))
+  b = try bias(c, prefix, Tensor.shape(w)[0], backend)
+  t = transposed(w)
+  close(w)
+  ok(Nn.Dense(w: try t, b: b))
+end
+
+## `t` transposed, through a trace: a backend that computes only whole graphs
+## (`Ggml`) loads too.
+def transposed(t: Tensor.Tensor) -> Result[Tensor.Tensor]
+  Trace.eval([t], ->(xs: List[Tensor.Tensor]) { Tensor.transpose(xs[0]) })
 end
 
 ## A conv layer: `{prefix}.weight` `[out, in, kernel]`, as stored; `{prefix}.bias` if present.
@@ -134,6 +144,16 @@ def decoder_block(
 end
 
 private
+
+## Frees `t` now on the backends whose tensors hold native memory, so a load
+## does not hold a weight twice.
+def close(t: Tensor.Tensor) -> Void
+  case t.handle
+    Tensor.Handle.Native(h) -> Native.close(h)
+    Tensor.Handle.Ggml(h) -> Native.close(h)
+    _ -> nil
+  end
+end
 
 ## `{prefix}.bias` of `[rows]`, or `none` when the checkpoint has none.
 def bias(c: Hub.Checkpoint, prefix: String, rows: Int, backend: Tensor.Backend) -> Result[Optional[Tensor.Tensor]]

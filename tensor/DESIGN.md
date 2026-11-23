@@ -107,7 +107,7 @@ Movement: `to_dtype, to_device, copy, contiguous`.
 
 Deliberately missing: `softmax`, `layer_norm`, attention, `silu`, beam
 search — all derived (§3.2). The exact (`erf`) GELU is `gelu_erf`, outside
-this set: inference only (`Trace` refuses it, ggml does not compile it yet).
+this set: inference only (`Trace` records it but has no gradient for it).
 
 ### 3.2 Derived ops (pure Agentica, backend-agnostic)
 
@@ -261,7 +261,8 @@ end
   without it), and that string is the key of a process-wide cache: a retrace
   of the same function with new data, constants or fill values compiles
   nothing. The cache holds 32 graphs and evicts the least recently used one
-  nobody runs.
+  nobody runs. A graph that will not run again (`eval_many` with `keep`
+  false) takes no slot and is dropped after its run.
 - **No copies in or out.** For one run only, an `F32` leaf points at the
   caller's tensor and an `F32` output at a fresh tensor the run writes; after
   the run the graph points at nothing again, so the cache keeps no caller
@@ -277,24 +278,26 @@ end
   device lock is queued for the lock's next holder, so no task's free waits
   for a graph to finish.
 - The lowering computes in `F32`. `Bool` (0/1) and integers up to 32 bits are
-  exact there below 2^24; a node of `F16`, `F64` or `I64`, an integer `div`,
-  a `to_dtype` that is not exact in `F32`, an integer fill or `arange` beyond
-  2^24, an `arange` that counts down, a `transpose` above rank 2, a tensor
-  with no elements and an op without a lowering are errors naming the node,
-  given before anything compiles; an `I32` value beyond 2^24 is an error when
-  it is copied in or out. Lowered: `add`, `sub`, `mul`, `div`, `neg`, `exp`,
-  `log`, `relu`, `sqrt`, `sigmoid`, `tanh`, `matmul`, `transpose`, `reshape`,
-  `squeeze`, `unsqueeze`, `broadcast_to`, `sum`, `mean` and `max` over a
-  leading or trailing block of axes, `stop_grad`, `copy`, `contiguous`,
-  `arange`, `slice`, `gather` (ggml's `get_rows` over the source as rows,
-  its indices clamped to them; an index outside the rows is an error after
-  the run, counted in the graph; a source of more than 2^24 rows is an
-  error), and `eq`, `lt` and `where` emulated in `F32` arithmetic (`eq` as
-  `1 - step(|a - b|)`, exact for integers below 2^24 and true when an operand
-  is NaN; `where` as `c·x + (1 - c)·y`, exact only when both branches are
-  finite): enough for an MLP and softmax cross-entropy with their gradients,
-  and for a training step and its batch. An output that holds an infinity or a NaN is an error. A
-  graph has at most 256 outputs.
+  exact there below 2^24; a node of `F16`, `F64` or `I64`, an integer `div`, a
+  `to_dtype` that is not exact in `F32`, an integer fill or `arange` beyond
+  2^24, an `arange` that counts down, a `transpose` above rank 2, a tensor with
+  no elements and an op without a lowering are errors naming the node, given
+  before anything compiles; an `I32` value beyond 2^24 is an error when it is
+  copied in or out. Lowered: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`,
+  `relu`, `sqrt`, `sigmoid`, `tanh`, `matmul`, `transpose`, `reshape`,
+  `squeeze`, `unsqueeze`, `broadcast_to`, `sum`, `mean` and `max` over a leading
+  or trailing block of axes, `stop_grad`, `copy`, `contiguous`, `arange`,
+  `slice`, `concat` and `stack` on any axis, `conv1d` (an `F32` im2col and one
+  matmul; ggml's own `conv_1d` makes the im2col `F16`), `gelu_erf`, `gather`
+  (ggml's `get_rows` over the source as rows, its indices clamped to them; an
+  index outside the rows is an error after the run, counted in the graph; a
+  source of more than 2^24 rows is an error), and `eq`, `lt` and `where`
+  emulated in `F32` arithmetic (`eq` as `1 - step(|a - b|)`, exact for integers
+  below 2^24 and true when an operand is NaN; `where` as `c·x + (1 - c)·y`,
+  exact only when both branches are finite): enough for an MLP and softmax
+  cross-entropy with their gradients, for a training step and its batch, and for
+  Whisper's forward (`asr/`). An output that holds an infinity or a NaN is an
+  error. A graph has at most 256 outputs.
 - Vulkan computes `mul_mat` in `F32` by default: ggml reads
   `GGML_VK_DISABLE_F16` once per process, when it first enumerates its
   devices, and the C layer sets it before its first registry call (any ggml

@@ -11,6 +11,8 @@ import Tokenizer from "../tokenizer"
 
 REF = Tensor.Backend.Reference
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
+GGML = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
 
 ## The reference computes in doubles, as the peer does, with the same GELU.
 ABS = 0.000000001
@@ -136,6 +138,24 @@ def test_on_libtorch_the_kv_cache_steps_match_the_peer() -> Result[Void]
   end
 end
 
+## On ggml (its CPU backend and Vulkan, where built) each encoder stage and
+## each step is one compiled graph: the cached steps match the peer, and
+## `transcribe` emits the reference's tokens.
+def test_on_ggml_the_steps_and_transcribe_match() -> Result[Void]
+  with_fixtures do |dir|
+    tok = try Tokenizer.open("test/fixtures/tokenizer.json")
+    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    want = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", REF), tok, pcm)
+    for backend in try ggml_backends()
+      try kv_steps(try Asr.open("#{dir}/tiny/model.safetensors", backend), dir, backend, F32, F32)
+      got = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", backend), tok, pcm)
+      try Test.eq(got.tokens, want.tokens)
+    end
+
+    ok()
+  end
+end
+
 ## The random `speech/` model says nothing sensible, but whatever it says
 ## keeps OpenAI's rules: its config suppresses 1 and 2, the first token is a
 ## timestamp (32 is `<|0.00|>`), the timestamps never decrease, and at most 13
@@ -255,6 +275,20 @@ def kv_steps(m: Asr.Model, dir: String, backend: Tensor.Backend, abs: Float, rel
   try expect_close(third.logits, logits.drop(14).take(7), abs, rel, "third")
   fourth = try Asr.step(m, third.cache, [tokens[3]])
   expect_close(fourth.logits, logits.drop(21), abs, rel, "fourth")
+end
+
+## The ggml backends this machine has: its CPU backend when the module is
+## built, and Vulkan device 0 when ggml sees one. With `TENSOR_REQUIRE_GGML`
+## set to anything but "" (CI sets it) a missing module is an error.
+def ggml_backends() -> Result[List[Tensor.Backend]]
+  if !Tensor.available(GGML)
+    flag = System.env("TENSOR_REQUIRE_GGML")
+    return error("ggml required but not built (TENSOR_REQUIRE_GGML is set)") if flag.ok? and try flag != ""
+    return ok([])
+  end
+
+  return ok([GGML, VULKAN]) if Tensor.available(VULKAN)
+  ok([GGML])
 end
 
 def ints(json: JSON.Value) -> Result[List[Int]]

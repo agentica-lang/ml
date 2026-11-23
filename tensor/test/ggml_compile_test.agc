@@ -212,6 +212,23 @@ def test_an_mlp_and_its_gradients_match_the_reference_on_the_cpu() -> Result[Voi
   ce_parity(CPU)
 end
 
+## A graph evaluated with `keep` false takes no cache slot: the same graph
+## compiles again on the next call, and once kept it compiles no more.
+def test_a_graph_not_kept_compiles_on_every_call() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  x = try floats(uniform(21, 9, 1.0), [7, 3], CPU)
+  start = try Lower.compiles()
+  _ = try Trace.eval_many([x], &sigmoids, false)
+  _ = try Trace.eval_many([x], &sigmoids, false)
+  try Test.eq(try Lower.compiles(), start + 2)
+  _ = try Trace.eval_many([x], &sigmoids)
+  _ = try Trace.eval_many([x], &sigmoids)
+  Test.eq(try Lower.compiles(), start + 3)
+end
+
+def sigmoids(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]] = ok([try Tensor.sigmoid(xs[0])])
+
 def test_a_retrace_with_new_values_compiles_nothing() -> Result[Void]
   return ok() if !try present(CPU)
 
@@ -266,6 +283,77 @@ def test_slice_and_gather_match_the_reference() -> Result[Void]
   try windows_match(CPU)
   return ok() if !Tensor.available(VULKAN)
   windows_match(VULKAN)
+end
+
+## Every output of `f` on `backend` is within `TOL` of the reference, for
+## the arguments `values` of `shapes` (floats from `uniform`).
+def forward_parity(
+  backend: Tensor.Backend,
+  shapes: List[List[Int]],
+  f: Fn[List[Tensor.Tensor], Result[List[Tensor.Tensor]]],
+) -> Result[Void]
+  got_args: List[Tensor.Tensor] = []
+  want_args: List[Tensor.Tensor] = []
+  for i in 0...shapes.size
+    n = shapes[i].reduce(1) do |acc, d| acc * d end
+    xs = uniform(n, 31 + i, 1.0)
+    got_args = got_args.push(try floats(xs, shapes[i], backend))
+    want_args = want_args.push(try floats(xs, shapes[i], REF))
+  end
+
+  got = try Trace.eval_many(got_args, f)
+  want = try Trace.eval_many(want_args, f)
+  for i in 0...want.size
+    g = try gap(got[i], want[i])
+    return error("output #{i}: gap #{g} is above #{TOL}") if g > TOL
+  end
+
+  ok()
+end
+
+## `concat` on each axis of rank-3 tensors, the head join on axis 1 that
+## attention makes (ggml counts its axes from the other end), and `stack`.
+def joins(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  ok([
+    try Tensor.concat([a[0], a[1]], 0),
+    try Tensor.concat([a[0], a[1], a[0]], 1),
+    try Tensor.concat([a[1], a[0]], 2),
+    try Tensor.concat([try Tensor.reshape(a[0], [6, 4]), try Tensor.reshape(a[1], [6, 4])], 1),
+    try Tensor.stack([a[0], a[1]], 0),
+    try Tensor.stack([a[0], a[1]], 2),
+  ])
+end
+
+## Two convolutions, one of a batch, the exact GELU, a layer norm, a softmax
+## and a masked attention: what Whisper's forward is made of.
+def whisper_ops(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  mask = try Tensor.mul(
+    try Tensor.relu(a[4]),
+    try Tensor.full([5, 5], Tensor.Values.Float(-1000.0), Tensor.Dtype.F32, Tensor.backend(a[4])),
+  )
+
+  ok([
+    try Tensor.conv1d(a[0], a[1], 1, 1),
+    try Tensor.conv1d(try Tensor.reshape(a[2], [2, 3, 8]), a[1], 2, 1),
+    try Tensor.gelu_erf(
+      try Tensor.mul(a[0], try Tensor.full([3, 8], Tensor.Values.Float(4.0), Tensor.Dtype.F32, Tensor.backend(a[0]))),
+    ),
+    try Tensor.layer_norm(a[3], 0.00001),
+    try Tensor.softmax(a[3], 1),
+    try Tensor.multi_head_attention(a[5], a[5], a[5], 2, some(mask)),
+  ])
+end
+
+def test_joins_and_whisper_ops_match_the_reference() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  for backend in [CPU, VULKAN]
+    next if !Tensor.available(backend)
+    try forward_parity(backend, [[2, 3, 4], [2, 3, 4]], &joins)
+    try forward_parity(backend, [[3, 8], [4, 3, 3], [6, 8], [4, 6], [5, 5], [1, 5, 4]], &whisper_ops)
+  end
+
+  ok()
 end
 
 def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]

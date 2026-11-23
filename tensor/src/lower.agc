@@ -48,6 +48,9 @@ LT = 23
 WHERE = 24
 SLICE = 25
 GATHER = 26
+GELU_ERF = 27
+CONCAT = 28
+CONV1D = 29
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -68,12 +71,18 @@ struct Plan
 end
 
 ## Runs the traced tensors `outs` on `Ggml(device)` as one graph. `env` holds
-## the value of every input node, keyed by node id.
-def evaluate(outs: List[Types.Tensor], env: Map[Int, Types.Tensor], device: Types.Device) -> Result[List[Types.Tensor]]
+## the value of every input node, keyed by node id. With `keep` false a graph
+## compiled here takes no slot of the structural cache.
+def evaluate(
+  outs: List[Types.Tensor],
+  env: Map[Int, Types.Tensor],
+  device: Types.Device,
+  keep: Bool = true,
+) -> Result[List[Types.Tensor]]
   code = try Ggml.code_of(device, "evaluate")
   p = try plan(outs, env, Types.Backend.Ggml(device))
   Native.arena do
-    lease = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1)
+    lease = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1, keep)
     if !GgmlRaw.ready(lease)
       for l in p.nodes
         _ = try GgmlRaw.node(lease, l.op, l.args, l.shape, l.ints)
@@ -150,6 +159,9 @@ def plan(outs: List[Types.Tensor], env: Map[Int, Types.Tensor], backend: Types.B
       Types.Op.Arange(start, stop, step) -> ints = [start, stop, step]
       Types.Op.Slice(starts, _) -> ints = starts
       Types.Op.Gather -> ints = [n.args[0].shape.size]
+      Types.Op.Concat(axis) -> ints = [axis, 0]
+      Types.Op.Stack(axis) -> ints = [axis, 1]
+      Types.Op.Conv1d(stride, padding) -> ints = [stride, padding]
       _ -> nil
     end
 
@@ -265,6 +277,10 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Where -> ok(WHERE)
     Types.Op.Slice(_, _) -> ok(SLICE)
     Types.Op.Gather -> ok(GATHER)
+    Types.Op.GeluErf -> ok(GELU_ERF)
+    Types.Op.Concat(_) -> ok(CONCAT)
+    Types.Op.Stack(_) -> ok(CONCAT)
+    Types.Op.Conv1d(_, _) -> ok(CONV1D)
     _ -> error("node #{n.id}: #{Types.op_name(n.op)} is not lowered to ggml yet")
   end
 end

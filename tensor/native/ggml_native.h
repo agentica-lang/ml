@@ -139,8 +139,9 @@ an_term ggml_transfer(an_env *env, struct ggml_TensorHandle_state *t, int64_t de
 
 /* A compiled graph cached under `key` on `device` that no one holds, or a
    new empty one with room for `capacity` nodes, to build with `node` and
-   `compile`. */
-an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity);
+   `compile`. A new graph with `keep` false takes no cache slot: it is
+   dropped when its lease is freed. */
+an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity, bool keep);
 
 /* True when the leased graph is compiled: a cache hit. */
 an_term ggml_ready(an_env *env, struct ggml_Lease_state *lease);
@@ -441,7 +442,9 @@ static an_term ggml_native_acquire(an_env *env, int argc, const an_term *argv) {
   if (!an_get_string(env, argv[1], &a1.data, &a1.len)) return an_badarg(env, 1);
   int64_t a2;
   if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
-  return ggml_acquire(env, a0, a1, a2);
+  bool a3;
+  if (!an_get_bool(env, argv[3], &a3)) return an_badarg(env, 3);
+  return ggml_acquire(env, a0, a1, a2, a3);
 }
 
 static an_term ggml_native_ready(an_env *env, int argc, const an_term *argv) {
@@ -538,7 +541,7 @@ static const an_function ggml_native_functions[] = {
   {"filled", "(Int, List[Int], Float, Bool) -> Result[TensorHandle]", ggml_native_filled, AN_DIRTY},
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
   {"transfer", "(TensorHandle, Int) -> Result[TensorHandle]", ggml_native_transfer, AN_DIRTY},
-  {"acquire", "(Int, String, Int) -> Result[Lease]", ggml_native_acquire, AN_DIRTY},
+  {"acquire", "(Int, String, Int, Bool) -> Result[Lease]", ggml_native_acquire, AN_DIRTY},
   {"ready", "(Lease) -> Bool", ggml_native_ready, AN_DIRTY},
   {"node", "(Lease, Int, List[Int], List[Int], List[Int]) -> Result[Int]", ggml_native_node, AN_DIRTY},
   {"compile", "(Lease, List[Int]) -> Result[Void]", ggml_native_compile, AN_DIRTY},
