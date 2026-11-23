@@ -375,20 +375,35 @@ an_term ggml_upload(an_env *env, int64_t device, ggml_list_Int shape, ggml_list_
   return store(env, state, bytes, term);
 }
 
-/* The tensor is filled where the file is read: in place on a host buffer (the CPU), through a host copy for
+/* Where the floats of a tensor come from: a byte range of a file that C reads, or the bytes Agentica read. */
+struct load_source {
+  const char *path;
+  size_t path_len;
+  int64_t offset;
+  const uint8_t *data;
+  size_t len;
+};
+
+/* The tensor is filled where the source is read: in place on a host buffer (the CPU), through a host copy for
    a device that has its own memory (Vulkan). */
-an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml_list_Int shape, int64_t format) {
+static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const struct load_source *src,
+                         int64_t format) {
   an_term term, failure;
   struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
   char why[FF_PATH_MAX + 160];
-  bool in_place, held;
+  bool in_place, held, read;
   float *host;
 
   if (!make_tensor(env, device, &shape, GGML_TYPE_F32, state, &failure)) return failure;
   in_place = !state->vulkan && ggml_backend_buffer_is_host(state->buffer);
   host = in_place ? (float *)state->t->data : (float *)host_bytes(state->t);
   if (host == NULL) return tg_error(env, "out of memory");
-  if (!ff_read(path.data, path.len, offset, ggml_nelements(state->t), format, host, why, sizeof why)) {
+  if (src->data != NULL) {
+    read = ff_from_bytes(src->data, src->len, ggml_nelements(state->t), format, host, why, sizeof why);
+  } else {
+    read = ff_read(src->path, src->path_len, src->offset, ggml_nelements(state->t), format, host, why, sizeof why);
+  }
+  if (!read) {
     if (!in_place) free(host);
     return tg_error(env, why);
   }
@@ -399,6 +414,18 @@ an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml
     free(host);
   }
   return ggml_result_TensorHandle_ok(env, term);
+}
+
+an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml_list_Int shape, int64_t format) {
+  struct load_source src = {path.data, path.len, offset, NULL, 0};
+
+  return load_from(env, device, shape, &src, format);
+}
+
+an_term ggml_from_bytes(an_env *env, int64_t device, ng_buf data, ggml_list_Int shape, int64_t format) {
+  struct load_source src = {NULL, 0, 0, data.data, data.len};
+
+  return load_from(env, device, shape, &src, format);
 }
 
 an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double value, bool int32) {

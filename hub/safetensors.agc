@@ -5,7 +5,7 @@
 ## `open` reads the header and nothing else. A float tensor (F32, F16, BF16)
 ## is read by the backend from its byte range of the file
 ## (`Tensor.from_file`), so no value goes through an Agentica list; any other
-## dtype is read here, without a seek, by dropping the bytes before it.
+## dtype is read here, from its offset (`File.seek`).
 
 import Binary from "std/binary"
 import Tensor from "pkg/tensor/tensor"
@@ -113,17 +113,10 @@ def read(path: String) -> Result[Shard]
   end
 end
 
-## `length` bytes at `offset` of `path`: the bytes before it are read and
-## dropped, since the File API has no seek.
+## `length` bytes at `offset` of `path`.
 def read_range(path: String, offset: Int, length: Int) -> Result[Bytes]
   File.open(path) do |f|
-    left = offset
-    while left > 0
-      chunk = try File.read_bytes(f, [left, CHUNK].min.unwrap!)
-      return error("the file ended #{left} bytes early") if chunk.empty?
-      left = left - chunk.size
-    end
-
+    try File.seek(f, offset)
     read_exact(f, length)
   end
 end

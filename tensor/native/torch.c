@@ -364,6 +364,24 @@ an_term torch_load(an_env *env, ng_str path, int64_t offset, torch_list_Int shap
   }
 }
 
+an_term torch_from_bytes(an_env *env, ng_buf data, torch_list_Int shape, int64_t format) {
+  std::vector<int64_t> dims;
+  an_term failure;
+  char why[160];
+
+  if (!read_shape(env, shape, &dims, &failure)) return failure;
+
+  try {
+    torch::Tensor built = torch::empty(dims, torch::TensorOptions().dtype(torch::kFloat32));
+    if (!ff_from_bytes(data.data, data.len, built.numel(), format, built.data_ptr<float>(), why, sizeof why)) {
+      return error_text(env, why);
+    }
+    return ok_tensor(env, built);
+  } catch (...) {
+    return failed(env, "from_bytes");
+  }
+}
+
 an_term torch_add(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b) {
   const torch::Tensor &left = *a->value;
   const torch::Tensor &right = *b->value;

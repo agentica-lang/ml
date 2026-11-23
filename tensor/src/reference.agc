@@ -22,6 +22,7 @@
 ## `tanh`, `gelu_tanh_approx`): saturation of finite inputs stays legitimate,
 ## but non-finite storage never enters the core.
 
+import FileRange from "file_range"
 import Types from "types"
 
 ## Natural log of two, double precision.
@@ -272,13 +273,11 @@ def from_list(data: List[Types.Values], shape: List[Int], dtype: Types.Dtype) ->
 end
 
 ## Creation: the floats of `format` at byte `offset` of the file `path`, as an
-## `F32` tensor of `shape`. The File API has no seek here, so the bytes before
-## `offset` are read and dropped: this is the slow path, for the oracle and for
-## small files. It is quadratic in the number of tensors read from one file,
-## and goes away with `File.seek` (ml#55).
+## `F32` tensor of `shape`, read and decoded in Agentica: the slow path, for the
+## oracle and for small files.
 def from_file(path: String, offset: Int, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
   n = try Types.volume(shape)
-  bytes = try read_range(path, offset, n * Types.file_width(format))
+  bytes = try FileRange.read_range(path, offset, n * Types.file_width(format))
   values: List[Float] = []
   for i in 0...n
     values = values.push(file_float(bytes, i, format))
@@ -1192,44 +1191,6 @@ def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> R
 end
 
 private
-
-## The bytes read at a time by `read_range`.
-CHUNK = 1048576
-
-## `length` bytes at `offset` of `path`: an `error` for a file that is too short.
-def read_range(path: String, offset: Int, length: Int) -> Result[Bytes]
-  return error("from_file: the offset is #{offset}, not 0 or more") if offset < 0
-  size = (try File.stat(path)).size_bytes
-  if offset + length > size
-    return error("#{path} has #{size} bytes: the range of #{length} bytes at #{offset} ends past them")
-  end
-
-  File.open(path) do |f|
-    try skip(f, offset)
-    parts: List[Bytes] = []
-    left = length
-    while left > 0
-      chunk = try File.read_bytes(f, [left, CHUNK].min.unwrap!)
-      return error("#{path} ended while it was read") if chunk.empty?
-      parts = parts.push(chunk)
-      left = left - chunk.size
-    end
-
-    ok(Bytes.concat(parts))
-  end
-end
-
-## Reads and drops `count` bytes of `f`.
-def skip(f: File.Handle, count: Int) -> Result[Void]
-  left = count
-  while left > 0
-    chunk = try File.read_bytes(f, [left, CHUNK].min.unwrap!)
-    return error("the file ended #{left} bytes early") if chunk.empty?
-    left = left - chunk.size
-  end
-
-  ok()
-end
 
 ## Element `i` of `b`, read as `format` says.
 def file_float(b: Bytes, i: Int, format: Types.FloatFormat) -> Float

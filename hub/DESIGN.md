@@ -49,10 +49,8 @@ The test fixtures drop the `model.` part of the prefix
   the size of the file is no limit. An F32, F16 or BF16 tensor goes to
   `Tensor.from_file`: the backend reads its byte range itself, with no
   Agentica list in between, and checks the range against the file again. Any
-  other dtype is read here, and since the File API of Agentica 0.36 has no
-  seek, the bytes before it are read and dropped; those tensors are small
-  (indices, masks). `File.seek` ([agentica#1927](https://github.com/agentica-lang/agentica/issues/1927),
-  ml#55) will make that a seek.
+  other dtype is read here, from its offset (`File.seek`, Agentica 0.37.0);
+  those tensors are small (indices, masks).
   A file replaced between `open` and `tensor` gives the weights of the new
   file at the old offsets (wrong, not a crash: C checks the range against the
   size of the file at each read). There is no stat or mtime check.

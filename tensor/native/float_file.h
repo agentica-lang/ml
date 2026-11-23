@@ -1,5 +1,6 @@
-/* Reads little-endian floats from a byte range of a file into a host buffer of `float`, for `ggml.c` and `torch.c`
-   (`Tensor.from_file`, `tensor/DESIGN.md` §4). It is compiled as C and as C++, so it casts every `malloc`.
+/* Reads little-endian floats from a byte range of a file, or from bytes Agentica read (`TENSOR_LOAD=agentica`), into a
+   host buffer of `float`, for `ggml.c` and `torch.c` (`Tensor.from_file`, `tensor/DESIGN.md` §4). It is compiled as C
+   and as C++, so it casts every `malloc`.
 
    The range is checked against the size of the file before anything is read, so a short file, a bad offset or a
    directory is an error and never a read past the end. An F32 range is read straight into `dest`; F16 and BF16
@@ -83,6 +84,17 @@ static float ff_bfloat(uint16_t b) {
   return out;
 }
 
+/* `count` values of a 16-bit `format` (FF_F16 or FF_BF16) in `raw`, widened into `dest`. */
+static void ff_widen(const uint8_t *raw, int64_t count, int64_t format, float *dest) {
+  int64_t i;
+
+  for (i = 0; i < count; i++) {
+    uint16_t v = (uint16_t)(raw[2 * i] | (raw[2 * i + 1] << 8));
+
+    dest[i] = format == FF_F16 ? ff_half(v) : ff_bfloat(v);
+  }
+}
+
 /* What an `open` failure means, in words that do not need `strerror` (not thread safe). */
 static const char *ff_open_why(int err) {
   switch (err) {
@@ -120,7 +132,7 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
                     char *why, size_t why_len) {
   char name[FF_PATH_MAX];
   struct stat info;
-  size_t width = ff_width(format), step, i, n;
+  size_t width = ff_width(format), step, n;
   int64_t done = 0, bytes;
   uint8_t *raw;
   int fd;
@@ -201,15 +213,35 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
       snprintf(why, why_len, "%s ended while it was read (it shrank?)", name);
       return false;
     }
-    for (i = 0; i < n; i++) {
-      uint16_t v = (uint16_t)(raw[2 * i] | (raw[2 * i + 1] << 8));
-
-      dest[done + (int64_t)i] = format == FF_F16 ? ff_half(v) : ff_bfloat(v);
-    }
+    ff_widen(raw, (int64_t)n, format, dest + done);
     done += (int64_t)n;
   }
   free(raw);
   close(fd);
+  return true;
+}
+
+/* The `count` values of `format` held by the `len` bytes of `data` (which Agentica read from a file), as floats in
+   `dest` (room for `count`; it may be NULL when `count` is 0). `len` must be exactly the range. False with the reason
+   in `why`. */
+static bool ff_from_bytes(const uint8_t *data, size_t len, int64_t count, int64_t format, float *dest, char *why,
+                          size_t why_len) {
+  size_t width = ff_width(format);
+
+  if (width == 0) {
+    snprintf(why, why_len, "unknown float format code %lld", (long long)format);
+    return false;
+  }
+  if (count < 0 || (uint64_t)count > SIZE_MAX / width || len != (size_t)count * width) {
+    snprintf(why, why_len, "%zu bytes are not %lld values of %zu bytes", len, (long long)count, width);
+    return false;
+  }
+  if (count == 0) return true;
+  if (format == FF_F32) {
+    memcpy(dest, data, len);
+  } else {
+    ff_widen(data, count, format, dest);
+  }
   return true;
 }
 
