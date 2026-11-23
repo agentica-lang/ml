@@ -7,18 +7,35 @@
 #   eval "$(sh tools/build-engine.sh | grep '^export ')"          # CPU only (CI)
 #   eval "$(sh tools/build-engine.sh vulkan | grep '^export ')"   # CPU + Vulkan
 #   JOBS=2 sh tools/build-engine.sh vulkan                        # parallel jobs
+#   ENGINE_REBUILD=1 sh tools/build-engine.sh vulkan              # ignore the cache
 #
 # ggml is the pinned submodule and nothing else: no source is copied into the
-# package, and the build trees land in `third_party/ggml/build-tensor-cpu` and
-# `build-tensor-vulkan` (ignored by ggml's own .gitignore).
+# package. The build trees land in `third_party/ggml/build-tensor-cpu` and
+# `build-tensor-vulkan` (ignored by ggml's own .gitignore), but what the
+# module links lives outside the checkout, in a cache shared by every
+# worktree:
+#
+#   ${AGENTICA_ML_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agentica-ml}/ggml/<key>/
+#
+# The key is the ggml commit, the action, a hash of the cmake flags and a hash
+# of the `cc` and `c++` versions. The entry holds ggml's static archives (the
+# Vulkan one with its shaders already compiled in) and `libtensor_ggml.a`, so
+# it needs nothing from a build tree. A hit builds nothing: the same pinned
+# ggml is never compiled twice. A miss builds in the tree (through ccache when
+# it is on PATH) and then publishes the entry whole (a temp dir, then `mv`),
+# under a lock per key, so two scripts that need the same entry build it once.
+# `ENGINE_REBUILD=1` wipes the tree and rebuilds the entry. An inherited `CC` or
+# `CXX` (`tools/build-torch.sh` sets `CC=g++` for the torch module) is ignored
+# here: ggml is configured and built with the default `cc` and `c++`, so the
+# key and the entry are the same whether or not torch was set up first.
 #
 # The module's build table names one library, `tensor_ggml`. This script
-# writes it into the build tree as a GNU ld linker script that lists ggml's
-# static archives: the CPU tree lists ggml, ggml-cpu and ggml-base; the Vulkan
-# tree adds ggml-vulkan and the Vulkan loader. So one `agentica.toml` links
-# either tree, CI needs no Vulkan, and the C module picks Vulkan up through
-# ggml's backend registry at run time (no `#ifdef`). The two trees have
-# different `LIBRARY_PATH`s, so the package cache keeps one module per tree.
+# writes it into the cache entry as a GNU ld linker script that lists ggml's
+# static archives: the CPU entry lists ggml, ggml-cpu and ggml-base; the Vulkan
+# entry adds ggml-vulkan and the Vulkan loader. So one `agentica.toml` links
+# either entry, CI needs no Vulkan, and the C module picks Vulkan up through
+# ggml's backend registry at run time (no `#ifdef`). The two entries have
+# different `LIBRARY_PATH`s, so the package cache keeps one module per entry.
 #
 # The Vulkan build needs the Vulkan headers and loader (`libvulkan-dev`),
 # `glslc` and `SPIRV-Headers`, looked for in `$VULKAN_SDK`, then
@@ -30,7 +47,7 @@
 #   export C_INCLUDE_PATH="third_party/ggml/include:..."      ggml's headers (gcc)
 #   export CPLUS_INCLUDE_PATH="third_party/ggml/include:..."  the same for g++, which
 #                                                             tools/build-torch.sh makes CC
-#   export LIBRARY_PATH="third_party/ggml/build-tensor-cpu:..."   libtensor_ggml.a
+#   export LIBRARY_PATH="<cache>/ggml/<key>:..."              libtensor_ggml.a
 set -eu
 
 action=${1:-cpu}
@@ -108,15 +125,56 @@ else
   flags="$flags -DGGML_VULKAN=OFF"
 fi
 
+rev=$(git -C "$engine" rev-parse HEAD 2> /dev/null || true)
+[ -n "$rev" ] || {
+  echo "build-engine.sh: cannot read the ggml commit of third_party/ggml" >&2
+  exit 1
+}
+short_hash() { sha256sum | cut -c1-8; }
+flags_hash=$(printf 'v1 %s' "$flags" | short_hash)
+cc_hash=$({ cc --version | head -n 1; c++ --version | head -n 1; } 2> /dev/null | short_hash)
+key="$(printf '%s' "$rev" | cut -c1-12)-$action-$flags_hash-$cc_hash"
+cache="${AGENTICA_ML_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agentica-ml}/ggml"
+entry="$cache/$key"
+
+print_exports() {
+  echo "ggml $action build: $entry"
+  echo "export C_INCLUDE_PATH=\"$engine/include\${C_INCLUDE_PATH:+:\$C_INCLUDE_PATH}\""
+  echo "export CPLUS_INCLUDE_PATH=\"$engine/include\${CPLUS_INCLUDE_PATH:+:\$CPLUS_INCLUDE_PATH}\""
+  echo "export LIBRARY_PATH=\"$entry\${LIBRARY_PATH:+:\$LIBRARY_PATH}\""
+}
+
+# One lock per key, held to the end: a second script waits, then hits.
+mkdir -p "$cache"
+exec 9> "$cache/$key.lock"
+flock 9
+
+if [ -z "${ENGINE_REBUILD:-}" ] && [ -f "$entry/libtensor_ggml.a" ]; then
+  echo "ggml $action: cache hit $key" >&2
+  print_exports
+  exit 0
+fi
+
+if [ -n "${ENGINE_REBUILD:-}" ]; then
+  rm -rf "$build"
+fi
+if command -v ccache > /dev/null 2>&1; then
+  flags="$flags -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+fi
+
 mkdir -p "$build"
 # shellcheck disable=SC2086
-cmake -S "$engine" -B "$build" $flags > "$build/configure.log" 2>&1 || {
+env -u CC -u CXX cmake -S "$engine" -B "$build" $flags > "$build/configure.log" 2>&1 || {
   echo "build-engine.sh: the $action configure failed; its log:" >&2
   tail -20 "$build/configure.log" >&2
   exit 1
 }
 # shellcheck disable=SC2086
-cmake --build "$build" --target $targets -j"$jobs" >&2
+env -u CC -u CXX cmake --build "$build" --target $targets -j"$jobs" >&2
+
+tmp=$(mktemp -d "$cache/.tmp-XXXXXX")
+chmod 755 "$tmp"
+trap 'rm -rf "$tmp"' EXIT
 
 archive() {
   found=$(find "$build/src" -name "lib$1.a" | head -n 1)
@@ -124,16 +182,18 @@ archive() {
     echo "build-engine.sh: no lib$1.a under $build/src" >&2
     exit 1
   }
-  printf '%s' "$found"
+  cp "$found" "$tmp/lib$1.a"
+  printf '%s' "$entry/lib$1.a"
 }
 
 libs="$(archive ggml) $(archive ggml-cpu) $(archive ggml-base)"
 if [ "$action" = vulkan ]; then
   libs="$libs $(archive ggml-vulkan) $vulkan_lib"
 fi
-printf '/* ggml for the tensor/ native module: tools/build-engine.sh %s */\nGROUP ( %s )\n' "$action" "$libs" > "$build/libtensor_ggml.a"
+printf '/* ggml for the tensor/ native module: tools/build-engine.sh %s */\nGROUP ( %s )\n' "$action" "$libs" > "$tmp/libtensor_ggml.a"
 
-echo "ggml $action build: $build"
-echo "export C_INCLUDE_PATH=\"$engine/include\${C_INCLUDE_PATH:+:\$C_INCLUDE_PATH}\""
-echo "export CPLUS_INCLUDE_PATH=\"$engine/include\${CPLUS_INCLUDE_PATH:+:\$CPLUS_INCLUDE_PATH}\""
-echo "export LIBRARY_PATH=\"$build\${LIBRARY_PATH:+:\$LIBRARY_PATH}\""
+rm -rf "$entry.old"
+[ ! -d "$entry" ] || mv "$entry" "$entry.old"
+mv "$tmp" "$entry"
+rm -rf "$entry.old"
+print_exports
