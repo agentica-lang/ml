@@ -1,8 +1,8 @@
 # nn — design
 
 Functional layers over `tensor/`, forward only (inference). Depends only on
-`tensor/` (`path = "../tensor"`), so it runs on every backend `tensor/` has:
-the reference and libtorch today.
+`tensor/` (a member of the same workspace, read from `../tensor`), so it runs
+on every backend `tensor/` has: the reference and libtorch today.
 
 ## API
 

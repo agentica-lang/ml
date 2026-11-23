@@ -5,8 +5,9 @@ backends (libtorch, XLA, candle). The API is functional, in the style of JAX and
 Nx: values are immutable, and a training step returns new parameters.
 
 Status: in progress. `whisper/` is the first package; `tensor/` (reference
-and libtorch backends, tracing and gradients) and the first layers of `nn/`
-([`nn/DESIGN.md`](nn/DESIGN.md)) are in. The tensor stack is
+and libtorch backends, tracing and gradients), the first layers of `nn/`
+([`nn/DESIGN.md`](nn/DESIGN.md)) and the first of `train/`
+([`train/DESIGN.md`](train/DESIGN.md)) are in. The tensor stack is
 designed in [`tensor/DESIGN.md`](tensor/DESIGN.md), with execution order in
 [`roadmap.md`](roadmap.md) and the open decisions in
 [issue #1](https://github.com/agentica-lang/ml/issues/1).
@@ -23,10 +24,12 @@ Versions are prefixed tags, such as `tensor-0.1.0`.
 | `xla/` | XLA backend (JIT, like JAX), through the PJRT C API | `tensor`, a PJRT plugin |
 | `candle/` | candle backend (eager), through a thin C layer over Rust | `tensor`, candle |
 | `nn/` | functional layers, forward only: dense, layer norm, embeddings, attention, MLP, a transformer encoder block, seeded initializers | `tensor` |
-| `train/` | gradients (computed in Agentica over the graph), losses, optimizers, the training loop | `nn` |
+| `train/` | losses (`mse`, binary cross-entropy), optimizers (SGD, Adam), the training loop over `tensor/`'s gradients | `tensor`, `nn` |
 | `hub/` | `safetensors` weights and Hugging Face models (later) | `nn` |
 
 An inference app depends on `nn` and one backend; a training app adds `train`.
+Inside this repository the packages are members of one Agentica workspace (the
+root `agentica.toml`), so they read each other from their folders.
 
 ```toml
 [dependencies]
