@@ -23,7 +23,7 @@ There are no releases yet: a project pins a member by a commit of `main`
 |---|---|---|
 | `tensor/` | the tensor API, the backend interface, a slow reference backend in Agentica, and the libtorch (eager) backend behind a thin C++ layer | nothing native for the reference backend; libtorch 2.4.1+cpu, **optional**, for `Backend.Torch` |
 | `nn/` | functional layers, forward only: dense, layer norm, embeddings, convolution, attention, MLP, transformer encoder and decoder blocks, seeded initializers | `tensor` |
-| `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam), the training loop over `tensor/`'s gradients | `tensor`, `nn` (tests) |
+| `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam), a data loader (seeded shuffle, background prefetch), the training loop over `tensor/`'s gradients | `tensor`, `hub` (and `nn` through it) |
 | `hub/` | `safetensors` checkpoints (one file or sharded with an index) read in Agentica, and `nn` layers loaded from them by name | `tensor`, `nn` |
 | `asr/` | Whisper's model forward (conv stem, encoder, decoder, tied logits) loaded from a Hugging Face checkpoint; inference only | `tensor`, `nn`, `hub` |
 | `whisper/` | a binding over the pinned whisper.cpp engine, with WAV reading, microphone capture and long-audio chunking | whisper.cpp (a submodule), a C/C++ compiler |

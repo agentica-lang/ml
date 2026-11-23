@@ -21,6 +21,7 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
 | `nn/` primer PR: capas funcionales (`dense`, `layer_norm`, `embedding`, `attention`, `mlp`, `encoder_block`), init con semilla, solo forward; `dense` y `mlp` relu diferenciables vía `Trace` | `nn/` | #20 |
 | `train/` primer PR: `Loss.mse`, `Loss.binary_cross_entropy`, `Optim` (SGD, Adam) puros, `Train.fit` sobre `Trace.value_and_grad`; la raíz pasa a ser un workspace | `train/`, `agentica.toml` | #21 |
 | `tensor/`: `stop_grad` y reglas de backward de `sqrt`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `max`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `gather`; `softmax`, `layer_norm`, atención y `embedding` diferenciables; `Loss.cross_entropy` | `tensor/`, `train/` | #24 |
+| `train/` loader: `Data` (dataset en memoria o de un safetensors, barajado con semilla por época, `drop_last`, un `gather` por batch), prefetch en un `Task` con `Channel` acotado; `fit` toma un `Data.Loader` | `train/data.agc` | (este PR) |
 | `nn/` decoder: `causal_mask`, `DecoderBlock` pre-norm como Whisper; `Load.decoder_block` en `hub/` | `nn/`, `hub/` | #26 |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
@@ -65,7 +66,9 @@ Ningún subagente sigue corriendo.
    `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
 3. **`asr/`**: frontend log-mel, tokenizer y decodificación; después, comparar
    con whisper-tiny real (hoy solo se compara con el peer propio).
-4. **`train/`**: shuffling y schedules.
+4. **`train/`**: schedules, y aplanar structs de capas (pytrees) cuando un
+   modelo lo pida. El prefetch solo oculta el coste de armar el batch; un
+   tensor nativo muere con el task que lo hizo.
 5. **`hub/`**: descarga HF con `http-client` `stream()`, **nunca** `bond` (es
    solo servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
 6. **CI**: un job no requerido con libtorch pineado por sha256.
