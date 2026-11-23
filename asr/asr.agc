@@ -262,7 +262,13 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
         )
       end
 
-      fresh = (try Trace.run(blocks.unwrap!, [h] + encoder_parts(m.encoder[i])))[0]
+      ran = Trace.run(blocks.unwrap!, [h] + encoder_parts(m.encoder[i]))
+      case ran
+        ok(xs) -> fresh = xs[0]
+        error(e) ->
+          Trace.close(blocks.unwrap!)
+          return error(e)
+      end
     else
       fresh = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.encoder_block(model.encoder[i], x) })
     end
@@ -339,7 +345,7 @@ def step(m: Model, cache: Cache, ids: List[Int], spare: List[Tensor.Tensor] = []
     case read
       ok(logits) -> return ok(Stepped(logits: logits, cache: a.cache))
       error(e) ->
-        close(kept(a.cache))
+        finish(a.cache)
         return error(e)
     end
   end
@@ -391,12 +397,12 @@ def step_pick(
         case chosen_id(pair[0], want[0])
           ok(id) -> return ok(Picked(id: id, logprob: pair[1], cache: a.cache))
           error(e) ->
-            close(kept(a.cache))
+            finish(a.cache)
             return error(e)
         end
 
       error(e) ->
-        close(kept(a.cache))
+        finish(a.cache)
         return error(e)
     end
   end
@@ -549,9 +555,10 @@ def decide(
       break if picked.id == tok.eot
       emitted = emitted.push(picked.id)
       break if emitted.size == limit
-      next = try guard(
+      next = try abandon(
         pick_next(m, rules, picked.cache, [picked.id], rest, spent, emitted),
-        kept(picked.cache) + [first, rest],
+        picked.cache,
+        [first, rest],
       )
 
       spent = kept(picked.cache)
@@ -572,7 +579,7 @@ def decide(
     break if id == tok.eot
     emitted = emitted.push(id)
     break if emitted.size == limit
-    next = try guard(step(m, stepped.cache, [id], spent), kept(stepped.cache))
+    next = try abandon(step(m, stepped.cache, [id], spent), stepped.cache, [])
     spent = kept(stepped.cache)
     stepped = next
   end
@@ -606,6 +613,17 @@ def pick_next(
   got = step_pick(m, cache, ids, mask, spare, some(Stamps(rules: rules, state: state)))
   close([state])
   got
+end
+
+## `r`, finishing `cache` and closing `held` first when it is an error.
+def abandon[T](r: Result[T], cache: Cache, held: List[Tensor.Tensor]) -> Result[T]
+  case r
+    ok(v) -> ok(v)
+    error(e) ->
+      finish(cache)
+      close(held)
+      error(e)
+  end
 end
 
 ## `r`, closing `held` first when it is an error.

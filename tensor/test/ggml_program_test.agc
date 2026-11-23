@@ -456,6 +456,7 @@ def test_into_refuses_what_cannot_take_an_output() -> Result[Void]
   )
 
   try refused(Trace.run(twice, [args[0]], [some(spare), some(spare)]), "another output")
-  got = try Trace.run(compiled, args, [some(spare)])
-  Test.assert(try gap(got[0], spare) == 0.0, "an accepted output was not written")
+  _ = try Trace.run(compiled, args, [some(spare)])
+  fresh = try Trace.run(compiled, args)
+  Test.assert(try gap(spare, fresh[0]) < TOL, "an accepted output was not written")
 end
