@@ -68,8 +68,15 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   a step writes its rows at their positions with a 0/1 matrix product (exact
   in F32), and its mask hides the later positions and the padding. A step's
   graph changes shape only with the number of ids and the capacity, so a
-  transcription compiles a few graphs and the next one none. The token ids
-  and positions are I32, which ggml holds.
+  transcription compiles a few graphs and the next one none. The compiled
+  steps and the encoder block are kept by the model (`Model.plans`, a channel
+  of one value that holds the map, which a task takes and puts back at once),
+  so every transcription of a model, from any task, traces and plans each of
+  them once: `planned` looks the key up, and compiles and stores on a miss.
+  The kept copy has no pin (that stays with the task that compiled), so a run
+  of it builds the graph again if the cache lost it. If the task that loaded
+  the model has ended, its channel is closed and every call compiles, as
+  before. The token ids and positions are I32, which ggml holds.
 
 ## The log-mel frontend (`mel.agc`)
 

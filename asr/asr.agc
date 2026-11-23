@@ -58,6 +58,9 @@ struct Model
   decoder_norm: Nn.LayerNorm
   ## The output projection, tied to `tokens`: its table transposed, no bias.
   logits: Nn.Dense
+  ## The compiled functions of this model that its transcriptions share (`planned`): a channel of one value, the map,
+  ## which a task takes to read or change it and puts back at once.
+  plans: Channel[Map[String, Trace.Compiled]]
 end
 
 ## One attention's keys and values, `[1, keys, d_model]` each: `keys` is the
@@ -228,6 +231,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
       decoder: decoder,
       decoder_norm: try Load.layer_norm(c, "#{d}layer_norm", EPS, backend),
       logits: Nn.Dense(w: try Load.transposed(tokens.table), b: none),
+      plans: try shared_plans(),
     ),
   )
 end
@@ -254,7 +258,9 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
       if i == 0
         first = m.encoder[0]
         blocks = some(
-          try Trace.compile(
+          try planned(
+            m,
+            "encoder #{Tensor.shape(h)}",
             ([h] + encoder_parts(first)).map { |t| Trace.spec_of(t) },
             ->(xs: List[Tensor.Tensor]) { ok([try Nn.encoder_block(encoder_over(first, xs.drop(1)), xs[0])]) },
           ),
@@ -1102,7 +1108,9 @@ def advance(
   if n == 1 and cache.length > 0
     key = "#{Tensor.shape(cache.own[0].key)[1]} #{room} #{picking} #{stamped(rules)}"
     if !graphs.has_key?(key)
-      built = Trace.compile(
+      built = planned(
+        m,
+        key,
         (fed + step_inputs(cache)).map { |t| Trace.spec_of(t) },
         ->(xs: List[Tensor.Tensor]) {
           stepped_graph(traced(m), cache_over(cache, xs.drop(head)), xs.take(head), room, picking, rules)
@@ -1157,6 +1165,39 @@ def fits(spare: List[Tensor.Tensor], cache: Cache, room: Int) -> Bool
   (0...have.size).all? { |i|
     Tensor.shape(spare[i]) == Tensor.shape(have[i]) and Tensor.dtype(spare[i]) == Tensor.dtype(have[i])
   }
+end
+
+def shared_plans() -> Result[Channel[Map[String, Trace.Compiled]]]
+  cell: Channel[Map[String, Trace.Compiled]] = Channel.new(1)
+  empty: Map[String, Trace.Compiled] = {}
+  try cell.send(empty, 1000)
+  ok(cell)
+end
+
+## The function `key` of `m`, compiled for `specs` and `f` once for every transcription of the model: looked up in the
+## model's map first, and compiled (then put there) on a miss. The copy kept has no pin, which stays with the task that
+## compiled; a run of it builds the graph again if the cache has lost it. A map that cannot be taken (the task that loaded
+## the model has ended and closed the channel) is a miss every time.
+def planned(
+  m: Model,
+  key: String,
+  specs: List[Trace.Spec],
+  f: Fn[List[Tensor.Tensor], Result[List[Tensor.Tensor]]],
+) -> Result[Trace.Compiled]
+  taken = m.plans.recv(1000)
+  if taken.ok?
+    plans = taken.unwrap!
+    _ = m.plans.send(plans, 1000)
+    return ok(plans[key]) if plans.has_key?(key)
+  end
+
+  compiled = try Trace.compile(specs, f)
+  again = m.plans.recv(1000)
+  if again.ok?
+    _ = m.plans.send(again.unwrap!.put(key, compiled.with(pin: none)), 1000)
+  end
+
+  ok(compiled)
 end
 
 ## What identifies the timestamp rules in the key of a compiled step.

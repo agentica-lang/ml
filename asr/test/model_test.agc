@@ -23,6 +23,27 @@ REL = 0.000000001
 ## libtorch's F32 against the peer's doubles.
 F32 = 0.00001
 
+## The compiled steps belong to the model: a second decoding over the same model finds them and traces and plans
+## nothing, which the VM steps of the task show, and gives the same logits.
+def test_the_compiled_steps_are_shared_by_every_decoding_of_a_model() -> Result[Void]
+  with_fixtures do |dir|
+    for backend in try ggml_backends()
+      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      audio = try Asr.encode(m, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
+      before = System.Profile.steps()
+      first = try decoded(m, audio)
+      cold = System.Profile.steps() - before
+      before = System.Profile.steps()
+      second = try decoded(m, audio)
+      warm = System.Profile.steps() - before
+      try Test.eq(second, first)
+      try Test.assert(warm * 2 < cold, "a second decoding took #{warm} steps, the first #{cold}")
+    end
+
+    ok()
+  end
+end
+
 private
 
 ## A vocabulary of 16: text 0..4, `eot` 5, specials 6..9 (`<|notimestamps|>` is 9, 7 is suppressed), timestamps 10..15,
@@ -429,6 +450,19 @@ def ruled(
   end
 
   ok()
+end
+
+## The logits of ten steps after a prompt.
+def decoded(m: Asr.Model, audio: Tensor.Tensor) -> Result[List[Float]]
+  cache = try Asr.listen(m, audio)
+  stepped = try Asr.step(m, cache, [5, 6, 4])
+  logits: List[Float] = []
+  for i in 0...10
+    stepped = try Asr.step(m, stepped.cache, [i % 7])
+    logits = logits + stepped.logits
+  end
+
+  ok(logits)
 end
 
 def masked(values: List[Float], backend: Tensor.Backend) -> Result[Tensor.Tensor] = f32(values, [values.size], backend)
