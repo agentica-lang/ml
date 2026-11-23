@@ -71,45 +71,35 @@ CC_RELEASES_IF(tg_device_lock, held) static void unlock_for(bool held) {
   if (held) tg_unlock_device();
 }
 
-/* What a freed tensor handle leaves behind. */
-struct remains {
-  struct deferred link;
-  ggml_backend_buffer_t buffer;
-  struct ggml_context *ctx;
-};
+static void free_storage(void *arg) {
+  struct tg_storage *s = (struct tg_storage *)arg;
 
-static void free_remains(void *arg) {
-  struct remains *r = (struct remains *)arg;
-
-  if (r->buffer != NULL) ggml_backend_buffer_free(r->buffer);
-  if (r->ctx != NULL) ggml_free(r->ctx);
-  free(r);
+  if (s->buffer != NULL) ggml_backend_buffer_free(s->buffer);
+  if (s->ctx != NULL) ggml_free(s->ctx);
+  free(s);
 }
 
+void tg_storage_retain(struct tg_storage *s) { __atomic_fetch_add(&s->refs, 1, __ATOMIC_RELAXED); }
+
+void tg_storage_release(struct tg_storage *s) {
+  if (__atomic_sub_fetch(&s->refs, 1, __ATOMIC_ACQ_REL) == 0) {
+    s->link.fn = free_storage;
+    s->link.arg = s;
+    tg_defer(&s->link);
+  }
+}
+
+/* A free hook runs on the scheduler, so it never waits for a graph: the memory goes when the last holder (this
+   handle, or a graph bound to it) lets go, at the next hold of the device lock. */
 static void ggml_TensorHandle_free(void *state) {
   struct ggml_TensorHandle_state *self = (struct ggml_TensorHandle_state *)state;
-  struct remains *r;
 
-  if (self->buffer != NULL || self->ctx != NULL) {
-    r = (struct remains *)malloc(sizeof *r);
-    if (r == NULL) {
-      /* no memory to queue the free: do it now, waiting for the lock */
-      tg_lock_device();
-      if (self->buffer != NULL) ggml_backend_buffer_free(self->buffer);
-      if (self->ctx != NULL) ggml_free(self->ctx);
-      tg_unlock_device();
-    } else {
-      r->buffer = self->buffer;
-      r->ctx = self->ctx;
-      r->link.fn = free_remains;
-      r->link.arg = r;
-      tg_defer(&r->link);
-    }
-  }
+  if (self->store != NULL) tg_storage_release(self->store);
   memset(self, 0, sizeof *self);
 }
 #define GGML_TensorHandle_FREE ggml_TensorHandle_free
 #define GGML_Lease_FREE ggml_Lease_free
+#define GGML_Pin_FREE ggml_Pin_free
 
 /* ggml-Vulkan converts F32 `mul_mat` inputs to fp16 on a device that has
    fp16, unless GGML_VK_DISABLE_F16 is set when ggml first enumerates its
@@ -251,11 +241,15 @@ bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_t
   if (dev == NULL) return failed(env, failure, why);
   if (buft == NULL) return failed(env, failure, "the device has no buffer type");
   state->vulkan = device >= 0;
+  state->store = (struct tg_storage *)calloc(1, sizeof *state->store);
+  if (state->store == NULL) return failed(env, failure, "out of memory");
+  state->store->refs = 1;
 
   params.mem_size = ggml_tensor_overhead();
   params.mem_buffer = NULL;
   params.no_alloc = true;
   state->ctx = ggml_init(params);
+  state->store->ctx = state->ctx;
   if (state->ctx == NULL) return failed(env, failure, "out of memory");
   state->t = ggml_new_tensor_4d(state->ctx, type, ne[0], ne[1], ne[2], ne[3]);
 
@@ -266,6 +260,7 @@ bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_t
   if (size < ggml_backend_buft_get_alignment(buft)) size = ggml_backend_buft_get_alignment(buft);
   lock_for(state->vulkan, &held);
   state->buffer = ggml_backend_buft_alloc_buffer(buft, size);
+  state->store->buffer = state->buffer;
   placed = state->buffer == NULL ? GGML_STATUS_ALLOC_FAILED
                                  : ggml_backend_tensor_alloc(state->buffer, state->t,
                                                              ggml_backend_buffer_get_base(state->buffer));

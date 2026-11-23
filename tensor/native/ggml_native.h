@@ -31,7 +31,7 @@ typedef struct {
 #endif
 
 /* The rows of the resource table: the TYPE of an_resource_new and an_get_resource. */
-enum { GGML_RESOURCE_TensorHandle = 0, GGML_RESOURCE_Lease = 1 };
+enum { GGML_RESOURCE_TensorHandle = 0, GGML_RESOURCE_Lease = 1, GGML_RESOURCE_Pin = 2 };
 
 /* One tensor in a ggml backend buffer of its device: the state owns a
    ggml context holding the tensor's metadata and the buffer holding its
@@ -66,6 +66,25 @@ static inline struct ggml_Lease_state *ggml_Lease_new(an_env *env, an_term *out)
 static inline struct ggml_Lease_state *ggml_Lease_get(an_env *env, an_term t) {
   void *state;
   return an_get_resource(env, t, GGML_RESOURCE_Lease, &state) ? (struct ggml_Lease_state *)state : NULL;
+}
+
+/* Keeps the compiled graph of `lease` in the structural cache for as long
+   as the `Pin` lives, however many other graphs the cache takes in: the
+   graph is exempt from eviction. The pin ends when its owner closes it or
+   ends; the graph then stays in the cache as any other. The lease must hold
+   a compiled graph that has a slot of the cache.
+
+   Define it, and GGML_Pin_FREE (a void (*)(void *state), or NULL), before GGML_NATIVE_MODULE.
+   A parameter of this type is its state. _new makes one, with zeroed state. _get gives the state of a term
+   that is an argument of this call, and NULL for any other, one made by _new in the same call included. The
+   state is valid until the call returns: do not keep the pointer. */
+struct ggml_Pin_state;
+static inline struct ggml_Pin_state *ggml_Pin_new(an_env *env, an_term *out) {
+  return (struct ggml_Pin_state *)an_resource_new(env, GGML_RESOURCE_Pin, out);
+}
+static inline struct ggml_Pin_state *ggml_Pin_get(an_env *env, an_term t) {
+  void *state;
+  return an_get_resource(env, t, GGML_RESOURCE_Pin, &state) ? (struct ggml_Pin_state *)state : NULL;
 }
 
 /* The Lists, Maps, Optionals and Results. A List or Map that is read is a cursor: _next gives 1 for an item, 0 at
@@ -117,6 +136,8 @@ an_term ggml_result_Int_ok(an_env *env, int64_t value);
 
 an_term ggml_result_Void_ok(an_env *env, an_term value);
 
+an_term ggml_result_Pin_ok(an_env *env, an_term value);
+
 /* How many Vulkan devices this build of ggml sees, not counting a CPU
    device (a software rasterizer): 0 when ggml was built without its Vulkan
    backend (`tools/build-engine.sh cpu`). It opens no device. */
@@ -167,14 +188,22 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs);
 
 /* Makes `t` the leaf `slot` for the next run (leaves count in the order
-   they were sent): an F32 tensor is read in place, so the caller keeps
-   `t` alive until `run` returns; another one is converted into the
-   leaf's own memory now. */
+   they were sent): an F32 tensor is read in place, another one is
+   converted into the leaf's own memory now. The graph holds `t`'s memory
+   until the lease ends, so a `t` that is closed meanwhile does not leave
+   the run without its data. */
 an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, struct ggml_TensorHandle_state *t);
 
 /* A fresh tensor that the next run writes output `output` into, stored as
    I32 when `int32` says so. */
 an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output, bool int32);
+
+/* Makes `t`, a tensor that exists, the tensor that the next run writes
+   output `output` into, in place of a fresh one: an F32 tensor of the same
+   element count is written directly. `t` must not be a leaf of this run. */
+an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t output, struct ggml_TensorHandle_state *t);
+
+an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease);
 
 /* Sets the fills (one value each, in the order they were sent) and runs
    the graph into the tensors `output` made; every leaf and output must be
@@ -389,6 +418,10 @@ an_term ggml_result_Void_ok(an_env *env, an_term value) {
   return an_ok(env, value);
 }
 
+an_term ggml_result_Pin_ok(an_env *env, an_term value) {
+  return an_ok(env, value);
+}
+
 static an_term ggml_native_vulkan_devices(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   (void)argv;
@@ -555,6 +588,24 @@ static an_term ggml_native_output(an_env *env, int argc, const an_term *argv) {
   return ggml_output(env, a0, a1, a2);
 }
 
+static an_term ggml_native_output_into(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  struct ggml_TensorHandle_state *a2 = ggml_TensorHandle_get(env, argv[2]);
+  if (!a2) return an_badarg(env, 2);
+  return ggml_output_into(env, a0, a1, a2);
+}
+
+static an_term ggml_native_pin(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  return ggml_pin(env, a0);
+}
+
 static an_term ggml_native_run(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   ng_fail fail;
@@ -594,6 +645,8 @@ static const an_function ggml_native_functions[] = {
   {"compile", "(Lease, List[Int]) -> Result[Void]", ggml_native_compile, AN_DIRTY},
   {"bind", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_bind, AN_DIRTY},
   {"output", "(Lease, Int, Bool) -> Result[TensorHandle]", ggml_native_output, AN_DIRTY},
+  {"output_into", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_output_into, AN_DIRTY},
+  {"pin", "(Lease) -> Result[Pin]", ggml_native_pin, AN_DIRTY},
   {"run", "(Lease, List[Float]) -> Result[Void]", ggml_native_run, AN_DIRTY},
   {"compiles", "() -> Int", ggml_native_compiles, AN_DIRTY},
   {"vulkan_fp16", "(Bool) -> Result[Void]", ggml_native_vulkan_fp16, AN_DIRTY},
@@ -605,6 +658,7 @@ static const an_function ggml_native_functions[] = {
   static const an_resource_type ggml_native_resources[] = { \
     {"TensorHandle", sizeof(struct ggml_TensorHandle_state), GGML_TensorHandle_FREE}, \
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
+    {"Pin", sizeof(struct ggml_Pin_state), GGML_Pin_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 16, NULL, 0, ggml_native_resources, 2, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 18, NULL, 0, ggml_native_resources, 3, LOAD)
 #endif

@@ -71,13 +71,25 @@ extern module "ggml"
   ## node against the backend. A failed compile leaves the graph unusable.
   compute def compile(lease: Lease, outputs: List[Int]) -> Result[Void]
   ## Makes `t` the leaf `slot` for the next run (leaves count in the order
-  ## they were sent): an F32 tensor is read in place, so the caller keeps
-  ## `t` alive until `run` returns; another one is converted into the
-  ## leaf's own memory now.
+  ## they were sent): an F32 tensor is read in place, another one is
+  ## converted into the leaf's own memory now. The graph holds `t`'s memory
+  ## until the lease ends, so a `t` that is closed meanwhile does not leave
+  ## the run without its data.
   compute def bind(lease: Lease, slot: Int, t: TensorHandle) -> Result[Void]
   ## A fresh tensor that the next run writes output `output` into, stored as
   ## I32 when `int32` says so.
   compute def output(lease: Lease, output: Int, int32: Bool) -> Result[TensorHandle]
+  ## Makes `t`, a tensor that exists, the tensor that the next run writes
+  ## output `output` into, in place of a fresh one: an F32 tensor of the same
+  ## element count is written directly. `t` must not be a leaf of this run.
+  compute def output_into(lease: Lease, output: Int, t: TensorHandle) -> Result[Void]
+  ## Keeps the compiled graph of `lease` in the structural cache for as long
+  ## as the `Pin` lives, however many other graphs the cache takes in: the
+  ## graph is exempt from eviction. The pin ends when its owner closes it or
+  ## ends; the graph then stays in the cache as any other. The lease must hold
+  ## a compiled graph that has a slot of the cache.
+  resource Pin
+  compute def pin(lease: Lease) -> Result[Pin]
   ## Sets the fills (one value each, in the order they were sent) and runs
   ## the graph into the tensors `output` made; every leaf and output must be
   ## set since the last run. An error when an output is not finite.

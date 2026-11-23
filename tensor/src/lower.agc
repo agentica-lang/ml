@@ -109,14 +109,47 @@ def program(outs: List[Types.Tensor], inputs: List[Types.Tensor], device: Types.
   System.Profile.measure("ml.plan") do lower(outs, inputs.map { |t| Graph.id_of(t) }, device, true) end
 end
 
+## The graph of `p` in the structural cache, built if it is not there, kept
+## out of the cache's eviction for as long as the `Pin` lives (`ggml_native.agc`).
+## The pin is owned by the task that makes it, and ends with it or with
+## `Native.close`; the graph then stays in the cache as any other.
+def pin(p: Program) -> Result[GgmlRaw.Pin]
+  code = try Ggml.code_of(p.device, "pin")
+  Native.arena do
+    lease = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1, true)
+    if !GgmlRaw.ready(lease)
+      for l in p.nodes
+        _ = try GgmlRaw.node(lease, l.op, l.args, l.shape, l.ints)
+      end
+
+      try GgmlRaw.compile(lease, p.outputs)
+    end
+
+    held = try GgmlRaw.pin(lease)
+    Native.close(lease)
+    ok(held)
+  end
+end
+
 ## One run of `program` over `inputs`, one tensor per input node, already
 ## checked against the backend, on the program's device. Its outputs are new
-## tensors. `op` names the call in an error. A tensor that is closed, an input
+## tensors, except an output that `into` gives a tensor for: that one is
+## written there (a tensor of the output's shape, dtype and backend, which
+## no input of the run may be). `op` names the call in an error. A tensor that is closed, an input
 ## or a constant of the trace, is an error naming the leaf; the constants must
 ## stay open while any task may run the program (nothing holds them between
 ## the bind and the run).
-def execute(p: Program, inputs: List[Types.Tensor], op: String = "run") -> Result[List[Types.Tensor]]
+def execute(
+  p: Program,
+  inputs: List[Types.Tensor],
+  op: String = "run",
+  into: List[Optional[Types.Tensor]] = [],
+) -> Result[List[Types.Tensor]]
   code = try Ggml.code_of(p.device, op)
+  if !into.empty? and into.size != p.shapes.size
+    return error("#{op}: into takes one entry per output, #{p.shapes.size}, got #{into.size}")
+  end
+
   Native.arena do
     lease = try System.Profile.measure("ml.acquire") do GgmlRaw.acquire(code, p.key, p.nodes.size + 1, p.keep) end
     if !GgmlRaw.ready(lease)
@@ -156,8 +189,27 @@ def execute(p: Program, inputs: List[Types.Tensor], op: String = "run") -> Resul
     try bound
     out: List[Types.Tensor] = []
     for i in 0...p.shapes.size
-      h = try GgmlRaw.output(lease, i, p.dtypes[i] == Types.Dtype.I32)
-      out = out.push(Ggml.tensor_of(p.device, p.shapes[i], p.dtypes[i], h))
+      target: Optional[Types.Tensor] = none
+      if !into.empty?
+        target = into[i]
+      end
+
+      case target
+        some(t) ->
+          if t.shape != p.shapes[i] or t.dtype != p.dtypes[i] or t.backend != Types.Backend.Ggml(p.device)
+            return error(
+              "#{op}: output #{i} is #{Types.dtype_name(p.dtypes[i])} #{p.shapes[i]}, the tensor given is #{Types.dtype_name(t.dtype)} #{t.shape}",
+            )
+          end
+
+          held = try Ggml.handle_of(t)
+          return error("#{op}: output #{i}, a tensor given in `into`, is closed") if Native.closed?(held)
+          try GgmlRaw.output_into(lease, i, held)
+          out = out.push(t)
+        none ->
+          h = try GgmlRaw.output(lease, i, p.dtypes[i] == Types.Dtype.I32)
+          out = out.push(Ggml.tensor_of(p.device, p.shapes[i], p.dtypes[i], h))
+      end
     end
 
     try System.Profile.measure("ml.run") do GgmlRaw.run(lease, p.fills) end

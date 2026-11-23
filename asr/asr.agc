@@ -265,6 +265,11 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
 
   audio = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.layer_norm(model.encoder_norm, x) })
   close([h])
+  case blocks
+    some(b) -> Trace.close(b)
+    none -> nil
+  end
+
   ok(audio)
 end
 
@@ -312,16 +317,26 @@ end
 ## cache takes several ids at once (a prompt). The new cache's self-attention
 ## keys and values are new tensors: on libtorch the caller closes the old
 ## ones once it has no use for them (`transcribe` does).
-def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
-  try checked(m, cache, ids)
+##
+## `spare` are the keys and values (`kept`) of a cache the caller is done with, that the step takes over: on `Ggml`, when
+## they have the shape of the new ones, it writes them there instead of making new tensors, and otherwise it closes
+## them. They must not be part of `cache`.
+def step(m: Model, cache: Cache, ids: List[Int], spare: List[Tensor.Tensor] = []) -> Result[Stepped]
+  try guard(checked(m, cache, ids), spare)
   backend = Tensor.backend(m.tokens.table)
   if compiled(backend)
-    a = try advance(m, cache, ids, none)
-    logits = try System.Profile.measure("ml.readback") do floats(a.first) end
+    a = try advance(m, cache, ids, none, spare)
+    read = System.Profile.measure("ml.readback") do floats(a.first) end
     close([a.first])
-    return ok(Stepped(logits: logits, cache: a.cache))
+    case read
+      ok(logits) -> return ok(Stepped(logits: logits, cache: a.cache))
+      error(e) ->
+        close(kept(a.cache))
+        return error(e)
+    end
   end
 
+  close(spare)
   # The arena keeps the new keys and values alone (the libtorch ops are
   # `AN_FRESH`), so the step's intermediates die with it.
   grown: Result[Grown] = Native.arena do
@@ -341,17 +356,24 @@ end
 ## `step` for greedy decoding: the id with the largest logit once `mask` (`[vocab_size]`, `F32`: 0 for a token that
 ## may be emitted, `Greedy.FORBIDDEN` for one that may not) is added, the first one on a tie, and its log-probability
 ## under the masked logits. On `Ggml` the choice runs in the step's graph, so only those two numbers leave the device,
-## not the logits.
-def step_pick(m: Model, cache: Cache, ids: List[Int], mask: Tensor.Tensor) -> Result[Picked]
-  try checked(m, cache, ids)
+## not the logits. `spare` is as for `step`.
+def step_pick(
+  m: Model,
+  cache: Cache,
+  ids: List[Int],
+  mask: Tensor.Tensor,
+  spare: List[Tensor.Tensor] = [],
+) -> Result[Picked]
+  try guard(checked(m, cache, ids), spare)
   backend = Tensor.backend(m.tokens.table)
   want = [m.config.vocab_size]
   if Tensor.shape(mask) != want or Tensor.dtype(mask) != Tensor.Dtype.F32
+    close(spare)
     return error("step_pick needs an F32 mask of #{want}, got #{Tensor.shape(mask)}")
   end
 
   if compiled(backend)
-    a = try advance(m, cache, ids, some(mask))
+    a = try advance(m, cache, ids, some(mask), spare)
     read = System.Profile.measure("ml.readback") do floats(a.first) end
     close([a.first])
     case read
@@ -360,15 +382,16 @@ def step_pick(m: Model, cache: Cache, ids: List[Int], mask: Tensor.Tensor) -> Re
           ok(id) -> return ok(Picked(id: id, logprob: pair[1], cache: a.cache))
           error(e) ->
             close(kept(a.cache))
-            return error(e.message)
+            return error(e)
         end
 
       error(e) ->
         close(kept(a.cache))
-        return error(e.message)
+        return error(e)
     end
   end
 
+  close(spare)
   grown: Result[Grown] = Native.arena do
     f = try forward(m, cache, try ids_of(ids, backend))
     pair = try floats(try picked(f.logits, mask))
@@ -505,6 +528,7 @@ def decide(
   backend = Tensor.backend(m.tokens.table)
   emitted: List[Int] = []
   logprob = 0.0
+  spent: List[Tensor.Tensor] = []
   if compiled(backend) and not rules.timestamps
     size = m.config.vocab_size
     first = try masked(Greedy.mask(rules, size, true), backend)
@@ -515,12 +539,13 @@ def decide(
       break if picked.id == tok.eot
       emitted = emitted.push(picked.id)
       break if emitted.size == limit
-      next = try guard(step_pick(m, picked.cache, [picked.id], rest), kept(picked.cache) + [first, rest])
-      close(kept(picked.cache))
+      next = try guard(step_pick(m, picked.cache, [picked.id], rest, spent), kept(picked.cache) + [first, rest])
+      spent = kept(picked.cache)
       picked = next
     end
 
-    close(kept(picked.cache))
+    finish(picked.cache)
+    close(spent)
     close([first, rest])
     return ok(Decided(tokens: emitted, logprob: logprob))
   end
@@ -533,13 +558,23 @@ def decide(
     break if id == tok.eot
     emitted = emitted.push(id)
     break if emitted.size == limit
-    next = try guard(step(m, stepped.cache, [id]), kept(stepped.cache))
-    close(kept(stepped.cache))
+    next = try guard(step(m, stepped.cache, [id], spent), kept(stepped.cache))
+    spent = kept(stepped.cache)
     stepped = next
   end
 
-  close(kept(stepped.cache))
+  finish(stepped.cache)
+  close(spent)
   ok(Decided(tokens: emitted, logprob: logprob))
+end
+
+## Closes the tensors of `cache` and ends the pins of its compiled steps, which the cache's task would end at its own
+## end otherwise.
+def finish(cache: Cache) -> Void
+  close(kept(cache))
+  for key in cache.graphs.keys
+    Trace.close(cache.graphs[key])
+  end
 end
 
 ## `r`, closing `held` first when it is an error.
@@ -548,7 +583,7 @@ def guard[T](r: Result[T], held: List[Tensor.Tensor]) -> Result[T]
     ok(v) -> ok(v)
     error(e) ->
       close(held)
-      error(e.message)
+      error(e)
   end
 end
 
@@ -886,7 +921,13 @@ end
 ## One step on a backend that compiles (`Ggml`): the graph of the logits, or of the pick when `mask` is given, and
 ## of the new cache. A one-token step after the first runs a graph compiled for its cache rows and capacity
 ## (`Cache.graphs`), the prompt traces its own.
-def advance(m: Model, cache: Cache, ids: List[Int], mask: Optional[Tensor.Tensor]) -> Result[Advanced]
+def advance(
+  m: Model,
+  cache: Cache,
+  ids: List[Int],
+  mask: Optional[Tensor.Tensor],
+  spare: List[Tensor.Tensor],
+) -> Result[Advanced]
   n = ids.size
   backend = Tensor.backend(m.tokens.table)
   made: Result[List[Tensor.Tensor]] = System.Profile.measure("ml.inputs") do
@@ -895,7 +936,7 @@ def advance(m: Model, cache: Cache, ids: List[Int], mask: Optional[Tensor.Tensor
     ok([at, try Tensor.from_list(where, [n], Tensor.Dtype.I32, backend)])
   end
 
-  fed = try made
+  fed = try guard(made, spare)
   head = 2
   picking = false
   case mask
@@ -909,6 +950,11 @@ def advance(m: Model, cache: Cache, ids: List[Int], mask: Optional[Tensor.Tensor
   room = capacity(cache.length + n, m.config.max_target_positions)
   graphs = cache.graphs
   got: Result[List[Tensor.Tensor]] = error("no step ran")
+  reuse = n == 1 and cache.length > 0 and fits(spare, cache, room)
+  if !reuse
+    close(spare)
+  end
+
   if n == 1 and cache.length > 0
     key = "#{Tensor.shape(cache.own[0].key)[1]} #{room} #{picking}"
     if !graphs.has_key?(key)
@@ -923,11 +969,25 @@ def advance(m: Model, cache: Cache, ids: List[Int], mask: Optional[Tensor.Tensor
         ok(c) -> graphs = graphs.put(key, c)
         error(e) ->
           close(fed.take(2))
-          return error(e.message)
+          if reuse
+            close(spare)
+          end
+
+          return error(e)
       end
     end
 
-    got = Trace.run(graphs[key], fed + step_inputs(cache))
+    into: List[Optional[Tensor.Tensor]] = []
+    if reuse
+      lead: List[Optional[Tensor.Tensor]] = [none]
+      layers = spare.size / 2
+      into = lead + (0...layers).map { |i| some(spare[2 * i]) } + (0...layers).map { |i| some(spare[2 * i + 1]) }
+    end
+
+    got = Trace.run(graphs[key], fed + step_inputs(cache), into)
+    if reuse and !got.ok?
+      close(spare)
+    end
   else
     got = Trace.eval_many(
       fed,
@@ -940,6 +1000,16 @@ def advance(m: Model, cache: Cache, ids: List[Int], mask: Optional[Tensor.Tensor
   layers = m.decoder.size
   own = (0...layers).map { |i| Kv(key: outs[1 + i], value: outs[1 + layers + i]) }
   ok(Advanced(first: outs[0], cache: Cache(cross: cache.cross, own: own, length: cache.length + n, graphs: graphs)))
+end
+
+## Whether `spare` can take the keys and values of the step after `cache`, which have `room` rows: the same count and
+## shapes as the ones of `cache`, which already have `room` rows.
+def fits(spare: List[Tensor.Tensor], cache: Cache, room: Int) -> Bool
+  have = kept(cache)
+  return false if spare.size != have.size or Tensor.shape(have[0])[1] != room
+  (0...have.size).all? { |i|
+    Tensor.shape(spare[i]) == Tensor.shape(have[i]) and Tensor.dtype(spare[i]) == Tensor.dtype(have[i])
+  }
 end
 
 ## The id and the log-probability of the likeliest token of `logits` once `mask` is added, as `[2]` floats (the id

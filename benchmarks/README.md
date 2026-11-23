@@ -14,6 +14,22 @@ Both engines run the same weights (the Hugging Face `openai/whisper-tiny` checkp
 | Clips | `jfk.wav` from whisper.cpp (11 s, English) and `whisper/live/fixtures/es-hola.wav` (2.6 s, Spanish) |
 | Threads | 8 for ours on ggml CPU (it uses every online core), `-t 8` for whisper.cpp, libtorch's default |
 
+### With the cache written into the tensors of the step before
+
+A step takes the keys and values of the cache it replaces (`spare`) and writes the new ones into them (`Trace.run`'s `into`), so a decoder step on ggml makes no tensor of its own except the two inputs. The two sets take turns. Same session, `bench_step.agc` (96 timed steps) and `bench_transcribe.agc` (median of 5 runs, medium 2), ml `d688a31` against this branch:
+
+| | before | after |
+|---|---|---|
+| step, CPU, pick (ms) | 42.9 | 44.0 |
+| step, Vulkan, pick (ms) | 68.8 | 68.1 |
+| step, CPU, logits (ms) | 64.3 | 64.9 |
+| step, Vulkan, logits (ms) | 123.8 | 121.8 |
+| tiny CPU, jfk / es-hola (RTF) | 0.252 / 0.783 | 0.244 / 0.749 |
+| tiny Vulkan, jfk / es-hola (RTF) | 0.275 / 0.718 | 0.270 / 0.738 |
+| medium Vulkan, jfk / es-hola (RTF) | 2.42 / 6.87 | 2.38 / 6.91 |
+
+Every difference is inside the run-to-run noise of this machine (a few percent, 20 percent for es-hola on the CPU). The allocation of 24 small tensors a step was already cheap, as the earlier table said (0.02 to 0.7 ms); the change is kept for what it fixes, not for speed: the tensors a run reads are held until it ends, and the cache never takes a decoder step's graph out from under it. The device is still the cost.
+
 The real-time factor is the run time over the clip length, so lower is better. The load is the time from the file to a model ready to transcribe.
 
 | Row | RTF jfk | RTF es-hola | Load | Peak memory | Tokens against Hugging Face |
