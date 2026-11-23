@@ -34,9 +34,8 @@ order of work in [`roadmap.md`](roadmap.md) and the open decisions in
 One repository, one folder per package, each with its own `agentica.toml`, so
 an app installs only what it needs (for example inference without training).
 There are no releases yet: a project pins a member by a commit of `main`
-(`ref`); later versions are prefixed tags, such as `tensor-0.1.0`. Until
-`Tensor[H]` and `Ops[H]` land ([ml#15](https://github.com/agentica-lang/ml/issues/15)),
-there is no stable API, so keep the commit pin.
+(`ref`); later versions are prefixed tags, such as `tensor-0.1.0`. The API is
+not stable yet, so keep the commit pin.
 
 | Folder | What | Needs |
 |---|---|---|
@@ -77,9 +76,7 @@ tensor = { git = "https://github.com/agentica-lang/ml", ref = "COMMIT", subdir =
 
 The libtorch backend ships **inside `tensor/`**, not as a `torch/` package,
 because a native handle is a `resource` that is nominal to its `extern module`
-([`tensor/DESIGN.md`](tensor/DESIGN.md) §1, §7;
-[ml#15](https://github.com/agentica-lang/ml/issues/15)
-moves it out). libtorch is `optional = true` and never vendored or downloaded
+([`tensor/DESIGN.md`](tensor/DESIGN.md) §1, §7). libtorch is `optional = true` and never vendored or downloaded
 by this repository: without it, everything still checks, formats and tests,
 and `Backend.Torch` answers `error("backend not available")`.
 [`tensor/README.md`](tensor/README.md) has the setup, the coverage table, the

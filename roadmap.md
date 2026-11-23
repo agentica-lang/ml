@@ -35,11 +35,6 @@ Works, but not yet fast.
 
 ## Not yet
 
-- [ml#15](https://github.com/agentica-lang/ml/issues/15): `Tensor[H]` and
-  `Ops[H]`, to move the libtorch backend out of `tensor/` into a `torch/`
-  package. No stable API until this lands.
-- [ml#40](https://github.com/agentica-lang/ml/issues/40): train on the iGPU
-  through Vulkan.
 - [ml#50](https://github.com/agentica-lang/ml/issues/50): training benchmarks
   against PyTorch and JAX. The Whisper inference half is in `benchmarks/`.
 - [ml#46](https://github.com/agentica-lang/ml/issues/46): training metrics: a
