@@ -110,6 +110,18 @@ end
 - `Trace.value_and_grad(args, f)` gives `value` and `grads` from one evaluation.
 - `Trace.eval_many(args, f)` gives several tensors from one evaluation: `f` answers a `List` of tensors, and on `Ggml` they are one compiled graph.
 - `Trace.constant(t)` adds a tensor from outside, such as data or labels, to the trace. No gradient is taken for it.
+- `Trace.compile(specs, f)` traces `f` once and gives a `Compiled` function. `Trace.run(compiled, args)` runs it any number of times and gives what `eval_many` gives, without tracing `f` or planning the graph again.
+
+`Trace.eval` and `eval_many` trace `f` and plan the graph on every call, then reuse the compiled ggml graph by its structure. `Trace.compile` does that work once:
+
+- `specs` lists each input's shape, dtype and backend (`Trace.spec_of(t)` takes them from a tensor). `f` gets one traced input per spec and answers a `List` of tensors.
+- Whatever changes between runs must be an input: the parameters of a training step, a KV cache. A tensor that `f` brings in with `Trace.constant` is fixed: the same tensor is bound again on every run. So is the value of a `full` in `f`.
+- A constant must stay open while any task may run the `Compiled` function. A closed one is an `error` that names the leaf, but nothing keeps a constant open between the moment `run` binds it and the moment it computes, so a `Compiled` shared by tasks must not outlive the owner of its constants.
+- `run` checks its arguments against the specs, one tensor per spec. A different shape, dtype, backend or count is an `error` naming the input. It never compiles another graph; make one `Compiled` for each shape.
+- On ggml the graph lives in the process-wide cache of 32 graphs (least recently used out). A run that finds its graph gone, or in use by another task, sends the nodes again and compiles it, though it still does not trace `f` or plan the graph. So "once" holds for a graph that is neither evicted nor busy.
+- `f` may compute `Trace.gradients` and the update of the parameters, so a training step (forward, backward and update) is one `Compiled` function that answers the loss and the new parameters.
+- Several tasks may run one `Compiled` function.
+- On `Reference` and `Torch` the traced graph is kept and evaluated node by node on every run.
 
 A backward rule tells how to get the gradient of an op. These ops have no backward rule, so the gradient is an error that names the op: `pow`, `clamp`, `to_dtype`, `batch_matmul`, `conv1d`, `avg_pool1d`, and a `to_device` across devices.
 

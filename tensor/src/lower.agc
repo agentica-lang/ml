@@ -60,14 +60,28 @@ struct Lowered
   ints: List[Int]
 end
 
-## What one evaluation sends: the nodes (on a cache miss), the tensors to bind
-## to the leaves, and the fill values, in the C layer's order.
-struct Plan
+## Where a leaf of the graph gets its tensor on every run: the input at
+## position `input` of the run's inputs (`-1` for none), or `fixed`, a
+## constant of the trace that every run binds again.
+struct Leaf
+  input: Int
+  fixed: Optional[Types.Tensor]
+end
+
+## A traced graph lowered once: what a run sends to the C layer (the nodes,
+## only on a cache miss), the structural key, where each leaf's tensor comes
+## from, the fill values and the outputs, in the C layer's order. A program
+## never changes, so any number of tasks may run it.
+struct Program
+  device: Types.Device
   nodes: List[Lowered]
   key: String
-  leaves: List[Types.Tensor]
+  leaves: List[Leaf]
   fills: List[Float]
   outputs: List[Int]
+  shapes: List[List[Int]]
+  dtypes: List[Types.Dtype]
+  keep: Bool
 end
 
 ## Runs the traced tensors `outs` on `Ggml(device)` as one graph. `env` holds
@@ -79,10 +93,32 @@ def evaluate(
   device: Types.Device,
   keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
-  code = try Ggml.code_of(device, "evaluate")
-  p = try System.Profile.measure("ml.plan") do plan(outs, env, Types.Backend.Ggml(device)) end
+  ids = env.keys
+  program = try System.Profile.measure("ml.plan") do lower(outs, ids, device, keep) end
+  inputs: List[Types.Tensor] = []
+  for id in ids
+    inputs = inputs.push(try bound(env[id], Types.Backend.Ggml(device), "an input"))
+  end
+
+  execute(program, inputs, "evaluate")
+end
+
+## The program of the traced tensors `outs` over the input nodes `inputs`
+## (traced `Input` tensors, in the order a run takes its tensors).
+def program(outs: List[Types.Tensor], inputs: List[Types.Tensor], device: Types.Device) -> Result[Program]
+  System.Profile.measure("ml.plan") do lower(outs, inputs.map { |t| Graph.id_of(t) }, device, true) end
+end
+
+## One run of `program` over `inputs`, one tensor per input node, already
+## checked against the backend, on the program's device. Its outputs are new
+## tensors. `op` names the call in an error. A tensor that is closed, an input
+## or a constant of the trace, is an error naming the leaf; the constants must
+## stay open while any task may run the program (nothing holds them between
+## the bind and the run).
+def execute(p: Program, inputs: List[Types.Tensor], op: String = "run") -> Result[List[Types.Tensor]]
+  code = try Ggml.code_of(p.device, op)
   Native.arena do
-    lease = try System.Profile.measure("ml.acquire") do GgmlRaw.acquire(code, p.key, p.nodes.size + 1, keep) end
+    lease = try System.Profile.measure("ml.acquire") do GgmlRaw.acquire(code, p.key, p.nodes.size + 1, p.keep) end
     if !GgmlRaw.ready(lease)
       for l in p.nodes
         _ = try GgmlRaw.node(lease, l.op, l.args, l.shape, l.ints)
@@ -93,18 +129,35 @@ def evaluate(
 
     bound: Result[Void] = System.Profile.measure("ml.bind") do
       for i in 0...p.leaves.size
-        try GgmlRaw.bind(lease, i, try Ggml.handle_of(p.leaves[i]))
+        leaf = p.leaves[i]
+        t = case leaf.fixed
+          some(c) -> c
+          none -> inputs[leaf.input]
+        end
+
+        h = try Ggml.handle_of(t)
+        if Native.closed?(h)
+          what = "an input"
+          if leaf.input < 0
+            what = "a constant"
+          end
+
+          return error(
+            "#{op}: #{what} of the graph (leaf #{i}) is closed; constants must stay open while the graph can run",
+          )
+        end
+
+        try GgmlRaw.bind(lease, i, h)
       end
 
       ok()
     end
 
     try bound
-
     out: List[Types.Tensor] = []
-    for i in 0...outs.size
-      h = try GgmlRaw.output(lease, i, outs[i].dtype == Types.Dtype.I32)
-      out = out.push(Ggml.tensor_of(device, outs[i].shape, outs[i].dtype, h))
+    for i in 0...p.shapes.size
+      h = try GgmlRaw.output(lease, i, p.dtypes[i] == Types.Dtype.I32)
+      out = out.push(Ggml.tensor_of(p.device, p.shapes[i], p.dtypes[i], h))
     end
 
     try System.Profile.measure("ml.run") do GgmlRaw.run(lease, p.fills) end
@@ -124,14 +177,20 @@ end
 
 private
 
-## The nodes, key, leaves and fills of the graph `outs` reach.
-def plan(outs: List[Types.Tensor], env: Map[Ref, Types.Tensor], backend: Types.Backend) -> Result[Plan]
+## The program of the graph `outs` reach; the input nodes are `ids`, in run order.
+def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: Bool) -> Result[Program]
+  positions: Map[Ref, Int] = {}
+  for i in 0...ids.size
+    positions = positions.put(ids[i], i)
+  end
+
+  backend = Types.Backend.Ggml(device)
   pos: Map[Ref, Int] = {}
   nodes: List[Lowered] = []
   parts: List[String] = []
-  leaves: List[Types.Tensor] = []
+  leaves: List[Leaf] = []
   fills: List[Float] = []
-  for t in try walk(outs, env)
+  for t in try walk(outs, positions)
     n = try Graph.node_of(t)
     if !exact(t.dtype)
       return error(
@@ -143,9 +202,9 @@ def plan(outs: List[Types.Tensor], env: Map[Ref, Types.Tensor], backend: Types.B
     ints: List[Int] = []
     case n.op
       Types.Op.Input ->
-        leaves = leaves.push(try bound(env[n.id], backend, "an input"))
+        leaves = leaves.push(Leaf(input: positions[n.id], fixed: none))
         op = LEAF
-      Types.Op.Constant(c) -> leaves = leaves.push(try bound(c, backend, "a constant"))
+      Types.Op.Constant(c) -> leaves = leaves.push(Leaf(input: -1, fixed: some(try bound(c, backend, "a constant"))))
       Types.Op.Full(v) ->
         x = try Types.value_to_float(v, t.dtype)
         if Types.is_int_dtype(t.dtype) and x.abs > 16777216.0
@@ -179,7 +238,19 @@ def plan(outs: List[Types.Tensor], env: Map[Ref, Types.Tensor], backend: Types.B
 
   outputs = outs.map { |o| pos[Graph.id_of(o)] }
   key = parts.join(";") + " -> #{outputs}"
-  ok(Plan(nodes: nodes, key: key, leaves: leaves, fills: fills, outputs: outputs))
+  ok(
+    Program(
+      device: device,
+      nodes: nodes,
+      key: key,
+      leaves: leaves,
+      fills: fills,
+      outputs: outputs,
+      shapes: outs.map { |o| o.shape },
+      dtypes: outs.map { |o| o.dtype },
+      keep: keep,
+    ),
+  )
 end
 
 ## A leaf's tensor, which must live on the backend the graph runs on.
@@ -194,7 +265,7 @@ end
 ## Every traced tensor `roots` reach, each node once, in id order. The walk
 ## does not enter a node of `env`; an input that is not there belongs to
 ## another trace.
-def walk(roots: List[Types.Tensor], env: Map[Ref, Types.Tensor]) -> Result[List[Types.Tensor]]
+def walk(roots: List[Types.Tensor], env: Map[Ref, Int]) -> Result[List[Types.Tensor]]
   seen: Set[Ref] = Set.new([])
   found: List[Types.Tensor] = []
   stack = roots

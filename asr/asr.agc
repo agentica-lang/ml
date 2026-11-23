@@ -76,6 +76,10 @@ struct Cache
   cross: List[Heard]
   own: List[Kv]
   length: Int
+  ## On `Ggml`, the one-token steps already compiled (`Trace.compile`), by
+  ## the rows of `own` and of the step's capacity, so a later step of the
+  ## same capacity neither traces nor plans.
+  graphs: Map[String, Trace.Compiled] = {}
 end
 
 ## One block's cross-attention keys and values, split by head: `keys[h]` is
@@ -218,8 +222,27 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
   # The previous stage's tensor is closed, so a block's intermediates die
   # with it (`staged`).
   h = try staged(m, mel, &stem)
+  blocks: Optional[Trace.Compiled] = none
   for i in 0...m.encoder.size
-    fresh = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.encoder_block(model.encoder[i], x) })
+    fresh = h
+    if compiled(Tensor.backend(h))
+      # The blocks have one shape: the weights are inputs, so one traced and
+      # planned graph runs every block.
+      if i == 0
+        first = m.encoder[0]
+        blocks = some(
+          try Trace.compile(
+            ([h] + encoder_parts(first)).map { |t| Trace.spec_of(t) },
+            ->(xs: List[Tensor.Tensor]) { ok([try Nn.encoder_block(encoder_over(first, xs.drop(1)), xs[0])]) },
+          ),
+        )
+      end
+
+      fresh = (try Trace.run(blocks.unwrap!, [h] + encoder_parts(m.encoder[i])))[0]
+    else
+      fresh = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.encoder_block(model.encoder[i], x) })
+    end
+
     close([h])
     h = fresh
   end
@@ -265,7 +288,7 @@ def listen(m: Model, audio: Tensor.Tensor) -> Result[Cache]
     cross = cross.push(Heard(keys: heads.take(n), values: heads.drop(n)))
   end
 
-  ok(Cache(cross: cross, own: [], length: 0))
+  ok(Cache(cross: cross, own: [], length: 0, graphs: {}))
 end
 
 ## `ids` fed after the tokens of `cache`: the logits of the last one, as
@@ -291,21 +314,42 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
     end
 
     fed = try made
-    at = fed[0]
-    positions = fed[1]
     room = capacity(cache.length + n, m.config.max_target_positions)
-    got = Trace.eval_many(
-      [at, positions],
-      ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), traced_cache(cache), xs, room) },
-    )
+    graphs = cache.graphs
+    got: Result[List[Tensor.Tensor]] = error("no step ran")
+    if n == 1 and cache.length > 0
+      key = "#{Tensor.shape(cache.own[0].key)[1]} #{room}"
+      if !graphs.has_key?(key)
+        built = Trace.compile(
+          (fed + step_inputs(cache)).map { |t| Trace.spec_of(t) },
+          ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), cache_over(cache, xs.drop(2)), xs.take(2), room) },
+        )
 
-    close([at, positions])
+        case built
+          ok(c) -> graphs = graphs.put(key, c)
+          error(e) ->
+            close(fed)
+            return error(e.message)
+        end
+      end
+
+      got = Trace.run(graphs[key], fed + step_inputs(cache))
+    else
+      got = Trace.eval_many(
+        fed,
+        ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), traced_cache(cache), xs, room) },
+      )
+    end
+
+    close(fed)
     outs = try got
     layers = m.decoder.size
     own = (0...layers).map { |i| Kv(key: outs[1 + i], value: outs[1 + layers + i]) }
     logits = try System.Profile.measure("ml.readback") do floats(outs[0]) end
     close([outs[0]])
-    return ok(Stepped(logits: logits, cache: Cache(cross: cache.cross, own: own, length: cache.length + n)))
+    return ok(
+      Stepped(logits: logits, cache: Cache(cross: cache.cross, own: own, length: cache.length + n, graphs: graphs)),
+    )
   end
 
   # The arena keeps the new keys and values alone (the libtorch ops are
@@ -316,7 +360,7 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
   end
 
   g = try grown
-  ok(Stepped(logits: g.logits, cache: Cache(cross: cache.cross, own: g.own, length: cache.length + n)))
+  ok(Stepped(logits: g.logits, cache: Cache(cross: cache.cross, own: g.own, length: cache.length + n, graphs: {})))
 end
 
 ## The text of `pcm` (16 kHz mono samples, about -1..1, at most one window:
@@ -720,6 +764,86 @@ def traced_cache(c: Cache) -> Cache
     },
     own: c.own.map { |kv| Kv(key: Trace.constant(kv.key), value: Trace.constant(kv.value)) },
   )
+end
+
+## The tensors of `c` a compiled step takes after the ids and the positions:
+## per decoder block the cross-attention keys then values of every head, then
+## the self-attention keys and values.
+def step_inputs(c: Cache) -> List[Tensor.Tensor] = c.cross.flat_map { |h| h.keys + h.values } + kept(c)
+
+## `c` with its tensors replaced, in the order of `step_inputs`, by `xs`.
+def cache_over(c: Cache, xs: List[Tensor.Tensor]) -> Cache
+  at = 0
+  cross: List[Heard] = []
+  for h in c.cross
+    n = h.keys.size
+    cross = cross.push(Heard(keys: xs.drop(at).take(n), values: xs.drop(at + n).take(n)))
+    at += 2 * n
+  end
+
+  own: List[Kv] = []
+  for i in 0...c.own.size
+    own = own.push(Kv(key: xs[at + 2 * i], value: xs[at + 2 * i + 1]))
+  end
+
+  c.with(cross: cross, own: own)
+end
+
+## The weights of an encoder block, in the order `encoder_over` reads them.
+def encoder_parts(b: Nn.EncoderBlock) -> List[Tensor.Tensor]
+  a = b.attention
+  [
+    norm_parts(b.norm1),
+    dense_parts(a.query),
+    dense_parts(a.key),
+    dense_parts(a.value),
+    dense_parts(a.output),
+    norm_parts(b.norm2),
+    dense_parts(b.mlp.up),
+    dense_parts(b.mlp.down),
+  ].flat_map { |part| part }
+end
+
+## `b` with its weights replaced, in the order of `encoder_parts`, by `xs`.
+def encoder_over(b: Nn.EncoderBlock, xs: List[Tensor.Tensor]) -> Nn.EncoderBlock
+  a = b.attention
+  at = 2
+  query = dense_over(a.query, xs, at)
+  at += dense_parts(a.query).size
+  key = dense_over(a.key, xs, at)
+  at += dense_parts(a.key).size
+  value = dense_over(a.value, xs, at)
+  at += dense_parts(a.value).size
+  output = dense_over(a.output, xs, at)
+  at += dense_parts(a.output).size
+  second = b.norm2.with(gamma: xs[at], beta: xs[at + 1])
+  at += 2
+  up = dense_over(b.mlp.up, xs, at)
+  at += dense_parts(b.mlp.up).size
+  down = dense_over(b.mlp.down, xs, at)
+  Nn.EncoderBlock(
+    norm1: b.norm1.with(gamma: xs[0], beta: xs[1]),
+    attention: a.with(query: query, key: key, value: value, output: output),
+    norm2: second,
+    mlp: b.mlp.with(up: up, down: down),
+  )
+end
+
+def norm_parts(p: Nn.LayerNorm) -> List[Tensor.Tensor] = [p.gamma, p.beta]
+
+def dense_parts(p: Nn.Dense) -> List[Tensor.Tensor]
+  case p.b
+    some(bias) -> [p.w, bias]
+    none -> [p.w]
+  end
+end
+
+## `p` with its weight and bias read from `xs` at `at`.
+def dense_over(p: Nn.Dense, xs: List[Tensor.Tensor], at: Int) -> Nn.Dense
+  case p.b
+    some(_) -> Nn.Dense(w: xs[at], b: some(xs[at + 1]))
+    none -> Nn.Dense(w: xs[at], b: none)
+  end
 end
 
 ## Attention of the queries `[n, d_model]` over one block's cached heads, as
