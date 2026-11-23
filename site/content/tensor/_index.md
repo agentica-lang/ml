@@ -125,6 +125,22 @@ end
 - Several tasks may run one `Compiled` function.
 - On `Reference` and `Torch` the traced graph is kept and evaluated node by node on every run.
 
+### Finding a parity bug
+
+When two backends give different results, `Trace.diff(args, a, b, f)` finds the first node where they disagree. It traces `f` once, copies `args` to the backends `a` and `b`, runs the graph on both, and compares every node:
+
+```agentica
+d = try Trace.diff(args, Tensor.Backend.Reference, Tensor.Backend.Torch(Tensor.Device.Cpu)) do |xs|
+  Tensor.exp(try Tensor.add(xs[0], xs[1]))
+end
+```
+
+- `d.first` is the first node outside the tolerance, or `none`. A node is a `NodeDiff` with its `op`, `shape`, `dtype`, the shapes of its arguments (`inputs`), and `max_abs` and `max_rel`, the largest absolute and relative gap over its elements. `d.nodes` counts the nodes it compared, and `d.worst` lists the five with the largest `max_abs`.
+- An element agrees when `|a - b| <= atol + rtol * max(|a|, |b|)`. `diff` uses `rtol` 0.0001 and `atol` 0.000001; `Trace.diff_within(args, a, b, rtol, atol, f)` takes yours. A non-finite value that the other side does not have is an infinite gap.
+- Nodes are in graph order, so `first` is the earliest cause: the nodes after it may differ only because it did.
+- On `Ggml` the nodes run 200 at a time, to stay under the 256 outputs of one graph.
+- Everything `f` needs from outside must be an argument. A `Trace.constant` lives on one backend, and running it on the other is an `error`.
+
 A backward rule tells how to get the gradient of an op. These ops have no backward rule, so the gradient is an error that names the op: `pow`, `clamp`, `to_dtype`, `batch_matmul`, `conv1d`, `avg_pool1d`, and a `to_device` across devices.
 
 `gelu_erf` is refused by `Trace`. Use `gelu_tanh_approx` when you train.

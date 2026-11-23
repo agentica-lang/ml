@@ -19,6 +19,13 @@ import Types from "src/types"
 SQRT2_OVER_PI = 0.7978845608028654
 GELU_CUBIC = 0.044715
 
+## How many nodes `Diff.worst` lists.
+WORST = 5
+
+## How many outputs one ggml graph returns at most is 256: `diff` asks for
+## 200 nodes at a time there.
+GGML_SLICE = 200
+
 ## The value of a scalar function and its gradient for each argument, in
 ## argument order.
 struct ValueAndGrad
@@ -44,6 +51,33 @@ struct Compiled
   program: Optional[Lower.Program]
   ## On ggml, the pin that keeps the graph in the cache (`close`).
   pin: Optional[GgmlRaw.Pin]
+end
+
+## One computed node of a traced function, run on two backends: where it is
+## in the graph, what it does, and how far its two values are apart.
+struct NodeDiff
+  node: Ref
+  op: String
+  shape: List[Int]
+  dtype: Types.Dtype
+  ## The shapes of the node's arguments.
+  inputs: List[List[Int]]
+  ## The largest `|a - b|` and `|a - b| / max(|a|, |b|)` over the elements. A
+  ## non-finite value that the other side does not have counts as infinite.
+  max_abs: Float
+  max_rel: Float
+  ## Every element has `|a - b| <= atol + rtol * max(|a|, |b|)`, and the
+  ## same non-finite value on both sides.
+  within: Bool
+end
+
+## The result of `diff`: how many nodes it compared, the first node (the
+## lowest id, an argument before its user) outside the tolerance, and the
+## nodes with the largest `max_abs`, largest first (at most `WORST`).
+struct Diff
+  nodes: Int
+  first: Optional[NodeDiff]
+  worst: List[NodeDiff]
 end
 
 ## A tensor from outside the function as a node of the trace: data, labels,
@@ -244,6 +278,75 @@ end
 def grad(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor]]) -> Result[List[Types.Tensor]]
   both = try value_and_grad(args, f)
   ok(both.grads)
+end
+
+## Runs `f` on `args` (any backend that computes; each is copied to `a` and to
+## `b`) and compares the value of every node it computes on the two backends:
+## the first node outside the tolerance, with its op, shapes and errors, and
+## the nodes with the largest errors. `f` is traced once, and the graph runs on
+## each backend as `eval` does; on ggml, 200 nodes at a time, so a big graph
+## stays under the 256 outputs of one ggml graph. Everything `f` needs from
+## outside must be an argument: a `Trace.constant` lives on one backend, and
+## running it on the other is an `error`. An element passes when
+## `|a - b| <= atol + rtol * max(|a|, |b|)`; `diff` takes `rtol` 0.0001 and
+## `atol` 0.000001.
+def diff(
+  args: List[Types.Tensor],
+  a: Types.Backend,
+  b: Types.Backend,
+  f: Fn[List[Types.Tensor], Result[Types.Tensor]],
+) -> Result[Diff]
+  diff_within(args, a, b, 0.0001, 0.000001, f)
+end
+
+## `diff` with the tolerance `rtol` and `atol`.
+def diff_within(
+  args: List[Types.Tensor],
+  a: Types.Backend,
+  b: Types.Backend,
+  rtol: Float,
+  atol: Float,
+  f: Fn[List[Types.Tensor], Result[Types.Tensor]],
+) -> Result[Diff]
+  inputs = try inputs_for(args)
+  out = try f.call(inputs)
+  env_a = bind(inputs, try moved(args, a))
+  env_b = bind(inputs, try moved(args, b))
+  computed: List[Types.Tensor] = []
+  for t in try reachable([out], Set.new([]))
+    n = try Graph.node_of(t)
+    case n.op
+      Types.Op.Input -> nil
+      _ -> computed = computed.push(t)
+    end
+  end
+
+  size = slice_limit(a)
+  if slice_limit(b) < size
+    size = slice_limit(b)
+  end
+
+  found: List[NodeDiff] = []
+  start = 0
+  while start < computed.size
+    part = computed.drop(start).take(size)
+    got_a = try evaluate(part, env_a, a, false)
+    got_b = try evaluate(part, env_b, b, false)
+    for i in 0...part.size
+      found = found.push(try compare(part[i], got_a[i], got_b[i], rtol, atol))
+    end
+
+    start += size
+  end
+
+  first: Optional[NodeDiff] = none
+  for d in found
+    if !d.within and first == none
+      first = some(d)
+    end
+  end
+
+  ok(Diff(nodes: found.size, first: first, worst: found.sort_by { |d| -d.max_abs }.take(WORST)))
 end
 
 private
@@ -643,4 +746,96 @@ def compute(
     Types.Op.Arange(start, stop, step) -> Tensor.arange(start, stop, step, t.dtype, backend)
     Types.Op.StopGrad -> Tensor.stop_grad(args[0])
   end
+end
+
+## The most nodes `evaluate` asks of `backend` at once.
+def slice_limit(backend: Types.Backend) -> Int
+  case backend
+    Types.Backend.Ggml(_) -> GGML_SLICE
+    _ -> 1000000000
+  end
+end
+
+## `args` on `backend`, copied through the host when they live elsewhere.
+def moved(args: List[Types.Tensor], backend: Types.Backend) -> Result[List[Types.Tensor]]
+  out: List[Types.Tensor] = []
+  for t in args
+    if t.backend == backend
+      out = out.push(t)
+    else
+      out = out.push(try Tensor.from_list(try Tensor.to_list(t), t.shape, t.dtype, backend))
+    end
+  end
+
+  ok(out)
+end
+
+## The elements of `t` as floats.
+def as_floats(t: Types.Tensor) -> Result[List[Float]]
+  out: List[Float] = []
+  for v in try Tensor.to_list(t)
+    case v
+      Types.Values.Float(x) -> out = out.push(x)
+      Types.Values.Int(i) -> out = out.push(i.to_f)
+      Types.Values.Bool(flag) ->
+        if flag
+          out = out.push(1.0)
+        else
+          out = out.push(0.0)
+        end
+    end
+  end
+
+  ok(out)
+end
+
+## The `NodeDiff` of the traced tensor `t`, whose values on the two backends
+## are `x` and `y`.
+def compare(t: Types.Tensor, x: Types.Tensor, y: Types.Tensor, rtol: Float, atol: Float) -> Result[NodeDiff]
+  n = try Graph.node_of(t)
+  xs = try as_floats(x)
+  ys = try as_floats(y)
+  return error("node #{n.id}: #{xs.size} values on one backend, #{ys.size} on the other") if xs.size != ys.size
+  infinity = 1.0e308 * 10.0
+  max_abs = 0.0
+  max_rel = 0.0
+  within = true
+  for i in 0...xs.size
+    u = xs[i]
+    v = ys[i]
+    if u - u == 0.0 and v - v == 0.0
+      gap = (u - v).abs
+      scale = bigger(u.abs, v.abs)
+      rel = 0.0
+      if scale > 0.0
+        rel = gap / scale
+      end
+
+      max_abs = bigger(max_abs, gap)
+      max_rel = bigger(max_rel, rel)
+      within = within and gap <= atol + rtol * scale
+    elsif !(u == v or (u != u and v != v))
+      max_abs = infinity
+      max_rel = infinity
+      within = false
+    end
+  end
+
+  ok(
+    NodeDiff(
+      node: n.id,
+      op: Types.op_name(n.op),
+      shape: t.shape,
+      dtype: t.dtype,
+      inputs: n.args.map { |a| a.shape },
+      max_abs: max_abs,
+      max_rel: max_rel,
+      within: within,
+    ),
+  )
+end
+
+def bigger(x: Float, y: Float) -> Float
+  return x if x > y
+  y
 end
