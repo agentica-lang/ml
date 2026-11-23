@@ -13,6 +13,10 @@ import Graph from "src/graph"
 import Tensor from "tensor"
 import Types from "src/types"
 
+## The constants of `gelu_tanh_approx` (`src/reference.agc`).
+GELU_C = 0.7978845608028654
+GELU_K = 0.044715
+
 ## The value of a scalar function and its gradient for each argument, in
 ## argument order.
 struct ValueAndGrad
@@ -253,20 +257,21 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.Eq -> ok(none)
     Types.Op.Argmax(_, _) -> ok(none)
     Types.Op.Arange(_, _, _) -> ok(none)
-    Types.Op.Sqrt -> no_rule("sqrt")
+    Types.Op.StopGrad -> ok(none)
+    Types.Op.Sqrt -> part(Tensor.div(ct, try Tensor.add(t, t)))
     Types.Op.Pow -> no_rule("pow")
-    Types.Op.Sigmoid -> no_rule("sigmoid")
-    Types.Op.Tanh -> no_rule("tanh")
-    Types.Op.Gelu -> no_rule("gelu_tanh_approx")
+    Types.Op.Sigmoid -> part(Tensor.mul(ct, try Tensor.mul(t, try one_minus(t))))
+    Types.Op.Tanh -> part(Tensor.mul(ct, try one_minus(try Tensor.mul(t, t))))
+    Types.Op.Gelu -> part(Tensor.mul(ct, try gelu_slope(x)))
     Types.Op.Clamp(_, _) -> no_rule("clamp")
-    Types.Op.Max(_, _) -> no_rule("max")
+    Types.Op.Max(axes, keep_dims) -> part(max_rule(t, x, ct, axes, keep_dims))
     Types.Op.BatchMatmul -> no_rule("batch_matmul")
-    Types.Op.Squeeze(_) -> no_rule("squeeze")
-    Types.Op.Unsqueeze(_) -> no_rule("unsqueeze")
-    Types.Op.Slice(_, _) -> no_rule("slice")
-    Types.Op.Concat(_) -> no_rule("concat")
-    Types.Op.Stack(_) -> no_rule("stack")
-    Types.Op.Gather -> no_rule("gather")
+    Types.Op.Squeeze(_) -> part(Tensor.reshape(ct, x.shape))
+    Types.Op.Unsqueeze(_) -> part(Tensor.reshape(ct, x.shape))
+    Types.Op.Slice(starts, _) -> part(slice_rule(ct, x.shape, starts))
+    Types.Op.Concat(axis) -> part(concat_rule(n, ct, axis, i))
+    Types.Op.Stack(axis) -> part(stack_rule(ct, x.shape, axis, i))
+    Types.Op.Gather -> part(gather_rule(n.args[0], n.args[1], ct))
     Types.Op.ToDtype -> no_rule("to_dtype")
     Types.Op.Conv1d(_, _) -> no_rule("conv1d")
     Types.Op.AvgPool1d(_, _, _) -> no_rule("avg_pool1d")
@@ -335,6 +340,101 @@ def unbroadcast(ct: Types.Tensor, from: List[Int]) -> Result[Types.Tensor]
 
   return Tensor.reshape(ct, from) if axes.empty?
   Tensor.reshape(try Tensor.sum(ct, some(axes), true), from)
+end
+
+## A traced fill of `like`'s shape and dtype with `x`.
+def const(like: Types.Tensor, x: Float) -> Result[Types.Tensor] = Graph.filled(like.shape, x, like.dtype)
+
+def one_minus(t: Types.Tensor) -> Result[Types.Tensor] = Tensor.sub(try const(t, 1.0), t)
+
+## The derivative of `gelu_tanh_approx`, `0.5 x (1 + tanh u)` with
+## `u = c (x + k x^3)`: `0.5 (1 + tanh u) + 0.5 x (1 - tanh^2 u) c (1 + 3 k x^2)`.
+def gelu_slope(x: Types.Tensor) -> Result[Types.Tensor]
+  x2 = try Tensor.mul(x, x)
+  inner = try Tensor.add(x, try Tensor.mul(try const(x, GELU_K), try Tensor.mul(x, x2)))
+  th = try Tensor.tanh(try Tensor.mul(try const(x, GELU_C), inner))
+  half = try const(x, 0.5)
+  outer = try Tensor.mul(half, try Tensor.add(try const(x, 1.0), th))
+  du = try Tensor.mul(
+    try const(x, GELU_C),
+    try Tensor.add(try const(x, 1.0), try Tensor.mul(try const(x, 3.0 * GELU_K), x2)),
+  )
+
+  Tensor.add(outer, try Tensor.mul(try Tensor.mul(half, x), try Tensor.mul(try one_minus(try Tensor.mul(th, th)), du)))
+end
+
+## The cotangent of each block goes to the positions that hold its maximum,
+## split evenly between them when several tie (as `jax.numpy.max` and
+## `torch.amax` do).
+def max_rule(
+  t: Types.Tensor,
+  x: Types.Tensor,
+  ct: Types.Tensor,
+  axes: List[Int],
+  keep_dims: Bool,
+) -> Result[Types.Tensor]
+  hit = try Tensor.eq(x, try unreduce(t, x.shape, axes, keep_dims))
+  mask = try Tensor.where(hit, try const(x, 1.0), try const(x, 0.0))
+  count = try Tensor.broadcast_to(try Tensor.sum(mask, some(axes), true), x.shape)
+  spread = try unreduce(ct, x.shape, axes, keep_dims)
+  Tensor.div(try Tensor.mul(spread, mask), count)
+end
+
+## The backward of `slice`: `ct` padded with zeros back to `shape`, one axis
+## at a time.
+def slice_rule(ct: Types.Tensor, shape: List[Int], starts: List[Int]) -> Result[Types.Tensor]
+  return Graph.filled(shape, 0.0, ct.dtype) if try Types.volume(ct.shape) == 0
+  out = ct
+  for axis in 0...shape.size
+    before = starts[axis]
+    after = shape[axis] - before - ct.shape[axis]
+    parts = [out]
+    if before > 0
+      parts = [try Graph.filled(out.shape.set(axis, before), 0.0, ct.dtype)] + parts
+    end
+
+    if after > 0
+      parts = parts.push(try Graph.filled(out.shape.set(axis, after), 0.0, ct.dtype))
+    end
+
+    if parts.size > 1
+      out = try Tensor.concat(parts, axis)
+    end
+  end
+
+  ok(out)
+end
+
+## The backward of `concat` for its argument `i`: its window of `ct`.
+def concat_rule(n: Types.Node, ct: Types.Tensor, axis: Int, i: Int) -> Result[Types.Tensor]
+  offset = n.args.take(i).reduce(0) do |acc, a| acc + a.shape[axis] end
+  starts = ct.shape.map { |_| 0 }.set(axis, offset)
+  Tensor.slice(ct, starts, ct.shape.set(axis, offset + n.args[i].shape[axis]))
+end
+
+## The backward of `stack` for its argument `i`: entry `i` of `ct` along
+## `axis`.
+def stack_rule(ct: Types.Tensor, shape: List[Int], axis: Int, i: Int) -> Result[Types.Tensor]
+  starts = ct.shape.map { |_| 0 }.set(axis, i)
+  Tensor.reshape(try Tensor.slice(ct, starts, ct.shape.set(axis, i + 1)), shape)
+end
+
+## The backward of `gather`: each row of `ct` added into the row of `source`
+## it was read from, as `onehot . ct` where
+## `onehot[r, k] = (indices[k] == r)`. A repeated index sums its rows. It
+## costs a `[rows, k]` mask, which a scatter-add primitive would avoid.
+def gather_rule(source: Types.Tensor, indices: Types.Tensor, ct: Types.Tensor) -> Result[Types.Tensor]
+  rows = source.shape[0]
+  k = try Types.volume(indices.shape)
+  width = try Types.volume(source.shape.drop(1))
+  return Graph.filled(source.shape, 0.0, ct.dtype) if rows == 0 or k == 0 or width == 0
+  grid = [rows, k]
+  positions = try Tensor.arange(0, rows, 1, indices.dtype, Types.Backend.Trace)
+  r = try Tensor.broadcast_to(try Tensor.reshape(positions, [rows, 1]), grid)
+  c = try Tensor.broadcast_to(try Tensor.reshape(indices, [1, k]), grid)
+  zeros = try Graph.filled(grid, 0.0, ct.dtype)
+  onehot = try Tensor.where(try Tensor.eq(r, c), try Graph.filled(grid, 1.0, ct.dtype), zeros)
+  Tensor.reshape(try Tensor.matmul(onehot, try Tensor.reshape(ct, [k, width])), source.shape)
 end
 
 ## The value of `t` on `backend` from the values of its node's arguments, by
@@ -407,5 +507,6 @@ def compute(
     Types.Op.Conv1d(stride, padding) -> Tensor.conv1d(args[0], args[1], stride, padding)
     Types.Op.AvgPool1d(kernel, stride, padding) -> Tensor.avg_pool1d(args[0], kernel, stride, padding)
     Types.Op.Arange(start, stop, step) -> Tensor.arange(start, stop, step, t.dtype, backend)
+    Types.Op.StopGrad -> Tensor.stop_grad(args[0])
   end
 end

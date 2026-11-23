@@ -240,21 +240,115 @@ def test_a_reshape_of_another_volume_fails_at_trace_time() -> Result[Void]
 end
 
 def test_a_gradient_through_an_op_with_no_rule_names_the_op() -> Result[Void]
-  got = Trace.grad([try f64([0.5, 1.0], [2])]) do |xs| Tensor.sum(try Tensor.sqrt(xs[0])) end
+  got = Trace.grad([try f64([0.5, 1.0], [2])]) do |xs| Tensor.sum(try Tensor.clamp(xs[0], 0.0, 0.7)) end
   case got
-    ok(_) -> error("sqrt has no backward rule, but the gradient was computed")
-    error(e) -> Test.assert(e.message.include?("sqrt"), "the error says \"#{e.message}\"")
+    ok(_) -> error("clamp has no backward rule, but the gradient was computed")
+    error(e) -> Test.assert(e.message.include?("clamp"), "the error says \"#{e.message}\"")
   end
 end
 
 def test_an_op_with_no_rule_off_the_gradient_path_is_fine() -> Result[Void]
   shift = try f64([4.0, 9.0], [2])
   grads = try Trace.grad([try f64([0.5, -1.0], [2])]) do |xs|
-    root = try Tensor.sqrt(Trace.constant(shift))
-    Tensor.sum(try Tensor.mul(xs[0], root))
+    capped = try Tensor.clamp(Trace.constant(shift), 0.0, 5.0)
+    Tensor.sum(try Tensor.mul(xs[0], capped))
   end
 
-  Support.expect_floats(grads[0], [2.0, 3.0])
+  Support.expect_floats(grads[0], [4.0, 5.0])
+end
+
+def test_sqrt_matches_a_central_difference() -> Result[Void]
+  check_grad([try f64([0.5, 1.0, 2.0, 0.3, 1.2, 3.7], [3, 2])]) do |xs| weigh(try Tensor.sqrt(xs[0])) end
+end
+
+def test_sigmoid_tanh_and_gelu_match_a_central_difference() -> Result[Void]
+  x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7], [2, 3])
+  try check_grad([x]) do |xs| weigh(try Tensor.sigmoid(xs[0])) end
+  try check_grad([x]) do |xs| weigh(try Tensor.tanh(xs[0])) end
+
+  check_grad([x]) do |xs| weigh(try Tensor.gelu_tanh_approx(xs[0])) end
+end
+
+def test_max_matches_a_central_difference_away_from_ties() -> Result[Void]
+  x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.4, 0.9, -1.3, 0.6, -0.2, 1.4], [2, 3, 2])
+  try check_grad([x]) do |xs| weigh(try Tensor.max(xs[0], some([1]))) end
+  try check_grad([x]) do |xs| weigh(try Tensor.max(xs[0], some([0, 2]), true)) end
+
+  check_grad([x]) do |xs| weigh(try Tensor.max(xs[0])) end
+end
+
+def test_max_splits_the_gradient_between_ties() -> Result[Void]
+  grads = try Trace.grad([try f64([2.0, -1.0, 2.0, 0.5, 3.0, 1.0], [2, 3])]) do |xs|
+    Tensor.sum(try Tensor.max(xs[0], some([1])))
+  end
+
+  Support.expect_floats(grads[0], [0.5, 0.0, 0.5, 0.0, 1.0, 0.0])
+end
+
+def test_stop_grad_is_the_identity_with_no_gradient() -> Result[Void]
+  x = try f64([0.5, -1.0, 2.0], [3])
+  both = try Trace.value_and_grad([x]) do |xs| Tensor.sum(try Tensor.mul(xs[0], try Tensor.stop_grad(xs[0]))) end
+
+  try Support.expect_floats(both.value, [5.25])
+  Support.expect_floats(both.grads[0], [0.5, -1.0, 2.0])
+end
+
+def test_squeeze_and_unsqueeze_match_a_central_difference() -> Result[Void]
+  x = try f64([0.5, -1.0, 2.0], [1, 3])
+  try check_grad([x]) do |xs| weigh(try Tensor.squeeze(xs[0])) end
+
+  check_grad([x]) do |xs| weigh(try Tensor.unsqueeze(xs[0], 2)) end
+end
+
+def test_slice_matches_a_central_difference() -> Result[Void]
+  x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.4, 0.9, -1.3, 0.6, -0.2, 1.4], [2, 3, 2])
+  try check_grad([x]) do |xs| weigh(try Tensor.slice(xs[0], [1, 1, 0], [2, 3, 1])) end
+
+  check_grad([x]) do |xs| weigh(try Tensor.slice(xs[0], [0, 0, 0], [2, 2, 2])) end
+end
+
+def test_concat_matches_a_central_difference() -> Result[Void]
+  args = [try f64([0.5, -1.0, 2.0, 0.3], [2, 2]), try f64([1.5, 0.2, -0.3, 0.8, -1.1, 0.4], [2, 3])]
+  check_grad(args) do |xs| weigh(try Tensor.concat([xs[0], xs[1], xs[0]], 1)) end
+end
+
+def test_stack_matches_a_central_difference() -> Result[Void]
+  args = [try f64([0.5, -1.0, 2.0, 0.3], [2, 2]), try f64([1.5, 0.2, -0.3, 0.8], [2, 2])]
+  try check_grad(args) do |xs| weigh(try Tensor.stack([xs[0], xs[1]], 0)) end
+
+  check_grad(args) do |xs| weigh(try Tensor.stack([xs[1], xs[0], xs[1]], 2)) end
+end
+
+def test_gather_matches_a_central_difference_and_sums_repeated_rows() -> Result[Void]
+  ids = try Support.i64([2, 0, 2], [3])
+  x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.4, 0.9], [4, 2])
+  try check_grad([x]) do |xs| weigh(try Tensor.gather(xs[0], Trace.constant(ids))) end
+
+  grads = try Trace.grad([x]) do |xs| Tensor.sum(try Tensor.gather(xs[0], Trace.constant(ids))) end
+
+  Support.expect_floats(grads[0], [1.0, 1.0, 0.0, 0.0, 2.0, 2.0, 0.0, 0.0])
+end
+
+def test_softmax_matches_a_central_difference() -> Result[Void]
+  x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7], [2, 3])
+  try check_grad([x]) do |xs| weigh(try Tensor.softmax(xs[0], 1)) end
+
+  check_grad([x]) do |xs| weigh(try Tensor.softmax(xs[0], 0)) end
+end
+
+def test_layer_norm_matches_a_central_difference() -> Result[Void]
+  x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.4, 0.9], [2, 4])
+  check_grad([x]) do |xs| weigh(try Tensor.layer_norm(xs[0], 0.00001)) end
+end
+
+def test_multi_head_attention_matches_a_central_difference() -> Result[Void]
+  args = [
+    try f64([0.5, -1.0, 0.2, 0.3, 1.2, -0.7, 0.4, 0.9], [1, 2, 4]),
+    try f64([0.1, 0.6, -0.3, 0.8, -0.5, 0.4, 0.7, -0.2, 0.3, -0.9, 0.5, 0.2], [1, 3, 4]),
+    try f64([1.5, 0.2, -0.3, 0.8, -1.1, 0.4, 0.6, 0.1, 0.3, -0.4, 0.9, -0.6], [1, 3, 4]),
+  ]
+
+  check_grad(args) do |xs| weigh(try Tensor.multi_head_attention(xs[0], xs[1], xs[2], 2)) end
 end
 
 def test_argmax_cuts_the_gradient() -> Result[Void]

@@ -23,3 +23,31 @@ def binary_cross_entropy(logits: Tensor.Tensor, targets: Tensor.Tensor) -> Resul
   soft = try Tensor.add(pos, try Tensor.log(try Tensor.add(one, try Tensor.exp(try Tensor.neg(abs)))))
   Tensor.mean(try Tensor.sub(soft, try Tensor.mul(logits, targets)))
 end
+
+## Softmax cross-entropy of `logits` (`[batch, classes]`) against the integer
+## class `labels` (`[batch]`): the mean of `-log softmax(z)[label]`. The
+## log-softmax subtracts the row maximum as a `stop_grad` constant, so it is
+## stable and its gradient is `(softmax(z) - onehot) / batch`. A label outside
+## `0...classes` matches no class and adds `0`: inside a trace the labels have
+## no values to check.
+def cross_entropy(logits: Tensor.Tensor, labels: Tensor.Tensor) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(logits)
+  return error("cross_entropy needs [batch, classes] logits, got #{shape}") if shape.size != 2
+  if Tensor.shape(labels) != [shape[0]]
+    return error("cross_entropy needs [#{shape[0]}] labels, got #{Tensor.shape(labels)}")
+  end
+
+  top = try Tensor.stop_grad(try Tensor.max(logits, some([1]), true))
+  shifted = try Tensor.sub(logits, try Tensor.broadcast_to(top, shape))
+  total = try Tensor.sum(try Tensor.exp(shifted), some([1]), true)
+  log_probs = try Tensor.sub(shifted, try Tensor.broadcast_to(try Tensor.log(total), shape))
+  classes = try Tensor.arange(0, shape[1], 1, Tensor.dtype(labels), Tensor.backend(logits))
+  hit = try Tensor.eq(
+    try Tensor.broadcast_to(try Tensor.reshape(classes, [1, shape[1]]), shape),
+    try Tensor.broadcast_to(try Tensor.reshape(labels, [shape[0], 1]), shape),
+  )
+
+  zeros = try Tensor.full(shape, Tensor.Values.Float(0.0), Tensor.dtype(logits), Tensor.backend(logits))
+  picked = try Tensor.where(hit, log_probs, zeros)
+  Tensor.neg(try Tensor.mean(try Tensor.sum(picked, some([1]))))
+end

@@ -1,6 +1,7 @@
 ## `nn/` composes with `Trace`: the gradient of a scalar loss through `dense`
-## (on a rank-3 input, so its fold and unfold are traced) and through a relu
-## `mlp` matches a central difference of the same loss.
+## (on a rank-3 input, so its fold and unfold are traced), a relu `mlp`,
+## `embedding` with `positional`, and a gelu encoder block matches a central
+## difference of the same loss.
 
 import Nn from "../nn"
 import S from "support"
@@ -31,6 +32,67 @@ def test_the_gradient_through_a_relu_mlp_matches_a_central_difference() -> Resul
   ]
 
   check(args, ->(ps: List[Tensor.Tensor]) { mlp_loss(ps, x) })
+end
+
+def test_the_gradient_through_embedding_and_positional_matches_a_central_difference() -> Result[Void]
+  ids = try Tensor.from_list([2, 0, 2].map { |i| Tensor.Values.Int(i) }, [3], Tensor.Dtype.I64, S.REF)
+  args = [
+    try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.4, 0.9], [4, 2]),
+    try f64([0.1, -0.2, 0.3, 0.6, -0.4, 0.8, 0.2, 0.5], [4, 2]),
+  ]
+
+  check(
+    args,
+    ->(ps: List[Tensor.Tensor]) {
+      rows = try Nn.embedding(Nn.Embedding(table: ps[0]), Trace.constant(ids))
+      squared(try Nn.positional(Nn.Embedding(table: ps[1]), rows))
+    },
+  )
+end
+
+def test_the_gradient_through_a_gelu_encoder_block_matches_a_central_difference() -> Result[Void]
+  args = [try filler([1, 2, 4], 0), try filler([4], 1)]
+  fixed: List[Tensor.Tensor] = []
+  for k in 2...9
+    fixed = fixed.push(try filler([4, 4], k))
+  end
+
+  check(args, ->(ps: List[Tensor.Tensor]) { block_loss(ps, fixed.map { |t| Trace.constant(t) }) })
+end
+
+## `sum(encoder_block(x)^2)` with a gelu `mlp` and bias-free weights, for
+## `ps = [x, norm1 gamma]`: the gradient of `x` crosses every layer of the
+## block. `fixed` holds the query, key, value and output weights, the `mlp`
+## weights, and a beta and the norm2 gamma (rows 0 and 1).
+def block_loss(ps: List[Tensor.Tensor], fixed: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  beta = try Tensor.reshape(try Tensor.slice(fixed[6], [0, 0], [1, 4]), [4])
+  gamma2 = try Tensor.reshape(try Tensor.slice(fixed[6], [1, 0], [2, 4]), [4])
+  attention = Nn.Attention(
+    query: Nn.Dense(w: fixed[0], b: none),
+    key: Nn.Dense(w: fixed[1], b: none),
+    value: Nn.Dense(w: fixed[2], b: none),
+    output: Nn.Dense(w: fixed[3], b: none),
+    heads: 2,
+  )
+
+  block = Nn.EncoderBlock(
+    norm1: Nn.LayerNorm(gamma: ps[1], beta: beta, eps: 0.00001),
+    attention: attention,
+    norm2: Nn.LayerNorm(gamma: gamma2, beta: beta, eps: 0.00001),
+    mlp: Nn.Mlp(
+      up: Nn.Dense(w: fixed[4], b: none),
+      down: Nn.Dense(w: fixed[5], b: none),
+      activation: Nn.Activation.Gelu,
+    ),
+  )
+
+  squared(try Nn.encoder_block(block, ps[0]))
+end
+
+## An `F64` tensor of `shape` with small values that differ by `seed`.
+def filler(shape: List[Int], seed: Int) -> Result[Tensor.Tensor]
+  n = shape.reduce(1) do |acc, d| acc * d end
+  f64((0...n).to_a.map { |j| 0.1 * ((j * 7 + seed * 3) % 11 - 5).to_f + 0.05 * seed.to_f }, shape)
 end
 
 ## `sum(dense(x)^2)` for the weight and bias in `ps`.

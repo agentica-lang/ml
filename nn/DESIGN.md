@@ -46,11 +46,9 @@ that are the layer's own (rank of `positional`, table length, heads).
   residual block, and folding leading axes so `dense` takes any rank.
 - **Differentiable for free.** Since a layer is `Tensor.*` calls, it records a
   graph on `Trace` tensors and `Trace.value_and_grad` differentiates it
-  (`tensor/DESIGN.md` §10). `dense` (any rank) and `mlp` with `relu` do today.
-  `tensor/` has no backward rule yet for `sqrt`, `max`, `slice`, `concat`,
-  `stack`, `gather`, `sigmoid` and `gelu_tanh_approx`, so `layer_norm`,
-  `positional`, `embedding`, attention and the `silu`/`gelu` activations are
-  forward-only under `Trace` today.
+  (`tensor/DESIGN.md` §10). Every layer is: the tests check `dense`, a relu
+  `mlp`, `embedding` with `positional` and a gelu `encoder_block` against a
+  central difference.
 - **Weights are `[in, out]`** (`x w`, as `Tensor.linear` takes them).
   Hugging Face and PyTorch checkpoints store `[out, in]`, so `hub/` transposes
   at load time.
