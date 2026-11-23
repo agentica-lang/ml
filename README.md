@@ -6,8 +6,9 @@ Nx: values are immutable, and a training step returns new parameters.
 
 Status: in progress. `whisper/` is the first package; `tensor/` (reference
 and libtorch backends, tracing and gradients), the first layers of `nn/`
-([`nn/DESIGN.md`](nn/DESIGN.md)) and the first of `train/`
-([`train/DESIGN.md`](train/DESIGN.md)) are in. The tensor stack is
+([`nn/DESIGN.md`](nn/DESIGN.md)), the first of `train/`
+([`train/DESIGN.md`](train/DESIGN.md)) and the safetensors reader of `hub/`
+([`hub/DESIGN.md`](hub/DESIGN.md)) are in. The tensor stack is
 designed in [`tensor/DESIGN.md`](tensor/DESIGN.md), with execution order in
 [`roadmap.md`](roadmap.md) and the open decisions in
 [issue #1](https://github.com/agentica-lang/ml/issues/1).
@@ -25,7 +26,7 @@ Versions are prefixed tags, such as `tensor-0.1.0`.
 | `candle/` | candle backend (eager), through a thin C layer over Rust | `tensor`, candle |
 | `nn/` | functional layers, forward only: dense, layer norm, embeddings, attention, MLP, a transformer encoder block, seeded initializers | `tensor` |
 | `train/` | losses (`mse`, binary cross-entropy), optimizers (SGD, Adam), the training loop over `tensor/`'s gradients | `tensor`, `nn` |
-| `hub/` | `safetensors` weights and Hugging Face models (later) | `nn` |
+| `hub/` | `safetensors` checkpoints (one file or sharded with an index) read in Agentica, and `nn` layers loaded from them by name; Hugging Face downloads later | `tensor`, `nn` |
 
 An inference app depends on `nn` and one backend; a training app adds `train`.
 Inside this repository the packages are members of one Agentica workspace (the
