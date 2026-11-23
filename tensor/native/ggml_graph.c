@@ -85,11 +85,12 @@ static const char *op_names[OP_COUNT] = {
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
-   first call that needs it) and the handle it points at for this call. */
+   first call that needs it) and, for this call, the tensor it converts to or
+   from. */
 struct port {
   struct ggml_tensor *t;
   ggml_backend_buffer_t own;
-  struct ggml_tensor *conv;               /* the bound tensor, converted to or from `own`; else NULL. Its memory is `held` */
+  struct ggml_tensor *conv; /* the bound tensor, converted to or from `own`; else NULL. Its memory is `held` */
   bool set;                               /* bound or prepared for the next run */
   struct tg_storage *held;                /* the memory of the bound tensor, kept until the run is over */
 };
@@ -925,6 +926,7 @@ an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output,
 an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t output, struct ggml_TensorHandle_state *t) {
   struct entry *p = lease->e;
   bool attached = false, alias = false;
+  char why[96];
   int64_t i;
 
   if (p == NULL || !p->compiled) return tg_error(env, "an output of a compiled graph");
@@ -945,7 +947,10 @@ an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t ou
   }
   if (!alias) attached = attach(p, &p->outs[output], t);
   tg_unlock_device();
-  if (alias) return tg_error(env, "an output tensor is an input of the run or another output");
+  if (alias) {
+    snprintf(why, sizeof why, "output %" PRId64 ": the tensor given is an input of the run or another output", output);
+    return tg_error(env, why);
+  }
   if (!attached) return tg_error(env, "out of memory");
   return ggml_result_Void_ok(env, an_void(env));
 }
@@ -970,8 +975,8 @@ an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease) {
 }
 
 /* A pin holds its graph in the cache; a graph that has no slot (every one is in use or pinned) gets a pin that holds
-   nothing, and runs as an ordinary graph. Lets the graph go back to the ordinary cache. A hook: it never waits for the device lock. The graph cannot have
-   been freed: a pinned one is never a victim, and it is dropped only when it never compiled. */
+   nothing, and runs as an ordinary graph. The free hook below ends a pin: it never waits for the device lock, and the
+   graph cannot have been freed, since a pinned one is never a victim and is dropped only when it never compiled. */
 CC_SHORT void ggml_Pin_free(void *state) {
   struct ggml_Pin_state *self = (struct ggml_Pin_state *)state;
 

@@ -7,9 +7,10 @@
 ## From `asr/`:
 ##
 ## ```sh
-## agentica tools/bench_transcribe.agc MODEL_DIR WAV BACKEND LANGUAGE [RUNS]
+## agentica tools/bench_transcribe.agc MODEL_DIR WAV BACKEND LANGUAGE [RUNS [stamps]]
 ## ```
 ##
+## `stamps` decodes with timestamps (the default of `Asr.Options`); without it, as here, there are none.
 ## MODEL_DIR holds `model.safetensors`, `config.json` and `tokenizer.json`; BACKEND is `torch`, `ggml` or `vulkan`.
 
 import Asr from "../asr"
@@ -28,7 +29,7 @@ def main() -> Void
 end
 
 def run(args: List[String]) -> Result[Void]
-  return error("usage: MODEL_DIR WAV BACKEND LANGUAGE [RUNS]") if args.size < 4
+  return error("usage: MODEL_DIR WAV BACKEND LANGUAGE [RUNS [stamps]]") if args.size < 4
   runs = 5
   if args.size > 4
     runs = try args[4].to_i
@@ -42,7 +43,7 @@ def run(args: List[String]) -> Result[Void]
   puts("load\t#{Time.monotonic_ms() - started}")
   return ok() if runs < 0
   pcm = try TranscribeCheck.pcm16(try TranscribeCheck.read_bytes(args[1]))
-  options = Asr.Options(language: some(args[3]), timestamps: false)
+  options = Asr.Options(language: some(args[3]), timestamps: args.size > 5 and args[5] == "stamps")
   started = Time.monotonic_ms()
   got = try Asr.transcribe(m, tok, pcm, options)
   puts("warmup\t#{Time.monotonic_ms() - started}")

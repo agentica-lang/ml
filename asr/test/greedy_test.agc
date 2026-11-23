@@ -56,6 +56,30 @@ def test_likelier_timestamps_forbid_the_text() -> Result[Void]
   Test.eq(open_ids(RULES, logits, [10, 1]), [11, 12, 13, 14, 15])
 end
 
+## The four numbers a step graph reads (`Asr.scored`): the first timestamp that may come, no timestamp, no text before
+## `eot`, the first token.
+def test_state_reads_the_end_of_the_tokens() -> Result[Void]
+  try Test.eq(Greedy.state(RULES, []), [10.0, 0.0, 0.0, 1.0])
+  try Test.eq(Greedy.state(RULES, [10]), [11.0, 1.0, 0.0, 0.0])
+  try Test.eq(Greedy.state(RULES, [10, 1]), [11.0, 0.0, 0.0, 0.0])
+  try Test.eq(Greedy.state(RULES, [10, 1, 13]), [13.0, 0.0, 1.0, 0.0])
+  try Test.eq(Greedy.state(RULES, [10, 1, 13, 13]), [14.0, 1.0, 0.0, 0.0])
+  Test.eq(Greedy.state(RULES, [1, 2]), [10.0, 0.0, 0.0, 0.0])
+end
+
+## The mask forbids the suppressed ids, the first token's ones for the first token, and `<|notimestamps|>` when there are
+## timestamp rules.
+def test_the_mask_forbids_the_ids_that_never_come() -> Result[Void]
+  forbidden = ->(r: Greedy.Rules, first: Bool) {
+    mask = Greedy.mask(r, 16, first)
+    (0...16).to_a.select { |i| mask[i] == Greedy.FORBIDDEN }
+  }
+
+  try Test.eq(forbidden.call(RULES, true), [3, 5, 7, 9])
+  try Test.eq(forbidden.call(RULES, false), [7, 9])
+  Test.eq(forbidden.call(RULES.with(timestamps: false), false), [7])
+end
+
 def test_without_timestamps_only_the_suppression_applies() -> Result[Void]
   plain = RULES.with(timestamps: false)
   try Test.eq(open_ids(plain, FLAT, []), [0, 1, 2, 4, 6, 8, 9, 10, 11, 12, 13, 14, 15])
