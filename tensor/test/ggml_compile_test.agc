@@ -92,10 +92,33 @@ end
 ## The sum of `k` times the argument: `k` is a fill of the trace.
 def scaled(k: Float) -> Fn[List[Tensor.Tensor], Result[Tensor.Tensor]]
   ->(a: List[Tensor.Tensor]) {
-    Tensor.sum(
-      try Tensor.mul(a[0], try Tensor.full([2, 3], Tensor.Values.Float(k), Tensor.Dtype.F32, Tensor.backend(a[0]))),
-    )
+    filled = try Tensor.full(Tensor.shape(a[0]), Tensor.Values.Float(k), Tensor.Dtype.F32, Tensor.backend(a[0]))
+    Tensor.sum(try Tensor.mul(a[0], filled))
   }
+end
+
+## `f` run on `args` gives the floats `want`.
+def gives(
+  args: List[Tensor.Tensor],
+  f: Fn[List[Tensor.Tensor], Result[Tensor.Tensor]],
+  want: List[Float],
+) -> Result[Void]
+  Test.eq(try Tensor.to_list(try Trace.eval(args, f)), want.map { |x| Tensor.Values.Float(x) })
+end
+
+def sum_of_squares(a: List[Tensor.Tensor]) -> Result[Tensor.Tensor] = Tensor.sum(try Tensor.mul(a[0], a[0]))
+
+def total(a: List[Tensor.Tensor]) -> Result[Tensor.Tensor] = Tensor.sum(a[0])
+
+## The MLP's loss on `backend`, `rounds` times, each within `TOL` of `want`.
+def repeat_mlp(backend: Tensor.Backend, rounds: Int, want: Float) -> Result[Bool]
+  for _ in 0...rounds
+    vg = try Trace.value_and_grad(try mlp_args(backend, 7), mlp_loss(try labels([0, 3, 1, 2, 3, 0], backend)))
+    got = try float_of((try Tensor.to_list(vg.value))[0])
+    return error("a task got the loss #{got}, alone it is #{want}") if (got - want).abs > TOL
+  end
+
+  ok(true)
 end
 
 ## `max |got - want| / max |want|` (floored at 1e-6) of two tensors' values.
@@ -207,6 +230,77 @@ def test_a_retrace_with_new_values_compiles_nothing() -> Result[Void]
   Test.eq(try Lower.compiles(), after_one)
 end
 
+def test_graphs_that_take_turns_keep_their_values() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  x = try floats([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3], CPU)
+  try gives([x], scaled(2.0), [42.0])
+  try gives([x], &sum_of_squares, [91.0])
+  gives([x], scaled(3.0), [63.0])
+end
+
+def test_a_zero_fill_and_another_fill_are_two_graphs() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  x = try floats([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [3, 2], CPU)
+  start = try Lower.compiles()
+  try gives([x], scaled(0.0), [0.0])
+  try Test.eq(try Lower.compiles(), start + 1)
+  try gives([x], scaled(5.0), [105.0])
+  try Test.eq(try Lower.compiles(), start + 2)
+  try gives([x], scaled(0.0), [0.0])
+  Test.eq(try Lower.compiles(), start + 2)
+end
+
+def test_a_graph_that_failed_a_run_runs_again() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  f = ->(a: List[Tensor.Tensor]) { Tensor.log(a[0]) }
+  try refused(Trace.eval([try floats([1.0, 0.0], [2], CPU)], f), "not finite")
+  gives([try floats([1.0, 1.0], [2], CPU)], f, [0.0, 0.0])
+end
+
+def test_an_i32_graph_converts_in_and_out() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  step: Fn[List[Tensor.Tensor], Result[Tensor.Tensor]] = &plus_positions
+  got = try Trace.eval([try labels([1, 1, 5], CPU)], step)
+  try Test.eq(Tensor.dtype(got), Tensor.Dtype.I32)
+  try Test.eq(try Tensor.to_list(got), [1, 11, 5].map { |x| Tensor.Values.Int(x) })
+  refused(Trace.eval([try labels([16777217, 1, 5], CPU)], step), "beyond 2^24")
+end
+
+def test_the_least_recently_used_graph_is_evicted_past_32() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  first = try floats([4.0], [1], CPU)
+  try gives([first], &total, [4.0])
+  for n in 2..33
+    try gives([try floats(uniform(n, n, 1.0).map { |_| 1.0 }, [n], CPU)], &total, [n.to_f])
+  end
+
+  before = try Lower.compiles()
+  try gives([first], &total, [4.0])
+  Test.eq(try Lower.compiles(), before + 1)
+end
+
+def test_two_tasks_run_graphs_at_once() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  alone = try Trace.value_and_grad(try mlp_args(CPU, 7), mlp_loss(try labels([0, 3, 1, 2, 3, 0], CPU)))
+  want = try float_of((try Tensor.to_list(alone.value))[0])
+  other = CPU
+  if Tensor.available(VULKAN)
+    other = VULKAN
+  end
+
+  a = Task.spawn do repeat_mlp(CPU, 5, want) end
+  b = Task.spawn do repeat_mlp(other, 5, want) end
+  try Task.await(a)
+  try Task.await(b)
+  ok()
+end
+
 def test_what_ggml_does_not_lower_is_an_error_naming_it() -> Result[Void]
   return ok() if !try present(CPU)
 
@@ -220,6 +314,35 @@ def test_what_ggml_does_not_lower_is_an_error_naming_it() -> Result[Void]
   plain = try floats([1.0, 2.0, 3.0, 4.0], [2, 2], REF)
   mixed = ->(a: List[Tensor.Tensor]) { Tensor.add(a[0], Trace.constant(plain)) }
   try refused(Trace.eval([x], mixed), "a constant on Reference in a trace run on Ggml(Cpu)")
+  try refused(
+    Trace.eval([try floats(uniform(27, 4, 1.0), [3, 3, 3], CPU)], &transposed),
+    "rank-3 tensor is not lowered",
+  )
+
+  try refused(Trace.eval([try labels([1, 2, 3], CPU)], &is_countdown), "step <= 0")
+  refused(Trace.eval([try labels([1, 2, 3], CPU)], &is_far), "beyond 2^24")
+end
+
+def transposed(a: List[Tensor.Tensor]) -> Result[Tensor.Tensor] = Tensor.transpose(a[0])
+
+## `a[0]` with `10 + i` where element `i` equals `i`.
+def plus_positions(a: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  b = Tensor.backend(a[0])
+  hit = try Tensor.eq(a[0], try Tensor.arange(0, 3, 1, Tensor.Dtype.I32, b))
+  Tensor.where(hit, try Tensor.arange(10, 13, 1, Tensor.Dtype.I32, b), a[0])
+end
+
+def is_countdown(a: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  Tensor.eq(a[0], try Tensor.arange(3, 0, -1, Tensor.Dtype.I32, Tensor.backend(a[0])))
+end
+
+def is_far(a: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  Tensor.eq(a[0], try Tensor.arange(16777215, 16777218, 1, Tensor.Dtype.I32, Tensor.backend(a[0])))
+end
+
+def test_the_refusals_of_ggml_name_their_cause() -> Result[Void]
+  return ok() if !try present(CPU)
+
   zero = try floats([1.0, 0.0, 3.0, 4.0], [2, 2], CPU)
   refused(Trace.eval([zero], ->(a: List[Tensor.Tensor]) { Tensor.log(a[0]) }), "not finite")
 end
@@ -235,6 +358,6 @@ def test_vulkan_matches_the_reference_or_says_why_not() -> Result[Void]
   try Test.eq(try System.env("GGML_VK_DISABLE_F16"), "1")
   case Tensor.vulkan_fp16(true)
     ok(_) -> error("fp16 was chosen after a Vulkan device opened with F32")
-    error(e) -> Test.assert(e.message.include?("F32 mul_mat already"), "the error said \"#{e.message}\"")
+    error(e) -> Test.assert(e.message.include?("chose F32 mul_mat"), "the error said \"#{e.message}\"")
   end
 end

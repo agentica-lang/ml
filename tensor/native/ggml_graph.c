@@ -11,8 +11,15 @@
    and a converting copy instead. Intermediates are not the graph's either:
    one graph allocator per device holds them, shared by every graph of that
    device. So a graph waiting in the cache costs its tensors' metadata only.
-   Every run, under tg_lock, re-plans the shared allocator when another graph
-   ran last, computes, and points the leaves and outputs back at nothing.
+   Every run, under the device lock, re-plans the shared allocator when
+   another graph ran last, computes, and points the leaves and outputs back
+   at nothing. The allocator keeps the largest buffer any graph needed for the
+   rest of the process.
+
+   Two locks: `cache_lock` (the slots, who holds a graph, the counters) is
+   held briefly and is all a lease's free hook takes; the device lock is held
+   through builds and runs. A graph the hook must drop is destroyed under the
+   device lock later (`tg_defer`). Order: device lock, then cache_lock.
 
    Layout: a row-major shape [d0, ..., dk] is a ggml tensor with ne[0] = dk,
    ne[1] = dk-1, ..., so trailing-axis broadcasting is ggml's own repeat.
@@ -36,7 +43,7 @@
 
 /* The op codes `lower.agc` sends; keep both lists in one order. */
 enum {
-  OP_LEAF = 0, /* an input or a constant, copied in per run */
+  OP_LEAF = 0, /* an input or a constant, bound per run */
   OP_FULL,     /* a fill: one element, lazy; ints: [zero] */
   OP_ADD,
   OP_SUB,
@@ -121,10 +128,12 @@ struct device_state {
   struct entry *planned;
 };
 
+static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct entry *cache[MAX_ENTRIES];
-static struct device_state devices[9];
 static int64_t compile_count = 0, tick = 0;
+static struct device_state devices[9]; /* under the device lock */
 
+/* Call under the device lock. */
 static void destroy(struct entry *e) {
   int64_t d = e->device + 1;
 
@@ -167,24 +176,26 @@ static void release(struct entry *e) {
   }
 }
 
+static void destroy_later(void *e) { destroy((struct entry *)e); }
+
 /* Gives the graph back to the cache, or drops it when it never compiled or
-   found no slot. */
+   found no slot. A hook: it never waits for the device lock. */
 void ggml_Lease_free(void *state) {
   struct ggml_Lease_state *self = (struct ggml_Lease_state *)state;
   int i, slot = -1;
+  bool drop;
 
   if (self->e == NULL) return;
-  pthread_mutex_lock(&tg_lock);
+  release(self->e); /* the lease's graph: no one else touches its ports */
+  pthread_mutex_lock(&cache_lock);
   self->e->in_use = false;
-  release(self->e);
   for (i = 0; i < MAX_ENTRIES; i++) {
     if (cache[i] == self->e) slot = i;
   }
-  if (!self->e->compiled || slot < 0) {
-    if (slot >= 0) cache[slot] = NULL;
-    destroy(self->e);
-  }
-  pthread_mutex_unlock(&tg_lock);
+  drop = !self->e->compiled || slot < 0;
+  if (drop && slot >= 0) cache[slot] = NULL;
+  pthread_mutex_unlock(&cache_lock);
+  if (drop) tg_defer(destroy_later, self->e);
   self->e = NULL;
 }
 
@@ -198,10 +209,25 @@ static struct ggml_context *new_context(size_t bytes) {
 }
 
 /* Room for the graph: a traced node lowers to a handful of ggml tensors at
-   most (a matmul's transpose and cont, a reduction's reshapes). */
-static size_t graph_size(int64_t capacity) { return (size_t)(capacity * 8 + 4 * MAX_OUTPUTS + 64); }
+   most (a matmul's transpose and cont, a reduction's reshapes); `node` and
+   `compile` check the room is there. */
+static size_t graph_size(int64_t capacity) { return (size_t)(capacity * 8 + 8 * MAX_OUTPUTS + 64); }
 
-/* A free cache slot, evicting the least recently used graph nobody holds. */
+/* True when the graph's context has room for `tensors` more tensor headers
+   and, before `compile`, for the graph itself. */
+static bool room(struct entry *p, size_t tensors) {
+  size_t graph = p->graph != NULL ? 0 : ggml_graph_overhead_custom(graph_size(p->capacity), false);
+
+  return ggml_used_mem(p->ctx) + graph + tensors * ggml_tensor_overhead() <= ggml_get_mem_size(p->ctx);
+}
+
+/* The most nodes a graph takes. Its metadata is allocated up front, about
+   8 tensor headers (3 KB) per node, so this bounds one graph at about
+   200 MB of metadata; a traced MLP step is about a hundred nodes. */
+#define MAX_NODES 65536
+
+/* A free cache slot, evicting the least recently used graph nobody holds.
+   Call under the device lock and cache_lock. */
 static int free_slot(void) {
   int i, oldest = -1;
 
@@ -216,59 +242,77 @@ static int free_slot(void) {
   return oldest;
 }
 
-an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity) {
-  an_term term;
-  struct ggml_Lease_state *lease = ggml_Lease_new(env, &term);
+/* The compiled graph cached under `key` on `device` that no one holds, marked
+   held, or NULL. */
+static struct entry *cached(int64_t device, ng_str key) {
   struct entry *e = NULL;
-  ggml_backend_t backend;
-  char why[160];
-  size_t size;
   int i;
 
-  if (capacity < 1 || capacity > 1000000) return tg_error(env, "a graph takes 1..1000000 nodes");
-  pthread_mutex_lock(&tg_lock);
+  pthread_mutex_lock(&cache_lock);
   for (i = 0; i < MAX_ENTRIES && e == NULL; i++) {
     struct entry *c = cache[i];
 
     if (c != NULL && c->compiled && !c->in_use && c->device == device && strlen(c->key) == key.len &&
         memcmp(c->key, key.data, key.len) == 0) {
       e = c;
+      e->in_use = true;
+      e->used = ++tick;
     }
   }
-  if (e == NULL) {
-    backend = tg_backend(device, why, sizeof why);
-    if (backend == NULL) {
-      pthread_mutex_unlock(&tg_lock);
-      return tg_error(env, why);
-    }
-    e = (struct entry *)calloc(1, sizeof *e);
-    size = graph_size(capacity);
-    if (e != NULL) {
-      e->device = device;
-      e->backend = backend;
-      e->capacity = capacity;
-      e->key = (char *)malloc(key.len + 1);
-      e->nodes = (struct gnode *)calloc((size_t)capacity, sizeof(struct gnode));
-      e->leaves = (struct port *)calloc((size_t)capacity, sizeof(struct port));
-      e->ctx = new_context(ggml_tensor_overhead() * size + ggml_graph_overhead_custom(size, false));
-      e->fill_ctx = new_context(ggml_tensor_overhead() * (size_t)(capacity + MAX_OUTPUTS + 8));
-      e->port_ctx = new_context(ggml_tensor_overhead() * (size_t)(capacity + MAX_OUTPUTS + 8));
-    }
-    if (e == NULL || e->key == NULL || e->nodes == NULL || e->leaves == NULL || e->ctx == NULL ||
-        e->fill_ctx == NULL || e->port_ctx == NULL) {
-      if (e != NULL) destroy(e);
-      pthread_mutex_unlock(&tg_lock);
-      return tg_error(env, "out of memory making a graph");
-    }
-    memcpy(e->key, key.data, key.len);
-    e->key[key.len] = '\0';
-    i = free_slot();
-    if (i >= 0) cache[i] = e; /* every slot held: the graph lives for this lease only */
+  pthread_mutex_unlock(&cache_lock);
+  return e;
+}
+
+an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity) {
+  an_term term;
+  struct ggml_Lease_state *lease = ggml_Lease_new(env, &term);
+  struct entry *e;
+  ggml_backend_t backend;
+  char why[160];
+  size_t size;
+  int i;
+
+  if (capacity < 1 || capacity > MAX_NODES) return tg_error(env, "a graph takes 1..65536 nodes");
+  e = cached(device, key);
+  if (e != NULL) {
+    lease->e = e;
+    return ggml_result_Lease_ok(env, term);
   }
+  tg_lock_device();
+  backend = tg_backend(device, why, sizeof why);
+  if (backend == NULL) {
+    tg_unlock_device();
+    return tg_error(env, why);
+  }
+  e = (struct entry *)calloc(1, sizeof *e);
+  size = graph_size(capacity);
+  if (e != NULL) {
+    e->device = device;
+    e->backend = backend;
+    e->capacity = capacity;
+    e->key = (char *)malloc(key.len + 1);
+    e->nodes = (struct gnode *)calloc((size_t)capacity, sizeof(struct gnode));
+    e->leaves = (struct port *)calloc((size_t)capacity, sizeof(struct port));
+    e->ctx = new_context(ggml_tensor_overhead() * size + ggml_graph_overhead_custom(size, false));
+    e->fill_ctx = new_context(ggml_tensor_overhead() * (size_t)(capacity + 2 * MAX_OUTPUTS + 8));
+    e->port_ctx = new_context(ggml_tensor_overhead() * (size_t)(capacity + MAX_OUTPUTS + 8));
+  }
+  if (e == NULL || e->key == NULL || e->nodes == NULL || e->leaves == NULL || e->ctx == NULL ||
+      e->fill_ctx == NULL || e->port_ctx == NULL) {
+    if (e != NULL) destroy(e);
+    tg_unlock_device();
+    return tg_error(env, "out of memory making a graph");
+  }
+  memcpy(e->key, key.data, key.len);
+  e->key[key.len] = '\0';
   e->in_use = true;
+  pthread_mutex_lock(&cache_lock);
   e->used = ++tick;
+  i = free_slot();
+  if (i >= 0) cache[i] = e; /* every slot held: the graph lives for this lease only */
+  pthread_mutex_unlock(&cache_lock);
+  tg_unlock_device();
   lease->e = e;
-  pthread_mutex_unlock(&tg_lock);
   return ggml_result_Lease_ok(env, term);
 }
 
@@ -279,9 +323,9 @@ an_term ggml_ready(an_env *env, struct ggml_Lease_state *lease) {
 an_term ggml_compiles(an_env *env) {
   int64_t n;
 
-  pthread_mutex_lock(&tg_lock);
+  pthread_mutex_lock(&cache_lock);
   n = compile_count;
-  pthread_mutex_unlock(&tg_lock);
+  pthread_mutex_unlock(&cache_lock);
   return an_int(env, n);
 }
 
@@ -381,8 +425,15 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   for (i = 0; i < nargs; i++) {
     if (args[i] < 0 || args[i] >= p->count) return tg_error(env, "an arg is not an earlier node");
   }
-  for (i = 0; i < rank; i++) {
-    if (shape[i] < 0) return tg_error(env, "a shape holds no negative dimension");
+  if (!room(p, 16)) return tg_error(env, "the graph ran out of room: it lowers to more ggml tensors than its capacity allows");
+  {
+    int64_t elements = 1;
+
+    for (i = 0; i < rank; i++) {
+      if (shape[i] <= 0) return tg_error(env, "a tensor with no elements is not lowered to ggml");
+      if (elements > INT64_MAX / 8 / shape[i]) return tg_error(env, "the tensor is too large");
+      elements *= shape[i];
+    }
   }
   if (nargs > 0) a = &p->nodes[args[0]];
   if (nargs > 1) b = &p->nodes[args[1]];
@@ -436,6 +487,11 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       }
       break;
     case OP_TRANSPOSE:
+      /* ggml_transpose swaps ne0 and ne1 only */
+      if (rank > 2) {
+        snprintf(text, sizeof text, "transpose of a rank-%d tensor is not lowered to ggml", rank);
+        return tg_error(env, text);
+      }
       t = ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, a)));
       n->arg = (int)args[0];
       break;
@@ -494,6 +550,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       break;
     case OP_ARANGE:
       if (nints != 3) return tg_error(env, "arange takes start, stop and step");
+      if (ints[2] <= 0 || ints[1] <= ints[0]) return tg_error(env, "arange with a step <= 0 or no values is not lowered to ggml");
+      if (ints[0] <= -16777216 || ints[1] >= 16777216) return tg_error(env, "arange beyond 2^24 is not exact in F32");
       t = ggml_arange(p->ctx, (float)ints[0], (float)ints[1], (float)ints[2]);
       break;
     case OP_EQ:
@@ -543,6 +601,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     if (outs[i] < 0 || outs[i] >= p->count) return tg_error(env, "an output is not a node");
   }
 
+  if (!room(p, (size_t)nouts * 8 + 1)) return tg_error(env, "the graph ran out of room for its outputs");
   p->graph = ggml_new_graph_custom(p->ctx, graph_size(p->capacity), false);
   p->checks = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, nouts);
   for (i = 0; i < nouts; i++) {
@@ -585,20 +644,22 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     }
   }
 
-  pthread_mutex_lock(&tg_lock);
+  tg_lock_device();
   p->fill_buffer = ggml_backend_alloc_ctx_tensors(p->fill_ctx, p->backend);
+  if (p->fill_buffer != NULL) ggml_backend_buffer_clear(p->fill_buffer, 0);
+  tg_unlock_device();
   if (p->fill_buffer != NULL) {
-    ggml_backend_buffer_clear(p->fill_buffer, 0);
+    pthread_mutex_lock(&cache_lock);
     p->compiled = true;
     compile_count++;
+    pthread_mutex_unlock(&cache_lock);
   }
-  pthread_mutex_unlock(&tg_lock);
   if (!p->compiled) return tg_error(env, "allocating the graph's fills failed");
   return ggml_result_Void_ok(env, an_void(env));
 }
 
 /* Points `port` at the memory of `h` when it is F32, or at its own memory
-   (made once) for a converting copy. Call under tg_lock. */
+   (made once) for a converting copy. Call under the device lock. */
 static bool attach(struct entry *p, struct port *port, struct ggml_TensorHandle_state *h) {
   if (h->t->type == GGML_TYPE_F32) {
     port->t->data = h->t->data;
@@ -630,10 +691,10 @@ an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, str
   if (!ggml_backend_supports_buft(p->backend, ggml_backend_buffer_get_type(t->buffer))) {
     return tg_error(env, "a bound tensor lives on another device than its graph");
   }
-  pthread_mutex_lock(&tg_lock);
+  tg_lock_device();
   if (!attach(p, leaf, t)) why = "out of memory";
-  else if (leaf->handle != NULL && !tg_copy(t->t, leaf->t)) why = "out of memory";
-  pthread_mutex_unlock(&tg_lock);
+  else if (leaf->handle != NULL) why = tg_copy(t->t, leaf->t);
+  tg_unlock_device();
   if (why != NULL) return tg_error(env, why);
   return ggml_result_Void_ok(env, an_void(env));
 }
@@ -649,9 +710,9 @@ an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output,
   if (!tg_new_tensor(env, p->device, p->outs[output].t->ne, int32 ? GGML_TYPE_I32 : GGML_TYPE_F32, state, &failure)) {
     return failure;
   }
-  pthread_mutex_lock(&tg_lock);
+  tg_lock_device();
   attached = attach(p, &p->outs[output], state);
-  pthread_mutex_unlock(&tg_lock);
+  tg_unlock_device();
   if (!attached) return tg_error(env, "out of memory");
   return ggml_result_TensorHandle_ok(env, term);
 }
@@ -687,7 +748,7 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
     return tg_error(env, "run needs one value per fill");
   }
 
-  pthread_mutex_lock(&tg_lock);
+  tg_lock_device();
   if (p->fill_count > 0) ggml_backend_tensor_set(p->fill_store, values, 0, (size_t)p->fill_count * sizeof(float));
   d = &devices[p->device + 1];
   if (d->galloc == NULL) d->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(p->backend));
@@ -697,7 +758,10 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
       p->inner[i]->data = NULL;
       p->inner[i]->buffer = NULL;
     }
-    if (d->planned != p && !ggml_gallocr_reserve(d->galloc, p->graph)) why = "allocating the graph failed";
+    if (d->planned != p) {
+      d->planned = NULL;
+      if (!ggml_gallocr_reserve(d->galloc, p->graph)) why = "allocating the graph failed";
+    }
   }
   if (why == NULL && !ggml_gallocr_alloc_graph(d->galloc, p->graph)) why = "allocating the graph failed";
   if (why == NULL) {
@@ -709,12 +773,12 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
     if (!isfinite(checks[i])) {
       snprintf(text, sizeof text, "output %" PRId64 " of the graph holds a value that is not finite", i);
       why = text;
-    } else if (p->outs[i].handle != NULL && !tg_copy(p->outs[i].t, p->outs[i].handle->t)) {
-      why = "out of memory";
+    } else if (p->outs[i].handle != NULL) {
+      why = tg_copy(p->outs[i].t, p->outs[i].handle->t);
     }
   }
   release(p);
-  pthread_mutex_unlock(&tg_lock);
+  tg_unlock_device();
   free(values);
   if (why != NULL) return tg_error(env, why);
   return ggml_result_Void_ok(env, an_void(env));

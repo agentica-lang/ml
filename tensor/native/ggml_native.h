@@ -172,8 +172,9 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
 an_term ggml_compiles(an_env *env);
 
 /* Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
-   Vulkan device this process opens. ggml reads it once, when the first
-   Vulkan device opens, so a different choice after that is an error. */
+   Vulkan device this process opens. ggml reads it once, when it first
+   enumerates its devices, so a different choice after any other call of
+   this module is an error. */
 an_term ggml_prefer_fp16(an_env *env, bool enabled);
 
 #ifdef __cplusplus

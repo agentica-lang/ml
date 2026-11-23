@@ -115,8 +115,8 @@ end
 
 ## Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
 ## Vulkan device of the ggml backend in this process. ggml fixes the choice
-## when the first Vulkan device opens, so a different choice after that is an
-## error. fp16 is faster and changes gradients by up to about 10 % at MLP
+## at the process's first ggml call (`available` included), so a different
+## choice after that is an error. fp16 is faster and changes gradients by up to about 10 % at MLP
 ## sizes (`tensor/README.md`, "The ggml backend").
 def vulkan_fp16(enabled: Bool) -> Result[Void] = Ggml.prefer_fp16(enabled)
 

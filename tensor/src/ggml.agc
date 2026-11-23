@@ -98,7 +98,7 @@ def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
 end
 
 ## Chooses fp16 `mul_mat` (`true`) or F32 (`false`, the default) for every
-## Vulkan device this process opens; an error once a device opened with the
+## Vulkan device this process opens; an error once a ggml call fixed the
 ## other one.
 def prefer_fp16(enabled: Bool) -> Result[Void]
   _ = try usable("vulkan_fp16")

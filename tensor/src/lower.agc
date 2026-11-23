@@ -131,6 +131,10 @@ def plan(outs: List[Types.Tensor], env: Map[Int, Types.Tensor], backend: Types.B
       Types.Op.Constant(c) -> leaves = leaves.push(try bound(c, backend, "a constant"))
       Types.Op.Full(v) ->
         x = try Types.value_to_float(v, t.dtype)
+        if Types.is_int_dtype(t.dtype) and x.abs > 16777216.0
+          return error("node #{n.id}: a fill of #{x} is beyond 2^24, which F32 does not hold exactly")
+        end
+
         fills = fills.push(x)
         zero = 0
         if x == 0.0

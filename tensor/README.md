@@ -211,8 +211,9 @@ and outputs written into fresh tensors, with no copy. The ops lowered are those
 of an MLP and softmax cross-entropy with their gradients (the list is in §7);
 any other op, a dtype `F32` does not hold exactly and an output that is not
 finite are errors. Vulkan computes in `F32`; `Tensor.vulkan_fp16(true)`, before
-the first Vulkan tensor, switches the whole process to fp16 `mul_mat`, which is
-faster and changes gradients by up to about 10 % at MLP sizes. ggml holds `F32`
+any other ggml call (`Tensor.available` included), switches the whole process
+to fp16 `mul_mat`, which is faster and changes gradients by up to about 10 % at
+MLP sizes. ggml holds `F32`
 and `I32`; `Bool`, `I8`, `I16` and `U8` are held as `F32`, which is exact for
 them; `F16`, `F64` and `I64` are refused, and so is a rank above 4. A fill is
 made in C, so it has no `List.repeat` cap. Vulkan buffer operations (allocate,

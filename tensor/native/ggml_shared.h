@@ -17,24 +17,32 @@ struct ggml_TensorHandle_state {
   bool vulkan;
 };
 
-/* The one lock of the device table, the registry, the graph cache, every
-   graph run and every Vulkan buffer operation. */
-extern pthread_mutex_t tg_lock;
+/* The device lock: the device table, the registry, every graph build and
+   run and every Vulkan buffer operation. Taking it first does the frees that
+   free hooks deferred (`tg_defer`), since a hook must never wait for a graph.
+   CPU and Vulkan graphs share it, so they run one at a time. */
+void tg_lock_device(void);
+void tg_unlock_device(void);
+
+/* Runs `fn(arg)` under the device lock, at the next time anyone takes it. */
+void tg_defer(void (*fn)(void *), void *arg);
 
 an_term tg_error(an_env *env, const char *message);
 
 /* The backend of `device` (-1: CPU, i >= 0: Vulkan device i), opened once
-   for the process, or NULL with the reason in `why`. Call under tg_lock. */
+   for the process, or NULL with the reason in `why`. Call under the device
+   lock. */
 ggml_backend_t tg_backend(int64_t device, char *why, size_t len);
 
 /* A fresh tensor of `ne` and `type` on `device` into `state`; false with the
-   error term in `failure`. Takes tg_lock itself. */
+   error term in `failure`. Takes the device lock itself. */
 bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_type type,
                    struct ggml_TensorHandle_state *state, an_term *failure);
 
-/* Copies `src` into `dst` (same element count), converting between F32 and
-   I32 through the host when their types differ. Call under tg_lock. */
-bool tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst);
+/* Copies `src` into `dst`, converting between F32 and I32 through the host
+   when their types differ; NULL, or why it did not (an element count that
+   differs, an integer beyond 2^24). Call under the device lock. */
+const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst);
 
 /* A held graph of the cache (`ggml_graph.c`). */
 struct entry;

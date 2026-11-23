@@ -74,7 +74,8 @@ extern module "ggml"
   ## How many graphs this process has compiled: the cache's misses.
   compute def compiles() -> Int
   ## Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
-  ## Vulkan device this process opens. ggml reads it once, when the first
-  ## Vulkan device opens, so a different choice after that is an error.
+  ## Vulkan device this process opens. ggml reads it once, when it first
+  ## enumerates its devices, so a different choice after any other call of
+  ## this module is an error.
   compute def prefer_fp16(enabled: Bool) -> Result[Void]
 end
