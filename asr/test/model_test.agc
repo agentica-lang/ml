@@ -163,6 +163,90 @@ def test_on_ggml_the_steps_and_transcribe_match() -> Result[Void]
   end
 end
 
+## Without timestamp rules, greedy decoding on ggml runs the pick in each step's graph (`Asr.step_pick`): only an id
+## and a log-probability leave the device. It emits the reference's tokens, in the padded cache's growth too, and its
+## `avg_logprob` is the reference's within F32 rounding. `step_pick` also answers on the reference, which computes the
+## same graph eagerly.
+def test_on_ggml_the_pick_runs_in_the_graph() -> Result[Void]
+  with_fixtures do |dir|
+    tok = try Tokenizer.open("test/fixtures/tokenizer.json")
+    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    options = Asr.Options(timestamps: false)
+    want = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", REF), tok, pcm, options)
+    try Test.assert(want.tokens.size > 9, "the padded cache grows past 8 rows: #{want.tokens}")
+    for backend in try ggml_backends()
+      speech = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      got = try Asr.transcribe(speech, tok, pcm, options)
+      try Test.eq(got.tokens, want.tokens)
+      try Test.assert(
+        (got.avg_logprob - want.avg_logprob).abs < 0.00001,
+        "avg_logprob #{got.avg_logprob} against #{want.avg_logprob}",
+      )
+
+      compiled = try Lower.compiles()
+      again = try Asr.transcribe(speech, tok, pcm, options)
+      try Test.eq(again.tokens, want.tokens)
+      try Test.eq(try Lower.compiles(), compiled)
+    end
+
+    ok()
+  end
+end
+
+## `step_pick` gives, on every backend, the id and the log-probability that `Greedy` computes from the logits of
+## `step`, for a mask that forbids ids and for the first token's.
+def test_step_pick_matches_greedy_over_the_logits() -> Result[Void]
+  with_fixtures do |dir|
+    rules = Greedy.Rules(
+      suppress: [1, 3],
+      begin_suppress: [2],
+      eot: 0,
+      no_timestamps: 4,
+      timestamp_begin: 32,
+      timestamps: false,
+      max_initial: 50,
+    )
+
+    backends = [REF] + try ggml_backends()
+    for backend in backends
+      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      audio = try Asr.encode(m, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
+      cache = try Asr.listen(m, audio)
+      logits = try Asr.step(m, cache, [5, 6, 7])
+      first = try masked(Greedy.mask(rules, m.config.vocab_size, true), backend)
+      rest = try masked(Greedy.mask(rules, m.config.vocab_size, false), backend)
+      got = try Asr.step_pick(m, cache, [5, 6, 7], first)
+      try agrees(got.id, got.logprob, Greedy.allowed(rules, logits.logits, []), "prompt on #{backend}")
+      emitted = [got.id]
+      plain = logits
+      picked = got
+      for _ in 0...10
+        plain = try Asr.step(m, plain.cache, [emitted.last])
+        picked = try Asr.step_pick(m, picked.cache, [emitted.last], rest)
+        try agrees(
+          picked.id,
+          picked.logprob,
+          Greedy.allowed(rules, plain.logits, emitted),
+          "step #{emitted.size} on #{backend}",
+        )
+
+        emitted = emitted.push(picked.id)
+      end
+    end
+
+    ok()
+  end
+end
+
+def masked(values: List[Float], backend: Tensor.Backend) -> Result[Tensor.Tensor] = f32(values, [values.size], backend)
+
+## `id` and `logprob` are the first largest of `allowed` and its log-probability.
+def agrees(id: Int, logprob: Float, allowed: List[Float], what: String) -> Result[Void]
+  want = Greedy.pick(allowed)
+  try Test.assert(id == want, "#{what}: picked #{id}, the logits say #{want}")
+  Test.assert((logprob - Greedy.log_probability(allowed, want)).abs < 0.00001, "#{what}: logprob #{logprob}")
+end
+
 ## On ggml the padded cache grows on purpose: 10 single ids take it from 8 to
 ## 16 rows, and a 9-id prompt on a model of 12 positions takes it from none to
 ## 12 rows (16, clamped) and then to its last position. Every step gives the

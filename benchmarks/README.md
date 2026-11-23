@@ -18,8 +18,8 @@ The real-time factor is the run time over the clip length, so lower is better. T
 
 | Row | RTF jfk | RTF es-hola | Load | Peak memory | Tokens against Hugging Face |
 |---|---|---|---|---|---|
-| ours, ggml CPU | 0.326 | 0.900 | 0.4 s | 0.50 GB | same |
-| ours, ggml Vulkan | 0.390 | 0.985 | 0.45 s | 0.35 GB | same |
+| ours, ggml CPU | 0.276 | 0.80 | 0.4 s | 0.50 GB | same |
+| ours, ggml Vulkan | 0.268 | 0.713 | 0.45 s | 0.35 GB | same |
 | ours, libtorch CPU | 0.619 | 1.987 | 0.3 s | 1.5 GB | same |
 | whisper.cpp CPU, F32 | 0.080 | 0.287 | 0.10 s | 0.22 GB | one more token on jfk |
 | whisper.cpp CPU, F32, no flash attention | 0.119 | 0.429 | 0.11 s | 0.29 GB | same |
@@ -96,11 +96,39 @@ Two things are measured, from the same commit:
 
 "Before" is `Trace.eval_many` on every step, "after" is `Trace.compile` and `Trace.run`: the decoder step is traced and planned once for each pair of cache rows and capacity (5 graphs for the 24 steps of jfk: 8, 16 and 32 rows), so the tracing and planning rows are those 5 compilations spread over 24 steps, and a step that finds its graph costs nothing there. The encoder blocks share one compiled graph, with the weights as inputs. On Vulkan the step is 17 ms shorter. On the CPU the 8 ms saved in tracing and planning are hidden by the native run, which varied by 6 ms between these runs (40.7, 43.1 and 46.3 ms in three runs of the same graph on this shared machine).
 
+### With the pick on the device
+
+`Asr.step_pick` adds a mask to the logits and takes the first largest id and its log-probability inside the step's graph (`Asr.picked`: `max`, `eq`, `arange`, `sum`, `exp`, `log`), so the 51,865 logits stay on the device and `[id, logprob]` is the only thing that crosses. `Asr.transcribe` uses it when the rules have no timestamps (`Options.timestamps` false) on ggml; with timestamps, and for the language detection step, the logits still come back. `bench_step.agc ... - pick` times it. Same session, same code otherwise (the step after `Trace.compile`, with the logits against with the pick):
+
+| Part of a step | VM steps, logits | VM steps, pick | CPU logits, ms | CPU pick, ms | Vulkan logits, ms | Vulkan pick, ms |
+|---|---|---|---|---|---|---|
+| tracing | 0.05 M | 0.05 M | 0.5 | 0.5 | 0.8 | 0.9 |
+| cache key and lowering | 0.06 M | 0.06 M | 1.7 | 1.7 | 2.5 | 2.8 |
+| lease lookup | 0 | 0 | 0.05 | 0.04 | 0.07 | 0.05 |
+| input upload (8 bytes, 2 calls) | 0 | 0 | 0.1 | 0.1 | 1.1 | 0.6 |
+| binding 147 leaves | 0.005 M | 0.005 M | 0.8 | 0.8 | 2.3 | 1.7 |
+| native execution (`run`) | 0 | 0 | 40.5 | 39.3 | 78.8 | 62.2 |
+| read-back | 1.04 M | 0.0001 M | 19.5 | 0.03 | 33.3 | 0.3 |
+| sum | 1.15 M | 0.11 M | 63.2 | 42.4 | 119.0 | 68.5 |
+| wall time of a step | | | 61.9 | 38.5 | 120.6 | 68.2 |
+
+The read-back is gone, and on Vulkan the native run is 16 ms shorter too: the graph no longer copies 207 KB of logits out and checks them. What is left is the device: 39 ms (CPU) and 62 ms (Vulkan) for 1,377 ggml nodes, and the per-step Agentica work (tracing and planning spread over the 5 compilations, binding, inputs), 3 to 6 ms.
+
+Whole transcriptions, median of 5 runs (medium 2), the code before and after in the same session, no timestamps:
+
+| | jfk before | jfk after | es-hola before | es-hola after |
+|---|---|---|---|---|
+| tiny ggml CPU | 0.299 | 0.276 | 0.86 to 0.99 | 0.75 to 0.89 |
+| tiny ggml Vulkan | 0.393 | 0.268 | 0.972 | 0.713 |
+| medium ggml Vulkan | 2.50 | 2.42 | 6.91 | 6.83 |
+
+The CPU es-hola runs vary by 20 percent between runs on this machine (the ranges are the medians of two to three sets). Tokens are those of the Hugging Face goldens everywhere.
+
 The earlier table in this file says 68 ms and 1.45 M VM steps for a CPU step, and this one 69.9 ms and 1.47 M. The earlier table was measured on `ac1b402`; on `b59c68c` the same `bench_transcribe.agc` stage pass gives 1.46 M for the prompt step and 33.8 M for the 23 steps after it (1.47 M each) and 68 ms a step, so the VM steps moved with the code between the two commits and the time is within noise of this run (60 to 78 ms a step across runs of `bench_step.agc` on this machine, which is shared). The parts add up to the wall time within 1 ms in this run. In an earlier one `bench_step.agc` did not close the self-attention caches, and about 7 ms a step were unattributed.
 
 What this says:
 
-- **The read-back is the largest VM cost, not the tracing.** 1.04 M of the 1.47 M VM steps, and 19 to 32 ms, are the logits crossing as a list and being converted twice. The planning (key and lowering) is the second, then the tracing; together the VM work that an unchanged graph repeats (tracing, planning, read-back) was 28 ms on the CPU and 47 ms on Vulkan, the rest being native. `Trace.compile` removed the tracing and the planning from it; the read-back is next.
+- **The read-back is the largest VM cost, not the tracing.** 1.04 M of the 1.47 M VM steps, and 19 to 32 ms, are the logits crossing as a list and being converted twice. The planning (key and lowering) is the second, then the tracing; together the VM work that an unchanged graph repeats (tracing, planning, read-back) was 28 ms on the CPU and 47 ms on Vulkan, the rest being native. `Trace.compile` removed the tracing and the planning from it, and the pick on the device removed the read-back (below).
 - **Nothing big is uploaded.** The step feeds 8 bytes. The weights and both caches are bound where they are (`bind` makes no copy for an F32 tensor). Each step makes 9 fresh output tensors: the logits (207 KB) and 8 self-attention caches of `capacity x 384` floats (393 KB in all at capacity 32), allocated and written by the graph. Only the logits come back to the host.
 - **The device part is what remains**: 41 ms on the CPU and 81 ms on Vulkan for a graph of 1,377 ggml nodes. `ggml_run` times show ggml's compute is 39.0 ms on the CPU and 80.3 ms on Vulkan, and its allocator 0.4 and 0.7 ms, so the rest of `run` is under 2 ms. That is 58 us a node on Vulkan, so the node count is the lever there (whisper.cpp's decoder step is 7 and 11 ms).
 
@@ -111,7 +139,7 @@ whisper-medium (the Hugging Face `openai/whisper-medium` checkpoint, 3.06 GB of 
 | Row | RTF jfk | RTF es-hola | Load | Peak memory of the load | Tokens |
 |---|---|---|---|---|---|
 | ours, ggml CPU | 8.17 | 22.4 | 7.7 s | 4.0 GB | same as the medium output of whisper.cpp's server (`whisper/live/fixtures/server-*-medium.json`) |
-| ours, ggml Vulkan | 2.51 | 7.0 | 24 s | 0.49 GB | same |
+| ours, ggml Vulkan | 2.42 | 6.83 | 24 s | 0.49 GB | same |
 
 The Vulkan weights sit in the device's own buffers, which on this iGPU are system memory outside the process's resident set, so its row shows the process only. The encoder takes 26 s on the CPU and 8 s on Vulkan, and a decoder step about 2 s on the CPU and 0.7 s on Vulkan, which is the per-step cost of #64 on a bigger model. The Vulkan load is slower than the CPU's (24 s against 7.7 s); where that time goes was not profiled.
 
