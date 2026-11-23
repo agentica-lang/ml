@@ -4,6 +4,7 @@
 
 import Asr from "../asr"
 import Greedy from "../greedy"
+import Lower from "pkg/tensor/src/lower"
 import Mathx from "../mathx"
 import Mel from "../mel"
 import Tensor from "pkg/tensor/tensor"
@@ -140,7 +141,8 @@ end
 
 ## On ggml (its CPU backend and Vulkan, where built) each encoder stage and
 ## each step is one compiled graph: the cached steps match the peer, and
-## `transcribe` emits the reference's tokens.
+## `transcribe` emits the reference's tokens. The padded cache grows from 8
+## to 16 rows on the way, and a second call compiles no graph.
 def test_on_ggml_the_steps_and_transcribe_match() -> Result[Void]
   with_fixtures do |dir|
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
@@ -148,8 +150,29 @@ def test_on_ggml_the_steps_and_transcribe_match() -> Result[Void]
     want = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", REF), tok, pcm)
     for backend in try ggml_backends()
       try kv_steps(try Asr.open("#{dir}/tiny/model.safetensors", backend), dir, backend, F32, F32)
-      got = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", backend), tok, pcm)
+      speech = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      got = try Asr.transcribe(speech, tok, pcm)
       try Test.eq(got.tokens, want.tokens)
+      try Test.assert(got.tokens.size > 5, "the padded cache grows past 8 rows: #{got.tokens}")
+      compiled = try Lower.compiles()
+      again = try Asr.transcribe(speech, tok, pcm)
+      try Test.eq(again.tokens, want.tokens)
+      try Test.eq(try Lower.compiles(), compiled)
+    end
+
+    ok()
+  end
+end
+
+## On ggml the padded cache grows on purpose: 10 single ids take it from 8 to
+## 16 rows, and a 9-id prompt on a model of 12 positions takes it from none to
+## 12 rows (16, clamped) and then to its last position. Every step gives the
+## reference's logits.
+def test_on_ggml_the_padded_cache_grows_and_clamps() -> Result[Void]
+  with_fixtures do |dir|
+    for backend in try ggml_backends()
+      try steps_match(dir, "speech", (0...10).map { |i| (i * 7) % 36 }, 1, backend)
+      try steps_match(dir, "twelve", (0...12).map { |i| (i * 5) % 36 }, 9, backend)
     end
 
     ok()
@@ -289,6 +312,32 @@ def ggml_backends() -> Result[List[Tensor.Backend]]
 
   return ok([GGML, VULKAN]) if Tensor.available(VULKAN)
   ok([GGML])
+end
+
+## The logits of `ids` fed to the `model` fixture on `backend`, first `prompt`
+## of them at once and then one at a time, against the reference's.
+def steps_match(dir: String, model: String, ids: List[Int], prompt: Int, backend: Tensor.Backend) -> Result[Void]
+  mel = try rows(try JSON.get(try JSON.parse(try File.read_text("#{dir}/expected.json")), "mel"))
+  ref = try Asr.open("#{dir}/#{model}/model.safetensors", REF)
+  got = try Asr.open("#{dir}/#{model}/model.safetensors", backend)
+  want = try Asr.listen(ref, try Asr.encode(ref, try f32(mel, [1, 3, 6])))
+  have = try Asr.listen(got, try Asr.encode(got, try f32(mel, [1, 3, 6], backend)))
+  at = 0
+  while at < ids.size
+    n = 1
+    if at == 0
+      n = prompt
+    end
+
+    a = try Asr.step(ref, want, ids.drop(at).take(n))
+    b = try Asr.step(got, have, ids.drop(at).take(n))
+    try expect_close(b.logits, a.logits, F32, F32, "#{model}, the step at #{at}")
+    want = a.cache
+    have = b.cache
+    at += n
+  end
+
+  ok()
 end
 
 def ints(json: JSON.Value) -> Result[List[Int]]
