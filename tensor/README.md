@@ -49,8 +49,8 @@ answers whether this machine has it, and the dispatch arm answers
   `third_party/ggml`; see "The ggml backend" below.
 - `src/lower.agc`, `native/ggml_graph.c` — `Trace.evaluate` on `Ggml`: the
   traced graph lowered to one ggml graph, with the structural cache.
-- `tools/build-engine.sh` — builds ggml (CPU, or CPU + Vulkan) and prints its
-  exports; CI runs it.
+- `tools/build-engine.sh` — builds ggml (CPU, or CPU + Vulkan) into a cache
+  shared by every worktree and prints its exports; CI runs it.
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
 - `tools/bench-ggml.agc` — the step times in "The ggml backend".
 - `test/` — the unit tests of the reference backend, the libtorch conformance
@@ -176,7 +176,7 @@ here and never vendored:
 ```sh
 git -C .. submodule update --init third_party/ggml
 eval "$(sh tools/build-engine.sh | grep '^export ')"          # CPU only, about a minute cold
-eval "$(JOBS=2 sh tools/build-engine.sh vulkan | grep '^export ')"   # CPU + Vulkan
+eval "$(JOBS=2 sh tools/build-engine.sh vulkan | grep '^export ')"   # CPU + Vulkan, about 25 minutes cold
 eval "$(sh tools/build-torch.sh)"   # optional, after it: both modules then build with g++
 agentica test --max-steps 10000000
 ```
@@ -186,14 +186,21 @@ fails early elsewhere. The Vulkan build needs the Vulkan headers and loader, `gl
 `SPIRV-Headers` (`libvulkan-dev`, `glslc`, `spirv-headers`, or a Vulkan SDK in
 `$VULKAN_SDK` or `$HOME/.local/vulkan-sdk/usr`); the script lists what is
 missing. The exports are `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` (g++ ignores
-the first) and `LIBRARY_PATH`. The last one points at the build tree, where the
+the first) and `LIBRARY_PATH`. The last one points at the cache entry, where the
 script writes `libtensor_ggml.a`: a linker script naming ggml's archives, plus
-`ggml-vulkan` and the Vulkan loader for the Vulkan tree. `agentica.toml` links
-that one name, so one build table serves both trees, and `native/ggml.c` finds
+`ggml-vulkan` and the Vulkan loader for the Vulkan entry. `agentica.toml` links
+that one name, so one build table serves both entries, and `native/ggml.c` finds
 Vulkan through ggml's backend registry at run time, so it has no `#ifdef`.
-The package cache keys a module on those paths, not on the libraries in them:
-after a bump of the ggml pin, run the script again and remove the cached build
-(`rm -rf ~/.cache/agentica/pkg/native-build`) so the module links the new ggml.
+The entry lives outside the checkout, in
+`${AGENTICA_ML_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agentica-ml}/ggml/<key>/`,
+and the key is the ggml commit, the action, a hash of the cmake flags and a
+hash of the compiler versions. Every worktree of the same pin finds the entry
+and compiles nothing (the Vulkan shaders are the slow part, and the entry
+holds them already compiled); a new commit, other flags or another compiler is
+a new entry, built through `ccache` when it is installed. `ENGINE_REBUILD=1`
+forces a rebuild, and removing the folder is always safe.
+The package cache keys a module on those paths, and the key holds the ggml
+commit, so a bump of the pin links a new module with no manual cleanup.
 
 What it does: `zeros`, `ones`, `empty`, `full`, `like`, `arange`,
 `scalar_to_tensor`, `from_list`, `to_list` and `to_device` eagerly, plus

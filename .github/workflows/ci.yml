@@ -89,6 +89,22 @@ jobs:
           version: ${{ steps.pin.outputs.version }}
           sha256: ${{ steps.pin.outputs.sha256 }}
 
+      # tensor/tools/build-engine.sh keeps ggml outside the checkout, in
+      # ~/.cache/agentica-ml, under a key of its own (commit, flags,
+      # compiler). This step restores that folder, keyed by the ggml commit
+      # and the script, so a run that changes neither compiles nothing.
+      - name: Name the engine pin
+        id: engine-pin
+        shell: bash
+        run: |
+          mkdir -p ~/.cache/agentica-ml
+          echo "ggml=$(git rev-parse HEAD:third_party/ggml)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/agentica-ml
+          key: engine-${{ matrix.package }}-${{ steps.engine-pin.outputs.ggml }}-${{ hashFiles('tensor/tools/build-engine.sh') }}
+
       # A package with tools/build-engine.sh links a pinned third-party
       # engine (a submodule at the repository root, never vendored); the
       # script builds it and prints the include/library exports. This runs

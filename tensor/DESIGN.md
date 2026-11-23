@@ -311,8 +311,8 @@ end
 - The ggml module is `[native.ggml]`, `optional = true`, built from
   `native/ggml.c` and `native/ggml_graph.c` against the pinned
   `third_party/ggml`, which `tools/build-engine.sh` builds CPU-only (CI) or with
-  Vulkan (local). The build table names one library, a linker script that script
-  writes, so one table links either tree; the C layer finds Vulkan devices
+  Vulkan (local), into a cache outside the checkout. The build table names one library, a linker script that script
+  writes, so one table links either entry; the C layer finds Vulkan devices
   through ggml's backend registry at run time.
   `Tensor.available(Backend.Ggml(device))` is `true` when the module is built
   and, for `Vulkan(i)`, ggml sees device `i`; it opens no device. ggml stores
