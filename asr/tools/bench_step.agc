@@ -66,9 +66,12 @@ def run(args: List[String]) -> Result[Void]
     started = Time.monotonic_ms()
     stepped = try Asr.step(m, cache, prompt)
     for id in ids
-      stepped = try Asr.step(m, stepped.cache, [id])
+      next = try Asr.step(m, stepped.cache, [id])
+      release(stepped.cache)
+      stepped = next
     end
 
+    release(stepped.cache)
     elapsed = Time.monotonic_ms() - started
     puts("pass\t#{elapsed}\t#{ids.size + 1}")
     if pass > 0
@@ -82,4 +85,17 @@ def run(args: List[String]) -> Result[Void]
   end
 
   ok()
+end
+
+## Closes the self-attention keys and values of `cache`, as `Asr.transcribe` does once a step replaced them.
+def release(cache: Asr.Cache) -> Void
+  for kv in cache.own
+    for t in [kv.key, kv.value]
+      case t.handle
+        Tensor.Handle.Native(h) -> Native.close(h)
+        Tensor.Handle.Ggml(h) -> Native.close(h)
+        _ -> nil
+      end
+    end
+  end
 end
