@@ -47,6 +47,10 @@ Handle  = Native(TensorHandle) | Plain(Data) | Traced(Node)    # enum, see §2, 
 Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 ```
 
+- `Device` has one arm on purpose: `Backend.Torch(Device)` and every backend
+  function take the device explicitly (§4), and a second device, if one ever
+  serves, adds an arm without changing a signature. Dropping the enum would
+  rewrite them all for no gain.
 - `Tensor` values are **immutable**; every op returns a new `Tensor`.
   A training step returns new parameters.
 - `handle` is `Native(TensorHandle)` on the libtorch backend (a
@@ -214,8 +218,9 @@ end
 - The module is `optional = true` and built from `native/torch.c` on first
   use, with libtorch found by the environment (`tools/build-torch.sh`). Where
   it is not built, `Backend.Torch(device)` answers
-  `error("backend not available")` and `Tensor.available(Backend.Torch(device))` is `false`, so
-  a caller can choose a backend without catching that error.
+  `error("backend not available")` and
+  `Tensor.available(Backend.Torch(device))` is `false`, so a caller can choose a
+  backend without catching that error.
 - Why this shape: Agentica is static and already checks before running
   (no `defn` macros as in `Nx.Defn`); an enum + `case` keeps dispatch
   visible to the checker and lets `reference` and `torch` coexist by value

@@ -613,8 +613,8 @@ def ready(device: Types.Device, op: String) -> Result[Bool]
 end
 
 ## The native module is loaded: a checkout without libtorch says so here,
-## before any call would halt with `RUNTIME-NATIVE-LOAD`. The message is the
-## one the unwritten backends answer with, plus where to look.
+## before any call would halt with `RUNTIME-NATIVE-LOAD`. The message says
+## where to look.
 def usable(op: String) -> Result[Bool]
   opened = Native.load("torch")
   return ok(true) if opened.ok?

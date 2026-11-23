@@ -94,9 +94,9 @@ def backend(t: Types.Tensor) -> Types.Backend = t.backend
 
 ## True when `backend` can run on this machine: `Reference` always can, `Torch`
 ## when the native libtorch module is built (`[native.torch] optional = true` in
-## `agentica.toml`). A caller that needs to work on both asks this instead of catching the
-## `error("backend not available")` an op would answer. `Trace` is never
-## available: it records ops and computes nothing (`trace.agc`).
+## `agentica.toml`). A caller that needs to work on both asks this instead of
+## catching the `error("backend not available")` an op would answer. `Trace` is
+## never available: it records ops and computes nothing (`trace.agc`).
 def available(backend: Types.Backend) -> Bool
   case backend
     Types.Backend.Reference -> true
