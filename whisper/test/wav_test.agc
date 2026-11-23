@@ -45,9 +45,10 @@ def test_data_before_fmt_is_an_error() -> Result[Void]
 end
 
 def test_load_reads_a_file() -> Result[Void]
+  bytes = try wav_bytes([0, -4_096])
   path = "wav_test_#{OpenSSL.Random.hex(4)}.wav"
   handle = try File.open(path, "write")
-  wrote = File.write_bytes(handle, try wav_bytes([0, -4_096]))
+  wrote = File.write_bytes(handle, bytes)
   _ = File.close(handle)
   try wrote
   samples = Wav.load(path)

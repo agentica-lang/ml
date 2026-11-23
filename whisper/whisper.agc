@@ -138,7 +138,8 @@ extern module "whisper"
 end
 
 ## Transcribes 16 kHz mono PCM audio with `Options()`: `join_text` of what
-## `transcribe_with` returns, so plain text of a full decode.
+## `transcribe_with` returns, so plain text of a full decode. It delegates, so
+## its errors name `transcribe_with`, not `transcribe`.
 def transcribe(model: Model, pcm: List[Float]) -> Result[String]
   segments = try transcribe_with(model, pcm, Options())
   ok(join_text(segments))

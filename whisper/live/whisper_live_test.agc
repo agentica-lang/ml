@@ -98,3 +98,20 @@ def test_transcribe_errors_on_an_unknown_language() -> Result[Void]
     error(e) -> Test.eq(e.message, "transcribe_with does not know that language code")
   end
 end
+
+def test_transcribe_errors_on_a_finite_sample_past_the_float_range() -> Result[Void]
+  model = try Whisper.load_model(MODEL_PATH)
+  case Whisper.transcribe(model, [1.0e300])
+    ok(_) -> Test.assert(false, "transcribe took a sample no float holds")
+    error(e) -> Test.eq(e.message, "transcribe_with needs finite samples")
+  end
+end
+
+def test_transcribe_errors_on_a_language_code_with_a_nul_byte() -> Result[Void]
+  code = try String.from_bytes(try Bytes.from_list([101, 0, 115]))
+  model = try Whisper.load_model(MODEL_PATH)
+  case Whisper.transcribe_with(model, [0.0], Whisper.Options(language: code))
+    ok(_) -> Test.assert(false, "transcribe_with cut a language code at its NUL byte")
+    error(e) -> Test.eq(e.message, "transcribe_with does not know that language code")
+  end
+end
