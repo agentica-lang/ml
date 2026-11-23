@@ -8,6 +8,7 @@
 ## constant is set once from its values (`fixed`). A `Write` replaces a state
 ## with a node's value after each run, inside the same graph.
 
+import Graph from "pkg/tensor/src/graph"
 import Raw from "ggml_graph"
 import Tensor from "pkg/tensor/tensor"
 import Types from "pkg/tensor/src/types"
@@ -64,7 +65,7 @@ struct Built
   backend: Raw.Backend
   keep: List[Raw.Program]
   step: Step
-  index: Map[Int, Int]
+  index: Map[Ref, Int]
   states: List[Int]
   inputs: List[Int]
   fixed: List[Fixed]
@@ -80,7 +81,7 @@ end
 def build(backend: Raw.Backend, step: Step) -> Result[Built]
   roots = step.outputs + step.writes.map { |w| w.value }
   nodes = try walk(roots)
-  slots: Map[Int, Int] = {}
+  slots: Map[Ref, Int] = {}
   for i in 0...step.states.size
     slots = slots.put(try id_of(step.states[i]), STATE)
   end
@@ -90,7 +91,7 @@ def build(backend: Raw.Backend, step: Step) -> Result[Built]
   end
 
   p = try Raw.program(backend, nodes.size + step.states.size + step.inputs.size + 8)
-  index: Map[Int, Int] = {}
+  index: Map[Ref, Int] = {}
   fixed: List[Fixed] = []
   for t in nodes + step.states + step.inputs
     n = try node_of(t)
@@ -108,8 +109,8 @@ def build(backend: Raw.Backend, step: Step) -> Result[Built]
     end
   end
 
-  states = step.states.map { |s| index[id_unchecked(s)] }
-  inputs = step.inputs.map { |s| index[id_unchecked(s)] }
+  states = step.states.map { |s| index[Graph.id_of(s)] }
+  inputs = step.inputs.map { |s| index[Graph.id_of(s)] }
   ok(
     Built(
       program: p,
@@ -126,7 +127,7 @@ end
 
 ## Compiles a built program and sets its fixed constants.
 def compile(b: Built) -> Result[Built]
-  outputs = b.step.outputs.map { |t| b.index[id_unchecked(t)] }
+  outputs = b.step.outputs.map { |t| b.index[Graph.id_of(t)] }
   writebacks: List[Int] = []
   for w in b.step.writes
     writebacks = writebacks + [b.index[try id_of(w.state)], b.index[try id_of(w.value)]]
@@ -193,21 +194,14 @@ def node_of(t: Tensor.Tensor) -> Result[Types.Node]
   end
 end
 
-def id_of(t: Tensor.Tensor) -> Result[Int]
+def id_of(t: Tensor.Tensor) -> Result[Ref]
   n = try node_of(t)
   ok(n.id)
 end
 
-def id_unchecked(t: Tensor.Tensor) -> Int
-  case t.handle
-    Types.Handle.Traced(n) -> n.id
-    _ -> -1
-  end
-end
-
 ## Every traced tensor `roots` reach, each node once, in id order.
 def walk(roots: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
-  seen: Set[Int] = Set.new([])
+  seen: Set[Ref] = Set.new([])
   found: List[Tensor.Tensor] = []
   stack = roots
   while !stack.empty?
@@ -221,16 +215,16 @@ def walk(roots: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
     end
   end
 
-  ok(found.sort_by { |t| id_unchecked(t) })
+  ok(found.sort_by { |t| Graph.id_of(t) })
 end
 
 ## One node to the program; answers its index.
-def emit(p: Raw.Program, t: Tensor.Tensor, n: Types.Node, index: Map[Int, Int], slots: Map[Int, Int]) -> Result[Int]
+def emit(p: Raw.Program, t: Tensor.Tensor, n: Types.Node, index: Map[Ref, Int], slots: Map[Ref, Int]) -> Result[Int]
   if !exact(t.dtype)
     return error("node #{n.id} has dtype #{Types.dtype_name(t.dtype)}, which F32 does not hold exactly")
   end
 
-  args = n.args.map { |a| index[id_unchecked(a)] }
+  args = n.args.map { |a| index[Graph.id_of(a)] }
   op = try code(t, n)
   ints: List[Int] = []
   value = 0.0
