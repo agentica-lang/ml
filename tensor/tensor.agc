@@ -47,9 +47,9 @@
 ##   arena. The native backend allocates its handles inside a `Native.arena`
 ##   per call, and a caller that runs a step wraps the step in one arena of its
 ##   own (`src/torch.agc`); arenas are never faked for `Plain`.
-## - There is no tracing and no `grad` in M1: every backward rule waits for
-##   the graph of `tensor/DESIGN.md` §10 (`train/` is M4). Saying so here so
-##   no caller mistakes a forward op for a differentiable one.
+## - These ops are forward-only and record nothing. A function to
+##   differentiate is written against `trace.agc` (same names, over traced
+##   nodes), which builds the graph and its gradient (`tensor/DESIGN.md` §10).
 ## - `conv1d`/`avg_pool1d` take only what `tensor/DESIGN.md` §3.1 admits
 ##   (stride and padding 1-D, no dilation and no groups); the wrapper
 ##   validates their window arithmetic before dispatch, so both backends
@@ -618,7 +618,7 @@ end
 
 ## Views `t` as `shape`: trailing axes align, size-1 dimensions widen.
 def broadcast_to(t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
-  _ = try check_broadcast(t.shape, shape, "broadcast_to")
+  _ = try Types.check_broadcast(t.shape, shape, "broadcast_to")
   case t.backend
     Types.Backend.Reference -> Reference.broadcast_to(t, shape)
     Types.Backend.Torch(device) -> Torch.broadcast_to(device, t, shape)
@@ -1148,22 +1148,6 @@ def check_slice(starts: List[Int], ends: List[Int], shape: List[Int], op: String
     if starts[i] < 0 or ends[i] < starts[i] or ends[i] > shape[i]
       return error("#{op} needs 0 <= start <= end <= #{shape[i]}, got #{starts[i]}..#{ends[i]}")
     end
-  end
-
-  ok(true)
-end
-
-## Trailing axes align, size-1 dimensions widen, ranks never shrink.
-def check_broadcast(from: List[Int], to: List[Int], op: String) -> Result[Bool]
-  _ = try Types.volume(to)
-  rank = from.size
-  out_rank = to.size
-  return error("#{op} cannot drop axes, got #{from} into #{to}") if out_rank < rank
-  lead = out_rank - rank
-  for i in 0...rank
-    dim = from[i]
-    want = to[lead + i]
-    return error("#{op} needs #{dim} to stay #{dim} or widen from 1, got #{want}") if dim != want and dim != 1
   end
 
   ok(true)

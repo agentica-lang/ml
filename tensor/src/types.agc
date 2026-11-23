@@ -203,3 +203,19 @@ def check_int_range(i: Int, dtype: Dtype) -> Result[Int]
 
   ok(i)
 end
+
+## Trailing axes align, size-1 dimensions widen, ranks never shrink.
+def check_broadcast(from: List[Int], to: List[Int], op: String) -> Result[Bool]
+  _ = try volume(to)
+  rank = from.size
+  out_rank = to.size
+  return error("#{op} cannot drop axes, got #{from} into #{to}") if out_rank < rank
+  lead = out_rank - rank
+  for i in 0...rank
+    dim = from[i]
+    want = to[lead + i]
+    return error("#{op} needs #{dim} to stay #{dim} or widen from 1, got #{want}") if dim != want and dim != 1
+  end
+
+  ok(true)
+end
