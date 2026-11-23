@@ -75,7 +75,7 @@ end
 ## compiled here takes no slot of the structural cache.
 def evaluate(
   outs: List[Types.Tensor],
-  env: Map[Int, Types.Tensor],
+  env: Map[Ref, Types.Tensor],
   device: Types.Device,
   keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
@@ -119,8 +119,8 @@ end
 private
 
 ## The nodes, key, leaves and fills of the graph `outs` reach.
-def plan(outs: List[Types.Tensor], env: Map[Int, Types.Tensor], backend: Types.Backend) -> Result[Plan]
-  pos: Map[Int, Int] = {}
+def plan(outs: List[Types.Tensor], env: Map[Ref, Types.Tensor], backend: Types.Backend) -> Result[Plan]
+  pos: Map[Ref, Int] = {}
   nodes: List[Lowered] = []
   parts: List[String] = []
   leaves: List[Types.Tensor] = []
@@ -165,13 +165,13 @@ def plan(outs: List[Types.Tensor], env: Map[Int, Types.Tensor], backend: Types.B
       _ -> nil
     end
 
-    l = Lowered(op: op, args: n.args.map { |a| pos[id_of(a)] }, shape: t.shape, ints: ints)
+    l = Lowered(op: op, args: n.args.map { |a| pos[Graph.id_of(a)] }, shape: t.shape, ints: ints)
     pos = pos.put(n.id, nodes.size)
     nodes = nodes.push(l)
     parts = parts.push("#{l.op} #{l.args} #{l.shape} #{l.ints} #{Types.dtype_name(t.dtype)}")
   end
 
-  outputs = outs.map { |o| pos[id_of(o)] }
+  outputs = outs.map { |o| pos[Graph.id_of(o)] }
   key = parts.join(";") + " -> #{outputs}"
   ok(Plan(nodes: nodes, key: key, leaves: leaves, fills: fills, outputs: outputs))
 end
@@ -185,18 +185,11 @@ def bound(t: Types.Tensor, backend: Types.Backend, what: String) -> Result[Types
   ok(t)
 end
 
-def id_of(t: Types.Tensor) -> Int
-  case t.handle
-    Types.Handle.Traced(n) -> n.id
-    _ -> -1
-  end
-end
-
 ## Every traced tensor `roots` reach, each node once, in id order. The walk
 ## does not enter a node of `env`; an input that is not there belongs to
 ## another trace.
-def walk(roots: List[Types.Tensor], env: Map[Int, Types.Tensor]) -> Result[List[Types.Tensor]]
-  seen: Set[Int] = Set.new([])
+def walk(roots: List[Types.Tensor], env: Map[Ref, Types.Tensor]) -> Result[List[Types.Tensor]]
+  seen: Set[Ref] = Set.new([])
   found: List[Types.Tensor] = []
   stack = roots
   while !stack.empty?
@@ -213,7 +206,7 @@ def walk(roots: List[Types.Tensor], env: Map[Int, Types.Tensor]) -> Result[List[
     end
   end
 
-  ok(found.sort_by { |t| id_of(t) })
+  ok(found.sort_by { |t| Graph.id_of(t) })
 end
 
 ## A dtype whose values F32 holds exactly here: F32 itself, `Bool` as 0/1,

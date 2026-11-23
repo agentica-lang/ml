@@ -456,9 +456,9 @@ The price:
   and `dtype` are the node's. Its arguments are traced tensors. The graph of a
   function is what its output reaches; there is no graph object and no
   mutable tape.
-- `id` comes from one run-wide counter (an `ATS` table in `src/graph.agc`), the
-  role `make_ref` plays in Nx: two uses of a value are one node, and since an
-  argument is always made before its user, sorting by `id` is a topological
+- `id` is a `Ref` (`Ref.new()` in `src/graph.agc`), the role `make_ref` plays in
+  Nx: two uses of a value are one node, and since an argument is always made
+  before its user and `Ref`s sort by creation, sorting by `id` is a topological
   order.
 - Leaves are `Input` (an argument of the traced function), `Constant(t)` (a
   lifted tensor: data, labels) and `Full(value)` (`zeros`, `ones`, `full`,

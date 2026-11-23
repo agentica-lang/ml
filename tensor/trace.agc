@@ -46,21 +46,21 @@ def gradients(out: Types.Tensor, wrt: List[Types.Tensor]) -> Result[List[Types.T
     _ = try Graph.node_of(w)
   end
 
-  wanted = Set.new(wrt.map { |w| id_of(w) })
+  wanted = Set.new(wrt.map { |w| Graph.id_of(w) })
   nodes = try reachable([out], Set.new([]))
-  needed: Set[Int] = Set.new([])
+  needed: Set[Ref] = Set.new([])
   for t in nodes
     args = try args_of(t)
-    depends = args.any? { |a| needed.include?(id_of(a)) }
-    if Types.is_float_dtype(t.dtype) and (wanted.include?(id_of(t)) or depends)
-      needed = needed.add(id_of(t))
+    depends = args.any? { |a| needed.include?(Graph.id_of(a)) }
+    if Types.is_float_dtype(t.dtype) and (wanted.include?(Graph.id_of(t)) or depends)
+      needed = needed.add(Graph.id_of(t))
     end
   end
 
-  cts: Map[Int, Types.Tensor] = {}
-  cts = cts.put(id_of(out), try Graph.filled(out.shape, 1.0, out.dtype))
+  cts: Map[Ref, Types.Tensor] = {}
+  cts = cts.put(Graph.id_of(out), try Graph.filled(out.shape, 1.0, out.dtype))
   for t in nodes.reverse
-    case cts.get(id_of(t))
+    case cts.get(Graph.id_of(t))
       some(ct) -> cts = try propagate(t, ct, needed, cts)
       none -> nil
     end
@@ -68,7 +68,7 @@ def gradients(out: Types.Tensor, wrt: List[Types.Tensor]) -> Result[List[Types.T
 
   out_grads: List[Types.Tensor] = []
   for w in wrt
-    case cts.get(id_of(w))
+    case cts.get(Graph.id_of(w))
       some(g) -> out_grads = out_grads.push(g)
       none -> out_grads = out_grads.push(try Graph.filled(w.shape, 0.0, w.dtype))
     end
@@ -85,7 +85,7 @@ end
 ## for this call takes no slot of its cache (a graph used once).
 def evaluate(
   outs: List[Types.Tensor],
-  env: Map[Int, Types.Tensor],
+  env: Map[Ref, Types.Tensor],
   backend: Types.Backend,
   keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
@@ -96,10 +96,10 @@ def evaluate(
 
   values = env
   for t in try reachable(outs, Set.new(env.keys))
-    values = values.put(id_of(t), try apply(t, values, backend))
+    values = values.put(Graph.id_of(t), try apply(t, values, backend))
   end
 
-  ok(outs.map { |o| values[id_of(o)] })
+  ok(outs.map { |o| values[Graph.id_of(o)] })
 end
 
 ## The number of distinct nodes `outs` reach: what `evaluate` computes, once
@@ -150,14 +150,6 @@ end
 
 private
 
-## The id of a traced tensor's node; `-1` for a tensor that is not traced.
-def id_of(t: Types.Tensor) -> Int
-  case t.handle
-    Types.Handle.Traced(n) -> n.id
-    _ -> -1
-  end
-end
-
 ## The arguments of a traced tensor's node.
 def args_of(t: Types.Tensor) -> Result[List[Types.Tensor]]
   n = try Graph.node_of(t)
@@ -177,10 +169,10 @@ def inputs_for(args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
 end
 
 ## The value of each input node, keyed by its id.
-def bind(inputs: List[Types.Tensor], args: List[Types.Tensor]) -> Map[Int, Types.Tensor]
-  env: Map[Int, Types.Tensor] = {}
+def bind(inputs: List[Types.Tensor], args: List[Types.Tensor]) -> Map[Ref, Types.Tensor]
+  env: Map[Ref, Types.Tensor] = {}
   for i in 0...inputs.size
-    env = env.put(id_of(inputs[i]), args[i])
+    env = env.put(Graph.id_of(inputs[i]), args[i])
   end
 
   env
@@ -189,7 +181,7 @@ end
 ## Every traced tensor `outs` reach, each node once, in id order (a
 ## topological order: an argument is made before its user). The walk does not
 ## enter a node of `known`. `stack[0...top]` is the work left.
-def reachable(outs: List[Types.Tensor], known: Set[Int]) -> Result[List[Types.Tensor]]
+def reachable(outs: List[Types.Tensor], known: Set[Ref]) -> Result[List[Types.Tensor]]
   seen = known
   found: List[Types.Tensor] = []
   stack = outs
@@ -198,8 +190,8 @@ def reachable(outs: List[Types.Tensor], known: Set[Int]) -> Result[List[Types.Te
     top -= 1
     t = stack[top]
     args = try args_of(t)
-    if !seen.include?(id_of(t))
-      seen = seen.add(id_of(t))
+    if !seen.include?(Graph.id_of(t))
+      seen = seen.add(Graph.id_of(t))
       found = found.push(t)
       for a in args
         if top < stack.size
@@ -213,7 +205,7 @@ def reachable(outs: List[Types.Tensor], known: Set[Int]) -> Result[List[Types.Te
     end
   end
 
-  ok(found.sort_by { |t| id_of(t) })
+  ok(found.sort_by { |t| Graph.id_of(t) })
 end
 
 ## `cts` with the cotangent `ct` of `t` added to each argument of `t` that
@@ -221,16 +213,16 @@ end
 def propagate(
   t: Types.Tensor,
   ct: Types.Tensor,
-  needed: Set[Int],
-  cts: Map[Int, Types.Tensor],
-) -> Result[Map[Int, Types.Tensor]]
+  needed: Set[Ref],
+  cts: Map[Ref, Types.Tensor],
+) -> Result[Map[Ref, Types.Tensor]]
   n = try Graph.node_of(t)
   out = cts
   for i in 0...n.args.size
     a = n.args[i]
-    if needed.include?(id_of(a))
+    if needed.include?(Graph.id_of(a))
       case try vjp(t, n, ct, i)
-        some(part) -> out = out.put(id_of(a), try accumulate(out.get(id_of(a)), part))
+        some(part) -> out = out.put(Graph.id_of(a), try accumulate(out.get(Graph.id_of(a)), part))
         none -> nil
       end
     end
@@ -463,7 +455,7 @@ end
 
 ## The value of `t` on `backend` from the values of its node's arguments, by
 ## the public API. A lifted constant must live on `backend`.
-def apply(t: Types.Tensor, values: Map[Int, Types.Tensor], backend: Types.Backend) -> Result[Types.Tensor]
+def apply(t: Types.Tensor, values: Map[Ref, Types.Tensor], backend: Types.Backend) -> Result[Types.Tensor]
   n = try Graph.node_of(t)
   r = try compute(t, n, values, backend)
   if r.shape != t.shape or r.dtype != t.dtype
@@ -479,10 +471,10 @@ end
 def compute(
   t: Types.Tensor,
   n: Types.Node,
-  values: Map[Int, Types.Tensor],
+  values: Map[Ref, Types.Tensor],
   backend: Types.Backend,
 ) -> Result[Types.Tensor]
-  args = n.args.map { |a| values[id_of(a)] }
+  args = n.args.map { |a| values[Graph.id_of(a)] }
   case n.op
     Types.Op.Input -> error("node #{n.id} is an input of another trace")
     Types.Op.Constant(c) ->
