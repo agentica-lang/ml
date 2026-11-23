@@ -146,6 +146,10 @@ def lower(backend: Raw.Backend, step: Step) -> Result[Built] = compile(try build
 ## `b` with its state `k` pointing at the state `k` of the compiled `from`,
 ## for every state of `b`; `b` keeps `from` open.
 def share_states(b: Built, from: Built) -> Result[Built]
+  if b.states.size > from.states.size
+    return error("#{b.states.size} states to share, the other program has #{from.states.size}")
+  end
+
   for k in 0...b.states.size
     try Raw.share(b.program, b.states[k], from.program, from.states[k])
   end

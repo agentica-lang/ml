@@ -104,6 +104,24 @@ def test_a_nan_or_an_infinity_is_an_error_not_a_gap() -> Result[Void]
   Test.eq(Compare.rel([1.5], [1.0]), ok(0.5))
 end
 
+def test_the_c_gap_refuses_a_nan_and_a_size_mismatch() -> Result[Void]
+  return Test.assert(!ready(), "ggmlgraph is not built: build ggml (README)") if !ready()
+  Native.arena do
+    backend = try Raw.backend_cpu(1)
+    a = Trace.constant(Step.placeholder([2], Tensor.Dtype.F32))
+    b = Trace.constant(Step.placeholder([3], Tensor.Dtype.F32))
+    two = try Lower.lower(backend, Lower.Step(outputs: [], states: [], inputs: [a], writes: []))
+    three = try Lower.lower(backend, Lower.Step(outputs: [], states: [], inputs: [b], writes: []))
+    inf = 1e300 * 1e300
+    try Raw.set(two.program, two.inputs[0], [1.0, inf - inf])
+    try Raw.set(three.program, three.inputs[0], [1.0, 2.0, 3.0])
+    try Test.error?(Raw.gap(two.program, two.inputs[0], two.program, two.inputs[0]))
+    try Raw.set(two.program, two.inputs[0], [1.0, 2.0])
+    try Test.eq(Raw.gap(two.program, two.inputs[0], two.program, two.inputs[0]), ok(0.0))
+    Test.error?(Raw.gap(two.program, two.inputs[0], three.program, three.inputs[0]))
+  end
+end
+
 def test_the_graph_is_built_once_and_reused() -> Result[Void]
   return Test.assert(!ready(), "ggmlgraph is not built: build ggml (README)") if !ready()
   Native.arena do

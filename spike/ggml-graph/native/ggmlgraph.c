@@ -27,6 +27,7 @@
 #include "ggml-vulkan.h"
 
 #include <inttypes.h>
+#include <pthread.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -165,31 +166,45 @@ an_term ggmlgraph_backend_cpu(an_env *env, int64_t threads) {
    fp16, unless GGML_VK_DISABLE_F16 is set when the device is first opened.
    No per-op switch works here: `ggml_prec_set_acc(F32)` changes nothing, and
    `ggml_prec_set_src(F32)` makes the backend refuse the op. So the precision
-   is chosen once per process, by the first `backend_vulkan`. */
+   is chosen once per process, by the first `backend_vulkan` that opens a
+   device; the lock keeps two tasks from choosing at once. */
 static int vulkan_fp16 = -1;
+static pthread_mutex_t vulkan_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static const char *open_vulkan(bool fp16, ggml_backend_t *out) {
+  ggml_backend_t backend;
+  ggml_backend_dev_t device;
+
+  if (vulkan_fp16 != -1 && vulkan_fp16 != (int)fp16)
+    return vulkan_fp16 ? "this process opened Vulkan with fp16 mul_mat already"
+                       : "this process opened Vulkan with F32 mul_mat already";
+  if (vulkan_fp16 == -1) {
+    if (fp16) unsetenv("GGML_VK_DISABLE_F16");
+    else setenv("GGML_VK_DISABLE_F16", "1", 1);
+  }
+  if (ggml_backend_vk_get_device_count() < 1) return "no Vulkan device";
+  backend = ggml_backend_vk_init(0);
+  if (backend == NULL) return "ggml_backend_vk_init(0) returned no backend";
+  device = ggml_backend_get_device(backend);
+  if (!ggml_backend_is_vk(backend) || device == NULL || ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+    ggml_backend_free(backend);
+    return "the Vulkan backend fell back to a CPU";
+  }
+  vulkan_fp16 = fp16;
+  *out = backend;
+  return NULL;
+}
 
 an_term ggmlgraph_backend_vulkan(an_env *env, bool fp16) {
   an_term term;
   struct ggmlgraph_Backend_state *state;
-  ggml_backend_t backend;
-  ggml_backend_dev_t device;
+  ggml_backend_t backend = NULL;
+  const char *why;
 
-  if (vulkan_fp16 == -1) {
-    if (fp16) unsetenv("GGML_VK_DISABLE_F16");
-    else setenv("GGML_VK_DISABLE_F16", "1", 1);
-    vulkan_fp16 = fp16;
-  } else if (vulkan_fp16 != (int)fp16) {
-    return error_text(env, vulkan_fp16 ? "this process opened Vulkan with fp16 mul_mat already"
-                                       : "this process opened Vulkan with F32 mul_mat already");
-  }
-  if (ggml_backend_vk_get_device_count() < 1) return error_text(env, "no Vulkan device");
-  backend = ggml_backend_vk_init(0);
-  if (backend == NULL) return error_text(env, "ggml_backend_vk_init(0) returned no backend");
-  device = ggml_backend_get_device(backend);
-  if (!ggml_backend_is_vk(backend) || device == NULL || ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_CPU) {
-    ggml_backend_free(backend);
-    return error_text(env, "the Vulkan backend fell back to a CPU");
-  }
+  pthread_mutex_lock(&vulkan_lock);
+  why = open_vulkan(fp16, &backend);
+  pthread_mutex_unlock(&vulkan_lock);
+  if (why != NULL) return error_text(env, why);
   state = ggmlgraph_Backend_new(env, &term);
   state->backend = backend;
   return ggmlgraph_result_Backend_ok(env, term);
@@ -670,7 +685,10 @@ an_term ggmlgraph_batches(an_env *env, struct ggmlgraph_Program_state *p, int64_
   free(p->ys);
   p->xs = (float *)malloc((size_t)(xsize * count) * sizeof(float));
   p->ys = (float *)malloc((size_t)(ysize * count) * sizeof(float));
-  if (p->xs == NULL || p->ys == NULL) return error_text(env, "out of memory making batches");
+  if (p->xs == NULL || p->ys == NULL) {
+    p->batch_count = 0;
+    return error_text(env, "out of memory making batches");
+  }
   for (i = 0; i < xsize * count; i++) p->xs[i] = next_uniform(&s) * 2.0f - 1.0f;
   for (i = 0; i < ysize * count; i++) p->ys[i] = (float)((int64_t)(next_uniform(&s) * (float)classes) % classes);
   p->x_node = x;

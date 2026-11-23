@@ -15,12 +15,12 @@ to 7e-7 at the benchmark's shapes, with F32 `mul_mat`.
 
 The speedup depends on the precision and on how loaded the machine is:
 
-- **F32 `mul_mat` (the default):** against plain C++ libtorch on the CPU, the
-  iGPU is 1.2–1.5× faster at batch 256, 1.5–2.5× at 1024 and 1.8–2.5× at
-  4096, and 1.4–1.6× slower at 64.
+- **F32 `mul_mat` (the default):** against the best plain C++ libtorch run
+  on the CPU, the iGPU is 1.2–1.5× faster at batch 256, 1.5–2.2× at 1024 and
+  1.8–2.1× at 4096, and 1.4–1.6× slower at 64.
 - **fp16 `mul_mat` (opt-in):** 1.5–1.9×, 2.1–2.9× and 2.7–3.2× at the same
   batches. It costs gradient accuracy (below).
-- **Against `Train.fit` on libtorch today:** the compiled step is 6–8×
+- **Against `Train.fit` on libtorch today:** the compiled step is 5.5–9×
   faster.
 
 It adds `spike/ggml-graph/` and one line to `../ggml-vulkan/tools/build-ggml.sh`
@@ -154,7 +154,8 @@ Two dead ends, measured once and removed:
 The only switch is `GGML_VK_DISABLE_F16`, which ggml reads when it first opens
 the device. So the precision is a property of the process: the first
 `backend_vulkan(fp16)` sets it, and a later call that asks for the other
-precision is an error.
+precision is an error. The choice overrides any `GGML_VK_DISABLE_F16` the
+user set, and it is fixed for the whole process.
 
 ## Correctness
 
@@ -220,9 +221,10 @@ PASS .../ggml_graph_test.agc / the igpu step matches the reference
 PASS .../ggml_graph_test.agc / two steps of the benchmark model agree between cpu and igpu
 PASS .../ggml_graph_test.agc / a write that reads a replaced state is refused
 PASS .../ggml_graph_test.agc / a nan or an infinity is an error not a gap
+PASS .../ggml_graph_test.agc / the c gap refuses a nan and a size mismatch
 PASS .../ggml_graph_test.agc / the graph is built once and reused
 PASS .../ggml_graph_test.agc / an op with no lowering is an error naming it
-9 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+10 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
 ```
 
 `bench.agc` prints the loss of the first and the last step of every row, so
