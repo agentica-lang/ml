@@ -31,13 +31,25 @@ typedef struct {
 #endif
 
 /* The rows of the type table: the TYPE of an_struct, an_enum and their getters. */
-enum { WHISPER_TYPE_Options = 0, WHISPER_TYPE_Segment = 1 };
+enum { WHISPER_TYPE_Options = 0, WHISPER_TYPE_Segment = 1, WHISPER_TYPE_Transcript = 2, WHISPER_TYPE_SegmentDetail = 3, WHISPER_TYPE_Detection = 4, WHISPER_TYPE_Token = 5 };
 
 /* The fields of Options, in declared order. */
-enum { WHISPER_Options_language = 0, WHISPER_Options_translate = 1 };
+enum { WHISPER_Options_language = 0, WHISPER_Options_translate = 1, WHISPER_Options_beam_size = 2, WHISPER_Options_token_timestamps = 3, WHISPER_Options_max_len = 4, WHISPER_Options_language_probabilities = 5 };
 
 /* The fields of Segment, in declared order. */
 enum { WHISPER_Segment_start_ms = 0, WHISPER_Segment_end_ms = 1, WHISPER_Segment_text = 2 };
+
+/* The fields of Transcript, in declared order. */
+enum { WHISPER_Transcript_language = 0, WHISPER_Transcript_segments = 1, WHISPER_Transcript_detection = 2 };
+
+/* The fields of SegmentDetail, in declared order. */
+enum { WHISPER_SegmentDetail_start_ms = 0, WHISPER_SegmentDetail_end_ms = 1, WHISPER_SegmentDetail_text = 2, WHISPER_SegmentDetail_tokens = 3, WHISPER_SegmentDetail_avg_logprob = 4, WHISPER_SegmentDetail_no_speech_probability = 5 };
+
+/* The fields of Detection, in declared order. */
+enum { WHISPER_Detection_language = 0, WHISPER_Detection_probability = 1, WHISPER_Detection_probabilities = 2 };
+
+/* The fields of Token, in declared order. */
+enum { WHISPER_Token_ids = 0, WHISPER_Token_text = 1, WHISPER_Token_probability = 2, WHISPER_Token_log_probability = 3, WHISPER_Token_start_ms = 4, WHISPER_Token_end_ms = 5 };
 
 /* The rows of the resource table: the TYPE of an_resource_new and an_get_resource. */
 enum { WHISPER_RESOURCE_Model = 0 };
@@ -66,6 +78,10 @@ static inline struct whisper_Model_state *whisper_Model_get(an_env *env, an_term
 typedef struct {
   ng_str language;
   bool translate;
+  int64_t beam_size;
+  bool token_timestamps;
+  int64_t max_len;
+  bool language_probabilities;
 } whisper_Options;
 bool whisper_Options_get(an_env *env, an_term t, whisper_Options *out);
 
@@ -75,6 +91,40 @@ typedef struct {
   ng_str text;
 } whisper_Segment;
 an_term whisper_Segment_make(an_env *env, const whisper_Segment *value);
+
+typedef struct {
+  ng_str language;
+  an_term segments;
+  an_term detection;
+} whisper_Transcript;
+an_term whisper_Transcript_make(an_env *env, const whisper_Transcript *value);
+
+typedef struct {
+  int64_t start_ms;
+  int64_t end_ms;
+  ng_str text;
+  an_term tokens;
+  double avg_logprob;
+  double no_speech_probability;
+} whisper_SegmentDetail;
+an_term whisper_SegmentDetail_make(an_env *env, const whisper_SegmentDetail *value);
+
+typedef struct {
+  ng_str language;
+  double probability;
+  an_term probabilities;
+} whisper_Detection;
+an_term whisper_Detection_make(an_env *env, const whisper_Detection *value);
+
+typedef struct {
+  an_term ids;
+  ng_str text;
+  double probability;
+  double log_probability;
+  int64_t start_ms;
+  int64_t end_ms;
+} whisper_Token;
+an_term whisper_Token_make(an_env *env, const whisper_Token *value);
 
 /* The Lists, Maps, Optionals and Results. A List or Map that is read is a cursor: _next gives 1 for an item, 0 at
    the end, and -1 when the item does not decode: the call has then failed with the path of the item in its own
@@ -108,6 +158,40 @@ an_term whisper_list_Segment_end(an_env *env, whisper_list_Segment_builder *b);
 
 an_term whisper_result_list_Segment_ok(an_env *env, an_term value);
 
+an_term whisper_result_Transcript_ok(an_env *env, whisper_Transcript value);
+
+an_term whisper_optional_String_some(an_env *env, ng_str value);
+
+typedef struct {
+  an_list_builder builder;
+} whisper_list_SegmentDetail_builder;
+void whisper_list_SegmentDetail_begin(an_env *env, whisper_list_SegmentDetail_builder *b, size_t hint);
+void whisper_list_SegmentDetail_push(an_env *env, whisper_list_SegmentDetail_builder *b, whisper_SegmentDetail value);
+an_term whisper_list_SegmentDetail_end(an_env *env, whisper_list_SegmentDetail_builder *b);
+
+an_term whisper_optional_Detection_some(an_env *env, whisper_Detection value);
+
+typedef struct {
+  an_list_builder builder;
+} whisper_list_Token_builder;
+void whisper_list_Token_begin(an_env *env, whisper_list_Token_builder *b, size_t hint);
+void whisper_list_Token_push(an_env *env, whisper_list_Token_builder *b, whisper_Token value);
+an_term whisper_list_Token_end(an_env *env, whisper_list_Token_builder *b);
+
+typedef struct {
+  an_term map;
+} whisper_map_String_Float_builder;
+void whisper_map_String_Float_begin(an_env *env, whisper_map_String_Float_builder *b);
+void whisper_map_String_Float_put(an_env *env, whisper_map_String_Float_builder *b, ng_str key, double value);
+an_term whisper_map_String_Float_end(an_env *env, whisper_map_String_Float_builder *b);
+
+typedef struct {
+  an_list_builder builder;
+} whisper_list_Int_builder;
+void whisper_list_Int_begin(an_env *env, whisper_list_Int_builder *b, size_t hint);
+void whisper_list_Int_push(an_env *env, whisper_list_Int_builder *b, int64_t value);
+an_term whisper_list_Int_end(an_env *env, whisper_list_Int_builder *b);
+
 /* Loads the model at `path` (a ggml/gguf file); error when it cannot be read. */
 an_term whisper_load_model(an_env *env, ng_str path);
 
@@ -116,6 +200,14 @@ an_term whisper_load_model(an_env *env, ng_str path);
    segments the engine emitted, in time order; error when the model cannot
    run it. */
 an_term whisper_transcribe_with(an_env *env, struct whisper_Model_state *model, whisper_list_Float pcm, whisper_Options options);
+
+/* Like `transcribe_with`, with each segment's tokens and probabilities,
+   the language decoded and, when `options` asks, the language detected. */
+an_term whisper_transcribe_detailed(an_env *env, struct whisper_Model_state *model, whisper_list_Float pcm, whisper_Options options);
+
+/* The English name of a language code (`"es"` is `"spanish"`); none for a
+   code the engine does not know. */
+an_term whisper_language_name(an_env *env, ng_str code);
 
 #ifdef __cplusplus
 }
@@ -236,6 +328,14 @@ static bool whisper_native_get_Options(an_env *env, an_term t, whisper_Options *
   if (!an_get_string(env, x, &out->language.data, &out->language.len)) return ng_leaf(fail, "String", "language");
   if (!an_get_field(env, t, WHISPER_TYPE_Options, 1, &x)) return ng_expected(fail, "Options");
   if (!an_get_bool(env, x, &out->translate)) return ng_leaf(fail, "Bool", "translate");
+  if (!an_get_field(env, t, WHISPER_TYPE_Options, 2, &x)) return ng_expected(fail, "Options");
+  if (!an_get_int(env, x, &out->beam_size)) return ng_leaf(fail, "Int", "beam_size");
+  if (!an_get_field(env, t, WHISPER_TYPE_Options, 3, &x)) return ng_expected(fail, "Options");
+  if (!an_get_bool(env, x, &out->token_timestamps)) return ng_leaf(fail, "Bool", "token_timestamps");
+  if (!an_get_field(env, t, WHISPER_TYPE_Options, 4, &x)) return ng_expected(fail, "Options");
+  if (!an_get_int(env, x, &out->max_len)) return ng_leaf(fail, "Int", "max_len");
+  if (!an_get_field(env, t, WHISPER_TYPE_Options, 5, &x)) return ng_expected(fail, "Options");
+  if (!an_get_bool(env, x, &out->language_probabilities)) return ng_leaf(fail, "Bool", "language_probabilities");
   return true;
 }
 
@@ -250,6 +350,44 @@ an_term whisper_Segment_make(an_env *env, const whisper_Segment *value) {
   fields[1] = an_int(env, value->end_ms);
   fields[2] = an_string(env, value->text.data, value->text.len);
   return an_struct(env, WHISPER_TYPE_Segment, fields);
+}
+
+an_term whisper_Transcript_make(an_env *env, const whisper_Transcript *value) {
+  an_term fields[3];
+  fields[0] = an_string(env, value->language.data, value->language.len);
+  fields[1] = value->segments;
+  fields[2] = value->detection;
+  return an_struct(env, WHISPER_TYPE_Transcript, fields);
+}
+
+an_term whisper_SegmentDetail_make(an_env *env, const whisper_SegmentDetail *value) {
+  an_term fields[6];
+  fields[0] = an_int(env, value->start_ms);
+  fields[1] = an_int(env, value->end_ms);
+  fields[2] = an_string(env, value->text.data, value->text.len);
+  fields[3] = value->tokens;
+  fields[4] = an_float(env, value->avg_logprob);
+  fields[5] = an_float(env, value->no_speech_probability);
+  return an_struct(env, WHISPER_TYPE_SegmentDetail, fields);
+}
+
+an_term whisper_Detection_make(an_env *env, const whisper_Detection *value) {
+  an_term fields[3];
+  fields[0] = an_string(env, value->language.data, value->language.len);
+  fields[1] = an_float(env, value->probability);
+  fields[2] = value->probabilities;
+  return an_struct(env, WHISPER_TYPE_Detection, fields);
+}
+
+an_term whisper_Token_make(an_env *env, const whisper_Token *value) {
+  an_term fields[6];
+  fields[0] = value->ids;
+  fields[1] = an_string(env, value->text.data, value->text.len);
+  fields[2] = an_float(env, value->probability);
+  fields[3] = an_float(env, value->log_probability);
+  fields[4] = an_int(env, value->start_ms);
+  fields[5] = an_int(env, value->end_ms);
+  return an_struct(env, WHISPER_TYPE_Token, fields);
 }
 
 static bool whisper_native_item_Float(an_env *env, an_term x, double *out, ng_fail *fail) {
@@ -297,6 +435,53 @@ an_term whisper_result_list_Segment_ok(an_env *env, an_term value) {
   return an_ok(env, value);
 }
 
+an_term whisper_result_Transcript_ok(an_env *env, whisper_Transcript value) {
+  return an_ok(env, whisper_Transcript_make(env, &value));
+}
+
+an_term whisper_optional_String_some(an_env *env, ng_str value) {
+  return an_some(env, an_string(env, value.data, value.len));
+}
+
+void whisper_list_SegmentDetail_begin(an_env *env, whisper_list_SegmentDetail_builder *b, size_t hint) { an_list_begin(env, &b->builder, hint); }
+
+void whisper_list_SegmentDetail_push(an_env *env, whisper_list_SegmentDetail_builder *b, whisper_SegmentDetail value) {
+  an_list_push(env, &b->builder, whisper_SegmentDetail_make(env, &value));
+}
+
+an_term whisper_list_SegmentDetail_end(an_env *env, whisper_list_SegmentDetail_builder *b) { return an_list_end(env, &b->builder); }
+
+an_term whisper_optional_Detection_some(an_env *env, whisper_Detection value) {
+  return an_some(env, whisper_Detection_make(env, &value));
+}
+
+void whisper_list_Token_begin(an_env *env, whisper_list_Token_builder *b, size_t hint) { an_list_begin(env, &b->builder, hint); }
+
+void whisper_list_Token_push(an_env *env, whisper_list_Token_builder *b, whisper_Token value) {
+  an_list_push(env, &b->builder, whisper_Token_make(env, &value));
+}
+
+an_term whisper_list_Token_end(an_env *env, whisper_list_Token_builder *b) { return an_list_end(env, &b->builder); }
+
+void whisper_map_String_Float_begin(an_env *env, whisper_map_String_Float_builder *b) { b->map = an_map_from(env, NULL, NULL, 0); }
+
+void whisper_map_String_Float_put(an_env *env, whisper_map_String_Float_builder *b, ng_str key, double value) {
+  b->map = an_map_put(env, b->map, an_string(env, key.data, key.len), an_float(env, value));
+}
+
+an_term whisper_map_String_Float_end(an_env *env, whisper_map_String_Float_builder *b) {
+  (void)env;
+  return b->map;
+}
+
+void whisper_list_Int_begin(an_env *env, whisper_list_Int_builder *b, size_t hint) { an_list_begin(env, &b->builder, hint); }
+
+void whisper_list_Int_push(an_env *env, whisper_list_Int_builder *b, int64_t value) {
+  an_list_push(env, &b->builder, an_int(env, value));
+}
+
+an_term whisper_list_Int_end(an_env *env, whisper_list_Int_builder *b) { return an_list_end(env, &b->builder); }
+
 static an_term whisper_native_load_model(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   ng_str a0;
@@ -318,14 +503,41 @@ static an_term whisper_native_transcribe_with(an_env *env, int argc, const an_te
   return whisper_transcribe_with(env, a0, a1, a2);
 }
 
+static an_term whisper_native_transcribe_detailed(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  struct whisper_Model_state *a0 = whisper_Model_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  whisper_list_Float a1;
+  if (!whisper_native_open_list_Float(env, argv[1], &a1, &fail))
+    return ng_fail_argument(env, &fail, "List[Float]", 1);
+  a1.argument = 2;
+  whisper_Options a2;
+  if (!whisper_native_get_Options(env, argv[2], &a2, &fail)) return ng_fail_argument(env, &fail, "Options", 2);
+  return whisper_transcribe_detailed(env, a0, a1, a2);
+}
+
+static an_term whisper_native_language_name(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_str a0;
+  if (!an_get_string(env, argv[0], &a0.data, &a0.len)) return an_badarg(env, 0);
+  return whisper_language_name(env, a0);
+}
+
 static const an_function whisper_native_functions[] = {
   {"load_model", "(String) -> Result[Model]", whisper_native_load_model, AN_DIRTY},
   {"transcribe_with", "(Model, List[Float], Options) -> Result[List[Segment]]", whisper_native_transcribe_with, AN_DIRTY},
+  {"transcribe_detailed", "(Model, List[Float], Options) -> Result[Transcript]", whisper_native_transcribe_detailed, AN_DIRTY},
+  {"language_name", "(String) -> Optional[String]", whisper_native_language_name, AN_SHORT},
 };
 
 static const an_type whisper_native_types[] = {
-  {"Options", AN_STRUCT, "language: String, translate: Bool"},
+  {"Options", AN_STRUCT, "language: String, translate: Bool, beam_size: Int, token_timestamps: Bool, max_len: Int, language_probabilities: Bool"},
   {"Segment", AN_STRUCT, "start_ms: Int, end_ms: Int, text: String"},
+  {"Transcript", AN_STRUCT, "language: String, segments: List[SegmentDetail], detection: Optional[Detection]"},
+  {"SegmentDetail", AN_STRUCT, "start_ms: Int, end_ms: Int, text: String, tokens: List[Token], avg_logprob: Float, no_speech_probability: Float"},
+  {"Detection", AN_STRUCT, "language: String, probability: Float, probabilities: Map[String, Float]"},
+  {"Token", AN_STRUCT, "ids: List[Int], text: String, probability: Float, log_probability: Float, start_ms: Int, end_ms: Int"},
 };
 
 /* Ends the module's one .c file: the tables and agentica_native_init. LOAD is NULL or a const char *(*)(void)
@@ -334,5 +546,5 @@ static const an_type whisper_native_types[] = {
   static const an_resource_type whisper_native_resources[] = { \
     {"Model", sizeof(struct whisper_Model_state), WHISPER_Model_FREE}, \
   }; \
-  AN_MODULE_TABLES("whisper", whisper_native_functions, 2, whisper_native_types, 2, whisper_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("whisper", whisper_native_functions, 4, whisper_native_types, 6, whisper_native_resources, 1, LOAD)
 #endif

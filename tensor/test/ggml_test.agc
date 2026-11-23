@@ -151,6 +151,37 @@ def test_every_op_points_at_trace_and_bad_storage_is_refused() -> Result[Void]
   Test.ok?(Tensor.stop_grad(t))
 end
 
+def test_to_device_copies_and_leaves_the_source_readable() -> Result[Void]
+  return ok() if !try present()
+
+  data = floats([1.5, -2.0, 3.25])
+  f32 = try Tensor.from_list(data, [3, 1], Tensor.Dtype.F32, CPU)
+  moved = try Tensor.to_device(f32, Tensor.Device.Cpu)
+  try Test.eq(Tensor.shape(moved), [3, 1])
+  try Test.eq(Tensor.dtype(moved), Tensor.Dtype.F32)
+  try Test.eq(try Tensor.to_list(moved), data)
+  try Test.eq(try Tensor.to_list(f32), data)
+  labels = ints([1, -7, 16777216])
+  i32 = try Tensor.from_list(labels, [3], Tensor.Dtype.I32, CPU)
+  copied = try Tensor.to_device(i32, Tensor.Device.Cpu)
+  try Test.eq(Tensor.dtype(copied), Tensor.Dtype.I32)
+  try Test.eq(try Tensor.to_list(copied), labels)
+  try Test.eq(try Tensor.to_list(i32), labels)
+  refused(Tensor.to_device(f32, Tensor.Device.Vulkan(99)), "no Vulkan device")
+end
+
+def test_fp16_is_chosen_before_the_first_ggml_call() -> Result[Void]
+  return ok() if !try present()
+
+  _ = try Tensor.zeros([1], Tensor.Dtype.F32, CPU)
+  case Tensor.vulkan_fp16(true)
+    ok(_) -> return error("fp16 was chosen after a ggml call fixed F32")
+    error(e) -> try Test.assert(e.message.include?("chose F32 mul_mat"), "the error said \"#{e.message}\"")
+  end
+
+  Test.ok?(Tensor.vulkan_fp16(false))
+end
+
 def test_the_other_backends_refuse_a_vulkan_device() -> Result[Void]
   try refused(Tensor.zeros([1], Tensor.Dtype.F32, Tensor.Backend.Torch(Tensor.Device.Vulkan(1))), "Vulkan(1)")
   ref = try Conform.on_ref([1.0], [1])

@@ -4,8 +4,8 @@ Functional tensors over pluggable backends: the public API (`tensor.agc`), a
 pure-Agentica **reference** backend that is the oracle, and the **libtorch
 (CPU, eager)** backend behind `extern module "torch"` and a thin C++ layer over
 libtorch's C++ API (as `tch-rs` is, in spirit), and the **ggml** backend (CPU
-and Vulkan) behind `extern module "ggml"`, which creates and reads back tensors
-until its graph compiler lands. The contract is [`DESIGN.md`](DESIGN.md).
+and Vulkan) behind `extern module "ggml"`, which runs a traced function as one
+compiled graph. The contract is [`DESIGN.md`](DESIGN.md).
 
 libtorch is a **system dependency**, never vendored and never downloaded by
 this repository: `tools/build-torch.sh` finds it through `TORCH_DIR`, or in
@@ -47,9 +47,12 @@ answers whether this machine has it, and the dispatch arm answers
 - `src/ggml.agc`, `src/ggml_native.agc`, `native/ggml.c` — the ggml backend
   (CPU and Vulkan): creation, upload and readback over the pinned
   `third_party/ggml`; see "The ggml backend" below.
+- `src/lower.agc`, `native/ggml_graph.c` — `Trace.evaluate` on `Ggml`: the
+  traced graph lowered to one ggml graph, with the structural cache.
 - `tools/build-engine.sh` — builds ggml (CPU, or CPU + Vulkan) and prints its
   exports; CI runs it.
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
+- `tools/bench-ggml.agc` — the step times in "The ggml backend".
 - `test/` — the unit tests of the reference backend, the libtorch conformance
   suite (`test/torch_*_test.agc`) that runs the same public call on both
   backends and compares, and the property tests (`test/prop_*_test.agc`, with
@@ -190,22 +193,69 @@ The package cache keys a module on those paths, not on the libraries in them:
 after a bump of the ggml pin, run the script again and remove the cached build
 (`rm -rf ~/.cache/agentica/pkg/native-build`) so the module links the new ggml.
 
-What it does today: `zeros`, `ones`, `empty`, `full`, `like`, `arange`,
-`scalar_to_tensor`, `from_list` and `to_list`, plus `stop_grad` (the
-identity). Every other op answers an error naming it and pointing at `Trace`:
-ggml is fast only when a whole step is one compiled graph, and that compiler is
-the next step (`DESIGN.md` §7). ggml holds `F32` and `I32`; `Bool`, `I8`, `I16`
-and `U8` are held as `F32`, which is exact for them; `F16`, `F64` and `I64` are
-refused, and so is a rank above 4. A fill is made in C, so it has no
-`List.repeat` cap. Vulkan buffer operations (allocate, write, read, free) run
-under one lock, so tasks can share a device. `Device.Vulkan(i)` counts only
-devices that are not a CPU (a software rasterizer is skipped).
+What it does: `zeros`, `ones`, `empty`, `full`, `like`, `arange`,
+`scalar_to_tensor`, `from_list`, `to_list` and `to_device` eagerly, plus
+`stop_grad` (the identity). Every other op answers an error naming it and
+pointing at `Trace`: ggml is fast only when a whole computation is one graph.
+`Trace.eval`, `Trace.value_and_grad` and `Trace.grad` on `Ggml` tensors lower
+the whole traced graph, forward and backward, to one ggml graph and run it
+(`DESIGN.md` §7). The graph is cached by its structure (ops, shapes, dtypes,
+integer parameters), not by the values of its inputs, constants or fills, so a
+training loop that retraces every step compiles once. Inputs are read in place
+and outputs written into fresh tensors, with no copy. The ops lowered are those
+of an MLP and softmax cross-entropy with their gradients (the list is in §7);
+any other op, a dtype `F32` does not hold exactly and an output that is not
+finite are errors. Vulkan computes in `F32`; `Tensor.vulkan_fp16(true)`, before
+any other ggml call (a CPU one or `Tensor.available` included), switches the
+whole process to fp16 `mul_mat`, which is faster and changes gradients by up to
+about 10 % at MLP sizes (on a build without Vulkan it changes nothing). ggml
+holds `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are held as `F32`, which is
+exact for them; `F16`, `F64` and `I64` are refused, and so is a rank above 4. A
+fill is made in C, so it has no `List.repeat` cap. Vulkan buffer operations
+(allocate, write, read, free) run under one lock, so tasks can share a device.
+`Device.Vulkan(i)` counts only devices that are not a CPU (a software rasterizer
+is skipped).
 
 `test/ggml_test.agc` round-trips every creation call against the reference on
-the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan
-device. Without the module, or without a Vulkan device, it asserts the absent
-state instead. With `TENSOR_REQUIRE_GGML` set (CI sets it for this package) a
-missing module fails the checks instead of passing them.
+the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan device.
+`test/ggml_compile_test.agc` checks the value and every gradient of a small MLP
+and of the cross-entropy against the reference within 1e-6 (relative to the
+largest value), on the CPU backend and on Vulkan, that a retrace with new values
+compiles nothing, and the refusals. `test/ggml_vulkan_mlp_test.agc` checks the
+benchmark's 784 → 512 → 512 → 10 model at batch 256 on Vulkan against ggml's CPU
+backend within 1.5e-6 (local only; `TENSOR_VULKAN_TOL` overrides the bound on
+another device), and `test/ggml_fp16_test.agc`, in a process of its own, that
+`Tensor.vulkan_fp16(true)` moves it further than that but within 0.1. Without
+the module, or without a Vulkan device, they assert the absent state instead or
+pass. With `TENSOR_REQUIRE_GGML` set (CI sets it for this package) a missing
+module fails the checks instead of passing them.
+
+### Step time through `Trace`
+
+`tools/bench-ggml.agc`: the MLP 784 → 512 → 512 → 10 of the spike, an SGD
+step through the public API (`value_and_grad`, then one `Trace.eval` per
+parameter for the update, since `Trace.eval` has one output: seven graphs),
+retraced every step. Milliseconds per step, median of 18 steps, on the Vega
+iGPU with `F32` `mul_mat`, against the spike's step compiled once as one graph
+(`spike/ggml-graph/README.md`, run B):
+
+| batch | step | of it `value_and_grad` | spike, one graph |
+|---|---|---|---|
+| 64 | 36.0 | 17.7 | 4.60 |
+| 256 | 33.0 | 20.5 | 7.19 |
+| 1024 | 36.1 | 26.6 | 18.89 |
+| 4096 | 94.2 | 84.7 | 67.92 |
+
+The graph itself is as fast as the spike's: run back to back in C, the
+`value_and_grad` graph takes 4.4 ms at batch 64 against the spike's 4.85 ms.
+What costs the rest is the gap between runs. Retracing, differentiating and
+lowering a step takes about 1–3 ms in Agentica, and in that gap the iGPU drops
+to its lowest clock (200 MHz in `pp_dpm_sclk`), so the next graph runs about 3×
+slower; the spike ran its graph with no gap. Six more graphs for the update add
+a dispatch and a clock drop each. A training step that is one graph (the next
+PR) removes the second cost; the first is the price of retracing, which keeps
+`Trace` the only API. ggml's CPU backend runs the same step in 12.9 ms at 64 and
+25.2 ms at 256.
 
 ## CI
 

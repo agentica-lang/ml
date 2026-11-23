@@ -50,3 +50,51 @@ def test_transcribe_errors_without_samples() -> Result[Void]
     error(e) -> Test.eq(e.message, "transcribe_with needs at least one sample at 16000 Hz")
   end
 end
+
+def test_detailed_silence_detects_a_language_and_has_no_text() -> Result[Void]
+  zeros: List[Float] = []
+  for _i in 0...1600
+    zeros = zeros.push(0.0)
+  end
+
+  model = try Whisper.load_model(MODEL_PATH)
+  options = Whisper.Options(language: "auto", language_probabilities: true)
+  transcript = try Whisper.transcribe_detailed(model, zeros, options)
+  case transcript.detection
+    some(detection) ->
+      try Test.eq(detection.probabilities.get(detection.language), some(detection.probability))
+      Test.assert(transcript.segments.all? do |segment| segment.text.strip.empty? end, "silence gave text")
+
+    none -> Test.assert(false, "language_probabilities gave no detection")
+  end
+end
+
+def test_detailed_has_no_detection_unless_asked() -> Result[Void]
+  model = try Whisper.load_model(MODEL_PATH)
+  transcript = try Whisper.transcribe_detailed(model, [0.0], Whisper.Options())
+  Test.eq(transcript.detection, none)
+end
+
+def test_transcribe_errors_on_a_beam_size_past_8() -> Result[Void]
+  model = try Whisper.load_model(MODEL_PATH)
+  case Whisper.transcribe_detailed(model, [0.0], Whisper.Options(beam_size: 9))
+    ok(_) -> Test.assert(false, "transcribe_detailed took 9 beams")
+    error(e) -> Test.eq(e.message, "transcribe_with takes a beam_size from 0 to 8")
+  end
+end
+
+def test_transcribe_errors_on_a_negative_max_len() -> Result[Void]
+  model = try Whisper.load_model(MODEL_PATH)
+  case Whisper.transcribe_with(model, [0.0], Whisper.Options(max_len: -1))
+    ok(_) -> Test.assert(false, "transcribe_with took a negative max_len")
+    error(e) -> Test.eq(e.message, "transcribe_with takes a max_len from 0 to 100000")
+  end
+end
+
+def test_transcribe_errors_on_an_unknown_language() -> Result[Void]
+  model = try Whisper.load_model(MODEL_PATH)
+  case Whisper.transcribe_detailed(model, [0.0], Whisper.Options(language: "xx"))
+    ok(_) -> Test.assert(false, "transcribe_detailed took the language xx")
+    error(e) -> Test.eq(e.message, "transcribe_with does not know that language code")
+  end
+end
