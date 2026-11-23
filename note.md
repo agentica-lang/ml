@@ -1,7 +1,7 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-23. `main` en `3593184`. Abierto: el primer PR de `train/`
-(rama `train`). Este fichero es el parte de estado: lo hecho, lo que
+Fecha: 2026-11-23. `main` en `926da75`. Abierto: el primer PR de `hub/`
+(rama `hub`). Este fichero es el parte de estado: lo hecho, lo que
 quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 `roadmap.md`; el contrato del tensor, en `tensor/DESIGN.md`.
 
@@ -18,6 +18,7 @@ quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 | `tensor/`: tracing y gradientes (§10): `Trace` como quinto brazo, `value_and_grad`, reglas de backward de las primeras ops, suite de paridad traced vs eager | `tensor/trace.agc`, `src/graph.agc` | #16, #18 |
 | `tensor/`: tests property-based con `prop` (órdenes de `axes`, `concat`, round trips de dtype, oráculo torch, conv/pool contra bucles) | `tensor/test/prop_*` | #17, #19 |
 | `nn/` primer PR: capas funcionales (`dense`, `layer_norm`, `embedding`, `attention`, `mlp`, `encoder_block`), init con semilla, solo forward; `dense` y `mlp` relu diferenciables vía `Trace` | `nn/` | #20 |
+| `train/` primer PR: `Loss.mse`, `Loss.binary_cross_entropy`, `Optim` (SGD, Adam) puros, `Train.fit` sobre `Trace.value_and_grad`; la raíz pasa a ser un workspace | `train/`, `agentica.toml` | #21 |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
 | Docs: `tensor/DESIGN.md` (contrato, sin fases), `roadmap.md` (orden e hitos), `README.md`, `.gitattributes`, CI matricial | raíz | #3, #6 |
@@ -44,15 +45,15 @@ quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 
 ## 2. En progreso (parado a propósito)
 
-- **`train/` primer PR** (rama `train`, worktree `../agentica-ml-train`):
-  `Loss.mse`, `Loss.binary_cross_entropy` (estable, solo ops con regla),
-  `Optim` (SGD con momentum, Adam) como funciones puras, y `Train.fit` sobre
-  `Trace.value_and_grad`. Criterio de salida: un MLP relu de `nn/` aprende
-  XOR en la referencia (golden de la curva) y libtorch la sigue a 1e-7.
-  Sin softmax cross-entropy: espera `stop_grad` o la regla de `max`. La raíz
-  del repo pasa a ser un workspace de Agentica (`agentica.toml` con
-  `[workspace]`): un paquete no raíz no puede tener deps `path`
-  (`PKG-ROOT-ONLY`). Diseño en `train/DESIGN.md`.
+- **`hub/` primer PR** (rama `hub`, worktree `../agentica-ml-hub`): lector
+  de safetensors en Agentica (cabecera validada entera: longitud, JSON,
+  dtypes, offsets que cubren el buffer sin huecos ni solapes), checkpoints
+  partidos con `model.safetensors.index.json`, y `Load.dense`/`layer_norm`/
+  `embedding`/`encoder_block` por nombre (transpone `[out, in]` a
+  `[in, out]`, pasa floats a `F32`). Solo ficheros locales: lee el fichero
+  entero porque `File` no tiene seek. `BF16` se rechaza (no hay dtype en
+  `tensor/`). Tests contra un peer Python (`struct` + `json`) que escribe los
+  ficheros en un temporal. Diseño en `hub/DESIGN.md`.
 
 Ningún subagente sigue corriendo.
 
@@ -62,12 +63,12 @@ Ningún subagente sigue corriendo.
    esperan `softmax`, `layer_norm` y la softmax cross-entropy de `train/`).
 2. **`nn/`**: falta decoder (máscara causal, cross-attention), conv,
    `rms_norm`, y `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
-3. **`train/`**: primer PR abierto (ver §2). Después: softmax
+3. **`train/`**: después del primer PR (#21): softmax
    cross-entropy, shuffling, schedules, y aplanar structs de capas (pytrees)
    cuando un modelo lo pida.
 4. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
    época del XOR en la referencia).
-5. **`hub/`**: safetensors + descarga HF. Descargas con `http-client`
+5. **`hub/`**: primer PR abierto (ver §2). Falta la descarga HF, con `http-client`
    `stream()` (redirects y retry incluidos), **nunca** `bond` (es solo
    servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
    Resume/progreso/sha256 hay que construirlos.
