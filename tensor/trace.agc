@@ -312,6 +312,23 @@ end
 ## the public API. A lifted constant must live on `backend`.
 def apply(t: Types.Tensor, values: Map[Int, Types.Tensor], backend: Types.Backend) -> Result[Types.Tensor]
   n = try Graph.node_of(t)
+  r = try compute(t, n, values, backend)
+  if r.shape != t.shape or r.dtype != t.dtype
+    return error(
+      "node #{n.id} (#{Types.op_name(n.op)}) computed #{Types.dtype_name(r.dtype)} #{r.shape}, the trace recorded #{Types.dtype_name(t.dtype)} #{t.shape}",
+    )
+  end
+
+  ok(r)
+end
+
+## The value of the node `n` behind `t`, by the public API.
+def compute(
+  t: Types.Tensor,
+  n: Types.Node,
+  values: Map[Int, Types.Tensor],
+  backend: Types.Backend,
+) -> Result[Types.Tensor]
   args = n.args.map { |a| values[id_of(a)] }
   case n.op
     Types.Op.Input -> error("node #{n.id} is an input of another trace")

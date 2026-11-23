@@ -239,11 +239,12 @@ r: Result[Tensor] = case a.backend
   Backend.Torch(device) -> Torch.matmul(device, a, b)      # src/torch.agc
   Backend.Xla(_) -> error("backend not available")         # module not written yet
   Backend.Candle(_) -> error("backend not available")      # module not written yet
+  Backend.Trace -> ok(Graph.record(Op.Matmul, [a, b], shape, a.dtype))   # §10
 end
 ```
 
-- The `case` is checked and exhaustive over all five variants (`Trace`, §10.1,
-  records a node instead of computing), which is the
+- The `case` is checked and exhaustive over all five variants (`Trace`
+  records a node instead of computing, §10.1), which is the
   property this shape buys; `xla` and `candle` return `error` until their
   modules exist, so the arm set does not change when they land.
 - The `Torch` arm calls `src/torch.agc`, which calls the thirteen `compute
@@ -385,6 +386,19 @@ The price:
   outside the function enters with `Trace.constant(t)`, explicitly.
 - `Backend` and `Handle` carry a variant that no compute backend handles; a
   backend that reads a handle answers `error` on `Traced`.
+- A traced tensor has no values, so host readback and control flow that
+  depends on data cannot be traced: `to_list`, `top_k`, `beam_search`, a
+  decode loop, `if x > 0`. They stay outside the traced function.
+- A new op costs five places: its `Trace` arm, its `Op` variant and its
+  `op_name`, `apply` and `vjp` arms. The compiler enforces all of them
+  (exhaustive `case`).
+- The shape a `Trace` arm records is a second copy of the backend's shape
+  inference; `evaluate` checks every computed shape and dtype against the
+  recorded one and answers an error naming the op and node.
+- A `Constant` holds its tensor, so a graph with a native constant is tied to
+  the task that owns that handle (§8).
+- `f` is traced again on every call (each training step) until `jit` caches
+  a graph.
 
 ### 10.2 The graph (decided)
 

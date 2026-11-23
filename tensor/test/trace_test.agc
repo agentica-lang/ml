@@ -103,6 +103,16 @@ def test_reshape_matches_a_central_difference() -> Result[Void]
   check_grad([try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7], [2, 3])]) do |xs| weigh(try Tensor.reshape(xs[0], [3, 2])) end
 end
 
+def test_where_matches_a_central_difference() -> Result[Void]
+  c0 = try f64([0.0, 1.0, 0.0, 1.0, 1.0, 0.0], [2, 3])
+  c1 = try f64([1.0, 0.0, 1.0, 1.0, 0.0, 2.0], [2, 3])
+  args = [try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7], [2, 3]), try f64([1.5, 0.2, -0.3, 0.8, -1.1, 0.4], [2, 3])]
+  check_grad(args) do |xs|
+    cond = try Tensor.lt(Trace.constant(c0), Trace.constant(c1))
+    weigh(try Tensor.where(cond, try Tensor.mul(xs[0], xs[1]), try Tensor.exp(xs[0])))
+  end
+end
+
 def test_a_two_layer_mlp_loss_matches_a_central_difference() -> Result[Void] = check_grad(try mlp_params(), &mlp_loss)
 
 def test_one_sgd_step_on_the_mlp_lowers_the_loss() -> Result[Void]

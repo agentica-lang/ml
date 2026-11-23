@@ -54,7 +54,8 @@ end
 def free(t: Tensor.Tensor) -> Void
   case t.handle
     Tensor.Handle.Native(h) -> Native.close(h)
-    _ -> puts("")
+    Tensor.Handle.Plain(_) -> puts("")
+    Tensor.Handle.Traced(_) -> puts("")
   end
 end
 
