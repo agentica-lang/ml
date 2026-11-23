@@ -181,12 +181,16 @@ struct Job
 end
 
 ## Waits for the next item; an error once the channel is closed and drained.
+## A wait that timed out may have raced with the producer, which sends a batch
+## and closes with its reason between the wait and the `closed?` check: the
+## last `recv(0)` then gives that batch, or the reason, and not the timeout.
 def receive(a: Ahead) -> Result[Result[Batch]]
   got = a.batches.recv(POLL_MS)
   while !got.ok? and !a.batches.closed?
     got = a.batches.recv(POLL_MS)
   end
 
+  return a.batches.recv(0) if !got.ok?
   got
 end
 
@@ -196,15 +200,17 @@ def alive(got: Result[Batch]) -> Result[Batch]
   ok(b)
 end
 
-## Builds every batch in order and sends it, an error included, then waits for
-## `stop`: its tensors must outlive their use.
+## Builds every batch in order and sends it. A failure closes the channel with
+## it: the consumer takes the batches built before, then that error. Then the
+## task stays until `stop` cancels it, whether it failed or not: its tensors
+## must outlive their use.
 def produce(job: Job) -> Result[Void]
-  outcome = send_all(job)
-  if !outcome.ok?
-    _ = hand(job.batches, error(outcome.message))
+  case send_all(job)
+    error(e) -> job.batches.close(e)
+    ok(_) -> nil
   end
 
-  while !job.batches.closed?
+  while true
     Task.sleep(POLL_MS)
   end
 
