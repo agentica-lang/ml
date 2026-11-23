@@ -250,31 +250,47 @@ end
 - **A trace on `Ggml` is one compiled graph** (`src/lower.agc`,
   `native/ggml_graph.c`). `Trace.evaluate` sends every node the outputs reach
   to the C layer in id order and runs the result as one ggml graph; it never
-  calls `Tensor.*` (§10.3). Inputs and lifted constants are leaves copied in
-  on every call, and a `Full` is a one-element leaf whose value is set on
-  every call. So a compiled graph depends on the ops, shapes, dtypes, integer
+  calls `Tensor.*` (§10.3). Inputs and lifted constants are leaves bound on
+  every call, and a `Full` is a one-element leaf whose value is set on every
+  call. So a compiled graph depends on the ops, shapes, dtypes, integer
   parameters and on which fills are zero (a `where` with a zero branch lowers
   without it), and that string is the key of a process-wide cache: a retrace
   of the same function with new data, constants or fill values compiles
-  nothing. A graph keeps its leaves and a copy of each output in a buffer of
-  its own; the intermediates live in one allocator per device that every
-  graph shares, re-planned when another graph ran last. The cache holds 32
-  graphs and evicts the least recently used one nobody runs.
+  nothing. The cache holds 32 graphs and evicts the least recently used one
+  nobody runs.
+- **No copies in or out.** For one run only, an `F32` leaf points at the
+  caller's tensor and an `F32` output at a fresh tensor the run writes; after
+  the run the graph points at nothing again, so the cache keeps no caller
+  tensor alive. Only an `I32` leaf or output is copied, converted through a
+  buffer of the graph's own. A cached graph owns its fills and its finiteness
+  checks; the intermediates live in one allocator per device that every
+  graph shares, re-planned when another graph ran last. That allocator keeps
+  the largest buffer any graph needed until the process ends.
+- **Locks.** Builds, runs and Vulkan buffer operations hold one device lock,
+  so CPU and Vulkan graphs run one at a time (enough for one iGPU; a lock per
+  device can come later). The cache's own lock is held briefly, and a free
+  hook (a lease, a tensor) takes only that one: what it must free under the
+  device lock is queued for the lock's next holder, so no task's free waits
+  for a graph to finish.
 - The lowering computes in `F32`. `Bool` (0/1) and integers up to 32 bits are
   exact there below 2^24; a node of `F16`, `F64` or `I64`, an integer `div`,
-  a `to_dtype` that is not exact in `F32` and an op without a lowering are
-  errors naming the node, given before anything compiles. Lowered: `add`,
-  `sub`, `mul`, `div`, `neg`, `exp`, `log`, `relu`, `sqrt`, `sigmoid`,
-  `tanh`, `matmul`, `transpose`, `reshape`, `squeeze`, `unsqueeze`,
-  `broadcast_to`, `sum`, `mean` and `max` over a leading or trailing block of
-  axes, `stop_grad`, `copy`, `contiguous`, `arange`, and `eq`, `lt` and
-  `where` emulated in `F32` arithmetic: enough for an MLP and softmax
-  cross-entropy with their gradients. An output that holds an infinity or a
-  NaN is an error.
+  a `to_dtype` that is not exact in `F32`, an integer fill or `arange` beyond
+  2^24, an `arange` that counts down, a `transpose` above rank 2, a tensor
+  with no elements and an op without a lowering are errors naming the node,
+  given before anything compiles; an `I32` value beyond 2^24 is an error when
+  it is copied in or out. Lowered: `add`, `sub`, `mul`, `div`, `neg`, `exp`,
+  `log`, `relu`, `sqrt`, `sigmoid`, `tanh`, `matmul`, `transpose`, `reshape`,
+  `squeeze`, `unsqueeze`, `broadcast_to`, `sum`, `mean` and `max` over a
+  leading or trailing block of axes, `stop_grad`, `copy`, `contiguous`,
+  `arange`, and `eq`, `lt` and `where` emulated in `F32` arithmetic (`eq` as
+  `1 - step(|a - b|)`, exact for integers below 2^24; `where` as
+  `c·x + (1 - c)·y`, exact only when both branches are finite): enough for an
+  MLP and softmax cross-entropy with their gradients. An output that holds
+  an infinity or a NaN is an error.
 - Vulkan computes `mul_mat` in `F32`: ggml reads `GGML_VK_DISABLE_F16` once
-  per process, when the first Vulkan device opens, and the C layer sets it
-  then. fp16 would be faster and changes gradients by up to about 10 % at MLP
-  sizes (`spike/ggml-graph/README.md`).
+  per process, when it first enumerates its devices, and the C layer sets it
+  before its first registry call. fp16 would be faster and changes gradients
+  by up to about 10 % at MLP sizes (`spike/ggml-graph/README.md`).
 - The ggml module is `[native.ggml]`, `optional = true`, built from
   `native/ggml.c` and `native/ggml_graph.c` against the pinned
   `third_party/ggml`, which `tools/build-engine.sh` builds CPU-only (CI) or with

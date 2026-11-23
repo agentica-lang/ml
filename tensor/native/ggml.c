@@ -26,35 +26,111 @@
 #include <string.h>
 #include <unistd.h>
 
-pthread_mutex_t tg_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t device_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* Frees that wait for the device lock. A free hook runs on the scheduler, so
+   it must never wait for a graph to finish: it queues its work here, and the
+   next holder of the device lock does it. */
+struct deferred {
+  void (*fn)(void *);
+  void *arg;
+  struct deferred *next;
+};
+static pthread_mutex_t deferred_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct deferred *deferred_head = NULL;
+
+void tg_defer(void (*fn)(void *), void *arg) {
+  struct deferred *d = (struct deferred *)malloc(sizeof *d);
+
+  if (d == NULL) { /* no memory to queue it: do it now and wait */
+    tg_lock_device();
+    fn(arg);
+    tg_unlock_device();
+    return;
+  }
+  d->fn = fn;
+  d->arg = arg;
+  pthread_mutex_lock(&deferred_lock);
+  d->next = deferred_head;
+  deferred_head = d;
+  pthread_mutex_unlock(&deferred_lock);
+}
+
+void tg_lock_device(void) {
+  struct deferred *d, *next;
+
+  pthread_mutex_lock(&device_lock);
+  pthread_mutex_lock(&deferred_lock);
+  d = deferred_head;
+  deferred_head = NULL;
+  pthread_mutex_unlock(&deferred_lock);
+  for (; d != NULL; d = next) {
+    next = d->next;
+    d->fn(d->arg);
+    free(d);
+  }
+}
+
+void tg_unlock_device(void) { pthread_mutex_unlock(&device_lock); }
+
+/* A CPU buffer is plain memory: only Vulkan buffer operations take the lock,
+   so CPU tensors move while a graph runs. */
 static void lock_for(bool vulkan) {
-  if (vulkan) pthread_mutex_lock(&tg_lock);
+  if (vulkan) tg_lock_device();
 }
 
 static void unlock_for(bool vulkan) {
-  if (vulkan) pthread_mutex_unlock(&tg_lock);
+  if (vulkan) tg_unlock_device();
+}
+
+/* What a freed tensor handle leaves behind. */
+struct remains {
+  ggml_backend_buffer_t buffer;
+  struct ggml_context *ctx;
+};
+
+static void free_remains(void *arg) {
+  struct remains *r = (struct remains *)arg;
+
+  if (r->buffer != NULL) ggml_backend_buffer_free(r->buffer);
+  if (r->ctx != NULL) ggml_free(r->ctx);
+  free(r);
 }
 
 static void ggml_TensorHandle_free(void *state) {
   struct ggml_TensorHandle_state *self = (struct ggml_TensorHandle_state *)state;
+  struct remains *r;
 
-  if (self->buffer != NULL) {
-    lock_for(self->vulkan);
-    ggml_backend_buffer_free(self->buffer);
-    unlock_for(self->vulkan);
+  if (self->buffer != NULL || self->ctx != NULL) {
+    r = (struct remains *)malloc(sizeof *r);
+    if (r == NULL) {
+      tg_lock_device();
+      if (self->buffer != NULL) ggml_backend_buffer_free(self->buffer);
+      if (self->ctx != NULL) ggml_free(self->ctx);
+      tg_unlock_device();
+    } else {
+      r->buffer = self->buffer;
+      r->ctx = self->ctx;
+      tg_defer(free_remains, r);
+    }
   }
-  if (self->ctx != NULL) ggml_free(self->ctx);
   memset(self, 0, sizeof *self);
 }
 #define GGML_TensorHandle_FREE ggml_TensorHandle_free
 #define GGML_Lease_FREE ggml_Lease_free
 
 /* ggml-Vulkan converts F32 `mul_mat` inputs to fp16 on a device that has
-   fp16, unless GGML_VK_DISABLE_F16 is set when the device is first opened,
-   and no per-op switch exists (spike/ggml-graph/README.md). The first Vulkan
-   device that opens sets it: F32. */
-static bool vulkan_opened = false;
+   fp16, unless GGML_VK_DISABLE_F16 is set when ggml first enumerates its
+   devices (any registry call does), and no per-op switch exists
+   (spike/ggml-graph/README.md). So the first registry call of this file sets
+   it, for the process: F32. Call under the device lock. */
+static bool precision_fixed = false;
+
+static void fix_precision(void) {
+  if (precision_fixed) return;
+  setenv("GGML_VK_DISABLE_F16", "1", 1);
+  precision_fixed = true;
+}
 
 /* The CPU and up to eight Vulkan devices, opened once for the process. */
 #define MAX_DEVICES 9
@@ -66,10 +142,13 @@ an_term tg_error(an_env *env, const char *message) { return an_error(env, messag
    software rasterizer), or NULL; `count` gets how many there are. NULL in a
    CPU-only build. Call under the lock. */
 static ggml_backend_dev_t vulkan_device(size_t index, size_t *count) {
-  ggml_backend_reg_t reg = ggml_backend_reg_by_name("Vulkan");
+  ggml_backend_reg_t reg;
   ggml_backend_dev_t found = NULL, dev;
-  size_t i, n = reg == NULL ? 0 : ggml_backend_reg_dev_count(reg);
+  size_t i, n;
 
+  fix_precision();
+  reg = ggml_backend_reg_by_name("Vulkan");
+  n = reg == NULL ? 0 : ggml_backend_reg_dev_count(reg);
   *count = 0;
   for (i = 0; i < n; i++) {
     dev = ggml_backend_reg_dev_get(reg, i);
@@ -83,19 +162,19 @@ static ggml_backend_dev_t vulkan_device(size_t index, size_t *count) {
 an_term ggml_vulkan_devices(an_env *env) {
   size_t n;
 
-  pthread_mutex_lock(&tg_lock);
+  tg_lock_device();
   vulkan_device(SIZE_MAX, &n);
-  pthread_mutex_unlock(&tg_lock);
+  tg_unlock_device();
   return an_int(env, (int64_t)n);
 }
 
 /* The ggml device of `device` (-1: CPU, i >= 0: Vulkan device i), or NULL
-   with the reason in `why`. The first Vulkan device fixes the precision.
-   Call under tg_lock. */
+   with the reason in `why`. Call under the device lock. */
 static ggml_backend_dev_t device_of(int64_t device, char *why, size_t len) {
   ggml_backend_dev_t dev = NULL;
   size_t n;
 
+  fix_precision();
   if (device == -1) {
     dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (dev == NULL) snprintf(why, len, "this ggml build has no CPU backend");
@@ -109,9 +188,6 @@ static ggml_backend_dev_t device_of(int64_t device, char *why, size_t len) {
   } else if (device >= MAX_DEVICES - 1) {
     snprintf(why, len, "Vulkan device %lld: this backend opens devices 0...%d", (long long)device, MAX_DEVICES - 1);
     dev = NULL;
-  } else if (!vulkan_opened) {
-    setenv("GGML_VK_DISABLE_F16", "1", 1);
-    vulkan_opened = true;
   }
   return dev;
 }
@@ -154,10 +230,10 @@ bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_t
   size_t size;
   enum ggml_status placed;
 
-  pthread_mutex_lock(&tg_lock);
+  tg_lock_device();
   dev = device_of(device, why, sizeof why);
   if (dev != NULL) buft = ggml_backend_dev_buffer_type(dev);
-  pthread_mutex_unlock(&tg_lock);
+  tg_unlock_device();
   if (dev == NULL) return failed(env, failure, why);
   if (buft == NULL) return failed(env, failure, "the device has no buffer type");
   state->vulkan = device >= 0;
@@ -204,25 +280,38 @@ static bool make_tensor(an_env *env, int64_t device, ggml_list_Int *shape, enum 
   return tg_new_tensor(env, device, ne, type, state, failure);
 }
 
-bool tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst) {
+/* 2^24: the integers F32 holds exactly. */
+#define EXACT 16777216.0f
+
+const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst) {
   int64_t n = ggml_nelements(src), i;
   void *bytes;
+  const char *why = NULL;
 
-  if (n != ggml_nelements(dst)) return false;
+  if (n != ggml_nelements(dst)) return "the tensors have different element counts";
   if (src->type == dst->type) {
     ggml_backend_tensor_copy(src, dst);
-    return true;
+    return NULL;
   }
   bytes = malloc(ggml_nbytes(src) > 0 ? ggml_nbytes(src) : 1);
-  if (bytes == NULL) return false;
+  if (bytes == NULL) return "out of memory";
   ggml_backend_tensor_get(src, bytes, 0, ggml_nbytes(src));
-  for (i = 0; i < n; i++) {
-    if (src->type == GGML_TYPE_I32) ((float *)bytes)[i] = (float)((int32_t *)bytes)[i];
-    else ((int32_t *)bytes)[i] = (int32_t)((float *)bytes)[i];
+  for (i = 0; i < n && why == NULL; i++) {
+    if (src->type == GGML_TYPE_I32) {
+      int32_t v = ((int32_t *)bytes)[i];
+
+      if (v > (int32_t)EXACT || v < -(int32_t)EXACT) why = "an I32 value beyond 2^24 is not exact in F32";
+      ((float *)bytes)[i] = (float)v;
+    } else {
+      float v = ((float *)bytes)[i];
+
+      if (!(v <= EXACT && v >= -EXACT)) why = "an I32 result beyond 2^24 (or not finite) is not exact in F32";
+      else ((int32_t *)bytes)[i] = (int32_t)v;
+    }
   }
-  ggml_backend_tensor_set(dst, bytes, 0, ggml_nbytes(dst));
+  if (why == NULL) ggml_backend_tensor_set(dst, bytes, 0, ggml_nbytes(dst));
   free(bytes);
-  return true;
+  return why;
 }
 
 /* Host bytes for every element of `t` (4 per element: F32 or I32). */
