@@ -1,0 +1,721 @@
+/* The compiled graphs of the ggml backend (`src/lower.agc`): ONE ggml graph
+   per traced evaluation, built once per structure and cached for the process.
+
+   A graph is built node by node in the order `lower.agc` sends (a
+   topological order); `compile` makes the cgraph, gives the fills and the
+   finiteness checks one small buffer, and checks every node against the
+   backend. The leaves (inputs, constants) and the outputs own no memory:
+   every call points them at the caller's tensors (`bind`) and at fresh ones
+   (`output`), so nothing is copied in or out; a leaf or output of another
+   type (an I32 tensor against the F32 graph) goes through a buffer of its own
+   and a converting copy instead. Intermediates are not the graph's either:
+   one graph allocator per device holds them, shared by every graph of that
+   device. So a graph waiting in the cache costs its tensors' metadata only.
+   Every run, under tg_lock, re-plans the shared allocator when another graph
+   ran last, computes, and points the leaves and outputs back at nothing.
+
+   Layout: a row-major shape [d0, ..., dk] is a ggml tensor with ne[0] = dk,
+   ne[1] = dk-1, ..., so trailing-axis broadcasting is ggml's own repeat.
+
+   A node may be "lazy": its tensor holds fewer elements than its recorded
+   shape and repeats to it (a fill, a `broadcast_to`). Binary ops take a lazy
+   right operand as ggml's broadcast; anything else materializes it. A fill is
+   "zero" when the trace's value is 0: the zero branch of a `where` drops out.
+   Zero-ness is part of the cache key, the value itself is set per run.
+
+   Every value is F32 here: a Bool is 0/1 and an integer exact below 2^24. */
+#include "ggml_shared.h"
+
+#include "ggml-alloc.h"
+
+#include <inttypes.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* The op codes `lower.agc` sends; keep both lists in one order. */
+enum {
+  OP_LEAF = 0, /* an input or a constant, copied in per run */
+  OP_FULL,     /* a fill: one element, lazy; ints: [zero] */
+  OP_ADD,
+  OP_SUB,
+  OP_MUL,
+  OP_DIV,
+  OP_NEG,
+  OP_EXP,
+  OP_LOG,
+  OP_RELU,
+  OP_SQRT,
+  OP_SIGMOID,
+  OP_TANH,
+  OP_MATMUL,
+  OP_TRANSPOSE,
+  OP_RESHAPE,
+  OP_BROADCAST,
+  OP_SUM, /* ints: the input's rank, then the reduced axes */
+  OP_MEAN,
+  OP_MAX,
+  OP_IDENTITY, /* stop_grad, copy, contiguous, a Bool or int cast to float */
+  OP_ARANGE,   /* ints: start, stop, step */
+  OP_EQ,
+  OP_LT,
+  OP_WHERE,
+  OP_COUNT
+};
+
+static const char *op_names[OP_COUNT] = {
+  "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
+  "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
+};
+
+/* A leaf or an output: the tensor of the graph, its own memory (made on the
+   first call that needs it) and the handle it points at for this call. */
+struct port {
+  struct ggml_tensor *t;
+  ggml_backend_buffer_t own;
+  struct ggml_TensorHandle_state *handle; /* converted to or from `own`; else NULL */
+  bool set;                               /* bound or prepared for the next run */
+};
+
+struct gnode {
+  struct ggml_tensor *t;
+  int64_t ne[4];
+  int op;
+  int lazy; /* t has fewer elements than ne and repeats to it */
+  int zero; /* a fill of 0.0, possibly broadcast or reshaped */
+  int arg;  /* a transpose's argument, for matmul's layout */
+};
+
+#define MAX_OUTPUTS 64
+#define MAX_ENTRIES 32
+
+/* One graph of the cache. */
+struct entry {
+  char *key;
+  int64_t device;
+  ggml_backend_t backend;  /* the device's, open for the process */
+  struct ggml_context *ctx; /* op tensors and the graph; no data */
+  struct ggml_context *fill_ctx; /* fills and checks, in fill_buffer */
+  ggml_backend_buffer_t fill_buffer;
+  struct ggml_context *port_ctx; /* leaves and outputs; no memory */
+  struct ggml_cgraph *graph;
+  struct gnode *nodes;
+  int64_t count, capacity;
+  struct port *leaves;
+  int64_t leaf_count;
+  struct ggml_tensor *fill_store; /* one F32 per fill; each fill is a view */
+  int64_t fill_count;
+  struct port outs[MAX_OUTPUTS];
+  struct ggml_tensor *checks; /* the sum of 0 * output, per output: NaN unless finite */
+  int64_t output_count;
+  struct ggml_tensor **inner; /* what the shared allocator places, every run */
+  int64_t inner_count;
+  bool compiled, in_use;
+  int64_t used; /* the tick of its last lease, for eviction */
+};
+
+/* The intermediates' allocator of each device and the graph it last planned. */
+struct device_state {
+  ggml_gallocr_t galloc;
+  struct entry *planned;
+};
+
+static struct entry *cache[MAX_ENTRIES];
+static struct device_state devices[9];
+static int64_t compile_count = 0, tick = 0;
+
+static void destroy(struct entry *e) {
+  int64_t d = e->device + 1;
+
+  int64_t i;
+
+  if (d >= 0 && d < 9 && devices[d].planned == e) devices[d].planned = NULL;
+  for (i = 0; e->leaves != NULL && i < e->leaf_count; i++) {
+    if (e->leaves[i].own != NULL) ggml_backend_buffer_free(e->leaves[i].own);
+  }
+  for (i = 0; i < e->output_count; i++) {
+    if (e->outs[i].own != NULL) ggml_backend_buffer_free(e->outs[i].own);
+  }
+  if (e->fill_buffer != NULL) ggml_backend_buffer_free(e->fill_buffer);
+  if (e->fill_ctx != NULL) ggml_free(e->fill_ctx);
+  if (e->port_ctx != NULL) ggml_free(e->port_ctx);
+  if (e->ctx != NULL) ggml_free(e->ctx);
+  free(e->nodes);
+  free(e->leaves);
+  free(e->inner);
+  free(e->key);
+  free(e);
+}
+
+/* Points every leaf and output at nothing, so no call's tensor stays
+   reachable from the cache. */
+static void release(struct entry *e) {
+  int64_t i;
+
+  for (i = 0; e->leaves != NULL && i < e->leaf_count; i++) {
+    e->leaves[i].t->data = NULL;
+    e->leaves[i].t->buffer = NULL;
+    e->leaves[i].handle = NULL;
+    e->leaves[i].set = false;
+  }
+  for (i = 0; i < e->output_count; i++) {
+    e->outs[i].t->data = NULL;
+    e->outs[i].t->buffer = NULL;
+    e->outs[i].handle = NULL;
+    e->outs[i].set = false;
+  }
+}
+
+/* Gives the graph back to the cache, or drops it when it never compiled or
+   found no slot. */
+void ggml_Lease_free(void *state) {
+  struct ggml_Lease_state *self = (struct ggml_Lease_state *)state;
+  int i, slot = -1;
+
+  if (self->e == NULL) return;
+  pthread_mutex_lock(&tg_lock);
+  self->e->in_use = false;
+  release(self->e);
+  for (i = 0; i < MAX_ENTRIES; i++) {
+    if (cache[i] == self->e) slot = i;
+  }
+  if (!self->e->compiled || slot < 0) {
+    if (slot >= 0) cache[slot] = NULL;
+    destroy(self->e);
+  }
+  pthread_mutex_unlock(&tg_lock);
+  self->e = NULL;
+}
+
+static struct ggml_context *new_context(size_t bytes) {
+  struct ggml_init_params params;
+
+  params.mem_size = bytes;
+  params.mem_buffer = NULL;
+  params.no_alloc = true;
+  return ggml_init(params);
+}
+
+/* Room for the graph: a traced node lowers to a handful of ggml tensors at
+   most (a matmul's transpose and cont, a reduction's reshapes). */
+static size_t graph_size(int64_t capacity) { return (size_t)(capacity * 8 + 4 * MAX_OUTPUTS + 64); }
+
+/* A free cache slot, evicting the least recently used graph nobody holds. */
+static int free_slot(void) {
+  int i, oldest = -1;
+
+  for (i = 0; i < MAX_ENTRIES; i++) {
+    if (cache[i] == NULL) return i;
+    if (!cache[i]->in_use && (oldest < 0 || cache[i]->used < cache[oldest]->used)) oldest = i;
+  }
+  if (oldest >= 0) {
+    destroy(cache[oldest]);
+    cache[oldest] = NULL;
+  }
+  return oldest;
+}
+
+an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity) {
+  an_term term;
+  struct ggml_Lease_state *lease = ggml_Lease_new(env, &term);
+  struct entry *e = NULL;
+  ggml_backend_t backend;
+  char why[160];
+  size_t size;
+  int i;
+
+  if (capacity < 1 || capacity > 1000000) return tg_error(env, "a graph takes 1..1000000 nodes");
+  pthread_mutex_lock(&tg_lock);
+  for (i = 0; i < MAX_ENTRIES && e == NULL; i++) {
+    struct entry *c = cache[i];
+
+    if (c != NULL && c->compiled && !c->in_use && c->device == device && strlen(c->key) == key.len &&
+        memcmp(c->key, key.data, key.len) == 0) {
+      e = c;
+    }
+  }
+  if (e == NULL) {
+    backend = tg_backend(device, why, sizeof why);
+    if (backend == NULL) {
+      pthread_mutex_unlock(&tg_lock);
+      return tg_error(env, why);
+    }
+    e = (struct entry *)calloc(1, sizeof *e);
+    size = graph_size(capacity);
+    if (e != NULL) {
+      e->device = device;
+      e->backend = backend;
+      e->capacity = capacity;
+      e->key = (char *)malloc(key.len + 1);
+      e->nodes = (struct gnode *)calloc((size_t)capacity, sizeof(struct gnode));
+      e->leaves = (struct port *)calloc((size_t)capacity, sizeof(struct port));
+      e->ctx = new_context(ggml_tensor_overhead() * size + ggml_graph_overhead_custom(size, false));
+      e->fill_ctx = new_context(ggml_tensor_overhead() * (size_t)(capacity + MAX_OUTPUTS + 8));
+      e->port_ctx = new_context(ggml_tensor_overhead() * (size_t)(capacity + MAX_OUTPUTS + 8));
+    }
+    if (e == NULL || e->key == NULL || e->nodes == NULL || e->leaves == NULL || e->ctx == NULL ||
+        e->fill_ctx == NULL || e->port_ctx == NULL) {
+      if (e != NULL) destroy(e);
+      pthread_mutex_unlock(&tg_lock);
+      return tg_error(env, "out of memory making a graph");
+    }
+    memcpy(e->key, key.data, key.len);
+    e->key[key.len] = '\0';
+    i = free_slot();
+    if (i >= 0) cache[i] = e; /* every slot held: the graph lives for this lease only */
+  }
+  e->in_use = true;
+  e->used = ++tick;
+  lease->e = e;
+  pthread_mutex_unlock(&tg_lock);
+  return ggml_result_Lease_ok(env, term);
+}
+
+an_term ggml_ready(an_env *env, struct ggml_Lease_state *lease) {
+  return an_bool(env, lease->e != NULL && lease->e->compiled);
+}
+
+an_term ggml_compiles(an_env *env) {
+  int64_t n;
+
+  pthread_mutex_lock(&tg_lock);
+  n = compile_count;
+  pthread_mutex_unlock(&tg_lock);
+  return an_int(env, n);
+}
+
+static int64_t volume(const int64_t ne[4]) { return ne[0] * ne[1] * ne[2] * ne[3]; }
+
+static int same_ne(const struct ggml_tensor *t, const int64_t ne[4]) {
+  return t->ne[0] == ne[0] && t->ne[1] == ne[1] && t->ne[2] == ne[2] && t->ne[3] == ne[3];
+}
+
+/* The node's tensor at its full recorded shape. */
+static struct ggml_tensor *full_of(struct entry *p, const struct gnode *n) {
+  if (!n->lazy) return n->t;
+  return ggml_repeat_4d(p->ctx, n->t, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
+}
+
+static struct ggml_tensor *contiguous(struct entry *p, struct ggml_tensor *t) {
+  return ggml_is_contiguous(t) ? t : ggml_cont(p->ctx, t);
+}
+
+static struct ggml_tensor *dense(struct entry *p, const struct gnode *n) { return contiguous(p, full_of(p, n)); }
+
+static struct ggml_tensor *reshape(struct entry *p, struct ggml_tensor *t, const int64_t ne[4]) {
+  if (same_ne(t, ne)) return t;
+  return ggml_reshape_4d(p->ctx, contiguous(p, t), ne[0], ne[1], ne[2], ne[3]);
+}
+
+typedef struct ggml_tensor *(*binary_fn)(struct ggml_context *, struct ggml_tensor *, struct ggml_tensor *);
+
+/* `a op b` at `a`'s recorded shape, with `b` broadcast by ggml when lazy. */
+static struct ggml_tensor *binary(struct entry *p, binary_fn fn, int commutes, const struct gnode *a,
+                                  const struct gnode *b) {
+  if (a->lazy && !b->lazy && commutes) return fn(p->ctx, b->t, a->t);
+  return fn(p->ctx, full_of(p, a), b->t);
+}
+
+/* `1 - m` for a 0/1 mask. */
+static struct ggml_tensor *flip(struct entry *p, struct ggml_tensor *m) {
+  return ggml_scale_bias(p->ctx, contiguous(p, m), -1.0f, 1.0f);
+}
+
+/* `x` as a 2-D tensor whose rows (ne[0]) are the reduced block: reshaped to
+   [inner, outer] for trailing axes, transposed from [outer, inner] for
+   leading ones. NULL for axes that are neither block. */
+static struct ggml_tensor *rows_to_reduce(struct entry *p, const struct gnode *x, int rank, const int64_t *axes,
+                                          int naxes) {
+  int64_t inner = 1, outer = 1, d;
+  int i, trailing = 1, leading = 1;
+  struct ggml_tensor *t = dense(p, x);
+
+  for (i = 0; i < naxes; i++) {
+    if (axes[i] != rank - naxes + i) trailing = 0;
+    if (axes[i] != i) leading = 0;
+  }
+  if (!trailing && !leading) return NULL;
+  for (i = 0; i < rank; i++) {
+    d = x->ne[rank - 1 - i];
+    if (trailing ? i >= rank - naxes : i < naxes) inner *= d;
+    else outer *= d;
+  }
+  if (trailing) return ggml_reshape_2d(p->ctx, t, inner, outer);
+  return ggml_cont(p->ctx, ggml_transpose(p->ctx, ggml_reshape_2d(p->ctx, t, outer, inner)));
+}
+
+/* Reads up to `max` ints; -2 when there are more, -1 when the cursor failed
+   (the error is raised already), 0 when done. */
+static int read_ints(an_env *env, ggml_list_Int *list, int64_t *out, int max, int *n) {
+  int64_t v;
+  int next;
+
+  *n = 0;
+  while ((next = ggml_list_Int_next(env, list, &v)) == 1) {
+    if (*n >= max) return -2;
+    out[(*n)++] = v;
+  }
+  return next;
+}
+
+/* The answer of a list that did not read: the cursor's error, or `text`. */
+static an_term bad_list(an_env *env, int r, const char *text) { return r == -1 ? an_void(env) : tg_error(env, text); }
+
+an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_list_Int args_list,
+                  ggml_list_Int shape_list, ggml_list_Int ints_list) {
+  struct entry *p = lease->e;
+  int64_t args[3], shape[4], ints[8];
+  int nargs, rank, nints, i, r;
+  struct gnode *n;
+  const struct gnode *a = NULL, *b = NULL, *c = NULL;
+  struct ggml_tensor *t = NULL;
+  char text[256];
+
+  if (p == NULL || p->compiled || p->graph != NULL) return tg_error(env, "the graph is compiled already, or its compile failed");
+  if (p->count >= p->capacity) return tg_error(env, "the graph is full");
+  if (op < 0 || op >= OP_COUNT) return tg_error(env, "unknown op code");
+  if ((r = read_ints(env, &args_list, args, 3, &nargs)) != 0) return bad_list(env, r, "a node takes at most 3 args");
+  if ((r = read_ints(env, &shape_list, shape, 4, &rank)) != 0) return bad_list(env, r, "ggml tensors have rank <= 4");
+  if ((r = read_ints(env, &ints_list, ints, 8, &nints)) != 0) return bad_list(env, r, "a node takes at most 8 ints");
+  for (i = 0; i < nargs; i++) {
+    if (args[i] < 0 || args[i] >= p->count) return tg_error(env, "an arg is not an earlier node");
+  }
+  for (i = 0; i < rank; i++) {
+    if (shape[i] < 0) return tg_error(env, "a shape holds no negative dimension");
+  }
+  if (nargs > 0) a = &p->nodes[args[0]];
+  if (nargs > 1) b = &p->nodes[args[1]];
+  if (nargs > 2) c = &p->nodes[args[2]];
+  if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT) {
+    if (nargs != 2) return tg_error(env, "a binary op takes 2 args");
+  } else if (op == OP_WHERE) {
+    if (nargs != 3) return tg_error(env, "where takes 3 args");
+  } else if (op > OP_FULL && op != OP_ARANGE && nargs != 1) {
+    return tg_error(env, "a unary op takes 1 arg");
+  }
+
+  n = &p->nodes[p->count];
+  memset(n, 0, sizeof *n);
+  n->op = (int)op;
+  n->arg = -1;
+  for (i = 0; i < 4; i++) n->ne[i] = i < rank ? shape[rank - 1 - i] : 1;
+
+  switch (op) {
+    case OP_LEAF:
+      t = ggml_new_tensor_4d(p->port_ctx, GGML_TYPE_F32, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
+      ggml_set_input(t);
+      p->leaves[p->leaf_count++].t = t;
+      break;
+    case OP_FULL:
+      if (p->fill_store == NULL) p->fill_store = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, p->capacity);
+      t = ggml_view_1d(p->fill_ctx, p->fill_store, 1, (size_t)p->fill_count * sizeof(float));
+      n->zero = nints > 0 && ints[0] != 0;
+      n->lazy = volume(n->ne) != 1;
+      p->fill_count++;
+      break;
+    case OP_ADD: t = binary(p, ggml_add, 1, a, b); break;
+    case OP_SUB: t = binary(p, ggml_sub, 0, a, b); break;
+    case OP_MUL: t = binary(p, ggml_mul, 1, a, b); break;
+    case OP_DIV: t = binary(p, ggml_div, 0, a, b); break;
+    case OP_NEG: t = ggml_neg(p->ctx, dense(p, a)); break;
+    case OP_EXP: t = ggml_exp(p->ctx, dense(p, a)); break;
+    case OP_LOG: t = ggml_log(p->ctx, dense(p, a)); break;
+    case OP_RELU: t = ggml_relu(p->ctx, dense(p, a)); break;
+    case OP_SQRT: t = ggml_sqrt(p->ctx, dense(p, a)); break;
+    case OP_SIGMOID: t = ggml_sigmoid(p->ctx, dense(p, a)); break;
+    case OP_TANH: t = ggml_tanh(p->ctx, dense(p, a)); break;
+    case OP_MATMUL:
+      /* ggml_mul_mat(x, y) is y · xᵀ in row-major terms, so a · b is
+         mul_mat(bᵀ, a). When b is a transpose (the backward's ct · wᵀ), bᵀ
+         is its argument and no copy is made. */
+      if (b->op == OP_TRANSPOSE) {
+        t = ggml_mul_mat(p->ctx, dense(p, &p->nodes[b->arg]), dense(p, a));
+      } else {
+        t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b))), dense(p, a));
+      }
+      break;
+    case OP_TRANSPOSE:
+      t = ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, a)));
+      n->arg = (int)args[0];
+      break;
+    case OP_RESHAPE:
+      if (a->lazy && ggml_nelements(a->t) == 1) {
+        t = a->t;
+        n->lazy = volume(n->ne) != 1;
+        n->zero = a->zero;
+      } else {
+        t = reshape(p, dense(p, a), n->ne);
+      }
+      break;
+    case OP_BROADCAST:
+      for (i = 0; i < 4; i++) {
+        if (a->t->ne[i] == 0 || n->ne[i] % a->t->ne[i] != 0) {
+          return tg_error(env, "broadcast_to: the source does not repeat to the shape");
+        }
+      }
+      t = a->t;
+      n->lazy = !same_ne(t, n->ne);
+      n->zero = a->zero;
+      break;
+    case OP_SUM:
+    case OP_MEAN:
+    case OP_MAX: {
+      struct ggml_tensor *rows;
+
+      if (nints < 1) return tg_error(env, "a reduction takes the input's rank and its axes");
+      if (nints == 1) { /* no axes: the value itself */
+        t = reshape(p, dense(p, a), n->ne);
+        break;
+      }
+      rows = rows_to_reduce(p, a, (int)ints[0], ints + 1, nints - 1);
+      if (rows == NULL) {
+        snprintf(text, sizeof text, "%s over axes that are not a leading or trailing block is not lowered to ggml",
+                 op_names[op]);
+        return tg_error(env, text);
+      }
+      if (op == OP_MAX) {
+        t = ggml_pool_1d(p->ctx, rows, GGML_OP_POOL_MAX, (int)rows->ne[0], (int)rows->ne[0], 0);
+      } else {
+        t = ggml_sum_rows(p->ctx, rows);
+        if (op == OP_MEAN) t = ggml_scale(p->ctx, t, 1.0f / (float)rows->ne[0]);
+      }
+      t = reshape(p, t, n->ne);
+      break;
+    }
+    case OP_IDENTITY:
+      t = a->t;
+      n->lazy = a->lazy;
+      n->zero = a->zero;
+      if (a->op == OP_TRANSPOSE) {
+        n->op = OP_TRANSPOSE;
+        n->arg = a->arg;
+      }
+      break;
+    case OP_ARANGE:
+      if (nints != 3) return tg_error(env, "arange takes start, stop and step");
+      t = ggml_arange(p->ctx, (float)ints[0], (float)ints[1], (float)ints[2]);
+      break;
+    case OP_EQ:
+      /* 1 - step(|a - b|): exact for integers below 2^24 */
+      t = flip(p, ggml_step(p->ctx, ggml_abs(p->ctx, binary(p, ggml_sub, 0, a, b))));
+      break;
+    case OP_LT:
+      t = ggml_step(p->ctx, binary(p, ggml_sub, 0, b, a));
+      break;
+    case OP_WHERE:
+      /* c·x + (1-c)·y, exact for a 0/1 mask and finite branches; the zero
+         branch of relu's and cross-entropy's rules drops out */
+      if (c->zero) {
+        t = binary(p, ggml_mul, 1, b, a);
+      } else if (b->zero) {
+        t = ggml_mul(p->ctx, flip(p, dense(p, a)), full_of(p, c));
+      } else {
+        t = ggml_add(p->ctx, binary(p, ggml_mul, 1, b, a), ggml_mul(p->ctx, flip(p, dense(p, a)), full_of(p, c)));
+      }
+      break;
+  }
+  if (t == NULL) {
+    snprintf(text, sizeof text, "ggml made no tensor for %s", op_names[op]);
+    return tg_error(env, text);
+  }
+  if (!n->lazy && !same_ne(t, n->ne)) {
+    snprintf(text, sizeof text,
+             "%s made ne [%" PRId64 ", %" PRId64 ", %" PRId64 ", %" PRId64 "], the trace recorded [%" PRId64 ", %" PRId64
+             ", %" PRId64 ", %" PRId64 "]",
+             op_names[op], t->ne[0], t->ne[1], t->ne[2], t->ne[3], n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
+    return tg_error(env, text);
+  }
+  n->t = t;
+  return ggml_result_Int_ok(env, p->count++);
+}
+
+an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
+  struct entry *p = lease->e;
+  int64_t outs[MAX_OUTPUTS];
+  int nouts, r, i, j;
+  char text[256];
+
+  if (p == NULL || p->compiled || p->graph != NULL) return tg_error(env, "the graph is compiled already, or its compile failed");
+  if ((r = read_ints(env, &outputs, outs, MAX_OUTPUTS, &nouts)) != 0) return bad_list(env, r, "at most 64 outputs");
+  if (nouts < 1) return tg_error(env, "a graph has at least one output");
+  for (i = 0; i < nouts; i++) {
+    if (outs[i] < 0 || outs[i] >= p->count) return tg_error(env, "an output is not a node");
+  }
+
+  p->graph = ggml_new_graph_custom(p->ctx, graph_size(p->capacity), false);
+  p->checks = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, nouts);
+  for (i = 0; i < nouts; i++) {
+    struct gnode *n = &p->nodes[outs[i]];
+    struct ggml_tensor *value = dense(p, n);
+    struct ggml_tensor *check;
+
+    p->outs[i].t = ggml_new_tensor_4d(p->port_ctx, GGML_TYPE_F32, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
+    ggml_set_output(p->outs[i].t);
+    ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, value, p->outs[i].t));
+    /* 0 * x is NaN for an inf or a NaN; sum_rows first, since one ggml_sum
+       of a large tensor is a single slow workgroup on Vulkan */
+    check = ggml_sum(p->ctx, ggml_sum_rows(p->ctx, ggml_scale(p->ctx, value, 0.0f)));
+    ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
+  }
+  p->output_count = nouts;
+  for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
+    struct ggml_tensor *node = ggml_graph_node(p->graph, i);
+
+    if (!ggml_backend_supports_op(p->backend, node)) {
+      snprintf(text, sizeof text, "the backend does not support graph node %d: %s", i, ggml_op_desc(node));
+      return tg_error(env, text);
+    }
+  }
+
+  /* Every node and source that is neither a port nor in the fill buffer:
+     what the shared allocator places, and forgets after each run. */
+  p->inner = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * (GGML_MAX_SRC + 1), sizeof(struct ggml_tensor *));
+  if (p->inner == NULL) return tg_error(env, "out of memory");
+  for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
+    struct ggml_tensor *node = ggml_graph_node(p->graph, i);
+
+    for (j = -1; j < GGML_MAX_SRC; j++) {
+      struct ggml_tensor *t = j < 0 ? node : node->src[j];
+
+      if (t != NULL && !(t->flags & (GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT)) && t->view_src != p->fill_store &&
+          t->view_src != p->checks && t != p->fill_store && t != p->checks) {
+        p->inner[p->inner_count++] = t;
+      }
+    }
+  }
+
+  pthread_mutex_lock(&tg_lock);
+  p->fill_buffer = ggml_backend_alloc_ctx_tensors(p->fill_ctx, p->backend);
+  if (p->fill_buffer != NULL) {
+    ggml_backend_buffer_clear(p->fill_buffer, 0);
+    p->compiled = true;
+    compile_count++;
+  }
+  pthread_mutex_unlock(&tg_lock);
+  if (!p->compiled) return tg_error(env, "allocating the graph's fills failed");
+  return ggml_result_Void_ok(env, an_void(env));
+}
+
+/* Points `port` at the memory of `h` when it is F32, or at its own memory
+   (made once) for a converting copy. Call under tg_lock. */
+static bool attach(struct entry *p, struct port *port, struct ggml_TensorHandle_state *h) {
+  if (h->t->type == GGML_TYPE_F32) {
+    port->t->data = h->t->data;
+    port->t->buffer = h->t->buffer;
+    port->handle = NULL;
+  } else {
+    if (port->own == NULL) {
+      port->own = ggml_backend_buft_alloc_buffer(ggml_backend_get_default_buffer_type(p->backend), ggml_nbytes(port->t));
+      if (port->own == NULL) return false;
+    }
+    port->t->data = ggml_backend_buffer_get_base(port->own);
+    port->t->buffer = port->own;
+    port->handle = h;
+  }
+  port->set = true;
+  return true;
+}
+
+an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, struct ggml_TensorHandle_state *t) {
+  struct entry *p = lease->e;
+  struct port *leaf;
+  const char *why = NULL;
+
+  if (p == NULL || !p->compiled) return tg_error(env, "bind a compiled graph");
+  if (slot < 0 || slot >= p->leaf_count) return tg_error(env, "no such leaf");
+  if (t->t == NULL) return tg_error(env, "bind a tensor that was made");
+  leaf = &p->leaves[slot];
+  if (ggml_nelements(t->t) != ggml_nelements(leaf->t)) return tg_error(env, "a bound tensor has another element count than its leaf");
+  if (!ggml_backend_supports_buft(p->backend, ggml_backend_buffer_get_type(t->buffer))) {
+    return tg_error(env, "a bound tensor lives on another device than its graph");
+  }
+  pthread_mutex_lock(&tg_lock);
+  if (!attach(p, leaf, t)) why = "out of memory";
+  else if (leaf->handle != NULL && !tg_copy(t->t, leaf->t)) why = "out of memory";
+  pthread_mutex_unlock(&tg_lock);
+  if (why != NULL) return tg_error(env, why);
+  return ggml_result_Void_ok(env, an_void(env));
+}
+
+an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output, bool int32) {
+  struct entry *p = lease->e;
+  an_term term, failure;
+  struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
+  bool attached;
+
+  if (p == NULL || !p->compiled) return tg_error(env, "an output of a compiled graph");
+  if (output < 0 || output >= p->output_count) return tg_error(env, "no such output");
+  if (!tg_new_tensor(env, p->device, p->outs[output].t->ne, int32 ? GGML_TYPE_I32 : GGML_TYPE_F32, state, &failure)) {
+    return failure;
+  }
+  pthread_mutex_lock(&tg_lock);
+  attached = attach(p, &p->outs[output], state);
+  pthread_mutex_unlock(&tg_lock);
+  if (!attached) return tg_error(env, "out of memory");
+  return ggml_result_TensorHandle_ok(env, term);
+}
+
+an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fills) {
+  struct entry *p = lease->e;
+  struct device_state *d;
+  float *values, *checks;
+  double v;
+  int64_t i = 0;
+  int next;
+  const char *why = NULL;
+  char text[160];
+
+  if (p == NULL || !p->compiled) return tg_error(env, "run a compiled graph");
+  for (i = 0; i < p->leaf_count; i++) {
+    if (!p->leaves[i].set) return tg_error(env, "run with every leaf bound");
+  }
+  for (i = 0; i < p->output_count; i++) {
+    if (!p->outs[i].set) return tg_error(env, "run with every output made");
+  }
+  i = 0;
+  values = (float *)malloc((size_t)(p->fill_count + p->output_count) * sizeof(float));
+  if (values == NULL) return tg_error(env, "out of memory");
+  checks = values + p->fill_count;
+  while ((next = ggml_list_Float_next(env, &fills, &v)) == 1 && i < p->fill_count) values[i++] = (float)v;
+  if (next < 0) {
+    free(values);
+    return an_void(env);
+  }
+  if (i != p->fill_count || next == 1) {
+    free(values);
+    return tg_error(env, "run needs one value per fill");
+  }
+
+  pthread_mutex_lock(&tg_lock);
+  if (p->fill_count > 0) ggml_backend_tensor_set(p->fill_store, values, 0, (size_t)p->fill_count * sizeof(float));
+  d = &devices[p->device + 1];
+  if (d->galloc == NULL) d->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(p->backend));
+  if (d->galloc == NULL) why = "making the graph allocator failed";
+  if (why == NULL) {
+    for (i = 0; i < p->inner_count; i++) {
+      p->inner[i]->data = NULL;
+      p->inner[i]->buffer = NULL;
+    }
+    if (d->planned != p && !ggml_gallocr_reserve(d->galloc, p->graph)) why = "allocating the graph failed";
+  }
+  if (why == NULL && !ggml_gallocr_alloc_graph(d->galloc, p->graph)) why = "allocating the graph failed";
+  if (why == NULL) {
+    d->planned = p;
+    if (ggml_backend_graph_compute(p->backend, p->graph) != GGML_STATUS_SUCCESS) why = "ggml_backend_graph_compute failed";
+  }
+  if (why == NULL) ggml_backend_tensor_get(p->checks, checks, 0, (size_t)p->output_count * sizeof(float));
+  for (i = 0; why == NULL && i < p->output_count; i++) {
+    if (!isfinite(checks[i])) {
+      snprintf(text, sizeof text, "output %" PRId64 " of the graph holds a value that is not finite", i);
+      why = text;
+    } else if (p->outs[i].handle != NULL && !tg_copy(p->outs[i].t, p->outs[i].handle->t)) {
+      why = "out of memory";
+    }
+  }
+  release(p);
+  pthread_mutex_unlock(&tg_lock);
+  free(values);
+  if (why != NULL) return tg_error(env, why);
+  return ggml_result_Void_ok(env, an_void(env));
+}

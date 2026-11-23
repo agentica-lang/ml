@@ -240,18 +240,43 @@ end
   engines, models) enter only as pinned git submodules under `third_party/`,
   never vendored.
 - **`Ggml` has no eager ops.** A Vulkan dispatch costs about 2 ms, so ggml is
-  fast only when a whole training step is one compiled graph
+  fast only when a whole computation is one compiled graph
   (`spike/ggml-graph/README.md`). Its arms create tensors (`zeros`, `ones`,
   `empty`, `full`, `like`, `arange`, `scalar_to_tensor`, `from_list`), read
-  them back (`to_list`) and pass `stop_grad` through; every other primitive
-  answers `Ggml.compiled_only(op)`, an `error` that names the op and points at
-  `Trace`. A traced graph will compile to one ggml graph in a later step,
-  which also changes §10.3's "`evaluate` runs a graph through the public
-  `Tensor.*` calls" for this backend. Running each op as a one-node graph
-  would work, but it is a slow path nobody should train on, so it is not
-  offered.
+  them back (`to_list`) and pass `stop_grad` through; every other primitive answers
+  `Ggml.compiled_only(op)`, an `error` that names the op and points at
+  `Trace`. Running each op as a one-node graph would work, but it is a slow
+  path nobody should train on, so it is not offered.
+- **A trace on `Ggml` is one compiled graph** (`src/lower.agc`,
+  `native/ggml_graph.c`). `Trace.evaluate` sends every node the outputs reach
+  to the C layer in id order and runs the result as one ggml graph; it never
+  calls `Tensor.*` (§10.3). Inputs and lifted constants are leaves copied in
+  on every call, and a `Full` is a one-element leaf whose value is set on
+  every call. So a compiled graph depends on the ops, shapes, dtypes, integer
+  parameters and on which fills are zero (a `where` with a zero branch lowers
+  without it), and that string is the key of a process-wide cache: a retrace
+  of the same function with new data, constants or fill values compiles
+  nothing. A graph keeps its leaves and a copy of each output in a buffer of
+  its own; the intermediates live in one allocator per device that every
+  graph shares, re-planned when another graph ran last. The cache holds 32
+  graphs and evicts the least recently used one nobody runs.
+- The lowering computes in `F32`. `Bool` (0/1) and integers up to 32 bits are
+  exact there below 2^24; a node of `F16`, `F64` or `I64`, an integer `div`,
+  a `to_dtype` that is not exact in `F32` and an op without a lowering are
+  errors naming the node, given before anything compiles. Lowered: `add`,
+  `sub`, `mul`, `div`, `neg`, `exp`, `log`, `relu`, `sqrt`, `sigmoid`,
+  `tanh`, `matmul`, `transpose`, `reshape`, `squeeze`, `unsqueeze`,
+  `broadcast_to`, `sum`, `mean` and `max` over a leading or trailing block of
+  axes, `stop_grad`, `copy`, `contiguous`, `arange`, and `eq`, `lt` and
+  `where` emulated in `F32` arithmetic: enough for an MLP and softmax
+  cross-entropy with their gradients. An output that holds an infinity or a
+  NaN is an error.
+- Vulkan computes `mul_mat` in `F32`: ggml reads `GGML_VK_DISABLE_F16` once
+  per process, when the first Vulkan device opens, and the C layer sets it
+  then. fp16 would be faster and changes gradients by up to about 10 % at MLP
+  sizes (`spike/ggml-graph/README.md`).
 - The ggml module is `[native.ggml]`, `optional = true`, built from
-  `native/ggml.c` against the pinned `third_party/ggml`, which
+  `native/ggml.c` and `native/ggml_graph.c` against the pinned `third_party/ggml`, which
   `tools/build-engine.sh` builds CPU-only (CI) or with Vulkan (local). The
   build table names one library, a linker script that script writes, so one
   table links either tree; the C layer finds Vulkan devices through ggml's
@@ -407,9 +432,12 @@ The price:
   `argmax`, `arange`, an integer `to_dtype`) carries no gradient, so
   comparisons and index ops cut it, and so does the condition of `where`.
   `relu`'s derivative at `0` is `0`.
-- `evaluate` runs a graph through the public `Tensor.*` calls on the inputs'
-  backend, computing each node once; a lifted constant must live on that
-  backend. `value_and_grad` evaluates the output and its gradients in one
+- `evaluate` runs a graph on the inputs' backend, computing each node once; a
+  lifted constant must live on that backend. A backend that computes op by
+  op (`Reference`, `Torch`) runs it through the public `Tensor.*` calls. A
+  backend that compiles (`Ggml`) runs the whole graph as one graph of its
+  own and does not go through `Tensor.*` (§7), so it supports the ops its
+  lowering knows and answers an error naming any other. `value_and_grad` evaluates the output and its gradients in one
   pass, so the backward reads the forward values it shares. Backends stay
   forward-only.
 - First rules: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `relu`,

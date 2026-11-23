@@ -89,6 +89,31 @@ def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   ok(out)
 end
 
+## The device's code for the native calls: `-1` for `Cpu`, the index for
+## `Vulkan`; the module must be loaded.
+def code_of(device: Types.Device, op: String) -> Result[Int]
+  _ = try usable(op)
+  case device
+    Types.Device.Cpu -> ok(-1)
+    Types.Device.Vulkan(i) ->
+      return error("#{op}: a Vulkan device index is >= 0, got #{i}") if i < 0
+      ok(i)
+  end
+end
+
+## The ggml handle of `t`.
+def handle_of(t: Types.Tensor) -> Result[GgmlRaw.TensorHandle]
+  case t.handle
+    Types.Handle.Ggml(h) -> ok(h)
+    _ -> error("a #{Types.backend_name(t.backend)} tensor has no ggml handle")
+  end
+end
+
+## The `Tensor` a fresh handle makes.
+def tensor_of(device: Types.Device, shape: List[Int], dtype: Types.Dtype, h: GgmlRaw.TensorHandle) -> Types.Tensor
+  Types.Tensor(shape: shape, dtype: dtype, backend: Types.Backend.Ggml(device), handle: Types.Handle.Ggml(h))
+end
+
 private
 
 def upload(
@@ -126,12 +151,7 @@ def ready(device: Types.Device, shape: List[Int], dtype: Types.Dtype, op: String
   _ = try usable(op)
   _ = try storable(dtype, op)
   return error("#{op}: the ggml backend holds tensors of rank 4 at most, got #{shape}") if shape.size > 4
-  case device
-    Types.Device.Cpu -> ok(-1)
-    Types.Device.Vulkan(i) ->
-      return error("#{op}: a Vulkan device index is >= 0, got #{i}") if i < 0
-      ok(i)
-  end
+  code_of(device, op)
 end
 
 def storable(dtype: Types.Dtype, op: String) -> Result[Bool]
@@ -155,15 +175,4 @@ def usable(op: String) -> Result[Bool]
     "`eval \"$(sh tools/build-engine.sh | grep '^export ')\"` in the shell that runs agentica " +
     "(tensor/README.md, \"The ggml backend\")",
   )
-end
-
-def handle_of(t: Types.Tensor) -> Result[GgmlRaw.TensorHandle]
-  case t.handle
-    Types.Handle.Ggml(h) -> ok(h)
-    _ -> error("a #{Types.backend_name(t.backend)} tensor has no ggml handle")
-  end
-end
-
-def tensor_of(device: Types.Device, shape: List[Int], dtype: Types.Dtype, h: GgmlRaw.TensorHandle) -> Types.Tensor
-  Types.Tensor(shape: shape, dtype: dtype, backend: Types.Backend.Ggml(device), handle: Types.Handle.Ggml(h))
 end

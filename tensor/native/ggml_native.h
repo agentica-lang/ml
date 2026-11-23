@@ -31,7 +31,7 @@ typedef struct {
 #endif
 
 /* The rows of the resource table: the TYPE of an_resource_new and an_get_resource. */
-enum { GGML_RESOURCE_TensorHandle = 0 };
+enum { GGML_RESOURCE_TensorHandle = 0, GGML_RESOURCE_Lease = 1 };
 
 /* One tensor in a ggml backend buffer of its device: the state owns a
    ggml context holding the tensor's metadata and the buffer holding its
@@ -48,6 +48,24 @@ static inline struct ggml_TensorHandle_state *ggml_TensorHandle_new(an_env *env,
 static inline struct ggml_TensorHandle_state *ggml_TensorHandle_get(an_env *env, an_term t) {
   void *state;
   return an_get_resource(env, t, GGML_RESOURCE_TensorHandle, &state) ? (struct ggml_TensorHandle_state *)state : NULL;
+}
+
+/* One compiled graph of the structural cache, held by one evaluation. The
+   graph itself lives in the C cache for the process; the lease marks it
+   in use, and its free hook gives it back (or drops it if it never
+   compiled). So two tasks never share one graph's leaves at once.
+
+   Define it, and GGML_Lease_FREE (a void (*)(void *state), or NULL), before GGML_NATIVE_MODULE.
+   A parameter of this type is its state. _new makes one, with zeroed state. _get gives the state of a term
+   that is an argument of this call, and NULL for any other, one made by _new in the same call included. The
+   state is valid until the call returns: do not keep the pointer. */
+struct ggml_Lease_state;
+static inline struct ggml_Lease_state *ggml_Lease_new(an_env *env, an_term *out) {
+  return (struct ggml_Lease_state *)an_resource_new(env, GGML_RESOURCE_Lease, out);
+}
+static inline struct ggml_Lease_state *ggml_Lease_get(an_env *env, an_term t) {
+  void *state;
+  return an_get_resource(env, t, GGML_RESOURCE_Lease, &state) ? (struct ggml_Lease_state *)state : NULL;
 }
 
 /* The Lists, Maps, Optionals and Results. A List or Map that is read is a cursor: _next gives 1 for an item, 0 at
@@ -93,6 +111,12 @@ an_term ggml_list_Float_end(an_env *env, ggml_list_Float_builder *b);
 
 an_term ggml_result_list_Float_ok(an_env *env, an_term value);
 
+an_term ggml_result_Lease_ok(an_env *env, an_term value);
+
+an_term ggml_result_Int_ok(an_env *env, int64_t value);
+
+an_term ggml_result_Void_ok(an_env *env, an_term value);
+
 /* How many Vulkan devices this build of ggml sees, not counting a CPU
    device (a software rasterizer): 0 when ggml was built without its Vulkan
    backend (`tools/build-engine.sh cpu`). It opens no device. */
@@ -109,6 +133,40 @@ an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double val
 /* Host readback: the row-major values as doubles, which the caller tags
    with the tensor's dtype. */
 an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t);
+
+/* A compiled graph cached under `key` on `device` that no one holds, or a
+   new empty one with room for `capacity` nodes, to build with `node` and
+   `compile`. */
+an_term ggml_acquire(an_env *env, int64_t device, ng_str key, int64_t capacity);
+
+/* True when the leased graph is compiled: a cache hit. */
+an_term ggml_ready(an_env *env, struct ggml_Lease_state *lease);
+
+/* Appends one node and answers its index: `op` is a code of
+   `native/ggml_graph.c`, `args` earlier indices, `shape` the row-major
+   shape the trace recorded, `ints` the op's integer parameters. */
+an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_list_Int args, ggml_list_Int shape, ggml_list_Int ints);
+
+/* Builds the graph of `outputs`, allocates its fills and checks every
+   node against the backend. A failed compile leaves the graph unusable. */
+an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs);
+
+/* Makes `t` the leaf `slot` for the next run (leaves count in the order
+   they were sent): an F32 tensor is read in place, another one is
+   converted into the leaf's own memory now. */
+an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, struct ggml_TensorHandle_state *t);
+
+/* A fresh tensor that the next run writes output `output` into, stored as
+   I32 when `int32` says so. */
+an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output, bool int32);
+
+/* Sets the fills (one value each, in the order they were sent) and runs
+   the graph into the tensors `output` made; every leaf and output must be
+   set since the last run. An error when an output is not finite. */
+an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fills);
+
+/* How many graphs this process has compiled: the cache's misses. */
+an_term ggml_compiles(an_env *env);
 
 #ifdef __cplusplus
 }
@@ -297,6 +355,18 @@ an_term ggml_result_list_Float_ok(an_env *env, an_term value) {
   return an_ok(env, value);
 }
 
+an_term ggml_result_Lease_ok(an_env *env, an_term value) {
+  return an_ok(env, value);
+}
+
+an_term ggml_result_Int_ok(an_env *env, int64_t value) {
+  return an_ok(env, an_int(env, value));
+}
+
+an_term ggml_result_Void_ok(an_env *env, an_term value) {
+  return an_ok(env, value);
+}
+
 static an_term ggml_native_vulkan_devices(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   (void)argv;
@@ -344,11 +414,111 @@ static an_term ggml_native_readback(an_env *env, int argc, const an_term *argv) 
   return ggml_readback(env, a0);
 }
 
+static an_term ggml_native_acquire(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  int64_t a0;
+  if (!an_get_int(env, argv[0], &a0)) return an_badarg(env, 0);
+  ng_str a1;
+  if (!an_get_string(env, argv[1], &a1.data, &a1.len)) return an_badarg(env, 1);
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  return ggml_acquire(env, a0, a1, a2);
+}
+
+static an_term ggml_native_ready(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  return ggml_ready(env, a0);
+}
+
+static an_term ggml_native_node(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  ggml_list_Int a2;
+  if (!ggml_native_open_list_Int(env, argv[2], &a2, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 2);
+  a2.argument = 3;
+  ggml_list_Int a3;
+  if (!ggml_native_open_list_Int(env, argv[3], &a3, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 3);
+  a3.argument = 4;
+  ggml_list_Int a4;
+  if (!ggml_native_open_list_Int(env, argv[4], &a4, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 4);
+  a4.argument = 5;
+  return ggml_node(env, a0, a1, a2, a3, a4);
+}
+
+static an_term ggml_native_compile(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  ggml_list_Int a1;
+  if (!ggml_native_open_list_Int(env, argv[1], &a1, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 1);
+  a1.argument = 2;
+  return ggml_compile(env, a0, a1);
+}
+
+static an_term ggml_native_bind(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  struct ggml_TensorHandle_state *a2 = ggml_TensorHandle_get(env, argv[2]);
+  if (!a2) return an_badarg(env, 2);
+  return ggml_bind(env, a0, a1, a2);
+}
+
+static an_term ggml_native_output(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  bool a2;
+  if (!an_get_bool(env, argv[2], &a2)) return an_badarg(env, 2);
+  return ggml_output(env, a0, a1, a2);
+}
+
+static an_term ggml_native_run(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  ggml_list_Float a1;
+  if (!ggml_native_open_list_Float(env, argv[1], &a1, &fail))
+    return ng_fail_argument(env, &fail, "List[Float]", 1);
+  a1.argument = 2;
+  return ggml_run(env, a0, a1);
+}
+
+static an_term ggml_native_compiles(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  (void)argv;
+  return ggml_compiles(env);
+}
+
 static const an_function ggml_native_functions[] = {
   {"vulkan_devices", "() -> Int", ggml_native_vulkan_devices, AN_DIRTY},
   {"upload", "(Int, List[Int], List[Float], Bool) -> Result[TensorHandle]", ggml_native_upload, AN_DIRTY},
   {"filled", "(Int, List[Int], Float, Bool) -> Result[TensorHandle]", ggml_native_filled, AN_DIRTY},
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
+  {"acquire", "(Int, String, Int) -> Result[Lease]", ggml_native_acquire, AN_DIRTY},
+  {"ready", "(Lease) -> Bool", ggml_native_ready, AN_DIRTY},
+  {"node", "(Lease, Int, List[Int], List[Int], List[Int]) -> Result[Int]", ggml_native_node, AN_DIRTY},
+  {"compile", "(Lease, List[Int]) -> Result[Void]", ggml_native_compile, AN_DIRTY},
+  {"bind", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_bind, AN_DIRTY},
+  {"output", "(Lease, Int, Bool) -> Result[TensorHandle]", ggml_native_output, AN_DIRTY},
+  {"run", "(Lease, List[Float]) -> Result[Void]", ggml_native_run, AN_DIRTY},
+  {"compiles", "() -> Int", ggml_native_compiles, AN_DIRTY},
 };
 
 /* Ends the module's one .c file: the tables and agentica_native_init. LOAD is NULL or a const char *(*)(void)
@@ -356,6 +526,7 @@ static const an_function ggml_native_functions[] = {
 #define GGML_NATIVE_MODULE(LOAD) \
   static const an_resource_type ggml_native_resources[] = { \
     {"TensorHandle", sizeof(struct ggml_TensorHandle_state), GGML_TensorHandle_FREE}, \
+    {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 4, NULL, 0, ggml_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 12, NULL, 0, ggml_native_resources, 2, LOAD)
 #endif
