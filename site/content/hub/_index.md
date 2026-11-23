@@ -36,7 +36,7 @@ The layer's weight is stored as `[out, in]` and comes back as `[in, out]`, the l
 
 - `Hub.open(path)` takes one `.safetensors` file, or the `.index.json` of a sharded checkpoint. A sharded checkpoint is one model split over several files. The index says which file holds each tensor. The shards must be file names in the index's folder.
 - `Hub.names(c)` gives every tensor name, sorted. `Hub.has?(c, name)` tells whether one exists.
-- `Hub.tensor(c, name, backend)` reads one tensor on `backend`, with the dtype of the file.
+- `Hub.tensor(c, name, backend)` reads one tensor on `backend`. `F32`, `F16` and `BF16` come as `F32`, read by the backend from the file (`Tensor.from_file`); every other dtype keeps the dtype of the file.
 - `Hub.metadata(c)` gives the `__metadata__` of each shard.
 
 ## Loading layers
@@ -49,12 +49,12 @@ Each `Load` function reads a layer by the prefix of its tensor names. It gives a
 - `Load.conv1d(c, prefix, stride, padding, backend)` reads a `[out, in, kernel]` weight and an optional bias.
 - `Load.encoder_block` and `Load.decoder_block` take the names of one block (`BlockNames` or `DecoderBlockNames`), the head count, the activation, `eps` and the backend.
 
-Float weights of 16 and 64 bits (`F16` and `F64`) become `F32`, the compute dtype. A layer weight must have the rank (number of dimensions) that its layer takes.
+Float weights of 16 and 64 bits (`F16`, `BF16` and `F64`) become `F32`, the compute dtype. A layer weight must have the rank (number of dimensions) that its layer takes.
 
 ## Limits
 
 - Local files only. Nothing is downloaded.
-- `Hub.open` reads the whole file into memory. A file is limited to 4 GiB, and its header to 100 MB.
-- A tensor of a dtype that `tensor` lacks, such as `BF16` or the `F8` types, opens with the file. Reading it is an error.
+- `Hub.open` reads only the header, which is limited to 100 MB. A tensor is read when you ask for it, so a checkpoint of several GB opens at once.
+- A tensor of a dtype that `tensor` lacks, such as the `F8` types or `U16`, opens with the file. Reading it is an error.
 - A tensor name in the index must exist in its shard, or `open` fails.
 - `Load` checks ranks, and the sizes of a bias and of a layer norm. It does not check a whole model. `asr` checks its own shapes against its config.

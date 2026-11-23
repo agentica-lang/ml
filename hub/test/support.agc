@@ -7,6 +7,11 @@ import Tensor from "pkg/tensor/tensor"
 
 REF = Tensor.Backend.Reference
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
+GGML = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+
+## The backends of this machine that read a float range from the file in C.
+def native() -> List[Tensor.Backend] = [TORCH, GGML, VULKAN].select { |b: Tensor.Backend| Tensor.available(b) }
 
 ## Runs `body` on the folder the peer wrote `set` into, then removes it.
 def with_fixtures(set: String, body: Fn[String, Result[Void]]) -> Result[Void]

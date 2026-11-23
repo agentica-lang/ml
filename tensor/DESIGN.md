@@ -140,12 +140,22 @@ An op that is neither in §3.1 nor expressible above at acceptable cost enters
 Tensor.zeros(shape, dtype, backend) -> Result[Tensor]
 Tensor.from_list(data: List[Values], shape, dtype, backend)
                                                   -> Result[Tensor]
+Tensor.from_file(path, offset, shape, format, backend)
+                                                  -> Result[Tensor]   # F32/F16/BF16 bytes of a file, read in C
 Tensor.to_list(t) -> Result[List[Values]]         # host readback, tests + decode loop
 Tensor.shape(t) -> Shape                          # no native call
 Tensor.dtype(t) -> Dtype                          # no native call
 Tensor.backend(t) -> Backend                      # no native call
 ```
 
+- `from_file` is how weights load: the backend reads the byte range
+  itself (`native/float_file.h`: `pread` into the tensor's own memory, F16
+  and BF16 widened in chunks) and no value crosses as a list. The tensor is
+  `F32`, the compute dtype (§2); a short file, a bad offset or a missing file
+  is an `error`, checked in C against the size of the file. `Reference` reads
+  the bytes in Agentica and drops the ones before `offset`, which is slow on
+  a large file. ggml takes it through one host copy on Vulkan. Native API 1.4
+  is enough: a `String` goes in, no `File.seek`.
 - Every fallible op returns `Result`; shape/dtype mismatches are `error`,
   never a halt. Introspection is free (fields, no FFI round-trip).
 - Device is explicit, never a global: dispatch is **by value** (`t.backend`),

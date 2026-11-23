@@ -13,7 +13,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-FORMATS = {"F32": "f", "F16": "e", "F64": "d", "I64": "q", "I32": "i",
+# BF16 values are the 16-bit patterns, widened to a float32 by the reader.
+FORMATS = {"F32": "f", "F16": "e", "BF16": "H", "F64": "d", "I64": "q", "I32": "i",
            "I16": "h", "I8": "b", "U8": "B", "BOOL": "?"}
 
 
@@ -46,7 +47,9 @@ def decoded(t):
     """Floats as text ("inf", "-inf", "nan" or repr), so JSON can hold them."""
     n = len(t["raw"]) // struct.calcsize(FORMATS[t["dtype"]])
     values = list(struct.unpack("<%d%s" % (n, FORMATS[t["dtype"]]), t["raw"]))
-    if t["dtype"] in ("F32", "F16", "F64"):
+    if t["dtype"] == "BF16":
+        values = [struct.unpack("<f", struct.pack("<I", b << 16))[0] for b in values]
+    if t["dtype"] in ("F32", "F16", "BF16", "F64"):
         values = [repr(v) for v in values]
     return {"dtype": t["dtype"], "shape": t["shape"], "values": values}
 
@@ -57,6 +60,7 @@ def values_file(out):
     tensors = {
         "f32": tensor("F32", [2, 3], [1.5, -2.25, 0.1, 3.4e38, -0.0, 1e-40]),
         "f16": tensor("F16", [10], halves),
+        "bf16": tensor("BF16", [2, 4], [0x3F80, 0xC040, 0x0001, 0x7F80, 0xFF80, 0x7FC0, 0x8000, 0x7F7F]),
         "f64": tensor("F64", [2], [0.1, -1e300]),
         "i64": tensor("I64", [3], [-2**63, 2**53, -5]),
         "i32": tensor("I32", [2, 2], [-2**31, 2**31 - 1, 0, -7]),
@@ -71,11 +75,14 @@ def values_file(out):
     write(out / "values.safetensors", tensors, {"format": "pt"})
     expected = {name: decoded(t) for name, t in tensors.items()}
     (out / "values.json").write_text(json.dumps(expected))
-    write(out / "bf16.safetensors",
-          {"w": {"dtype": "BF16", "shape": [2], "raw": b"\x80\x3f\x00\x40"},
+    write(out / "u16.safetensors",
+          {"w": {"dtype": "U16", "shape": [2], "raw": b"\x01\x00\x02\x00"},
            "ok": tensor("F32", [1], [1.0])})
     raw_header(out / "bad_bool.safetensors",
                b'{"b":{"dtype":"BOOL","shape":[2],"data_offsets":[0,2]}}', b"\x01\x02")
+    # A shape whose first dimensions overflow an Int, made empty by its last one.
+    raw_header(out / "hostile.safetensors",
+               json.dumps({"h": entry("F32", [2**62, 4, 0], 0, 0)}).encode())
     # Header and buffer both past the reader's 1 MiB chunk.
     big = 2 * 1048576 + 5
     header = {"big": entry("U8", [big], 0, big), "small": entry("I64", [2], big, big + 16)}

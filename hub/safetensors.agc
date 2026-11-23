@@ -2,8 +2,10 @@
 ## length, a JSON header, then one byte buffer that the header's
 ## `data_offsets` cut into little-endian, row-major tensors.
 ##
-## `open` reads the header first, then the whole buffer: the File API has no
-## seek, so a ranged read per tensor would read the file again up to it.
+## `open` reads the header and nothing else. A float tensor (F32, F16, BF16)
+## is read by the backend from its byte range of the file
+## (`Tensor.from_file`), so no value goes through an Agentica list; any other
+## dtype is read here, without a seek, by dropping the bytes before it.
 
 import Binary from "std/binary"
 import Tensor from "pkg/tensor/tensor"
@@ -11,8 +13,6 @@ import Tensor from "pkg/tensor/tensor"
 ## The largest header the format allows, so a hostile length is refused
 ## before anything is read past it.
 MAX_HEADER = 100000000
-## The largest file `open` reads (4 GiB): the buffer is held in memory.
-MAX_FILE = 4294967296
 CHUNK = 1048576
 
 ## The bytes per element of every safetensors dtype, so a file with a dtype
@@ -22,12 +22,14 @@ WIDTHS = {
   "F32": 4, "I64": 8, "U64": 8, "F64": 8,
 }
 
-## The `tensor/` dtype of each safetensors dtype that has one.
+## The `tensor/` dtype of each safetensors dtype that is read here, as the file has it.
 DTYPES = {
-  "F32": Tensor.Dtype.F32, "F16": Tensor.Dtype.F16, "F64": Tensor.Dtype.F64, "I8": Tensor.Dtype.I8,
-  "I16": Tensor.Dtype.I16, "I32": Tensor.Dtype.I32, "I64": Tensor.Dtype.I64, "U8": Tensor.Dtype.U8,
-  "BOOL": Tensor.Dtype.Bool,
+  "F64": Tensor.Dtype.F64, "I8": Tensor.Dtype.I8, "I16": Tensor.Dtype.I16, "I32": Tensor.Dtype.I32,
+  "I64": Tensor.Dtype.I64, "U8": Tensor.Dtype.U8, "BOOL": Tensor.Dtype.Bool,
 }
+
+## The float formats a backend reads from the file itself.
+FORMATS = {"F32": Tensor.FloatFormat.F32, "F16": Tensor.FloatFormat.F16, "BF16": Tensor.FloatFormat.BF16}
 
 ## A tensor of the header: `start` and `stop` index the data buffer.
 struct Entry
@@ -38,12 +40,12 @@ struct Entry
   stop: Int
 end
 
-## A parsed file: its header and its data buffer.
+## A parsed file: its header, and `base`, the byte of the file where the data buffer starts.
 struct Shard
   path: String
+  base: Int
   entries: Map[String, Entry]
   metadata: Map[String, String]
-  data: Bytes
 end
 
 ## The JSON form of one header entry.
@@ -55,10 +57,20 @@ end
 
 def open(path: String) -> Result[Shard] = within(path, read(path))
 
-## The tensor `name` of `shard`, with the file's dtype.
+## The tensor `name` of `shard`: F32, F16 and BF16 as `F32`, any other dtype as the file has it.
 def tensor(shard: Shard, name: String, backend: Tensor.Backend) -> Result[Tensor.Tensor]
   e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
-  values = try within("#{shard.path}: tensor #{name}", decode(shard.data, e))
+  at = shard.base + e.start
+  if FORMATS.key?(e.dtype)
+    return within(
+      "#{shard.path}: tensor #{name}",
+      Tensor.from_file(shard.path, at, e.shape, FORMATS[e.dtype], backend),
+    )
+  end
+
+  return error("#{shard.path}: tensor #{name}: dtype #{e.dtype} has no tensor/ dtype") if not DTYPES.key?(e.dtype)
+  b = try within("#{shard.path}: tensor #{name}", read_range(shard.path, at, e.stop - e.start))
+  values = try within("#{shard.path}: tensor #{name}", decode(b, e))
   Tensor.from_list(values, e.shape, DTYPES[e.dtype], backend)
 end
 
@@ -84,25 +96,35 @@ def parse(text: String, size: Int) -> Result[Shard]
   end
 
   try check_layout(entries.values, size)
-  ok(Shard(path: "", entries: entries, metadata: metadata, data: Bytes.concat([])))
+  ok(Shard(path: "", base: 0, entries: entries, metadata: metadata))
 end
 
 ## The header length is checked against the file's size before the header
-## is read, and the header before the buffer is.
+## is read, and the header before the data offsets are.
 def read(path: String) -> Result[Shard]
   size = (try File.stat(path)).size_bytes
-  return error("file of #{size} bytes is over the limit #{MAX_FILE}") if size > MAX_FILE
   return error("#{size} bytes is too short for the header length") if size < 8
   File.open(path) do |f|
     n = try Binary.read_u64_le(try read_exact(f, 8), 0)
     return error("the header length #{n} is over the limit #{MAX_HEADER}") if n > MAX_HEADER
     return error("the header length #{n} is past the end of the file") if n > size - 8
     shard = try parse(try String.from_bytes(try read_exact(f, n)), size - 8 - n)
-    data = try read_exact(f, size - 8 - n)
-    # This and the "ended early" error of `read_exact` need a file that
-    # changes under the reader: no hermetic test reaches them.
-    return error("the file grew while it was read") if not (try File.read_bytes(f, 1)).empty?
-    ok(shard.with(path: path, data: data))
+    ok(shard.with(path: path, base: 8 + n))
+  end
+end
+
+## `length` bytes at `offset` of `path`: the bytes before it are read and
+## dropped, since the File API has no seek.
+def read_range(path: String, offset: Int, length: Int) -> Result[Bytes]
+  File.open(path) do |f|
+    left = offset
+    while left > 0
+      chunk = try File.read_bytes(f, [left, CHUNK].min.unwrap!)
+      return error("the file ended #{left} bytes early") if chunk.empty?
+      left = left - chunk.size
+    end
+
+    read_exact(f, length)
   end
 end
 
@@ -179,12 +201,11 @@ def order(e: Entry) -> Int
   e.start * 2 + 1
 end
 
+## The values of the bytes `b` of one tensor, for the dtypes the backends do not read from the file.
 def decode(b: Bytes, e: Entry) -> Result[List[Tensor.Values]]
-  at = e.start
+  at = 0
   count = (e.stop - e.start) / WIDTHS[e.dtype]
   case e.dtype
-    "F32" -> ok((0...count).map { |i| Tensor.Values.Float(Float.from_bits32(u32(b, at + 4 * i))) })
-    "F16" -> ok((0...count).map { |i| Tensor.Values.Float(half(u16(b, at + 2 * i))) })
     "F64" -> ok((0...count).map { |i| Tensor.Values.Float(Float.from_bits(i64_at(b, at + 8 * i))) })
     "I8" -> ok((0...count).map { |i| Tensor.Values.Int(signed(b[at + i], 8)) })
     "I16" -> ok((0...count).map { |i| Tensor.Values.Int(signed(u16(b, at + 2 * i), 16)) })
@@ -218,20 +239,4 @@ def i64_at(b: Bytes, at: Int) -> Int = u32(b, at).bit_or(u32(b, at + 4).shift_le
 def signed(v: Int, bits: Int) -> Int
   return v - 1.shift_left(bits) if v >= 1.shift_left(bits - 1)
   v
-end
-
-## IEEE binary16 to a Float, rebuilt as binary64 bits (exact).
-def half(bits: Int) -> Float
-  sign = bits.shift_right(15).shift_left(63)
-  exp = bits.shift_right(10).bit_and(0x1F)
-  mant = bits.bit_and(0x3FF)
-  if exp == 0
-    # Subnormal: mant * 2^-24.
-    m = mant.to_f * Float.from_bits((1023 - 24).shift_left(52))
-    return -m if sign != 0
-    return m
-  end
-
-  return Float.from_bits(sign.bit_or(0x7FF0000000000000).bit_or(mant.shift_left(42))) if exp == 31
-  Float.from_bits(sign.bit_or((exp - 15 + 1023).shift_left(52)).bit_or(mant.shift_left(42)))
 end

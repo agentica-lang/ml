@@ -78,6 +78,7 @@ export Types.Backend
 export Types.Data
 export Types.Device
 export Types.Dtype
+export Types.FloatFormat
 export Types.Handle
 export Types.Tensor
 export Types.TopK
@@ -228,6 +229,32 @@ def from_list(
     Types.Backend.Torch(device) -> Torch.from_list(device, data, shape, dtype)
     Types.Backend.Trace -> error("from_list makes no traced tensor: lift one with Trace.constant")
     Types.Backend.Ggml(device) -> Ggml.from_list(device, data, shape, dtype)
+  end
+end
+
+## Creation: an `F32` tensor of `shape` from the little-endian floats of `format`
+## that start at byte `offset` of the file `path`, for weights: the backend reads
+## the file itself, so no value crosses as an Agentica list. `F16` and `BF16`
+## widen to `F32`. A short file, a bad offset or a missing file is an `error`.
+## The reference reads the bytes in Agentica and is slow on a large file.
+def from_file(
+  path: String,
+  offset: Int,
+  shape: List[Int],
+  format: Types.FloatFormat = Types.FloatFormat.F32,
+  backend: Types.Backend = Types.Backend.Reference,
+) -> Result[Types.Tensor]
+  n = try Types.volume(shape)
+  return error("from_file needs an offset of 0 or more, got #{offset}") if offset < 0
+  if n > (9223372036854775807 - offset) / Types.file_width(format)
+    return error("from_file: #{n} values at offset #{offset} reach past what an Int counts")
+  end
+
+  case backend
+    Types.Backend.Reference -> Reference.from_file(path, offset, shape, format)
+    Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format)
+    Types.Backend.Trace -> error("from_file makes no traced tensor: lift one with Trace.constant")
+    Types.Backend.Ggml(device) -> Ggml.from_file(device, path, offset, shape, format)
   end
 end
 

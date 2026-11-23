@@ -78,6 +78,21 @@ def from_list(
   upload(device, shape, dtype, values, "from_list")
 end
 
+## Creation: an `F32` tensor of `shape` from the floats of `format` at byte
+## `offset` of the file `path`, read by C; on Vulkan through one host copy.
+def from_file(
+  device: Types.Device,
+  path: String,
+  offset: Int,
+  shape: List[Int],
+  format: Types.FloatFormat,
+) -> Result[Types.Tensor]
+  code = try ready(device, shape, Types.Dtype.F32, "from_file")
+  made("from_file", device, shape, Types.Dtype.F32) do
+    GgmlRaw.load(code, path, offset, shape, Types.file_code(format))
+  end
+end
+
 ## Host readback: the row-major values tagged with `t`'s dtype.
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   _ = try usable("to_list")

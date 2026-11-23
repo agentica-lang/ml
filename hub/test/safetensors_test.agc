@@ -19,20 +19,47 @@ def test_every_dtype_reads_as_the_peer_wrote_it() -> Result[Void]
   end
 end
 
+def test_the_native_backends_read_floats_from_the_file_as_the_reference_does() -> Result[Void]
+  S.with_fixtures("values") do |dir|
+    c = try Hub.open("#{dir}/values.safetensors")
+    for backend in S.native()
+      for name in ["f32", "f16", "bf16", "scalar", "empty"]
+        want = try Hub.tensor(c, name, S.REF)
+        got = try Hub.tensor(c, name, backend)
+        try Test.eq(Tensor.dtype(got), Tensor.Dtype.F32)
+        try Test.eq(Tensor.shape(got), Tensor.shape(want))
+        try Test.eq(bits(try Tensor.to_list(got)), bits(try Tensor.to_list(want)))
+      end
+    end
+
+    ok()
+  end
+end
+
+def test_a_shape_that_overflows_an_int_is_no_crash() -> Result[Void]
+  S.with_fixtures("values") do |dir|
+    c = try Hub.open("#{dir}/hostile.safetensors")
+    for backend in [S.REF].concat(S.native())
+      _ = Hub.tensor(c, "h", backend)
+    end
+
+    ok()
+  end
+end
+
 def test_a_dtype_tensor_lacks_is_refused_alone() -> Result[Void]
   S.with_fixtures("values") do |dir|
-    c = try Hub.open("#{dir}/bf16.safetensors")
-    try expect_error(Hub.tensor(c, "w", S.REF), "BF16")
+    c = try Hub.open("#{dir}/u16.safetensors")
+    try expect_error(Hub.tensor(c, "w", S.REF), "U16")
     try Test.eq(try Tensor.to_list(try Hub.tensor(c, "ok", S.REF)), [Tensor.Values.Float(1.0)])
     c2 = try Hub.open("#{dir}/bad_bool.safetensors")
     expect_error(Hub.tensor(c2, "b", S.REF), "not 0 or 1")
   end
 end
 
-def test_a_header_and_buffer_past_one_chunk_read_whole() -> Result[Void]
+def test_a_tensor_past_one_chunk_of_the_file_reads_from_its_offset() -> Result[Void]
   S.with_fixtures("values") do |dir|
     c = try Hub.open("#{dir}/chunks.safetensors")
-    try Test.eq(c.shards["chunks.safetensors"].data.size, 2 * 1048576 + 5 + 16)
     Test.eq(try Tensor.to_list(try Hub.tensor(c, "small", S.REF)), [Tensor.Values.Int(7), Tensor.Values.Int(-9)])
   end
 end
@@ -79,12 +106,18 @@ def same_as_peer(c: Hub.Checkpoint, expected: JSON.Value) -> Result[Void]
   for name in fields.keys
     want = fields[name]
     t = try Hub.tensor(c, name, S.REF)
-    try Test.eq(Tensor.dtype(t), Safetensors.DTYPES[try JSON.string(try JSON.get(want, "dtype"))])
+    try Test.eq(Tensor.dtype(t), loaded_dtype(try JSON.string(try JSON.get(want, "dtype"))))
     try Test.eq(Tensor.shape(t), try JSON.decode(try JSON.get(want, "shape"), List[Int]))
     try Test.eq(bits(try Tensor.to_list(t)), bits(try values(try JSON.get(want, "values"), Tensor.dtype(t))))
   end
 
   ok()
+end
+
+## F32, F16 and BF16 load as `F32`; the other dtypes as the file has them.
+def loaded_dtype(file_dtype: String) -> Tensor.Dtype
+  return Tensor.Dtype.F32 if ["F32", "F16", "BF16"].include?(file_dtype)
+  Safetensors.DTYPES[file_dtype]
 end
 
 ## The peer's values: floats come as text, so `inf` and `nan` fit in JSON.
@@ -93,7 +126,6 @@ def values(json: JSON.Value, dtype: Tensor.Dtype) -> Result[List[Tensor.Values]]
   for v in try JSON.list(json)
     case dtype
       Tensor.Dtype.F32 -> out = out.push(Tensor.Values.Float(try float(try JSON.string(v))))
-      Tensor.Dtype.F16 -> out = out.push(Tensor.Values.Float(try float(try JSON.string(v))))
       Tensor.Dtype.F64 -> out = out.push(Tensor.Values.Float(try float(try JSON.string(v))))
       Tensor.Dtype.Bool -> out = out.push(Tensor.Values.Bool(try JSON.bool(v)))
       _ -> out = out.push(Tensor.Values.Int(try JSON.int(v)))

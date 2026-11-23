@@ -246,8 +246,9 @@ of 1.9–2.3) and 7.1–9.3 s for the 11 s of jfk (0.64–0.84); about 3.5 s is 
 encoder over the 30 s window, of which 1.5–2 s is handing each block's output
 out of its arena as a list (the memory bullet above), and 0.12–0.14 s each
 decoder step. The reference backend gave the same ids for es-hola in 22
-minutes (a real-time factor of about 500). Loading the checkpoint takes 25–40
-s. On ggml the five cases give the same ids, the text and the segments too,
+minutes (a real-time factor of about 500). Loading the checkpoint takes
+0.3–0.5 s (it took 25–40 s before `Tensor.from_file`). On ggml the five cases
+give the same ids, the text and the segments too,
 and compile 12 graphs in all, 11 of them in the first case (104 when every
 step compiled its own). In one run after another (a quiet machine), the
 real-time factor was:

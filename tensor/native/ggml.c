@@ -16,6 +16,7 @@
 #endif
 #define GGML_NATIVE_IMPLEMENTATION
 #include "ggml_shared.h"
+#include "float_file.h"
 
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
@@ -372,6 +373,32 @@ an_term ggml_upload(an_env *env, int64_t device, ggml_list_Int shape, ggml_list_
     return tg_error(env, "upload needs exactly one value per element");
   }
   return store(env, state, bytes, term);
+}
+
+/* The tensor is filled where the file is read: in place on a host buffer (the CPU), through a host copy for
+   a device that has its own memory (Vulkan). */
+an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml_list_Int shape, int64_t format) {
+  an_term term, failure;
+  struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
+  char why[FF_PATH_MAX + 160];
+  bool in_place, held;
+  float *host;
+
+  if (!make_tensor(env, device, &shape, GGML_TYPE_F32, state, &failure)) return failure;
+  in_place = !state->vulkan && ggml_backend_buffer_is_host(state->buffer);
+  host = in_place ? (float *)state->t->data : (float *)host_bytes(state->t);
+  if (host == NULL) return tg_error(env, "out of memory");
+  if (!ff_read(path.data, path.len, offset, ggml_nelements(state->t), format, host, why, sizeof why)) {
+    if (!in_place) free(host);
+    return tg_error(env, why);
+  }
+  if (!in_place) {
+    lock_for(state->vulkan, &held);
+    ggml_backend_tensor_set(state->t, host, 0, ggml_nbytes(state->t));
+    unlock_for(held);
+    free(host);
+  }
+  return ggml_result_TensorHandle_ok(env, term);
 }
 
 an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double value, bool int32) {

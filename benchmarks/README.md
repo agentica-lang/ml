@@ -18,15 +18,17 @@ The real-time factor is the run time over the clip length, so lower is better. T
 
 | Row | RTF jfk | RTF es-hola | Load | Peak memory | Tokens against Hugging Face |
 |---|---|---|---|---|---|
-| ours, ggml CPU | 0.363 | 1.017 | 22.8 s | 3.0 GB | same |
-| ours, ggml Vulkan | 0.436 | 1.027 | 22.8 s | 2.8 GB | same |
-| ours, libtorch CPU | 0.622 | 1.915 | 23.6 s | 3.6 GB | same |
+| ours, ggml CPU | 0.396 | 1.008 | 0.4 s | 0.50 GB | same |
+| ours, ggml Vulkan | 0.442 | 1.100 | 0.45 s | 0.35 GB | same |
+| ours, libtorch CPU | 0.619 | 1.987 | 0.3 s | 1.5 GB | same |
 | whisper.cpp CPU, F32 | 0.080 | 0.287 | 0.10 s | 0.22 GB | one more token on jfk |
 | whisper.cpp CPU, F32, no flash attention | 0.119 | 0.429 | 0.11 s | 0.29 GB | same |
 | whisper.cpp CPU, F16 (its default) | 0.116 | 0.456 | 0.08 s | 0.15 GB | one more token on jfk |
 | whisper.cpp Vulkan, F32 | 0.041 | 0.110 | 0.17 s | 0.16 GB | one more token on jfk |
 | whisper.cpp Vulkan, F32, no flash attention | 0.041 | 0.107 | 0.17 s | 0.16 GB | one more token on jfk |
 | whisper.cpp Vulkan, F16 (its default) | 0.038 | 0.106 | 0.13 s | 0.12 GB | one more token on jfk |
+
+The three `ours` rows were measured again after ml#63 (the load and the memory changed, the rest is the same code and the same machine, so the real-time factors moved only by noise). Before it the load was 23.6 s, 23.3 s and 23.6 s, and a pass that stops after the load peaked at 3.05 GB, 2.84 GB and 3.26 GB. The Peak memory column is the whole run, transcriptions included; the load alone now peaks at 0.46 GB, 0.36 GB and 0.49 GB.
 
 Whisper's window is 30 s whatever the clip, so a short clip costs the same encoder time as a long one: that is why es-hola has the larger factor.
 
@@ -57,7 +59,7 @@ More figures, all on jfk and from the same run (`report` prints the stages; the 
 | whisper.cpp Vulkan F32, decoder step | 11 ms (261 ms for the 24 steps) |
 | ours ggml CPU, decoder step (24 steps in 1630 ms) | 68 ms, 1.45 M VM steps |
 | ours ggml Vulkan, decoder step (24 steps in 3010 ms) | 125 ms, 1.45 M VM steps |
-| ours, load: VM steps | 2.76 G, of which 2.7 G decode the 37.8 M floats of the checkpoint one by one (`u16`, `u32`, `Float.from_bits32` in `hub/safetensors.agc`) |
+| ours, load: VM steps | 2.76 G before ml#63, of which 2.7 G decoded the 37.8 M floats of the checkpoint one by one (`u16`, `u32`, `Float.from_bits32` in `hub/safetensors.agc`) |
 | ours, libtorch, encoder | 3171 ms, 117.7 M VM steps |
 
 Reading it:
@@ -65,9 +67,20 @@ Reading it:
 - **The encoder is on par on the CPU** (994 ms against 1054 ms without flash attention, 662 ms with it). Similar ggml CPU kernels (different ggml versions: v1.0.0 against 0.24.0). On Vulkan ours is 2.5 times slower (396 ms against 158 ms).
 - **The decoder is the gap.** A step takes about 68 ms on ggml CPU and 125 ms on Vulkan, against 7 and 11 ms for whisper.cpp. A step is one graph, but it costs 1.45 M VM steps, which is tracing and lowering a graph that does not change (about 6 to 12 ms of the 68, at the 120 to 230 M steps a second the VM runs here). The rest is not split: it is probably native time to feed the graph (the padded self-attention cache and the cross-attention cache go in as inputs every step) and to read the logits back as a list. This is what [#64](https://github.com/agentica-lang/ml/issues/64) is about, and it is 41 percent of a transcription on the CPU and 63 percent on Vulkan.
 - **The log-mel costs 0.5 s** in `mel.agc`, which is Agentica code (a radix FFT over lists): 118 M VM steps, against 14 to 19 ms in whisper.cpp. It runs on the CPU and is the same on every backend; on Vulkan it costs more than the encoder.
-- **The load is 23 s**, and 99 percent of its VM steps are in `hub/safetensors.agc` decoding the floats one by one. whisper.cpp reads the file in 0.1 s. The checkpoint is 151 MB and the process peaks at 3 GB, probably because the floats go through lists first (not measured).
+- **The load was 23 s and 3 GB, and is 0.3 to 0.45 s, and the load alone peaks under 0.5 GB** (ml#63). 99 percent of it had been `hub/safetensors.agc` decoding the 37.8 M floats one by one (2.7 G VM steps), and the lists they went through held the memory. Now C reads each tensor's byte range into the backend's buffer (`Tensor.from_file`), so no float is an Agentica value. whisper.cpp reads the file in 0.1 s.
 - On Vulkan, the encoder gains 2.5 times over the CPU, but the decoder loses: a graph costs about 2 ms to dispatch (`note.md`), and a step has many small ones.
 - libtorch runs the encoder op by op: 3.2 s, and 117.7 M VM steps.
+
+## Whisper-medium, ours only
+
+whisper-medium (the Hugging Face `openai/whisper-medium` checkpoint, 3.06 GB of F32, `model.safetensors` sha256 `62f73550fa6db24b0c6f6c5962bd0dae80fa644e93cde9cd9c3792971b47fd28`) could not load before ml#63. Same machine and clips, under a 6 GB memory cap, the median of 2 timed runs after the warm-up. No whisper.cpp row: only the tiny model was converted.
+
+| Row | RTF jfk | RTF es-hola | Load | Peak memory of the load | Tokens |
+|---|---|---|---|---|---|
+| ours, ggml CPU | 8.17 | 22.4 | 7.7 s | 4.0 GB | same as the medium output of whisper.cpp's server (`whisper/live/fixtures/server-*-medium.json`) |
+| ours, ggml Vulkan | 2.80 | 7.57 | 24 s | 0.49 GB | same |
+
+The Vulkan weights sit in the device's own buffers, which on this iGPU are system memory outside the process's resident set, so its row shows the process only. The encoder takes 26 s on the CPU and 8 s on Vulkan, and a decoder step about 2 s on the CPU and 0.7 s on Vulkan, which is the per-step cost of #64 on a bigger model. The Vulkan load is slower than the CPU's (24 s against 7.7 s); where that time goes was not profiled.
 
 ## Run it
 
