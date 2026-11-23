@@ -48,10 +48,6 @@ Train.fit(loss, params, batches, optimizer, epochs, on_epoch?) -> Result[Fit { p
   the graph (`arange`, `eq`, `where`). A label outside `0...classes` is an
   error in an eager call. Traced labels, those `fit` lifts with
   `Trace.constant` included, are not checked, and such a label adds `0`.
-- **Embedding gradients cost `[rows, k]`.** The backward of `gather` (an
-  embedding lookup) is a one-hot `matmul`: four `[rows, k]` intermediates,
-  about 800 MB each for a 50k vocabulary over 4096 tokens at `F32`, plus
-  `O(rows k width)`. A scatter-add primitive would fix it (ml#25).
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on
   libtorch and only the new state, parameters and loss leave it
@@ -60,9 +56,6 @@ Train.fit(loss, params, batches, optimizer, epochs, on_epoch?) -> Result[Fit { p
 - **Reporting is a callback and a history.** `fit` answers the mean loss of
   every epoch and calls `on_epoch` after each; a caller logs from there
   (`std/logger` or `puts`). `fit` itself prints nothing.
-- **Left out until a client needs them:** shuffling, evaluation sets, early
-  stopping, learning-rate schedules, weight decay, gradient clipping, and
-  resuming from a saved `State`.
 
 ## Cost
 
@@ -70,7 +63,8 @@ Train.fit(loss, params, batches, optimizer, epochs, on_epoch?) -> Result[Fit { p
 reference backend an epoch of the XOR test (a 2-8-1 relu MLP, four rows)
 costs about 75,000 VM steps, most of it the evaluation of the forward and
 gradient graphs; a test file's step budget (1M steps per test, plus 1M) has to
-hold the reference run and the libtorch run, so the test trains for 20. On libtorch an epoch costs about 45,000.
+hold the reference run and the libtorch run, so the test trains for 20. On
+libtorch an epoch costs about 45,000.
 
 ## The repository is a workspace
 
@@ -78,11 +72,7 @@ hold the reference run and the libtorch run, so the test trains for 20. On libto
 write a `path` dependency (`PKG-ROOT-ONLY`), so the repository root has an
 `agentica.toml` with `[workspace]`, and members name each other by the
 repository and a `subdir`: a member reads another from its folder, with no
-fetch, and the `ref` it writes is not used inside the workspace. A
-project outside the workspace fetches a member at the `ref` written, so:
-
-- `train/` cannot be used from outside until its `ref` to `tensor/` is
-  bumped to a commit of `main` that has `train/`'s needs (after this PR
-  merges, the `ref` still names the commit before it).
-- A PR that changes several members leaves outside users on the old pin
-  until a follow-up bumps the `ref` (or a release tag replaces it).
+fetch, and the `ref` it writes is not used inside the workspace. A project
+outside the workspace fetches a member at the `ref` written, so a PR that
+changes several members leaves outside users on the old pin until a follow-up
+bumps the `ref` (or a release tag replaces it).

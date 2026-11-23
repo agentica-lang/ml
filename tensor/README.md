@@ -4,8 +4,7 @@ Functional tensors over pluggable backends: the public API (`tensor.agc`), a
 pure-Agentica **reference** backend that is the oracle, and the **libtorch
 (CPU, eager)** backend behind `extern module "torch"` and a thin C++ layer over
 libtorch's C++ API (as `tch-rs` is, in spirit). The contract is
-[`DESIGN.md`](DESIGN.md); the execution plan is the repository's
-[`roadmap.md`](../roadmap.md).
+[`DESIGN.md`](DESIGN.md).
 
 libtorch is a **system dependency**, never vendored and never downloaded by
 this repository: `tools/build-torch.sh` finds it through `TORCH_DIR` (or the
@@ -29,13 +28,11 @@ answers whether this machine has it, and the dispatch arm answers
 - `src/torch.agc` — the libtorch backend: the §3.1 primitives libtorch
   expresses, per-op checks, and one `Native.arena` per call (§8).
 - `src/native.agc` — the FFI boundary and nothing else: `resource
-  TensorHandle` and the thirty-six `compute def` calls. The generated header
+  TensorHandle` and the `compute def` calls. The generated header
   `native/torch_native.h` comes from this file (native-gen).
-- `src/torch_dtypes.agc`, `src/torch_shapes.agc` — the dtype table with the
-  codes that cross to C, the two conversions between a storage double and a
-  dtype-tagged `Values`, and the shape arithmetic a reduction needs. The
-  backend validates its own storage crossing and computes the shape it is
-  about to hand back.
+- `src/torch_dtypes.agc`, `src/torch_shapes.agc` — the dtype codes that cross
+  to C, the conversions between a storage double and a `Values`, and the shape
+  arithmetic a reduction needs.
 - `native/torch.c` — the thin C++ layer: one libtorch call per function, the
   checks that keep libtorch's implicit behaviour (broadcasting, wrapping) from
   leaking, and the `error` text. libtorch has no C API, so this is C++ in a
@@ -45,23 +42,18 @@ answers whether this machine has it, and the dispatch arm answers
   `LIBRARY_PATH`, `LD_LIBRARY_PATH`). Without a libtorch it exits 1 and says
   what it looked for.
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
-- `test/` — the unit tests of the reference backend, and the libtorch
-  conformance suite (`test/torch_*_test.agc`) that runs the same public call on
-  both backends and compares. `test/prop_*_test.agc` are the property tests
-  (`prop`, a test-group dependency): every ordering of the reduction `axes`
-  against a naive reduction, `concat` associativity, `from_list`/`to_list` per
-  dtype, the reference against libtorch within the tolerance below, and
-  `conv1d`/`avg_pool1d` against plain loops. Without libtorch the comparison
-  with it asserts that absence and the rest runs on the reference.
+- `test/` — the unit tests of the reference backend, the libtorch conformance
+  suite (`test/torch_*_test.agc`) that runs the same public call on both
+  backends and compares, and the property tests (`test/prop_*_test.agc`, with
+  `prop`, a test-group dependency). Without libtorch the comparison asserts
+  that absence and the rest runs on the reference.
 
 The native module lives in this package rather than in a `torch/` of its own
 because a `resource` is nominal to the `extern module` block that declares it:
 `Tensor.handle` has to name `TensorHandle`, and the `Backend.Torch` arm has to
 call the module, so both have to be declared here (`DESIGN.md` §1, §2, §7).
-[agentica#1918](https://github.com/agentica-lang/agentica/issues/1918) — an
-opaque resource that can live in data and cross modules — is the change that
-lets the backend move out into its own package again; until it lands, this one
-carries the libtorch layer as a deliberate, documented trade-off.
+[agentica#1918](https://github.com/agentica-lang/agentica/issues/1918) is the
+change that lets the backend move out into its own package again.
 
 ## What is implemented, and what is not
 
@@ -85,26 +77,19 @@ shape/dtype, plus its error paths.
 Plus the two host-crossing functions §4 names, `from_list` and `to_list`
 (readback), which are not primitives.
 
-Why those three are still out, in this slice's terms:
+Why those three are out:
 
-- **`gelu_tanh_approx`** is one libtorch call (`at::gelu(..., "tanh")`), but it
-  is not part of this change, so no test here pins it against the reference.
-  Everything else a transformer block uses is in: the composite conformance
-  checks run `softmax`, `layer_norm`, `rms_norm`, `silu`, the masked and
-  unmasked `multi_head_attention` and `greedy_step` on **both** backends.
-- **`batch_matmul`** is likewise expressible (`at::matmul` already takes a
-  batch) and likewise untested here. `multi_head_attention` does not need it:
-  it splits heads into rank-2 `matmul` calls (§3.2).
-- **`to_device`** would only ever move a tensor to the one device this CPU
-  release serves, which is the identity; `Cuda` is already `error("backend not
-  available")` at the module level. Adding it would claim a device story this
-  build does not have.
-
-The three that *did* land changed what the §3.2 vocabulary can do on libtorch:
-`div` (with `sub`, `max`, `argmax`, `sqrt`, `pow` and `broadcast_to`) is what
-`softmax`, `layer_norm`, `rms_norm` and attention divide with, and
-`conv1d`/`avg_pool1d` now exist on both sides because the reference computes
-them too — the oracle comes first, then the backend is checked against it.
+- **`gelu_tanh_approx`** is one libtorch call (`at::gelu(..., "tanh")`), but
+  no test pins it against the reference. Everything else a transformer block
+  uses is in: the composite conformance checks run `softmax`, `layer_norm`,
+  `rms_norm`, `silu`, the masked and unmasked `multi_head_attention` and
+  `greedy_step` on **both** backends.
+- **`batch_matmul`** is expressible (`at::matmul` already takes a batch) and
+  untested. `multi_head_attention` does not need it: it splits heads into
+  rank-2 `matmul` calls (§3.2).
+- **`to_device`** would only move a tensor to the one device this CPU release
+  serves, which is the identity; `Cuda` is already `error("backend not
+  available")` at the module level.
 
 `conv1d`/`avg_pool1d` take the window `DESIGN.md` §3.1 admits and no more:
 `stride` ≥ 1 and `padding` ≥ 0, no dilation, no groups. `avg_pool1d` also caps
@@ -117,19 +102,14 @@ length, and both refuse an empty input, a window wider than the padded input
 and a channel-count mismatch.
 
 Reduction `axes` are a **set**, and the wrapper hands every backend the
-ascending order (`tensor.agc`, `normalize_axes_option`). That is not cosmetic:
-`argmax` numbers the position inside a reduced block by the order of its axes,
-and the two backends walk a tensor differently — the reference row-major, over
-the whole tensor, libtorch one permuted axis at a time — so a literal
-`some([2, 0])` would number the same element two ways and break a tie between
-`(i0=0, i2=2)` and `(i0=1, i2=0)` on different elements (`argmax` of the raw
-`[2, 1, 3]` block answers `1` on one side and `2` on the other). Sorting in the
-one place that both backends share fixes the order and the tie:
-`argmax(x, some([2, 0]))` and `argmax(x, some([0, 2]))` are the same call, and
-`test/torch_reductions_test.agc` pins both the tie and the numbering on a block
-whose reduced axes have different sizes.
+ascending order (`tensor.agc`, `normalize_axes_option`). `argmax` numbers the
+position inside a reduced block by the order of its axes, and the two backends
+walk a tensor differently, so a literal `some([2, 0])` would break a tie on
+different elements. Sorting in the one place both backends share fixes it:
+`argmax(x, some([2, 0]))` and `argmax(x, some([0, 2]))` are the same call
+(`test/torch_reductions_test.agc` pins the tie and the numbering).
 
-Two more honest limits of what crosses the boundary:
+Limits of what crosses the boundary:
 
 - shapes, dtypes and devices cross as `List[Int]`, an `Int` code and nothing
   (CPU only); there is no struct over the boundary, so the wrapper is the one
@@ -140,8 +120,8 @@ Two more honest limits of what crosses the boundary:
 - readback crosses as storage doubles: `I64` values past 2^53 lose precision
   on the way out. Relatedly, `arange` past an int dtype's width diverges by
   side — libtorch's conversion wraps (200 into `I8` reads back `-56`) while the
-  reference refuses to read it back at all — and
-  `test/torch_creation_test.agc` pins both behaviours rather than hiding them.
+  reference refuses to read it back at all; `test/torch_creation_test.agc`
+  pins both.
 
 ## Local setup
 
@@ -157,12 +137,12 @@ agentica test                        # builds the module on first use
 agentica tools/bench.agc
 ```
 
-`eval "$(sh tools/build-torch.sh)"` is what makes the build possible at all:
+`eval "$(sh tools/build-torch.sh)"` is what makes the build possible:
 `agentica.toml` can name `.c` sources, `-D` defines and `-l` names, and nothing
 else, so the C++ driver (`CC`), libtorch's headers (`CPLUS_INCLUDE_PATH`) and
-its libraries (`LIBRARY_PATH`) have to come from the environment. The build
-cache key includes those three variables, so a shell without them builds
-nothing and warns.
+its libraries (`LIBRARY_PATH`) come from the environment. The build cache key
+includes those three variables, so a shell without them builds nothing and
+warns.
 
 Without libtorch the package still works: `agentica check`, `agentica fmt
 --check` and `agentica test` run, the run prints
@@ -172,41 +152,27 @@ warning: native module torch not built: the C compiler failed with status 1; the
 ```
 
 and every conformance test takes its `Conform.absent()` path, which asserts
-that `Tensor.available(...)` is false and that the dispatch arm answers
-`Result` error instead of halting. `agentica test` reports those as passed, so
+that `Tensor.available(...)` is false and that the dispatch arm answers an
+`error` instead of halting. `agentica test` reports those as passed, so
 **that warning line is the signal that the conformance comparison did NOT
-run** — it is not a note, it is the difference between "the libtorch backend
-agrees with the oracle" and "nothing was compared". A green run without it is a
-green run with the comparison.
+run**.
 
 ## CI
 
-`.github/workflows/ci.yml` has one generic job per package folder, and this
-folder is one of them. It runs `agentica check`, `agentica fmt --check`, the
-native-gen `--check` of `native/torch_native.h`, and `agentica test` on the
-pinned Agentica. It does **not** install libtorch: a 473 MB `libtorch_cpu.so`
-plus 51 MB of headers is not something this repository downloads, and a
-download it cannot pin by sha256 would be worse than not running. So:
+`.github/workflows/ci.yml` has one generic job per package folder. It runs
+`agentica check`, `agentica fmt --check`, the native-gen `--check` of
+`native/torch_native.h`, and `agentica test` on the pinned Agentica. It does
+**not** install libtorch (a 473 MB `libtorch_cpu.so` plus 51 MB of headers). So:
 
-- what CI proves: the package checks, formats, that the committed header is
-  the one native-gen makes from `src/native.agc`, and that the suite runs green
-  with the module absent by *asserting* that absence — the `warning:` line
-  above is present in the job log, and no test silently skipped.
-- what CI does **not** prove: that `native/torch.c` compiles, that it still
-  matches libtorch's C++ API, or that the values agree with the reference. With
+- CI proves that the package checks and formats, that the committed header is
+  the one native-gen makes from `src/native.agc`, and that the suite runs
+  green with the module absent.
+- CI does **not** prove that `native/torch.c` compiles, that it still matches
+  libtorch's C++ API, or that the values agree with the reference. With
   `optional = true`, a broken C++ file, a libtorch API drift and a missing
   libtorch are the same one-line warning inside a green job.
-- what was run locally, by hand, with libtorch 2.4.1+cpu at `$HOME/opt/libtorch`:
-  `agentica check`, `agentica fmt --check`, the header `--check`, `agentica
-  test` (the reference suite, the libtorch conformance suite and the property
-  tests) and `agentica tools/bench.agc`.
-
-The exit is a **non-required** CI job that installs libtorch pinned by sha256
-and runs `agentica test` with `TORCH_DIR` set, so the build and the comparison
-are gated somewhere without making every unrelated PR depend on a 500 MB
-download. Until that job exists, the warning line is the contract: green CI
-says "the contract still checks", not "the backend still agrees with the
-oracle".
+- The libtorch comparison runs locally, with libtorch 2.4.1+cpu at
+  `$HOME/opt/libtorch`.
 
 ## Tolerances, and why
 
@@ -226,19 +192,14 @@ relative for `exp`, `tanh`, `sigmoid`, `silu`, `log`, `sqrt`, `pow`, `softmax`
 and the norms: libtorch's vectorised math may be an ulp or two (1.2e-7 each)
 from the correctly rounded value.
 
-The reason for a tolerance at all: the reference computes in doubles
-(`DESIGN.md` §2 fixes `F32` as the compute dtype but the reference keeps its
-storage in Agentica floats), while libtorch stores and computes `F32`. `F32`'s
-epsilon is 1.19e-7, so one rounding of a value of magnitude ~1 is about 6e-8
-relative — 1e-7 is one float32 ulp of slack, no more. It is deliberately not
-looser: a `matmul` that picked the wrong operand, or an `exp` applied twice,
-misses it by orders of magnitude.
+The reason for a tolerance: the reference computes in doubles, while libtorch
+stores and computes `F32`, whose epsilon is 1.19e-7. 1e-7 is one float32 ulp of
+slack, no more: a `matmul` that picked the wrong operand, or an `exp` applied
+twice, misses it by orders of magnitude.
 
-The third line is not decoration: without it the tolerance is vacuous at
-infinity (`inf - inf` is `NaN`, and `inf <= inf` is true), so a saturating
-libtorch op would "agree" with any large finite value the reference produced.
-`test/torch_elementwise_test.agc` pins exactly that case — `exp(100)` is `+inf`
-in `F32` and finite in doubles — and asserts that the comparison *fails*.
+The third line keeps the tolerance from being vacuous at infinity (`inf - inf`
+is `NaN`): `test/torch_elementwise_test.agc` pins `exp(100)`, which is `+inf`
+in `F32` and finite in doubles, and asserts that the comparison *fails*.
 
 Where the two backends legitimately disagree and are therefore not asserted:
 
@@ -253,28 +214,19 @@ Where the two backends legitimately disagree and are therefore not asserted:
 
 ## Lifetimes
 
-`DESIGN.md` §8: one `Native.arena` per call, and one per decode step when a
-caller runs several ops.
+`DESIGN.md` §8: one `Native.arena` per call, and one per step when a caller
+runs several ops.
 
-- Every op in `src/torch.agc` opens its own `Native.arena` and the tensor it
-  returns is the block's value: results leave the arena, the arguments (opened
-  by the caller) are not its to close. `test/torch_lifetime_test.agc` checks
-  both halves, including a struct field.
-- A caller that runs a block — a decode step, an inference call — wraps it in
-  one `Native.arena`: the intermediates die at the end of the step, newest
-  first, instead of waiting for a GC that sees them as any other resource.
-  `test/torch_lifetime_test.agc` runs a three-op step that way, and the
-  composite conformance checks run their whole block that way.
-- `Handle.Native` and `Handle.Plain` coexist in one process: a `Reference`
-  tensor and a `Torch` tensor go through the same `Tensor.*` calls, dispatch by
-  value, and mixing the two backends is an `error`. The same test asserts the
-  arena rules from Agentica's side: a value that leaves an arena is still
-  readable, an argument is not closed by an op's arena, and an explicitly
-  `Native.close`d handle reads as closed.
-- M2 needed nothing that arenas cannot express. The one thing a caller cannot
-  observe from Agentica is an intermediate whose handle no value reaches (by
-  design it is closed at the end of the block), so the suite checks the
-  observable half: what the value reaches is alive, and the arguments are.
+- Every op in `src/torch.agc` opens its own `Native.arena` and returns the
+  tensor it made as the block's value; the arguments are not its to close.
+- A caller that runs a block (a decode step, an inference call) wraps it in one
+  `Native.arena`: the intermediates die at the end of the step, newest first.
+- `Handle.Native` and `Handle.Plain` coexist in one process, dispatch by value,
+  and mixing the two backends is an `error`.
+
+`test/torch_lifetime_test.agc` checks these rules from Agentica's side: a value
+that leaves an arena is still readable, an argument is not closed by an op's
+arena, and an explicitly `Native.close`d handle reads as closed.
 
 ## What the dependency costs
 
@@ -304,15 +256,10 @@ torch column includes the free of the tensor the op made):
 
 What those two columns say:
 
-- **A small op is dominated by the crossing** (an argument count, ~10 µs of
-  arena, resource and term work). `add [2, 2]` at 17 µs is not computing
-  anything; a step made of twenty tiny ops pays ~340 µs before libtorch does
-  any work. This is the number `DESIGN.md` §8's arena-per-step exists to
-  amortise, and the reason the §3.2 derived ops (`softmax`, `layer_norm`) will
-  eventually want to be one native call rather than five.
+- **A small op is dominated by the crossing** (~10 µs of arena, resource and
+  term work): a step of twenty tiny ops pays ~340 µs before libtorch does any
+  work. `DESIGN.md` §8's arena-per-step amortises it.
 - **Real work wins outright**: 64×64 mats and transcendentals are 7× to 200×
-  faster than the reference, which is the point of the backend.
-- **Crossing a big tensor in is the exception**: `from_list [64, 64]` is
-  2× slower than the reference because 4096 values cross as VM terms; a
-  checkpoint loader (§6) and `create`-from-file will want a bulk path
-  (`Bytes` + dims) rather than `List[Float]`.
+  faster than the reference.
+- **Crossing a big tensor in is the exception**: `from_list [64, 64]` is 2×
+  slower than the reference because 4096 values cross as VM terms.

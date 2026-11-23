@@ -33,8 +33,7 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
   **pierde por debajo** (256³: 2.9× más lenta).
 - `mul_mat` de ggml CPU es 1.5–3.4× más lento que el BLAS de libtorch.
 - Consecuencia de diseño: **Vulkan no puede ser un backend op-por-op**;
-  pide batching/compilación de grafo. Es el primer dato objetivo a favor
-  del backend JIT.
+  pide batching de grafo.
 - AVX512 no es alcanzable aquí: el techo real es AVX2.
 
 ### Fuera de este repo
@@ -57,39 +56,20 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
 
 Ningún subagente sigue corriendo.
 
-## 3. Futuro planeado (orden propuesto)
+## 3. Siguientes pasos
 
 1. **`grad`**: faltan reglas para `pow`, `clamp`, `batch_matmul`,
    `to_dtype` entre floats, `conv1d` y `avg_pool1d`, y el scatter-add de
    `gather` (ml#25).
-2. **`nn/`**: decoder mergeado (#26), conv en `asr`. Siguiente: caché KV
-   (con ella, un `mask` opcional en `decoder_block` para padding), luego
-   `rms_norm`, y `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
-3. **`asr/`** (Whisper vía B), después del primer PR: frontend log-mel,
-   tokenizer, decodificación greedy y beam (sobre la caché KV), y la descarga
-   de pesos reales (con `hub/`). Fuera del primer PR por YAGNI. Lo
-   siguiente: comparar con whisper-tiny real (hoy solo se compara con el peer
-   propio).
-4. **`train/`**: mergeado (#21); softmax cross-entropy mergeado (#24). Después:
-   shuffling, schedules, y aplanar structs de capas (pytrees)
-   cuando un modelo lo pida.
-5. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
-   época del XOR en la referencia).
-6. **`hub/`**: primer PR mergeado (#23). Falta la descarga HF, con `http-client`
-   `stream()` (redirects y retry incluidos), **nunca** `bond` (es solo
-   servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
-   Resume/progreso/sha256 hay que construirlos.
-7. **Batching de grafo / JIT**: justificado por los 2 ms por dispatch. Es
-   el camino para que la iGPU sirva, y el mismo mecanismo que `xla/`
-   (PJRT) necesitaría.
-8. **Backend Vulkan/iGPU** como backend real, ya con batching; requiere
-   añadir una variante a `Device` (hoy `Cpu | Cuda(Int)`).
-9. **`candle/`** (eager, Rust) y/o **ggml** como backend general.
-10. **dGPU CUDA**: build CUDA de libtorch, `Device.Cuda(Int)`, `to_device`,
-   y un job de CI no requerido (no se puede bajar en cada push).
-11. Cuando cierre **#1918**: evaluar volver a la opción **A** (tabla de
-    `Fn` por backend), que deja `tensor/` sin nativo. Con un solo backend
-    no compensa; con dos o más, sí.
+2. **`nn/`**: caché KV (con ella, un `mask` opcional en `decoder_block`), y
+   `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
+3. **`asr/`**: frontend log-mel, tokenizer y decodificación; después, comparar
+   con whisper-tiny real (hoy solo se compara con el peer propio).
+4. **`train/`**: shuffling y schedules.
+5. **`hub/`**: descarga HF con `http-client` `stream()`, **nunca** `bond` (es
+   solo servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
+6. **CI**: un job no requerido con libtorch pineado por sha256.
+7. Cuando cierre **#1918**: mover el backend libtorch a un paquete `torch/`.
 
 ## 4. Deuda y issues abiertos
 
