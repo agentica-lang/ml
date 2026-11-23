@@ -18,6 +18,10 @@ Asr.load(checkpoint, config, backend) -> Result[Model]
 Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_model]
 Asr.decode(m, tokens [batch, t] integer, audio) -> logits [batch, t, vocab_size]
 Mel.log_mel(samples, mels, frames = 3000) -> Result[List[Float]]   row-major [mels, frames]
+Tokenizer.open(path) -> Result[Tokenizer]       a tokenizer.json
+Tokenizer.decode(tok, ids) -> Result[String]    text tokens only
+Tokenizer.prompt(tok, language, job, timestamps) -> Result[List[Int]]
+Tokenizer.seconds(tok, id) -> Optional[Float]   the time of a timestamp token
 ```
 
 Encoder: `conv1` (kernel 3, padding 1) → gelu → `conv2` (kernel 3, stride 2,
@@ -80,6 +84,37 @@ minus 8 → `(x + 4) / 4`.
 `test/mel_test.agc` checks the output against `test/mel_peer.py`, the same
 steps in Python doubles with a direct DFT (standard library only); the gap is
 about 1e-13.
+
+## The tokenizer (`tokenizer.agc`)
+
+Decoding only: Whisper's decoder emits ids, and the prompt is special tokens,
+so no text is ever encoded.
+
+- **It reads `tokenizer.json`**, which Hugging Face writes beside every
+  Whisper checkpoint: one file with the BPE vocabulary and the added tokens
+  with their ids. The merges are not needed to decode.
+- **Special tokens are found by id.** The added tokens give the ids of
+  `<|endoftext|>`, `<|startoftranscript|>`, `<|translate|>`,
+  `<|transcribe|>` and `<|notimestamps|>`; every id from `<|endoftext|>` on is
+  special and gives no text. The language tokens are the ids between
+  `<|startoftranscript|>` and `<|translate|>` (99 in the first checkpoints,
+  100 in large-v3), and the timestamps start right after `<|notimestamps|>`,
+  0.02 s apart.
+- **Decoding joins bytes first**: each character of a token's text stands for
+  one byte (GPT-2's byte-level alphabet), the bytes of all the tokens are
+  joined, and only then read as UTF-8, so a character split across tokens
+  comes back whole; a broken one becomes U+FFFD, as Python's `"replace"`.
+- `prompt` is `<|startoftranscript|>`, the language token (none leaves it to
+  the language detection), `<|transcribe|>` or `<|translate|>`, and
+  `<|notimestamps|>` unless timestamps are wanted.
+
+`test/tokenizer_test.agc` decodes a tiny vocabulary made for the tests
+(`test/fixtures/tokenizer.json`) and checks it against
+`test/tokenizer_peer.py` (standard library only). Checked once against
+whisper-tiny's `tokenizer.json`: 206 id lists (5 encoded texts in five
+scripts, 200 random ones, one with the prompt and timestamps) decode as the
+peer and as Hugging Face's `WhisperTokenizerFast` do; it loads in about
+0.1 s.
 
 ## Tests
 
