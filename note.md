@@ -112,6 +112,9 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
 - **ml#12**: menores de `tensor/` (comentarios obsoletos, `catch` de OOM,
   dos aserciones, y el límite de CI que no compila el C++).
 - **agentica#1918**: el cambio de lenguaje.
+- `asr/mathx.agc` (módulo nativo sobre libm: `exp`, `log`, `log10`, `sin`,
+  `cos`) es temporal: se quita cuando Agentica tenga esas funciones en `Math`
+  (agentica#1925).
 - `Torch.full` (`tensor/src/torch.agc`) arma los valores con `List.repeat`
   y los sube: por encima de 1 048 576 elementos la ejecución se para
   (`RUNTIME-INVALID-COUNT`, no un `Result`), y cada `full` del optimizador
