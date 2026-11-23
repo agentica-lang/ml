@@ -107,6 +107,30 @@ def test_on_libtorch_the_tiny_whisper_matches_the_peer() -> Result[Void]
   end
 end
 
+## A prompt of two ids, then one id twice (the second step concatenates onto
+## a cache that already did), give the last three rows of the peer's logits
+## for the same four tokens.
+def test_the_kv_cache_steps_match_the_peer() -> Result[Void]
+  with_fixtures do |dir|
+    m = try Asr.open("#{dir}/tiny/model.safetensors", REF)
+    try kv_steps(m, dir, REF, ABS, REL)
+    cache = try Asr.listen(m, try Asr.encode(m, try f32(List.repeat(0.5, 18), [1, 3, 6])))
+    first = try Asr.step(m, cache, [1])
+    try Test.error?(Asr.step(m, first.cache, [1, 2]))
+    Test.error?(Asr.step(m, cache, (0...9).map { |i| i % 7 }))
+  end
+end
+
+def test_on_libtorch_the_kv_cache_steps_match_the_peer() -> Result[Void]
+  with_fixtures do |dir|
+    loaded = Asr.open("#{dir}/tiny/model.safetensors", TORCH)
+    return Test.error?(loaded) if not Tensor.available(TORCH)
+
+    matched: Result[Void] = Native.arena do kv_steps(try loaded, dir, TORCH, F32, F32) end
+    matched
+  end
+end
+
 ## Runs `body` on the folder the peer wrote, then removes it.
 def with_fixtures(body: Fn[String, Result[Void]]) -> Result[Void]
   p = try Process.spawn_captured("python3", ["-I", "test/peer.py"])
@@ -121,6 +145,22 @@ def with_fixtures(body: Fn[String, Result[Void]]) -> Result[Void]
   result = body.call(dir)
   _ = Path.remove(dir)
   result
+end
+
+## `Asr.step` over the peer's first mel and tokens on `backend`: a prompt of
+## two ids, then the third and the fourth, against rows 1, 2 and 3 of the
+## peer's logits.
+def kv_steps(m: Asr.Model, dir: String, backend: Tensor.Backend, abs: Float, rel: Float) -> Result[Void]
+  want = try JSON.parse(try File.read_text("#{dir}/expected.json"))
+  cache = try Asr.listen(m, try Asr.encode(m, try f32(try rows(try JSON.get(want, "mel")), [1, 3, 6], backend)))
+  tokens = try ints(try JSON.get(want, "tokens"))
+  logits = try rows(try JSON.get(try JSON.get(want, "tanh"), "logits"))
+  prompt = try Asr.step(m, cache, tokens.take(2))
+  try expect_close(prompt.logits, logits.drop(7).take(7), abs, rel, "prompt")
+  third = try Asr.step(m, prompt.cache, [tokens[2]])
+  try expect_close(third.logits, logits.drop(14).take(7), abs, rel, "third")
+  fourth = try Asr.step(m, third.cache, [tokens[3]])
+  expect_close(fourth.logits, logits.drop(21), abs, rel, "fourth")
 end
 
 def ints(json: JSON.Value) -> Result[List[Int]]

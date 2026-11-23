@@ -17,11 +17,16 @@ Asr.open(path, backend) -> Result[Model]     a .safetensors or .index.json, conf
 Asr.load(checkpoint, config, backend) -> Result[Model]
 Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_model]
 Asr.decode(m, tokens [batch, t] integer, audio) -> logits [batch, t, vocab_size]
+Asr.listen(m, audio [1, frames, d_model]) -> Result[Cache]     the cross-attention keys and values
+Asr.step(m, cache, ids) -> Result[Stepped]       the logits of the last id, and the cache
 Mel.log_mel(samples, mels, frames = 3000) -> Result[List[Float]]   row-major [mels, frames]
 Tokenizer.open(path) -> Result[Tokenizer]       a tokenizer.json
 Tokenizer.decode(tok, ids) -> Result[String]    text tokens only
 Tokenizer.prompt(tok, language, job, timestamps) -> Result[List[Int]]
 Tokenizer.seconds(tok, id) -> Optional[Float]   the time of a timestamp token
+Greedy.rules(tok, suppress, begin_suppress, timestamps) -> Rules
+Greedy.allowed(rules, logits, emitted) -> List[Float]   the forbidden ids at FORBIDDEN
+Greedy.segments(tok, emitted, duration) -> Result[List[Segment]]
 ```
 
 Encoder: `conv1` (kernel 3, padding 1) → gelu → `conv2` (kernel 3, stride 2,
@@ -129,6 +134,40 @@ once against whisper-tiny's `tokenizer.json`: 206 id lists (5 encoded texts in
 five scripts, 200 random ones, one with the prompt and timestamps) decode as
 the peer and as Hugging Face's `WhisperTokenizerFast` do; it loads in about
 0.1 s.
+
+## Greedy decoding (`greedy.agc`) and the KV cache
+
+The rules of Whisper's greedy decoding over one step's logits, as plain lists,
+and the KV cache that feeds them one token at a time.
+
+- **The rules** (`Greedy.allowed`), in OpenAI's order: the blank and `eot`
+  are not emitted first, the config's `suppress_tokens` never (without them,
+  only the specials: `sot` and those from `<|translate|>` to just before
+  `<|notimestamps|>`, not OpenAI's non-speech symbols, which need the
+  tokenizer's encoder; without `begin_suppress_tokens`: the blank `Ġ` and
+  `eot`). With timestamps: `<|notimestamps|>` is out; timestamps come in pairs
+  (after a pair, text; after text and one timestamp, a timestamp or `eot`);
+  they never decrease; the first token is a timestamp of at most 1 s; and when
+  the timestamps together (log-sum-exp) are likelier than the best text
+  token, a timestamp must come. A forbidden id gets `FORBIDDEN` (-1e30), so
+  the sums stay finite.
+- **The pick** is the largest logit, the first one on a tie;
+  `Greedy.probability` is a softmax in doubles.
+- **Segments**: a timestamp opens a segment and the next one closes it; text
+  with no closing timestamp starts at its opening one, as Hugging Face does
+  (OpenAI starts it at 0), and ends at the clip's end; without timestamps the
+  whole text is one segment from 0. A segment is `start`, `stop`, `text`
+  (`end` is a reserved word in Agentica).
+- **The KV cache** lives in `asr/`, over `nn/`'s layers: `listen` projects the
+  encoder output to every block's cross-attention keys and values once, split
+  by head (keys transposed); `step` keeps each block's self-attention keys and
+  values and feeds one token at a time (a prompt at once, under the causal
+  mask), and returns only the last token's logits. On libtorch each step and
+  each encoder block runs in a `Native.arena` of its own.
+
+`test/greedy_test.agc` checks the rules on hand-made logits and the segments
+over `test/fixtures/tokenizer.json`; `test/model_test.agc` checks the steps
+against the peer's full forward.
 
 ## Tests of the model
 
