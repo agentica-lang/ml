@@ -32,14 +32,11 @@ end
 
 enum Device
   Cpu
-  Cuda(Int)
 end
 
 enum Backend
   Reference
   Torch(Device)
-  Xla(Device)
-  Candle(Device)
   Trace
 end
 
@@ -199,7 +196,6 @@ def is_finite(x: Float) -> Bool = x - x == 0.0
 def device_name(device: Device) -> String
   case device
     Device.Cpu -> "Cpu"
-    Device.Cuda(n) -> "Cuda(#{n})"
   end
 end
 
@@ -208,8 +204,6 @@ def backend_name(backend: Backend) -> String
   case backend
     Backend.Reference -> "Reference"
     Backend.Torch(device) -> "Torch(#{device_name(device)})"
-    Backend.Xla(device) -> "Xla(#{device_name(device)})"
-    Backend.Candle(device) -> "Candle(#{device_name(device)})"
     Backend.Trace -> "Trace"
   end
 end
