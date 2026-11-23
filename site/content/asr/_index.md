@@ -76,3 +76,7 @@ Its `mathx` module is a small native module over libm (the C math library). A C 
 A window is 2 * `max_source_positions` frames of 160 samples. For Whisper's checkpoints that is 30 seconds of 16 kHz audio.
 
 `tools/transcribe_check.agc` compares the cases of `test/fixtures/transcribe_golden.json` with a real whisper-tiny checkpoint. It is run by hand, not by the tests. Against Hugging Face's `generate` on whisper-tiny, the token ids match.
+
+## Speed
+
+The [benchmarks folder](https://github.com/agentica-lang/ml/tree/main/benchmarks) times whisper-tiny against whisper.cpp on one machine, with the same weights, clips and threads. On the CPU the encoder is on par. The gap is in the decoder step, the log-mel and the load.
