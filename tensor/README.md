@@ -21,8 +21,8 @@ answers whether this machine has it, and the dispatch arm answers
   (`DESIGN.md` §9), and dispatches by value over the `Backend` arms: two
   compute backends (`Reference`, `Torch`), the `Trace` recorder that records a
   node instead of computing (§7, §10).
-- `trace.agc` — tracing and gradients: `value_and_grad`, `grad` and `eval`
-  call a function written against `tensor.agc` with tensors of the `Trace`
+- `trace.agc` — tracing and gradients: `value_and_grad`, `grad`, `eval` and
+  `eval_many` (several outputs, one evaluation) call a function written against `tensor.agc` with tensors of the `Trace`
   backend, derive the gradient graph with the same ops and run it on a real
   backend (`DESIGN.md` §10). `src/graph.agc` is the recording side the
   `Trace` arms call.
@@ -199,14 +199,16 @@ What it does: `zeros`, `ones`, `empty`, `full`, `like`, `arange`,
 `scalar_to_tensor`, `from_list`, `to_list` and `to_device` eagerly, plus
 `stop_grad` (the identity). Every other op answers an error naming it and
 pointing at `Trace`: ggml is fast only when a whole computation is one graph.
-`Trace.eval`, `Trace.value_and_grad` and `Trace.grad` on `Ggml` tensors lower
-the whole traced graph, forward and backward, to one ggml graph and run it
+`Trace.eval`, `Trace.eval_many`, `Trace.value_and_grad` and `Trace.grad` on
+`Ggml` tensors lower the whole traced graph, forward and backward, to one ggml
+graph and run it
 (`DESIGN.md` §7). The graph is cached by its structure (ops, shapes, dtypes,
 integer parameters), not by the values of its inputs, constants or fills, so a
 training loop that retraces every step compiles once. Inputs are read in place
 and outputs written into fresh tensors, with no copy. The ops lowered are those
-of an MLP and softmax cross-entropy with their gradients (the list is in §7);
-any other op, a dtype `F32` does not hold exactly and an output that is not
+of an MLP and softmax cross-entropy with their gradients, plus `slice` and
+`gather` (the list is in §7); a `gather` index outside the source's rows, any
+other op, a dtype `F32` does not hold exactly and an output that is not
 finite are errors. Vulkan computes in `F32`; `Tensor.vulkan_fp16(true)`, before
 any other ggml call (a CPU one or `Tensor.available` included), switches the
 whole process to fp16 `mul_mat`, which is faster and changes gradients by up to
@@ -223,7 +225,10 @@ the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan device.
 `test/ggml_compile_test.agc` checks the value and every gradient of a small MLP
 and of the cross-entropy against the reference within 1e-6 (relative to the
 largest value), on the CPU backend and on Vulkan, that a retrace with new values
-compiles nothing, and the refusals. `test/ggml_vulkan_mlp_test.agc` checks the
+compiles nothing, `slice` and `gather` (an index outside the rows is an error),
+and the refusals. `test/ggml_turns_test.agc`, in a process of its own, that a
+graph without fills does not write into the buffer the shared allocator freed
+when a larger graph grew it. `test/ggml_vulkan_mlp_test.agc` checks the
 benchmark's 784 → 512 → 512 → 10 model at batch 256 on Vulkan against ggml's CPU
 backend within 1.5e-6 (local only; `TENSOR_VULKAN_TOL` overrides the bound on
 another device), and `test/ggml_fp16_test.agc`, in a process of its own, that
@@ -235,29 +240,25 @@ module fails the checks instead of passing them.
 ### Step time through `Trace`
 
 `tools/bench-ggml.agc`: the MLP 784 → 512 → 512 → 10 of the spike, an SGD
-step through the public API (`value_and_grad`, then one `Trace.eval` per
-parameter for the update, since `Trace.eval` has one output: seven graphs),
-retraced every step. Milliseconds per step, median of 18 steps, on the Vega
-iGPU with `F32` `mul_mat`, against the spike's step compiled once as one graph
+step through the public API as `Train.fit` takes it: one `Trace.eval_many`
+traces the loss, its gradients and the update and runs them as one graph,
+retraced every step. Milliseconds per step, median of 18 steps, with `F32`
+`mul_mat`; before, the update ran as one more graph per parameter (seven
+graphs a step); the spike compiled its step once and ran it with no retrace
 (`spike/ggml-graph/README.md`, run B):
 
-| batch | step | of it `value_and_grad` | spike, one graph |
-|---|---|---|---|
-| 64 | 36.0 | 17.7 | 4.60 |
-| 256 | 33.0 | 20.5 | 7.19 |
-| 1024 | 36.1 | 26.6 | 18.89 |
-| 4096 | 94.2 | 84.7 | 67.92 |
+| batch | Vega iGPU, one graph | seven graphs | spike | ggml CPU, one graph | seven graphs |
+|---|---|---|---|---|---|
+| 64 | 11.8 | 36.3 | 4.60 | 8.6 | 26.4 |
+| 256 | 12.4 | 36.7 | 7.19 | 16.9 | 33.4 |
+| 1024 | 22.2 | 36.6 | 18.89 | 65.6 | 85.0 |
+| 4096 | 69.9 | 94.2 | 67.92 | 292.5 | 349.6 |
 
-The graph itself is as fast as the spike's: run back to back in C, the
-`value_and_grad` graph takes 4.4 ms at batch 64 against the spike's 4.85 ms.
-What costs the rest is the gap between runs. Retracing, differentiating and
-lowering a step takes about 1–3 ms in Agentica, and in that gap the iGPU drops
-to its lowest clock (200 MHz in `pp_dpm_sclk`), so the next graph runs about 3×
-slower; the spike ran its graph with no gap. Six more graphs for the update add
-a dispatch and a clock drop each. A training step that is one graph (the next
-PR) removes the second cost; the first is the price of retracing, which keeps
-`Trace` the only API. ggml's CPU backend runs the same step in 12.9 ms at 64 and
-25.2 ms at 256.
+At batch 4096 the graph is the step. Below it, what costs the rest is the gap
+between runs: retracing, differentiating and lowering a step takes about 1–3
+ms in Agentica, and in that gap the iGPU drops to its lowest clock (200 MHz in
+`pp_dpm_sclk`), so the next graph runs slower; the spike ran its graph with no
+gap. That gap is the price of retracing, which keeps `Trace` the only API.
 
 ## CI
 

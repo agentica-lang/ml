@@ -239,6 +239,45 @@ def test_graphs_that_take_turns_keep_their_values() -> Result[Void]
   gives([x], scaled(3.0), [63.0])
 end
 
+## `slice` and `gather` (one evaluation with three outputs) give the
+## reference's values on `backend`: multiples of 1/32, exact in F32.
+def windows_match(backend: Tensor.Backend) -> Result[Void]
+  xs = (0...24).to_a.map { |i| ((i * 7) % 32).to_f / 32.0 - 0.5 }
+  at = [3, 0, 1, 1]
+  outs = try Trace.eval_many([try floats(xs, [4, 3, 2], backend), try labels(at, backend)], &windows)
+  wants = try Trace.eval_many([try floats(xs, [4, 3, 2], REF), try labels(at, REF)], &windows)
+  try Test.eq(outs.size, 3)
+  for i in 0...3
+    try Test.eq(try Tensor.to_list(outs[i]), try Tensor.to_list(wants[i]))
+  end
+
+  ok()
+end
+
+## A slice of `a[0]`, its rows `a[1]`, and the rows of a slice.
+def windows(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  part = try Tensor.slice(a[0], [1, 1, 0], [3, 3, 2])
+  ok([part, try Tensor.gather(a[0], a[1]), try Tensor.gather(part, try Tensor.slice(a[1], [1], [3]))])
+end
+
+def test_slice_and_gather_match_the_reference() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  try windows_match(CPU)
+  return ok() if !Tensor.available(VULKAN)
+  windows_match(VULKAN)
+end
+
+def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  x = try floats([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [3, 2], CPU)
+  rows = ->(a: List[Tensor.Tensor]) { Tensor.gather(a[0], a[1]) }
+  try refused(Trace.eval([x, try labels([0, 3], CPU)], rows), "outside the rows")
+  try refused(Trace.eval([x, try labels([-1, 2], CPU)], rows), "outside the rows")
+  gives([x, try labels([2, 0], CPU)], rows, [5.0, 6.0, 1.0, 2.0])
+end
+
 def test_a_zero_fill_and_another_fill_are_two_graphs() -> Result[Void]
   return ok() if !try present(CPU)
 

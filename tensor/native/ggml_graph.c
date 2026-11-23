@@ -1,19 +1,19 @@
 /* The compiled graphs of the ggml backend (`src/lower.agc`): ONE ggml graph
    per traced evaluation, built once per structure and cached for the process.
 
-   A graph is built node by node in the order `lower.agc` sends (a
-   topological order); `compile` makes the cgraph, gives the fills and the
-   finiteness checks one small buffer, and checks every node against the
-   backend. The leaves (inputs, constants) and the outputs own no memory:
-   every call points them at the caller's tensors (`bind`) and at fresh ones
-   (`output`), so nothing is copied in or out; a leaf or output of another
-   type (an I32 tensor against the F32 graph) goes through a buffer of its own
-   and a converting copy instead. Intermediates are not the graph's either:
-   one graph allocator per device holds them, shared by every graph of that
-   device. So a graph waiting in the cache costs its tensors' metadata only.
-   Every run, under the device lock, re-plans the shared allocator when
-   another graph ran last, computes, and points the leaves and outputs back
-   at nothing. The allocator keeps the largest buffer any graph needed for the
+   A graph is built node by node in the order `lower.agc` sends (a topological
+   order); `compile` makes the cgraph, gives the fills, the finiteness checks
+   and the index checks of `gather` one small buffer, and checks every node
+   against the backend. The leaves (inputs, constants) and the outputs own no
+   memory: every call points them at the caller's tensors (`bind`) and at
+   fresh ones (`output`), so nothing is copied in or out; a leaf or output of
+   another type (an I32 tensor against the F32 graph) goes through a buffer of
+   its own and a converting copy instead. Intermediates are not the graph's
+   either: one graph allocator per device holds them, shared by every graph of
+   that device. So a graph waiting in the cache costs its tensors' metadata
+   only. Every run, under the device lock, re-plans the shared allocator when
+   another graph ran last, computes, and points the leaves and outputs back at
+   nothing. The allocator keeps the largest buffer any graph needed for the
    rest of the process.
 
    Two locks: `cache_lock` (the slots, who holds a graph, the counters) is
@@ -68,12 +68,15 @@ enum {
   OP_EQ,
   OP_LT,
   OP_WHERE,
+  OP_SLICE,  /* ints: the starts, row-major */
+  OP_GATHER, /* ints: the source's rank */
   OP_COUNT
 };
 
 static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
+  "slice", "gather",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -92,9 +95,10 @@ struct gnode {
   int lazy; /* t has fewer elements than ne and repeats to it */
   int zero; /* a fill of 0.0, possibly broadcast or reshaped */
   int arg;  /* a transpose's argument, for matmul's layout */
+  struct ggml_tensor *guard; /* a gather's count of indices out of range */
 };
 
-#define MAX_OUTPUTS 64
+#define MAX_OUTPUTS 256
 #define MAX_ENTRIES 32
 
 /* One graph of the cache. */
@@ -115,8 +119,8 @@ struct entry {
   struct ggml_tensor *fill_store; /* one F32 per fill; each fill is a view */
   int64_t fill_count;
   struct port outs[MAX_OUTPUTS];
-  struct ggml_tensor *checks; /* the sum of 0 * output, per output: NaN unless finite */
-  int64_t output_count;
+  struct ggml_tensor *checks; /* the sum of 0 * output per output (NaN unless finite), then the guards */
+  int64_t output_count, guard_count;
   struct ggml_tensor **inner; /* what the shared allocator places, every run */
   int64_t inner_count;
   bool compiled, in_use;
@@ -397,6 +401,40 @@ static struct ggml_tensor *rows_to_reduce(struct entry *p, const struct gnode *x
   return ggml_cont(p->ctx, ggml_transpose(p->ctx, ggml_reshape_2d(p->ctx, t, outer, inner)));
 }
 
+/* The window of `x` that starts at the row-major `starts` and is `ne` wide
+   (ggml order), made contiguous. */
+static struct ggml_tensor *slice(struct entry *p, const struct gnode *x, const int64_t *starts, int rank,
+                                 const int64_t ne[4]) {
+  struct ggml_tensor *t = dense(p, x);
+  size_t offset = 0;
+  int i;
+
+  for (i = 0; i < rank; i++) offset += (size_t)starts[i] * t->nb[rank - 1 - i];
+  return ggml_cont(p->ctx, ggml_view_4d(p->ctx, t, ne[0], ne[1], ne[2], ne[3], t->nb[1], t->nb[2], t->nb[3], offset));
+}
+
+/* The rows of `source` (its first row-major axis) that `indices` name, as
+   ggml_get_rows over a [width, rows] view. ggml reads out of bounds (or
+   aborts) on a bad index, so the indices are clamped to the rows first and
+   `guard` counts the ones that were outside: `run` refuses its result unless
+   that count is 0. */
+static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, int rank, const struct gnode *indices,
+                                  struct ggml_tensor **guard) {
+  int64_t rows = source->ne[rank - 1];
+  struct ggml_tensor *table = ggml_reshape_2d(p->ctx, dense(p, source), volume(source->ne) / rows, rows);
+  struct ggml_tensor *at = ggml_reshape_1d(p->ctx, dense(p, indices), volume(indices->ne));
+  float top = (float)(rows - 1);
+  /* relu(i) - relu(i - top) is i clamped to [0, top]; ggml_clamp works in place */
+  struct ggml_tensor *clamped =
+    ggml_sub(p->ctx, ggml_relu(p->ctx, at), ggml_relu(p->ctx, ggml_scale_bias(p->ctx, at, 1.0f, -top)));
+  /* step(-i - 0.5) + step(i - top - 0.5): 1 for an index below 0 or past top */
+  struct ggml_tensor *below = ggml_step(p->ctx, ggml_scale_bias(p->ctx, at, -1.0f, -0.5f));
+  struct ggml_tensor *above = ggml_step(p->ctx, ggml_scale_bias(p->ctx, at, 1.0f, -top - 0.5f));
+
+  *guard = ggml_sum(p->ctx, ggml_add(p->ctx, below, above));
+  return ggml_get_rows(p->ctx, table, ggml_cast(p->ctx, clamped, GGML_TYPE_I32));
+}
+
 /* Reads up to `max` ints; -2 when there are more, -1 when the cursor failed
    (the error is raised already), 0 when done. */
 static int read_ints(an_env *env, ggml_list_Int *list, int64_t *out, int max, int *n) {
@@ -433,7 +471,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   for (i = 0; i < nargs; i++) {
     if (args[i] < 0 || args[i] >= p->count) return tg_error(env, "an arg is not an earlier node");
   }
-  if (!room(p, 16)) return tg_error(env, "the graph ran out of room: it lowers to more ggml tensors than its capacity allows");
+  if (!room(p, 24)) return tg_error(env, "the graph ran out of room: it lowers to more ggml tensors than its capacity allows");
   {
     int64_t elements = 1;
 
@@ -446,7 +484,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if (nargs > 0) a = &p->nodes[args[0]];
   if (nargs > 1) b = &p->nodes[args[1]];
   if (nargs > 2) c = &p->nodes[args[2]];
-  if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT) {
+  if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT || op == OP_GATHER) {
     if (nargs != 2) return tg_error(env, "a binary op takes 2 args");
   } else if (op == OP_WHERE) {
     if (nargs != 3) return tg_error(env, "where takes 3 args");
@@ -580,6 +618,14 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         t = ggml_add(p->ctx, binary(p, ggml_mul, 1, b, a), ggml_mul(p->ctx, flip(p, dense(p, a)), full_of(p, c)));
       }
       break;
+    case OP_SLICE:
+      if (nints != rank) return tg_error(env, "slice takes one start per axis");
+      t = slice(p, a, ints, rank, n->ne);
+      break;
+    case OP_GATHER:
+      if (nints != 1 || ints[0] < 1 || ints[0] > 4) return tg_error(env, "gather takes the source's rank");
+      t = reshape(p, gather(p, a, (int)ints[0], b, &n->guard), n->ne);
+      break;
   }
   if (t == NULL) {
     snprintf(text, sizeof text, "ggml made no tensor for %s", op_names[op]);
@@ -596,6 +642,11 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   return ggml_result_Int_ok(env, p->count++);
 }
 
+/* `t` is `store` or a view into it; a graph without fills has no store. */
+static bool in(const struct ggml_tensor *t, const struct ggml_tensor *store) {
+  return store != NULL && (t == store || t->view_src == store);
+}
+
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
   struct entry *p = lease->e;
   int64_t outs[MAX_OUTPUTS];
@@ -603,15 +654,18 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   char text[256];
 
   if (p == NULL || p->compiled || p->graph != NULL) return tg_error(env, "the graph is compiled already, or its compile failed");
-  if ((r = read_ints(env, &outputs, outs, MAX_OUTPUTS, &nouts)) != 0) return bad_list(env, r, "at most 64 outputs");
+  if ((r = read_ints(env, &outputs, outs, MAX_OUTPUTS, &nouts)) != 0) return bad_list(env, r, "at most 256 outputs");
   if (nouts < 1) return tg_error(env, "a graph has at least one output");
   for (i = 0; i < nouts; i++) {
     if (outs[i] < 0 || outs[i] >= p->count) return tg_error(env, "an output is not a node");
   }
 
-  if (!room(p, (size_t)nouts * 8 + 1)) return tg_error(env, "the graph ran out of room for its outputs");
+  for (i = 0; i < p->count; i++) {
+    if (p->nodes[i].guard != NULL) p->guard_count++;
+  }
+  if (!room(p, (size_t)(nouts * 8 + p->guard_count + 1))) return tg_error(env, "the graph ran out of room for its outputs");
   p->graph = ggml_new_graph_custom(p->ctx, graph_size(p->capacity), false);
-  p->checks = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, nouts);
+  p->checks = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, nouts + p->guard_count);
   for (i = 0; i < nouts; i++) {
     struct gnode *n = &p->nodes[outs[i]];
     struct ggml_tensor *value = dense(p, n);
@@ -626,6 +680,13 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
   }
   p->output_count = nouts;
+  for (i = 0, j = nouts; i < p->count; i++) {
+    struct ggml_tensor *guard = p->nodes[i].guard;
+
+    if (guard != NULL) {
+      ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, guard, ggml_view_1d(p->fill_ctx, p->checks, 1, j++ * sizeof(float))));
+    }
+  }
   for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
     struct ggml_tensor *node = ggml_graph_node(p->graph, i);
 
@@ -645,8 +706,8 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     for (j = -1; j < GGML_MAX_SRC; j++) {
       struct ggml_tensor *t = j < 0 ? node : node->src[j];
 
-      if (t != NULL && !(t->flags & (GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT)) && t->view_src != p->fill_store &&
-          t->view_src != p->checks && t != p->fill_store && t != p->checks) {
+      if (t != NULL && !(t->flags & (GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT)) && !in(t, p->fill_store) &&
+          !in(t, p->checks)) {
         p->inner[p->inner_count++] = t;
       }
     }
@@ -743,7 +804,7 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
     if (!p->outs[i].set) return tg_error(env, "run with every output made");
   }
   i = 0;
-  values = (float *)malloc((size_t)(p->fill_count + p->output_count) * sizeof(float));
+  values = (float *)malloc((size_t)(p->fill_count + p->output_count + p->guard_count) * sizeof(float));
   if (values == NULL) return tg_error(env, "out of memory");
   checks = values + p->fill_count;
   while ((next = ggml_list_Float_next(env, &fills, &v)) == 1 && i < p->fill_count) values[i++] = (float)v;
@@ -776,7 +837,12 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
     d->planned = p;
     if (ggml_backend_graph_compute(p->backend, p->graph) != GGML_STATUS_SUCCESS) why = "ggml_backend_graph_compute failed";
   }
-  if (why == NULL) ggml_backend_tensor_get(p->checks, checks, 0, (size_t)p->output_count * sizeof(float));
+  if (why == NULL) {
+    ggml_backend_tensor_get(p->checks, checks, 0, (size_t)(p->output_count + p->guard_count) * sizeof(float));
+  }
+  for (i = p->output_count; why == NULL && i < p->output_count + p->guard_count; i++) {
+    if (checks[i] != 0.0f) why = "an index of gather is outside the rows of its source";
+  }
   for (i = 0; why == NULL && i < p->output_count; i++) {
     if (!isfinite(checks[i])) {
       snprintf(text, sizeof text, "output %" PRId64 " of the graph holds a value that is not finite", i);

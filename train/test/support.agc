@@ -4,6 +4,22 @@ import Tensor from "pkg/tensor/tensor"
 
 REF = Tensor.Backend.Reference
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
+GGML = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+
+## The ggml backends this machine has: its CPU backend when the module is
+## built, and Vulkan device 0 when ggml sees one. With `TENSOR_REQUIRE_GGML`
+## set to anything but "" (CI sets it) a missing module is an error.
+def ggml_backends() -> Result[List[Tensor.Backend]]
+  if !Tensor.available(GGML)
+    flag = System.env("TENSOR_REQUIRE_GGML")
+    return error("ggml required but not built (TENSOR_REQUIRE_GGML is set)") if flag.ok? and try flag != ""
+    return ok([])
+  end
+
+  return ok([GGML, VULKAN]) if Tensor.available(VULKAN)
+  ok([GGML])
+end
 
 def tensor(
   data: List[Float],

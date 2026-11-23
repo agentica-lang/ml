@@ -63,7 +63,7 @@ def test_the_seed_fixes_the_order_and_epochs_differ() -> Result[Void]
 end
 
 def test_prefetch_gives_the_synchronous_batches() -> Result[Void]
-  for backend in backends()
+  for backend in try backends()
     sync = Data.Loader(dataset: try rows(backend), batch_size: 3, seed: 5, prefetch: 0)
     ahead = Data.Loader(dataset: sync.dataset, batch_size: 3, seed: 5, prefetch: 2)
     try Test.eq(try values(sync, 3), try values(ahead, 3))
@@ -102,7 +102,7 @@ end
 
 ## Shuffled minibatches train the same with and without prefetch.
 def test_fit_through_prefetch_matches_the_synchronous_run() -> Result[Void]
-  for backend in backends()
+  for backend in try backends()
     d = try rows(backend)
     sync = try linear_fit(Data.Loader(dataset: d, batch_size: 3, seed: 2, prefetch: 0), backend)
     ahead = try linear_fit(Data.Loader(dataset: d, batch_size: 3, seed: 2, prefetch: 2), backend)
@@ -210,9 +210,10 @@ def torch_absent() -> Result[Void]
   Test.assert(!S.tensor([1.0], [1], Tensor.Dtype.F32, S.TORCH).ok?, "a torch tensor without the module")
 end
 
-def backends() -> List[Tensor.Backend]
-  return [S.REF, S.TORCH] if Tensor.available(S.TORCH)
-  [S.REF]
+def backends() -> Result[List[Tensor.Backend]]
+  ggml = try S.ggml_backends()
+  return ok([S.REF, S.TORCH] + ggml) if Tensor.available(S.TORCH)
+  ok([S.REF] + ggml)
 end
 
 def epoch(loader: Data.Loader, e: Int) -> Result[List[Data.Batch]]
