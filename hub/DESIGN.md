@@ -32,6 +32,9 @@ norm2  encoder_attn_layer_norm   cross_*        encoder_attn.{q,k,v,out}_proj
 norm3  final_layer_norm          up, down       fc1, fc2
 ```
 
+The test fixtures drop the `model.` part of the prefix
+(`decoder.layers.0.`); a real checkpoint keeps it.
+
 ## Decisions
 
 - **The format is checked whole at `open`**: the 8-byte header length (at

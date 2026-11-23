@@ -93,7 +93,7 @@ def encoder_block(
   ok(
     Nn.EncoderBlock(
       norm1: try layer_norm(c, names.norm1, eps, backend),
-      attention: try attention(c, [names.query, names.key, names.value, names.output], heads, backend),
+      attention: try attention(c, names.query, names.key, names.value, names.output, heads, backend),
       norm2: try layer_norm(c, names.norm2, eps, backend),
       mlp: Nn.Mlp(
         up: try dense(c, names.up, backend),
@@ -112,13 +112,20 @@ def decoder_block(
   eps: Float,
   backend: Tensor.Backend,
 ) -> Result[Nn.DecoderBlock]
-  cross = [names.cross_query, names.cross_key, names.cross_value, names.cross_output]
   ok(
     Nn.DecoderBlock(
       norm1: try layer_norm(c, names.norm1, eps, backend),
-      self_attention: try attention(c, [names.query, names.key, names.value, names.output], heads, backend),
+      self_attention: try attention(c, names.query, names.key, names.value, names.output, heads, backend),
       norm2: try layer_norm(c, names.norm2, eps, backend),
-      cross_attention: try attention(c, cross, heads, backend),
+      cross_attention: try attention(
+        c,
+        names.cross_query,
+        names.cross_key,
+        names.cross_value,
+        names.cross_output,
+        heads,
+        backend,
+      ),
       norm3: try layer_norm(c, names.norm3, eps, backend),
       mlp: Nn.Mlp(
         up: try dense(c, names.up, backend),
@@ -131,15 +138,22 @@ end
 
 private
 
-## The four projections named by `prefixes`, in the order query, key, value,
-## output.
-def attention(c: Hub.Checkpoint, prefixes: List[String], heads: Int, backend: Tensor.Backend) -> Result[Nn.Attention]
+## The four projections of one attention, by prefix.
+def attention(
+  c: Hub.Checkpoint,
+  query: String,
+  key: String,
+  value: String,
+  output: String,
+  heads: Int,
+  backend: Tensor.Backend,
+) -> Result[Nn.Attention]
   ok(
     Nn.Attention(
-      query: try dense(c, prefixes[0], backend),
-      key: try dense(c, prefixes[1], backend),
-      value: try dense(c, prefixes[2], backend),
-      output: try dense(c, prefixes[3], backend),
+      query: try dense(c, query, backend),
+      key: try dense(c, key, backend),
+      value: try dense(c, value, backend),
+      output: try dense(c, output, backend),
       heads: heads,
     ),
   )

@@ -158,7 +158,7 @@ end
 ## The additive `[size, size]` mask that keeps query `i` off the keys after
 ## it: `0.0` where `key <= i`, `MASKED` above the diagonal. It is the `mask`
 ## of `attention`, built from `arange`, `lt` and `where`, so on `Trace` it is
-## a leaf with no gradient.
+## a constant, never differentiated.
 def causal_mask(size: Int, dtype: Tensor.Dtype, backend: Tensor.Backend) -> Result[Tensor.Tensor]
   return error("causal_mask needs size >= 1, got #{size}") if size < 1
   square = [size, size]

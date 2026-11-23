@@ -60,8 +60,10 @@ def test_the_gradient_through_a_gelu_encoder_block_matches_a_central_difference(
   check(args, ->(ps: List[Tensor.Tensor]) { block_loss(ps, fixed.map { |t| Trace.constant(t) }) })
 end
 
-## Only the input is differentiated (each of its values costs two more
-## passes); the block's `F32` weights enter as `F64` constants.
+## The input of a decoder block, then its encoder output (keys and values of
+## the cross-attention), each in a test of its own: every value costs two more
+## passes, and each test adds to the file's step budget. The block's `F32`
+## weights enter as `F64` constants.
 def test_the_gradient_of_a_decoder_block_input_matches_a_central_difference() -> Result[Void]
   memory = Trace.constant(try filler([1, 3, 2], 9))
   block = try lift_block(try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF))
@@ -69,6 +71,12 @@ def test_the_gradient_of_a_decoder_block_input_matches_a_central_difference() ->
     [try filler([1, 2, 2], 10)],
     ->(ps: List[Tensor.Tensor]) { squared(try Nn.decoder_block(block, ps[0], memory)) },
   )
+end
+
+def test_the_gradient_of_a_decoder_block_memory_matches_a_central_difference() -> Result[Void]
+  x = Trace.constant(try filler([1, 1, 2], 10))
+  block = try lift_block(try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF))
+  check([try filler([1, 2, 2], 9)], ->(ps: List[Tensor.Tensor]) { squared(try Nn.decoder_block(block, x, ps[0])) })
 end
 
 ## `sum(encoder_block(x)^2)` with a gelu `mlp` and bias-free weights, for

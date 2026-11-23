@@ -155,7 +155,13 @@ def test_a_decoder_block_over_a_longer_memory_matches_the_naive_model() -> Resul
     try S.expect_close(try S.floats_of(got), want, ABS, REL, "decoder_block")
   end
 
-  ok()
+  Test.error?(
+    Nn.decoder_block(
+      try Nn.init_decoder_block(4, 2, 8, Nn.Activation.Relu, 19, S.REF),
+      try S.f32(x, [6, 4]),
+      try S.f32(memory, [10, 4]),
+    ),
+  )
 end
 
 def test_a_later_token_does_not_change_the_earlier_decoder_outputs() -> Result[Void]

@@ -55,15 +55,17 @@ that are the layer's own (rank of `positional`, table length, heads).
   (`tensor/DESIGN.md` §10). The tests check `dense`, a relu and a silu
   `mlp`, `embedding` with `positional`, a gelu `encoder_block` (the
   gradient of its input and of one gamma) and a silu `decoder_block` (its
-  input) against a central difference.
+  input and its encoder output) against a central difference.
 - **The decoder is Whisper's, pre-norm.** Self-attention is causal and
   cross-attention reuses `attention(p, queries, memory)`: queries come from
   the decoder and keys and values from the encoder output, so `t` and `s`
   differ freely (`multi_head_attention` already allows it). The causal mask is
   the additive bias that `mask` already takes, built from `arange`, `lt` and
   `where` on the input's backend, so it costs no new op and, on `Trace`, is a
-  leaf with no gradient. `MASKED` is `-1e9`, not `-inf`: finite, and far
-  enough down that its softmax weight is `0`. No KV cache and no decode loop
+  constant, never differentiated. `MASKED` is `-1e9`, not `-inf`: finite, and
+  far enough down that its softmax weight is `0`. It assumes an `F32` or `F64`
+  compute dtype and a row with at least one key it may see (the causal mask
+  always leaves the diagonal). No KV cache and no decode loop
   yet: each call recomputes every position.
 - **Weights are `[in, out]`** (`x w`, as `Tensor.linear` takes them).
   Hugging Face and PyTorch checkpoints store `[out, in]`, so `hub/` transposes

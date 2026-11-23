@@ -1,8 +1,8 @@
 ## `nn/` layers loaded by name: a dense layer, a layer norm and a
 ## Whisper-style decoder block give the forward pass the Python peer computed,
 ## on the reference and on libtorch, and a Whisper-style encoder block loads
-## and runs. Where libtorch is not
-## installed, the test asserts that absence instead (`tensor/README.md`, "CI").
+## and runs. Where libtorch is not installed, the test asserts that absence
+## instead (`tensor/README.md`, "CI").
 
 import Hub from "../hub"
 import Load from "../load"

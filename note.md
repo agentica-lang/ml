@@ -59,7 +59,8 @@ Ningún subagente sigue corriendo.
 1. **`grad`**: faltan reglas para `pow`, `clamp`, `batch_matmul`,
    `to_dtype` entre floats, `conv1d` y `avg_pool1d`, y el scatter-add de
    `gather` (ml#25).
-2. **`nn/`**: decoder en #26. Siguiente: caché KV y bucle de decodificación
+2. **`nn/`**: decoder en #26. Siguiente: caché KV (con ella, un `mask`
+   opcional en `decoder_block` para padding) y bucle de decodificación
    (greedy sobre `decoder_block`), luego conv, `rms_norm`, y `gelu` en
    libtorch (`gelu_tanh_approx`, en `tensor/`).
 3. **`train/`**: mergeado (#21); softmax cross-entropy mergeado (#24). Después:
