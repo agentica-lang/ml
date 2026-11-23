@@ -1,0 +1,24 @@
+name = "ggml-vulkan-spike"
+agentica = "0.35.0"
+
+# Every bare `end` is followed by an empty line, as in the packages of this
+# repository.
+[style]
+blank_line_after_end = true
+
+[dependencies]
+native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.4.0", subdir = "native-gen" }
+
+# The native side: a thin C layer over the pinned ggml submodule
+# (`third_party/ggml`, built by `tools/build-ggml.sh`). The build table names
+# `.c` sources, `-l` libraries and nothing else, so ggml's include and library
+# directories arrive through `C_INCLUDE_PATH` and `LIBRARY_PATH`, which that
+# script prints (the same contract as `spike/m0/tools/build-torch.sh` and
+# `tensor/tools/build-torch.sh`). `optional = true` keeps the spike runnable
+# where ggml is not built or the Vulkan loader is missing: the programs say so
+# instead of pretending to measure something. The static link order is the one
+# ggml's own build needs: `ggml` pulls the backends, each backend pulls
+# `ggml-base`, and `vulkan` is the loader the Vulkan backend calls into.
+[native.ggmlspike]
+optional = true
+build = { sources = ["native/ggmlspike.c"], libs = ["ggml", "ggml-vulkan", "ggml-cpu", "ggml-base", "vulkan", "stdc++", "m", "pthread"] }

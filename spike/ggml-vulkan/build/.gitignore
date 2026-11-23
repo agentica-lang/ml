@@ -1,0 +1,5 @@
+# ggml's two build trees (`tools/build-ggml.sh` makes them here). They are
+# build output: no binaries are committed, and the submodule is the only
+# third-party artifact in git.
+*
+!.gitignore
