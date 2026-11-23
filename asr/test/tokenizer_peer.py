@@ -43,6 +43,7 @@ def main():
         "transcribe": added["<|transcribe|>"],
         "no_timestamps": added["<|notimestamps|>"],
         "timestamp_begin": added["<|0.00|>"],
+        "vocab_size": 1 + max(list(added.values()) + list(tok["model"]["vocab"].values())),
         "languages": [[c, i] for i, c in languages],
     }
     print(json.dumps({"texts": texts, "special": special}))

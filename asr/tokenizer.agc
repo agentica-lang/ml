@@ -12,14 +12,19 @@ end
 struct Tokenizer
   ## The byte-level text of each text token, by id.
   pieces: List[String]
+  ## One more than the largest id of the vocabulary and the added tokens.
+  vocab_size: Int
+  ## False for the English-only checkpoints (`.en`), whose `eot` is 50256.
+  multilingual: Bool
   eot: Int
   sot: Int
-  ## The language tokens, in id order: the ids between `sot` and `translate`.
+  ## The language tokens, in id order: the ids between `sot` and `translate`;
+  ## none for an English-only checkpoint.
   languages: List[Language]
   translate: Int
   transcribe: Int
   no_timestamps: Int
-  ## `<|0.00|>`; the id `timestamp_begin + n` is `n * 0.02` seconds.
+  ## `<|0.00|>`; the id `timestamp_begin + n` is `n / 50` seconds.
   timestamp_begin: Int
 end
 
@@ -35,32 +40,44 @@ def open(path: String) -> Result[Tokenizer]
 end
 
 ## The tokenizer of the text of a `tokenizer.json`: the vocabulary of its BPE
-## model and its added tokens, which must name the special tokens.
+## model and its added tokens, which must name the special tokens in Whisper's
+## order (`eot < sot < translate < transcribe < notimestamps`).
 def parse(text: String) -> Result[Tokenizer]
   file = try JSON.decode(text, Json)
   added: Map[String, Int] = {}
+  top = 0
   for t in file.added_tokens
     added = added.put(t.content, t.id)
+    top = [top, t.id + 1].max.unwrap!
   end
 
   eot = try special(added, "<|endoftext|>")
   sot = try special(added, "<|startoftranscript|>")
   translate = try special(added, "<|translate|>")
+  transcribe = try special(added, "<|transcribe|>")
   no_timestamps = try special(added, "<|notimestamps|>")
+  if not (
+    0 < eot and eot < LIMIT and eot < sot and sot < translate and translate < transcribe and transcribe < no_timestamps
+  )
+    return error("the special tokens are out of Whisper's order: #{[eot, sot, translate, transcribe, no_timestamps]}")
+  end
+
   pieces = List.repeat("", eot)
   ids = file.model.vocab.values
   texts = file.model.vocab.keys
   for i in 0...ids.size
     id = ids[i]
     return error("the vocabulary has a negative id #{id}") if id < 0
+    top = [top, id + 1].max.unwrap!
     if id < eot
       pieces = pieces.set(id, texts[i])
     end
   end
 
+  multilingual = eot != ENGLISH_EOT
   languages: List[Language] = []
   for t in (file.added_tokens.sort_by { |a| a.id })
-    if t.id > sot and t.id < translate
+    if multilingual and t.id > sot and t.id < translate
       code = t.content.replace("<|", "").replace("|>", "")
       languages = languages.push(Language(code: code, id: t.id))
     end
@@ -69,11 +86,13 @@ def parse(text: String) -> Result[Tokenizer]
   ok(
     Tokenizer(
       pieces: pieces,
+      vocab_size: top,
+      multilingual: multilingual,
       eot: eot,
       sot: sot,
       languages: languages,
       translate: translate,
-      transcribe: try special(added, "<|transcribe|>"),
+      transcribe: transcribe,
       no_timestamps: no_timestamps,
       timestamp_begin: no_timestamps + 1,
     ),
@@ -86,7 +105,7 @@ end
 def decode(tok: Tokenizer, ids: List[Int]) -> Result[String]
   bytes: List[Int] = []
   for id in ids
-    return error("no token has the id #{id}") if id < 0
+    return error("no token has the id #{id}") if id < 0 or id >= tok.vocab_size
     next if id >= tok.eot
     for c in tok.pieces[id].split("")
       code = c.code
@@ -104,17 +123,22 @@ def decode(tok: Tokenizer, ids: List[Int]) -> Result[String]
 end
 
 ## The prompt that starts the decoder: `<|startoftranscript|>`, the language
-## token (none leaves it to the language detection), the job token, and
-## `<|notimestamps|>` when `timestamps` is false.
+## token, the job token, and `<|notimestamps|>` when `timestamps` is false.
+## With no language it is `<|startoftranscript|>` alone, so the decoder's next
+## token is the language. An English-only checkpoint has no language or job
+## token: `language` and `job` are ignored.
 def prompt(tok: Tokenizer, language: Optional[String], job: Job, timestamps: Bool) -> Result[List[Int]]
-  out = case language
-    some(code) -> [tok.sot, try language_id(tok, code)]
-    none -> [tok.sot]
-  end
+  out = [tok.sot]
+  if tok.multilingual
+    case language
+      some(code) -> out = out.push(try language_id(tok, code))
+      none -> return ok(out)
+    end
 
-  out = case job
-    Job.Transcribe -> out.push(tok.transcribe)
-    Job.Translate -> out.push(tok.translate)
+    out = case job
+      Job.Transcribe -> out.push(tok.transcribe)
+      Job.Translate -> out.push(tok.translate)
+    end
   end
 
   return ok(out) if timestamps
@@ -131,8 +155,8 @@ end
 
 ## The time of a timestamp token, in seconds, or none for another token.
 def seconds(tok: Tokenizer, id: Int) -> Optional[Float]
-  return none if id < tok.timestamp_begin
-  some((id - tok.timestamp_begin).to_f * TIME_STEP)
+  return none if id < tok.timestamp_begin or id >= tok.vocab_size
+  some((id - tok.timestamp_begin).to_f / 50.0)
 end
 
 private
@@ -147,8 +171,11 @@ BYTE_OF = (0...(256 + HIDDEN.size)).to_a.map do |c|
   c
 end
 
-## Seconds per timestamp step.
-TIME_STEP = 0.02
+## The `eot` of the English-only checkpoints, whose vocabulary has no
+## language tokens before it.
+ENGLISH_EOT = 50256
+## A bound on the special ids, so a bad file cannot ask for a huge table.
+LIMIT = 1000000
 
 ## The fields of `tokenizer.json` that decoding needs.
 struct Json

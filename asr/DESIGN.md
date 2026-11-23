@@ -102,25 +102,31 @@ so no text is ever encoded.
   with their ids. The merges are not needed to decode.
 - **Special tokens are found by id.** The added tokens give the ids of
   `<|endoftext|>`, `<|startoftranscript|>`, `<|translate|>`,
-  `<|transcribe|>` and `<|notimestamps|>`; every id from `<|endoftext|>` on is
-  special and gives no text. The language tokens are the ids between
+  `<|transcribe|>` and `<|notimestamps|>`, which must come in that order;
+  every id from `<|endoftext|>` on is special and gives no text, and an id
+  from `vocab_size` on is an error. The language tokens are the ids between
   `<|startoftranscript|>` and `<|translate|>` (99 in the first checkpoints,
   100 in large-v3), and the timestamps start right after `<|notimestamps|>`,
-  0.02 s apart.
+  50 a second.
+- **English-only checkpoints** (`.en`) have `<|endoftext|>` at 50256 where
+  the others have 50257: `multilingual` is false, `languages` is empty, and
+  the prompt has no language or job token.
 - **Decoding joins bytes first**: each character of a token's text stands for
   one byte (GPT-2's byte-level alphabet), the bytes of all the tokens are
   joined, and only then read as UTF-8, so a character split across tokens
   comes back whole; a broken one becomes U+FFFD, as Python's `"replace"`.
-- `prompt` is `<|startoftranscript|>`, the language token (none leaves it to
-  the language detection), `<|transcribe|>` or `<|translate|>`, and
-  `<|notimestamps|>` unless timestamps are wanted.
+- `prompt` is `<|startoftranscript|>`, the language token, `<|transcribe|>`
+  or `<|translate|>`, and `<|notimestamps|>` unless timestamps are wanted.
+  With no language it is `<|startoftranscript|>` alone: the decoder's next
+  token is then the language.
 
 `test/tokenizer_test.agc` decodes a tiny vocabulary made for the tests
 (`test/fixtures/tokenizer.json`) and checks it against
-`test/tokenizer_peer.py` (standard library only). Checked once against
-whisper-tiny's `tokenizer.json`: 206 id lists (5 encoded texts in five
-scripts, 200 random ones, one with the prompt and timestamps) decode as the
-peer and as Hugging Face's `WhisperTokenizerFast` do; it loads in about
+`test/tokenizer_peer.py` (standard library only); it also builds files with
+the special ids of whisper-tiny, whisper-large-v3 and whisper-tiny.en. Checked
+once against whisper-tiny's `tokenizer.json`: 206 id lists (5 encoded texts in
+five scripts, 200 random ones, one with the prompt and timestamps) decode as
+the peer and as Hugging Face's `WhisperTokenizerFast` do; it loads in about
 0.1 s.
 
 ## Tests of the model
