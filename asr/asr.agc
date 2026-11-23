@@ -3,7 +3,7 @@
 ##
 ## `encode` turns a log-mel batch into the encoder output; `decode` turns
 ## token ids and that output into logits. Inference only; the log-mel frontend
-## is `mel.agc`. No tokenizer and no decoding loop yet.
+## is `mel.agc` and the tokenizer `tokenizer.agc`. No decoding loop yet.
 
 import Hub from "pkg/hub/hub"
 import Load from "pkg/hub/load"
