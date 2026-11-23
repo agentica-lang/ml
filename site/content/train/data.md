@@ -59,8 +59,8 @@ end
 
 - Each epoch is a permutation of the rows. It comes from the seed and the epoch number, so a seed gives the same order each time, and two epochs give different orders.
 - `Data.order(loader, epoch)` gives the rows of an epoch. With `shuffle: false` the rows come in order.
-- A shuffled batch is one `from_list` of its row ids, then one `gather` per tensor. The row ids are `I64`.
-- An unshuffled batch is one `slice` per tensor.
+- Each batch is one `from_list` of its row ids, `I32`, in order when not shuffled, then one `gather` per tensor.
+- The `from_list` and both gathers run as one traced evaluation, so a backend that computes only whole graphs (`Ggml`) makes batches too.
 - `s` and `-s` are the same seed. Seeds below `2^20` and epochs below `2048` give distinct starting states, so their orders differ.
 
 ## Feeding by hand
@@ -69,7 +69,7 @@ end
 
 - `Data.feed(loader, epochs)` starts the feed. With `prefetch > 0` it also starts a task.
 - `Data.epoch(feed, e)` gives the feed for epoch `e`, counting from 1.
-- `Data.take(feed, i)` gives batch `i` of the epoch. A `Data.Batch` has `inputs`, `targets` and `index`, the row ids of a shuffled batch.
+- `Data.take(feed, i)` gives batch `i` of the epoch. A `Data.Batch` has `inputs`, `targets` and `index`, the row ids of the batch.
 - `Data.release(batch)` frees the batch's native tensors. Call it when the step is done.
 - `Data.stop(feed)` ends the prefetch task. Call it when you are done, including after an error.
 
@@ -83,7 +83,8 @@ end
 
 ## Limits
 
-- The loader's batch ops run eagerly, so its dataset must be on `Reference` or `Torch`. The `Ggml` backend does not run them.
+- On `Ggml`, the source of a batch's `gather` holds at most 2^24 rows, so a dataset of more rows must be on `Reference` or `Torch`.
+- A batch is one compiled graph per batch shape on `Ggml`, so a last partial batch costs a second graph.
 - A dataset must have fewer than 2 147 483 646 rows.
 - The shuffle runs as VM steps, `O(N)` for each epoch, and counts against `--max-steps` like any Agentica code.
 - `fit` retraces the loss on every step, so each step pays the trace again.

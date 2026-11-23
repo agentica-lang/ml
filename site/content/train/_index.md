@@ -4,7 +4,7 @@ description: Losses, SGD and Adam, and Train.fit, a training loop over the gradi
 weight: 3
 ---
 
-`train` trains a model. A model is a loss function of a parameter list and a batch. `Train.fit` traces that function, evaluates the loss and its gradients on the parameters' backend, and hands the gradients to an optimizer. Each step is one traced evaluation: the loss is traced once, and its value and gradients come from one run of the graph.
+`train` trains a model. A model is a loss function of a parameter list and a batch. `Train.fit` traces that function, and an optimizer updates the parameters from its gradients. Each step is one traced evaluation: `fit` traces the loss, its gradients and the optimizer update, and runs them together, so the value, the gradients and the new parameters come from one run of the graph.
 
 The batches come from a data loader, which has [its own page](data.md).
 
@@ -70,10 +70,11 @@ The optimizers are pure. `Optim.init(optimizer, params)` makes the state, and `O
 - `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1) and `loss`. `fit` prints nothing.
 - A failed step stops `fit` with an error that names the epoch and the batch, for example `epoch 1, batch 0: ...`.
 
-Parameters are a plain `List[Tensor.Tensor]`, the list that `Trace.value_and_grad` takes. The loss rebuilds the layer structs from that list, for example `Nn.Dense(w: ps[0], b: some(ps[1]))`.
+Parameters are a plain `List[Tensor.Tensor]`, the list that `Trace` takes. The loss rebuilds the layer structs from that list, for example `Nn.Dense(w: ps[0], b: some(ps[1]))`.
 
 ## Limits
 
 - Every step retraces the loss, so the trace cost is paid on each step. On the reference backend, one epoch of the 2-8-1 MLP of the XOR test, with four rows, costs about 75 000 VM steps.
 - The loss must return a float scalar. An op with no backward rule, listed on the [tensor page](../tensor/_index.md), makes `fit` fail.
-- On `Ggml`, the losses and the optimizers use only ops that ggml lowers. The data loader's batch ops run eagerly, so its dataset must be on `Reference` or `Torch`.
+- On `Ggml`, the step is one compiled graph with at most 256 outputs: the loss, the new parameters and the optimizer's moments. That allows about 85 parameters with Adam, 127 with momentum SGD and 255 with plain SGD.
+- The losses and the optimizers use only ops that ggml lowers, so a batch and its step run on `Ggml` when the dataset is on `Ggml`.

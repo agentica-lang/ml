@@ -83,13 +83,14 @@ libtorch and ggml are never vendored: `tensor/README.md` has the setup.
 - `Trace.eval(args, f)` gives the value of `f` on the backend of `args`.
 - `Trace.grad(args, f)` gives the gradient of a scalar function for each argument.
 - `Trace.value_and_grad(args, f)` gives `value` and `grads` from one evaluation.
+- `Trace.eval_many(args, f)` gives several tensors from one evaluation: `f` answers a `List` of tensors, and on `Ggml` they are one compiled graph.
 - `Trace.constant(t)` lifts a tensor from outside, such as data or labels, into the trace. The gradient is not taken for it.
 
 Ops with no backward rule make the gradient an error that names the op: `pow`, `clamp`, `to_dtype`, `batch_matmul`, `conv1d`, `avg_pool1d`, and a `to_device` across devices.
 
 `gelu_erf` is refused by `Trace`; use `gelu_tanh_approx` when you train.
 
-On `Ggml`, `Trace.eval`, `grad` and `value_and_grad` compile the whole graph, forward and backward, into one ggml graph. The graph is cached by its structure, so a retrace with new values compiles nothing. ggml lowers the ops of an MLP and of softmax cross-entropy with their gradients; `tensor/DESIGN.md` §7 has the list.
+On `Ggml`, `Trace.eval`, `eval_many`, `grad` and `value_and_grad` compile the whole graph, forward and backward, into one ggml graph. The graph is cached by its structure, so a retrace with new values compiles nothing. ggml lowers the ops of an MLP and of softmax cross-entropy with their gradients, plus `slice` and `gather`; `tensor/DESIGN.md` §7 has the list.
 
 ## Dtypes and fp16
 
@@ -102,8 +103,9 @@ On `Ggml`, `Trace.eval`, `grad` and `value_and_grad` compile the whole graph, fo
 ## Limits
 
 - Exact integers: `F32` holds integers exactly up to 2^24 (16 777 216). On ggml, an `I32` value beyond that, or an `arange` or fill beyond it, is an error, not a wrong number.
-- Output cap: one ggml graph returns at most 64 outputs. `value_and_grad` returns the value and one gradient per argument, so ggml takes at most 63 arguments.
+- Output cap: one ggml graph returns at most 256 outputs. `value_and_grad` returns the value and one gradient per argument, so ggml takes at most 255 arguments.
 - Rank: ggml holds tensors of rank 4 at most.
+- Gather: on ggml, the source of a `gather` holds at most 2^24 rows, because its integer indices are exact in `F32` only below that.
 - Non-finite values: `exp`, `log`, `sqrt`, `pow`, `sigmoid`, `tanh` and `gelu_tanh_approx` refuse `NaN` and infinite inputs, and a ggml output that is not finite is an error.
 - Integers: an integer overflow is an error, never a wrap-around. On libtorch, readback of `I64` past 2^53 loses precision.
 - Speed: `Reference` is for checks. On one machine, a 64 x 64 matmul took about 6.6 ms there and 33 µs on libtorch (`tensor/README.md`).
