@@ -24,7 +24,10 @@
 # ggml is never compiled twice. A miss builds in the tree (through ccache when
 # it is on PATH) and then publishes the entry whole (a temp dir, then `mv`),
 # under a lock per key, so two scripts that need the same entry build it once.
-# `ENGINE_REBUILD=1` wipes the tree and rebuilds the entry.
+# `ENGINE_REBUILD=1` wipes the tree and rebuilds the entry. An inherited `CC` or
+# `CXX` (`tools/build-torch.sh` sets `CC=g++` for the torch module) is ignored
+# here: ggml is configured and built with the default `cc` and `c++`, so the
+# key and the entry are the same whether or not torch was set up first.
 #
 # The module's build table names one library, `tensor_ggml`. This script
 # writes it into the cache entry as a GNU ld linker script that lists ggml's
@@ -127,9 +130,9 @@ rev=$(git -C "$engine" rev-parse HEAD 2> /dev/null || true)
   echo "build-engine.sh: cannot read the ggml commit of third_party/ggml" >&2
   exit 1
 }
-hash() { sha256sum | cut -c1-8; }
-flags_hash=$(printf 'v1 %s' "$flags" | hash)
-cc_hash=$({ ${CC:-cc} --version | head -n 1; ${CXX:-c++} --version | head -n 1; } 2> /dev/null | hash)
+short_hash() { sha256sum | cut -c1-8; }
+flags_hash=$(printf 'v1 %s' "$flags" | short_hash)
+cc_hash=$({ cc --version | head -n 1; c++ --version | head -n 1; } 2> /dev/null | short_hash)
 key="$(printf '%s' "$rev" | cut -c1-12)-$action-$flags_hash-$cc_hash"
 cache="${AGENTICA_ML_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agentica-ml}/ggml"
 entry="$cache/$key"
@@ -161,13 +164,13 @@ fi
 
 mkdir -p "$build"
 # shellcheck disable=SC2086
-cmake -S "$engine" -B "$build" $flags > "$build/configure.log" 2>&1 || {
+env -u CC -u CXX cmake -S "$engine" -B "$build" $flags > "$build/configure.log" 2>&1 || {
   echo "build-engine.sh: the $action configure failed; its log:" >&2
   tail -20 "$build/configure.log" >&2
   exit 1
 }
 # shellcheck disable=SC2086
-cmake --build "$build" --target $targets -j"$jobs" >&2
+env -u CC -u CXX cmake --build "$build" --target $targets -j"$jobs" >&2
 
 tmp=$(mktemp -d "$cache/.tmp-XXXXXX")
 chmod 755 "$tmp"
