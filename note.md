@@ -1,6 +1,6 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-23. `main` en `926da75`. Abierto: el primer PR de `hub/`
+Fecha: 2026-11-23. `main` en `31e2609`. Abierto: el primer PR de `hub/`
 (rama `hub`). Este fichero es el parte de estado: lo hecho, lo que
 quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 `roadmap.md`; el contrato del tensor, en `tensor/DESIGN.md`.
