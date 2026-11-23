@@ -81,7 +81,8 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   cancelled while it holds the map loses it; the next caller whose take times
   out (50 ms; a slow holder takes the same path) puts a new, empty map in the
   channel, which costs one round of compiles. A channel that was closed makes
-  every call compile, as before. The token ids and positions are I32, which ggml holds.
+  every call compile, as before. The token ids and positions are I32, which
+  ggml holds.
 
 ## The log-mel frontend (`mel.agc`)
 
