@@ -7,8 +7,9 @@ libtorch's C++ API (as `tch-rs` is, in spirit). The contract is
 [`DESIGN.md`](DESIGN.md).
 
 libtorch is a **system dependency**, never vendored and never downloaded by
-this repository: `tools/build-torch.sh` finds it through `TORCH_DIR` (or the
-usual `/opt`, `/usr/local` and `$HOME/opt` places), and the module is
+this repository: `tools/build-torch.sh` finds it through `TORCH_DIR`, or in
+`/opt/libtorch`, `/usr/local/libtorch`, `/usr/lib/libtorch`, `$HOME/opt/libtorch`
+or `$HOME/libtorch`, and the module is
 `optional = true` in `agentica.toml`, so a checkout without libtorch still
 checks, formats and tests. `Tensor.available(Tensor.Backend.Torch(Tensor.Device.Cpu))`
 answers whether this machine has it, and the dispatch arm answers
@@ -16,8 +17,10 @@ answers whether this machine has it, and the dispatch arm answers
 
 - `tensor.agc` — the public API. Every op returns `Result` (`error`, never a
   halt), validates shape/dtype/backend/device before it dispatches
-  (`DESIGN.md` §9), and dispatches by value over the five `Backend` arms
-  (§7; `Trace` records a node instead of computing, §10).
+  (`DESIGN.md` §9), and dispatches by value over the `Backend` arms: two
+  compute backends (`Reference`, `Torch`), the `Trace` recorder that records a
+  node instead of computing (§7, §10), and the stubs `Xla` and `Candle`, which
+  answer `error`.
 - `trace.agc` — tracing and gradients: `value_and_grad`, `grad` and `eval`
   call a function written against `tensor.agc` with tensors of the `Trace`
   backend, derive the gradient graph with the same ops and run it on a real
@@ -59,7 +62,7 @@ change that lets the backend move out into its own package again.
 
 `DESIGN.md` §3.1 names 45 primitives. Both backends compute them: the
 **reference computes all 45**, and the **libtorch backend implements 42** and
-answers `error("<op> is not implemented on the torch backend yet")` for the
+answers `error("<op> is not implemented on the torch backend yet (see tensor/README.md)")` for the
 other three, so the gap is an error naming the op, never a wrong number. Every
 implemented one is checked against the reference on the same inputs, values and
 shape/dtype, plus its error paths.
@@ -88,8 +91,8 @@ Why those three are out:
   untested. `multi_head_attention` does not need it: it splits heads into
   rank-2 `matmul` calls (§3.2).
 - **`to_device`** would only move a tensor to the one device this CPU release
-  serves, which is the identity; `Cuda` is already `error("backend not
-  available")` at the module level.
+  serves, which is the identity; a `Cuda` device is already an `error`
+  (`<op> runs on Cpu only`).
 
 `conv1d`/`avg_pool1d` take the window `DESIGN.md` §3.1 admits and no more:
 `stride` ≥ 1 and `padding` ≥ 0, no dilation, no groups. `avg_pool1d` also caps

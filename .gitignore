@@ -9,5 +9,4 @@ models/
 # The documentation site: the Hugo output (make site).
 site/public/
 site/resources/
-site/.hugo_build.lock
 .hugo_build.lock

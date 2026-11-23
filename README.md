@@ -29,8 +29,18 @@ There are no releases yet: a project pins a member by a commit of `main`
 | `whisper/` | a binding over the pinned whisper.cpp engine, with WAV reading, microphone capture and long-audio chunking | whisper.cpp (a submodule), a C/C++ compiler |
 
 An inference app depends on `nn` and one backend; a training app adds `train`.
-Inside this repository the packages are members of one Agentica workspace (the
-root `agentica.toml`), so they read each other from their folders.
+Inside this repository `tensor`, `nn`, `train`, `hub` and `asr` are members of
+one Agentica workspace (the root `agentica.toml`), so they read each other from
+their folders; `whisper` is a project of its own, not a member. Each package
+pins its own Agentica version (`AGENTICA_VERSION`), and CI runs `check`,
+`fmt --check` and `test` on each folder that has an `agentica.toml`, on that
+version.
+
+Outside the workspace a member is fetched at the `ref` it writes for the
+others, and today those pins are old: `tensor` and `nn` install correctly, but
+`train` (its `ref` of `tensor` lacks `stop_grad`) and `hub` and `asr` (their
+`ref` of `nn` lacks `Conv1d` and `DecoderBlock`) do not, until a follow-up
+bumps the pins.
 
 ```toml
 [dependencies]

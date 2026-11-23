@@ -42,7 +42,7 @@ Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool
 Device  = Cpu | Cuda(Int)                                      # enum; only Cpu computes
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
-Backend = Reference | Torch(Device) | Trace                  # enum, see §7, §10
+Backend = Reference | Torch(Device) | Xla(Device) | Candle(Device) | Trace   # enum, see §7, §10; Xla and Candle are stubs
 Handle  = Native(TensorHandle) | Plain(Data) | Traced(Node)    # enum, see §2, §10
 Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 ```
@@ -83,8 +83,8 @@ Elementwise: `add, sub, mul, div, neg, exp, log, sqrt, pow, relu, sigmoid,
 tanh, gelu_tanh_approx, eq, lt, where, clamp`.
 Reductions: `sum, mean, max, argmax` (each with `axes: Optional[List[Int]]`,
 `keep_dims: Bool`).
-Linear algebra: `matmul, transpose, batch_matmul` (batched `matmul` covers
-attention; plain `dot` is derived).
+Linear algebra: `matmul, transpose, batch_matmul` (`multi_head_attention`
+uses rank-2 `matmul` per head, §3.2; plain `dot` is derived).
 Shape: `reshape, squeeze, unsqueeze, slice, concat, stack, broadcast_to,
 gather` (embedding lookup and beam gather need `gather`; everything fancier
 is derived).
@@ -111,9 +111,10 @@ Built only from §3.1, in `tensor/` (generic) or `nn/` (model-shaped):
   `sigmoid` and `mul`.
 - `dot(a, b)` as `reshape` + `matmul`; `linear(x, w, b?)`, `embedding(ids,
   table)` via `matmul`/`gather`.
-- `multi_head_attention(q, k, v, mask?)`: split heads by `reshape/transpose`,
-  scores by `batch_matmul`, scale by `mul`, `softmax`, context by
-  `batch_matmul`, merge by `transpose/reshape`. No fused kernel.
+- `multi_head_attention(q, k, v, heads, mask?)`: for each `(batch, head)` pair,
+  slice its part of the width, scores by rank-2 `matmul`, scale by `mul`,
+  `softmax`, context by `matmul`, and join the pieces with `concat`/`stack`.
+  No fused kernel, and no `batch_matmul`.
 - `greedy_step(logits, temperature?)`: `div` by temperature, `softmax`,
   `argmax`. `beam_search` is an Agentica loop over `gather` + `top_k`, and
   `top_k` is a derived sort/select loop.
@@ -195,10 +196,10 @@ r: Result[Tensor] = case a.backend
 end
 ```
 
-- The `case` is checked and exhaustive over all five variants (`Trace`
-  records a node instead of computing, §10.1), which is the property this
-  shape buys. `Xla` and `Candle` are variants with no module: they only
-  answer `error`.
+- The `case` is checked and exhaustive over all five variants, which is the
+  property this shape buys. Two compute backends (`Reference`, `Torch`), the
+  `Trace` recorder (it records a node instead of computing, §10.1), and two
+  stubs: `Xla` and `Candle` have no module and only answer `error`.
 - The `Torch` arm calls `src/torch.agc`, which calls the `compute
   def`s of `extern module "torch"` (`src/native.agc`). Both files live in this
   package, and they have to: the arm needs the module's signatures, and the
@@ -276,15 +277,16 @@ Usage for tensors:
 - Functions trace to a graph of §3.1 primitives; `grad`/`value_and_grad` are
   computed **in Agentica over that graph** (ml#1 key decision). Backends stay
   forward-only: no per-backend autograd.
-- Nothing in §3.1–§4 assumes training, but every differentiable primitive
-  declares its backward rule in Agentica: the trace records the ops, and the
+- Nothing in §3.1–§4 assumes training, but a differentiable primitive
+  declares its backward rule in Agentica (the end of §10.3 lists the ones still
+  without): the trace records the ops, and the
   rule lives in `tensor/`, not in a backend. `nn/` (forward-only layers over
   `tensor/`) and `train/` (losses, SGD/Adam, a training loop) build on them.
 - Op admission rule: an op that a backward rule needs enters §3.1; adding one
   is a breaking change to the backend interface. `stop_grad`/detach is not
   one: it is a wrapper-level op with no backend primitive (§10.3).
-- Every differentiable primitive — an `F32`-output arithmetic, reduction,
-  linalg, shape, movement, conv or pooling op — has a backward rule
+- The backward rule of a differentiable primitive — an `F32`-output
+  arithmetic, reduction, linalg, shape, movement, conv or pooling op — is
   expressible over §3.1 itself; an op whose rule needs more admits that op
   (§3.1). Creation, comparison and index ops cut the trace instead: `zeros`,
   `ones`, `empty`, `full`, `arange` and `scalar_to_tensor` build a value from

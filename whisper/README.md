@@ -8,8 +8,8 @@ chunking.
   file into a `Model` resource, `transcribe_with` decodes 16 kHz mono PCM
   floats into timed `Segment`s as an `Options` asks (language, translation),
   and `transcribe` is `join_text` of those segments with the default options.
-  All three run in the compute pool; the engine is CPU-only. One decode takes
-  five minutes of audio at most.
+  All three run in the compute pool; the engine is CPU-only. One decode accepts
+  up to five minutes of audio.
 - `mic.agc` — microphone capture: 16 kHz mono s16le PCM from a command run
   through `Process` (pinned `arecord` invocation, configurable), plus the
   `Source` abstraction (`Samples` for synthetic PCM in tests, `Command` for

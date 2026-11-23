@@ -1,10 +1,9 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-23. `main` en `c9e23fb` (decoder de `nn/` mergeado, #26).
-Abierto: Whisper vía B, primer PR (`asr/`, rama `asr`). Este fichero es el
-parte de estado: lo hecho, lo que quedó a medias al parar, y lo planeado. El
-plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
-`tensor/DESIGN.md`.
+Fecha: 2026-11-23. `main` en `33fc239` (loader de `train/` mergeado, #28).
+Este fichero es el parte de estado: lo hecho, lo que sigue abierto y lo
+planeado. El plan de ejecución sigue en `roadmap.md`; el contrato del tensor,
+en `tensor/DESIGN.md`.
 
 ## 1. Hecho (mergeado en `main`)
 
@@ -14,7 +13,7 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
 | `whisper/`: idioma (`es`/`auto`), `translate`, segmentos con timestamps en ms, `transcribe` = join puro | `whisper/whisper.agc` | #7 |
 | `whisper/`: micrófono por `Process` (`arecord`) + audio largo con VAD, ventanas con solape y dedupe | `whisper/mic.agc`, `stream.agc` | #9 |
 | `tensor/` M1: API en la raíz + `src/`, backend de referencia puro, guard de no finitos, 148 tests | `tensor/` | #10 |
-| `tensor/` M2 = **decisión (b′)**: el backend libtorch vive **dentro** de `tensor/` (`src/torch.agc`, `src/native.agc`, `native/torch.c`, `[native.torch] optional`), `Handle = Native(TensorHandle) \| Plain(Data)`, dispatch cableado en los 47 brazos | `tensor/` | #11 |
+| `tensor/` M2 = **decisión (b′)**: el backend libtorch vive **dentro** de `tensor/` (`src/torch.agc`, `src/native.agc`, `native/torch.c`, `[native.torch] optional`), `Handle = Native(TensorHandle) \| Plain(Data)`, dispatch cableado en cada brazo | `tensor/` | #11 |
 | `tensor/`: cobertura **42/45 en libtorch, 45/45 en referencia**, con `div`, `conv1d`, `avg_pool1d` reales; `softmax`/`layer_norm`/atención ya corren en torch | `tensor/` | #13 |
 | `tensor/`: tracing y gradientes (§10): `Trace` como quinto brazo, `value_and_grad`, reglas de backward de las primeras ops, suite de paridad traced vs eager | `tensor/trace.agc`, `src/graph.agc` | #16, #18 |
 | `tensor/`: tests property-based con `prop` (órdenes de `axes`, `concat`, round trips de dtype, oráculo torch, conv/pool contra bucles) | `tensor/test/prop_*` | #17, #19 |
@@ -23,6 +22,7 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
 | `tensor/`: `stop_grad` y reglas de backward de `sqrt`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `max`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `gather`; `softmax`, `layer_norm`, atención y `embedding` diferenciables; `Loss.cross_entropy` | `tensor/`, `train/` | #24 |
 | `train/` loader: `Data` (dataset en memoria o de un safetensors, barajado con semilla por época, `drop_last`, un `gather` por batch), prefetch en un `Task` con `Channel` acotado; `fit` toma un `Data.Loader` | `train/data.agc` | (este PR) |
 | `nn/` decoder: `causal_mask`, `DecoderBlock` pre-norm como Whisper; `Load.decoder_block` en `hub/` | `nn/`, `hub/` | #26 |
+| `asr/` (Whisper vía B): forward del modelo (stem conv, encoder, decoder, logits atados) cargado con los nombres de HF y el `config.json`; `Nn.Conv1d` y `Load.conv1d`. Solo referencia: en libtorch falta `gelu_tanh_approx`; deriva de la GELU tanh frente a la erf en el modelo de test: 1.7e-4 (encoder), 3.8e-5 (logits) | `asr/`, `nn/`, `hub/` | #27 |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
 | Docs: `tensor/DESIGN.md` (contrato, sin fases), `roadmap.md` (orden e hitos), `README.md`, `.gitattributes`, CI matricial | raíz | #3, #6 |
@@ -46,16 +46,9 @@ plan de ejecución sigue en `roadmap.md`; el contrato del tensor, en
   con la regla de hoy, el caso de `ml`, la propuesta, los cinco invariantes
   y lo decidido en contra.
 
-## 2. En progreso (parado a propósito)
+## 2. En progreso
 
-- **Whisper vía B, primer PR** (rama `asr`): el miembro `asr/` con el
-  forward de Whisper (stem conv, encoder, decoder, logits atados) cargado
-  con los nombres de HF y el `config.json`; `Nn.Conv1d` y `Load.conv1d`.
-  Solo referencia: en libtorch falta `gelu_tanh_approx`. La deriva de la
-  GELU tanh frente a la erf, medida en el modelo de test: 1.7e-4 (encoder),
-  3.8e-5 (logits).
-
-Ningún subagente sigue corriendo.
+Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
 
 ## 3. Siguientes pasos
 
@@ -100,22 +93,3 @@ Ningún subagente sigue corriendo.
   visible, así que los skips deben ser estructurales (aserción del estado
   ausente), no un `puts` y `ok`.
 - **Vulkan no está en CI** (no hay driver pineable): el spike es local.
-
-## 6. Cómo reanudar
-
-- Un lane = una rama y un worktree hermano: `git worktree add
-  ../agentica-ml-<tema> -b <tema> origin/main`. Un solo escritor por
-  worktree.
-- Se pasa modelo explícito: ejecutores `opencode-go/deepseek-v4.1-flash`,
-  revisores `opencode-go/glm-5.3-flash`. **Omitir `model` NO hereda el de la
-  sesión**: resuelve al `defaultModel` de `~/.pi/agent/settings.json`.
-- Loop por PR: rama → PR → review de un agente fresco → un batch de fixes
-  (críticos y mayores, más menores baratos) → CI verde → review otra vez →
-  merge **solo con el ok del dueño**. Menores no bloquean: van a un issue.
-- `git push` por https da 403 con el PAT; empujar con
-  `git push git@github.com:agentica-lang/ml.git <rama>`.
-- Cada paquete valida con `agentica check`, `agentica fmt --check`, el
-  `--check` del header de native-gen, y `agentica test`
-  (`agentica install` antes si hay dependencias).
-- Antes de tocar `tensor/`, leer `tensor/DESIGN.md`. Cambiar el contrato
-  exige actualizarlo en el mismo PR; el roadmap no entra en el DESIGN.
