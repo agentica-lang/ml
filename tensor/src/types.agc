@@ -40,6 +40,7 @@ enum Backend
   Torch(Device)
   Xla(Device)
   Candle(Device)
+  Trace
 end
 
 ## Plain Agentica backing store: the row-major values of one tensor.
@@ -56,6 +57,7 @@ end
 enum Handle
   Plain(Data)
   Native(Raw.TensorHandle)
+  Traced(Node)
 end
 
 ## One dtype-tagged value: the element type of `from_list`/`to_list`.
@@ -71,6 +73,40 @@ struct Tensor
   dtype: Dtype
   backend: Backend
   handle: Handle
+end
+
+## What a traced node computes (`tensor/DESIGN.md` §10.2). `Input` is an
+## argument of the traced function, `Constant` a tensor lifted into the trace,
+## `Full` a fill of the node's shape; the shape-changing ops read their target
+## from the node's tensor.
+enum Op
+  Input
+  Constant(Tensor)
+  Full(Values)
+  Add
+  Sub
+  Mul
+  Div
+  Neg
+  Exp
+  Log
+  Relu
+  Matmul
+  Transpose
+  Sum(List[Int], Bool)
+  Mean(List[Int], Bool)
+  BroadcastTo
+  Reshape
+  Lt
+  Where
+end
+
+## One node of a traced graph: unique `id` in the run, its op and its
+## arguments, which are traced tensors themselves.
+struct Node
+  id: Int
+  op: Op
+  args: List[Tensor]
 end
 
 ## The two results of `top_k`: `values` descending, `indices` their positions.
@@ -148,6 +184,7 @@ def backend_name(backend: Backend) -> String
     Backend.Torch(device) -> "Torch(#{device_name(device)})"
     Backend.Xla(device) -> "Xla(#{device_name(device)})"
     Backend.Candle(device) -> "Candle(#{device_name(device)})"
+    Backend.Trace -> "Trace"
   end
 end
 
@@ -204,18 +241,27 @@ def check_int_range(i: Int, dtype: Dtype) -> Result[Int]
   ok(i)
 end
 
-## Trailing axes align, size-1 dimensions widen, ranks never shrink.
-def check_broadcast(from: List[Int], to: List[Int], op: String) -> Result[Bool]
-  _ = try volume(to)
-  rank = from.size
-  out_rank = to.size
-  return error("#{op} cannot drop axes, got #{from} into #{to}") if out_rank < rank
-  lead = out_rank - rank
-  for i in 0...rank
-    dim = from[i]
-    want = to[lead + i]
-    return error("#{op} needs #{dim} to stay #{dim} or widen from 1, got #{want}") if dim != want and dim != 1
+## The shape left after reducing `axes`: dropped, or `1` with `keep_dims`.
+def reduced_shape(shape: List[Int], axes: List[Int], keep_dims: Bool) -> List[Int]
+  out: List[Int] = []
+  for i in 0...shape.size
+    next if !keep_dims and axes.include?(i)
+    if axes.include?(i)
+      out = out.push(1)
+    else
+      out = out.push(shape[i])
+    end
   end
 
-  ok(true)
+  out
+end
+
+## The product of the reduced dimensions (the count `mean` divides by).
+def reduced_count(shape: List[Int], axes: List[Int]) -> Int
+  total = 1
+  for ax in axes
+    total = total * shape[ax]
+  end
+
+  total
 end

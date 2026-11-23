@@ -130,6 +130,7 @@ def data_of(t: Types.Tensor) -> Result[List[Float]]
     Types.Handle.Plain(d) -> ok(d.values)
     Types.Handle.Native(_) ->
       error("the reference backend cannot read a native handle (#{Types.backend_name(t.backend)})")
+    Types.Handle.Traced(_) -> error("a traced tensor has no values: run it with Trace.eval")
   end
 end
 
@@ -516,35 +517,10 @@ def normalize_axes(axes: Optional[List[Int]], rank: Int, op: String) -> Result[L
   end
 end
 
-## The shape left after reducing `axes`: dropped, or `1` with `keep_dims`.
-def reduced_shape(shape: List[Int], axes: List[Int], keep_dims: Bool) -> List[Int]
-  out: List[Int] = []
-  for i in 0...shape.size
-    next if !keep_dims and axes.include?(i)
-    if axes.include?(i)
-      out = out.push(1)
-    else
-      out = out.push(shape[i])
-    end
-  end
-
-  out
-end
-
-## The product of the reduced dimensions (the count `mean` divides by).
-def reduced_count(shape: List[Int], axes: List[Int]) -> Int
-  total = 1
-  for ax in axes
-    total = total * shape[ax]
-  end
-
-  total
-end
-
 ## Sums every element into the reduced shape.
 def sum_axes(t: Types.Tensor, axes: List[Int], keep_dims: Bool) -> Result[Types.Tensor]
   shape = t.shape
-  out_shape = reduced_shape(shape, axes, keep_dims)
+  out_shape = Types.reduced_shape(shape, axes, keep_dims)
   in_strides = strides_of(shape)
   out_strides = strides_of(out_shape)
   n = try Types.volume(out_shape)
@@ -581,7 +557,7 @@ end
 def mean(t: Types.Tensor, axes: Optional[List[Int]], keep_dims: Bool) -> Result[Types.Tensor]
   return error("mean needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
   axs = try normalize_axes(axes, t.shape.size, "mean")
-  count = reduced_count(t.shape, axs)
+  count = Types.reduced_count(t.shape, axs)
   return error("mean of zero elements is an error") if count == 0
   total = try sum_axes(t, axs, keep_dims)
   out: List[Float] = []
@@ -598,7 +574,7 @@ def max(t: Types.Tensor, axes: Optional[List[Int]], keep_dims: Bool) -> Result[T
   axs = try normalize_axes(axes, t.shape.size, "max")
   return error("max of zero elements is an error") if try Types.volume(t.shape) == 0
   shape = t.shape
-  out_shape = reduced_shape(shape, axs, keep_dims)
+  out_shape = Types.reduced_shape(shape, axs, keep_dims)
   in_strides = strides_of(shape)
   out_strides = strides_of(out_shape)
   n = try Types.volume(out_shape)
@@ -636,7 +612,7 @@ def argmax(t: Types.Tensor, axes: Optional[List[Int]], keep_dims: Bool) -> Resul
   axs = try normalize_axes(axes, t.shape.size, "argmax")
   return error("argmax of zero elements is an error") if try Types.volume(t.shape) == 0
   shape = t.shape
-  out_shape = reduced_shape(shape, axs, keep_dims)
+  out_shape = Types.reduced_shape(shape, axs, keep_dims)
   in_strides = strides_of(shape)
   out_strides = strides_of(out_shape)
   sub_shape: List[Int] = []

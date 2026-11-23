@@ -77,7 +77,7 @@ def test_closing_a_native_handle_is_observable() -> Result[Void]
   try Test.assert(!Conform.native_closed(t), "a fresh handle reads as closed")
   case t.handle
     Tensor.Handle.Native(h) -> Native.close(h)
-    Tensor.Handle.Plain(_) -> puts("")
+    _ -> puts("")
   end
 
   Test.assert(Conform.native_closed(t), "a closed handle must read as closed")

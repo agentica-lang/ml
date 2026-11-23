@@ -19,10 +19,11 @@ answers whether this machine has it, and the dispatch arm answers
   halt), validates shape/dtype/backend/device before it dispatches
   (`DESIGN.md` §9), and dispatches by value over the four `Backend` arms
   (§7).
-- `trace.agc` — tracing and gradients: the differentiable subset of the API
-  over traced nodes (`Expr`), `value_and_grad`, `grad` and `eval`; the
-  gradient is a graph built from the same ops and run on any backend
-  (`DESIGN.md` §10).
+- `trace.agc` — tracing and gradients: `value_and_grad`, `grad` and `eval`
+  call a function written against `tensor.agc` with tensors of the `Trace`
+  backend, derive the gradient graph with the same ops and run it on a real
+  backend (`DESIGN.md` §10). `src/graph.agc` is the recording side the
+  `Trace` arms call.
 - `src/reference.agc` — the reference backend, pure Agentica over
   `List[Float]`; the oracle every other backend is checked against.
 - `src/torch.agc` — the libtorch backend: the §3.1 primitives libtorch
