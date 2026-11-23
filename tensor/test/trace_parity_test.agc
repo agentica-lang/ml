@@ -134,6 +134,7 @@ def all_cases() -> Result[List[Case]]
         Tensor.full([2], Tensor.Values.Float(1.5), Tensor.Dtype.F32, Tensor.backend(x[0]))
       },
     ),
+    Case(name: "stop_grad", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.stop_grad(x[0]) }),
     Case(name: "softmax", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.softmax(x[0], 1) }),
     Case(name: "layer_norm", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.layer_norm(x[0], 0.00001) }),
   ])

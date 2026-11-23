@@ -1,7 +1,7 @@
 # note — estado del trabajo
 
-Fecha: 2026-11-23. `main` en `31e2609`. Abierto: el primer PR de `hub/`
-(rama `hub`). Este fichero es el parte de estado: lo hecho, lo que
+Fecha: 2026-11-23. `main` en `37e9e37` (`hub/` mergeado, #23). Abierto: las
+reglas de backward (#24). Este fichero es el parte de estado: lo hecho, lo que
 quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 `roadmap.md`; el contrato del tensor, en `tensor/DESIGN.md`.
 
@@ -45,30 +45,30 @@ quedó a medias al parar, y lo planeado. El plan de ejecución sigue en
 
 ## 2. En progreso (parado a propósito)
 
-- **`hub/` primer PR** (rama `hub`, worktree `../agentica-ml-hub`): lector
-  de safetensors en Agentica (cabecera validada entera: longitud, JSON,
-  dtypes, offsets que cubren el buffer sin huecos ni solapes), checkpoints
-  partidos con `model.safetensors.index.json`, y `Load.dense`/`layer_norm`/
-  `embedding`/`encoder_block` por nombre (transpone `[out, in]` a
-  `[in, out]`, pasa floats a `F32`). Solo ficheros locales: lee el fichero
-  entero porque `File` no tiene seek. `BF16` se rechaza (no hay dtype en
-  `tensor/`). Tests contra un peer Python (`struct` + `json`) que escribe los
-  ficheros en un temporal. Diseño en `hub/DESIGN.md`.
+- **Reglas de backward** (rama `grad-rules`, PR #24): `stop_grad` (op de
+  wrapper, sin primitiva de backend) y reglas para `sqrt`, `sigmoid`, `tanh`,
+  `gelu_tanh_approx`, `max` (empates a partes iguales), `squeeze`,
+  `unsqueeze`, `slice`, `concat`, `stack` y `gather` (one-hot `matmul`; el
+  scatter-add es ml#25). Con ellas `softmax`, `layer_norm`, `rms_norm`,
+  atención, `embedding`, `positional` y `silu`/`gelu` son diferenciables, y
+  `train/` gana `Loss.cross_entropy` (labels enteros, estable vía
+  `stop_grad`).
 
 Ningún subagente sigue corriendo.
 
 ## 3. Futuro planeado (orden propuesto)
 
-1. **`grad`**: faltan reglas para el resto de §3.1 y `stop_grad` (lo que
-   esperan `softmax`, `layer_norm` y la softmax cross-entropy de `train/`).
+1. **`grad`**: faltan reglas para `pow`, `clamp`, `batch_matmul`,
+   `to_dtype` entre floats, `conv1d` y `avg_pool1d`, y el scatter-add de
+   `gather` (ml#25).
 2. **`nn/`**: falta decoder (máscara causal, cross-attention), conv,
    `rms_norm`, y `gelu` en libtorch (`gelu_tanh_approx`, en `tensor/`).
-3. **`train/`**: después del primer PR (#21): softmax
-   cross-entropy, shuffling, schedules, y aplanar structs de capas (pytrees)
+3. **`train/`**: mergeado (#21); softmax cross-entropy en #24. Después:
+   shuffling, schedules, y aplanar structs de capas (pytrees)
    cuando un modelo lo pida.
 4. **`jit`/caché del grafo**: `fit` retraza cada paso (~75k pasos de VM por
    época del XOR en la referencia).
-5. **`hub/`**: primer PR abierto (ver §2). Falta la descarga HF, con `http-client`
+5. **`hub/`**: primer PR mergeado (#23). Falta la descarga HF, con `http-client`
    `stream()` (redirects y retry incluidos), **nunca** `bond` (es solo
    servidor) ni `std/http download()` (tope 256 MiB, sin redirects).
    Resume/progreso/sha256 hay que construirlos.

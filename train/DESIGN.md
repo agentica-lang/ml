@@ -9,6 +9,7 @@ is a test dependency (`group = "test"`), used by the XOR test.
 ```text
 Loss.mse(prediction, target)                   mean of (p - t)^2
 Loss.binary_cross_entropy(logits, targets)     mean of softplus(z) - t z
+Loss.cross_entropy(logits, labels)             mean of -log softmax(z)[label]
 
 Optim.Optimizer = Sgd(Sgd { lr, momentum = 0 }) | Adam(Adam { lr = 1e-3, beta1 = 0.9, beta2 = 0.999, eps = 1e-8 })
 Optim.init(optimizer, params) -> Result[State]
@@ -40,12 +41,17 @@ Train.fit(loss, params, batches, optimizer, epochs, on_epoch?) -> Result[Fit { p
   `relu(z) + log(1 + exp(-|z|)) - t z`, stable for any `z`, with
   `|z| = 2 relu(z) - z`: `relu`'s derivative at `0` is `0`, and with this form
   the gradient at `z = 0` is still `sigmoid(0) - t` (a test pins it).
-- **No softmax cross-entropy yet.** A stable log-softmax subtracts the row
-  maximum, and `max` has no backward rule; the subtraction needs no gradient,
-  which is what `stop_grad` is for (`tensor/DESIGN.md` §10.3, still open).
-  Lifting the eager maximum with `Trace.constant` does not work inside the
-  trace, where the logits have no values. It lands when `tensor/` has
-  `stop_grad` or a rule for `max`.
+- **Softmax cross-entropy takes integer labels.** `logits` are
+  `[batch, classes]` and `labels` are `[batch]` class ids. The log-softmax
+  subtracts the row maximum through `Tensor.stop_grad`, so it is stable and
+  its gradient is `(softmax - onehot) / batch`. The one-hot mask is built in
+  the graph (`arange`, `eq`, `where`). A label outside `0...classes` is an
+  error in an eager call. Traced labels, those `fit` lifts with
+  `Trace.constant` included, are not checked, and such a label adds `0`.
+- **Embedding gradients cost `[rows, k]`.** The backward of `gather` (an
+  embedding lookup) is a one-hot `matmul`: four `[rows, k]` intermediates,
+  about 800 MB each for a 50k vocabulary over 4096 tokens at `F32`, plus
+  `O(rows k width)`. A scatter-add primitive would fix it (ml#25).
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on
   libtorch and only the new state, parameters and loss leave it

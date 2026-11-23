@@ -46,6 +46,50 @@ def test_the_gradients_match_a_central_difference() -> Result[Void]
   check(prediction, ->(ps: List[Tensor.Tensor]) { Loss.binary_cross_entropy(ps[0], Trace.constant(labels)) })
 end
 
+def test_cross_entropy_is_the_mean_negative_log_softmax() -> Result[Void]
+  labels = try labels_of([2, 0])
+  got = try Loss.cross_entropy(try S.tensor([1.0, 2.0, 3.0, 0.0, 0.0, 0.0], [2, 3]), labels)
+  # `-log softmax([1, 2, 3])[2]` and `log 3`.
+  want = (0.4076059644443803 + 1.0986122886681098) / 2.0
+  S.expect_close(try S.floats_of(got), [want], 0.000000000001, 0.0, "cross_entropy")
+end
+
+## Logits of 1000 overflow `exp` without the max subtraction; the gradient is
+## `(softmax - onehot) / batch`.
+def test_cross_entropy_is_stable_and_has_the_softmax_gradient() -> Result[Void]
+  labels = try labels_of([0])
+  both = try Trace.value_and_grad(
+    [try S.tensor([1000.0, 1000.0], [1, 2])],
+    ->(ps: List[Tensor.Tensor]) { Loss.cross_entropy(ps[0], Trace.constant(labels)) },
+  )
+
+  try S.expect_close(try S.floats_of(both.value), [LOG2], 0.000000000001, 0.0, "value")
+  S.expect_close(try S.floats_of(both.grads[0]), [-0.5, 0.5], 0.000000000001, 0.0, "gradient")
+end
+
+def test_the_cross_entropy_gradient_matches_a_central_difference() -> Result[Void]
+  logits = try S.tensor([0.3, -1.2, 2.5, 0.7, -0.4, 1.1], [2, 3])
+  labels = try labels_of([1, 2])
+  check(logits, ->(ps: List[Tensor.Tensor]) { Loss.cross_entropy(ps[0], Trace.constant(labels)) })
+end
+
+def test_cross_entropy_refuses_a_label_out_of_range() -> Result[Void]
+  logits = try S.tensor([0.3, -1.2, 2.5, 0.7, -0.4, 1.1], [2, 3])
+  try Test.error?(Loss.cross_entropy(logits, try labels_of([1, 3])))
+
+  Test.error?(Loss.cross_entropy(logits, try labels_of([-1, 0])))
+end
+
+def test_cross_entropy_refuses_bad_shapes() -> Result[Void]
+  try Test.error?(Loss.cross_entropy(try S.tensor([0.3, -1.2, 2.5], [3]), try labels_of([1])))
+
+  Test.error?(Loss.cross_entropy(try S.tensor([0.3, -1.2, 2.5, 0.7, -0.4, 1.1], [2, 3]), try labels_of([1, 0, 2])))
+end
+
+def labels_of(classes: List[Int]) -> Result[Tensor.Tensor]
+  Tensor.from_list(classes.map { |c| Tensor.Values.Int(c) }, [classes.size], Tensor.Dtype.I64, S.REF)
+end
+
 ## The gradient of `loss` at `x` against its central difference.
 def check(x: Tensor.Tensor, loss: Fn[List[Tensor.Tensor], Result[Tensor.Tensor]]) -> Result[Void]
   analytic = try S.floats_of((try Trace.grad([x], loss))[0])

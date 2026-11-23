@@ -734,6 +734,19 @@ def contiguous(t: Types.Tensor) -> Result[Types.Tensor]
   end
 end
 
+## `t` itself, as a constant of the gradient: the identity on every backend
+## that computes, and on `Trace` a node whose backward rule is zero
+## (`tensor/DESIGN.md` §10).
+def stop_grad(t: Types.Tensor) -> Result[Types.Tensor]
+  case t.backend
+    Types.Backend.Reference -> ok(t)
+    Types.Backend.Torch(_) -> ok(t)
+    Types.Backend.Trace -> Graph.same(Types.Op.StopGrad, [t], t)
+    Types.Backend.Xla(_) -> error("backend not available")
+    Types.Backend.Candle(_) -> error("backend not available")
+  end
+end
+
 ## Convolution: the cross-correlation of `input` with `weight` along its last
 ## axis, moved by `stride`, with `padding` zeros on each side. No dilation and
 ## no groups: `tensor/DESIGN.md` §3.1 admits stride/padding-1D and leaves the
@@ -791,11 +804,13 @@ def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int = 1, padding: Int =
   end
 end
 
-## Derived: `softmax` over `axis` with max-subtraction, from §3.1 only.
+## Derived: `softmax` over `axis` with max-subtraction, from §3.1 only. The
+## maximum is a `stop_grad` constant: it cancels out of the value, so it
+## needs no gradient.
 def softmax(x: Types.Tensor, axis: Int) -> Result[Types.Tensor]
   rank = x.shape.size
   return error("softmax needs an axis in 0...#{rank}, got #{axis}") if axis < 0 or axis >= rank
-  m = try max(x, some([axis]), true)
+  m = try stop_grad(try max(x, some([axis]), true))
   shifted = try sub(x, try broadcast_to(m, x.shape))
   e = try exp(shifted)
   s = try sum(e, some([axis]), true)

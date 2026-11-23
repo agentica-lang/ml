@@ -124,6 +124,7 @@ enum Op
   Conv1d(Int, Int)
   AvgPool1d(Int, Int, Int)
   Arange(Int, Int, Int)
+  StopGrad
 end
 
 ## One node of a traced graph: unique `id` in the run, its op and its
@@ -336,5 +337,6 @@ def op_name(op: Op) -> String
     Op.Conv1d(_, _) -> "conv1d"
     Op.AvgPool1d(_, _, _) -> "avg_pool1d"
     Op.Arange(_, _, _) -> "arange"
+    Op.StopGrad -> "stop_grad"
   end
 end

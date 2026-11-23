@@ -340,8 +340,9 @@ Proposed usage for tensors (needs sign-off):
 - Op admission rule: §3.1 is frozen once, when the contract is written. An op
   that a backward rule needs enters §3.1 then, and so does an op `train/`
   needs with no backward rule of its own — keyed random (`randn`/`randint`/
-  `split`) and `stop_grad`/detach. Adding either later would be a breaking
-  change to the frozen backend interface.
+  `split`). Adding one later would be a breaking change to the frozen
+  backend interface. `stop_grad`/detach is not one: it is a wrapper-level op
+  with no backend primitive (§10.3).
 - Every differentiable primitive — an `F32`-output arithmetic, reduction,
   linalg, shape, movement, conv or pooling op — has a backward rule
   expressible over §3.1 itself; an op whose rule needs more admits that op
@@ -349,8 +350,7 @@ Proposed usage for tensors (needs sign-off):
   `ones`, `empty`, `full`, `arange` and `scalar_to_tensor` build a value from
   shape/dtype arguments; `like(t)` reads only `t`'s metadata (shape, dtype,
   backend), ignoring its value, so it needs no rule either; `eq`, `lt` and
-  `argmax` give `Bool`/integer values. That is why `stop_grad`, which cuts the
-  trace too, enters §3.1 with them.
+  `argmax` give `Bool`/integer values. `stop_grad` cuts the trace too.
 
 ### 10.1 How a function is traced (decided)
 
@@ -445,10 +445,29 @@ The price:
 - A parity suite runs every op of §3.1 traced (`Trace.eval`) and eagerly over
   good and bad inputs: both fail, or both give the same shape, dtype and
   values, and the shape and dtype a trace records are the eager ones.
-- Still open: rules for the rest of §3.1; `stop_grad`, which `softmax` waits
-  for (its max-subtraction goes through `max`, which has no rule, and needs
-  no gradient); `to_dtype` between float dtypes (a precision cast); the rule
-  of `where`'s condition for gradients of gradients; `vmap`/`jit`; and how an
+- `stop_grad(t)` is a wrapper-level op with no backend primitive: the
+  wrapper answers `t` itself on every backend that computes and, on `Trace`,
+  records a node whose rule is zero. `softmax` subtracts its maximum through
+  it: the shift cancels out of the value, so it needs no gradient.
+- More rules: `sqrt` (`ct / 2 sqrt(x)`, infinite at `0`), `sigmoid`, `tanh`,
+  `gelu_tanh_approx` (the derivative of the tanh form), `squeeze` and
+  `unsqueeze` (a `reshape` back), `slice` (`ct` padded with zeros by
+  `concat`), `concat` (each argument's window of `ct`), `stack` (entry `i`
+  along the axis), `gather` (scatter-add as `onehot . ct`, with
+  `onehot[r, k] = indices[k] == r` made from `arange`, `eq` and `to_dtype`:
+  a repeated index sums its rows) and `max`
+  (the cotangent goes to the positions that hold the maximum and is split
+  evenly between ties, as `jax.numpy.max` and `torch.amax` do). With them,
+  `softmax`, `layer_norm`, `rms_norm`, `silu`, `gelu`, `embedding` and
+  `multi_head_attention` are differentiable; each rule and the last two are
+  tested against a central difference.
+- `gather`'s rule scales with the table: it makes four `[rows, k]`
+  intermediates (a 50k vocabulary over 4096 tokens at `F32` is about 800 MB
+  each) and its `matmul` costs `O(rows k width)`. A scatter-add primitive
+  would avoid both (ml#25).
+- Still open: rules for `pow`, `clamp`, `batch_matmul`, `to_dtype` between
+  float dtypes (a precision cast), `conv1d` and `avg_pool1d`; the rule of
+  `where`'s condition for gradients of gradients; `vmap`/`jit`; and how an
   evaluation's intermediate tensors map onto the arenas of §8 (today they
   live until `evaluate` returns).
 
