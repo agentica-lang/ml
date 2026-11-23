@@ -1,6 +1,13 @@
 version = 1
 
 [[package]]
+name = "hub"
+git = "https://github.com/agentica-lang/ml"
+subdir = "hub"
+ref = "926da75e4a5da411b492857d3e819c64d723cc93"
+workspace = true
+
+[[package]]
 name = "native-gen"
 git = "https://github.com/agentica-lang/packages"
 subdir = "native-gen"

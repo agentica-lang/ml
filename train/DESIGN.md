@@ -1,8 +1,9 @@
 # train — design
 
-Losses, optimizers and a minimal training loop over `tensor/`'s
-`Trace.value_and_grad` (`tensor/DESIGN.md` §10). Depends on `tensor/`; `nn/`
-is a test dependency (`group = "test"`), used by the XOR test.
+Losses, optimizers, a data loader and a minimal training loop over
+`tensor/`'s `Trace.value_and_grad` (`tensor/DESIGN.md` §10). Depends on
+`tensor/` and `hub/` (a dataset from a safetensors file); `nn/` is a test
+dependency (`group = "test"`), used by the XOR test.
 
 ## API
 
@@ -15,9 +16,15 @@ Optim.Optimizer = Sgd(Sgd { lr, momentum = 0 }) | Adam(Adam { lr = 1e-3, beta1 =
 Optim.init(optimizer, params) -> Result[State]
 Optim.step(state, params, grads) -> Result[Step { state, params }]
 
-Train.Batch { inputs, targets }
-Train.fit(loss, params, batches, optimizer, epochs, on_epoch?) -> Result[Fit { params, history }]
-  loss: Fn[List[Tensor], Batch, Result[Tensor]]
+Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
+Data.load(path, inputs, targets, backend) -> Result[Dataset]  two named tensors of a safetensors file
+Data.Loader { dataset, batch_size, shuffle = true, seed = 0, drop_last = false, prefetch = 2 }
+Data.count(loader) / Data.order(loader, epoch) / Data.batch(loader, rows, i)
+Data.feed(loader, epochs) -> Result[Feed]; Data.epoch(feed, e); Data.take(feed, i); Data.stop(feed)
+Data.Batch { inputs, targets }
+
+Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Result[Fit { params, history }]
+  loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
   on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
 ```
 
@@ -60,7 +67,26 @@ Train.fit(loss, params, batches, optimizer, epochs, on_epoch?) -> Result[Fit { p
 - **Reporting is a callback and a history.** `fit` answers the mean loss of
   every epoch and calls `on_epoch` after each; a caller logs from there
   (`std/logger` or `puts`). `fit` itself prints nothing.
-- **Left out until a client needs them:** shuffling, evaluation sets, early
+- **A batch is one op per tensor.** The epoch's order is a Fisher-Yates
+  permutation drawn in Agentica with the Park-Miller generator of `nn/init.agc`,
+  from the seed and the epoch, so a run repeats and epochs differ (`std`
+  `Random` has no seedable generator of its own). A shuffled batch is one
+  `from_list` of its row ids and one `gather` per tensor; an unshuffled one is
+  one `slice`. The last partial batch is kept unless `drop_last`.
+- **Prefetch is a task and a bounded channel.** With `prefetch = K > 0`,
+  `Data.feed` starts a task that builds the batches of every epoch in order and
+  sends them through a channel of capacity `K`, so it stays at most `K` batches
+  ahead and builds the next while `fit` steps. A failed batch goes through the
+  channel as an error in its place; a crash of the task reaches the reader
+  through a `Task.monitor` notice into the same channel.
+- **The prefetch task lives until `stop`.** A native tensor belongs to the
+  task that made it and is freed when that task ends, and a tensor made
+  directly from a freed one can no longer be used (the VM keeps one level of
+  parents open). Torch tensors cross tasks, so the task builds them, but it
+  then waits for `Data.stop`, which `fit` calls on every path: it closes the
+  channel, cancels the task and awaits it. `fit` frees each batch after its
+  step (`Data.release`); nothing it keeps is made directly from a batch.
+- **Left out until a client needs them:** evaluation sets, early
   stopping, learning-rate schedules, weight decay, gradient clipping, and
   resuming from a saved `State`.
 
@@ -71,6 +97,11 @@ reference backend an epoch of the XOR test (a 2-8-1 relu MLP, four rows)
 costs about 75,000 VM steps, most of it the evaluation of the forward and
 gradient graphs; a test file's step budget (1M steps per test, plus 1M) has to
 hold the reference run and the libtorch run, so the test trains for 20. On libtorch an epoch costs about 45,000.
+
+Prefetch hides the cost of building a batch, not more: with a step made slow
+on purpose, `tools/prefetch_bench.agc` (libtorch, 16384 rows of 32, batches of
+2048, about 3 ms to build one) gives 154 steps/s without prefetch and 232 with
+it; with 5 ms more per step, 77 and 105.
 
 ## The repository is a workspace
 
