@@ -93,6 +93,7 @@ def run(args: List[String]) -> Result[Bool]
     puts("  #{ms} ms, real-time factor #{rtf}")
     puts("  language #{got.language} p=#{got.language_probability} (Hugging Face #{c.detected} p=#{c.probability})")
     puts("  text #{got.text}")
+    puts("  avg_logprob #{got.avg_logprob}, no_speech_prob #{got.no_speech_prob}")
     if not same
       puts("  tokens #{got.tokens}")
       puts("  wanted #{c.tokens}")

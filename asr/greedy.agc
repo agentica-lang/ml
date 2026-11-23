@@ -30,6 +30,10 @@ struct Segment
   start: Float
   stop: Float
   text: String
+  ## Its ids, with the timestamps that open and close it, as OpenAI's.
+  tokens: List[Int]
+  ## OpenAI's `avg_logprob` of the window the segment is in.
+  avg_logprob: Float
 end
 
 ## The rules for `tok`, with the token ids `suppress` and `begin_suppress`
@@ -92,20 +96,23 @@ end
 ## does (OpenAI starts it at 0), and ends at `duration`; text before any
 ## timestamp starts at 0, and with no timestamps at all the whole text is one
 ## segment from 0. A segment with no text is left out.
-def segments(tok: Tokenizer.Tokenizer, emitted: List[Int], duration: Float) -> Result[List[Segment]]
+def segments(
+  tok: Tokenizer.Tokenizer,
+  emitted: List[Int],
+  duration: Float,
+  avg_logprob: Float = 0.0,
+) -> Result[List[Segment]]
   out: List[Segment] = []
-  start: Optional[Float] = none
+  opened: List[Int] = []
   text: List[Int] = []
   for id in emitted
     case Tokenizer.seconds(tok, id)
       some(at) ->
-        case start
-          some(s) ->
-            out = try close(tok, out, s, at, text)
-            start = none
-          none ->
-            out = try close(tok, out, 0.0, at, text)
-            start = some(at)
+        out = try close(tok, out, opened, text, [id], at, avg_logprob)
+        if opened.empty?
+          opened = [id]
+        else
+          opened = []
         end
 
         text = []
@@ -113,23 +120,14 @@ def segments(tok: Tokenizer.Tokenizer, emitted: List[Int], duration: Float) -> R
     end
   end
 
-  if not text.empty?
-    out = try close(tok, out, start.unwrap_or(0.0), duration, text)
-  end
-
-  ok(out)
+  ok(try close(tok, out, opened, text, [], duration, avg_logprob))
 end
 
 ## The softmax of `logits` at `i`, in doubles.
-def probability(logits: List[Float], i: Int) -> Float
-  top = logits.max.unwrap_or(0.0)
-  sum = 0.0
-  for x in logits
-    sum += Mathx.exp(x - top)
-  end
+def probability(logits: List[Float], i: Int) -> Float = Mathx.exp(log_probability(logits, i))
 
-  Mathx.exp(logits[i] - top) / sum
-end
+## The log-softmax of `logits` at `i`, in doubles.
+def log_probability(logits: List[Float], i: Int) -> Float = logits[i] - log_sum_exp(logits)
 
 private
 
@@ -200,13 +198,30 @@ def forbid_range(logits: List[Float], from: Int, to: Int) -> List[Float]
   logits.take(from) + List.repeat(FORBIDDEN, [to, logits.size].min.unwrap! - from) + logits.drop(to)
 end
 
+## `out` with the segment of `text` between the timestamp `opened` (none:
+## 0) and `stop`, unless `text` is empty.
 def close(
   tok: Tokenizer.Tokenizer,
   out: List[Segment],
-  start: Float,
-  stop: Float,
+  opened: List[Int],
   text: List[Int],
+  closing: List[Int],
+  stop: Float,
+  avg_logprob: Float,
 ) -> Result[List[Segment]]
   return ok(out) if text.empty?
-  ok(out.push(Segment(start: start, stop: stop, text: try Tokenizer.decode(tok, text))))
+  start = 0.0
+  for id in opened
+    start = Tokenizer.seconds(tok, id).unwrap_or(0.0)
+  end
+
+  segment = Segment(
+    start: start,
+    stop: stop,
+    text: try Tokenizer.decode(tok, text),
+    tokens: opened + text + closing,
+    avg_logprob: avg_logprob,
+  )
+
+  ok(out.push(segment))
 end

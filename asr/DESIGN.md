@@ -165,8 +165,7 @@ and the KV cache that feeds them one token at a time.
   encoder output to every block's cross-attention keys and values once, split
   by head (keys transposed); `step` keeps each block's self-attention keys and
   values and feeds one token at a time (a prompt at once, under the causal
-  mask), and returns only the last token's logits. On libtorch each step and
-  each encoder block runs in a `Native.arena` of its own.
+  mask), and returns only the last token's logits.
 
 `test/greedy_test.agc` checks the rules on hand-made logits and the segments
 over `test/fixtures/tokenizer.json`; `test/model_test.agc` checks the steps
@@ -175,30 +174,46 @@ against the peer's full forward.
 ## Transcription (`transcribe`)
 
 One window of 16 kHz samples (at most `2 * max_source_positions` frames: 30 s
-for Whisper; longer audio is an error) → `Mel.log_mel` of the whole window,
-padded as Hugging Face pads → `encode` → `listen` → greedy decoding with
-`step` and `Greedy`. This is what Hugging Face's `generate` does with
-`num_beams=1` and no sampling, and OpenAI's `transcribe` at temperature 0
-inside one window.
+for Whisper; no samples or more are an error) → `Mel.log_mel` of the whole
+window, padded with zeros to 30 s as Hugging Face's feature extractor does
+(not OpenAI's, which pads the log-mel) → `encode` → `listen` → greedy
+decoding with `step` and `Greedy`. This is what Hugging Face's `generate`
+does with `num_beams=1` and no sampling, and OpenAI's `transcribe` at
+temperature 0 inside one window. A named language and the job are checked
+against the tokenizer before the audio costs anything.
 
-- **Language detection**: without `Options.language`, one step after
-  `<|startoftranscript|>` alone; the language token with the largest logit
-  wins, and `language_probability` is the softmax over the language tokens
-  only. A named language gives 1.0; an English-only checkpoint is `en`. The
-  prompt then starts again with the language, the job and
-  `<|notimestamps|>` unless timestamps are wanted.
+- **The first step** feeds `<|startoftranscript|>` alone. `no_speech_prob` is
+  the softmax of its logits at `<|nospeech|>` (`<|nocaptions|>` in the first
+  checkpoints), as OpenAI's. Without `Options.language` it also detects the
+  language: the language token with the largest logit wins, and
+  `language_probability` is the softmax over the language tokens only. A
+  named language gives 1.0; an English-only checkpoint is `en`. The prompt
+  then starts again with the language, the job and `<|notimestamps|>` unless
+  timestamps are wanted.
 - **The suppressed ids** come from `config.json` (`suppress_tokens`,
   `begin_suppress_tokens`, optional in `Config`), else `Greedy.rules`'
   defaults.
-- **Decoding stops** at `eot`, after `max_tokens` (224, OpenAI's
-  `sample_len`) or at `max_target_positions`. `tokens` are the ids after the
-  prompt, without `eot`; the segments end at the clip's length.
+- **Decoding stops** at `eot`, after `max_tokens` (at least 1), or at
+  `max_target_positions` (448 for Whisper), Hugging Face's `max_length`;
+  OpenAI's `sample_len` is 224. `tokens` are the ids after the prompt, without
+  `eot`; the segments end at the clip's length.
+- **`avg_logprob`** is OpenAI's: the log-softmax of each picked id under the
+  rules, `eot` included, summed and divided by `tokens.size + 1`. Each segment
+  carries it, and its ids with the timestamps around them, as OpenAI's do.
 - **Out, on purpose**: beam search, temperature fallback (and the compression
-  and log-probability thresholds it needs), the no-speech probability, initial
-  prompts and word timestamps. Greedy at temperature 0 is what the speech
-  server asks for; each can come when something needs it.
-- On libtorch a call runs in one `Native.arena`, so its tensors are freed
-  when it ends.
+  ratio it needs), initial prompts and word timestamps. Greedy at temperature
+  0 is what the speech server asks for; each can come when something needs
+  it.
+- **Memory on libtorch**: an Agentica `Native.arena` whose value holds a
+  native resource keeps every resource made inside it alive, so nothing here
+  returns a tensor from an arena. A call runs in a task of its own, which
+  closes what it opened when it ends (the encoder's intermediates, about 2 GB
+  for whisper-tiny, live until then). Each `step` hands only lists out of its
+  arena (the logits and the new rows of the self-attention keys and values),
+  builds the new cache from them outside it, and the loop closes the cache it
+  replaced. 224 forced steps of whisper-tiny take 0.12–0.14 s each with flat
+  memory (+5 MB); everything in one enclosing arena, they went from 1.5 s to
+  11.6 s a step by step 192, and memory grew by 760 MB.
 
 Checked against Hugging Face's `generate` (transformers 4.46.3, greedy) on
 whisper-tiny: `tools/transcribe_check.agc` runs the five cases of
@@ -211,11 +226,11 @@ and so do the text and the segments. The language probability is within
 and `transformers`). The tests run neither: the checkpoint is not in git.
 
 Speed on this machine (Ryzen 5 3550H, shared with other jobs, so the numbers
-spread): libtorch takes 6–19 s for the 2.6 s of es-hola (a real-time factor
-of 2.4–7) and 18–26 s for the 11 s of jfk (1.6–2.3); about 2 s is the encoder
-over the 30 s window and 0.1–0.3 s each decoder step. The reference backend
-gives the same ids for es-hola in 22 minutes (a real-time factor of about
-500). Loading the checkpoint takes 25–40 s.
+spread): libtorch takes 3.6–4.5 s for the 2.6 s of es-hola (a real-time
+factor of 1.4–1.7) and 5.4–6.5 s for the 11 s of jfk (0.5–0.6); about 2 s is
+the encoder over the 30 s window and 0.12–0.14 s each decoder step. The
+reference backend gave the same ids for es-hola in 22 minutes (a real-time
+factor of about 500). Loading the checkpoint takes 25–40 s.
 
 ## Tests of the model
 

@@ -4,6 +4,8 @@
 
 import Asr from "../asr"
 import Greedy from "../greedy"
+import Mathx from "../mathx"
+import Mel from "../mel"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "../tokenizer"
 
@@ -135,28 +137,91 @@ end
 
 ## The random `speech/` model says nothing sensible, but whatever it says
 ## keeps OpenAI's rules: its config suppresses 1 and 2, the first token is a
-## timestamp (32 is `<|0.00|>`), the timestamps never decrease, and 13 tokens
-## fill its 16 positions after a prompt of 3.
-def test_transcribe_keeps_the_rules_end_to_end() -> Result[Void]
+## timestamp (32 is `<|0.00|>`), the timestamps never decrease, and at most 13
+## tokens fill its 16 positions after a prompt of 3. The language, its
+## probability, `no_speech_prob`, the tokens and `avg_logprob` match a greedy
+## loop over the full `Asr.decode`, without the KV cache.
+def test_transcribe_matches_a_loop_over_the_full_decoder() -> Result[Void]
   with_fixtures do |dir|
     m = try Asr.open("#{dir}/speech/model.safetensors", REF)
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
     pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
     t = try Asr.transcribe(m, tok, pcm)
-    try Test.assert(["en", "es", "yue"].include?(t.language), "language #{t.language}")
-    try Test.assert(t.language_probability > 0.0 and t.language_probability <= 1.0, "p #{t.language_probability}")
-    try Test.assert(not t.tokens.empty? and t.tokens.size <= 13, "tokens #{t.tokens}")
-    try Test.assert(t.tokens[0] >= 32 and t.tokens.all? { |id| id != 1 and id != 2 }, "tokens #{t.tokens}")
+    audio = try Asr.encode(m, try f32(try Mel.log_mel(pcm, 3, 6), [1, 3, 6]))
+    first = try last_logits(m, [tok.sot], audio)
+    scores = tok.languages.map { |l| first[l.id] }
+    best = (0...scores.size).to_a.max_by { |i| scores[i] }.unwrap!
+    try Test.eq(t.language, tok.languages[best].code)
+    try close_to(t.language_probability, Mathx.exp(scores[best]) / sum_exp(scores), "language probability")
+    try close_to(t.no_speech_prob, Mathx.exp(first[30]) / sum_exp(first), "no_speech_prob")
+
+    prompt = try Tokenizer.prompt(tok, some(t.language), Tokenizer.Job.Transcribe, true)
+    rules = Greedy.rules(tok, some([1, 2]), some([4, 21]), true)
+    emitted: List[Int] = []
+    logprob = 0.0
+    while emitted.size < 16 - prompt.size
+      allowed = Greedy.allowed(rules, try last_logits(m, prompt + emitted, audio), emitted)
+      id = Greedy.pick(allowed)
+      logprob += Greedy.log_probability(allowed, id)
+      break if id == tok.eot
+      emitted = emitted.push(id)
+    end
+
+    try Test.eq(t.tokens, emitted)
+    try close_to(t.avg_logprob, logprob / (emitted.size + 1).to_f, "avg_logprob")
+    try Test.assert(
+      not t.tokens.empty? and t.tokens[0] >= 32 and t.tokens.all? { |id| id != 1 and id != 2 },
+      "#{t.tokens}",
+    )
+
     stamps = t.tokens.select { |id| id >= 32 }
     try Test.assert((1...stamps.size).all? { |i| stamps[i] >= stamps[i - 1] }, "stamps #{stamps}")
     try Test.eq(t.text, try Tokenizer.decode(tok, t.tokens))
-    try Test.eq(t.segments, try Greedy.segments(tok, t.tokens, 0.06))
+    Test.eq(t.segments, try Greedy.segments(tok, t.tokens, 0.06, t.avg_logprob))
+  end
+end
 
+def test_transcribe_takes_options_and_refuses_bad_input() -> Result[Void]
+  with_fixtures do |dir|
+    m = try Asr.open("#{dir}/speech/model.safetensors", REF)
+    tok = try Tokenizer.open("test/fixtures/tokenizer.json")
+    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
     given = try Asr.transcribe(m, tok, pcm, Asr.Options(language: some("es"), translate: true, timestamps: false))
     try Test.eq([given.language, given.language_probability.to_s], ["es", "1.0"])
+    try Test.eq((try Asr.transcribe(m, tok, pcm, Asr.Options(max_tokens: some(2)))).tokens.size, 2)
+    try Test.error?(Asr.transcribe(m, tok, pcm, Asr.Options(max_tokens: some(0))))
+    try Test.error?(Asr.transcribe(m, tok, pcm, Asr.Options(language: some("fr"))))
     try Test.error?(Asr.transcribe(m, tok, pcm + [0.0]))
+    try Test.error?(Asr.transcribe(m, tok, []))
     Test.error?(Asr.transcribe(try Asr.open("#{dir}/tiny/model.safetensors", REF), tok, pcm))
   end
+end
+
+## An English-only checkpoint has no language token: the language is `en`
+## with probability 1.0, and another language or translation is refused.
+def test_an_english_only_checkpoint_transcribes_english() -> Result[Void]
+  with_fixtures do |dir|
+    m = try Asr.open("#{dir}/english/model.safetensors", REF)
+    tok = try Tokenizer.open("#{dir}/english/tokenizer.json")
+    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    t = try Asr.transcribe(m, tok, pcm, Asr.Options(max_tokens: some(3)))
+    try Test.eq([t.language, t.language_probability.to_s, t.tokens.size.to_s], ["en", "1.0", "3"])
+    try Test.assert(t.no_speech_prob > 0.0 and t.no_speech_prob < 1.0, "no_speech_prob #{t.no_speech_prob}")
+    try Test.error?(Asr.transcribe(m, tok, pcm, Asr.Options(language: some("es"))))
+    Test.error?(Asr.transcribe(m, tok, pcm, Asr.Options(translate: true)))
+  end
+end
+
+## The logits of the last of `tokens` from the full decoder, over `audio`.
+def last_logits(m: Asr.Model, tokens: List[Int], audio: Tensor.Tensor) -> Result[List[Float]]
+  all = try floats_of(try Asr.decode(m, try ids(tokens, [1, tokens.size]), audio))
+  ok(all.drop(all.size - m.config.vocab_size))
+end
+
+def sum_exp(xs: List[Float]) -> Float = xs.reduce(0.0) do |acc, x| acc + Mathx.exp(x) end
+
+def close_to(got: Float, want: Float, what: String) -> Result[Void]
+  Test.assert((got - want).abs <= 0.000000001 * (1.0 + want.abs), "#{what}: #{got}, expected #{want}")
 end
 
 ## Runs `body` on the folder the peer wrote, then removes it.

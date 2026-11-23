@@ -4,8 +4,9 @@ forward pass in doubles. Standard library only.
 
 Usage: python3 peer.py. Writes `tiny/` (the model), `missing/` (the same
 model without one tensor) and `speech/` (one with the 36 ids of
-`fixtures/tokenizer.json`, for `transcribe`) into a new temporary folder and
-prints its path.
+`fixtures/tokenizer.json`, for `transcribe`) and `english/` (an English-only
+model with its `tokenizer.json`) into a new temporary folder and prints its
+path.
 `expected.json` holds two mels of 6 frames with their token rows, and a mel
 of 4 frames for the encoder alone.
 The forward runs twice: with the tanh GELU the Agentica model uses, and with
@@ -169,6 +170,12 @@ def gelu_tanh(x):
 # The model `transcribe` runs in the tests: the vocabulary of
 # `fixtures/tokenizer.json`, and the suppressed ids in its config.
 SPEECH = dict(CONFIG, vocab_size=36, max_target_positions=16, suppress_tokens=[1, 2], begin_suppress_tokens=[4, 21])
+# An English-only model (whisper-tiny.en's 51864 ids) with its tokenizer: the
+# special ids from `<|endoftext|>` at 50256 on, and no suppressed ids in its
+# config, so `transcribe` takes the defaults.
+ENGLISH = dict(CONFIG, vocab_size=51864, max_target_positions=16)
+ENGLISH_SPECIALS = ["<|endoftext|>", "<|startoftranscript|>", "<|translate|>", "<|transcribe|>",
+                    "<|startoflm|>", "<|startofprev|>", "<|nocaptions|>", "<|notimestamps|>"]
 
 
 def whisper(c=CONFIG):
@@ -222,6 +229,14 @@ def write(out):
         (out / folder).mkdir()
         model.save(out / folder / "model.safetensors", skip)
         (out / folder / "config.json").write_text(json.dumps(config))
+    (out / "english").mkdir()
+    whisper(ENGLISH).save(out / "english" / "model.safetensors")
+    (out / "english" / "config.json").write_text(json.dumps(ENGLISH))
+    specials = [50256, 50257, 50357, 50358, 50359, 50360, 50361, 50362]
+    added = [{"id": i, "content": c} for i, c in zip(specials, ENGLISH_SPECIALS)]
+    added += [{"id": 50363 + n, "content": "<|%.2f|>" % (n / 50)} for n in range(1501)]
+    tokenizer = {"added_tokens": added, "model": {"vocab": {"H": 0, "o": 1, "l": 2, "a": 3, "Ġ": 220}}}
+    (out / "english" / "tokenizer.json").write_text(json.dumps(tokenizer))
     (out / "expected.json").write_text(json.dumps(expected))
 
 
