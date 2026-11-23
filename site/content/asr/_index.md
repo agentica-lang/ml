@@ -4,13 +4,11 @@ description: Whisper in Agentica over tensor, nn and hub, from a Hugging Face ch
 weight: 5
 ---
 
-`asr` is Whisper's model, written in Agentica, for inference. It loads a Hugging Face checkpoint, runs the log-mel frontend, the encoder and greedy decoding, and returns the text with its segments. It depends on `tensor`, `nn` and `hub`.
-
-It runs on the reference backend and on libtorch. Its `mathx` module is a small native module over libm, so a C compiler is needed to build the package.
+`asr` is Whisper, OpenAI's speech-to-text model, written in Agentica for inference. It turns up to 30 seconds of audio into text, with timed segments.
 
 ## Example
 
-Transcribe one clip in Spanish with a Whisper checkpoint in a folder. The folder holds `model.safetensors`, `config.json` and `tokenizer.json`. The samples are 16 kHz mono floats, for example read with the `whisper` package's `Wav.load`.
+Transcribe one clip in Spanish. The folder `whisper-tiny` holds `model.safetensors`, `config.json` and `tokenizer.json`, from a Hugging Face Whisper checkpoint. The samples are 16 kHz mono floats: one channel, 16 000 samples per second. You can read them with `Whisper.load` from the `whisper` package, which uses `Wav.load` from its `wav` module.
 
 ```agentica
 import Asr from "pkg/asr/asr"
@@ -42,8 +40,8 @@ end
 - `Asr.open(path, backend)` loads a `.safetensors` file, or the `.index.json` of a sharded one, with the `config.json` in its folder.
 - `Asr.transcribe(model, tok, pcm, options)` runs the whole pipeline on one clip and gives a `Result` of `Transcript`.
 - `Tokenizer.open(path)` reads a `tokenizer.json`.
-- `Asr.encode(model, mel)` and `Asr.decode(model, tokens, audio)` are the model's forward passes, for callers who want the parts.
-- `Asr.listen`, `Asr.step` and the `Cache` they use decode one token at a time with a KV cache.
+- `Asr.encode(model, mel)` and `Asr.decode(model, tokens, audio)` are the model's forward passes (one run of the network), for callers who want the parts.
+- `Asr.listen`, `Asr.step` and the `Cache` they use decode one token at a time. The cache is a KV cache: it keeps the past keys and values, so earlier tokens are not computed again.
 
 `Asr.Options` has these fields:
 
@@ -62,12 +60,23 @@ end
 
 ## Limits
 
-- Up to one window of audio: 30 s of 16 kHz audio for Whisper's checkpoints, which is `2 * max_source_positions` frames of 160 samples. Longer audio must be cut by the caller; the `whisper` package does that with its own engine.
-- Greedy decoding at temperature 0, with OpenAI's rules for the suppressed tokens and the timestamps. There is no beam search.
-- The samples must be mono 16 kHz floats. The frontend does not resample.
+- Up to one window of audio: 30 s of 16 kHz audio for Whisper's checkpoints. A window is the chunk the model takes in one pass. Longer audio must be cut by the caller. The `whisper` package does that with its own engine.
+- Decoding is greedy: at each step it takes the most likely token (temperature 0). It follows OpenAI's rules for suppressed tokens and timestamps. There is no beam search (a search that keeps several candidate outputs).
+- The samples must be mono 16 kHz floats. The frontend, the part that turns audio into the model's input, does not resample (change the sample rate).
 - `Tokenizer.vocab_size` must equal the model's `vocab_size`, or `transcribe` is an error.
-- `tools/transcribe_check.agc` compares the cases of `test/fixtures/transcribe_golden.json` with a real whisper-tiny checkpoint. It is run by hand, not by the tests. Against Hugging Face's `generate` on whisper-tiny, the token ids match.
+
+## How it works
+
+`asr` loads a Hugging Face checkpoint. Then it runs the log-mel frontend (it turns audio into log-mel features, the model's input), the encoder and greedy decoding. It depends on `tensor`, `nn` and `hub`.
+
+`asr` runs on the reference backend and on libtorch. See the [tensor page](../tensor/_index.md) for the backends.
+
+Its `mathx` module is a small native module over libm (the C math library). A C compiler is needed to build the package. The module is temporary, until Agentica's `Math` has `exp`, `log`, `log10`, `sin` and `cos` (agentica#1925).
+
+A window is 2 * `max_source_positions` frames of 160 samples. For Whisper's checkpoints that is 30 seconds of 16 kHz audio.
+
+`tools/transcribe_check.agc` compares the cases of `test/fixtures/transcribe_golden.json` with a real whisper-tiny checkpoint. It is run by hand, not by the tests. Against Hugging Face's `generate` on whisper-tiny, the token ids match.
 
 ## Speed
 
-[`benchmarks/`](https://github.com/agentica-lang/ml/tree/main/benchmarks) times whisper-tiny against whisper.cpp on one machine, with the same weights, clips and threads. On the CPU the encoder is on par; the decoder step, the log-mel and the load are where the gap is.
+The [benchmarks folder](https://github.com/agentica-lang/ml/tree/main/benchmarks) times whisper-tiny against whisper.cpp on one machine, with the same weights, clips and threads. On the CPU the encoder is on par. The gap is in the decoder step, the log-mel and the load.

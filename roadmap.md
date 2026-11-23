@@ -12,7 +12,7 @@ written over `tensor`, `nn` and `hub` (Via B). The contract is
 
 | Piece | What is in |
 |---|---|
-| `tensor/` | the API, 45 backend primitives and the derived ops over them, the pure Agentica reference backend (the oracle), the libtorch CPU backend (42 of the 45), tracing, `value_and_grad` and backward rules for most ops, property tests |
+| `tensor/` | the API, 45 backend primitives and the derived ops over them, the pure Agentica reference backend (the oracle), the libtorch CPU backend (43 of the 45), tracing, `value_and_grad` and backward rules for most ops, property tests |
 | `nn/` | dense, layer norm, embeddings, convolution, attention, MLP, encoder and decoder blocks, seeded initializers |
 | `train/` | `mse`, binary and softmax cross-entropy, SGD, Adam, `Train.fit` |
 | `hub/` | safetensors (one file or sharded), and `nn` layers loaded by name |
