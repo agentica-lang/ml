@@ -144,9 +144,10 @@ The rules of Whisper's greedy decoding over one step's logits, as plain lists,
 and the KV cache that feeds them one token at a time.
 
 - **The rules** (`Greedy.allowed`), in OpenAI's order: the blank and `eot`
-  are not emitted first, the config's `suppress_tokens` never (without them:
-  `sot` and the specials from `<|translate|>` to just before
-  `<|notimestamps|>`; without `begin_suppress_tokens`: the blank `Ġ` and
+  are not emitted first, the config's `suppress_tokens` never (without them,
+  only the specials: `sot` and those from `<|translate|>` to just before
+  `<|notimestamps|>`, not OpenAI's non-speech symbols, which need the
+  tokenizer's encoder; without `begin_suppress_tokens`: the blank `Ġ` and
   `eot`). With timestamps: `<|notimestamps|>` is out; timestamps come in pairs
   (after a pair, text; after text and one timestamp, a timestamp or `eot`);
   they never decrease; the first token is a timestamp of at most 1 s; and when
@@ -156,7 +157,8 @@ and the KV cache that feeds them one token at a time.
 - **The pick** is the largest logit, the first one on a tie;
   `Greedy.probability` is a softmax in doubles.
 - **Segments**: a timestamp opens a segment and the next one closes it; text
-  with no closing timestamp ends at the clip's end, and without timestamps the
+  with no closing timestamp starts at its opening one, as Hugging Face does
+  (OpenAI starts it at 0), and ends at the clip's end; without timestamps the
   whole text is one segment from 0. A segment is `start`, `stop`, `text`
   (`end` is a reserved word in Agentica).
 - **The KV cache** lives in `asr/`, over `nn/`'s layers: `listen` projects the

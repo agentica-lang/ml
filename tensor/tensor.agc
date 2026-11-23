@@ -897,7 +897,9 @@ def multi_head_attention(
 
   dh = d / heads
   dvh = dv / heads
-  scale = 1.0 / Math.sqrt(dh.to_f)
+  # The query is scaled before the product, as Whisper does: a constant of the
+  # `[sq, sk]` scores would pass `List.repeat`'s cap at 1500 positions.
+  scale = try full([sq, dh], Types.Values.Float(1.0 / Math.sqrt(dh.to_f)), query.dtype, query.backend)
   widened = case mask
     some(m) ->
       _ = try same_backend(query, m, "multi_head_attention")
@@ -911,11 +913,7 @@ def multi_head_attention(
   for bb in 0...b
     head_ctx: List[Types.Tensor] = []
     for h in 0...heads
-      # The query is scaled before the product, as Whisper does: a constant
-      # of the `[sq, sk]` scores would pass `List.repeat`'s cap at 1500
-      # positions.
-      qbh = try reshape(try slice(query, [bb, 0, h * dh], [bb + 1, sq, (h + 1) * dh]), [sq, dh])
-      qbh = try mul(qbh, try full([sq, dh], Types.Values.Float(scale), query.dtype, query.backend))
+      qbh = try mul(try reshape(try slice(query, [bb, 0, h * dh], [bb + 1, sq, (h + 1) * dh]), [sq, dh]), scale)
       kbh = try reshape(try slice(key, [bb, 0, h * dh], [bb + 1, sk, (h + 1) * dh]), [sk, dh])
       scaled = try matmul(qbh, try transpose(kbh))
       biased = case widened
