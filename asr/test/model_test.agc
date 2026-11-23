@@ -107,6 +107,24 @@ def test_on_libtorch_the_tiny_whisper_matches_the_peer() -> Result[Void]
   end
 end
 
+## A prompt of three ids, then one more, give the last two rows of the peer's
+## logits for the same four tokens.
+def test_the_kv_cache_steps_match_the_peer() -> Result[Void]
+  with_fixtures do |dir|
+    want = try JSON.parse(try File.read_text("#{dir}/expected.json"))
+    m = try Asr.open("#{dir}/tiny/model.safetensors", REF)
+    cache = try Asr.listen(m, try Asr.encode(m, try f32(try rows(try JSON.get(want, "mel")), [1, 3, 6])))
+    tokens = try ints(try JSON.get(want, "tokens"))
+    logits = try rows(try JSON.get(try JSON.get(want, "tanh"), "logits"))
+    prompt = try Asr.step(m, cache, tokens.take(3))
+    try expect_close(prompt.logits, logits.drop(14).take(7), ABS, REL, "prompt")
+    next = try Asr.step(m, prompt.cache, [tokens[3]])
+    try expect_close(next.logits, logits.drop(21), ABS, REL, "next")
+    try Test.error?(Asr.step(m, prompt.cache, [1, 2]))
+    Test.error?(Asr.step(m, cache, (0...9).map { |i| i % 7 }))
+  end
+end
+
 ## Runs `body` on the folder the peer wrote, then removes it.
 def with_fixtures(body: Fn[String, Result[Void]]) -> Result[Void]
   p = try Process.spawn_captured("python3", ["-I", "test/peer.py"])

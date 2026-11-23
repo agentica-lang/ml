@@ -2,8 +2,10 @@
 ## `hub/`, loaded from a Hugging Face checkpoint (`asr/DESIGN.md`).
 ##
 ## `encode` turns a log-mel batch into the encoder output; `decode` turns
-## token ids and that output into logits. Inference only; the log-mel frontend
-## is `mel.agc` and the tokenizer `tokenizer.agc`. No decoding loop yet.
+## token ids and that output into logits; `listen` and `step` decode one token
+## at a time with a KV cache. Inference only; the log-mel frontend is
+## `mel.agc`, the tokenizer `tokenizer.agc` and the rules of greedy decoding
+## `greedy.agc`.
 
 import Hub from "pkg/hub/hub"
 import Load from "pkg/hub/load"
@@ -42,6 +44,34 @@ struct Model
   decoder_norm: Nn.LayerNorm
   ## The output projection, tied to `tokens`: its table transposed, no bias.
   logits: Nn.Dense
+end
+
+## One attention's keys and values, `[1, keys, d_model]` each.
+struct Kv
+  key: Tensor.Tensor
+  value: Tensor.Tensor
+end
+
+## What `step` keeps between calls: per decoder block the projected encoder
+## output, made once by `listen`, and the self-attention keys and values of
+## the `length` tokens so far.
+struct Cache
+  cross: List[Heard]
+  own: List[Kv]
+  length: Int
+end
+
+## One block's cross-attention keys and values, split by head: `keys[h]` is
+## `[head_width, frames]` (transposed), `values[h]` is `[frames, head_width]`.
+struct Heard
+  keys: List[Tensor.Tensor]
+  values: List[Tensor.Tensor]
+end
+
+struct Stepped
+  ## The logits of the last token fed, one per vocabulary id.
+  logits: List[Float]
+  cache: Cache
 end
 
 ## Hugging Face's `config.json` at `path`.
@@ -125,7 +155,9 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
 
   h = try Nn.positional(m.encoder_positions, try Tensor.stack(items, 0))
   for block in m.encoder
-    h = try Nn.encoder_block(block, h)
+    # On libtorch each block's intermediates are freed when it ends.
+    out: Result[Tensor.Tensor] = Native.arena do Nn.encoder_block(block, h) end
+    h = try out
   end
 
   Nn.layer_norm(m.encoder_norm, h)
@@ -151,7 +183,127 @@ def decode(m: Model, tokens: Tensor.Tensor, audio: Tensor.Tensor) -> Result[Tens
   Nn.dense(m.logits, try Nn.layer_norm(m.decoder_norm, h))
 end
 
+## The empty cache over `audio`, the `[1, frames, d_model]` output of
+## `encode`: the cross-attention keys and values of every decoder block.
+def listen(m: Model, audio: Tensor.Tensor) -> Result[Cache]
+  heard = Tensor.shape(audio)
+  if heard.size != 3 or heard[0] != 1 or heard[2] != m.config.d_model
+    return error("listen needs audio [1, frames, #{m.config.d_model}] from encode, got #{heard}")
+  end
+
+  frames = heard[1]
+  d = m.config.d_model
+  cross: List[Heard] = []
+  for block in m.decoder
+    a = block.cross_attention
+    k = try Tensor.reshape(try Nn.dense(a.key, audio), [frames, d])
+    v = try Tensor.reshape(try Nn.dense(a.value, audio), [frames, d])
+    width = d / a.heads
+    keys: List[Tensor.Tensor] = []
+    values: List[Tensor.Tensor] = []
+    for h in 0...a.heads
+      keys = keys.push(try Tensor.transpose(try Tensor.slice(k, [0, h * width], [frames, (h + 1) * width])))
+      values = values.push(try Tensor.slice(v, [0, h * width], [frames, (h + 1) * width]))
+    end
+
+    cross = cross.push(Heard(keys: keys, values: values))
+  end
+
+  ok(Cache(cross: cross, own: [], length: 0))
+end
+
+## `ids` fed after the tokens of `cache`: the logits of the last one, as
+## `decode` gives them, and the cache that holds them all. Only an empty
+## cache takes several ids at once (a prompt).
+def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
+  n = ids.size
+  return error("step needs ids") if n == 0
+  return error("step takes one id after the first call, got #{n}") if n > 1 and cache.length > 0
+  if cache.length + n > m.config.max_target_positions
+    return error("step needs at most #{m.config.max_target_positions} tokens, got #{cache.length + n}")
+  end
+
+  Native.arena do
+    d = m.config.d_model
+    backend = Tensor.backend(m.tokens.table)
+    rows = try Nn.embedding(
+      m.tokens,
+      try Tensor.from_list(ids.map { |i| Tensor.Values.Int(i) }, [n], Tensor.Dtype.I64, backend),
+    )
+
+    positions = try Tensor.slice(m.decoder_positions.table, [cache.length, 0], [cache.length + n, d])
+    h = try Tensor.reshape(try Tensor.add(rows, positions), [1, n, d])
+    mask: Optional[Tensor.Tensor] = none
+    if n > 1
+      mask = some(try Nn.causal_mask(n, Tensor.dtype(h), backend))
+    end
+
+    own: List[Kv] = []
+    for i in 0...m.decoder.size
+      block = m.decoder[i]
+      a = block.self_attention
+      x = try Nn.layer_norm(block.norm1, h)
+      k = try Nn.dense(a.key, x)
+      v = try Nn.dense(a.value, x)
+      if cache.length > 0
+        k = try Tensor.concat([cache.own[i].key, k], 1)
+        v = try Tensor.concat([cache.own[i].value, v], 1)
+      end
+
+      own = own.push(Kv(key: k, value: v))
+      h = try Tensor.add(
+        h,
+        try Nn.dense(a.output, try Tensor.multi_head_attention(try Nn.dense(a.query, x), k, v, a.heads, mask)),
+      )
+
+      c = block.cross_attention
+      x = try Nn.layer_norm(block.norm2, h)
+      heard = try attend(try Tensor.reshape(try Nn.dense(c.query, x), [n, d]), cache.cross[i])
+      h = try Tensor.add(h, try Nn.dense(c.output, try Tensor.reshape(heard, [1, n, d])))
+      h = try Tensor.add(h, try Nn.mlp(block.mlp, try Nn.layer_norm(block.norm3, h)))
+    end
+
+    last = try Tensor.slice(h, [0, n - 1, 0], [1, n, d])
+    logits = try Nn.dense(m.logits, try Nn.layer_norm(m.decoder_norm, last))
+    ok(Stepped(logits: try floats(logits), cache: Cache(cross: cache.cross, own: own, length: cache.length + n)))
+  end
+end
+
 private
+
+## Attention of the queries `[n, d_model]` over one block's cached heads, as
+## `Tensor.multi_head_attention` computes it, without slicing the keys and
+## values again at every step.
+def attend(queries: Tensor.Tensor, heard: Heard) -> Result[Tensor.Tensor]
+  n = Tensor.shape(queries)[0]
+  width = Tensor.shape(heard.values[0])[1]
+  scale = try Tensor.full(
+    [n, width],
+    Tensor.Values.Float(1.0 / Math.sqrt(width.to_f)),
+    Tensor.Dtype.F32,
+    Tensor.backend(queries),
+  )
+
+  parts: List[Tensor.Tensor] = []
+  for h in 0...heard.keys.size
+    q = try Tensor.mul(try Tensor.slice(queries, [0, h * width], [n, (h + 1) * width]), scale)
+    parts = parts.push(try Tensor.matmul(try Tensor.softmax(try Tensor.matmul(q, heard.keys[h]), 1), heard.values[h]))
+  end
+
+  Tensor.concat(parts, 1)
+end
+
+def floats(t: Tensor.Tensor) -> Result[List[Float]]
+  out: List[Float] = []
+  for v in try Tensor.to_list(t)
+    case v
+      Tensor.Values.Float(f) -> out = out.push(f)
+      _ -> return error("the logits hold Float values")
+    end
+  end
+
+  ok(out)
+end
 
 ## Whisper's names for encoder block `p` (`model.encoder.layers.N.`).
 def encoder_names(p: String) -> Load.BlockNames
