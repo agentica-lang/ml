@@ -18,8 +18,8 @@
 ##
 ## A device crosses as an `Int`: `-1` is ggml's CPU backend and `i >= 0` the
 ## Vulkan device `i`. A tensor is stored as F32, or as I32 when `int32` says
-## so (`src/ggml.agc` picks it from the dtype). Every call but `vulkan_devices`
-## may allocate or copy device memory, so they run on the compute pool.
+## so (`src/ggml.agc` picks it from the dtype). The calls may allocate, copy or
+## compute on a device, so they run on the compute pool.
 
 extern module "ggml"
   ## One tensor in a ggml backend buffer of its device: the state owns a
@@ -39,4 +39,37 @@ extern module "ggml"
   ## Host readback: the row-major values as doubles, which the caller tags
   ## with the tensor's dtype.
   compute def readback(t: TensorHandle) -> Result[List[Float]]
+
+  ## One compiled graph of the structural cache, held by one evaluation. The
+  ## graph itself lives in the C cache for the process; the lease marks it
+  ## in use, and its free hook gives it back (or drops it if it never
+  ## compiled). So two tasks never share one graph's leaves at once.
+  resource Lease
+  ## A compiled graph cached under `key` on `device` that no one holds, or a
+  ## new empty one with room for `capacity` nodes, to build with `node` and
+  ## `compile`.
+  compute def acquire(device: Int, key: String, capacity: Int) -> Result[Lease]
+  ## True when the leased graph is compiled: a cache hit.
+  compute def ready(lease: Lease) -> Bool
+  ## Appends one node and answers its index: `op` is a code of
+  ## `native/ggml_graph.c`, `args` earlier indices, `shape` the row-major
+  ## shape the trace recorded, `ints` the op's integer parameters.
+  compute def node(lease: Lease, op: Int, args: List[Int], shape: List[Int], ints: List[Int]) -> Result[Int]
+  ## Builds the graph of `outputs`, allocates its fills and checks every
+  ## node against the backend. A failed compile leaves the graph unusable.
+  compute def compile(lease: Lease, outputs: List[Int]) -> Result[Void]
+  ## Makes `t` the leaf `slot` for the next run (leaves count in the order
+  ## they were sent): an F32 tensor is read in place, so the caller keeps
+  ## `t` alive until `run` returns; another one is converted into the
+  ## leaf's own memory now.
+  compute def bind(lease: Lease, slot: Int, t: TensorHandle) -> Result[Void]
+  ## A fresh tensor that the next run writes output `output` into, stored as
+  ## I32 when `int32` says so.
+  compute def output(lease: Lease, output: Int, int32: Bool) -> Result[TensorHandle]
+  ## Sets the fills (one value each, in the order they were sent) and runs
+  ## the graph into the tensors `output` made; every leaf and output must be
+  ## set since the last run. An error when an output is not finite.
+  compute def run(lease: Lease, fills: List[Float]) -> Result[Void]
+  ## How many graphs this process has compiled: the cache's misses.
+  compute def compiles() -> Int
 end

@@ -63,8 +63,9 @@
 ##   `error("<op> is not implemented on the torch backend yet")` for those,
 ##   so the gap is a `Result` error naming the op, never a wrong number
 ##   (`README.md`, "What is implemented"). The `Ggml` arm creates and reads
-##   back, and answers `Ggml.compiled_only(op)` for every other primitive
-##   (`README.md`, "The ggml backend").
+##   back, and answers `Ggml.compiled_only(op)` for every other primitive:
+##   ggml runs ops only in a traced graph (`Trace`, `README.md`, "The ggml
+##   backend").
 
 import Ggml from "src/ggml"
 import Graph from "src/graph"

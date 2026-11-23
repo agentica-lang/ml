@@ -11,63 +11,134 @@
 
    This file is compiled as C or as C++ (`tools/build-torch.sh` sets CC to
    g++), so it casts every `malloc`. */
+#if !defined(__cplusplus) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L /* setenv, sysconf */
+#endif
 #define GGML_NATIVE_IMPLEMENTATION
-#include "ggml_native.h"
+#include "ggml_shared.h"
 
 #include "ggml-alloc.h"
-#include "ggml-backend.h"
-#include "ggml.h"
+#include "ggml-cpu.h"
 
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
-/* One lock for the registry and for every Vulkan buffer operation (allocate,
-   set, get, free): compute tasks may touch Vulkan buffers at once, and one
-   lock is the simple way to keep ggml-Vulkan's transfers from overlapping.
-   CPU buffers are plain memory and need none. */
 static pthread_mutex_t device_lock = PTHREAD_MUTEX_INITIALIZER;
 
-struct ggml_TensorHandle_state {
-  struct ggml_context *ctx;
-  struct ggml_tensor *t;
-  ggml_backend_buffer_t buffer;
-  bool vulkan;
-};
+/* Frees that wait for the device lock. A free hook runs on the scheduler, so
+   it must never wait for a graph to finish: it queues its work here, and the
+   next holder of the device lock does it. */
+static pthread_mutex_t deferred_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct deferred *deferred_head = NULL;
 
+void tg_defer(struct deferred *d) {
+  pthread_mutex_lock(&deferred_lock);
+  d->next = deferred_head;
+  deferred_head = d;
+  pthread_mutex_unlock(&deferred_lock);
+}
+
+void tg_lock_device(void) {
+  struct deferred *d, *next;
+
+  pthread_mutex_lock(&device_lock);
+  pthread_mutex_lock(&deferred_lock);
+  d = deferred_head;
+  deferred_head = NULL;
+  pthread_mutex_unlock(&deferred_lock);
+  for (; d != NULL; d = next) {
+    next = d->next; /* `fn` may free the node itself */
+    d->fn(d->arg);
+  }
+}
+
+void tg_unlock_device(void) { pthread_mutex_unlock(&device_lock); }
+
+/* A CPU buffer is plain memory: Vulkan buffer operations take the lock, CPU
+   uploads and readbacks do not, so CPU tensors move while a graph runs. Making
+   a tensor (`tg_new_tensor`) waits for the lock even on the CPU, to look the
+   device up. */
 static void lock_for(bool vulkan) {
-  if (vulkan) pthread_mutex_lock(&device_lock);
+  if (vulkan) tg_lock_device();
 }
 
 static void unlock_for(bool vulkan) {
-  if (vulkan) pthread_mutex_unlock(&device_lock);
+  if (vulkan) tg_unlock_device();
+}
+
+/* What a freed tensor handle leaves behind. */
+struct remains {
+  struct deferred link;
+  ggml_backend_buffer_t buffer;
+  struct ggml_context *ctx;
+};
+
+static void free_remains(void *arg) {
+  struct remains *r = (struct remains *)arg;
+
+  if (r->buffer != NULL) ggml_backend_buffer_free(r->buffer);
+  if (r->ctx != NULL) ggml_free(r->ctx);
+  free(r);
 }
 
 static void ggml_TensorHandle_free(void *state) {
   struct ggml_TensorHandle_state *self = (struct ggml_TensorHandle_state *)state;
+  struct remains *r;
 
-  if (self->buffer != NULL) {
-    lock_for(self->vulkan);
-    ggml_backend_buffer_free(self->buffer);
-    unlock_for(self->vulkan);
+  if (self->buffer != NULL || self->ctx != NULL) {
+    r = (struct remains *)malloc(sizeof *r);
+    if (r == NULL) {
+      /* no memory to queue the free: do it now, waiting for the lock */
+      tg_lock_device();
+      if (self->buffer != NULL) ggml_backend_buffer_free(self->buffer);
+      if (self->ctx != NULL) ggml_free(self->ctx);
+      tg_unlock_device();
+    } else {
+      r->buffer = self->buffer;
+      r->ctx = self->ctx;
+      r->link.fn = free_remains;
+      r->link.arg = r;
+      tg_defer(&r->link);
+    }
   }
-  if (self->ctx != NULL) ggml_free(self->ctx);
   memset(self, 0, sizeof *self);
 }
 #define GGML_TensorHandle_FREE ggml_TensorHandle_free
+#define GGML_Lease_FREE ggml_Lease_free
 
-static an_term error_text(an_env *env, const char *message) { return an_error(env, message, strlen(message)); }
+/* ggml-Vulkan converts F32 `mul_mat` inputs to fp16 on a device that has
+   fp16, unless GGML_VK_DISABLE_F16 is set when ggml first enumerates its
+   devices (any registry call does), and no per-op switch exists
+   (spike/ggml-graph/README.md). So the first registry call of this file sets
+   it, for the process: F32. Call under the device lock. */
+static bool precision_fixed = false;
+
+static void fix_precision(void) {
+  if (precision_fixed) return;
+  setenv("GGML_VK_DISABLE_F16", "1", 1);
+  precision_fixed = true;
+}
+
+/* The CPU and up to eight Vulkan devices, opened once for the process. */
+#define MAX_DEVICES 9
+static ggml_backend_t backends[MAX_DEVICES];
+
+an_term tg_error(an_env *env, const char *message) { return an_error(env, message, strlen(message)); }
 
 /* The Vulkan device `index`, counting only devices that are not a CPU (a
    software rasterizer), or NULL; `count` gets how many there are. NULL in a
    CPU-only build. Call under the lock. */
 static ggml_backend_dev_t vulkan_device(size_t index, size_t *count) {
-  ggml_backend_reg_t reg = ggml_backend_reg_by_name("Vulkan");
+  ggml_backend_reg_t reg;
   ggml_backend_dev_t found = NULL, dev;
-  size_t i, n = reg == NULL ? 0 : ggml_backend_reg_dev_count(reg);
+  size_t i, n;
 
+  fix_precision();
+  reg = ggml_backend_reg_by_name("Vulkan");
+  n = reg == NULL ? 0 : ggml_backend_reg_dev_count(reg);
   *count = 0;
   for (i = 0; i < n; i++) {
     dev = ggml_backend_reg_dev_get(reg, i);
@@ -81,36 +152,54 @@ static ggml_backend_dev_t vulkan_device(size_t index, size_t *count) {
 an_term ggml_vulkan_devices(an_env *env) {
   size_t n;
 
-  pthread_mutex_lock(&device_lock);
+  tg_lock_device();
   vulkan_device(SIZE_MAX, &n);
-  pthread_mutex_unlock(&device_lock);
+  tg_unlock_device();
   return an_int(env, (int64_t)n);
 }
 
-/* The buffer type of `device` (-1: CPU, i >= 0: Vulkan device i), or false
-   with the reason in `why`. */
-static bool buffer_type_of(int64_t device, ggml_backend_buffer_type_t *out, char *why, size_t len) {
+/* The ggml device of `device` (-1: CPU, i >= 0: Vulkan device i), or NULL
+   with the reason in `why`. Call under the device lock. */
+static ggml_backend_dev_t device_of(int64_t device, char *why, size_t len) {
   ggml_backend_dev_t dev = NULL;
   size_t n;
 
-  pthread_mutex_lock(&device_lock);
+  fix_precision();
   if (device == -1) {
     dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (dev == NULL) snprintf(why, len, "this ggml build has no CPU backend");
-  } else if (device < 0) {
-    snprintf(why, len, "a Vulkan device index is >= 0, got %lld", (long long)device);
-  } else if ((dev = vulkan_device((size_t)device, &n)) == NULL) {
+  } else if (device < 0 || (dev = vulkan_device((size_t)device, &n)) == NULL) {
     if (ggml_backend_reg_by_name("Vulkan") == NULL) {
       snprintf(why, len, "no Vulkan device %lld: this ggml build has no Vulkan backend (`tools/build-engine.sh vulkan`)",
                (long long)device);
     } else {
       snprintf(why, len, "no Vulkan device %lld: ggml sees %zu", (long long)device, n);
     }
+  } else if (device >= MAX_DEVICES - 1) {
+    snprintf(why, len, "Vulkan device %lld: this backend opens devices 0...%d", (long long)device, MAX_DEVICES - 1);
+    dev = NULL;
   }
-  *out = dev == NULL ? NULL : ggml_backend_dev_buffer_type(dev);
-  pthread_mutex_unlock(&device_lock);
-  if (dev != NULL && *out == NULL) snprintf(why, len, "the device has no buffer type");
-  return *out != NULL;
+  return dev;
+}
+
+ggml_backend_t tg_backend(int64_t device, char *why, size_t len) {
+  ggml_backend_dev_t dev;
+  ggml_backend_t backend;
+  long cores;
+
+  if (device >= -1 && device < MAX_DEVICES - 1 && backends[device + 1] != NULL) return backends[device + 1];
+  if ((dev = device_of(device, why, len)) == NULL) return NULL;
+  backend = ggml_backend_dev_init(dev, NULL);
+  if (backend == NULL) {
+    snprintf(why, len, "ggml could not open %s", ggml_backend_dev_name(dev));
+    return NULL;
+  }
+  if (device == -1) {
+    cores = sysconf(_SC_NPROCESSORS_ONLN);
+    ggml_backend_cpu_set_n_threads(backend, cores > 0 ? (int)cores : 4);
+  }
+  backends[device + 1] = backend;
+  return backend;
 }
 
 static bool failed_with(an_term *failure, an_term term) {
@@ -119,34 +208,24 @@ static bool failed_with(an_term *failure, an_term term) {
 }
 
 static bool failed(an_env *env, an_term *failure, const char *message) {
-  return failed_with(failure, error_text(env, message));
+  return failed_with(failure, tg_error(env, message));
 }
 
-/* A new tensor of `shape` and `type` in its own buffer on `device`, into
-   `state`; false with the error term in `failure`. The free hook releases a
-   half-made state. */
-static bool make_tensor(an_env *env, int64_t device, ggml_list_Int *shape, enum ggml_type type,
-                        struct ggml_TensorHandle_state *state, an_term *failure) {
-  int64_t dims[GGML_MAX_DIMS], ne[GGML_MAX_DIMS] = {1, 1, 1, 1};
-  int64_t dim, count = 1;
-  int rank = 0, code, i;
+bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_type type,
+                   struct ggml_TensorHandle_state *state, an_term *failure) {
   char why[160];
-  ggml_backend_buffer_type_t buft;
+  ggml_backend_dev_t dev;
+  ggml_backend_buffer_type_t buft = NULL;
   struct ggml_init_params params;
   size_t size;
   enum ggml_status placed;
 
-  while ((code = ggml_list_Int_next(env, shape, &dim)) == 1) {
-    if (dim < 0) return failed(env, failure, "a shape holds no negative dimension");
-    if (rank == GGML_MAX_DIMS) return failed(env, failure, "the ggml backend holds tensors of rank 4 at most");
-    if (dim > 0 && count > INT64_MAX / 8 / dim) return failed(env, failure, "the tensor is too large");
-    count *= dim;
-    dims[rank++] = dim;
-  }
-  if (code < 0) return failed_with(failure, an_void(env));
-  for (i = 0; i < rank; i++) ne[i] = dims[rank - 1 - i];
-
-  if (!buffer_type_of(device, &buft, why, sizeof why)) return failed(env, failure, why);
+  tg_lock_device();
+  dev = device_of(device, why, sizeof why);
+  if (dev != NULL) buft = ggml_backend_dev_buffer_type(dev);
+  tg_unlock_device();
+  if (dev == NULL) return failed(env, failure, why);
+  if (buft == NULL) return failed(env, failure, "the device has no buffer type");
   state->vulkan = device >= 0;
 
   params.mem_size = ggml_tensor_overhead();
@@ -170,6 +249,59 @@ static bool make_tensor(an_env *env, int64_t device, ggml_list_Int *shape, enum 
   if (state->buffer == NULL) return failed(env, failure, "the device could not allocate the tensor");
   if (placed != GGML_STATUS_SUCCESS) return failed(env, failure, "the device could not place the tensor in its buffer");
   return true;
+}
+
+/* A new tensor of the row-major `shape`, as `tg_new_tensor`. */
+static bool make_tensor(an_env *env, int64_t device, ggml_list_Int *shape, enum ggml_type type,
+                        struct ggml_TensorHandle_state *state, an_term *failure) {
+  int64_t dims[GGML_MAX_DIMS], ne[GGML_MAX_DIMS] = {1, 1, 1, 1};
+  int64_t dim, count = 1;
+  int rank = 0, code, i;
+
+  while ((code = ggml_list_Int_next(env, shape, &dim)) == 1) {
+    if (dim < 0) return failed(env, failure, "a shape holds no negative dimension");
+    if (rank == GGML_MAX_DIMS) return failed(env, failure, "the ggml backend holds tensors of rank 4 at most");
+    if (dim > 0 && count > INT64_MAX / 8 / dim) return failed(env, failure, "the tensor is too large");
+    count *= dim;
+    dims[rank++] = dim;
+  }
+  if (code < 0) return failed_with(failure, an_void(env));
+  for (i = 0; i < rank; i++) ne[i] = dims[rank - 1 - i];
+  return tg_new_tensor(env, device, ne, type, state, failure);
+}
+
+/* 2^24: the integers F32 holds exactly. */
+#define EXACT 16777216.0f
+
+const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst) {
+  int64_t n = ggml_nelements(src), i;
+  void *bytes;
+  const char *why = NULL;
+
+  if (n != ggml_nelements(dst)) return "the tensors have different element counts";
+  if (src->type == dst->type) {
+    ggml_backend_tensor_copy(src, dst);
+    return NULL;
+  }
+  bytes = malloc(ggml_nbytes(src) > 0 ? ggml_nbytes(src) : 1);
+  if (bytes == NULL) return "out of memory";
+  ggml_backend_tensor_get(src, bytes, 0, ggml_nbytes(src));
+  for (i = 0; i < n && why == NULL; i++) {
+    if (src->type == GGML_TYPE_I32) {
+      int32_t v = ((int32_t *)bytes)[i];
+
+      if (v > (int32_t)EXACT || v < -(int32_t)EXACT) why = "an I32 value beyond 2^24 is not exact in F32";
+      ((float *)bytes)[i] = (float)v;
+    } else {
+      float v = ((float *)bytes)[i];
+
+      if (!(v <= EXACT && v >= -EXACT)) why = "an I32 result beyond 2^24 (or not finite) is not exact in F32";
+      else ((int32_t *)bytes)[i] = (int32_t)v;
+    }
+  }
+  if (why == NULL) ggml_backend_tensor_set(dst, bytes, 0, ggml_nbytes(dst));
+  free(bytes);
+  return why;
 }
 
 /* Host bytes for every element of `t` (4 per element: F32 or I32). */
@@ -204,7 +336,7 @@ an_term ggml_upload(an_env *env, int64_t device, ggml_list_Int shape, ggml_list_
   if (!make_tensor(env, device, &shape, type, state, &failure)) return failure;
   count = ggml_nelements(state->t);
   bytes = host_bytes(state->t);
-  if (bytes == NULL) return error_text(env, "out of memory");
+  if (bytes == NULL) return tg_error(env, "out of memory");
   while ((code = ggml_list_Float_next(env, &data, &v)) == 1 && i < count) put(bytes, i++, type, v);
   if (code < 0) {
     free(bytes);
@@ -212,7 +344,7 @@ an_term ggml_upload(an_env *env, int64_t device, ggml_list_Int shape, ggml_list_
   }
   if (i != count || code == 1) {
     free(bytes);
-    return error_text(env, "upload needs exactly one value per element");
+    return tg_error(env, "upload needs exactly one value per element");
   }
   return store(env, state, bytes, term);
 }
@@ -227,7 +359,7 @@ an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double val
   if (!make_tensor(env, device, &shape, type, state, &failure)) return failure;
   count = ggml_nelements(state->t);
   bytes = host_bytes(state->t);
-  if (bytes == NULL) return error_text(env, "out of memory");
+  if (bytes == NULL) return tg_error(env, "out of memory");
   for (i = 0; i < count; i++) put(bytes, i, type, value);
   return store(env, state, bytes, term);
 }
@@ -238,10 +370,10 @@ an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t) {
   ggml_list_Float_builder out;
   an_term list;
 
-  if (t->t == NULL) return error_text(env, "readback of a tensor that was never made");
+  if (t->t == NULL) return tg_error(env, "readback of a tensor that was never made");
   count = ggml_nelements(t->t);
   bytes = host_bytes(t->t);
-  if (bytes == NULL) return error_text(env, "out of memory");
+  if (bytes == NULL) return tg_error(env, "out of memory");
   lock_for(t->vulkan);
   ggml_backend_tensor_get(t->t, bytes, 0, ggml_nbytes(t->t));
   unlock_for(t->vulkan);
