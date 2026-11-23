@@ -6,13 +6,15 @@ import Tensor from "../tensor"
 private
 
 def test_zeros_fills_the_shape() -> Result[Void]
-  t = try Tensor.zeros([2, 2], Tensor.Dtype.F32, Tensor.Backend.Reference)
+  t = try Tensor.zeros([2, 2])
   try Test.eq(Tensor.shape(t), [2, 2])
+  try Test.eq(Tensor.dtype(t), Tensor.Dtype.F32)
+  try Test.eq(Tensor.backend(t), Tensor.Backend.Reference)
   Support.expect_floats(t, [0.0, 0.0, 0.0, 0.0])
 end
 
 def test_ones_fills_the_shape() -> Result[Void]
-  t = try Tensor.ones([3], Tensor.Dtype.F32, Tensor.Backend.Reference)
+  t = try Tensor.ones([3])
   Support.expect_floats(t, [1.0, 1.0, 1.0])
 end
 
@@ -22,8 +24,17 @@ def test_empty_is_deterministic_zeros() -> Result[Void]
 end
 
 def test_full_repeats_the_value() -> Result[Void]
-  t = try Tensor.full([2, 2], Tensor.Values.Float(2.5), Tensor.Dtype.F32, Tensor.Backend.Reference)
+  t = try Tensor.full([2, 2], Tensor.Values.Float(2.5))
   Support.expect_floats(t, [2.5, 2.5, 2.5, 2.5])
+end
+
+def test_floats_and_from_list_default_to_f32_on_reference() -> Result[Void]
+  short = try Tensor.floats([1.0, 2.0], [2])
+  long = try Tensor.from_list([Tensor.Values.Float(1.0), Tensor.Values.Float(2.0)], [2])
+  try Test.eq(Tensor.dtype(short), Tensor.Dtype.F32)
+  try Test.eq(Tensor.backend(short), Tensor.Backend.Reference)
+  try Test.eq(Tensor.to_list(short), Tensor.to_list(long))
+  Test.error?(Tensor.floats([1.0], [2]))
 end
 
 def test_like_keeps_shape_and_dtype() -> Result[Void]

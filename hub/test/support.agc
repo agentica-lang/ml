@@ -60,7 +60,7 @@ def floats_of(t: Tensor.Tensor) -> Result[List[Float]]
 end
 
 def f32(data: List[Float], shape: List[Int], backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  Tensor.from_list(data.map { |x: Float| Tensor.Values.Float(x) }, shape, Tensor.Dtype.F32, backend)
+  Tensor.floats(data, shape, backend)
 end
 
 ## `got` matches `want` within `abs + rel * |want|`, element by element.

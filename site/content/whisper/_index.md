@@ -20,7 +20,8 @@ def main() -> Void
   pcm = Whisper.load("clip.wav").unwrap!
   text = Whisper.transcribe(model, pcm).unwrap!
   puts(text)
-  segments = Whisper.transcribe_with(model, pcm, Whisper.Options(language: "es")).unwrap!
+  options = Whisper.Options(language: "es")
+  segments = Whisper.transcribe_with(model, pcm, options).unwrap!
   for segment in segments
     puts("#{segment.start_ms} ms to #{segment.end_ms} ms: #{segment.text}")
   end

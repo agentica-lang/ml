@@ -30,9 +30,10 @@ import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
 def main() -> Void
-  values = [1.0, 2.0, 3.0].map { |x| Tensor.Values.Float(x) }
-  w = Tensor.from_list(values, [3], Tensor.Dtype.F32, Tensor.Backend.Reference).unwrap!
-  both = Trace.value_and_grad([w]) do |ps| Tensor.sum(try Tensor.mul(ps[0], ps[0])) end
+  w = Tensor.floats([1.0, 2.0, 3.0], [3]).unwrap!
+  both = Trace.value_and_grad([w]) do |ps|
+    Tensor.sum(try Tensor.mul(ps[0], ps[0]))
+  end
   result = both.unwrap!
   puts(Tensor.to_list(result.value).unwrap!)
   puts(Tensor.to_list(result.grads[0]).unwrap!)

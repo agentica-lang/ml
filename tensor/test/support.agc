@@ -6,10 +6,7 @@ import Tensor from "../tensor"
 TOL = 0.000000001
 
 ## `data` as an `F32` tensor of `shape` on the reference backend.
-def f32(data: List[Float], shape: List[Int]) -> Result[Tensor.Tensor]
-  floats = data.map do |x: Float| Tensor.Values.Float(x) end
-  Tensor.from_list(floats, shape, Tensor.Dtype.F32, Tensor.Backend.Reference)
-end
+def f32(data: List[Float], shape: List[Int]) -> Result[Tensor.Tensor] = Tensor.floats(data, shape)
 
 ## `data` as an `I64` tensor of `shape` on the reference backend.
 def i64(data: List[Int], shape: List[Int]) -> Result[Tensor.Tensor]

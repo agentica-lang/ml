@@ -21,18 +21,19 @@ import Train from "pkg/train/train"
 
 def linear(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
   rows = Tensor.shape(b.inputs)[0]
-  Loss.mse(try Tensor.reshape(try Tensor.matmul(b.inputs, ps[0]), [rows]), b.targets)
+  pred = try Tensor.matmul(b.inputs, ps[0])
+  Loss.mse(try Tensor.reshape(pred, [rows]), b.targets)
 end
 
 def main() -> Void
-  ref = Tensor.Backend.Reference
-  xs = [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 2.0, 3.0, 1.0, 1.0, 3.0, 2.0, 2.0]
+  xs = [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0,
+    1.0, 2.0, 3.0, 1.0, 1.0, 3.0, 2.0, 2.0]
   ys = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
-  inputs = Tensor.from_list(xs.map { |x: Float| Tensor.Values.Float(x) }, [8, 2], Tensor.Dtype.F32, ref).unwrap!
-  targets = Tensor.from_list(ys.map { |y: Float| Tensor.Values.Float(y) }, [8], Tensor.Dtype.F32, ref).unwrap!
+  inputs = Tensor.floats(xs, [8, 2]).unwrap!
+  targets = Tensor.floats(ys, [8]).unwrap!
   dataset = Data.dataset(inputs, targets).unwrap!
   loader = Data.Loader(dataset: dataset, batch_size: 4, seed: 1)
-  w = Tensor.zeros([2, 1], Tensor.Dtype.F32, ref).unwrap!
+  w = Tensor.zeros([2, 1]).unwrap!
   sgd = Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.05))
   fit = Train.fit(&linear, [w], loader, sgd, 30).unwrap!
   puts(fit.history.size)

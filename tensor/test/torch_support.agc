@@ -65,10 +65,7 @@ def on_ref(data: List[Float], shape: List[Int]) -> Result[Tensor.Tensor] = Suppo
 def on_ref_i64(data: List[Int], shape: List[Int]) -> Result[Tensor.Tensor] = Support.i64(data, shape)
 
 ## `data` as an `F32` torch tensor of `shape`.
-def on_torch(data: List[Float], shape: List[Int]) -> Result[Tensor.Tensor]
-  floats = data.map do |x: Float| Tensor.Values.Float(x) end
-  Tensor.from_list(floats, shape, Tensor.Dtype.F32, TORCH)
-end
+def on_torch(data: List[Float], shape: List[Int]) -> Result[Tensor.Tensor] = Tensor.floats(data, shape, TORCH)
 
 ## `data` as an `I64` torch tensor of `shape`.
 def on_torch_i64(data: List[Int], shape: List[Int]) -> Result[Tensor.Tensor]
