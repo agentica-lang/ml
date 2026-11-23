@@ -51,6 +51,7 @@ GATHER = 26
 GELU_ERF = 27
 CONCAT = 28
 CONV1D = 29
+SCATTER_ADD = 30
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -276,6 +277,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Arange(start, stop, step) -> ints = [start, stop, step]
       Types.Op.Slice(starts, _) -> ints = starts
       Types.Op.Gather -> ints = [n.args[0].shape.size]
+      Types.Op.ScatterAdd(rows) -> ints = [rows]
       Types.Op.Concat(axis) -> ints = [axis, 0]
       Types.Op.Stack(axis) -> ints = [axis, 1]
       Types.Op.Conv1d(stride, padding) -> ints = [stride, padding]
@@ -399,6 +401,7 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Where -> ok(WHERE)
     Types.Op.Slice(_, _) -> ok(SLICE)
     Types.Op.Gather -> ok(GATHER)
+    Types.Op.ScatterAdd(_) -> ok(SCATTER_ADD)
     Types.Op.GeluErf -> ok(GELU_ERF)
     Types.Op.Concat(_) -> ok(CONCAT)
     Types.Op.Stack(_) -> ok(CONCAT)

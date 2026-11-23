@@ -329,6 +329,15 @@ def test_gather_matches_a_central_difference_and_sums_repeated_rows() -> Result[
   Support.expect_floats(grads[0], [1.0, 1.0, 0.0, 0.0, 2.0, 2.0, 0.0, 0.0])
 end
 
+def test_scatter_add_matches_a_central_difference() -> Result[Void]
+  ids = try Support.i64([2, 0, 2], [3])
+  u = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7], [3, 2])
+  try check_grad([u]) do |xs| weigh(try Tensor.scatter_add(Trace.constant(ids), xs[0], 4)) end
+
+  grads = try Trace.grad([u]) do |xs| Tensor.sum(try Tensor.scatter_add(Trace.constant(ids), xs[0], 4)) end
+  Support.expect_floats(grads[0], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+end
+
 def test_softmax_matches_a_central_difference() -> Result[Void]
   x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7], [2, 3])
   try check_grad([x]) do |xs| weigh(try Tensor.softmax(xs[0], 1)) end

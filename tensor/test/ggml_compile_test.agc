@@ -356,6 +356,46 @@ def test_joins_and_whisper_ops_match_the_reference() -> Result[Void]
   ok()
 end
 
+## The loss of an embedding lookup: the sum of squares of the rows `ids` name.
+def lookup_loss(ids: Tensor.Tensor) -> Fn[List[Tensor.Tensor], Result[Tensor.Tensor]]
+  ->(a: List[Tensor.Tensor]) {
+    rows = try Tensor.gather(a[0], Trace.constant(ids))
+    Tensor.sum(try Tensor.mul(rows, rows))
+  }
+end
+
+## The gradient of a lookup is a `scatter_add`: it sums the rows of a repeated
+## index and matches the reference.
+def lookup_parity(backend: Tensor.Backend) -> Result[Void]
+  xs = uniform(12, 5, 1.0)
+  ids = [3, 0, 3, 1, 3]
+  parity(
+    backend,
+    [try floats(xs, [4, 3], backend)],
+    [try floats(xs, [4, 3], REF)],
+    lookup_loss(try labels(ids, backend)),
+    lookup_loss(try labels(ids, REF)),
+  )
+end
+
+def test_the_gradient_of_a_lookup_matches_the_reference() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  try lookup_parity(CPU)
+  return ok() if !Tensor.available(VULKAN)
+  lookup_parity(VULKAN)
+end
+
+def test_scatter_add_sums_repeated_indices_and_refuses_one_outside_the_rows() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  rows = ->(a: List[Tensor.Tensor]) { Tensor.scatter_add(a[0], a[1], 4) }
+  updates = try floats([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [3, 2], CPU)
+  try gives([try labels([2, 0, 2], CPU), updates], rows, [3.0, 4.0, 0.0, 0.0, 6.0, 8.0, 0.0, 0.0])
+  try refused(Trace.eval([try labels([0, 4, 1], CPU), updates], rows), "outside")
+  refused(Trace.eval([try labels([0, -1, 1], CPU), updates], rows), "outside")
+end
+
 def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]
   return ok() if !try present(CPU)
 

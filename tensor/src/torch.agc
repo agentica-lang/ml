@@ -534,12 +534,7 @@ end
 
 ## The inverse of `gather`: `updates` added into `rows` rows at integer
 ## `indices`; the answer is `[rows] ++ updates.shape[indices.rank:]`.
-def scatter_add(
-  device: Types.Device,
-  indices: Types.Tensor,
-  updates: Types.Tensor,
-  rows: Int,
-) -> Result[Types.Tensor]
+def scatter_add(device: Types.Device, indices: Types.Tensor, updates: Types.Tensor, rows: Int) -> Result[Types.Tensor]
   _ = try ready(device, "scatter_add")
   return error("scatter_add needs a row count of 0 or more, got #{rows}") if rows < 0
   if !TorchDtypes.is_int_dtype(indices.dtype)

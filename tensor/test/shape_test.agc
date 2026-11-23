@@ -145,6 +145,39 @@ def test_gather_rejects_an_index_out_of_range() -> Result[Void]
   Test.error?(Tensor.gather(table, ids))
 end
 
+def test_scatter_add_sums_the_rows_of_a_repeated_index() -> Result[Void]
+  ids = try Support.i64([2, 0, 2], [3])
+  updates = try Support.f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [3, 2])
+  out = try Tensor.scatter_add(ids, updates, 4)
+  try Test.eq(Tensor.shape(out), [4, 2])
+  Support.expect_floats(out, [3.0, 4.0, 0.0, 0.0, 6.0, 8.0, 0.0, 0.0])
+end
+
+def test_scatter_add_keeps_the_index_shape_out_of_the_answer() -> Result[Void]
+  ids = try Support.i64([1, 0], [2, 1])
+  updates = try Support.f32([1.0, 2.0, 3.0, 4.0], [2, 1, 2])
+  out = try Tensor.scatter_add(ids, updates, 2)
+  try Test.eq(Tensor.shape(out), [2, 2])
+  Support.expect_floats(out, [3.0, 4.0, 1.0, 2.0])
+end
+
+def test_gather_reads_back_what_scatter_add_wrote_at_distinct_indices() -> Result[Void]
+  ids = try Support.i64([3, 1], [2])
+  updates = try Support.f32([1.0, 2.0, 3.0, 4.0], [2, 2])
+  table = try Tensor.scatter_add(ids, updates, 4)
+  Support.expect_floats(try Tensor.gather(table, ids), [1.0, 2.0, 3.0, 4.0])
+end
+
+def test_scatter_add_rejects_what_it_cannot_place() -> Result[Void]
+  updates = try Support.f32([1.0, 2.0], [2, 1])
+  try Test.error?(Tensor.scatter_add(try Support.i64([0, 5], [2]), updates, 2))
+  try Test.error?(Tensor.scatter_add(try Support.i64([0, -1], [2]), updates, 2))
+  try Test.error?(Tensor.scatter_add(try Support.f32([0.0, 1.0], [2]), updates, 2))
+  try Test.error?(Tensor.scatter_add(try Support.i64([0], [1]), updates, 2))
+  try Test.error?(Tensor.scatter_add(try Support.i64([0, 1], [2]), try Support.i64([1, 2], [2, 1]), 2))
+  Test.error?(Tensor.scatter_add(try Support.i64([0, 1], [2]), updates, -1))
+end
+
 def test_gather_rejects_non_integer_indices() -> Result[Void]
   table = try Support.f32([1.0, 2.0], [2, 1])
   ids = try Support.f32([0.0], [1])

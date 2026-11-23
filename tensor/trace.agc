@@ -557,7 +557,7 @@ end
 ## it was read from, which is `scatter_add`. A repeated index sums its rows.
 def gather_rule(source: Types.Tensor, indices: Types.Tensor, ct: Types.Tensor) -> Result[Types.Tensor]
   rows = source.shape[0]
-  empty = rows == 0 or (try Types.volume(ct.shape)) == 0
+  empty = rows == 0 or try Types.volume(ct.shape) == 0
   return Graph.filled(source.shape, 0.0, ct.dtype) if empty
   Tensor.scatter_add(indices, ct, rows)
 end

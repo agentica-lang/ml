@@ -85,7 +85,7 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 is **derived**: pure Agentica code over primitives, shared by all backends
 and therefore tested once.
 
-### 3.1 Primitives (the backend contract, 45 ops)
+### 3.1 Primitives (the backend contract, 46 ops)
 
 Creation: `zeros, ones, empty, full, like, arange, scalar_to_tensor`.
 Elementwise: `add, sub, mul, div, neg, exp, log, sqrt, pow, relu, sigmoid,
@@ -95,8 +95,10 @@ Reductions: `sum, mean, max, argmax` (each with `axes: Optional[List[Int]]`,
 Linear algebra: `matmul, transpose, batch_matmul` (`multi_head_attention`
 uses rank-2 `matmul` per head, §3.2; plain `dot` is derived).
 Shape: `reshape, squeeze, unsqueeze, slice, concat, stack, broadcast_to,
-gather` (embedding lookup and beam gather need `gather`; everything fancier
-is derived).
+gather, scatter_add` (embedding lookup and beam gather need `gather`, and its
+backward rule needs `scatter_add(indices, updates, rows)`, which adds the rows
+of `updates` into `rows` zero rows at `indices`; everything fancier is
+derived).
 Normalization support: `rsqrt, mean_var` are **not** primitives —
 `layer_norm` is derived (§3.2); the backend only needs the pieces above plus
 `broadcast_to`.
@@ -331,7 +333,9 @@ end
   matmul; ggml's own `conv_1d` makes the im2col `F16`), `gelu_erf`, `gather`
   (ggml's `get_rows` over the source as rows, its indices clamped to them; an
   index outside the rows is an error after the run, counted in the graph; a
-  source of more than 2^24 rows is an error), and `eq`, `lt` and `where`
+  source of more than 2^24 rows is an error), `scatter_add` (ggml's
+  `get_rows_back`, with the same index check and the same 2^24 limit), and
+  `eq`, `lt` and `where`
   emulated in `F32` arithmetic (`eq` as `1 - step(|a - b|)`, exact for integers
   below 2^24 and true when an operand is NaN; `where` as `c·x + (1 - c)·y`,
   exact only when both branches are finite): enough for an MLP and softmax
@@ -540,18 +544,14 @@ The price:
   `gelu_tanh_approx` (the derivative of the tanh form), `squeeze` and
   `unsqueeze` (a `reshape` back), `slice` (`ct` padded with zeros by
   `concat`), `concat` (each argument's window of `ct`), `stack` (entry `i`
-  along the axis), `gather` (scatter-add as `onehot . ct`, with
-  `onehot[r, k] = indices[k] == r` made from `arange`, `eq` and `to_dtype`:
-  a repeated index sums its rows) and `max`
+  along the axis), `gather` (`scatter_add` of `ct` at the indices: a
+  repeated index sums its rows), `scatter_add` (for its updates, `gather` of
+  `ct` at the indices; the indices have no gradient) and `max`
   (the cotangent goes to the positions that hold the maximum and is split
   evenly between ties, as `jax.numpy.max` and `torch.amax` do). With them,
   `softmax`, `layer_norm`, `rms_norm`, `silu`, `gelu`, `embedding` and
   `multi_head_attention` are differentiable; each rule and the last two are
   tested against a central difference.
-- `gather`'s rule scales with the table: it makes four `[rows, k]`
-  intermediates (a 50k vocabulary over 4096 tokens at `F32` is about 800 MB
-  each) and its `matmul` costs `O(rows k width)`. A scatter-add primitive
-  would avoid both (ml#25).
 - Still open: rules for `pow`, `clamp`, `batch_matmul`, `to_dtype` between
   float dtypes (a precision cast), `conv1d` and `avg_pool1d`; the rule of
   `where`'s condition for gradients of gradients; and how an
