@@ -95,8 +95,10 @@ def test_real_layouts_give_whisper_prompts() -> Result[Void]
   english = try Tokenizer.parse(layout(TINY_EN))
   try Test.eq([english.vocab_size, english.timestamp_begin, english.languages.size], [51864, 50363, 0])
   try Test.assert(not english.multilingual, "tiny.en is English-only")
-  try Test.eq(try Tokenizer.prompt(english, some("es"), Tokenizer.Job.Translate, false), [50257, 50362])
-  Test.eq(try Tokenizer.prompt(english, none, Tokenizer.Job.Transcribe, true), [50257])
+  try Test.eq(try Tokenizer.prompt(english, some("en"), Tokenizer.Job.Transcribe, false), [50257, 50362])
+  try Test.eq(try Tokenizer.prompt(english, none, Tokenizer.Job.Transcribe, true), [50257])
+  try Test.error?(Tokenizer.prompt(english, some("es"), Tokenizer.Job.Transcribe, true))
+  Test.error?(Tokenizer.prompt(english, none, Tokenizer.Job.Translate, true))
 end
 
 ## A file over 1 MiB, read in chunks, with a two-byte character across the
@@ -131,7 +133,10 @@ def test_bad_input_is_an_error() -> Result[Void]
   try Test.error?(Tokenizer.decode(tok, [4, 36]))
   try Test.error?(Tokenizer.open("test/fixtures/missing.json"))
   try Test.error?(Tokenizer.parse("{\"added_tokens\": ["))
-  try Test.error?(Tokenizer.parse("{\"added_tokens\": [], \"model\": {}}"))
+  no_vocab = "{\"added_tokens\": #{JSON.encode(added(TINY))}, \"model\": {}}"
+  try Test.error?(Tokenizer.parse(no_vocab))
+  try Test.ok?(Tokenizer.parse(layout(TINY)))
+  try Test.error?(Tokenizer.parse(layout([1000000, 1000001, 1000101, 1000102, 1000106, 1001607, 99])))
   disordered = TINY.set(2, 50360).set(3, 50359)
   try Test.error?(Tokenizer.parse(layout(disordered)))
   euro = JSON.encode(FileJson(added_tokens: added(TINY), model: ModelJson(vocab: {"€": 0})))

@@ -126,10 +126,16 @@ end
 ## token, the job token, and `<|notimestamps|>` when `timestamps` is false.
 ## With no language it is `<|startoftranscript|>` alone, so the decoder's next
 ## token is the language. An English-only checkpoint has no language or job
-## token: `language` and `job` are ignored.
+## token, and takes only no language or `en`, and only transcription.
 def prompt(tok: Tokenizer, language: Optional[String], job: Job, timestamps: Bool) -> Result[List[Int]]
   out = [tok.sot]
-  if tok.multilingual
+  if not tok.multilingual
+    if language != none and language != some("en")
+      return error("an English-only tokenizer has no language #{language.unwrap_or("")}")
+    end
+
+    return error("an English-only tokenizer cannot translate") if job == Job.Translate
+  else
     case language
       some(code) -> out = out.push(try language_id(tok, code))
       none -> return ok(out)
@@ -171,8 +177,7 @@ BYTE_OF = (0...(256 + HIDDEN.size)).to_a.map do |c|
   c
 end
 
-## The `eot` of the English-only checkpoints, whose vocabulary has no
-## language tokens before it.
+## eot of the English-only checkpoints; their ids are shifted down by one.
 ENGLISH_EOT = 50256
 ## A bound on the special ids, so a bad file cannot ask for a huge table.
 LIMIT = 1000000

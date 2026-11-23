@@ -110,7 +110,8 @@ so no text is ever encoded.
   50 a second.
 - **English-only checkpoints** (`.en`) have `<|endoftext|>` at 50256 where
   the others have 50257: `multilingual` is false, `languages` is empty, and
-  the prompt has no language or job token.
+  the prompt has no language or job token. As in Hugging Face, a language
+  other than `en` or the translate job is an error there.
 - **Decoding joins bytes first**: each character of a token's text stands for
   one byte (GPT-2's byte-level alphabet), the bytes of all the tokens are
   joined, and only then read as UTF-8, so a character split across tokens
