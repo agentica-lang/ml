@@ -222,8 +222,27 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
   # The previous stage's tensor is closed, so a block's intermediates die
   # with it (`staged`).
   h = try staged(m, mel, &stem)
+  blocks: Optional[Trace.Compiled] = none
   for i in 0...m.encoder.size
-    fresh = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.encoder_block(model.encoder[i], x) })
+    fresh = h
+    if compiled(Tensor.backend(h))
+      # The blocks have one shape: the weights are inputs, so one traced and
+      # planned graph runs every block.
+      if i == 0
+        first = m.encoder[0]
+        blocks = some(
+          try Trace.compile(
+            ([h] + encoder_parts(first)).map { |t| Trace.spec_of(t) },
+            ->(xs: List[Tensor.Tensor]) { ok([try Nn.encoder_block(encoder_over(first, xs.drop(1)), xs[0])]) },
+          ),
+        )
+      end
+
+      fresh = (try Trace.run(blocks.unwrap!, [h] + encoder_parts(m.encoder[i])))[0]
+    else
+      fresh = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.encoder_block(model.encoder[i], x) })
+    end
+
     close([h])
     h = fresh
   end
@@ -301,10 +320,13 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
     if n == 1 and cache.length > 0
       key = "#{Tensor.shape(cache.own[0].key)[1]} #{room}"
       if !graphs.has_key?(key)
-        graphs = graphs.put(key, try Trace.compile(
-          (fed + step_inputs(cache)).map { |t| Trace.spec_of(t) },
-          ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), cache_over(cache, xs.drop(2)), xs.take(2), room) },
-        ))
+        graphs = graphs.put(
+          key,
+          try Trace.compile(
+            (fed + step_inputs(cache)).map { |t| Trace.spec_of(t) },
+            ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), cache_over(cache, xs.drop(2)), xs.take(2), room) },
+          ),
+        )
       end
 
       got = Trace.run(graphs[key], fed + step_inputs(cache))
@@ -743,9 +765,7 @@ end
 ## The tensors of `c` a compiled step takes after the ids and the positions:
 ## per decoder block the cross-attention keys then values of every head, then
 ## the self-attention keys and values.
-def step_inputs(c: Cache) -> List[Tensor.Tensor]
-  c.cross.flat_map { |h| h.keys + h.values } + kept(c)
-end
+def step_inputs(c: Cache) -> List[Tensor.Tensor] = c.cross.flat_map { |h| h.keys + h.values } + kept(c)
 
 ## `c` with its tensors replaced, in the order of `step_inputs`, by `xs`.
 def cache_over(c: Cache, xs: List[Tensor.Tensor]) -> Cache
@@ -763,6 +783,63 @@ def cache_over(c: Cache, xs: List[Tensor.Tensor]) -> Cache
   end
 
   c.with(cross: cross, own: own)
+end
+
+## The weights of an encoder block, in the order `encoder_over` reads them.
+def encoder_parts(b: Nn.EncoderBlock) -> List[Tensor.Tensor]
+  a = b.attention
+  [
+    norm_parts(b.norm1),
+    dense_parts(a.query),
+    dense_parts(a.key),
+    dense_parts(a.value),
+    dense_parts(a.output),
+    norm_parts(b.norm2),
+    dense_parts(b.mlp.up),
+    dense_parts(b.mlp.down),
+  ].flat_map { |part| part }
+end
+
+## `b` with its weights replaced, in the order of `encoder_parts`, by `xs`.
+def encoder_over(b: Nn.EncoderBlock, xs: List[Tensor.Tensor]) -> Nn.EncoderBlock
+  a = b.attention
+  at = 2
+  query = dense_over(a.query, xs, at)
+  at += dense_parts(a.query).size
+  key = dense_over(a.key, xs, at)
+  at += dense_parts(a.key).size
+  value = dense_over(a.value, xs, at)
+  at += dense_parts(a.value).size
+  output = dense_over(a.output, xs, at)
+  at += dense_parts(a.output).size
+  second = b.norm2.with(gamma: xs[at], beta: xs[at + 1])
+  at += 2
+  up = dense_over(b.mlp.up, xs, at)
+  at += dense_parts(b.mlp.up).size
+  down = dense_over(b.mlp.down, xs, at)
+  Nn.EncoderBlock(
+    norm1: b.norm1.with(gamma: xs[0], beta: xs[1]),
+    attention: a.with(query: query, key: key, value: value, output: output),
+    norm2: second,
+    mlp: b.mlp.with(up: up, down: down),
+  )
+end
+
+def norm_parts(p: Nn.LayerNorm) -> List[Tensor.Tensor] = [p.gamma, p.beta]
+
+def dense_parts(p: Nn.Dense) -> List[Tensor.Tensor]
+  case p.b
+    some(bias) -> [p.w, bias]
+    none -> [p.w]
+  end
+end
+
+## `p` with its weight and bias read from `xs` at `at`.
+def dense_over(p: Nn.Dense, xs: List[Tensor.Tensor], at: Int) -> Nn.Dense
+  case p.b
+    some(_) -> Nn.Dense(w: xs[at], b: some(xs[at + 1]))
+    none -> Nn.Dense(w: xs[at], b: none)
+  end
 end
 
 ## Attention of the queries `[n, d_model]` over one block's cached heads, as
