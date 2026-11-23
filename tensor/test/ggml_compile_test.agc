@@ -275,7 +275,9 @@ def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]
   rows = ->(a: List[Tensor.Tensor]) { Tensor.gather(a[0], a[1]) }
   try refused(Trace.eval([x, try labels([0, 3], CPU)], rows), "outside the rows")
   try refused(Trace.eval([x, try labels([-1, 2], CPU)], rows), "outside the rows")
-  gives([x, try labels([2, 0], CPU)], rows, [5.0, 6.0, 1.0, 2.0])
+  try gives([x, try labels([2, 0], CPU)], rows, [5.0, 6.0, 1.0, 2.0])
+  ten = try floats(uniform(20, 3, 1.0), [10, 2], CPU)
+  Test.error?(Trace.eval([ten, try labels([134217728], CPU)], rows))
 end
 
 def test_a_zero_fill_and_another_fill_are_two_graphs() -> Result[Void]

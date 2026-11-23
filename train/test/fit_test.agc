@@ -1,8 +1,8 @@
 ## The exit criterion of `train/` (roadmap, phase 4): a relu MLP from `nn/`
-## learns XOR on the reference, and the same seeded run on libtorch follows
-## the reference's loss curve within `F32` drift. Where libtorch is not
-## installed, the second test asserts that absence instead. On ggml, where
-## each step is one compiled graph, the run follows it within the same drift. `nn` is a test
+## learns XOR on the reference, and the same seeded run on libtorch follows the
+## reference's loss curve within `F32` drift. Where libtorch is not installed,
+## the second test asserts that absence instead. On ggml, where each step is one
+## compiled graph, the run follows it within the same drift. `nn` is a test
 ## dependency, so the model lives here, in a test file.
 
 import Data from "../data"

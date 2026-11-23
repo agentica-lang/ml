@@ -4,6 +4,8 @@
 ## memory, and the first graph runs again: it must place its intermediates in
 ## the allocator's new buffer, not write over the new tensor. A file of its
 ## own, because the order matters and the runner shuffles a file's tests.
+## Whether the freed memory is reused is up to the allocator (glibc here), so
+## without the fix the test fails on this machine, not by contract.
 
 import Tensor from "../tensor"
 import Trace from "../trace"

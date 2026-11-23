@@ -1,7 +1,8 @@
 ## Optimizers as pure functions: `init` makes the state for a list of
 ## parameters, `step` takes the state, the parameters and their gradients and
 ## answers the new state and the new parameters. Nothing mutates; every
-## tensor is computed eagerly on the parameters' backend.
+## tensor is a `Tensor.*` call, so a step runs eagerly on the parameters'
+## backend or traced (`fit` traces it).
 
 import Tensor from "pkg/tensor/tensor"
 

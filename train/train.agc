@@ -1,5 +1,5 @@
 ## The `train/` package: losses (`loss.agc`), optimizers (`optim.agc`) and
-## `fit`, a minimal training loop over `Trace.value_and_grad`
+## `fit`, a minimal training loop over `tensor/`'s tracing
 ## (`train/DESIGN.md`).
 ##
 ## A model is a loss function of a parameter list and a batch. `fit` traces

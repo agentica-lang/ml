@@ -22,10 +22,10 @@ answers whether this machine has it, and the dispatch arm answers
   compute backends (`Reference`, `Torch`), the `Trace` recorder that records a
   node instead of computing (§7, §10).
 - `trace.agc` — tracing and gradients: `value_and_grad`, `grad`, `eval` and
-  `eval_many` (several outputs, one evaluation) call a function written against `tensor.agc` with tensors of the `Trace`
-  backend, derive the gradient graph with the same ops and run it on a real
-  backend (`DESIGN.md` §10). `src/graph.agc` is the recording side the
-  `Trace` arms call.
+  `eval_many` (several outputs, one evaluation) call a function written against
+  `tensor.agc` with tensors of the `Trace` backend, derive the gradient graph
+  with the same ops and run it on a real backend (`DESIGN.md` §10).
+  `src/graph.agc` is the recording side the `Trace` arms call.
 - `src/reference.agc` — the reference backend, pure Agentica over
   `List[Float]`; the oracle every other backend is checked against.
 - `src/torch.agc` — the libtorch backend: the §3.1 primitives libtorch

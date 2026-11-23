@@ -1,9 +1,9 @@
 ## Datasets and loaders (`train/DESIGN.md`, "Data"): `N` examples held as two
 ## tensors, `inputs` `[N, ...]` and `targets` `[N, ...]`, cut into batches of
 ## `batch_size` rows in a seeded order per epoch. A batch is one `gather` of
-## each tensor (one `slice` when not shuffled), never a loop over examples,
-## both run as one traced evaluation, so a backend that computes only whole
-## graphs (`Ggml`) makes batches too.
+## each tensor, never a loop over examples, both run as one traced
+## evaluation, so a backend that computes only whole graphs (`Ggml`) makes
+## batches too.
 ##
 ## With `prefetch > 0`, `feed` starts a task that builds the next batches while
 ## the caller trains and hands them over through a bounded channel. Its native
@@ -24,7 +24,7 @@ MULTIPLIER = 48271
 ## How long a wait on the prefetch channel lasts before it looks again.
 POLL_MS = 1000
 
-## `index` is the row ids a shuffled batch was gathered with, kept so that
+## `index` is the row ids the batch was gathered with, kept so that
 ## `release` frees it too.
 struct Batch
   inputs: Tensor.Tensor
@@ -113,11 +113,6 @@ def batch(loader: Loader, rows: List[Int], i: Int) -> Result[Batch]
   to = [from + loader.batch_size, n].min.unwrap!
   return error("batch #{i} is past the #{count(loader)} of an epoch") if i < 0 or i >= count(loader)
   d = loader.dataset
-  if !loader.shuffle
-    both = try Trace.eval_many([d.inputs, d.targets], ->(xs: List[Tensor.Tensor]) { windows(xs, from, to) })
-    return ok(Batch(inputs: both[0], targets: both[1]))
-  end
-
   picked = (from...to).map { |k| Tensor.Values.Int(rows[k]) }
   at = try Tensor.from_list(picked, [to - from], Tensor.Dtype.I32, d.inputs.backend)
   both = try Trace.eval_many([d.inputs, d.targets, at], &gathered)
@@ -236,18 +231,6 @@ def hand(batches: Channel[Result[Batch]], item: Result[Batch]) -> Bool
   end
 
   sent.ok?
-end
-
-## Rows `from...to` of the inputs and the targets `xs`.
-def windows(xs: List[Tensor.Tensor], from: Int, to: Int) -> Result[List[Tensor.Tensor]]
-  ok([try window(xs[0], from, to), try window(xs[1], from, to)])
-end
-
-## Rows `from...to` of `t`, every other axis whole.
-def window(t: Tensor.Tensor, from: Int, to: Int) -> Result[Tensor.Tensor]
-  shape = Tensor.shape(t)
-  starts = shape.map { |_| 0 }.set(0, from)
-  Tensor.slice(t, starts, shape.set(0, to))
 end
 
 ## The rows `xs[2]` names of the inputs and the targets `xs[0]`, `xs[1]`.

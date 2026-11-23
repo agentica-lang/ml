@@ -95,6 +95,7 @@ struct gnode {
   int lazy; /* t has fewer elements than ne and repeats to it */
   int zero; /* a fill of 0.0, possibly broadcast or reshaped */
   int arg;  /* a transpose's argument, for matmul's layout */
+  int rank; /* of the recorded shape */
   struct ggml_tensor *guard; /* a gather's count of indices out of range */
 };
 
@@ -417,16 +418,16 @@ static struct ggml_tensor *slice(struct entry *p, const struct gnode *x, const i
    ggml_get_rows over a [width, rows] view. ggml reads out of bounds (or
    aborts) on a bad index, so the indices are clamped to the rows first and
    `guard` counts the ones that were outside: `run` refuses its result unless
-   that count is 0. */
+   that count is 0. The indices are F32 here, exact below 2^24, so `node`
+   refuses a source with more rows. */
 static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, int rank, const struct gnode *indices,
                                   struct ggml_tensor **guard) {
   int64_t rows = source->ne[rank - 1];
   struct ggml_tensor *table = ggml_reshape_2d(p->ctx, dense(p, source), volume(source->ne) / rows, rows);
   struct ggml_tensor *at = ggml_reshape_1d(p->ctx, dense(p, indices), volume(indices->ne));
   float top = (float)(rows - 1);
-  /* relu(i) - relu(i - top) is i clamped to [0, top]; ggml_clamp works in place */
-  struct ggml_tensor *clamped =
-    ggml_sub(p->ctx, ggml_relu(p->ctx, at), ggml_relu(p->ctx, ggml_scale_bias(p->ctx, at, 1.0f, -top)));
+  /* ggml_clamp works in place: clamp a copy */
+  struct ggml_tensor *clamped = ggml_clamp(p->ctx, ggml_cont(p->ctx, at), 0.0f, top);
   /* step(-i - 0.5) + step(i - top - 0.5): 1 for an index below 0 or past top */
   struct ggml_tensor *below = ggml_step(p->ctx, ggml_scale_bias(p->ctx, at, -1.0f, -0.5f));
   struct ggml_tensor *above = ggml_step(p->ctx, ggml_scale_bias(p->ctx, at, 1.0f, -top - 0.5f));
@@ -496,6 +497,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   memset(n, 0, sizeof *n);
   n->op = (int)op;
   n->arg = -1;
+  n->rank = rank;
   for (i = 0; i < 4; i++) n->ne[i] = i < rank ? shape[rank - 1 - i] : 1;
 
   switch (op) {
@@ -619,11 +621,19 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       }
       break;
     case OP_SLICE:
-      if (nints != rank) return tg_error(env, "slice takes one start per axis");
+      if (nints != rank || a->rank != rank) return tg_error(env, "slice takes one start per axis of its source");
+      for (i = 0; i < rank; i++) {
+        int d = rank - 1 - i;
+
+        if (ints[i] < 0 || ints[i] + n->ne[d] > a->ne[d]) return tg_error(env, "slice: a window outside its source");
+      }
       t = slice(p, a, ints, rank, n->ne);
       break;
     case OP_GATHER:
-      if (nints != 1 || ints[0] < 1 || ints[0] > 4) return tg_error(env, "gather takes the source's rank");
+      if (nints != 1 || ints[0] != a->rank || ints[0] < 1) return tg_error(env, "gather takes the source's rank");
+      if (a->ne[a->rank - 1] > 16777216) {
+        return tg_error(env, "gather from more than 2^24 rows is not lowered to ggml: F32 row ids are exact below that");
+      }
       t = reshape(p, gather(p, a, (int)ints[0], b, &n->guard), n->ne);
       break;
   }

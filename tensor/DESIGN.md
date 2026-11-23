@@ -288,13 +288,12 @@ end
   leading or trailing block of axes, `stop_grad`, `copy`, `contiguous`,
   `arange`, `slice`, `gather` (ggml's `get_rows` over the source as rows,
   its indices clamped to them; an index outside the rows is an error after
-  the run, counted in the graph), and `eq`, `lt` and `where` emulated in `F32`
-  arithmetic (`eq` as
+  the run, counted in the graph; a source of more than 2^24 rows is an
+  error), and `eq`, `lt` and `where` emulated in `F32` arithmetic (`eq` as
   `1 - step(|a - b|)`, exact for integers below 2^24 and true when an operand
   is NaN; `where` as `c·x + (1 - c)·y`, exact only when both branches are
-  finite): enough for an
-  MLP and softmax cross-entropy with their gradients, and for a training step
-  and its batch. An output that holds an infinity or a NaN is an error. A
+  finite): enough for an MLP and softmax cross-entropy with their gradients,
+  and for a training step and its batch. An output that holds an infinity or a NaN is an error. A
   graph has at most 256 outputs.
 - Vulkan computes `mul_mat` in `F32` by default: ggml reads
   `GGML_VK_DISABLE_F16` once per process, when it first enumerates its
