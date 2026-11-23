@@ -10,28 +10,44 @@ written over `tensor`, `nn` and `hub` (Via B). The contract is
 
 ## Done
 
+Works today.
+
 | Piece | What is in |
 |---|---|
-| `tensor/` | the API, 45 backend primitives and the derived ops over them, the pure Agentica reference backend (the oracle), the libtorch CPU backend (43 of the 45), tracing, `value_and_grad` and backward rules for most ops, property tests |
-| `nn/` | dense, layer norm, embeddings, convolution, attention, MLP, encoder and decoder blocks, seeded initializers |
-| `train/` | `mse`, binary and softmax cross-entropy, SGD, Adam, `Train.fit` |
-| `hub/` | safetensors (one file or sharded), and `nn` layers loaded by name |
-| `asr/` | Whisper's model forward on the reference backend (Via B) |
+| `tensor/` | the API, 45 backend primitives and the derived ops over them, the pure Agentica reference backend (the oracle), the libtorch CPU backend (43 of the 45), the ggml backend on CPU and Vulkan (a traced graph compiles to one ggml graph, with a structural cache), tracing, `value_and_grad` and backward rules for most ops, property tests |
+| `nn/` | dense, layer norm, embeddings, convolution, attention, MLP, encoder and decoder blocks, seeded initializers, `gelu_tanh_approx` on libtorch |
+| `train/` | `mse`, binary and softmax cross-entropy, SGD, Adam, `Train.fit`, a data loader (seeded shuffle, background prefetch) |
+| `hub/` | safetensors (one file or sharded), `nn` layers loaded by name, float weights read by the backend from the file (`Tensor.from_file`, [PR #67](https://github.com/agentica-lang/ml/pull/67)) |
+| `asr/` | Whisper end to end (Via B): log-mel, tokenizer, greedy decoding with a padded KV cache, timestamps, language detection, translation, up to 30 s of audio. It runs on the reference backend, libtorch and ggml (CPU and Vulkan), and its tokens equal Hugging Face's on the test clips (`asr/test/fixtures/transcribe_golden.json`) |
 | `whisper/` | the whisper.cpp binding, WAV reader, microphone capture, long-audio chunking (Via A) |
 | `spike/` | the FFI boundary (`spike/m0/`) and ggml on Vulkan, measured (`spike/ggml-vulkan/`) |
+| tooling and CI | the ggml build cache, shared by every worktree ([PR #68](https://github.com/agentica-lang/ml/pull/68)); whisper-tiny against whisper.cpp in [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md) ([PR #66](https://github.com/agentica-lang/ml/pull/66)); cchecker over the native C in CI ([PR #49](https://github.com/agentica-lang/ml/pull/49)); Agentica 0.37.0 (PRs #69 to #72): `AN_FRESH` on libtorch, `Math`, `Ref` ids, `TENSOR_LOAD=agentica` |
 
-## Next
+## Needs optimization
 
+Works, but not yet fast.
+
+- `asr/` on ggml: the tokens match, but the decoder step costs about 68 ms on
+  CPU (whisper.cpp: 7 ms), and the log-mel runs in Agentica code. Speed against
+  whisper.cpp and libtorch is in [`benchmarks/README.md`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md).
+  The work is [ml#64](https://github.com/agentica-lang/ml/issues/64): an
+  explicit `Trace.compile`, KV caches on the device, native log-mel.
+
+## Not yet
+
+- [ml#15](https://github.com/agentica-lang/ml/issues/15): `Tensor[H]` and
+  `Ops[H]`, to move the libtorch backend out of `tensor/` into a `torch/`
+  package. No stable API until this lands.
+- [ml#40](https://github.com/agentica-lang/ml/issues/40): train on the iGPU
+  through Vulkan.
+- [ml#50](https://github.com/agentica-lang/ml/issues/50): training benchmarks
+  against PyTorch and JAX. The Whisper inference half is in `benchmarks/`.
+- [ml#46](https://github.com/agentica-lang/ml/issues/46): training metrics: a
+  logger with JSONL and TensorBoard sinks.
 - Backward rules for `pow`, `clamp`, `batch_matmul`, float `to_dtype`,
   `conv1d`, `avg_pool1d`, and a scatter-add for `gather` (ml#25).
-- `nn/`: a KV cache for the decoder, `gelu` on libtorch (`gelu_tanh_approx`).
-- `asr/`: the log-mel frontend, the tokenizer and decoding, then a comparison
-  with a real checkpoint.
-- `train/`: shuffling and learning-rate schedules.
+- `train/`: learning-rate schedules.
 - `hub/`: downloading checkpoints from Hugging Face.
 - CI: a non-required job that builds libtorch and runs the comparison with the
   reference.
-- When [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
-  lands: move the libtorch backend out of `tensor/` into a `torch/` package.
-- Backends are CPU only. The Vulkan spike measured 2 ms per dispatched graph,
-  so a GPU backend needs graph batching, not op-by-op calls.
+- CUDA, later. No issue yet.

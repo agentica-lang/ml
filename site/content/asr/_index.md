@@ -69,7 +69,7 @@ end
 
 `asr` loads a Hugging Face checkpoint. Then it runs the log-mel frontend (it turns audio into log-mel features, the model's input), the encoder and greedy decoding. It depends on `tensor`, `nn` and `hub`.
 
-`asr` runs on the reference backend and on libtorch. See the [tensor page](../tensor/_index.md) for the backends.
+`asr` runs on the reference backend, on libtorch and on ggml (CPU and Vulkan). See the [tensor page](../tensor/_index.md) for the backends.
 
 A window is 2 * `max_source_positions` frames of 160 samples. For Whisper's checkpoints that is 30 seconds of 16 kHz audio.
 
