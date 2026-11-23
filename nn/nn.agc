@@ -73,10 +73,10 @@ def dense(p: Dense, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(x)
   return Tensor.linear(x, p.w, p.b) if shape.size == 2
   return error("dense needs rank >= 1, got #{shape}") if shape.size == 0
-  inputs = shape[shape.size - 1]
-  rows = shape.take(shape.size - 1).reduce(1) do |acc, d| acc * d end
-  y = try Tensor.linear(try Tensor.reshape(x, [rows, inputs]), p.w, p.b)
-  Tensor.reshape(y, shape.take(shape.size - 1).push(Tensor.shape(y)[1]))
+  lead = shape.take(shape.size - 1)
+  rows = lead.reduce(1) do |acc, d| acc * d end
+  y = try Tensor.linear(try Tensor.reshape(x, [rows, shape[shape.size - 1]]), p.w, p.b)
+  Tensor.reshape(y, lead.push(Tensor.shape(y)[1]))
 end
 
 def layer_norm(p: LayerNorm, x: Tensor.Tensor) -> Result[Tensor.Tensor]

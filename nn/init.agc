@@ -45,8 +45,9 @@ def derive(seed: Int, k: Int) -> Int = (start(seed) * 131 + 7919 * (k + 1)) % (M
 
 private
 
-## A state in `1...MODULUS` for any seed, stirred once so that neighbouring
-## seeds do not start neighbouring sequences.
+## A state in `1...MODULUS` for any seed. `seed.abs` makes `s` and `-s` the
+## same seed, and neighbouring seeds start states `MULTIPLIER` apart, so their
+## sequences step together linearly: fine for starting weights, nothing more.
 def start(seed: Int) -> Int
   s = seed.abs % (MODULUS - 1) + 1
   (s * MULTIPLIER) % MODULUS

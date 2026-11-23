@@ -46,9 +46,17 @@ that are the layer's own (rank of `positional`, table length, heads).
   residual block, and folding leading axes so `dense` takes any rank.
 - **Differentiable for free.** Since a layer is `Tensor.*` calls, it records a
   graph on `Trace` tensors and `Trace.value_and_grad` differentiates it
-  (`tensor/DESIGN.md` §10). The gradient reaches every op that has a backward
-  rule today: `dense` and `mlp` with `relu` do; `layer_norm` (`sqrt`) and
-  attention (`softmax` through `max`) wait for their rules in `tensor/`.
+  (`tensor/DESIGN.md` §10). `dense` (any rank) and `mlp` with `relu` do today.
+  `tensor/` has no backward rule yet for `sqrt`, `max`, `slice`, `concat`,
+  `stack`, `gather`, `sigmoid` and `gelu_tanh_approx`, so `layer_norm`,
+  `positional`, `embedding`, attention and the `silu`/`gelu` activations are
+  forward-only under `Trace` today.
+- **Weights are `[in, out]`** (`x w`, as `Tensor.linear` takes them).
+  Hugging Face and PyTorch checkpoints store `[out, in]`, so `hub/` transposes
+  at load time.
+- **Attention costs what `tensor/` costs.** `Tensor.multi_head_attention`
+  loops over batch, heads and rows in Agentica; a fused version belongs in
+  `tensor/`, not here.
 - **Seeded initializers in Agentica.** `tensor/` has no random op at
   inference (`tensor/DESIGN.md` §3.1), so `init.agc` draws from a
   Park-Miller generator and crosses with `from_list`: one seed gives the same
@@ -62,4 +70,5 @@ that are the layer's own (rank of `positional`, table length, heads).
   `Tensor.dropout` is there), a causal mask helper, cross-attention blocks
   (the decoder), conv layers, `rms_norm`. `gelu` does not run on libtorch yet
   (`gelu_tanh_approx` is one of its three missing ops), so the libtorch
-  comparisons use `relu` and `silu`.
+  comparisons use `relu` and `silu`. `gelu` is the tanh approximation, while
+  Whisper uses the `erf` form: expect drift near 1e-3 on real checkpoints.

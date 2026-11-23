@@ -107,21 +107,39 @@ def softmax_row(row: List[Float]) -> List[Float]
   e.map { |v| v / total }
 end
 
-## Self-attention of one sequence `x` (`[seq, width]`), head by head.
-def self_attention(p: Nn.Attention, x: List[List[Float]]) -> Result[List[List[Float]]]
-  q = try dense(p.query, x)
-  k = try dense(p.key, x)
-  v = try dense(p.value, x)
+## The rows of one batch item: `flat` is `[batch, seq, width]` row-major.
+def item(flat: List[Float], b: Int, seq: Int, width: Int) -> List[List[Float]]
+  (0...seq).to_a.map { |i| flat.drop((b * seq + i) * width).take(width) }
+end
+
+## Attention of one sequence of `queries` over one of `memory`, head by head;
+## `mask` is an additive `[q, k]` bias.
+def attention(
+  p: Nn.Attention,
+  queries: List[List[Float]],
+  memory: List[List[Float]],
+  mask: Optional[List[List[Float]]] = none,
+) -> Result[List[List[Float]]]
+  q = try dense(p.query, queries)
+  k = try dense(p.key, memory)
+  v = try dense(p.value, memory)
   dh = q[0].size / p.heads
   scale = 1.0 / Math.sqrt(dh.to_f)
   empty: List[Float] = []
-  ctx = x.map { |_| empty }
+  ctx = queries.map { |_| empty }
   for h in 0...p.heads
     cols = ((h * dh)...((h + 1) * dh)).to_a
-    for i in 0...x.size
-      scores = (0...x.size).to_a.map do |j: Int| cols.reduce(0.0) do |acc, c| acc + q[i][c] * k[j][c] end * scale end
+    for i in 0...queries.size
+      scores = (0...memory.size).to_a.map do |j: Int|
+        raw = cols.reduce(0.0) do |acc, c| acc + q[i][c] * k[j][c] end * scale
+        case mask
+          some(m) -> raw + m[i][j]
+          none -> raw
+        end
+      end
+
       probs = softmax_row(scores)
-      head = cols.map do |c: Int| (0...x.size).to_a.reduce(0.0) do |acc, j| acc + probs[j] * v[j][c] end end
+      head = cols.map do |c: Int| (0...memory.size).to_a.reduce(0.0) do |acc, j| acc + probs[j] * v[j][c] end end
       ctx = ctx.set(i, ctx[i] + head)
     end
   end
@@ -129,11 +147,18 @@ def self_attention(p: Nn.Attention, x: List[List[Float]]) -> Result[List[List[Fl
   dense(p.output, ctx)
 end
 
+def self_attention(p: Nn.Attention, x: List[List[Float]]) -> Result[List[List[Float]]] = attention(p, x, x)
+
+def relu(v: Float) -> Float
+  return v if v > 0.0
+  0.0
+end
+
 def mlp(p: Nn.Mlp, x: List[List[Float]]) -> Result[List[List[Float]]]
   return error("the naive model has no gelu") if p.activation == Nn.Activation.Gelu
   h = try dense(p.up, x)
   act = case p.activation
-    Nn.Activation.Relu -> h.map { |row| row.map { |v| v.clamp(0.0, v.abs) } }
+    Nn.Activation.Relu -> h.map { |row| row.map { |v| relu(v) } }
     Nn.Activation.Silu -> h.map { |row| row.map { |v| v / (1.0 + exp(-v)) } }
     Nn.Activation.Gelu -> h
   end
