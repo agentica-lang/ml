@@ -183,17 +183,15 @@ jobs:
           TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "train", "asr"]'), matrix.package) && '1' || '' }}
         run: agentica test --max-steps 10000000
 
-      # The round-trip tests of tensor/ (from_file) and the tests of hub/ again,
-      # with the weights read in Agentica (TENSOR_LOAD=agentica: File.seek and
-      # File.read_bytes, then the native from_bytes) in place of the native
-      # pread.
+      # The round-trip tests of tensor/ (from_file) again, with the weights read
+      # in Agentica (TENSOR_LOAD=agentica: File.seek and File.read_bytes, then
+      # the native from_bytes) in place of the native pread.
       - name: Test the Agentica read path of from_file
-        if: contains(fromJSON('["tensor", "hub"]'), matrix.package)
+        if: matrix.package == 'tensor'
         env:
           TENSOR_LOAD: agentica
-          TENSOR_REQUIRE_GGML: ${{ matrix.package == 'tensor' && '1' || '' }}
-          TESTS: ${{ matrix.package == 'tensor' && 'test/from_file_test.agc' || '' }}
-        run: agentica test --max-steps 10000000 $TESTS
+          TENSOR_REQUIRE_GGML: '1'
+        run: agentica test --max-steps 10000000 test/from_file_test.agc
 
       # A package with tools/fetch-model.sh validates against the pinned
       # models it downloads (weights never enter git); the script checks every

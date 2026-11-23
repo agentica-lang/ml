@@ -156,7 +156,7 @@ Tensor.backend(t) -> Backend                      # no native call
   the bytes in Agentica (`File.seek` and `File.read_bytes`, `src/file_range.agc`)
   and decodes them there, which is slow on a large file. ggml takes it through
   one host copy on Vulkan.
-- `TENSOR_LOAD=agentica` (the environment, read once) makes the native
+- `TENSOR_LOAD=agentica` (an environment variable) makes the native
   backends take the Agentica read too: Agentica reads the range and passes
   the `Bytes` to the native `from_bytes`, which reads them in place
   (`an_get_bytes`, no copy on entry) and widens them into the backend buffer
