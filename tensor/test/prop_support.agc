@@ -71,17 +71,26 @@ def flag_number(flag: Bool) -> Float
   0.0
 end
 
-## `Conform.close?` with the relative tolerance `rel`: exact when either side is
-## not finite, within `Conform.ABS` near zero.
+## `Conform.close?` with the relative tolerance `rel`, and two NaNs are equal
+## (an op that answers NaN on both sides agrees). `rel` of 0.0 asks for exact
+## equality, for the ops whose inputs make them exact.
 def near?(a: Float, b: Float, rel: Float) -> Bool
-  return a == b if !Conform.finite?(a) or !Conform.finite?(b)
+  return true if a != a and b != b
+  return a == b if rel == 0.0 or !Conform.finite?(a) or !Conform.finite?(b)
 
   gap = (a - b).abs
   gap <= Conform.ABS or gap <= rel * (a.abs + b.abs)
 end
 
-## `t` has `shape` and holds `want`, each value within the tolerance of
-## `Conform.close?`. A plain `error` (never `Test.eq`), so `Prop.check` can
+## What a test of the torch side proves: libtorch is among `backends()` where it
+## is built, and where it is not, its absence (`Conform.absent()`).
+def torch_is_compared_or_absent() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  Test.eq(backends(), [Conform.REF, Conform.TORCH])
+end
+
+## `t` has `shape` and holds `want`, each value `near?` it. A plain `error` (never `Test.eq`), so `Prop.check` can
 ## shrink the input that caused it.
 def holds(
   t: Tensor.Tensor,

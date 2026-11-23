@@ -3,12 +3,11 @@
 ## `axes` is a set, and `argmax` numbers the position inside a reduced block by
 ## the order of its axes, so `some([2, 0])` and `some([0, 2])` must be the same
 ## call (`../README.md`, "Reduction `axes` are a set"). That bug lived in the
-## order, so the check is exhaustive: two rank-3 shapes whose axes differ in
-## size, every ordered subset of their axes (and `none`), and three value
-## patterns, on every available backend, for `sum`, `mean`, `max` and `argmax`
+## order, so the check is exhaustive: two rank-3 shapes ([2, 1, 3] has three
+## different axis sizes, [2, 3, 2] repeats one), every ordered subset of their
+## axes (and `none`), and three value patterns, on every available backend, for `sum`, `mean`, `max` and `argmax`
 ## with and without `keep_dims`. The naive reduction below is the oracle.
 
-import Conform from "torch_support"
 import Prop from "pkg/prop/prop"
 import Support from "prop_support"
 import Tensor from "../tensor"
@@ -26,6 +25,9 @@ struct Reduced
   values: List[Float]
 end
 
+# One op on one shape per test because a test file's step budget is 1M steps x
+# (tests + 1) and the reference is slow. Merge them into one test per shape
+# when agentica#1917 makes the step budget configurable.
 def test_sum_over_every_ordering_of_the_axes_of_a_2_1_3_tensor() -> Result[Void] = exhaust("sum", [2, 1, 3])
 
 def test_mean_over_every_ordering_of_the_axes_of_a_2_1_3_tensor() -> Result[Void] = exhaust("mean", [2, 1, 3])
@@ -42,11 +44,7 @@ def test_max_over_every_ordering_of_the_axes_of_a_2_3_2_tensor() -> Result[Void]
 
 def test_argmax_over_every_ordering_of_the_axes_of_a_2_3_2_tensor() -> Result[Void] = exhaust("argmax", [2, 3, 2])
 
-def test_the_torch_side_is_compared_or_absent() -> Result[Void]
-  return Conform.absent() if !Conform.available()
-
-  Test.eq(Support.backends(), [Conform.REF, Conform.TORCH])
-end
+def test_the_torch_side_is_compared_or_absent() -> Result[Void] = Support.torch_is_compared_or_absent()
 
 ## `op` over every ordering of every subset of the axes of `shape` (and `none`),
 ## for every pattern. Each test has a step budget and the reference is slow, so

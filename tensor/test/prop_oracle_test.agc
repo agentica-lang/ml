@@ -19,6 +19,10 @@ import Tensor from "../tensor"
 ## default, still far below any wrong operand or a doubled `exp`.
 LOOSE = 0.000001
 
+## For the ops whose dyadic inputs make them exact in `F32`: `Support.near?` then
+## asks for equality.
+EXACT = 0.0
+
 SHAPES = [[1], [5], [2, 3], [3, 2], [1, 4], [4, 1], [2, 2, 2]]
 GRIDS = [[2, 3], [3, 2], [1, 4], [4, 1], [2, 2]]
 
@@ -150,7 +154,7 @@ def binary_ops_agree(ops: List[String], gen: Prop.Gen[Twins], rel: Float) -> Res
 end
 
 def test_exact_unary_ops_agree_with_the_reference() -> Result[Void]
-  unary_ops_agree(["neg", "relu"], specs(SHAPES, dyadic()), Conform.REL)
+  unary_ops_agree(["neg", "relu"], specs(SHAPES, dyadic()), EXACT)
 end
 
 def test_transcendental_ops_agree_with_the_reference() -> Result[Void]
@@ -170,7 +174,7 @@ def test_normalizations_agree_with_the_reference() -> Result[Void]
 end
 
 def test_add_sub_and_mul_agree_with_the_reference() -> Result[Void]
-  binary_ops_agree(["add", "sub", "mul"], twins(SHAPES, dyadic(), dyadic()), Conform.REL)
+  binary_ops_agree(["add", "sub", "mul"], twins(SHAPES, dyadic(), dyadic()), EXACT)
 end
 
 def test_div_agrees_with_the_reference() -> Result[Void]
@@ -182,7 +186,7 @@ def test_pow_agrees_with_the_reference() -> Result[Void]
 end
 
 def test_comparisons_agree_with_the_reference() -> Result[Void]
-  binary_ops_agree(["eq", "lt"], twins(SHAPES, small(), small()), Conform.REL)
+  binary_ops_agree(["eq", "lt"], twins(SHAPES, small(), small()), EXACT)
 end
 
 def test_matmul_agrees_with_the_reference() -> Result[Void]
@@ -196,7 +200,7 @@ def test_matmul_agrees_with_the_reference() -> Result[Void]
     n = p.first[2]
     left = Support.Spec(shape: [m, k], data: Support.cycle(p.second.first, m * k))
     right = Support.Spec(shape: [k, n], data: Support.cycle(p.second.second, k * n))
-    binary_agrees("matmul", left, right, Conform.REL)
+    binary_agrees("matmul", left, right, EXACT)
   end
 end
 
@@ -208,15 +212,19 @@ def test_clamp_agrees_with_the_reference() -> Result[Void]
     try Prop.assume(p.second.first <= p.second.second)
     ours = try Tensor.clamp(try Support.tensor(Conform.TORCH, p.first), p.second.first, p.second.second)
     theirs = try Tensor.clamp(try Support.tensor(Conform.REF, p.first), p.second.first, p.second.second)
-    Support.same(ours, theirs, "clamp", Conform.REL)
+    Support.same(ours, theirs, "clamp", EXACT)
   end
 end
 
 ## One value of a tape, wrapping around: a few integers set every size of a case
 ## and then its data, and the tape shrinks to zeros, which is the smallest case.
-def at(tape: List[Int], index: Int) -> Int = tape[index % tape.size].abs
+def at(tape: List[Int], index: Int) -> Int = tape[index].abs
 
-def tapes() -> Prop.Gen[List[Int]] = Prop.non_empty_list(Prop.int(-8, 8), 24)
+## Eight integers set the sizes of a case; the rest of the tape (and its zero
+## padding, when it shrinks below eight) is data.
+def tapes() -> Prop.Gen[List[Int]]
+  Prop.map(Prop.list(Prop.int(-8, 8), 24)) do |tape: List[Int]| tape + List.repeat(0, (8 - tape.size).clamp(0, 8)) end
+end
 
 def conv_window(tape: List[Int]) -> Window
   batched = at(tape, 0) % 2 == 0
@@ -342,7 +350,50 @@ def test_avg_pool1d_is_the_naive_window_mean() -> Result[Void]
 end
 
 def test_the_torch_side_of_the_window_laws_is_compared_or_absent() -> Result[Void]
+  Support.torch_is_compared_or_absent()
+end
+
+def scalar(backend: Tensor.Backend, x: Float) -> Result[Tensor.Tensor]
+  Support.tensor(backend, Support.Spec(shape: [1], data: [x]))
+end
+
+## The inputs a property never draws (they are outside the domain, or past the
+## `F32` range), one example each: both backends refuse them with an `error`
+## instead of answering NaN or infinity.
+def test_out_of_domain_inputs_are_errors_on_every_backend() -> Result[Void]
+  for backend in Support.backends()
+    for x in [0.0, -1.0]
+      try Test.error?(Tensor.log(try scalar(backend, x)))
+    end
+
+    try Test.error?(Tensor.sqrt(try scalar(backend, -1.0)))
+    try Test.error?(Tensor.div(try scalar(backend, 1.0), try scalar(backend, 0.0)))
+    try Support.holds(try Tensor.sqrt(try scalar(backend, 0.0)), [1], [0.0], "sqrt of zero on #{backend}", EXACT)
+  end
+
+  ok()
+end
+
+## `exp(100)` is finite in the reference's doubles and `+inf` in libtorch's
+## `F32` (README, "Tolerances, and why"): pinned, and `near?` is what keeps an
+## infinity from agreeing with a large finite value.
+def test_exp_past_the_f32_range_is_finite_on_the_reference_and_infinite_on_torch() -> Result[Void]
+  ref = try Tensor.exp(try scalar(Conform.REF, 100.0))
+  try Support.holds(ref, [1], [2.688117141816139e43], "exp(100) on the reference", LOOSE)
   return Conform.absent() if !Conform.available()
 
-  Test.eq(Support.backends(), [Conform.REF, Conform.TORCH])
+  infinity = 1.0e308 * 10.0
+  try Support.holds(try Tensor.exp(try scalar(Conform.TORCH, 100.0)), [1], [infinity], "exp(100) on torch", EXACT)
+  Test.assert(!Support.near?(infinity, 1.0e308, LOOSE), "an infinity agreed with a finite value")
+end
+
+def test_near_treats_two_nans_as_equal_and_exact_means_exact() -> Result[Void]
+  infinity = 1.0e308 * 10.0
+  nan = infinity - infinity
+  try Test.assert(Support.near?(nan, nan, LOOSE), "NaN against NaN")
+  try Test.assert(!Support.near?(nan, 1.0, LOOSE), "NaN against a number")
+  try Test.assert(Support.near?(infinity, infinity, EXACT), "infinity against itself")
+  try Test.assert(!Support.near?(infinity, -infinity, LOOSE), "opposite infinities")
+  try Test.assert(!Support.near?(1.0, 1.00000001, EXACT), "exact allows no gap")
+  Test.assert(Support.near?(1.0, 1.00000001, LOOSE), "loose allows a rounding gap")
 end

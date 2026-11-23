@@ -193,9 +193,8 @@ download it cannot pin by sha256 would be worse than not running. So:
   libtorch are the same one-line warning inside a green job.
 - what was run locally, by hand, with libtorch 2.4.1+cpu at `$HOME/opt/libtorch`:
   `agentica check`, `agentica fmt --check`, the header `--check`, `agentica
-  test` (357 tests: the reference suite, the libtorch conformance suite and the
-  property tests)
-  and `agentica tools/bench.agc`.
+  test` (the reference suite, the libtorch conformance suite and the property
+  tests) and `agentica tools/bench.agc`.
 
 The exit is a **non-required** CI job that installs libtorch pinned by sha256
 and runs `agentica test` with `TORCH_DIR` set, so the build and the comparison

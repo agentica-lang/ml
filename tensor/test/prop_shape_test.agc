@@ -1,9 +1,9 @@
 ## Laws of the shape and host-crossing ops, on every available backend:
-## `concat` is associative along both axes (and the three-way call is the same
-## as the folded pair, which is how libtorch joins a list), and `from_list` then
-## `to_list` returns the values it was given, for every dtype.
+## `concat` is associative along both axes, joins the data the way its shape says,
+## and the three-way call is the same as the folded pair (which is how libtorch
+## joins a list); `from_list` then `to_list` returns the values it was given, for
+## every dtype, limits included.
 
-import Conform from "torch_support"
 import Prop from "pkg/prop/prop"
 import Support from "prop_support"
 import Tensor from "../tensor"
@@ -25,18 +25,22 @@ def pieces(by_rows: Bool) -> Prop.Gen[Support.Spec]
 end
 
 ## What `concat` of two pieces answers, read back as a `Spec`.
-def joined(backend: Tensor.Backend, axis: Int, a: Support.Spec, b: Support.Spec) -> Support.Spec
-  t = Tensor.concat([Support.tensor(backend, a).unwrap!, Support.tensor(backend, b).unwrap!], axis).unwrap!
-  Support.Spec(shape: Tensor.shape(t), data: Support.numbers(t).unwrap!)
+def joined(backend: Tensor.Backend, axis: Int, a: Support.Spec, b: Support.Spec) -> Result[Support.Spec]
+  t = try Tensor.concat([try Support.tensor(backend, a), try Support.tensor(backend, b)], axis)
+  ok(Support.Spec(shape: Tensor.shape(t), data: try Support.numbers(t)))
 end
 
 def concat_is_associative(axis: Int) -> Result[Void]
+  piece = pieces(axis == 0)
   for backend in Support.backends()
-    result = Prop.associative(pieces(axis == 0), Prop.Config(runs: Support.RUNS)) do |a: Support.Spec, b: Support.Spec|
-      joined(backend, axis, a, b)
+    try Prop.check(
+      Prop.pair(piece, Prop.pair(piece, piece)),
+      Prop.Config(runs: Support.RUNS),
+    ) do |p: Prop.Pair[Support.Spec, Prop.Pair[Support.Spec, Support.Spec]]|
+      left = try joined(backend, axis, try joined(backend, axis, p.first, p.second.first), p.second.second)
+      right = try joined(backend, axis, p.first, try joined(backend, axis, p.second.first, p.second.second))
+      Prop.eq(left, right)
     end
-
-    try result
   end
 
   ok()
@@ -46,41 +50,75 @@ def test_concat_along_the_first_axis_is_associative() -> Result[Void] = concat_i
 
 def test_concat_along_the_second_axis_is_associative() -> Result[Void] = concat_is_associative(1)
 
+## Associativity alone holds for a `concat` that answers its first argument, so
+## this is the value model: `[pa, 2]` pieces stack their rows, and `[2, ca]`
+## pieces put the rows of `b` after the rows of `a`, row by row.
+def concat_is_the_joined_data(axis: Int) -> Result[Void]
+  piece = pieces(axis == 0)
+  for backend in Support.backends()
+    try Prop.check(
+      Prop.pair(piece, piece),
+      Prop.Config(runs: Support.RUNS),
+    ) do |p: Prop.Pair[Support.Spec, Support.Spec]|
+      got = try joined(backend, axis, p.first, p.second)
+      shape = [p.first.shape[0] + p.second.shape[0], 2]
+      want = p.first.data + p.second.data
+      if axis == 1
+        shape = [2, p.first.shape[1] + p.second.shape[1]]
+        want = row(p.first, 0) + row(p.second, 0) + row(p.first, 1) + row(p.second, 1)
+      end
+
+      Support.holds(try Support.tensor(backend, got), shape, want, "concat on axis #{axis} on #{backend}", 0.0)
+    end
+  end
+
+  ok()
+end
+
+## Row `i` of a `[2, cols]` piece.
+def row(piece: Support.Spec, i: Int) -> List[Float]
+  cols = piece.shape[1]
+  piece.data.drop(i * cols).take(cols)
+end
+
+def test_concat_along_the_first_axis_stacks_the_rows() -> Result[Void] = concat_is_the_joined_data(0)
+
+def test_concat_along_the_second_axis_extends_each_row() -> Result[Void] = concat_is_the_joined_data(1)
+
 def test_concat_of_three_is_the_fold_of_pairs() -> Result[Void]
   gen = Prop.pair(pieces(true), Prop.pair(pieces(true), pieces(true)))
   for backend in Support.backends()
-    result = Prop.check(
+    try Prop.check(
       gen,
       Prop.Config(runs: Support.RUNS),
     ) do |p: Prop.Pair[Support.Spec, Prop.Pair[Support.Spec, Support.Spec]]|
-      ts = [p.first, p.second.first, p.second.second].map do |s: Support.Spec| Support.tensor(backend, s).unwrap! end
+      specs = [p.first, p.second.first, p.second.second]
+      ts: List[Tensor.Tensor] = []
+      for spec in specs
+        ts = ts.push(try Support.tensor(backend, spec))
+      end
+
       at_once = try Tensor.concat(ts, 0)
       folded = try Tensor.concat([try Tensor.concat([ts[0], ts[1]], 0), ts[2]], 0)
       Support.same(at_once, folded, "concat of three on #{backend}")
     end
-
-    try result
   end
 
   ok()
 end
 
 def test_the_torch_side_of_the_shape_laws_is_compared_or_absent() -> Result[Void]
-  return Conform.absent() if !Conform.available()
-
-  Test.eq(Support.backends(), [Conform.REF, Conform.TORCH])
+  Support.torch_is_compared_or_absent()
 end
 
 ## `from_list` then `to_list` gives the values back, as the dtype, in a rank-1
 ## tensor, whatever the backend.
 def round_trips(dtype: Tensor.Dtype, values: Prop.Gen[Tensor.Values]) -> Result[Void]
   for backend in Support.backends()
-    encode = ->(xs: List[Tensor.Values]) { Tensor.from_list(xs, [xs.size], dtype, backend).unwrap! }
-    result = Prop.roundtrip(Prop.list(values, 6), encode, Prop.Config(runs: Support.RUNS)) do |t: Tensor.Tensor|
-      read_back(t, dtype)
+    encode = ->(xs: List[Tensor.Values]) { Tensor.from_list(xs, [xs.size], dtype, backend) }
+    try Prop.roundtrip(Prop.list(values, 6), encode, Prop.Config(runs: Support.RUNS)) do |made: Result[Tensor.Tensor]|
+      read_back(try made, dtype)
     end
-
-    try result
   end
 
   ok()
@@ -92,21 +130,49 @@ def read_back(t: Tensor.Tensor, dtype: Tensor.Dtype) -> Result[List[Tensor.Value
   Tensor.to_list(t)
 end
 
-def floats(scale: Int, bound: Int) -> Prop.Gen[Tensor.Values]
-  Prop.map(Prop.int(-bound, bound)) do |n: Int| Tensor.Values.Float(n.to_f / scale.to_f) end
+## One case in three is an `edge`, the rest come from `any`: a random value
+## rarely lands on the limit of a dtype, and the limits are where it breaks.
+def mixed(edge: Prop.Gen[Tensor.Values], any: Prop.Gen[Tensor.Values]) -> Prop.Gen[Tensor.Values]
+  both = Prop.pair(edge, any)
+  Prop.map(Prop.pair(both, Prop.int(0, 2))) do |p: Prop.Pair[Prop.Pair[Tensor.Values, Tensor.Values], Int]|
+    pick(p.first, p.second)
+  end
 end
 
+def pick(both: Prop.Pair[Tensor.Values, Tensor.Values], draw: Int) -> Tensor.Values
+  return both.first if draw == 0
+
+  both.second
+end
+
+## Values a dtype can hold, in `low` ..= `high`, and the ones next to its limits.
 def ints(low: Int, high: Int) -> Prop.Gen[Tensor.Values]
-  Prop.map(Prop.int(low, high)) do |n: Int| Tensor.Values.Int(n) end
+  limits = [low, low + 1, -1, 0, 1, high - 1, high].select do |n: Int| n >= low and n <= high end
+  as_values = ->(n: Int) { Tensor.Values.Int(n) }
+  mixed(Prop.map(Prop.one_of(limits), as_values), Prop.map(Prop.int(low, high), as_values))
 end
 
-def test_f32_values_round_trip() -> Result[Void] = round_trips(Tensor.Dtype.F32, floats(1024, 1048576))
+## Multiples of `1 / scale` that the dtype holds exactly, and its `extremes`: the
+## largest finite value and the smallest normal one, of both signs, and zero.
+def floats(scale: Int, bound: Int, largest: Float, smallest: Float) -> Prop.Gen[Tensor.Values]
+  as_values = ->(x: Float) { Tensor.Values.Float(x) }
+  extremes = [0.0, largest, -largest, smallest, -smallest]
+  exact = Prop.map(Prop.int(-bound, bound)) do |n: Int| n.to_f / scale.to_f end
+  mixed(Prop.map(Prop.one_of(extremes), as_values), Prop.map(exact, as_values))
+end
 
-def test_f16_values_round_trip() -> Result[Void] = round_trips(Tensor.Dtype.F16, floats(16, 1024))
+def test_f32_values_round_trip() -> Result[Void]
+  round_trips(Tensor.Dtype.F32, floats(1024, 1048576, 3.4028234663852886e38, 1.1754943508222875e-38))
+end
+
+def test_f16_values_round_trip() -> Result[Void]
+  round_trips(Tensor.Dtype.F16, floats(16, 1024, 65504.0, 0.00006103515625))
+end
 
 def test_f64_values_round_trip() -> Result[Void]
   anything = Prop.map(Prop.float(-1000000.0, 1000000.0)) do |x: Float| Tensor.Values.Float(x) end
-  round_trips(Tensor.Dtype.F64, anything)
+  extremes = Prop.one_of([1.7976931348623157e308, -1.7976931348623157e308, 2.2250738585072014e-308])
+  round_trips(Tensor.Dtype.F64, mixed(Prop.map(extremes) do |x: Float| Tensor.Values.Float(x) end, anything))
 end
 
 def test_i8_values_round_trip() -> Result[Void] = round_trips(Tensor.Dtype.I8, ints(-128, 127))
