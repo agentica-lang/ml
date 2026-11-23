@@ -1,0 +1,124 @@
+{
+ "task": "transcribe",
+ "language": "spanish",
+ "duration": 2.6470625400543213,
+ "text": " ¡Hola! Esto es una prueba de audio en español.\n",
+ "segments": [
+  {
+   "id": 0,
+   "text": " ¡Hola! Esto es una prueba de audio en español.",
+   "start": 0.0,
+   "end": 2.32,
+   "tokens": [
+    6514,
+    48529,
+    0,
+    20880,
+    785,
+    2002,
+    48241,
+    368,
+    6278,
+    465,
+    31177,
+    13
+   ],
+   "words": [
+    {
+     "word": " ¡",
+     "start": 0.0,
+     "end": 0.05,
+     "t_dtw": -1,
+     "probability": 0.46964988112449646
+    },
+    {
+     "word": "Hola",
+     "start": 0.26,
+     "end": 0.28,
+     "t_dtw": -1,
+     "probability": 0.9698342084884644
+    },
+    {
+     "word": "!",
+     "start": 0.28,
+     "end": 0.45,
+     "t_dtw": -1,
+     "probability": 0.8936457633972168
+    },
+    {
+     "word": " Esto",
+     "start": 0.45,
+     "end": 0.65,
+     "t_dtw": -1,
+     "probability": 0.7328215837478638
+    },
+    {
+     "word": " es",
+     "start": 0.74,
+     "end": 0.79,
+     "t_dtw": -1,
+     "probability": 0.9975501298904419
+    },
+    {
+     "word": " una",
+     "start": 0.79,
+     "end": 0.96,
+     "t_dtw": -1,
+     "probability": 0.9726110696792603
+    },
+    {
+     "word": " prueba",
+     "start": 0.96,
+     "end": 1.31,
+     "t_dtw": -1,
+     "probability": 0.9642142057418823
+    },
+    {
+     "word": " de",
+     "start": 1.31,
+     "end": 1.4000000000000001,
+     "t_dtw": -1,
+     "probability": 0.9978451132774353
+    },
+    {
+     "word": " audio",
+     "start": 1.43,
+     "end": 1.71,
+     "t_dtw": -1,
+     "probability": 0.9442363381385803
+    },
+    {
+     "word": " en",
+     "start": 1.71,
+     "end": 1.82,
+     "t_dtw": -1,
+     "probability": 0.9938828349113464
+    },
+    {
+     "word": " español",
+     "start": 1.82,
+     "end": 2.29,
+     "t_dtw": -1,
+     "probability": 0.9786533117294312
+    },
+    {
+     "word": ".",
+     "start": 2.29,
+     "end": 2.32,
+     "t_dtw": -1,
+     "probability": 0.887305498123169
+    }
+   ],
+   "temperature": 0.0,
+   "avg_logprob": -0.1059412956237793,
+   "no_speech_prob": 0.0037665192503482103
+  }
+ ],
+ "detected_language": "spanish",
+ "detected_language_probability": 0.9952635169029236,
+ "language_probabilities": {
+  "en": 0.001409473130479455,
+  "es": 0.9952635169029236,
+  "gl": 0.0011125972960144281
+ }
+}

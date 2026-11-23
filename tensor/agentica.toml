@@ -32,4 +32,4 @@ build = { sources = ["native/torch.c"], libs = ["torch", "torch_cpu", "c10", "st
 # `optional`: without it `Tensor.available(Backend.Ggml(..))` says no.
 [native.ggml]
 optional = true
-build = { sources = ["native/ggml.c"], libs = ["tensor_ggml", "stdc++", "m", "pthread"] }
+build = { sources = ["native/ggml.c", "native/ggml_graph.c"], libs = ["tensor_ggml", "stdc++", "m", "pthread"] }

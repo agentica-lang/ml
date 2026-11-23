@@ -10,6 +10,7 @@
 ## a trace through `constant`.
 
 import Graph from "src/graph"
+import Lower from "src/lower"
 import Tensor from "tensor"
 import Types from "src/types"
 
@@ -78,11 +79,19 @@ end
 
 ## Runs the traced tensors `outs` on `backend`. `env` holds the value of every
 ## node already known (the inputs), keyed by node id; the walk stops there.
+## A backend that compiles (`Ggml`) runs the whole graph as one graph of its
+## own and never calls `Tensor.*`; every other backend computes node by node
+## through the public API (§10.3).
 def evaluate(
   outs: List[Types.Tensor],
   env: Map[Int, Types.Tensor],
   backend: Types.Backend,
 ) -> Result[List[Types.Tensor]]
+  case backend
+    Types.Backend.Ggml(device) -> return Lower.evaluate(outs, env, device)
+    _ -> nil
+  end
+
   values = env
   for t in try reachable(outs, Set.new(env.keys))
     values = values.put(id_of(t), try apply(t, values, backend))

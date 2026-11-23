@@ -151,7 +151,8 @@ Tensor.backend(t) -> Backend                      # no native call
   other in the same process. A backend value carries its device
   (`Backend.Torch(Device.Cpu)`);
   `Backend.Reference` has none. Batch lives in the shape, not in a global
-  either.
+  either. The one process-wide setting is `Tensor.vulkan_fp16`, because ggml
+  fixes it per process (§7).
 - Backend-module functions take the device as an explicit first argument
   (`Torch.matmul(device, a, b)`): dispatch unpacks it from the backend value
   (§7) and the tensor keeps no second copy of it.
@@ -240,26 +241,75 @@ end
   engines, models) enter only as pinned git submodules under `third_party/`,
   never vendored.
 - **`Ggml` has no eager ops.** A Vulkan dispatch costs about 2 ms, so ggml is
-  fast only when a whole training step is one compiled graph
+  fast only when a whole computation is one compiled graph
   (`spike/ggml-graph/README.md`). Its arms create tensors (`zeros`, `ones`,
-  `empty`, `full`, `like`, `arange`, `scalar_to_tensor`, `from_list`), read
-  them back (`to_list`) and pass `stop_grad` through; every other primitive
-  answers `Ggml.compiled_only(op)`, an `error` that names the op and points at
-  `Trace`. A traced graph will compile to one ggml graph in a later step,
-  which also changes §10.3's "`evaluate` runs a graph through the public
-  `Tensor.*` calls" for this backend. Running each op as a one-node graph
+  `empty`, `full`, `like`, `arange`, `scalar_to_tensor`, `from_list`), read them
+  back (`to_list`), copy them between devices (`to_device`) and pass `stop_grad`
+  through; every other primitive answers `Ggml.compiled_only(op)`, an `error`
+  that names the op and points at `Trace`. Running each op as a one-node graph
   would work, but it is a slow path nobody should train on, so it is not
   offered.
+- **A trace on `Ggml` is one compiled graph** (`src/lower.agc`,
+  `native/ggml_graph.c`). `Trace.evaluate` sends every node the outputs reach
+  to the C layer in id order and runs the result as one ggml graph; it never
+  calls `Tensor.*` (§10.3). Inputs and lifted constants are leaves bound on
+  every call, and a `Full` is a one-element leaf whose value is set on every
+  call. So a compiled graph depends on the ops, shapes, dtypes, integer
+  parameters and on which fills are zero (a `where` with a zero branch lowers
+  without it), and that string is the key of a process-wide cache: a retrace
+  of the same function with new data, constants or fill values compiles
+  nothing. The cache holds 32 graphs and evicts the least recently used one
+  nobody runs.
+- **No copies in or out.** For one run only, an `F32` leaf points at the
+  caller's tensor and an `F32` output at a fresh tensor the run writes; after
+  the run the graph points at nothing again, so the cache keeps no caller
+  tensor alive. Only an `I32` leaf or output is copied, converted through a
+  buffer of the graph's own. A cached graph owns its fills and its finiteness
+  checks; the intermediates live in one allocator per device that every
+  graph shares, re-planned when another graph ran last. That allocator keeps
+  the largest buffer any graph needed until the process ends.
+- **Locks.** Builds, runs and Vulkan buffer operations hold one device lock,
+  so CPU and Vulkan graphs run one at a time (enough for one iGPU; a lock per
+  device can come later). The cache's own lock is held briefly, and a free
+  hook (a lease, a tensor) takes only that one: what it must free under the
+  device lock is queued for the lock's next holder, so no task's free waits
+  for a graph to finish.
+- The lowering computes in `F32`. `Bool` (0/1) and integers up to 32 bits are
+  exact there below 2^24; a node of `F16`, `F64` or `I64`, an integer `div`,
+  a `to_dtype` that is not exact in `F32`, an integer fill or `arange` beyond
+  2^24, an `arange` that counts down, a `transpose` above rank 2, a tensor
+  with no elements and an op without a lowering are errors naming the node,
+  given before anything compiles; an `I32` value beyond 2^24 is an error when
+  it is copied in or out. Lowered: `add`, `sub`, `mul`, `div`, `neg`, `exp`,
+  `log`, `relu`, `sqrt`, `sigmoid`, `tanh`, `matmul`, `transpose`, `reshape`,
+  `squeeze`, `unsqueeze`, `broadcast_to`, `sum`, `mean` and `max` over a
+  leading or trailing block of axes, `stop_grad`, `copy`, `contiguous`,
+  `arange`, and `eq`, `lt` and `where` emulated in `F32` arithmetic (`eq` as
+  `1 - step(|a - b|)`, exact for integers below 2^24 and true when an operand
+  is NaN; `where` as `c·x + (1 - c)·y`, exact only when both branches are
+  finite): enough for an
+  MLP and softmax cross-entropy with their gradients. An output that holds
+  an infinity or a NaN is an error.
+- Vulkan computes `mul_mat` in `F32` by default: ggml reads
+  `GGML_VK_DISABLE_F16` once per process, when it first enumerates its
+  devices, and the C layer sets it before its first registry call (any ggml
+  call, a CPU one or `Tensor.available` included). `Tensor.vulkan_fp16(true)`
+  before that opts in to fp16 `mul_mat`, process-wide (it is ggml's choice
+  per process, not per tensor, the one exception to §4's "never a global");
+  a different choice after it is an error, and on a build without Vulkan it
+  changes nothing. fp16 is 1.1–1.5× faster from batch 256 to 4096 and
+  changes gradients by up to about 10 % at MLP sizes (the spike's run B,
+  `spike/ggml-graph/README.md`).
 - The ggml module is `[native.ggml]`, `optional = true`, built from
-  `native/ggml.c` against the pinned `third_party/ggml`, which
-  `tools/build-engine.sh` builds CPU-only (CI) or with Vulkan (local). The
-  build table names one library, a linker script that script writes, so one
-  table links either tree; the C layer finds Vulkan devices through ggml's
-  backend registry at run time. `Tensor.available(Backend.Ggml(device))` is
-  `true` when the module is built and, for `Vulkan(i)`, ggml sees device `i`;
-  it opens no device. ggml stores `F32` and `I32`; `Bool`, `I8`, `I16` and
-  `U8` are stored as `F32` (exact for them), and `F16`, `F64`, `I64` and a
-  rank above 4 are refused.
+  `native/ggml.c` and `native/ggml_graph.c` against the pinned
+  `third_party/ggml`, which `tools/build-engine.sh` builds CPU-only (CI) or with
+  Vulkan (local). The build table names one library, a linker script that script
+  writes, so one table links either tree; the C layer finds Vulkan devices
+  through ggml's backend registry at run time.
+  `Tensor.available(Backend.Ggml(device))` is `true` when the module is built
+  and, for `Vulkan(i)`, ggml sees device `i`; it opens no device. ggml stores
+  `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are stored as `F32` (exact for
+  them), and `F16`, `F64`, `I64` and a rank above 4 are refused.
 
 ## 8. Tensor lifetime
 
@@ -292,10 +342,12 @@ Usage for tensors:
   buffer, freed together by its free hook. The device itself is opened once
   per process and never closed: a buffer only needs its device's buffer type,
   which lives as long as the process. Every Vulkan buffer operation
-  (allocate, write, read, free, the free hook included) runs under one lock in
-  the C layer, so tasks on one device never overlap a transfer. A compiled step (later) will own its graph and the train state
-  in a resource of its own, which `fit` creates and closes; the tensors it
-  returns are fresh `Handle.Ggml` values (no donation).
+  (allocate, write, read, free) runs under one lock in the C layer, so tasks
+  on one device never overlap a transfer; a free hook never waits for it and
+  leaves the free to the next holder (§7). A compiled step (later) will own
+  its graph and the train state in a resource of its own, which `fit` creates
+  and closes; the tensors it returns are fresh `Handle.Ggml` values (no
+  donation).
 - `compute def` kernels only push data or return a resource; the loop lives
   in Agentica and the native side never calls back (existing FFI invariant).
 
@@ -407,11 +459,14 @@ The price:
   `argmax`, `arange`, an integer `to_dtype`) carries no gradient, so
   comparisons and index ops cut it, and so does the condition of `where`.
   `relu`'s derivative at `0` is `0`.
-- `evaluate` runs a graph through the public `Tensor.*` calls on the inputs'
-  backend, computing each node once; a lifted constant must live on that
-  backend. `value_and_grad` evaluates the output and its gradients in one
-  pass, so the backward reads the forward values it shares. Backends stay
-  forward-only.
+- `evaluate` runs a graph on the inputs' backend, computing each node once; a
+  lifted constant must live on that backend. A backend that computes op by op
+  (`Reference`, `Torch`) runs it through the public `Tensor.*` calls. A backend
+  that compiles (`Ggml`) runs the whole graph as one graph of its own and does
+  not go through `Tensor.*` (§7), so it supports the ops its lowering knows and
+  answers an error naming any other. `value_and_grad` evaluates the output and
+  its gradients in one pass, so the backward reads the forward values it shares.
+  Backends stay forward-only.
 - First rules: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `relu`,
   `matmul`, `transpose`, `sum`, `mean`, `broadcast_to`, `reshape`, `where`,
   and the identity of `copy`, `contiguous` and `to_device` to `Cpu` (every

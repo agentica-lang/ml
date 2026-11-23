@@ -25,7 +25,9 @@ en `tensor/DESIGN.md`.
 | `asr/` (Whisper vía B): forward del modelo (stem conv, encoder, decoder, logits atados) cargado con los nombres de HF y el `config.json`; `Nn.Conv1d` y `Load.conv1d`. Solo referencia: en libtorch falta `gelu_tanh_approx`; deriva de la GELU tanh frente a la erf en el modelo de test: 1.7e-4 (encoder), 3.8e-5 (logits) | `asr/`, `nn/`, `hub/` | #27 |
 | Todos los miembros en agentica 0.36.0; `agentica test --max-steps` por archivo en CI, sin los apaños del presupuesto de pasos; pins entre miembros al día (instalan desde fuera del workspace); checks de gradiente completos en `nn/` | `*/AGENTICA_VERSION`, `.github/workflows/ci.yml` | (este PR) |
 | `tensor/`: fuera los stubs `Backend.Xla`/`Candle` y `Device.Cuda` (sin módulo, solo devolvían `error`); `Device` queda con el brazo `Cpu` | `tensor/` | (este PR) |
-| `tensor/` backend ggml, PR 1 de 6: `Device.Vulkan(Int)`, `Backend.Ggml(Device)`, `Handle.Ggml`; módulo nativo `ggml` opcional sobre `third_party/ggml`; crear, subir y leer en CPU y Vulkan, cualquier otra op da un error que apunta a `Trace`; CI compila ggml CPU (`tools/build-engine.sh`) | `tensor/` | (este PR) |
+| `tensor/` backend ggml, PR 1 de 6: `Device.Vulkan(Int)`, `Backend.Ggml(Device)`, `Handle.Ggml`; módulo nativo `ggml` opcional sobre `third_party/ggml`; crear, subir y leer en CPU y Vulkan, cualquier otra op da un error que apunta a `Trace`; CI compila ggml CPU (`tools/build-engine.sh`) | `tensor/` | #34 |
+| `tensor/` backend ggml, PR 2 de 6: `Trace.evaluate` sobre `Ggml` baja el grafo entero (forward y backward) a **un** grafo ggml; caché por estructura (ops, formas, dtypes; no valores), entradas leídas en su sitio y salidas escritas en tensores nuevos, `gallocr` compartido por dispositivo; ops de un MLP y la cross-entropy; Vulkan en F32 | `tensor/` | #36 |
+| `tensor/` backend ggml, PR 2b: `Tensor.vulkan_fp16` (por proceso, F32 por defecto), `to_device` entre CPU y Vulkan, paridad del MLP 784→512→512→10 en Vulkan contra ggml CPU, `tools/bench-ggml.agc` y tiempos por paso | `tensor/` | (este PR) |
 | Spike M0: boundary FFI, gradiente a mano verificado contra diferencia central, libtorch CPU, 8 gaps medidos | `spike/m0/` | #8 |
 | Spike ggml/Vulkan: ggml pineado `v1.0.0`, builds AVX2 y Vulkan, medidas iGPU vs CPU vs libtorch | `spike/ggml-vulkan/` | #14 |
 | Spike ggml-graph: un paso de entrenamiento trazado (forward, backward, SGD/Adam) bajado a **un** grafo ggml, construido una vez, en la iGPU por Vulkan | `spike/ggml-graph/` | #30 |
@@ -89,18 +91,23 @@ Nada abierto en `main`. Fuera de él hay trabajo en ramas de spike.
    **probado** por el spike ggml-graph (#30): el grafo que `Trace` ya graba
    se baja entero a ggml.
 9. **Backend Vulkan/iGPU** como backend real (diseño y PRs en
-   `spike/ggml-graph/README.md`): el PR 1 (tipos, módulo, build) está hecho;
-   sigue el PR 2, el compilador del grafo con caché por estructura. `Train.fit` compila
-   pérdida, gradientes y optimizador en un grafo con caché por estructura y
-   deja parámetros y momentos en un estado de entrenamiento que `fit` posee
-   y nunca devuelve; al final devuelve tensores nuevos (sin donación).
-   `mul_mat` F32 por defecto; fp16 opcional y por proceso (1.1–1.5×, con
-   error en los gradientes).
-   Notas para el PR 2: los intermedios del grafo compilado necesitan un
-   `ggml_gallocr` compartido (no un buffer por tensor, como en el PR 1), y
-   la elección fp16/F32 de Vulkan (`GGML_VK_DISABLE_F16`, por proceso) llega
-   con él. Un programa que enlace `whisper` y `tensor_ggml` lleva dos copias
-   de los símbolos de ggml (cada módulo enlaza ggml estático).
+   `spike/ggml-graph/README.md`): el PR 1 (tipos, módulo, build) y el PR 2
+   (compilador del grafo con caché por estructura, `Trace.evaluate`) están
+   hechos, y también fp16 opcional, `to_device` y las medidas (PR 2b); sigue
+   el PR 3, el paso de entrenamiento en un grafo con estado. `Train.fit`
+   compila pérdida, gradientes y optimizador en un grafo con caché por
+   estructura y deja parámetros y momentos en un estado de entrenamiento que
+   `fit` posee y nunca devuelve; al final devuelve tensores nuevos (sin
+   donación). `mul_mat` F32 por defecto; fp16 opcional y por proceso
+   (1.1–1.5×, con error en los gradientes). Medido en el PR 2b
+   (`tensor/README.md`): el grafo de `value_and_grad` corre tan rápido como
+   el del spike seguido (4.4 ms a batch 64), pero entre dos llamadas
+   (retrazar y bajar, 1–3 ms) la iGPU baja a 200 MHz y el siguiente grafo
+   tarda ~3×; un paso por la API pública (7 grafos) va a 33–36 ms de 64 a
+   1024. Notas para el PR 3: escrituras de vuelta a los parámetros (con las
+   comprobaciones de swap y doble escritura del spike) y el optimizador en
+   el mismo grafo. Un programa que enlace `whisper` y `tensor_ggml` lleva
+   dos copias de los símbolos de ggml (cada módulo enlaza ggml estático).
 10. Cuando cierre **#1918**: mover el backend libtorch a un paquete `torch/`.
 
 ## 4. Deuda y issues abiertos
