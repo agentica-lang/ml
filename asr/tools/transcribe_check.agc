@@ -2,8 +2,8 @@
 ## whisper-tiny and compares them with what Hugging Face answered: the token
 ## ids exactly, the text and the segments, the language and its probability
 ## within 1e-5. It prints the real-time factor of each case and, on ggml, the
-## graphs it compiled. Manual, not run by
-## the tests (the checkpoint is not in git). From `asr/`:
+## graphs it compiled. Manual, not run by the tests (the checkpoint is not in
+## git). From `asr/`:
 ##
 ## ```sh
 ## agentica tools/transcribe_check.agc MODEL_DIR ES_HOLA_WAV JFK_WAV [BACKEND] [CASE]
