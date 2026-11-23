@@ -196,15 +196,20 @@ def alive(got: Result[Batch]) -> Result[Batch]
   ok(b)
 end
 
-## Builds every batch in order and sends it, an error included, then waits for
-## `stop`: its tensors must outlive their use.
+## Builds every batch in order and sends it. A failure closes the channel with
+## it: the consumer takes the batches built before, then that error. Then it
+## waits for `stop` (a cancel, or the close of the channel): its tensors must
+## outlive their use.
 def produce(job: Job) -> Result[Void]
-  outcome = send_all(job)
-  if !outcome.ok?
-    _ = hand(job.batches, error(outcome.message))
+  failed = false
+  case send_all(job)
+    error(e) ->
+      job.batches.close(e)
+      failed = true
+    ok(_) -> nil
   end
 
-  while !job.batches.closed?
+  while failed or !job.batches.closed?
     Task.sleep(POLL_MS)
   end
 

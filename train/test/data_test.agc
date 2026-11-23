@@ -131,16 +131,21 @@ def test_a_dataset_loads_from_safetensors() -> Result[Void]
 end
 
 ## Batch 3 of 10 fails (the targets hold 3 rows) behind three buffered ones:
-## those arrive whole, then the error, in its place.
+## those arrive whole, then the very error of the synchronous path, and again
+## on every later take, because the task closed the channel with it.
 def test_a_failed_batch_comes_after_the_buffered_ones() -> Result[Void]
   d = try rows(S.REF)
   short = Data.Dataset(inputs: d.inputs, targets: try S.tensor([0.0, 10.0, 20.0], [3], Tensor.Dtype.F32))
   feed = Data.epoch(try Data.feed(Data.Loader(dataset: short, batch_size: 1, shuffle: false, prefetch: 4), 1), 1)
   got = firsts_three(feed)
   failed = Data.take(feed, 3)
+  later = Data.take(feed, 4)
   Data.stop(feed)
   try Test.eq(try got, [0.0, 10.0, 20.0])
   try Test.assert(!failed.ok?, "batch 3 is an error")
+  want = Data.batch(Data.Loader(dataset: short, batch_size: 1, shuffle: false), (0...ROWS).to_a, 3)
+  try Test.eq(failed.message, want.message)
+  try Test.eq(later.message, want.message)
 
   sgd = Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.01))
   loader = Data.Loader(dataset: short, batch_size: 1, shuffle: false, prefetch: 4)
