@@ -1,8 +1,8 @@
 # train — design
 
 Losses, optimizers and a minimal training loop over `tensor/`'s
-`Trace.value_and_grad` (`tensor/DESIGN.md` §10). Depends on `tensor/` and
-`nn/` (`nn/` only in the tests today).
+`Trace.value_and_grad` (`tensor/DESIGN.md` §10). Depends on `tensor/`; `nn/`
+is a test dependency (`group = "test"`), used by the XOR test.
 
 ## API
 
@@ -48,8 +48,9 @@ Train.fit(loss, params, batches, optimizer, epochs, on_epoch?) -> Result[Fit { p
   `stop_grad` or a rule for `max`.
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on
-  libtorch and only the new state, parameters and loss survive
-  (`tensor/DESIGN.md` §8).
+  libtorch and only the new state, parameters and loss leave it
+  (`tensor/DESIGN.md` §8). The previous parameters and state were made
+  before the arena, so it does not free them: they wait for the GC.
 - **Reporting is a callback and a history.** `fit` answers the mean loss of
   every epoch and calls `on_epoch` after each; a caller logs from there
   (`std/logger` or `puts`). `fit` itself prints nothing.
@@ -62,8 +63,8 @@ Train.fit(loss, params, batches, optimizer, epochs, on_epoch?) -> Result[Fit { p
 `fit` traces the loss again on every step (`tensor/DESIGN.md` §10.1). On the
 reference backend an epoch of the XOR test (a 2-8-1 relu MLP, four rows)
 costs about 75,000 VM steps, most of it the evaluation of the forward and
-gradient graphs; a test file's step budget allows about 25 such epochs, so
-the test trains for 20. On libtorch an epoch costs about 45,000.
+gradient graphs; a test file's step budget (1M steps per test, plus 1M) has to
+hold the reference run and the libtorch run, so the test trains for 20. On libtorch an epoch costs about 45,000.
 
 ## The repository is a workspace
 
@@ -72,5 +73,10 @@ write a `path` dependency (`PKG-ROOT-ONLY`), so the repository root has an
 `agentica.toml` with `[workspace]`, and members name each other by the
 repository and a `subdir`: a member reads another from its folder, with no
 fetch, and the `ref` it writes is not used inside the workspace. A
-release of a member bumps that `ref` (or the tag) in the members that depend
-on it, since a project outside the workspace fetches it as written.
+project outside the workspace fetches a member at the `ref` written, so:
+
+- `train/` cannot be used from outside until its `ref` to `tensor/` is
+  bumped to a commit of `main` that has `train/`'s needs (after this PR
+  merges, the `ref` still names the commit before it).
+- A PR that changes several members leaves outside users on the old pin
+  until a follow-up bumps the `ref` (or a release tag replaces it).

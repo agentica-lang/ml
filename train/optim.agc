@@ -41,17 +41,13 @@ struct Step
 end
 
 def init(optimizer: Optimizer, params: List[Tensor.Tensor]) -> Result[State]
-  zeros: List[Tensor.Tensor] = []
-  for p in params
-    zeros = zeros.push(try Tensor.like(p))
-  end
-
   unused: List[Tensor.Tensor] = []
   case optimizer
     Optimizer.Sgd(o) ->
       return ok(State(optimizer: optimizer, steps: 0, first: unused, second: unused)) if o.momentum == 0.0
-      ok(State(optimizer: optimizer, steps: 0, first: zeros, second: unused))
-    Optimizer.Adam(_) -> ok(State(optimizer: optimizer, steps: 0, first: zeros, second: zeros))
+      ok(State(optimizer: optimizer, steps: 0, first: try zeros_like(params), second: unused))
+    Optimizer.Adam(_) ->
+      ok(State(optimizer: optimizer, steps: 0, first: try zeros_like(params), second: try zeros_like(params)))
   end
 end
 
@@ -67,6 +63,15 @@ def step(state: State, params: List[Tensor.Tensor], grads: List[Tensor.Tensor]) 
 end
 
 private
+
+def zeros_like(params: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  zeros: List[Tensor.Tensor] = []
+  for p in params
+    zeros = zeros.push(try Tensor.like(p))
+  end
+
+  ok(zeros)
+end
 
 def sgd(o: Sgd, state: State, params: List[Tensor.Tensor], grads: List[Tensor.Tensor]) -> Result[Step]
   first: List[Tensor.Tensor] = []

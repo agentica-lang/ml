@@ -29,6 +29,17 @@ def test_adam_corrects_the_bias_of_its_moments() -> Result[Void]
   S.expect_close(twice, [0.9, -1.0 + 0.2 / 1.5], TOL, 0.0, "adam step 2")
 end
 
+## The same holds at any step, which pins `beta^t` at `t = 3` and `t = 5`.
+def test_adam_keeps_the_correction_on_later_steps() -> Result[Void]
+  adam = Optim.Optimizer.Adam(Optim.Adam(lr: 0.1, eps: 0.5))
+  for n in [3, 5]
+    got = try run(adam, (0...n).to_a.map { |_| [0.5, -1.0] })
+    try S.expect_close(got, [1.0 - 0.05 * n.to_f, -1.0 + (0.1 / 1.5) * n.to_f], TOL, 0.0, "adam step #{n}")
+  end
+
+  ok()
+end
+
 def test_a_gradient_per_parameter_is_required() -> Result[Void]
   p = try S.tensor([1.0, -1.0], [2])
   state = try Optim.init(Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.1)), [p])

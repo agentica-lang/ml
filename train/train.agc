@@ -29,11 +29,6 @@ struct Fit
   history: List[Float]
 end
 
-struct Stepped
-  step: Optim.Step
-  loss: Float
-end
-
 ## Trains `params` for `epochs` passes over `batches`, one optimizer step per
 ## batch. `loss(params, batch)` must answer a float scalar; inside it the
 ## parameters and the batch are `Trace` tensors.
@@ -51,8 +46,10 @@ def fit(
   history: List[Float] = []
   for e in 1..epochs
     total = 0.0
-    for b in batches
-      done = try step(loss, state, current, b)
+    for i in 0...batches.size
+      stepped = step(loss, state, current, batches[i])
+      return error("epoch #{e}, batch #{i}: #{stepped.message}") if !stepped.ok?
+      done = stepped.unwrap!
       state = done.step.state
       current = done.step.params
       total = total + done.loss
@@ -70,6 +67,11 @@ def fit(
 end
 
 private
+
+struct Stepped
+  step: Optim.Step
+  loss: Float
+end
 
 ## One step in its own native arena: only the new state, parameters and the
 ## loss outlive it (`tensor/DESIGN.md` §8).
