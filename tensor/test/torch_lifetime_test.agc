@@ -36,6 +36,14 @@ def step(x: Tensor.Tensor, y: Tensor.Tensor) -> Result[Tensor.Tensor]
   end
 end
 
+## `ones + ones` reshaped, with the sum sent to `seen` on the way.
+def doubled_into(seen: Channel[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  x = try Tensor.ones([2, 2], Tensor.Dtype.F32, Conform.TORCH)
+  doubled = try Tensor.add(x, x)
+  _ = seen.send(doubled, 0)
+  Tensor.reshape(doubled, [4])
+end
+
 def test_a_result_leaves_the_arena_that_made_it() -> Result[Void]
   return Conform.absent() if !Conform.available()
 
@@ -46,6 +54,20 @@ def test_a_result_leaves_the_arena_that_made_it() -> Result[Void]
   try Test.assert(!Conform.native_closed(same), "the result of an arena was closed with it")
   try Test.assert(!Conform.native_closed(t), "an op's arena closed its argument")
   Conform.expect_floats(same, [0.0, 0.0, 0.0, 0.0], "the tensor that left the arena")
+end
+
+## The libtorch ops are `AN_FRESH`: the result an arena keeps owns its memory,
+## so the intermediates it came from still close with the arena. One goes out
+## through `seen`, which the arena's value does not reach, to look at it.
+def test_a_kept_result_does_not_keep_its_intermediates() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  seen: Channel[Tensor.Tensor] = Channel.new(1)
+  out = try Native.arena do doubled_into(seen) end
+  middle = try seen.recv(0)
+  try Test.assert(Conform.native_closed(middle), "the intermediate was kept with the result")
+  try Test.assert(!Conform.native_closed(out), "the result was closed with the arena")
+  Conform.expect_floats(out, [2.0, 2.0, 2.0, 2.0], "the result of the arena")
 end
 
 def test_a_struct_field_leaves_the_arena_too() -> Result[Void]
