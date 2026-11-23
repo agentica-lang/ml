@@ -17,7 +17,7 @@
 # RUNS (default 5), ONLY (a regex on row names, `run` only), VULKAN_SDK (default ~/.local/vulkan-sdk/usr: glslc and the
 # headers) and JOBS (default 2).
 # Builds and runs are heavy and the numbers need a quiet machine: wrap each step in a lock if others share it.
-set -eu
+set -euo pipefail
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
@@ -68,7 +68,9 @@ if [ "$step" = build ]; then
     # shellcheck disable=SC2086
     cmake -S "$wsrc" -B "$work/wcpp-$dev" -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_TESTS=OFF $flags > "$work/wcpp-$dev.configure.log"
     cmake --build "$work/wcpp-$dev" --target whisper-cli -j"$jobs" > "$work/wcpp-$dev.build.log"
-    lib=$(dirname "$(find -L "$work/wcpp-$dev" -name 'libwhisper.so' | head -n 1)")
+    libwhisper=$(find -L "$work/wcpp-$dev" -name 'libwhisper.so' | head -n 1)
+    [ -n "$libwhisper" ] || { echo "bench_whisper.sh: no libwhisper.so under $work/wcpp-$dev" >&2; exit 1; }
+    lib=$(dirname "$libwhisper")
     g++ -O2 -std=c++17 -I"$wsrc/include" -I"$wsrc/ggml/include" "$here/whisper_cpp_bench.cpp" -o "$work/wcpp-$dev/whisper_cpp_bench" \
       -L"$lib" -lwhisper -Wl,-rpath,"$lib"
   done
@@ -95,23 +97,31 @@ timed() {  # OUT COMMAND...: the command's stdout in OUT.tsv, `time -v` in OUT.t
   /usr/bin/time -v -o "$out.time" "$@" > "$out.tsv"
 }
 
+# Each row runs the timed pass on both clips, then a pass that stops after the load (jfk only), for the memory of the load.
 ours() {  # ROW BACKEND
   wanted "$1" || return 0
   rm -f "$work/results/$1".*
   engine=$([ "$2" = vulkan ] && echo vulkan || echo cpu)
-  for clip in jfk es-hola; do
-    for n in "$runs" -1; do
-      suffix=$([ "$n" = -1 ] && echo .load || echo)
-      (
-        cd "$root/asr"
-        vulkan_env
-        eval "$(sh tools/build-engine.sh "$engine" 2> /dev/null | grep '^export ')"
-        if [ "$2" = torch ]; then
-          eval "$(cd "$root/tensor" && sh tools/build-torch.sh)"
-        fi
-        timed "$work/results/$1.$clip$suffix" agentica tools/bench_transcribe.agc "$model_dir" "$(clip_wav "$clip")" "$2" "$(clip_lang "$clip")" "$n"
-      )
-    done
+  for pass in jfk es-hola load; do
+    clip=$pass
+    n=$runs
+    suffix=
+    if [ "$pass" = load ]; then
+      clip=jfk
+      n=-1
+      suffix=.load
+    fi
+    (
+      cd "$root/asr"
+      vulkan_env
+      exports=$(sh tools/build-engine.sh "$engine")
+      eval "$(printf '%s\n' "$exports" | grep '^export ')"
+      if [ "$2" = torch ]; then
+        torch_exports=$(cd "$root/tensor" && sh tools/build-torch.sh)
+        eval "$torch_exports"
+      fi
+      timed "$work/results/$1.$clip$suffix" agentica tools/bench_transcribe.agc "$model_dir" "$(clip_wav "$clip")" "$2" "$(clip_lang "$clip")" "$n"
+    )
   done
 }
 
@@ -119,12 +129,17 @@ cpp() {  # ROW DEVICE MODEL FLASH_ATTN
   wanted "$1" || return 0
   rm -f "$work/results/$1".*
   gpu=$([ "$2" = vulkan ] && echo 1 || echo 0)
-  for clip in jfk es-hola; do
-    for n in "$runs" -1; do
-      suffix=$([ "$n" = -1 ] && echo .load || echo)
-      timed "$work/results/$1.$clip$suffix" "$work/wcpp-$2/whisper_cpp_bench" "$work/models/ggml-tiny-$3.bin" "$(clip_wav "$clip")" \
-        "$(clip_lang "$clip")" "$threads" "$gpu" "$4" "$n"
-    done
+  for pass in jfk es-hola load; do
+    clip=$pass
+    n=$runs
+    suffix=
+    if [ "$pass" = load ]; then
+      clip=jfk
+      n=-1
+      suffix=.load
+    fi
+    timed "$work/results/$1.$clip$suffix" "$work/wcpp-$2/whisper_cpp_bench" "$work/models/ggml-tiny-$3.bin" "$(clip_wav "$clip")" \
+      "$(clip_lang "$clip")" "$threads" "$gpu" "$4" "$n"
   done
 }
 

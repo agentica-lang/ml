@@ -2,7 +2,8 @@
 ## warm-up transcription, then RUNS timed ones (the whole pipeline: log-mel, encoder, greedy decoding, no timestamps).
 ## RUNS -1 stops after the load. It prints tab-separated lines: `load`, `warmup`, `run` (one per run, in ms), `text`,
 ## `tokens`, and `phase NAME MS STEPS` for one more pass split into its parts. Manual, like transcribe_check.agc;
-## benchmarks/bench_whisper.sh runs it.
+## benchmarks/bench_whisper.sh runs it. The stage pass calls the stage functions (`Asr.encode`, `Asr.listen`,
+## `Asr.step`) and repeats `transcribe`'s own order, so it must follow them when they change.
 ## From `asr/`:
 ##
 ## ```sh

@@ -3,7 +3,7 @@
 Usage: python3 -I summarize.py RESULTS_DIR TRANSCRIBE_GOLDEN_JSON
 
 For each row and clip: the load time, the first (warm-up) transcription, the median of the timed ones as milliseconds
-and as a real-time factor (time over clip length), the peak memory of a load-only process and of the whole one, and
+and as a real-time factor (time over clip length), the peak memory of the whole process, and
 whether the token ids equal the ones Hugging Face's `generate` gave (the golden file).
 """
 
@@ -13,7 +13,7 @@ import statistics
 import sys
 from pathlib import Path
 
-CLIPS = {"jfk": ("jfk", 176000 / 16000, "en"), "es-hola": ("es-hola", 42353 / 16000, "es")}
+CLIP_SECONDS = {"jfk": 176000 / 16000, "es-hola": 42353 / 16000}
 ROWS = [
     ("agentica-ggml-cpu", "ours, ggml CPU"),
     ("agentica-ggml-vulkan", "ours, ggml Vulkan"),
@@ -67,11 +67,11 @@ def main():
         if not c["timestamps"] and c["task"] == "transcribe":
             want[c["clip"]] = " ".join(map(str, c["tokens"]))
 
-    print("| row | clip | load ms | first ms | median ms | real-time factor | RSS after load MB | peak RSS MB | tokens |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("| row | clip | load ms | first ms | median ms | real-time factor | peak RSS MB | tokens |")
+    print("|---|---|---|---|---|---|---|---|")
     phases = {}
     for row, label in ROWS:
-        for clip, (_, seconds, _) in CLIPS.items():
+        for clip, seconds in CLIP_SECONDS.items():
             base = results / f"{row}.{clip}"
             if not Path(f"{base}.tsv").exists():
                 continue
@@ -80,7 +80,7 @@ def main():
             same = "same" if r.get("tokens") == want[clip] else "DIFFERENT"
             print(
                 f"| {label} | {clip} | {float(r['load']):.0f} | {float(r['warmup']):.0f} | {median:.0f} "
-                f"| {median / 1000 / seconds:.3f} | {rss_mb(Path(f'{base}.load.time')):.0f} | {rss_mb(Path(f'{base}.time')):.0f} | {same} |"
+                f"| {median / 1000 / seconds:.3f} | {rss_mb(Path(f'{base}.time')):.0f} | {same} |"
             )
             if "phase" in r:
                 phases[(label, clip)] = per_run(r["phase"], len(r["run"]))
