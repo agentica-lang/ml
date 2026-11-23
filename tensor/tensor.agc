@@ -928,17 +928,7 @@ def multi_head_attention(
       head_ctx = head_ctx.push(try matmul(probs, vbh))
     end
 
-    rows: List[Types.Tensor] = []
-    for i in 0...sq
-      parts: List[Types.Tensor] = []
-      for h in 0...heads
-        parts = parts.push(try reshape(try slice(head_ctx[h], [i, 0], [i + 1, dvh]), [dvh]))
-      end
-
-      rows = rows.push(try concat(parts, 0))
-    end
-
-    per_batch = per_batch.push(try stack(rows, 0))
+    per_batch = per_batch.push(try concat(head_ctx, 1))
   end
 
   stack(per_batch, 0)
