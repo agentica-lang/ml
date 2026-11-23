@@ -47,6 +47,8 @@ def test_bad_sizes_and_samples_are_errors() -> Result[Void]
   try Test.error?(Mel.log_mel([0.5], 80, 1))
   inf = 1.0e308 * 10.0
   try Test.error?(Mel.log_mel([0.5, inf], 3, 4))
+  try Test.error?(Mel.log_mel([0.5, -1.0e151], 3, 4))
+  try Test.ok?(Mel.log_mel([0.5, 1.0e150], 3, 4))
   Test.error?(Mel.log_mel([inf - inf, 0.5], 3, 4))
 end
 
