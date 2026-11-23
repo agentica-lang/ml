@@ -90,14 +90,17 @@ def test_a_range_of_several_chunks_sums_the_same_on_each_native_backend() -> Res
   count = 524291
   quad = [0, 60, 0, 64, 0, 68, 0, 72]
   tail = [0, 60, 0, 64, 0, 68]
-  bytes = try Bytes.from_list([9])
-  chunks = List.repeat(try Bytes.from_list(quad), 131072)
-  data = Bytes.concat([bytes].concat(chunks).push(try Bytes.from_list(tail)))
+  group = Bytes.concat(List.repeat(try Bytes.from_list(quad), 16384))
   dir = "/tmp/agentica-from-file-#{Random.int(0, 999999999)}"
   try Dir.mkdir_private(dir, 5000)
   path = "#{dir}/chunks.bin"
   try File.open(path, "write", 5000) do |f|
-    try File.write_bytes(f, data, 5000)
+    try File.write_bytes(f, try Bytes.from_list([9]), 5000)
+    for _ in 0...8
+      try File.write_bytes(f, group, 5000)
+    end
+
+    try File.write_bytes(f, try Bytes.from_list(tail), 5000)
     ok()
   end
 
