@@ -25,7 +25,12 @@ def log_mel(samples: List[Float], mels: Int, frames: Int = FRAMES) -> Result[Lis
   x = samples.take(size)
   heard = 0
   for i in 0...x.size
-    return error("log_mel needs finite samples, got #{x[i]} at #{i}") if x[i] - x[i] != 0.0
+    # NaN fails `x - x == 0`; a bound far above the -1..1 range keeps the
+    # power spectrum from overflowing to Inf and then NaN.
+    if x[i] - x[i] != 0.0 or x[i].abs > LIMIT
+      return error("log_mel needs finite samples of about -1..1, got #{x[i]} at #{i}")
+    end
+
     if x[i] != 0.0
       heard = i + 1
     end
@@ -96,6 +101,8 @@ C1 = 0.30901699437494745
 C2 = -0.8090169943749475
 S1 = 0.9510565162951535
 S2 = 0.5877852522924731
+## The largest sample magnitude `log_mel` takes.
+LIMIT = 1.0e150
 ## The power floor before `log10`.
 FLOOR = 0.0000000001
 

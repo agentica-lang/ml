@@ -59,7 +59,7 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
 the Slaney mel filterbank → `log10(max(x, 1e-10))` → a floor at the maximum
 minus 8 → `(x + 4) / 4`. Fewer than 3000 frames are the spectrogram of that
 shorter segment (its own end reflection and maximum), not a prefix of the 30 s
-one. A non-finite sample is an error.
+one. Samples are about -1..1: a non-finite one, or one past 1e150, is an error.
 
 - **Agentica lists**, not tensor ops: the work is an FFT per frame, which the
   tensor API has no op for.
