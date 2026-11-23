@@ -40,6 +40,15 @@ struct Embedding
   table: Tensor.Tensor
 end
 
+## A 1-D convolution over `[channels, length]` or `[batch, channels, length]`:
+## `weight` is `[out, in, kernel]`, `bias` is `[out]`, added per channel.
+struct Conv1d
+  weight: Tensor.Tensor
+  bias: Optional[Tensor.Tensor]
+  stride: Int
+  padding: Int
+end
+
 enum Activation
   Relu
   Gelu
@@ -117,6 +126,19 @@ def positional(p: Embedding, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   return error("positional needs at most #{table[0]} positions, got #{seq}") if seq > table[0]
   rows = try Tensor.slice(p.table, [0, 0], [seq, table[1]])
   Tensor.add(x, try Tensor.broadcast_to(rows, shape))
+end
+
+## `Tensor.conv1d` with the layer's stride and padding, plus the bias of each
+## output channel: `[out, L_out]` or `[batch, out, L_out]`.
+def conv1d(p: Conv1d, x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  y = try Tensor.conv1d(x, p.weight, p.stride, p.padding)
+  case p.bias
+    some(b) ->
+      shape = Tensor.shape(y)
+      column = try Tensor.reshape(b, [Tensor.shape(b)[0], 1])
+      Tensor.add(y, try Tensor.broadcast_to(column, shape))
+    none -> ok(y)
+  end
 end
 
 def activate(a: Activation, x: Tensor.Tensor) -> Result[Tensor.Tensor]

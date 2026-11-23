@@ -27,6 +27,7 @@ Versions are prefixed tags, such as `tensor-0.1.0`.
 | `nn/` | functional layers, forward only: dense, layer norm, embeddings, attention, MLP, a transformer encoder block, seeded initializers | `tensor` |
 | `train/` | losses (`mse`, binary cross-entropy), optimizers (SGD, Adam), the training loop over `tensor/`'s gradients | `tensor`, `nn` |
 | `hub/` | `safetensors` checkpoints (one file or sharded with an index) read in Agentica, and `nn` layers loaded from them by name; Hugging Face downloads later | `tensor`, `nn` |
+| `asr/` | Whisper's model forward (conv stem, encoder, decoder, tied logits) loaded from a Hugging Face checkpoint; inference only, no frontend or decoding loop yet | `tensor`, `nn`, `hub` |
 
 An inference app depends on `nn` and one backend; a training app adds `train`.
 Inside this repository the packages are members of one Agentica workspace (the

@@ -14,6 +14,7 @@ Hub.tensor(c, name, backend) -> Result[Tensor]   the file's dtype
 Hub.metadata(c) -> Map[file, Map[String, String]]   each shard's __metadata__
 
 Load.dense(c, prefix, backend)          {prefix}.weight [out, in] -> w [in, out]; {prefix}.bias if present
+Load.conv1d(c, prefix, stride, padding, backend)   {prefix}.weight [out, in, kernel] as stored; bias if present
 Load.layer_norm(c, prefix, eps, backend)   {prefix}.weight, {prefix}.bias
 Load.embedding(c, name, backend)        [rows, width]
 Load.encoder_block(c, BlockNames { norm1, query, key, value, output, norm2, up, down },
@@ -64,8 +65,8 @@ The test fixtures drop the `model.` part of the prefix
   `F32` (`tensor/DESIGN.md` §6); a dense weight stored `[out, in]` becomes
   `nn/`'s `[in, out]`; a missing bias is `none` (Whisper's `k_proj`). Names
   are the caller's: Whisper's or BERT's live with the model code.
-- **Left out until a client needs them:** downloads, `mmap`, writing
-  safetensors and conv layers.
+- **Left out until a client needs them:** downloads, `mmap` and writing
+  safetensors.
 
 ## Cost
 

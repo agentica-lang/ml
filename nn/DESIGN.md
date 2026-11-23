@@ -10,6 +10,7 @@ on every backend `tensor/` has: the reference and libtorch today.
 struct Dense        { w: [in, out], b: Optional [out] }
 struct LayerNorm    { gamma: [width], beta: [width], eps: Float }
 struct Embedding    { table: [rows, width] }
+struct Conv1d       { weight: [out, in, kernel], bias: Optional [out], stride, padding: Int }
 enum   Activation   = Relu | Gelu | Silu
 struct Attention    { query, key, value, output: Dense, heads: Int }
 struct Mlp          { up, down: Dense, activation: Activation }
@@ -20,6 +21,7 @@ struct DecoderBlock { norm1, self_attention: Attention, norm2, cross_attention: 
 Nn.dense(p, x)                     x [..., in] -> [..., out]
 Nn.layer_norm(p, x)                last axis, then * gamma + beta
 Nn.embedding(p, ids)               ids rank-1 integer -> [ids, width]
+Nn.conv1d(p, x)                    x [in, L] or [batch, in, L] -> Tensor.conv1d + bias per channel
 Nn.positional(p, x)                x [seq, width] or [batch, seq, width] + table rows 0...seq
 Nn.activate(a, x)
 Nn.attention(p, queries, memory, mask?)   [batch, q, width] over [batch, k, width]
@@ -83,7 +85,7 @@ that are the layer's own (rank of `positional`, table length, heads).
 - **`F32` only** for `init_*`, the compute dtype of `tensor/DESIGN.md` §2.
   Layers themselves take any float dtype (the gradient test uses `F64`).
 - **Left out until a client needs them:** dropout (identity at inference,
-  `Tensor.dropout` is there), a KV cache and a decode loop, conv layers,
+  `Tensor.dropout` is there), a KV cache and a decode loop,
   `rms_norm`. `gelu` does not run on libtorch yet
   (`gelu_tanh_approx` is one of its three missing ops), so the libtorch
   comparisons use `relu` and `silu`. `gelu` is the tanh approximation, while
