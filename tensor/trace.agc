@@ -153,21 +153,22 @@ end
 def spec_of(t: Types.Tensor) -> Spec = Spec(shape: t.shape, dtype: t.dtype, backend: t.backend)
 
 ## Traces `f` once over inputs of `specs` and lowers it, so that `run` neither
-## traces nor plans. On `Ggml` the function is one ggml graph (kept in the
-## cache unless `keep` is false, as in `eval_many`); on the other backends it
-## is the traced graph, evaluated node by node on every run.
+## traces nor plans. On `Ggml` the function is one ggml graph, kept in the
+## structural cache of the process (32 graphs, least recently used out): a
+## run whose graph the cache dropped, or that another run holds, sends the
+## nodes again to build it, though it still does not trace or plan. On the
+## other backends it is the traced graph, evaluated node by node on every run.
 ##
 ## What `f` reads from outside the inputs enters through `constant`, and is
-## fixed for the life of the result: the same tensors, bound again on every
-## run. Whatever changes between runs (the weights of a training step, a KV
-## cache) must be an input. `f` may build any graph, a gradient (`gradients`)
-## and an update of the parameters included, and answers every tensor `run`
-## gives back.
-def compile(
-  specs: List[Spec],
-  f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]],
-  keep: Bool = true,
-) -> Result[Compiled]
+## fixed: the same tensors, bound again on every run. They must stay open
+## while any task may run the result (a closed one is an `error` naming the
+## leaf, but nothing keeps one open between the bind and the run), so a
+## `Compiled` shared by tasks must not outlive the owner of its constants.
+## Whatever changes between runs (the weights of a training step, a KV cache)
+## must be an input. `f` may build any graph, a gradient (`gradients`) and an
+## update of the parameters included, and answers every tensor `run` gives
+## back.
+def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]]) -> Result[Compiled]
   return error("a compiled function needs at least one input") if specs.empty?
   backend = specs[0].backend
   for s in specs
@@ -177,19 +178,20 @@ def compile(
   return error("a compiled function needs computed inputs, got traced ones") if backend == Types.Backend.Trace
   inputs = specs.map { |s| Graph.record(Types.Op.Input, [], s.shape, s.dtype) }
   outs = try System.Profile.measure("ml.trace") do f.call(inputs) end
-  lowered: Optional[Lower.Program] = none
   case backend
-    Types.Backend.Ggml(device) -> lowered = some(try Lower.program(outs, inputs, device, keep))
-    _ -> nil
+    Types.Backend.Ggml(device) ->
+      # The program is all `run` needs: it keeps no trace.
+      p = try Lower.program(outs, inputs, device)
+      ok(Compiled(specs: specs, inputs: [], outs: [], backend: backend, program: some(p)))
+    _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none))
   end
-
-  ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: lowered))
 end
 
 ## One run of `compiled` over `args`, which must match its specs (shape,
 ## dtype and backend, one tensor per spec): the tensors `f` answered, with
 ## the semantics of `eval_many`. Any number of tasks may run one compiled
-## function; on `Ggml` a graph in use by one run is built again for another.
+## function; on `Ggml` a graph in use by one run is built again for another
+## (the nodes are sent again, nothing is traced or planned).
 def run(compiled: Compiled, args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
   try matches(compiled.specs, args)
   case compiled.program

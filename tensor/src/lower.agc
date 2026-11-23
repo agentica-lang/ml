@@ -95,25 +95,28 @@ def evaluate(
 ) -> Result[List[Types.Tensor]]
   ids = env.keys
   program = try System.Profile.measure("ml.plan") do lower(outs, ids, device, keep) end
-  execute(program, ids.map { |id| env[id] })
+  inputs: List[Types.Tensor] = []
+  for id in ids
+    inputs = inputs.push(try bound(env[id], Types.Backend.Ggml(device), "an input"))
+  end
+
+  execute(program, inputs, "evaluate")
 end
 
 ## The program of the traced tensors `outs` over the input nodes `inputs`
 ## (traced `Input` tensors, in the order a run takes its tensors).
-def program(
-  outs: List[Types.Tensor],
-  inputs: List[Types.Tensor],
-  device: Types.Device,
-  keep: Bool = true,
-) -> Result[Program]
-  System.Profile.measure("ml.plan") do lower(outs, inputs.map { |t| Graph.id_of(t) }, device, keep) end
+def program(outs: List[Types.Tensor], inputs: List[Types.Tensor], device: Types.Device) -> Result[Program]
+  System.Profile.measure("ml.plan") do lower(outs, inputs.map { |t| Graph.id_of(t) }, device, true) end
 end
 
-## One run of `program` over `inputs`, one tensor per input node, on the
-## program's device. Its outputs are new tensors.
-def execute(p: Program, inputs: List[Types.Tensor]) -> Result[List[Types.Tensor]]
-  backend = Types.Backend.Ggml(p.device)
-  code = try Ggml.code_of(p.device, "evaluate")
+## One run of `program` over `inputs`, one tensor per input node, already
+## checked against the backend, on the program's device. Its outputs are new
+## tensors. `op` names the call in an error. A tensor that is closed, an input
+## or a constant of the trace, is an error naming the leaf; the constants must
+## stay open while any task may run the program (nothing holds them between
+## the bind and the run).
+def execute(p: Program, inputs: List[Types.Tensor], op: String = "run") -> Result[List[Types.Tensor]]
+  code = try Ggml.code_of(p.device, op)
   Native.arena do
     lease = try System.Profile.measure("ml.acquire") do GgmlRaw.acquire(code, p.key, p.nodes.size + 1, p.keep) end
     if !GgmlRaw.ready(lease)
@@ -129,10 +132,22 @@ def execute(p: Program, inputs: List[Types.Tensor]) -> Result[List[Types.Tensor]
         leaf = p.leaves[i]
         t = case leaf.fixed
           some(c) -> c
-          none -> try bound(inputs[leaf.input], backend, "an input")
+          none -> inputs[leaf.input]
         end
 
-        try GgmlRaw.bind(lease, i, try Ggml.handle_of(t))
+        h = try Ggml.handle_of(t)
+        if Native.closed?(h)
+          what = "an input"
+          if leaf.input < 0
+            what = "a constant"
+          end
+
+          return error(
+            "#{op}: #{what} of the graph (leaf #{i}) is closed; constants must stay open while the graph can run",
+          )
+        end
+
+        try GgmlRaw.bind(lease, i, h)
       end
 
       ok()

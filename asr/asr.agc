@@ -320,13 +320,17 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
     if n == 1 and cache.length > 0
       key = "#{Tensor.shape(cache.own[0].key)[1]} #{room}"
       if !graphs.has_key?(key)
-        graphs = graphs.put(
-          key,
-          try Trace.compile(
-            (fed + step_inputs(cache)).map { |t| Trace.spec_of(t) },
-            ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), cache_over(cache, xs.drop(2)), xs.take(2), room) },
-          ),
+        built = Trace.compile(
+          (fed + step_inputs(cache)).map { |t| Trace.spec_of(t) },
+          ->(xs: List[Tensor.Tensor]) { stepped_graph(traced(m), cache_over(cache, xs.drop(2)), xs.take(2), room) },
         )
+
+        case built
+          ok(c) -> graphs = graphs.put(key, c)
+          error(e) ->
+            close(fed)
+            return error(e.message)
+        end
       end
 
       got = Trace.run(graphs[key], fed + step_inputs(cache))
