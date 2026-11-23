@@ -19,6 +19,9 @@ Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_
 Asr.decode(m, tokens [batch, t] integer, audio) -> logits [batch, t, vocab_size]
 Asr.listen(m, audio [1, frames, d_model]) -> Result[Cache]     the cross-attention keys and values
 Asr.step(m, cache, ids) -> Result[Stepped]       the logits of the last id, and the cache
+Asr.transcribe(m, tok, pcm, options = Options()) -> Result[Transcript]
+struct Options      language (none: detect), translate, timestamps, max_tokens
+struct Transcript   text, language, language_probability, tokens, segments (start, stop, text)
 Mel.log_mel(samples, mels, frames = 3000) -> Result[List[Float]]   row-major [mels, frames]
 Tokenizer.open(path) -> Result[Tokenizer]       a tokenizer.json
 Tokenizer.decode(tok, ids) -> Result[String]    text tokens only
@@ -162,17 +165,83 @@ and the KV cache that feeds them one token at a time.
   encoder output to every block's cross-attention keys and values once, split
   by head (keys transposed); `step` keeps each block's self-attention keys and
   values and feeds one token at a time (a prompt at once, under the causal
-  mask), and returns only the last token's logits. On libtorch each step and
-  each encoder block runs in a `Native.arena` of its own.
+  mask), and returns only the last token's logits.
 
 `test/greedy_test.agc` checks the rules on hand-made logits and the segments
 over `test/fixtures/tokenizer.json`; `test/model_test.agc` checks the steps
 against the peer's full forward.
+
+## Transcription (`transcribe`)
+
+One window of 16 kHz samples (at most `2 * max_source_positions` frames: 30 s
+for Whisper; no samples or more are an error) → `Mel.log_mel` of the whole
+window, padded with zeros to 30 s as Hugging Face's feature extractor does
+(not OpenAI's, which pads the log-mel) → `encode` → `listen` → greedy
+decoding with `step` and `Greedy`. This is what Hugging Face's `generate`
+does with `num_beams=1` and no sampling, and OpenAI's `transcribe` at
+temperature 0 inside one window. A named language and the job are checked
+against the tokenizer before the audio costs anything.
+
+- **The first step** feeds `<|startoftranscript|>` alone. `no_speech_prob` is
+  the softmax of its logits at `<|nospeech|>` (`<|nocaptions|>` in the first
+  checkpoints), as OpenAI's. Without `Options.language` it also detects the
+  language: the language token with the largest logit wins, and
+  `language_probability` is the softmax over the language tokens only. A
+  named language gives 1.0; an English-only checkpoint is `en`. The prompt
+  then starts again with the language, the job and `<|notimestamps|>` unless
+  timestamps are wanted.
+- **The suppressed ids** come from `config.json` (`suppress_tokens`,
+  `begin_suppress_tokens`, optional in `Config`), else `Greedy.rules`'
+  defaults.
+- **Decoding stops** at `eot`, after `max_tokens` (at least 1), or at
+  `max_target_positions` (448 for Whisper), Hugging Face's `max_length`;
+  OpenAI's `sample_len` is 224. `tokens` are the ids after the prompt, without
+  `eot`; the segments end at the clip's length.
+- **`avg_logprob`** is OpenAI's: the log-softmax of each picked id under the
+  rules, `eot` included, summed and divided by `tokens.size + 1`. Each segment
+  carries it, and its ids with the timestamps around them, as OpenAI's do.
+- **Out, on purpose**: beam search, temperature fallback (and the compression
+  ratio it needs), initial prompts and word timestamps. Greedy at temperature
+  0 is what the speech server asks for; each can come when something needs
+  it.
+- **Memory on libtorch**: a `Native.arena` keeps the resource its value holds
+  and everything that resource comes from, all the way up, so nothing here
+  returns a tensor from an arena. Each encoder block runs in an arena that
+  hands out the block's output as a list; the tensor is built again outside
+  and the previous one closed, so the peak is one block (whisper-tiny on
+  `jfk.wav`: +0.4 GB over the loaded model, against +1.9 GB with the whole
+  encoder in one arena). A call runs in a task of its own, which closes what
+  it opened when it ends (the encoder output and the cross-attention cache).
+  Each `step` hands only lists out of its arena (the logits and the new rows
+  of the self-attention keys and values), builds the new cache from them
+  outside it, and the loop closes the cache it replaced. 224 forced steps of whisper-tiny take 0.12–0.14 s each with flat
+  memory (+5 MB); everything in one enclosing arena, they went from 1.5 s to
+  11.6 s a step by step 192, and memory grew by 760 MB.
+
+Checked against Hugging Face's `generate` (transformers 4.46.3, greedy) on
+whisper-tiny: `tools/transcribe_check.agc` runs the five cases of
+`test/fixtures/transcribe_golden.json` (`whisper/live/fixtures/es-hola.wav`
+and whisper.cpp's `samples/jfk.wav`: detected and named language, transcribe
+and translate, with and without timestamps). The token ids match exactly,
+and so do the text and the segments. The language probability is within
+4.1e-4 (es) and 1.2e-4 (en): the GELU here is the tanh form.
+`test/transcribe_golden.py` wrote the golden once, by hand (it needs `torch`
+and `transformers`). The tests run neither: the checkpoint is not in git.
+
+Speed on this machine (Ryzen 5 3550H, shared with other jobs, so the numbers
+spread): libtorch takes 5.5–6 s for the 2.6 s of es-hola (a real-time factor
+of 2.1–2.3) and 7.1–9.3 s for the 11 s of jfk (0.64–0.84); about 3.5 s is the
+encoder over the 30 s window, of which 1.5–2 s is handing each block's output
+out of its arena as a list (the memory bullet above), and 0.12–0.14 s each
+decoder step. The
+reference backend gave the same ids for es-hola in 22 minutes (a real-time
+factor of about 500). Loading the checkpoint takes 25–40 s.
 
 ## Tests of the model
 
 The tests use a tiny random Whisper (d_model 4, 2 heads, one block each,
 3 mel bins, vocab 7, 6 frames) that `test/peer.py` (standard library only)
 writes at test time with its config and its forward in doubles; run them
-from `asr/`. The model is checked only against that peer, not yet against
-a real checkpoint.
+from `asr/`. The peer also writes `speech/`, the same shape with the 36 ids of
+`test/fixtures/tokenizer.json`, on which `test/model_test.agc` runs
+`transcribe` end to end and checks that its output keeps the rules.

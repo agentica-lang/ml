@@ -26,6 +26,8 @@ struct Tokenizer
   no_timestamps: Int
   ## `<|0.00|>`; the id `timestamp_begin + n` is `n / 50` seconds.
   timestamp_begin: Int
+  ## `<|nospeech|>` (`<|nocaptions|>` in the first checkpoints), if any.
+  no_speech: Optional[Int]
 end
 
 enum Job
@@ -95,6 +97,7 @@ def parse(text: String) -> Result[Tokenizer]
       transcribe: transcribe,
       no_timestamps: no_timestamps,
       timestamp_begin: no_timestamps + 1,
+      no_speech: no_speech(added),
     ),
   )
 end
@@ -195,6 +198,11 @@ end
 
 struct Model
   vocab: Map[String, Int]
+end
+
+def no_speech(added: Map[String, Int]) -> Optional[Int]
+  return added.get("<|nospeech|>") if added.key?("<|nospeech|>")
+  added.get("<|nocaptions|>")
 end
 
 def special(added: Map[String, Int], content: String) -> Result[Int]

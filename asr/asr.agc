@@ -3,14 +3,17 @@
 ##
 ## `encode` turns a log-mel batch into the encoder output; `decode` turns
 ## token ids and that output into logits; `listen` and `step` decode one token
-## at a time with a KV cache. Inference only; the log-mel frontend is
-## `mel.agc`, the tokenizer `tokenizer.agc` and the rules of greedy decoding
-## `greedy.agc`.
+## at a time with a KV cache; `transcribe` runs the log-mel frontend
+## (`mel.agc`), the encoder and greedy decoding (`greedy.agc`) on up to 30 s of
+## audio. Inference only.
 
+import Greedy from "greedy"
 import Hub from "pkg/hub/hub"
 import Load from "pkg/hub/load"
 import Nn from "pkg/nn/nn"
+import Mel from "mel"
 import Tensor from "pkg/tensor/tensor"
+import Tokenizer from "tokenizer"
 
 ## Whisper's layer norms use PyTorch's default.
 EPS = 0.00001
@@ -29,6 +32,10 @@ struct Config
   vocab_size: Int
   max_source_positions: Int
   max_target_positions: Int
+  ## The ids greedy decoding never emits, and those it does not emit first;
+  ## `Greedy.rules` has the defaults.
+  suppress_tokens: Optional[List[Int]] = none
+  begin_suppress_tokens: Optional[List[Int]] = none
 end
 
 struct Model
@@ -68,10 +75,49 @@ struct Heard
   values: List[Tensor.Tensor]
 end
 
+## What one step's arena hands back: the last logits, and per block the new
+## rows of the self-attention keys and values, `[n, d_model]` row-major.
+struct Grown
+  logits: List[Float]
+  keys: List[List[Float]]
+  values: List[List[Float]]
+end
+
 struct Stepped
   ## The logits of the last token fed, one per vocabulary id.
   logits: List[Float]
   cache: Cache
+end
+
+## What `transcribe` does.
+struct Options
+  ## The language code, such as `es`; none detects it.
+  language: Optional[String] = none
+  ## Translate to English instead of transcribing.
+  translate: Bool = false
+  ## Timestamp tokens, and the segments they give.
+  timestamps: Bool = true
+  ## At most this many tokens after the prompt, at least 1; none decodes up to
+  ## `max_target_positions`, as Hugging Face's `max_length` (448 for
+  ## Whisper) does. OpenAI's `sample_len` is 224.
+  max_tokens: Optional[Int] = none
+end
+
+struct Transcript
+  text: String
+  language: String
+  ## The softmax of `language` over the language tokens, one decoder step
+  ## after `<|startoftranscript|>`; 1.0 when `Options.language` named it.
+  language_probability: Float
+  ## The ids emitted after the prompt, without `<|endoftext|>`.
+  tokens: List[Int]
+  segments: List[Greedy.Segment]
+  ## OpenAI's `avg_logprob`: the log-probabilities of the emitted tokens and
+  ## `<|endoftext|>` under the rules, summed, over `tokens.size + 1`.
+  avg_logprob: Float
+  ## OpenAI's `no_speech_prob`: the softmax of the logits after
+  ## `<|startoftranscript|>` at `<|nospeech|>` (0.0 without that token).
+  no_speech_prob: Float
 end
 
 ## Hugging Face's `config.json` at `path`.
@@ -145,22 +191,35 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
     return error("encode needs [batch, #{m.config.num_mel_bins}, frames], got #{shape}")
   end
 
-  items: List[Tensor.Tensor] = []
-  for b in 0...shape[0]
-    one = try Tensor.reshape(try Tensor.slice(mel, [b, 0, 0], [b + 1, shape[1], shape[2]]), [shape[1], shape[2]])
-    h = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv1, one))
-    h = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv2, h))
-    items = items.push(try Tensor.transpose(h))
+  # Each stage hands only a list out of its arena (as `step` does) and the
+  # previous stage's tensor is closed, so a block's intermediates die with it.
+  out = [shape[0], (shape[2] + 1) / 2, m.config.d_model]
+  start: Result[List[Tensor.Values]] = Native.arena do
+    items: List[Tensor.Tensor] = []
+    for b in 0...shape[0]
+      one = try Tensor.reshape(try Tensor.slice(mel, [b, 0, 0], [b + 1, shape[1], shape[2]]), [shape[1], shape[2]])
+      x = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv1, one))
+      x = try Nn.activate(Nn.Activation.Gelu, try Nn.conv1d(m.conv2, x))
+      items = items.push(try Tensor.transpose(x))
+    end
+
+    Tensor.to_list(try Nn.positional(m.encoder_positions, try Tensor.stack(items, 0)))
   end
 
-  h = try Nn.positional(m.encoder_positions, try Tensor.stack(items, 0))
+  h = try rebuilt(start, out, m.encoder_positions.table)
   for block in m.encoder
-    # On libtorch each block's intermediates are freed when it ends.
-    out: Result[Tensor.Tensor] = Native.arena do Nn.encoder_block(block, h) end
-    h = try out
+    done: Result[List[Tensor.Values]] = Native.arena do Tensor.to_list(try Nn.encoder_block(block, h)) end
+
+    fresh = try rebuilt(done, out, h)
+    close([h])
+    h = fresh
   end
 
-  Nn.layer_norm(m.encoder_norm, h)
+  normed: Result[List[Tensor.Values]] = Native.arena do Tensor.to_list(try Nn.layer_norm(m.encoder_norm, h)) end
+
+  audio = try rebuilt(normed, out, h)
+  close([h])
+  ok(audio)
 end
 
 ## The logits `[batch, t, vocab_size]` of the integer token ids `[batch, t]`
@@ -214,7 +273,9 @@ end
 
 ## `ids` fed after the tokens of `cache`: the logits of the last one, as
 ## `decode` gives them, and the cache that holds them all. Only an empty
-## cache takes several ids at once (a prompt).
+## cache takes several ids at once (a prompt). The new cache's self-attention
+## keys and values are new tensors: on libtorch the caller closes the old
+## ones once it has no use for them (`transcribe` does).
 def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
   n = ids.size
   return error("step needs ids") if n == 0
@@ -223,9 +284,12 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
     return error("step needs at most #{m.config.max_target_positions} tokens, got #{cache.length + n}")
   end
 
-  Native.arena do
-    d = m.config.d_model
-    backend = Tensor.backend(m.tokens.table)
+  d = m.config.d_model
+  backend = Tensor.backend(m.tokens.table)
+  # The arena hands back only lists: an arena keeps the resource its value
+  # holds and everything that resource comes from, all the way up, so a
+  # returned tensor would keep the step's intermediates.
+  grown: Result[Grown] = Native.arena do
     rows = try Nn.embedding(
       m.tokens,
       try Tensor.from_list(ids.map { |i| Tensor.Values.Int(i) }, [n], Tensor.Dtype.I64, backend),
@@ -238,19 +302,21 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
       mask = some(try Nn.causal_mask(n, Tensor.dtype(h), backend))
     end
 
-    own: List[Kv] = []
+    keys: List[List[Float]] = []
+    values: List[List[Float]] = []
     for i in 0...m.decoder.size
       block = m.decoder[i]
       a = block.self_attention
       x = try Nn.layer_norm(block.norm1, h)
       k = try Nn.dense(a.key, x)
       v = try Nn.dense(a.value, x)
+      keys = keys.push(try floats(k))
+      values = values.push(try floats(v))
       if cache.length > 0
         k = try Tensor.concat([cache.own[i].key, k], 1)
         v = try Tensor.concat([cache.own[i].value, v], 1)
       end
 
-      own = own.push(Kv(key: k, value: v))
       h = try Tensor.add(
         h,
         try Nn.dense(a.output, try Tensor.multi_head_attention(try Nn.dense(a.query, x), k, v, a.heads, mask)),
@@ -265,11 +331,159 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
 
     last = try Tensor.slice(h, [0, n - 1, 0], [1, n, d])
     logits = try Nn.dense(m.logits, try Nn.layer_norm(m.decoder_norm, last))
-    ok(Stepped(logits: try floats(logits), cache: Cache(cross: cache.cross, own: own, length: cache.length + n)))
+    ok(Grown(logits: try floats(logits), keys: keys, values: values))
   end
+
+  g = try grown
+  dtype = Tensor.dtype(m.tokens.table)
+  own: List[Kv] = []
+  for i in 0...m.decoder.size
+    k = try Tensor.from_list(g.keys[i].map { |x| Tensor.Values.Float(x) }, [1, n, d], dtype, backend)
+    v = try Tensor.from_list(g.values[i].map { |x| Tensor.Values.Float(x) }, [1, n, d], dtype, backend)
+    if cache.length > 0
+      # The arena concatenated the old cache with these rows too, for its own
+      # attention, but could not hand that tensor out; it is built again here.
+      fresh = [k, v]
+      k = try Tensor.concat([cache.own[i].key, k], 1)
+      v = try Tensor.concat([cache.own[i].value, v], 1)
+      close(fresh)
+    end
+
+    own = own.push(Kv(key: k, value: v))
+  end
+
+  ok(Stepped(logits: g.logits, cache: Cache(cross: cache.cross, own: own, length: cache.length + n)))
+end
+
+## The text of `pcm` (16 kHz mono samples, about -1..1, at most one window:
+## 30 s for Whisper): the log-mel, the encoder and greedy decoding at
+## temperature 0 with OpenAI's rules (`Greedy`). Without a language in
+## `options`, one decoder step after `<|startoftranscript|>` picks the likeliest
+## language token.
+def transcribe(
+  m: Model,
+  tok: Tokenizer.Tokenizer,
+  pcm: List[Float],
+  options: Options = Options(),
+) -> Result[Transcript]
+  frames = 2 * m.config.max_source_positions
+  window = frames * HOP
+  return error("transcribe needs samples, got none") if pcm.empty?
+  if pcm.size > window
+    return error("transcribe takes at most #{window} samples (#{window / SAMPLE_RATE} s), got #{pcm.size}")
+  end
+
+  if tok.vocab_size != m.config.vocab_size
+    return error("the tokenizer has #{tok.vocab_size} ids and the model #{m.config.vocab_size}")
+  end
+
+  case options.max_tokens
+    some(n) -> return error("transcribe needs max_tokens >= 1, got #{n}") if n < 1
+    none -> nil
+  end
+
+  # A named language and the job are checked before the audio costs anything.
+  _ = try Tokenizer.prompt(tok, options.language, job(options), options.timestamps)
+  # On libtorch the call runs in a task of its own: when it ends, the task
+  # closes what it opened, the encoder output and the cache included.
+  call = Task.spawn do decoded(m, tok, pcm, options, frames) end
+  Task.await(call)
 end
 
 private
+
+## 16 kHz audio, and one log-mel frame every 160 samples (`mel.agc`).
+SAMPLE_RATE = 16000
+HOP = 160
+
+## `transcribe` once its arguments are checked. Each step's self-attention
+## keys and values are closed once the next step replaced them, so a call
+## holds one cache at a time.
+def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Options, frames: Int) -> Result[Transcript]
+  features = try Mel.log_mel(pcm, m.config.num_mel_bins, frames)
+  values = features.map { |x| Tensor.Values.Float(x) }
+  mel = try Tensor.from_list(
+    values,
+    [1, m.config.num_mel_bins, frames],
+    Tensor.Dtype.F32,
+    Tensor.backend(m.tokens.table),
+  )
+
+  cache = try listen(m, try encode(m, mel))
+  language = options.language.unwrap_or("en")
+  probability = 1.0
+  no_speech = 0.0
+  detect = options.language == none and tok.multilingual
+  # One step after `sot` alone, only when something reads its logits.
+  if detect or tok.no_speech != none
+    first = try step(m, cache, [tok.sot])
+    close(kept(first.cache))
+    case tok.no_speech
+      some(id) -> no_speech = Greedy.probability(first.logits, id)
+      none -> nil
+    end
+
+    if detect
+      scores = tok.languages.map { |l| first.logits[l.id] }
+      best = Greedy.pick(scores)
+      language = tok.languages[best].code
+      probability = Greedy.probability(scores, best)
+    end
+  end
+
+  prompt = try Tokenizer.prompt(tok, some(language), job(options), options.timestamps)
+  rules = Greedy.rules(tok, m.config.suppress_tokens, m.config.begin_suppress_tokens, options.timestamps)
+  limit = m.config.max_target_positions - prompt.size
+  limit = [limit, options.max_tokens.unwrap_or(limit)].min.unwrap!
+  stepped = try step(m, cache, prompt)
+  emitted: List[Int] = []
+  logprob = 0.0
+  while emitted.size < limit
+    allowed = Greedy.allowed(rules, stepped.logits, emitted)
+    id = Greedy.pick(allowed)
+    logprob += Greedy.log_probability(allowed, id)
+    break if id == tok.eot
+    emitted = emitted.push(id)
+    break if emitted.size == limit
+    next = try step(m, stepped.cache, [id])
+    close(kept(stepped.cache))
+    stepped = next
+  end
+
+  close(kept(stepped.cache))
+  average = logprob / (emitted.size + 1).to_f
+  duration = pcm.size.to_f / SAMPLE_RATE.to_f
+  ok(
+    Transcript(
+      text: try Tokenizer.decode(tok, emitted),
+      language: language,
+      language_probability: probability,
+      tokens: emitted,
+      segments: try Greedy.segments(tok, emitted, duration, average),
+      avg_logprob: average,
+      no_speech_prob: no_speech,
+    ),
+  )
+end
+
+def job(options: Options) -> Tokenizer.Job
+  return Tokenizer.Job.Translate if options.translate
+  Tokenizer.Job.Transcribe
+end
+
+## The self-attention keys and values `cache` holds.
+def kept(cache: Cache) -> List[Tensor.Tensor] = cache.own.flat_map { |kv| [kv.key, kv.value] }
+
+## Closes the libtorch tensors of `ts` now, not at the end of an arena; the
+## other backends have nothing to close.
+def close(ts: List[Tensor.Tensor]) -> Void
+  for t in ts
+    case t.handle
+      Tensor.Handle.Native(h) -> Native.close(h)
+      _ -> nil
+    end
+  end
+end
 
 ## Attention of the queries `[n, d_model]` over one block's cached heads, as
 ## `Tensor.multi_head_attention` computes it, without slicing the keys and
@@ -293,12 +507,18 @@ def attend(queries: Tensor.Tensor, heard: Heard) -> Result[Tensor.Tensor]
   Tensor.concat(parts, 1)
 end
 
+## `values`, what an arena handed out, as a tensor of `shape` with the dtype
+## and backend of `like`.
+def rebuilt(values: Result[List[Tensor.Values]], shape: List[Int], like: Tensor.Tensor) -> Result[Tensor.Tensor]
+  Tensor.from_list(try values, shape, Tensor.dtype(like), Tensor.backend(like))
+end
+
 def floats(t: Tensor.Tensor) -> Result[List[Float]]
   out: List[Float] = []
   for v in try Tensor.to_list(t)
     case v
       Tensor.Values.Float(f) -> out = out.push(f)
-      _ -> return error("the logits hold Float values")
+      _ -> return error("expected Float values, got #{v}")
     end
   end
 

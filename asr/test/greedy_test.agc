@@ -78,14 +78,29 @@ end
 ## `<|0.00|>` is 32, `<|0.02|>` 33, `<|0.06|>` 35.
 def test_timestamps_give_segments() -> Result[Void]
   tok = try Tokenizer.open(FIXTURE)
-  pairs = try Greedy.segments(tok, [32, 4, 33, 33, 6, 16, 35], 1.5)
+  pairs = try Greedy.segments(tok, [32, 4, 33, 33, 6, 16, 35], 1.5, -0.25)
   try Test.eq(
     pairs,
-    [Greedy.Segment(start: 0.0, stop: 0.02, text: "Hola"), Greedy.Segment(start: 0.02, stop: 0.06, text: " mundo.")],
+    [
+      Greedy.Segment(start: 0.0, stop: 0.02, text: "Hola", tokens: [32, 4, 33], avg_logprob: -0.25),
+      Greedy.Segment(start: 0.02, stop: 0.06, text: " mundo.", tokens: [33, 6, 16, 35], avg_logprob: -0.25),
+    ],
   )
 
-  try Test.eq(try Greedy.segments(tok, [4, 6], 1.5), [Greedy.Segment(start: 0.0, stop: 1.5, text: "Hola mundo")])
-  try Test.eq(try Greedy.segments(tok, [33, 4], 1.5), [Greedy.Segment(start: 0.02, stop: 1.5, text: "Hola")])
-  try Test.eq(try Greedy.segments(tok, [32, 4, 33], 1.5), [Greedy.Segment(start: 0.0, stop: 0.02, text: "Hola")])
-  Test.eq(try Greedy.segments(tok, [], 1.5), [])
+  try Test.eq(segment(tok, [4, 6]), some([0.0, 1.5]))
+  try Test.eq(segment(tok, [33, 4]), some([0.02, 1.5]))
+  try Test.eq(segment(tok, [4, 33]), some([0.0, 0.02]))
+  try Test.eq(segment(tok, [32, 4, 33]), some([0.0, 0.02]))
+  Test.eq(try Greedy.segments(tok, [], 1.5, 0.0), [])
+end
+
+## The start and stop of the one segment of `ids` with the text `Hola`, if
+## that is what they give.
+def segment(tok: Tokenizer.Tokenizer, ids: List[Int]) -> Optional[List[Float]]
+  case Greedy.segments(tok, ids, 1.5, 0.0)
+    ok(found) ->
+      return none if found.size != 1 or not found[0].text.start_with?("Hola") or found[0].tokens != ids
+      some([found[0].start, found[0].stop])
+    error(_) -> none
+  end
 end
