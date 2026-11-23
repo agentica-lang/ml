@@ -131,6 +131,12 @@ def batch_matmul(a: Types.Tensor, b: Types.Tensor) -> Types.Tensor
   record(Types.Op.BatchMatmul, [a, b], a.shape.take(rank - 1).push(b.shape[rank - 1]), a.dtype)
 end
 
+## A traced `gather` of the `indices` rows of `source`.
+def gather(source: Types.Tensor, indices: Types.Tensor) -> Types.Tensor
+  shape = Shapes.gathered_shape(source.shape, indices.shape)
+  record(Types.Op.Gather, [source, indices], shape, source.dtype)
+end
+
 ## A traced `conv1d` of `input` by `weight` (`[C_out, C_in, K]`).
 def conv1d(input: Types.Tensor, weight: Types.Tensor, stride: Int, padding: Int) -> Types.Tensor
   shape = Shapes.conv1d_output_shape(input.shape, weight.shape[0], weight.shape[2], stride, padding)

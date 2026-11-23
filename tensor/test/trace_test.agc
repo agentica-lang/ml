@@ -99,6 +99,10 @@ def test_broadcast_to_matches_a_central_difference() -> Result[Void]
   check_grad([try f64([0.5, -1.0], [2, 1])]) do |xs| weigh(try Tensor.broadcast_to(xs[0], [2, 2, 3])) end
 end
 
+def test_copy_matches_a_central_difference() -> Result[Void]
+  check_grad([try f64([0.5, -1.0, 2.0], [3])]) do |xs| weigh(try Tensor.mul(try Tensor.copy(xs[0]), xs[0])) end
+end
+
 def test_reshape_matches_a_central_difference() -> Result[Void]
   check_grad([try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7], [2, 3])]) do |xs| weigh(try Tensor.reshape(xs[0], [3, 2])) end
 end

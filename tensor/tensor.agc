@@ -683,8 +683,7 @@ def gather(source: Types.Tensor, indices: Types.Tensor) -> Result[Types.Tensor]
   case source.backend
     Types.Backend.Reference -> Reference.gather(source, indices)
     Types.Backend.Torch(device) -> Torch.gather(device, source, indices)
-    Types.Backend.Trace ->
-      ok(Graph.record(Types.Op.Gather, [source, indices], indices.shape + source.shape.drop(1), source.dtype))
+    Types.Backend.Trace -> ok(Graph.gather(source, indices))
     Types.Backend.Xla(_) -> error("backend not available")
     Types.Backend.Candle(_) -> error("backend not available")
   end

@@ -246,7 +246,10 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.Reshape -> part(Tensor.reshape(ct, x.shape))
     Types.Op.Copy -> ok(some(ct))
     Types.Op.Contiguous -> ok(some(ct))
-    Types.Op.ToDevice(_) -> ok(some(ct))
+    # Every backend that computes today lives on `Cpu`, so a move to `Cpu`
+    # stays on its device.
+    Types.Op.ToDevice(Types.Device.Cpu) -> ok(some(ct))
+    Types.Op.ToDevice(_) -> error("to_device has no backward rule across devices yet")
     Types.Op.Eq -> ok(none)
     Types.Op.Argmax(_, _) -> ok(none)
     Types.Op.Arange(_, _, _) -> ok(none)

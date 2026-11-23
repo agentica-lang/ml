@@ -26,7 +26,8 @@ def test_traced_and_eager_calls_agree() -> Result[Void]
   Test.assert(cases.size >= 40, "only #{cases.size} cases ran")
 end
 
-## Both runs fail, or both give one shape, dtype and the same values.
+## Both runs fail, or both give one shape, dtype and the same values, and the
+## shape and dtype the trace records on lifted inputs are the eager ones.
 def agree(c: Case) -> Result[Void]
   eager = c.f.call(c.args)
   traced = Trace.eval(c.args, c.f)
@@ -38,6 +39,9 @@ def agree(c: Case) -> Result[Void]
         ok(got) ->
           try Test.assert(Tensor.shape(got) == Tensor.shape(want), "#{c.name}: shape #{Tensor.shape(got)}")
           try Test.assert(Tensor.dtype(got) == Tensor.dtype(want), "#{c.name}: dtype")
+          recorded = try c.f.call(c.args.map { |a| Trace.constant(a) })
+          try Test.assert(Tensor.shape(recorded) == Tensor.shape(want), "#{c.name}: recorded shape")
+          try Test.assert(Tensor.dtype(recorded) == Tensor.dtype(want), "#{c.name}: recorded dtype")
           Test.assert(Tensor.to_list(got) == Tensor.to_list(want), "#{c.name}: values differ")
       end
   end

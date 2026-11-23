@@ -428,7 +428,8 @@ The price:
 - Cotangents flow only into arguments on a path to `wrt`; a `wrt` node the
   output does not reach gets zeros. A node that is not float (`eq`, `lt`,
   `argmax`, `arange`, an integer `to_dtype`) carries no gradient, so
-  comparisons and index ops cut it, and so does the condition of `where`. `relu`'s derivative at `0` is `0`.
+  comparisons and index ops cut it, and so does the condition of `where`.
+  `relu`'s derivative at `0` is `0`.
 - `evaluate` runs a graph through the public `Tensor.*` calls on the inputs'
   backend, computing each node once; a lifted constant must live on that
   backend. `value_and_grad` evaluates the output and its gradients in one
@@ -436,16 +437,20 @@ The price:
   forward-only.
 - First rules: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `relu`,
   `matmul`, `transpose`, `sum`, `mean`, `broadcast_to`, `reshape`, `where`,
-  and the identity of `copy`, `contiguous` and `to_device`.
-  Each is tested against a central difference of the traced function on the
-  reference backend. On libtorch, the forward ops of a 2-layer MLP's gradient
-  graph are run and compared with the reference.
+  and the identity of `copy`, `contiguous` and `to_device` to `Cpu` (every
+  backend that computes today is on `Cpu`; a move across devices answers an
+  error). Each is tested against a central difference of the traced
+  function on the reference backend. On libtorch, the forward ops of a
+  2-layer MLP's gradient graph are run and compared with the reference.
 - A parity suite runs every op of §3.1 traced (`Trace.eval`) and eagerly over
   good and bad inputs: both fail, or both give the same shape, dtype and
-  values.
-- Still open: rules for the rest of §3.1, `stop_grad`, the rule of `where`'s condition for gradients of gradients,
-  `vmap`/`jit`, and how an evaluation's intermediate tensors map onto the
-  arenas of §8 (today they live until `evaluate` returns).
+  values, and the shape and dtype a trace records are the eager ones.
+- Still open: rules for the rest of §3.1; `stop_grad`, which `softmax` waits
+  for (its max-subtraction goes through `max`, which has no rule, and needs
+  no gradient); `to_dtype` between float dtypes (a precision cast); the rule
+  of `where`'s condition for gradients of gradients; `vmap`/`jit`; and how an
+  evaluation's intermediate tensors map onto the arenas of §8 (today they
+  live until `evaluate` returns).
 
 ## 11. Conformance (proposal)
 
