@@ -113,6 +113,13 @@ def available(backend: Types.Backend) -> Bool
   end
 end
 
+## Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
+## Vulkan device of the ggml backend in this process. ggml fixes the choice
+## when the first Vulkan device opens, so a different choice after that is an
+## error. fp16 is faster and changes gradients by up to about 10 % at MLP
+## sizes (`tensor/README.md`, "The ggml backend").
+def vulkan_fp16(enabled: Bool) -> Result[Void] = Ggml.prefer_fp16(enabled)
+
 ## Creation: zeros of `shape`, `dtype` and `backend`.
 def zeros(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
@@ -668,7 +675,7 @@ def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
     Types.Backend.Reference -> Reference.to_device(t, device)
     Types.Backend.Torch(_) -> Torch.unsupported("to_device")
     Types.Backend.Trace -> Graph.same(Types.Op.ToDevice(device), [t], t)
-    Types.Backend.Ggml(_) -> Ggml.compiled_only("to_device")
+    Types.Backend.Ggml(_) -> Ggml.to_device(t, device)
   end
 end
 

@@ -52,8 +52,10 @@ static void ggml_TensorHandle_free(void *state) {
 
 /* ggml-Vulkan converts F32 `mul_mat` inputs to fp16 on a device that has
    fp16, unless GGML_VK_DISABLE_F16 is set when the device is first opened,
-   and no per-op switch exists (spike/ggml-graph/README.md). The first Vulkan
-   device that opens sets it: F32. */
+   and no per-op switch exists (spike/ggml-graph/README.md). So the precision
+   belongs to the process: `prefer_fp16` records the choice, and the first
+   Vulkan device that opens sets the variable from it and fixes it. */
+static bool want_fp16 = false;
 static bool vulkan_opened = false;
 
 /* The CPU and up to eight Vulkan devices, opened once for the process. */
@@ -110,7 +112,8 @@ static ggml_backend_dev_t device_of(int64_t device, char *why, size_t len) {
     snprintf(why, len, "Vulkan device %lld: this backend opens devices 0...%d", (long long)device, MAX_DEVICES - 1);
     dev = NULL;
   } else if (!vulkan_opened) {
-    setenv("GGML_VK_DISABLE_F16", "1", 1);
+    if (want_fp16) unsetenv("GGML_VK_DISABLE_F16");
+    else setenv("GGML_VK_DISABLE_F16", "1", 1);
     vulkan_opened = true;
   }
   return dev;
@@ -134,6 +137,21 @@ ggml_backend_t tg_backend(int64_t device, char *why, size_t len) {
   }
   backends[device + 1] = backend;
   return backend;
+}
+
+an_term ggml_prefer_fp16(an_env *env, bool enabled) {
+  bool conflict, fixed;
+
+  pthread_mutex_lock(&tg_lock);
+  conflict = vulkan_opened && want_fp16 != enabled;
+  fixed = want_fp16;
+  if (!conflict) want_fp16 = enabled;
+  pthread_mutex_unlock(&tg_lock);
+  if (conflict) {
+    return tg_error(env, fixed ? "this process opened Vulkan with fp16 mul_mat already; choose before the first Vulkan tensor"
+                               : "this process opened Vulkan with F32 mul_mat already; choose before the first Vulkan tensor");
+  }
+  return ggml_result_Void_ok(env, an_void(env));
 }
 
 static bool failed_with(an_term *failure, an_term term) {
@@ -283,6 +301,20 @@ an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double val
   if (bytes == NULL) return tg_error(env, "out of memory");
   for (i = 0; i < count; i++) put(bytes, i, type, value);
   return store(env, state, bytes, term);
+}
+
+an_term ggml_transfer(an_env *env, struct ggml_TensorHandle_state *t, int64_t device) {
+  an_term term, failure;
+  struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
+  bool vulkan;
+
+  if (t->t == NULL) return tg_error(env, "transfer of a tensor that was never made");
+  if (!tg_new_tensor(env, device, t->t->ne, t->t->type, state, &failure)) return failure;
+  vulkan = t->vulkan || state->vulkan;
+  lock_for(vulkan);
+  ggml_backend_tensor_copy(t->t, state->t);
+  unlock_for(vulkan);
+  return ggml_result_TensorHandle_ok(env, term);
 }
 
 an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t) {

@@ -151,7 +151,8 @@ Tensor.backend(t) -> Backend                      # no native call
   other in the same process. A backend value carries its device
   (`Backend.Torch(Device.Cpu)`);
   `Backend.Reference` has none. Batch lives in the shape, not in a global
-  either.
+  either. The one process-wide setting is `Tensor.vulkan_fp16`, because ggml
+  fixes it per process (§7).
 - Backend-module functions take the device as an explicit first argument
   (`Torch.matmul(device, a, b)`): dispatch unpacks it from the backend value
   (§7) and the tensor keeps no second copy of it.
@@ -242,11 +243,12 @@ end
 - **`Ggml` has no eager ops.** A Vulkan dispatch costs about 2 ms, so ggml is
   fast only when a whole computation is one compiled graph
   (`spike/ggml-graph/README.md`). Its arms create tensors (`zeros`, `ones`,
-  `empty`, `full`, `like`, `arange`, `scalar_to_tensor`, `from_list`), read
-  them back (`to_list`) and pass `stop_grad` through; every other primitive
-  answers `Ggml.compiled_only(op)`, an `error` that names the op and points at
-  `Trace`. Running each op as a one-node graph would work, but it is a slow
-  path nobody should train on, so it is not offered.
+  `empty`, `full`, `like`, `arange`, `scalar_to_tensor`, `from_list`), read them
+  back (`to_list`), copy them between devices (`to_device`) and pass `stop_grad`
+  through; every other primitive answers `Ggml.compiled_only(op)`, an `error`
+  that names the op and points at `Trace`. Running each op as a one-node graph
+  would work, but it is a slow path nobody should train on, so it is not
+  offered.
 - **A trace on `Ggml` is one compiled graph** (`src/lower.agc`,
   `native/ggml_graph.c`). `Trace.evaluate` sends every node the outputs reach
   to the C layer in id order and runs the result as one ggml graph; it never
@@ -271,10 +273,13 @@ end
   `where` emulated in `F32` arithmetic: enough for an MLP and softmax
   cross-entropy with their gradients. An output that holds an infinity or a
   NaN is an error.
-- Vulkan computes `mul_mat` in `F32`: ggml reads `GGML_VK_DISABLE_F16` once
-  per process, when the first Vulkan device opens, and the C layer sets it
-  then. fp16 would be faster and changes gradients by up to about 10 % at MLP
-  sizes (`spike/ggml-graph/README.md`).
+- Vulkan computes `mul_mat` in `F32` by default: ggml reads
+  `GGML_VK_DISABLE_F16` when the first Vulkan device opens, and the C layer
+  sets it then. `Tensor.vulkan_fp16(true)` before that opts in to fp16
+  `mul_mat`, process-wide (it is ggml's choice per process, not per tensor,
+  the one exception to §4's "never a global"); a different choice after a
+  device opened is an error. fp16 is 1.1–1.5× faster and changes gradients
+  by up to about 10 % at MLP sizes.
 - The ggml module is `[native.ggml]`, `optional = true`, built from
   `native/ggml.c` and `native/ggml_graph.c` against the pinned
   `third_party/ggml`, which `tools/build-engine.sh` builds CPU-only (CI) or with

@@ -89,6 +89,22 @@ def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   ok(out)
 end
 
+## `t` copied to `device`: between ggml's CPU and a Vulkan device, or between
+## two Vulkan devices.
+def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
+  code = try code_of(device, "to_device")
+  h = try handle_of(t)
+  made("to_device", device, t.shape, t.dtype) do GgmlRaw.transfer(h, code) end
+end
+
+## Chooses fp16 `mul_mat` (`true`) or F32 (`false`, the default) for every
+## Vulkan device this process opens; an error once a device opened with the
+## other one.
+def prefer_fp16(enabled: Bool) -> Result[Void]
+  _ = try usable("vulkan_fp16")
+  GgmlRaw.prefer_fp16(enabled)
+end
+
 ## The device's code for the native calls: `-1` for `Cpu`, the index for
 ## `Vulkan`; the module must be loaded.
 def code_of(device: Types.Device, op: String) -> Result[Int]
