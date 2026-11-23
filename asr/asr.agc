@@ -102,12 +102,11 @@ struct Slots
   capacity: Int
 end
 
-## What one step's arena hands back: the last logits, and per block the new
-## rows of the self-attention keys and values, `[n, d_model]` row-major.
+## What one step's arena hands back: the last logits, and per block the
+## self-attention keys and values of all the tokens so far.
 struct Grown
   logits: List[Float]
-  keys: List[List[Float]]
-  values: List[List[Float]]
+  own: List[Kv]
 end
 
 struct Stepped
@@ -218,15 +217,14 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
 
   # The previous stage's tensor is closed, so a block's intermediates die
   # with it (`staged`).
-  out = [shape[0], (shape[2] + 1) / 2, m.config.d_model]
-  h = try staged(m, mel, out, &stem)
+  h = try staged(m, mel, &stem)
   for i in 0...m.encoder.size
-    fresh = try staged(m, h, out, ->(model: Model, x: Tensor.Tensor) { Nn.encoder_block(model.encoder[i], x) })
+    fresh = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.encoder_block(model.encoder[i], x) })
     close([h])
     h = fresh
   end
 
-  audio = try staged(m, h, out, ->(model: Model, x: Tensor.Tensor) { Nn.layer_norm(model.encoder_norm, x) })
+  audio = try staged(m, h, ->(model: Model, x: Tensor.Tensor) { Nn.layer_norm(model.encoder_norm, x) })
   close([h])
   ok(audio)
 end
@@ -283,7 +281,6 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
     return error("step needs at most #{m.config.max_target_positions} tokens, got #{cache.length + n}")
   end
 
-  d = m.config.d_model
   backend = Tensor.backend(m.tokens.table)
   values = ids.map { |i| Tensor.Values.Int(i) }
   if compiled(backend)
@@ -305,40 +302,15 @@ def step(m: Model, cache: Cache, ids: List[Int]) -> Result[Stepped]
     return ok(Stepped(logits: logits, cache: Cache(cross: cache.cross, own: own, length: cache.length + n)))
   end
 
-  # The arena hands back only lists: an arena keeps the resource its value
-  # holds and everything that resource comes from, all the way up, so a
-  # returned tensor would keep the step's intermediates.
+  # The arena keeps the new keys and values alone (the libtorch ops are
+  # `AN_FRESH`), so the step's intermediates die with it.
   grown: Result[Grown] = Native.arena do
     f = try forward(m, cache, try Tensor.from_list(values, [n], Tensor.Dtype.I32, backend))
-    keys: List[List[Float]] = []
-    rows: List[List[Float]] = []
-    for i in 0...f.keys.size
-      keys = keys.push(try floats(f.keys[i]))
-      rows = rows.push(try floats(f.values[i]))
-    end
-
-    ok(Grown(logits: try floats(f.logits), keys: keys, values: rows))
+    ok(Grown(logits: try floats(f.logits), own: f.own))
   end
 
   g = try grown
-  dtype = Tensor.dtype(m.tokens.table)
-  own: List[Kv] = []
-  for i in 0...m.decoder.size
-    k = try Tensor.from_list(g.keys[i].map { |x| Tensor.Values.Float(x) }, [1, n, d], dtype, backend)
-    v = try Tensor.from_list(g.values[i].map { |x| Tensor.Values.Float(x) }, [1, n, d], dtype, backend)
-    if cache.length > 0
-      # The arena concatenated the old cache with these rows too, for its own
-      # attention, but could not hand that tensor out; it is built again here.
-      fresh = [k, v]
-      k = try Tensor.concat([cache.own[i].key, k], 1)
-      v = try Tensor.concat([cache.own[i].value, v], 1)
-      close(fresh)
-    end
-
-    own = own.push(Kv(key: k, value: v))
-  end
-
-  ok(Stepped(logits: g.logits, cache: Cache(cross: cache.cross, own: own, length: cache.length + n)))
+  ok(Stepped(logits: g.logits, cache: Cache(cross: cache.cross, own: g.own, length: cache.length + n)))
 end
 
 ## The text of `pcm` (16 kHz mono samples, about -1..1, at most one window:
@@ -494,19 +466,12 @@ def run(
   f.call(m, args)
 end
 
-## `f` of the model and `x`, a tensor of `shape`. On `Ggml` it is one compiled
-## graph; elsewhere it runs in an arena that hands out only a list, so its
-## intermediates die with the arena (agentica#1932: a returned tensor would
-## keep them).
-def staged(
-  m: Model,
-  x: Tensor.Tensor,
-  shape: List[Int],
-  f: Fn[Model, Tensor.Tensor, Result[Tensor.Tensor]],
-) -> Result[Tensor.Tensor]
+## `f` of the model and `x`. On `Ggml` it is one compiled graph; elsewhere it
+## runs in an arena that keeps the result alone (the libtorch ops are
+## `AN_FRESH`), so its intermediates die with the arena.
+def staged(m: Model, x: Tensor.Tensor, f: Fn[Model, Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Tensor.Tensor]
   return Trace.eval([x], ->(xs: List[Tensor.Tensor]) { f.call(traced(m), xs[0]) }) if compiled(Tensor.backend(x))
-  values: Result[List[Tensor.Values]] = Native.arena do Tensor.to_list(try f.call(m, x)) end
-  Tensor.from_list(try values, shape, Tensor.dtype(x), Tensor.backend(x))
+  Native.arena do f.call(m, x) end
 end
 
 ## The conv stem of the encoder over a log-mel batch, with the positions

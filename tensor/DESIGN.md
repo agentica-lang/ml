@@ -351,9 +351,13 @@ Usage for tensors:
   native tensor looks like any other `resource` to the GC; a step makes
   thousands of them). Each op of `src/torch.agc` opens an arena of its own and
   returns the tensor it made as the block's value, so the arena keeps that
-  tensor and everything it comes from, all the way up; a caller that runs a
-  step nests those calls in one arena of its own
-  (`test/torch_lifetime_test.agc`).
+  tensor. The libtorch ops are `AN_FRESH` (Agentica 0.37.0, `native/torch.c`):
+  a handle owns its `torch::Tensor`, and a view holds its base by libtorch's
+  refcount, never through another handle's state, so the arena keeps the
+  result alone and the intermediates it came from still close. A caller that
+  runs a step nests those calls in one arena of its own, and can return a
+  tensor out of it (`test/torch_lifetime_test.agc`). `Handle.Ggml` is not
+  fresh: a traced node refers to its arguments.
 - Only the returned `Tensor`(s) leave the arena; views keep their buffers
   through the rule above, so there is no explicit `keep` call.
 - `Handle.Ggml` follows the same rules: each creation call of `src/ggml.agc`

@@ -212,20 +212,18 @@ against the tokenizer before the audio costs anything.
   ratio it needs), initial prompts and word timestamps. Greedy at temperature
   0 is what the speech server asks for; each can come when something needs
   it.
-- **Memory on libtorch**: a `Native.arena` keeps the resource its value holds
-  and everything that resource comes from, all the way up, so nothing here
-  returns a tensor from an arena. Each encoder block runs in an arena that
-  hands out the block's output as a list; the tensor is built again outside
-  and the previous one closed, so the peak is one block (whisper-tiny on
-  `jfk.wav`: +0.4 GB over the loaded model, against +1.9 GB with the whole
-  encoder in one arena). A call runs in a task of its own, which closes what
-  it opened when it ends (the encoder output and the cross-attention cache).
-  Each `step` hands only lists out of its arena (the logits and the new rows
-  of the self-attention keys and values), builds the new cache from them
-  outside it, and the loop closes the cache it replaced. 224 forced steps of
-  whisper-tiny take 0.12–0.14 s each with flat memory (+5 MB); everything in
-  one enclosing arena, they went from 1.5 s to 11.6 s a step by step 192, and
-  memory grew by 760 MB.
+- **Memory on libtorch**: a `Native.arena` frees what a block makes when it
+  ends, and since Agentica 0.37.0 it keeps a returned tensor alone when the
+  native ops that made it are `AN_FRESH` (`tensor/native/torch.c`: a handle
+  owns its `torch::Tensor`, and a view holds its base by libtorch's refcount,
+  not by pointing into another handle). So each encoder block runs in an arena
+  that returns the block's output tensor, and the previous one is closed: the
+  peak is one block. Each `step` returns the logits as a list and the new
+  self-attention keys and values as tensors; the loop closes the cache it
+  replaced. A call runs in a task of its own, which closes what it opened when
+  it ends (the encoder output and the cross-attention cache). Before 0.37.0
+  an arena kept everything its result came from, so each block handed its
+  output out as a list and built the tensor again outside: 1.5-2 s a call.
 
 Checked against Hugging Face's `generate` (transformers 4.46.3, greedy) on
 whisper-tiny: `tools/transcribe_check.agc` runs the five cases of
@@ -238,12 +236,13 @@ and so do the text and the segments. The language probability is within
 and `transformers`). The tests run neither: the checkpoint is not in git.
 
 Speed on this machine (Ryzen 5 3550H, shared with other jobs, so the numbers
-spread): libtorch takes 5.1–6 s for the 2.6 s of es-hola (a real-time factor
-of 1.9–2.3) and 7.1–9.3 s for the 11 s of jfk (0.64–0.84); about 3.5 s is the
-encoder over the 30 s window, of which 1.5–2 s is handing each block's output
-out of its arena as a list (the memory bullet above), and 0.12–0.14 s each
-decoder step. The reference backend gave the same ids for es-hola in 22
-minutes (a real-time factor of about 500). Loading the checkpoint takes
+spread): with Agentica 0.37.0 libtorch takes 2.5 s for the 2.6 s of es-hola (a
+real-time factor of 0.96) and 3.6–3.8 s for the 11 s of jfk (0.33–0.35); 1 s is
+the encoder over the 30 s window and 0.06–0.08 s each decoder step. Before
+0.37.0 (each block's output went out of its arena as a list) it was 5.4–6.7 s
+(2.1–2.6) and 7.3–7.5 s (0.66–0.68), 3.2 s of it the encoder, and the run
+peaked at 1.6 GB against 1.0 GB. The reference backend gave the same ids for
+es-hola in 22 minutes (a real-time factor of about 500). Loading the checkpoint takes
 0.3–0.5 s (it took 25–40 s before `Tensor.from_file`). On ggml the five cases
 give the same ids, the text and the segments too,
 and compile 12 graphs in all, 11 of them in the first case (104 when every
@@ -252,7 +251,7 @@ real-time factor was:
 
 | backend | es-hola (2.6 s) | jfk (11 s) |
 |---|---|---|
-| libtorch, CPU | 1.91–2.20 | 0.62–0.65 |
+| libtorch, CPU | 0.96–0.98 | 0.33–0.35 |
 | ggml, CPU | 0.95–1.07 | 0.36–0.41 |
 | ggml, Vulkan (Vega iGPU) | 1.03–1.31 | 0.41–0.47 |
 
