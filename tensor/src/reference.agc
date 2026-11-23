@@ -131,6 +131,7 @@ def data_of(t: Types.Tensor) -> Result[List[Float]]
     Types.Handle.Native(_) ->
       error("the reference backend cannot read a native handle (#{Types.backend_name(t.backend)})")
     Types.Handle.Traced(_) -> error("a traced tensor has no values: run it with Trace.eval")
+    Types.Handle.Ggml(_) -> error("the reference backend cannot read a ggml handle (#{Types.backend_name(t.backend)})")
   end
 end
 
@@ -1010,6 +1011,7 @@ end
 def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
   case device
     Types.Device.Cpu -> ok(make(t.shape, t.dtype, try data_of(t)))
+    Types.Device.Vulkan(i) -> error("to_device: reference tensors live on Cpu only, got Vulkan(#{i})")
   end
 end
 

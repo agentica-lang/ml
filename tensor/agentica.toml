@@ -22,3 +22,14 @@ prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.4.2", 
 [native.torch]
 optional = true
 build = { sources = ["native/torch.c"], libs = ["torch", "torch_cpu", "c10", "stdc++", "m"] }
+
+# The ggml backend's native side: a thin C layer over the pinned ggml
+# submodule (`third_party/ggml`), declared by the `extern module "ggml"` of
+# `src/ggml_native.agc` and dispatched to from the `Backend.Ggml(device)` arms
+# of `tensor.agc` (`tensor/DESIGN.md` §7). `tools/build-engine.sh` builds ggml
+# and writes `libtensor_ggml.a`, a linker script naming ggml's archives: the
+# CPU tree's (CI), or the Vulkan tree's with ggml-vulkan and the loader.
+# `optional`: without it `Tensor.available(Backend.Ggml(..))` says no.
+[native.ggml]
+optional = true
+build = { sources = ["native/ggml.c"], libs = ["tensor_ggml", "stdc++", "m", "pthread"] }

@@ -56,6 +56,7 @@ def free(t: Tensor.Tensor) -> Void
     Tensor.Handle.Native(h) -> Native.close(h)
     Tensor.Handle.Plain(_) -> puts("")
     Tensor.Handle.Traced(_) -> puts("")
+    Tensor.Handle.Ggml(h) -> Native.close(h)
   end
 end
 

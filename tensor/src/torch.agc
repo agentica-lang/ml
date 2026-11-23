@@ -602,6 +602,7 @@ def handle_of(t: Types.Tensor) -> Result[Raw.TensorHandle]
     Types.Handle.Native(h) -> ok(h)
     Types.Handle.Plain(_) -> error("a Plain tensor has no native handle (backend #{Types.backend_name(t.backend)})")
     Types.Handle.Traced(_) -> error("a traced tensor has no native handle")
+    Types.Handle.Ggml(_) -> error("a ggml tensor has no torch handle")
   end
 end
 
@@ -609,6 +610,7 @@ end
 def ready(device: Types.Device, op: String) -> Result[Bool]
   case device
     Types.Device.Cpu -> usable(op)
+    Types.Device.Vulkan(i) -> error("#{op}: the torch backend runs on Cpu only, got Vulkan(#{i})")
   end
 end
 
