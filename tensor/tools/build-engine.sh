@@ -129,7 +129,7 @@ rev=$(git -C "$engine" rev-parse HEAD 2> /dev/null || true)
 }
 hash() { sha256sum | cut -c1-8; }
 flags_hash=$(printf 'v1 %s' "$flags" | hash)
-cc_hash=$({ cc --version | head -n 1; c++ --version | head -n 1; } 2> /dev/null | hash)
+cc_hash=$({ ${CC:-cc} --version | head -n 1; ${CXX:-c++} --version | head -n 1; } 2> /dev/null | hash)
 key="$(printf '%s' "$rev" | cut -c1-12)-$action-$flags_hash-$cc_hash"
 cache="${AGENTICA_ML_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agentica-ml}/ggml"
 entry="$cache/$key"
