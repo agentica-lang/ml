@@ -67,3 +67,7 @@ end
 - The samples must be mono 16 kHz floats. The frontend does not resample.
 - `Tokenizer.vocab_size` must equal the model's `vocab_size`, or `transcribe` is an error.
 - `tools/transcribe_check.agc` compares the cases of `test/fixtures/transcribe_golden.json` with a real whisper-tiny checkpoint. It is run by hand, not by the tests. Against Hugging Face's `generate` on whisper-tiny, the token ids match.
+
+## Speed
+
+[`benchmarks/`](https://github.com/agentica-lang/ml/tree/main/benchmarks) times whisper-tiny against whisper.cpp on one machine, with the same weights, clips and threads. On the CPU the encoder is on par; the decoder step, the log-mel and the load are where the gap is.
