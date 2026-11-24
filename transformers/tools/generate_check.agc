@@ -11,7 +11,6 @@ import Generate from "../generate"
 import Qwen3 from "../qwen3"
 import Source from "../tokenizer/source"
 import Tensor from "pkg/tensor/tensor"
-import Trace from "pkg/tensor/trace"
 
 ## The end ids of `generation_config.json`: `<|im_end|>` and `<|endoftext|>`.
 STOP = [151645, 151643]
@@ -51,44 +50,43 @@ private
 def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Void]
   want = try JSON.decode(try Source.read_text(golden), Golden)
   m = try Qwen3.open(dir, backend)
-  done = checked(m, want)
+  g = try Generate.open(m)
+  done = checked(g, want)
+  Generate.close(g)
   Qwen3.close_model(m)
   puts(memory())
   done
 end
 
-def checked(m: Qwen3.Qwen3, want: Golden) -> Result[Void]
-  graphs: Map[String, Trace.Compiled] = {}
+def checked(g: Generate.Generator, want: Golden) -> Result[Void]
   for i in 0...want.cases.size
     c = want.cases[i]
     started = Time.monotonic_ms
-    first = try Generate.generate(m, c.ids, c.generated.size, STOP, graphs)
+    first = try Generate.generate(g, c.ids, c.generated.size, STOP)
     cold = Time.monotonic_ms - started
     started = Time.monotonic_ms
-    one = try Generate.generate(m, c.ids, 1, STOP, first.graphs)
+    _ = try Generate.generate(g, c.ids, 1, STOP)
     prompt = Time.monotonic_ms - started
     started = Time.monotonic_ms
-    again = try Generate.generate(m, c.ids, c.generated.size, STOP, one.graphs)
+    again = try Generate.generate(g, c.ids, c.generated.size, STOP)
     warm = Time.monotonic_ms - started
-    graphs = again.graphs
     # Hugging Face keeps the end id it stopped at; ours stops before it.
     expect = c.generated.filter { |id| not STOP.include?(id) }
-    return error("prompt #{i}: ids #{again.ids}, expected #{expect}") if again.ids != expect
-    return error("prompt #{i}: the first call gave #{first.ids}, the second #{again.ids}") if first.ids != again.ids
-    steps = again.ids.size - 1
+    return error("prompt #{i}: ids #{again}, expected #{expect}") if again != expect
+    return error("prompt #{i}: the first call gave #{first}, the second #{again}") if first != again
+    steps = again.size - 1
     per = 0.0
     if steps > 0 and warm > prompt
       per = (steps * 1000).to_f / (warm - prompt).to_f
     end
 
     puts(
-      "prompt #{i}: #{c.ids.size} prompt tokens, #{again.ids.size} new, smallest gap of HF #{c.gaps.min.unwrap!}; " +
-      "first call #{cold} ms, then prompt and one token #{prompt} ms, #{again.ids.size} tokens #{warm} ms, " +
+      "prompt #{i}: #{c.ids.size} prompt tokens, #{again.size} new, smallest gap of HF #{c.gaps.min.unwrap!}; " +
+      "first call #{cold} ms, then prompt and one token #{prompt} ms, #{again.size} tokens #{warm} ms, " +
       "#{per} tokens/s after the prompt",
     )
   end
 
-  Generate.close_graphs(graphs)
   ok()
 end
 

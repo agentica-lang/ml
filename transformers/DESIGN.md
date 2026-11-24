@@ -7,14 +7,17 @@ tokenizers are here; sampling and more models come in later PRs of ml#78.
 ## Generation
 
 `generate.agc`, the design of `asr/`'s decoder copied and adapted (ml#117 tracks
-sharing it): `Generate.generate(m, ids, max_new, stop, graphs)` decodes greedily
-and is `start`, then `step` (the id with the largest logit) or `step_logits`
-per call, then `finish`. Batch of one.
+sharing it): `Generate.open(m)` is the generator of a model, which holds its
+compiled steps in a one-slot channel (as `Asr.Model.plans`), and
+`Generate.generate(g, ids, max_new, stop)` decodes greedily; `start`, then `step`
+(the id with the largest logit) or `step_logits` per call, then `finish`, are
+the same by hand. `Generate.close(g)` ends the compiled steps, before
+`Qwen3.close_model`. Batch of one, one task at a time.
 
 - The cache of a layer is `[1, kv_heads, rows, head_dim]`: the keys already
   normalized and rotated, so a step never rotates the past. Rows are padded
-  with zeros to a capacity of 8, 16, 32 and so on, so a graph changes shape
-  only when the capacity grows. A step writes its rows with a product by a 0/1
+  with zeros to a capacity of 8, 16, 32 and so on (the prompt too: a prompt of
+  9 tokens runs as 16), so a graph changes shape only when the capacity grows. A step writes its rows with a product by a 0/1
   matrix (`written`; exact, since a row is one value plus zeros) and a mask
   hides the later positions and the padding, as `asr/` does.
 - The prompt is one step: padded to a capacity, its padding gets the position
@@ -22,10 +25,13 @@ per call, then `finish`. Batch of one.
   product takes the last real hidden row alone to the final norm and the head.
   Every later step is one token.
 - On ggml each (tokens, rows, capacity) is one compiled graph (`Trace.compile`,
-  kept in `Cache.graphs` and handed to the next call by `finish`), and the pick
+  kept in the generator at once, so an error path loses none, and a second call
+  compiles none: `Generate.compiles(g)` counts them), and the pick
   of the next id is in the graph, so one number leaves the device, not 152k
   logits. The pick is `asr/`'s (`max` and `eq`): a graph cannot answer an `I64`
-  (what `argmax` makes). Elsewhere the same graph runs eagerly in an arena.
+  (what `argmax` makes). Elsewhere the same graph runs eagerly in an arena; on
+  the reference backend attention needs `q * k` of at most 1,048,576, which the
+  padded prompt counts. libtorch is not tested.
 - `step` closes the cache it is given, and the new keys and values are fresh
   tensors every step (`asr/` can write into those of a cache it is done with;
   not done here). A cache of 1024 tokens is 0.23 GB in `F32`.
@@ -145,11 +151,11 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
   reference and on ggml; the last row alone; refusals; bad inputs; a closed
   model.
 - `test/generate_test.agc` against the same peer: the logits of every step of
-  a row of 20 ids (a prompt of 5 padded to 8, then one id at a time, the cache
-  growing from 8 to 16 to 32 rows) match the peer's forward over the whole
+  a row of 20 ids (a prompt of 5, 8 or 9 padded to a bucket, then one id at a
+  time, the cache growing to 16 and 32 rows) match the peer's forward over the whole
   row on the reference (1e-9) and ggml (1e-4); `generate` picks what the
-  forward without a cache picks, with a stop id and with the steps of an
-  earlier call; bad steps are errors.
+  forward without a cache picks, with a stop id, and a second call compiles
+  none; the pick of a tie is the first index; bad steps are errors.
 - `tools/generate_check.agc` against Hugging Face's greedy `generate`
   (`test/qwen_golden.py`): 24 new ids for each of the five prompts, equal on
   ggml CPU and on Vulkan (the smallest gap between the two largest logits of

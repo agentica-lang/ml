@@ -141,7 +141,7 @@ def close_model(m: Qwen3) -> Void
   Lift.close(tensors)
 end
 
-## The tensors of `m` as `Trace` constants (`Lift`), for the graphs of `Generate`.
+## The tensors of `m` as `Trace` constants (`Lift`). Internal: the graphs of `Generate` use it.
 def traced(m: Qwen3) -> Qwen3
   m.with(
     tokens: Lift.embedding(m.tokens),

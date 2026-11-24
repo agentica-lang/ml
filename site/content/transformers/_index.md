@@ -74,7 +74,7 @@ end
 
 ## Generation
 
-`Generate.generate(m, ids, max_new, stop)` adds at most `max_new` ids to the prompt `ids`, always the one with the largest logit (greedy), and stops before an id of `stop`. It keeps the keys and values of the tokens so far (a KV cache), so a new token costs one step, not a pass over the whole sequence. The result is `Generated(ids, graphs)`: the new ids, and the compiled steps, which the next call takes as `graphs:` so that it does not trace them again.
+`Generate.open(m)` gives the generator of a model, which keeps the compiled steps for every sequence of that model. `Generate.generate(g, ids, max_new, stop)` adds at most `max_new` ids to the prompt `ids`, always the one with the largest logit (greedy), and stops before an id of `stop`. It keeps the keys and values of the tokens so far (a KV cache), so a new token costs one step, not a pass over the whole sequence. It gives the new ids; a second call finds the compiled steps of the first and traces none. `Generate.close(g)` ends the compiled steps, and goes before `Qwen3.close_model(m)`.
 
 ```agentica
 import Bpe from "pkg/transformers/tokenizer/bpe"
@@ -87,8 +87,10 @@ def main() -> Void
   tok = Bpe.open("Qwen3-0.6B/tokenizer.json").unwrap!
   m = Qwen3.open("Qwen3-0.6B", backend).unwrap!
   prompt = Bpe.encode(tok, "The capital of France is").unwrap!
-  made = Generate.generate(m, prompt, 8, [151645, 151643]).unwrap!
-  puts(Bpe.decode(tok, made.ids).unwrap!)
+  g = Generate.open(m).unwrap!
+  made = Generate.generate(g, prompt, 8, [151645, 151643]).unwrap!
+  puts(Bpe.decode(tok, made).unwrap!)
+  Generate.close(g)
 end
 ```
 
@@ -96,10 +98,11 @@ end
  Paris. The capital of Italy is Rome
 ```
 
-For one-step control, `Generate.start()`, then `Generate.step(m, cache, ids)` (a prompt of any length first, then one id) gives `Picked(id, cache)`, `Generate.step_logits` gives the logits `[vocab_size]`, and `Generate.finish(cache)` closes the cache. `step` closes the cache it is given: use the one it returns.
+For one-step control, `Generate.start()`, then `Generate.step(g, cache, ids)` (a prompt first, then one id) gives `Picked(id, cache)`, `Generate.step_logits` gives the logits `[vocab_size]`, and `Generate.finish(cache)` closes the cache. `step` closes the cache it is given: use the one it returns. A generator belongs to one task at a time.
 
 - The ids match Hugging Face's greedy `generate` for `Qwen3-0.6B` in `float32` on ggml CPU and Vulkan: 24 new ids for each of five prompts (English, code, a chat template, accents and CJK, a long repeat).
-- The cache is padded to 8, 16, 32 and so on rows, and on ggml each (tokens, rows, capacity) is one compiled graph, so a generation compiles a handful and a second call with `graphs:` none. The choice of the id runs on the device.
+- The cache is padded to 8, 16, 32 and so on rows, and the prompt too, to a power of 2 (a prompt of 9 tokens runs as 16). On ggml each (tokens, rows, capacity) is one compiled graph, so a generation compiles a handful and a second call none. The choice of the id runs on the device.
+- On the reference backend attention needs `q * k` of at most 1,048,576, which the padded prompt counts: a prompt of 600 tokens is padded to 1024. libtorch is not tested. The prompt and the new ids must fit `max_position_embeddings` (40960).
 - Speed on this machine (Ryzen 5 3550H, Radeon Vega iGPU, shared with other jobs), in `float32`: about 2.9 tokens per second on Vulkan and about 0.5 on the CPU. Memory: 0.94 GB peak on Vulkan, 4.2 GB on the CPU. On the CPU a one-token step takes about as long as the 8-token prompt (1.8 s), so the cost is per weight and not per token: it looks like the copy that ggml makes of each dense weight at every run (`CONT`, ml#101).
 - A batch of one, the prompt in one step (no chunks), no sampling yet.
 
