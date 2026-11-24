@@ -47,6 +47,7 @@ def run(args: List[String]) -> Result[Void]
     ids = ids.push(try part.to_i)
   end
 
+  try Load.vulkan_fp16_from_env(true)
   backend = try TranscribeCheck.backend_of(args[2])
   return error("#{args[2]} is not available") if not Tensor.available(backend)
   m = try Asr.open("#{args[0]}/model.safetensors", backend, try Load.weights_from_env())

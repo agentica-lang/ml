@@ -21,7 +21,7 @@ end
 def test_the_native_backends_read_floats_from_the_file_as_the_reference_does() -> Result[Void]
   S.with_fixtures("values") do |dir|
     c = try Hub.open("#{dir}/values.safetensors")
-    for backend in S.native()
+    for backend in try S.native()
       for name in ["f32", "f16", "bf16", "scalar", "empty"]
         want = try Hub.tensor(c, name, S.REF)
         got = try Hub.tensor(c, name, backend)
@@ -38,7 +38,7 @@ end
 def test_a_shape_that_overflows_an_int_is_no_crash() -> Result[Void]
   S.with_fixtures("values") do |dir|
     c = try Hub.open("#{dir}/hostile.safetensors")
-    for backend in [S.REF].concat(S.native())
+    for backend in [S.REF].concat(try S.native())
       _ = Hub.tensor(c, "h", backend)
     end
 

@@ -5,6 +5,7 @@
 ##   agentica tools/bench_bert.agc MODEL_DIR [cpu|vulkan] [SEQ] [BATCH] [REPS]
 
 import Bert from "../bert"
+import Load from "pkg/hub/load"
 import Tensor from "pkg/tensor/tensor"
 import WordPiece from "../tokenizer/wordpiece"
 
@@ -46,6 +47,7 @@ end
 private
 
 def measure(dir: String, backend: Tensor.Backend, seq: Int, batch: Int, reps: Int) -> Result[String]
+  try Load.vulkan_fp16_from_env(true)
   started = Time.monotonic_ms
   m = try Bert.open(dir, backend)
   load = Time.monotonic_ms - started

@@ -4,8 +4,8 @@
 ##
 ##   agentica tools/bench_qwen.agc MODEL_DIR [cpu|vulkan]
 ##
-## `WEIGHTS=f16` loads the big matrices as half weights and `VULKAN_FP16=1` makes Vulkan multiply in fp16;
-## both are off by default.
+## `WEIGHTS=f16` loads the big matrices as half weights (off by default) and `VULKAN_FP16=0` makes Vulkan multiply in
+## exact `float32` (fp16 is the default).
 
 import Generate from "../generate"
 import Qwen3 from "../qwen3"
@@ -39,7 +39,7 @@ private
 
 def run(dir: String, backend: Tensor.Backend) -> Result[String]
   started = Time.monotonic_ms
-  try Load.vulkan_fp16_from_env()
+  try Load.vulkan_fp16_from_env(true)
   m = try Qwen3.open(dir, backend, try Load.weights_from_env())
   load = Time.monotonic_ms - started
   g = try Generate.open(m)

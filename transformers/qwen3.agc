@@ -1,8 +1,10 @@
-## Qwen3 for inference, from a Hugging Face checkpoint (`transformers/DESIGN.md`):
+## Qwen3 and Qwen2.5 for inference, from a Hugging Face checkpoint (`transformers/DESIGN.md`):
 ## the embedding table, pre-norm decoder blocks with grouped-query attention
 ## (query and key norms per head, rotary positions with `rope_theta`) and a
 ## SwiGLU MLP, RMS norms, and the output head, tied to the embedding table when
 ## the config says so. This is the forward over a whole sequence, with no cache.
+## `model_type` `qwen2` (Qwen2.5) has no query and key norms, a bias on the query, key and
+## value projections, and a `head_dim` of `hidden_size / num_attention_heads`.
 ##
 ## `Qwen/Qwen3-0.6B` is `bfloat16` on disk; the weights are `F32` in memory.
 
@@ -21,7 +23,8 @@ struct Config
   num_hidden_layers: Int
   num_attention_heads: Int
   num_key_value_heads: Int
-  head_dim: Int
+  ## 0 when the config has none (Qwen2): `hidden_size / num_attention_heads`.
+  head_dim: Int = 0
   intermediate_size: Int
   vocab_size: Int
   max_position_embeddings: Int
@@ -116,7 +119,10 @@ end
 ## An error when `config` is a model this file does not run: another type, activation, attention bias, rope scaling or
 ## sliding window, or head counts that do not divide.
 def check_config(config: Config) -> Result[Void]
-  return error("model_type is #{config.model_type}, not qwen3") if config.model_type != "qwen3"
+  if config.model_type != "qwen3" and config.model_type != "qwen2"
+    return error("model_type is #{config.model_type}, not qwen3 or qwen2")
+  end
+
   return error("hidden_act #{config.hidden_act} is not supported, only silu") if config.hidden_act != "silu"
   return error("attention_bias is not supported") if config.attention_bias
   return error("rope_scaling is not supported") if config.rope_scaling.some?
@@ -136,6 +142,7 @@ def load(
   backend: Tensor.Backend,
   weights: Tensor.Dtype = Tensor.Dtype.F32,
 ) -> Result[Qwen3]
+  config = try with_head_dim(config)
   try check_config(config)
   width = config.hidden_size
   tokens = try Load.embedding(c, "model.embed_tokens.weight", backend, weights)
@@ -228,6 +235,15 @@ end
 
 private
 
+def with_head_dim(config: Config) -> Result[Config]
+  return ok(config) if config.head_dim != 0
+  if config.num_attention_heads < 1 or config.hidden_size % config.num_attention_heads != 0
+    return error("hidden_size #{config.hidden_size} is not a multiple of #{config.num_attention_heads} heads")
+  end
+
+  ok(config.with(head_dim: config.hidden_size / config.num_attention_heads))
+end
+
 def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]
   return error("#{name}: needs #{want}, got #{Tensor.shape(t)}") if Tensor.shape(t) != want
   ok()
@@ -275,6 +291,15 @@ def block(
   kv_width = config.num_key_value_heads * config.head_dim
   eps = config.rms_norm_eps
   a = "#{p}self_attn."
+  query_norm: Optional[Nn.LayerNorm] = none
+  key_norm: Optional[Nn.LayerNorm] = none
+  if config.model_type == "qwen3"
+    query_norm = some(try rms(c, "#{a}q_norm", eps, backend))
+    key_norm = some(try rms(c, "#{a}k_norm", eps, backend))
+    try expect_shape("#{a}q_norm.weight", query_norm.unwrap!.gamma, [config.head_dim])
+    try expect_shape("#{a}k_norm.weight", key_norm.unwrap!.gamma, [config.head_dim])
+  end
+
   attention = Nn.Attention(
     query: try Load.dense(c, "#{a}q_proj", backend, weights),
     key: try Load.dense(c, "#{a}k_proj", backend, weights),
@@ -283,16 +308,14 @@ def block(
     heads: config.num_attention_heads,
     kv_heads: some(config.num_key_value_heads),
     rope: some(Nn.Rope(base: config.rope_theta)),
-    query_norm: some(try rms(c, "#{a}q_norm", eps, backend)),
-    key_norm: some(try rms(c, "#{a}k_norm", eps, backend)),
+    query_norm: query_norm,
+    key_norm: key_norm,
   )
 
   try expect_shape("#{a}q_proj.weight", attention.query.w, [q_width, width])
   try expect_shape("#{a}k_proj.weight", attention.key.w, [kv_width, width])
   try expect_shape("#{a}v_proj.weight", attention.value.w, [kv_width, width])
   try expect_shape("#{a}o_proj.weight", attention.output.w, [width, q_width])
-  try expect_shape("#{a}q_norm.weight", attention.query_norm.unwrap!.gamma, [config.head_dim])
-  try expect_shape("#{a}k_norm.weight", attention.key_norm.unwrap!.gamma, [config.head_dim])
   m = "#{p}mlp."
   mlp = Nn.Mlp(
     up: try Load.dense(c, "#{m}up_proj", backend, weights),

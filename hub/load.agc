@@ -61,10 +61,16 @@ def weights_from_env() -> Result[Tensor.Dtype]
   end
 end
 
-## `VULKAN_FP16=1` makes Vulkan multiply in fp16 (`Tensor.vulkan_fp16`), for the tools; it must come before any ggml call.
-def vulkan_fp16_from_env() -> Result[Void]
-  return Tensor.vulkan_fp16(true) if System.env("VULKAN_FP16").unwrap_or("0") == "1"
-  ok()
+## Vulkan's fp16 or F32 `mul_mat` (`Tensor.vulkan_fp16`) for a tool, before any ggml call: `VULKAN_FP16=1` or `0` says, and
+## when it is not set `default` does. A check against Hugging Face or whisper.cpp leaves `default` false (exact `float32`);
+## a benchmark passes true (the library default).
+def vulkan_fp16_from_env(default: Bool = false) -> Result[Void]
+  case System.env("VULKAN_FP16").unwrap_or("")
+    "1" -> Tensor.vulkan_fp16(true)
+    "0" -> Tensor.vulkan_fp16(false)
+    "" -> Tensor.vulkan_fp16(default)
+    _ -> error("VULKAN_FP16 is 0 or 1")
+  end
 end
 
 ## The float tensor `name` as `F32`, of `rank`.

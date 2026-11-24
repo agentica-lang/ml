@@ -135,11 +135,12 @@ def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
   made("to_device", device, t.shape, t.dtype) do GgmlRaw.transfer(h, code) end
 end
 
-## Chooses fp16 `mul_mat` (`true`) or F32 (`false`, the default) for every
+## Chooses fp16 `mul_mat` (`true`, the default) or F32 (`false`) for every
 ## Vulkan device this process opens; an error once a ggml call fixed the
-## other one.
+## other one. Without the ggml module there is nothing to choose and it
+## does nothing.
 def vulkan_fp16(enabled: Bool) -> Result[Void]
-  _ = try usable("vulkan_fp16")
+  return ok() if !Native.load("ggml").ok?
   GgmlRaw.vulkan_fp16(enabled)
 end
 

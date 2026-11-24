@@ -42,6 +42,7 @@ end
 def convert(dir: String, out: String, format: Tensor.FloatFormat) -> Result[Void]
   config = try Qwen3.read_config(dir)
   try Qwen3.check_config(config)
+  return error("the model type is #{config.model_type}: only qwen3 is written") if config.model_type != "qwen3"
   c = try Qwen3.checkpoint(dir)
   tok = try Bpe.open("#{dir}/tokenizer.json")
   fields = config_fields(config, format)

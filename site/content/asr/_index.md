@@ -37,7 +37,7 @@ end
 
 ## Main API
 
-- `Asr.open(path, backend, weights)` loads a `.safetensors` file, or the `.index.json` of a sharded one, with the `config.json` in its folder. With `weights: Dtype.F16` the big dense matrices and the token table (also the tied output head) are kept as half weights on ggml, which halves the weights' memory; whisper-medium transcribes 9% faster on Vulkan and no faster on the CPU, and whisper-tiny gains little (see the hub page for the numbers). `F32` is the default and the exact path, and `Tensor.vulkan_fp16` stays off by default because it breaks token-exactness, with `F32` weights too.
+- `Asr.open(path, backend, weights)` loads a `.safetensors` file, or the `.index.json` of a sharded one, with the `config.json` in its folder. With `weights: Dtype.F16` the big dense matrices and the token table (also the tied output head) are kept as half weights on ggml, which halves the weights' memory; whisper-medium transcribes 9% faster on Vulkan and no faster on the CPU, and whisper-tiny gains little (see the hub page for the numbers). `F32` is the default and the exact path, and Vulkan multiplies in fp16 by default (`Tensor.vulkan_fp16`), which breaks token-exactness against Hugging Face with `F32` weights too: `Tensor.vulkan_fp16(false)` before the first ggml call makes it exact, as the checks of this package do.
 - `Asr.close_model(model)` frees the weights and the log-mel plan now, as a server does when it replaces a model. Using the model afterwards is an error, and a second call changes nothing.
 - `Asr.transcribe(model, tok, pcm, options)` runs the whole pipeline on one clip and gives a `Result` of `Transcript`.
 - `Tokenizer.open(path)` reads a `tokenizer.json`.

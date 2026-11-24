@@ -127,6 +127,7 @@ end
 ## The ggml backends this machine has: the CPU one, and Vulkan when it is there.
 ## With the CPU one missing and `TENSOR_REQUIRE_GGML` unset, none.
 def engines() -> Result[List[Tensor.Backend]]
+  try Tensor.vulkan_fp16(false)
   return ok([CPU, VULKAN]) if Tensor.available(CPU) and Tensor.available(VULKAN)
   return ok([CPU]) if Tensor.available(CPU)
   flag = System.env("TENSOR_REQUIRE_GGML")

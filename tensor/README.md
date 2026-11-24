@@ -220,10 +220,12 @@ and outputs written into fresh tensors, with no copy. The ops lowered are those
 of an MLP and softmax cross-entropy with their gradients, plus `slice`,
 `gather` and `scatter_add`, and attention's `permute`, `batch_matmul`, `rope` and `attention` (the list is in §7); a `gather` or `scatter_add` index outside the rows, any
 other op, a dtype `F32` does not hold exactly and an output that is not
-finite are errors. Vulkan computes in `F32`; `Tensor.vulkan_fp16(true)`, before
-any other ggml call (a CPU one or `Tensor.available` included), switches the
-whole process to fp16 `mul_mat`, which is faster and changes gradients by up to
-about 10 % at MLP sizes (on a build without Vulkan it changes nothing). ggml
+finite are errors. Vulkan multiplies in fp16 by default, which is about 1.7 times
+faster for the products of a model and changes gradients by up to about 10 % at
+MLP sizes; `Tensor.vulkan_fp16(false)`, before any other ggml call (a CPU one, or
+`Tensor.available` of a Vulkan device, included), switches the whole process to exact `F32`
+`mul_mat` (on a build without Vulkan it changes nothing), and the checks against
+Hugging Face and whisper.cpp do. ggml
 holds `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are held as `F32`, which is
 exact for them; `F16`, `F64` and `I64` are refused, and so is a rank above 4. A
 fill is made in C, so it has no `List.repeat` cap. Vulkan buffer operations
@@ -235,19 +237,22 @@ is skipped).
 the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan device.
 `test/ggml_compile_test.agc` checks the value and every gradient of a small MLP
 and of the cross-entropy against the reference within 1e-6 (relative to the
-largest value), on the CPU backend and on Vulkan, that a retrace with new values
+largest value) on the CPU backend and on Vulkan, that a retrace with new values
 compiles nothing, `slice`, `gather` and `scatter_add` (an index outside the rows is an error),
 `concat` and `stack` on every axis, `test/ggml_attention_test.agc` (`attention` over grouped heads, masks and the causal flag, `rope`, `permute`, `batch_matmul` and the backward of attention, node by node with `Trace.diff`), the ops of Whisper's forward (`conv1d`,
 `gelu_erf`, layer norm, softmax, masked attention) and the refusals. `test/ggml_turns_test.agc`, in a process of its own, that a
 graph without fills does not write into the buffer the shared allocator freed
 when a larger graph grew it. `test/ggml_vulkan_mlp_test.agc` checks the
-benchmark's 784 → 512 → 512 → 10 model at batch 256 on Vulkan against ggml's CPU
-backend within 1.5e-6 (local only; `TENSOR_VULKAN_TOL` overrides the bound on
-another device), and `test/ggml_fp16_test.agc`, in a process of its own, that
-`Tensor.vulkan_fp16(true)` moves it further than that but within 0.1. Without
+benchmark's 784 → 512 → 512 → 10 model at batch 256 on Vulkan with
+`Tensor.vulkan_fp16(false)` against ggml's CPU backend within 1.5e-6 (local only;
+`TENSOR_VULKAN_TOL` overrides the bound on another device), and
+`test/ggml_fp16_test.agc`, in a process of its own, that the default (fp16)
+moves it further than that but within 0.1. Without
 the module, or without a Vulkan device, they assert the absent state instead or
 pass. With `TENSOR_REQUIRE_GGML` set (CI sets it for this package) a missing
-module fails the checks instead of passing them.
+module fails the checks instead of passing them. Run the tests with
+`GGML_VK_DISABLE_F16` unset: a value set to anything makes the process `F32`
+(`ggml_fp16_test.agc` checks the fp16 default).
 
 ### Step time through `Trace`
 

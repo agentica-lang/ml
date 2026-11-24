@@ -177,16 +177,16 @@ def test_to_device_copies_and_leaves_the_source_readable() -> Result[Void]
   refused(Tensor.to_device(f32, Tensor.Device.Vulkan(99)), "no Vulkan device")
 end
 
-def test_fp16_is_chosen_before_the_first_ggml_call() -> Result[Void]
+def test_fp16_is_the_default_and_is_fixed_by_the_first_ggml_call() -> Result[Void]
   return ok() if !try present()
 
   _ = try Tensor.zeros([1], Tensor.Dtype.F32, CPU)
-  case Tensor.vulkan_fp16(true)
-    ok(_) -> return error("fp16 was chosen after a ggml call fixed F32")
-    error(e) -> try Test.assert(e.message.include?("chose F32 mul_mat"), "the error said \"#{e.message}\"")
+  case Tensor.vulkan_fp16(false)
+    ok(_) -> return error("F32 was chosen after a ggml call fixed fp16")
+    error(e) -> try Test.assert(e.message.include?("chose fp16 mul_mat"), "the error said \"#{e.message}\"")
   end
 
-  Test.ok?(Tensor.vulkan_fp16(false))
+  Test.ok?(Tensor.vulkan_fp16(true))
 end
 
 def test_the_other_backends_refuse_a_vulkan_device() -> Result[Void]

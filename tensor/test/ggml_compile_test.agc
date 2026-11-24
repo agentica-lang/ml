@@ -22,6 +22,7 @@ private
 ## True when `backend` is there; with `TENSOR_REQUIRE_GGML` set, a missing
 ## ggml CPU backend is an error, never a pass.
 def present(backend: Tensor.Backend) -> Result[Bool]
+  try Tensor.vulkan_fp16(false)
   return ok(true) if Tensor.available(backend)
   return ok(false) if backend != CPU
   flag = System.env("TENSOR_REQUIRE_GGML")
@@ -209,7 +210,9 @@ def test_an_mlp_and_its_gradients_match_the_reference_on_the_cpu() -> Result[Voi
   return ok() if !try present(CPU)
 
   try mlp_parity(CPU)
-  ce_parity(CPU)
+  try ce_parity(CPU)
+  # The opt-out of `present` was fixed by the first ggml call, Vulkan device or not.
+  Test.eq(try System.env("GGML_VK_DISABLE_F16"), "1")
 end
 
 ## A graph evaluated with `keep` false takes no cache slot: the same graph
@@ -567,6 +570,7 @@ def test_the_refusals_of_ggml_name_their_cause() -> Result[Void]
 end
 
 def test_vulkan_matches_the_reference_or_says_why_not() -> Result[Void]
+  try Tensor.vulkan_fp16(false)
   if !Tensor.available(VULKAN)
     IO.warn("SKIP: no Vulkan device 0; the compiled Vulkan parity runs where there is one")
     return ok()

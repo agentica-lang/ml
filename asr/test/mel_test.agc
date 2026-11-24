@@ -128,6 +128,7 @@ def test_the_features_on_every_backend_match_hugging_face() -> Result[Void]
 end
 
 def backends() -> Result[List[Tensor.Backend]]
+  try Tensor.vulkan_fp16(false)
   out: List[Tensor.Backend] = []
   if Tensor.available(TORCH)
     out = out.push(TORCH)

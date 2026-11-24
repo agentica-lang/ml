@@ -71,7 +71,7 @@ end
 def test_the_native_backends_read_floats_from_a_gguf_as_the_reference_does() -> Result[Void]
   S.with_fixtures("gguf") do |dir|
     c = try Hub.open("#{dir}/model.gguf")
-    for backend in S.native()
+    for backend in try S.native()
       for name in ["model.embed_tokens.weight", "lm_head.weight", "model.layers.0.self_attn.q_proj.weight"]
         want = try Hub.tensor(c, name, S.REF)
         got = try Hub.tensor(c, name, backend)

@@ -8,6 +8,9 @@ TOL = 0.000000001
 ## True when the ggml CPU backend is there; with `TENSOR_REQUIRE_GGML` set, a missing one is an error, never a pass
 ## (as in `ggml_compile_test.agc`).
 def ggml_present() -> Result[Bool]
+  # The tests check Vulkan against the other backends in exact `float32`: the choice belongs to the process, so it goes
+  # before the first ggml call.
+  try Tensor.vulkan_fp16(false)
   return ok(true) if Tensor.available(Tensor.Backend.Ggml(Tensor.Device.Cpu))
   flag = System.env("TENSOR_REQUIRE_GGML")
   return ok(false) if !flag.ok?

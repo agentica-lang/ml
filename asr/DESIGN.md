@@ -109,8 +109,8 @@ power overflows there).
   device and feeds `encode` with no list in between. It computes in `F32`: the
   gap to the exact value is about 1e-5 (the tokens and the language
   probabilities of the golden clips do not move). That holds for an `F32`
-  matmul; with `Ggml.vulkan_fp16(true)` the DFT would run in fp16, which is
-  not measured here and is not excepted. A sample that is not finite (or so
+  matmul; with fp16 on Vulkan (the default, `Tensor.vulkan_fp16`) the DFT
+  would run in fp16, which is not measured here and is not excepted. A sample that is not finite (or so
   large that the power overflows) makes the sum the graph also answers not
   finite, and that is an error (`relu` would hide a `NaN` in the features).
 - **On `Ggml` the graph is compiled by `load`** into `Model.mel`
