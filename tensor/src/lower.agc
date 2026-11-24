@@ -59,6 +59,7 @@ BATCH_MATMUL = 34
 NORM = 35
 RMS_NORM = 36
 SET_ROWS = 37
+TOP_K = 38
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -319,6 +320,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
       Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
       Types.Op.SetRows -> ints = [flag(!donate)]
+      Types.Op.TopK(k) -> ints = [k]
       Types.Op.RmsNorm(eps) -> ints = [Float.to_bits32(eps)]
       _ -> nil
     end
@@ -599,6 +601,7 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.LayerNorm(_) -> ok(NORM)
     Types.Op.RmsNorm(_) -> ok(RMS_NORM)
     Types.Op.SetRows -> ok(SET_ROWS)
+    Types.Op.TopK(_) -> ok(TOP_K)
     Types.Op.Concat(_) -> ok(CONCAT)
     Types.Op.Stack(_) -> ok(CONCAT)
     Types.Op.Conv1d(_, _) -> ok(CONV1D)

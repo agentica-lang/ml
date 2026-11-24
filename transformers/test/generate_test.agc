@@ -9,6 +9,7 @@ import Ggml from "pkg/tensor/src/ggml"
 import Lift from "../lift"
 import Qwen3 from "../qwen3"
 import S from "support"
+import Sample from "../sample"
 import Tensor from "pkg/tensor/tensor"
 
 ABS = 0.000000001
@@ -80,6 +81,22 @@ def test_generate_is_the_greedy_choice_of_the_forward_on_ggml() -> Result[Void]
   end
 end
 
+## A sampled run is the greedy one when only the largest id can be drawn, the same for the same seed, and not the same
+## for every seed.
+def test_sampling_is_greedy_when_one_id_is_left_and_seeded_otherwise_on_the_reference() -> Result[Void]
+  with_peer do |dir| sampling(dir, S.REF) end
+end
+
+def test_sampling_is_greedy_when_one_id_is_left_and_seeded_otherwise_on_ggml() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.ggml_backends()
+      try sampling(dir, backend)
+    end
+
+    ok()
+  end
+end
+
 def test_bad_steps_are_errors() -> Result[Void]
   with_peer do |dir|
     for backend in [S.REF] + try S.ggml_backends()
@@ -122,6 +139,33 @@ def test_the_pick_of_a_tie_is_the_first_index() -> Result[Void]
 end
 
 private
+
+def sampling(dir: String, backend: Tensor.Backend) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  prompt = [1, 5, 2]
+  want = try Generate.generate(g, prompt, 8)
+  for s in [Sample.Sampling(temperature: 0.0), Sample.Sampling(top_k: 1, seed: 9)]
+    try Test.eq(try Generate.generate(g, prompt, 8, [], some(s)), want)
+  end
+
+  warm = Sample.Sampling(temperature: 1.5, seed: 21)
+  first = try Generate.generate(g, prompt, 8, [], some(warm))
+  try Test.eq(try Generate.generate(g, prompt, 8, [], some(warm)), first)
+  differs = false
+  for seed in 1...4
+    if try Generate.generate(g, prompt, 8, [], some(warm.with(seed: seed))) != first
+      differs = true
+    end
+  end
+
+  try Test.assert(differs, "four seeds drew the same ids")
+  try Test.error?(Generate.generate(g, prompt, 8, [], some(Sample.Sampling(top_p: 0.0))))
+  try Test.error?(Generate.generate(g, prompt, 8, [], some(Sample.Sampling(temperature: -1.0))))
+  try Test.error?(Generate.generate(g, prompt, 8, [], some(Sample.Sampling(top_k: -1, temperature: 0.0))))
+  Generate.close(g)
+  ok()
+end
 
 ## Seven ids after a prompt of three: the cache goes from 8 to 16 rows. The ids are those of the forward without a cache.
 ## A second call finds the steps of the first: it compiles none.

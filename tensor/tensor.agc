@@ -827,6 +827,29 @@ def set_rows(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) 
   end
 end
 
+## The indices of the `k` largest elements of the float vector `x`, an `I32` `[k]`, from the largest down on every backend
+## but `Ggml`, where `ggml_top_k` gives them in no particular order. Among equal values the ones kept are not
+## specified. In a trace it is one node, which `Ggml` runs on the device: only `k` ids cross to the host, not the
+## whole vector. `x` has at most 2^24 elements (ids are exact in `F32` below that). No gradient.
+def top_ids(x: Types.Tensor, k: Int) -> Result[Types.Tensor]
+  _ = try float_only(x, "top_ids")
+  return error("top_ids needs a vector, got #{x.shape}") if x.shape.size != 1
+  return error("top_ids needs k from 1 to #{x.shape[0]}, got #{k}") if k < 1 or k > x.shape[0]
+  case x.backend
+    Types.Backend.Trace -> ok(Graph.record(Types.Op.TopK(k), [x], [k], Types.Dtype.I32))
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("top_ids")
+    _ ->
+      values = try to_list(x)
+      scores: List[Float] = []
+      for v in values
+        scores = scores.push(try Types.value_to_float(v, x.dtype))
+      end
+
+      largest = (0...scores.size).to_a.sort_by { |i| 0.0 - scores[i] }
+      from_list(largest.take(k).map { |i| Types.Values.Int(i) }, [k], Types.Dtype.I32, x.backend)
+  end
+end
+
 ## The ops `set_rows` stands for: the cache with the written rows zeroed, plus the rows scattered into place.
 def set_rows_composed(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) -> Result[Types.Tensor]
   rank = cache.shape.size

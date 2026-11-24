@@ -121,6 +121,7 @@ enum Op
   LayerNorm(Float)
   RmsNorm(Float)
   SetRows
+  TopK(Int)
   Eq
   Clamp(Float, Float)
   Max(List[Int], Bool)
@@ -364,6 +365,7 @@ def op_name(op: Op) -> String
     Op.LayerNorm(_) -> "layer_norm"
     Op.RmsNorm(_) -> "rms_norm"
     Op.SetRows -> "set_rows"
+    Op.TopK(_) -> "top_k"
     Op.Eq -> "eq"
     Op.Clamp(_, _) -> "clamp"
     Op.Max(_, _) -> "max"
