@@ -570,6 +570,7 @@ def test_the_refusals_of_ggml_name_their_cause() -> Result[Void]
 end
 
 def test_vulkan_matches_the_reference_or_says_why_not() -> Result[Void]
+  try Tensor.vulkan_fp16(false)
   if !Tensor.available(VULKAN)
     IO.warn("SKIP: no Vulkan device 0; the compiled Vulkan parity runs where there is one")
     return ok()

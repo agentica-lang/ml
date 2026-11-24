@@ -236,7 +236,7 @@ is skipped).
 the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan device.
 `test/ggml_compile_test.agc` checks the value and every gradient of a small MLP
 and of the cross-entropy against the reference within 1e-6 (relative to the
-largest value) on the CPU backend and within 1e-2 on Vulkan (fp16 is its default), that a retrace with new values
+largest value) on the CPU backend and on Vulkan, that a retrace with new values
 compiles nothing, `slice`, `gather` and `scatter_add` (an index outside the rows is an error),
 `concat` and `stack` on every axis, `test/ggml_attention_test.agc` (`attention` over grouped heads, masks and the causal flag, `rope`, `permute`, `batch_matmul` and the backward of attention, node by node with `Trace.diff`), the ops of Whisper's forward (`conv1d`,
 `gelu_erf`, layer norm, softmax, masked attention) and the refusals. `test/ggml_turns_test.agc`, in a process of its own, that a
@@ -249,7 +249,9 @@ benchmark's 784 → 512 → 512 → 10 model at batch 256 on Vulkan with
 moves it further than that but within 0.1. Without
 the module, or without a Vulkan device, they assert the absent state instead or
 pass. With `TENSOR_REQUIRE_GGML` set (CI sets it for this package) a missing
-module fails the checks instead of passing them.
+module fails the checks instead of passing them. Run the tests with
+`GGML_VK_DISABLE_F16` unset: a value set to anything makes the process `F32`
+(`ggml_fp16_test.agc` checks the fp16 default).
 
 ### Step time through `Trace`
 
