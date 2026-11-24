@@ -378,7 +378,7 @@ What the numbers say: compile the step, never evaluate op by op on Vulkan.
    `tensor/`, `optional = true`, as the torch module is (decision (b′)).
    [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918) is
    what later lets the module move out to its own package with an opaque
-   handle (note.md §3 item 10). Nothing below depends on it.
+   handle. Nothing below depends on it.
 
    Eager `Tensor.*` on `Ggml` stays possible, so conformance and readback
    work. Each op is then a one-node graph: fine on the CPU, 2 ms on Vulkan.

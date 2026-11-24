@@ -5,28 +5,25 @@ reference backend, libtorch and ggml (CPU and Vulkan). The API is functional, in
 the style of JAX and Nx: values are immutable, and a training step returns new
 parameters.
 
-Status: in progress, in three parts.
+Status: in progress. The API is not stable yet.
 
 Works today: `tensor/` (the reference, libtorch and ggml backends, tracing and
 gradients), `nn/` (layers, forward only), `train/` (losses, SGD and Adam, a
-training loop, a data loader), `hub/` (safetensors checkpoints), `asr/`
-(Whisper on the reference, libtorch and ggml backends, with Hugging Face's token
-ids on the test clips) and `whisper/` (a binding over whisper.cpp).
+training loop, a data loader), `hub/` (safetensors and GGUF checkpoints),
+`asr/` (Whisper on the reference, libtorch and ggml backends, with Hugging
+Face's token ids on the test clips), `transformers/` (BERT, Qwen3 and Qwen2.5)
+and `whisper/` (a binding over whisper.cpp).
 
 Works, but slow: `asr/` on ggml. Its tokens match, but on the test clips it
-runs about 3.5 to 5 times slower than whisper.cpp on CPU and about 10 times
-slower on Vulkan. On libtorch, the real-time factor on jfk went from 0.67 to
-0.34 with [ml#70](https://github.com/agentica-lang/ml/pull/70); the libtorch
-rows of [`benchmarks/README.md`](benchmarks/README.md) predate that change. The
-numbers and the machine are in [`benchmarks/README.md`](benchmarks/README.md);
-the work is in [ml#64](https://github.com/agentica-lang/ml/issues/64).
+runs about 2 to 3 times slower than whisper.cpp on CPU and about 5 times
+slower on Vulkan. The numbers and the machine are in
+[`benchmarks/README.md`](benchmarks/README.md).
 
-Not yet: training benchmarks and metrics
-([ml#50](https://github.com/agentica-lang/ml/issues/50),
-[ml#46](https://github.com/agentica-lang/ml/issues/46)), and CUDA.
+Not yet: what the [roadmap](roadmap.md) lists, from training metrics and
+benchmarks to CUDA.
 
 The tensor stack is designed in [`tensor/DESIGN.md`](tensor/DESIGN.md), with the
-order of work in [`roadmap.md`](roadmap.md) and the open decisions in
+order of work in [`roadmap.md`](roadmap.md) and the original design in
 [issue #1](https://github.com/agentica-lang/ml/issues/1).
 
 ## Packages
