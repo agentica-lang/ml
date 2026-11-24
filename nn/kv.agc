@@ -69,6 +69,10 @@ def written(
   axis: Int,
 ) -> Result[Tensor.Tensor]
   shape = Tensor.shape(fresh)
+  if axis < 0 or axis >= shape.size
+    return error("written: the rows axis #{axis} is not an axis of a tensor of shape #{shape}")
+  end
+
   room = Tensor.shape(spread)[0]
   n = shape[axis]
   rest = (0...shape.size).select { |i| i != axis }

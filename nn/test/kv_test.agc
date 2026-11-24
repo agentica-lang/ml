@@ -54,6 +54,15 @@ def test_written_places_rows_and_grows_the_cache() -> Result[Void]
   Test.eq(try S.floats_of(more), expected)
 end
 
+## A position of `capacity` (the padding of a prompt) names no row: the row is dropped.
+def test_written_drops_a_row_at_the_capacity() -> Result[Void]
+  slots = Padded.Slots(positions: try positions([4, 0]), capacity: 4)
+  spread = try Padded.spread_of(slots, Tensor.Dtype.F32)
+  got = try Padded.written(none, try S.f32([1.0, 2.0, 3.0, 4.0], [1, 2, 2]), spread, 1)
+  try Test.eq(try S.floats_of(got), [3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+  Test.error?(Padded.written(none, try S.f32([1.0, 2.0], [1, 1, 2]), spread, 3))
+end
+
 def test_written_on_a_four_axis_cache_is_set_rows() -> Result[Void]
   # `written` adds into rows that are zero: the cache is empty at the positions it fills.
   old = try S.f32((0...24).map { |i| keep(i) }, [1, 2, 4, 3])
