@@ -1,9 +1,9 @@
 ## A permute that keeps the last axis (a head's width) is a view on ggml, not a copy: every class of op that takes
 ## such a view gives what the reference gives, node by node with `Trace.diff`, on ggml CPU (and Vulkan when it is
 ## there). The classes: a binary op (the view first or second, and as the source of a broadcast), a reduction over a
-## trailing and a leading block, a product, a gather, `concat`, `rms_norm`, `rope` (which permutes the view back) and
-## `attention`, also with one key head over a batch (a view whose head axis is 1 and whose batch stride is not packed:
-## ggml-vulkan copies such a product operand through F16).
+## trailing and a leading block, a product, a gather, `concat`, `rms_norm`, `rope` (which permutes the view back),
+## `where` (a mask that is a view) and `attention`, also with one key head over a batch (a view whose head axis is 1
+## and whose batch stride is not packed: ggml-vulkan copies such a product operand through F16).
 
 import Support from "support"
 import Tensor from "../tensor"
@@ -52,6 +52,11 @@ def test_binary_ops_take_a_view_first_second_and_as_a_broadcast_source() -> Resu
 
     try agree("sub of two views", backend, [a, b]) do |x|
       Tensor.sub(try heads(x[0]), try heads(try Tensor.add(x[0], x[0])))
+    end
+
+    try agree("where with a mask that is a view", backend, [a, b]) do |x|
+      mask = try heads(try Tensor.lt(x[0], try Tensor.add(x[0], x[0])))
+      Tensor.where(mask, try heads(x[0]), try heads(try Tensor.add(x[0], x[0])))
     end
 
     try agree("a view broadcast to a bigger shape", backend, [b, c]) do |x|

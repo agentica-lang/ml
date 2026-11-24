@@ -803,9 +803,9 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       if (c->zero) {
         t = binary(p, ggml_mul, 1, b, a);
       } else if (b->zero) {
-        t = ggml_mul(p->ctx, flip(p, dense(p, a)), full_of(p, c));
+        t = ggml_mul(p->ctx, flip(p, dense(p, a)), dense(p, c));
       } else {
-        t = ggml_add(p->ctx, binary(p, ggml_mul, 1, b, a), ggml_mul(p->ctx, flip(p, dense(p, a)), full_of(p, c)));
+        t = ggml_add(p->ctx, binary(p, ggml_mul, 1, b, a), ggml_mul(p->ctx, flip(p, dense(p, a)), dense(p, c)));
       }
       break;
     case OP_SLICE:
