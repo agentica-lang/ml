@@ -128,6 +128,18 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
   `Native.arena`. Reference and ggml are tested, libtorch is not.
 - `lift.agc` holds what a model needs on ggml (the lifted weights, `staged`,
   `close`, the weight lists), shared by the models of this folder.
+- `distilbert.agc` is BERT without token types and pooler, under DistilBERT's
+  names (`transformer.layer.N.attention.q_lin`, `sa_layer_norm`, `ffn.lin1`,
+  `output_layer_norm`; a `distilbert.` prefix or none), with the layer-norm
+  `eps` of 1e-12 that Hugging Face has in its code. It is a file of its own,
+  not optional fields of `Bert`: the config names differ and `Bert`'s struct
+  is public. It takes `Bert.padding_bias`, and `embed` pools and normalizes
+  in the same graph as the encoder.
+- `sentence.agc` holds what a sentence-embedding model adds to an encoder
+  (`mean_pooled`, `normalized`, `cosine_similarity_loss`). A loss lives with
+  its domain: the cosine itself is generic math in `nn/`
+  (`Nn.cosine_similarity`), and the loss on scored pairs is here, next to
+  the pooling it is trained with.
 - The pins in `agentica.toml` are those of `asr/`: outside this repository
   `transformers` gets the `hub` without the `gamma`/`beta` fallback until the
   next release moves them (the workspace reads the folders).

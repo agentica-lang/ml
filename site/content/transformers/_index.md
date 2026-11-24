@@ -41,6 +41,41 @@ end
 - Reference and ggml are tested; libtorch is not. A sharded checkpoint (`model.safetensors.index.json`) is not supported yet.
 - Installed from outside this repository, `transformers` pins the `hub` of an earlier commit, which does not read `bert-base-uncased`'s `gamma` and `beta` layer norms: it needs the next ml release, which moves the pins.
 
+## DistilBERT
+
+`DistilBert.open(dir, backend)` loads `model.safetensors` and `config.json` of a DistilBERT (`sentence-transformers/msmarco-distilbert-cos-v5`, `distilbert-base-uncased`): BERT's blocks with word and position embeddings only, no token types and no pooler. `DistilBert.run(m, encodings)` pads the encodings to the longest and gives the last hidden state `[batch, seq, dim]`. `DistilBert.embed(m, encodings, normalize)` gives one vector per sentence, `[batch, dim]`: the mean of its token vectors, and with `normalize: true` that mean over its length, which is what a sentence-transformers model with `Pooling` and `Normalize` modules answers.
+
+```agentica
+import DistilBert from "pkg/transformers/distilbert"
+import Tensor from "pkg/tensor/tensor"
+import WordPiece from "pkg/transformers/tokenizer/wordpiece"
+
+def main() -> Void
+  backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+  dir = "msmarco-distilbert-cos-v5"
+  tok = WordPiece.open("#{dir}/tokenizer.json").unwrap!
+  m = DistilBert.open(dir, backend).unwrap!
+  sentences = ["How big is London?", "London has 9 million people."]
+  encodings = sentences.map { |s| WordPiece.encode(tok, s).unwrap! }
+  puts(Tensor.shape(DistilBert.embed(m, encodings, true).unwrap!))
+end
+```
+
+```output
+[2, 768]
+```
+
+- `DistilBert.forward(m, ids, mask)` is `run` on tensors: `I32` ids and an `F32` mask (1.0 for a token, 0.0 for padding), both `[batch, seq]`.
+- The results belong to the caller (`Lift.close`), and `DistilBert.close_model(m)` frees the weights. Nothing may use a closed model.
+- A checkpoint with the `distilbert.` prefix (`DistilBertFor...`) loads too, and its head is ignored. The layer-norm `eps` is 1e-12, as in Hugging Face's code. A `model_type` other than `distilbert`, an activation other than `gelu` and sinusoidal positions are errors.
+- Only `model.safetensors` is read, never `pytorch_model.bin`. Reference and ggml are tested; libtorch is not.
+
+`Sentence` (`pkg/transformers/sentence`) holds the pieces a sentence-embedding model adds to an encoder, each usable inside a trace:
+
+- `Sentence.mean_pooled(hidden, mask)` averages `[batch, seq, width]` over the tokens the `[batch, seq]` mask keeps.
+- `Sentence.normalized(x)` gives each row of `[batch, width]` over its length. A row of zeros stays zeros.
+- `Sentence.cosine_similarity_loss(a, b, scores)` is the mean of `(cosine - score)^2` over pairs of rows (`Nn.cosine_similarity`) with `[batch]` scores: sentence-transformers' `CosineSimilarityLoss`.
+
 ## Qwen3
 
 `Qwen3.open(dir, backend, weights)` loads `config.json` and `model.safetensors` from a folder (or one `.gguf` file, whose key-values give the config) (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). The same loader reads Qwen2.5 (`Qwen/Qwen2.5-0.5B-Instruct`): its `config.json` says `model_type` `qwen2`, which has no query and key norms and has a bias on the query, key and value projections, and `head_dim` is `hidden_size / num_attention_heads` when the config has none. `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token. With `weights: Dtype.F16` the big matrices (the projections, the token table and the output head) are kept as half weights on ggml: half the memory and a decode 39% to 60% faster on Vulkan, with a load close to `F32`'s (the CPU gain is not claimed: see the hub page). With `weights: Dtype.Q8_0` and a `.gguf` file that stores its matrices as `Q8_0`, they stay as quantized blocks on ggml (see the hub page). `F32` is the default and the exact path, and Vulkan multiplies in fp16 by default (`Tensor.vulkan_fp16`), which breaks the Hugging Face goldens with `F32` weights too: `Tensor.vulkan_fp16(false)` before the first ggml call makes it exact, as the checks of this package do.
