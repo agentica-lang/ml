@@ -81,6 +81,7 @@ enum {
   OP_ROPE,        /* args: x, positions; ints: dims, neox, the bits of the base, inverse */
   OP_BATCH_MATMUL,
   OP_NORM,        /* a layer norm over the last axis; ints: eps as the bits of an F32 */
+  OP_SET_ROWS,    /* args: a cache leaf, the rows, their positions; written in place, its result is an output that is the leaf */
   OP_COUNT
 };
 
@@ -88,7 +89,7 @@ static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
   "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
-  "norm",
+  "norm", "set_rows",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -99,6 +100,7 @@ struct port {
   ggml_backend_buffer_t own;
   struct ggml_tensor *conv; /* the bound tensor, converted to or from `own`; else NULL. Its memory is `held` */
   bool set;                               /* bound or prepared for the next run */
+  bool donated;                           /* a leaf a `set_rows` writes in place, or the output that is that leaf: no copy in or out */
   struct tg_storage *held;                /* the memory of the bound tensor, kept until the run is over */
 };
 
@@ -635,8 +637,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT || op == OP_GATHER ||
       op == OP_SCATTER_ADD || op == OP_CONV1D || op == OP_ROPE || op == OP_BATCH_MATMUL) {
     if (nargs != 2) return tg_error(env, "a binary op takes 2 args");
-  } else if (op == OP_WHERE) {
-    if (nargs != 3) return tg_error(env, "where takes 3 args");
+  } else if (op == OP_WHERE || op == OP_SET_ROWS) {
+    if (nargs != 3) return tg_error(env, "where and set_rows take 3 args");
   } else if (op == OP_ATTENTION) {
     if (nargs != 3 && nargs != 4) return tg_error(env, "attention takes q, k, v and an optional mask");
   } else if (op == OP_CONCAT) {
@@ -810,6 +812,23 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       t = reshape(p, scatter_add(p, a, b, ints[0], &n->guard), n->ne);
       break;
     case OP_GELU_ERF: t = ggml_gelu_erf(p->ctx, dense(p, a)); break;
+    case OP_SET_ROWS: {
+      struct port *leaf = NULL;
+      int64_t k;
+
+      if (a->op != OP_LEAF) return tg_error(env, "set_rows writes a leaf, an input of the graph, in place");
+      for (k = 0; k < p->leaf_count; k++) {
+        if (p->leaves[k].t == a->t) leaf = &p->leaves[k];
+      }
+      if (leaf == NULL || a->t->type != GGML_TYPE_F32) return tg_error(env, "set_rows writes an F32 input in place");
+      if (leaf->donated) return tg_error(env, "set_rows writes a leaf in place twice");
+      if (a->ne[0] != b->ne[0] || a->ne[2] != b->ne[2] || a->ne[3] != b->ne[3] || volume(c->ne) != b->ne[1]) {
+        return tg_error(env, "set_rows takes rows of the cache's width, one for each position");
+      }
+      leaf->donated = true;
+      t = ggml_set_rows(p->ctx, a->t, dense(p, b), row_ids(p, c, a->ne[1], &n->guard));
+      break;
+    }
     case OP_NORM: {
       uint32_t bits;
       float eps;
@@ -918,10 +937,17 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   p->checks = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, nouts + p->guard_count);
   for (i = 0; i < nouts; i++) {
     struct gnode *n = &p->nodes[outs[i]];
-    struct ggml_tensor *value = dense(p, n);
+    struct ggml_tensor *value;
     struct ggml_tensor *check;
 
     p->outs[i].t = ggml_new_tensor_4d(p->port_ctx, GGML_TYPE_F32, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
+    if (n->op == OP_SET_ROWS) {
+      /* the output is the leaf itself: nothing to copy or to check, the node only has to run */
+      p->outs[i].donated = true;
+      ggml_build_forward_expand(p->graph, n->t);
+      continue;
+    }
+    value = dense(p, n);
     ggml_set_output(p->outs[i].t);
     ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, value, p->outs[i].t));
     /* 0 * x is NaN for an inf or a NaN; sum_rows first, since one ggml_sum
@@ -1119,7 +1145,18 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
     if (!p->leaves[i].set) return tg_error(env, "run with every leaf bound");
   }
   for (i = 0; i < p->output_count; i++) {
-    if (!p->outs[i].set) return tg_error(env, "run with every output made");
+    if (!p->outs[i].set && !p->outs[i].donated) return tg_error(env, "run with every output made");
+  }
+  for (i = 0; i < p->leaf_count; i++) {
+    int64_t k;
+
+    if (!p->leaves[i].donated) continue;
+    if (p->leaves[i].conv != NULL) return tg_error(env, "an input a set_rows writes in place must be F32");
+    for (k = 0; k < p->leaf_count; k++) {
+      if (k != i && p->leaves[k].held != NULL && p->leaves[k].held == p->leaves[i].held) {
+        return tg_error(env, "an input a set_rows writes in place is bound to another input too");
+      }
+    }
   }
   i = 0;
   values = (float *)malloc((size_t)(p->fill_count + p->output_count + p->guard_count) * sizeof(float));
