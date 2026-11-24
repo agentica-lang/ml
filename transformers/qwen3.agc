@@ -6,6 +6,7 @@
 ##
 ## `Qwen/Qwen3-0.6B` is `bfloat16` on disk; the weights are `F32` in memory.
 
+import Gguf from "pkg/hub/gguf"
 import Hub from "pkg/hub/hub"
 import Load from "pkg/hub/load"
 import Nn from "pkg/nn/nn"
@@ -49,8 +50,14 @@ struct Qwen3
 end
 
 ## The model in `dir`, which holds `config.json` and `model.safetensors` (or
-## the `model.safetensors.index.json` of a sharded one).
+## the `model.safetensors.index.json` of a sharded one), or in the `.gguf` file
+## `dir` names, whose key-values give the config.
 def open(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype = Tensor.Dtype.F32) -> Result[Qwen3]
+  if dir.end_with?(".gguf")
+    c = try Hub.open(dir)
+    return load(c, try gguf_config(c), backend, weights)
+  end
+
   text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
   config = try Source.within("#{dir}/config.json", JSON.decode(text, Config))
   file = "#{dir}/model.safetensors"
@@ -59,6 +66,42 @@ def open(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype = Tensor.Dt
   end
 
   load(try Hub.open(file), config, backend, weights)
+end
+
+## The config of a `qwen3` GGUF, from the key-values that llama.cpp's converter writes. The output head is the file's
+## `output.weight` when there is one (llama.cpp writes it even for a tied model), else the embedding table.
+def gguf_config(c: Hub.Checkpoint) -> Result[Config]
+  h = try c.gguf.to_result("the checkpoint is not a GGUF file")
+  arch = try Gguf.string(h, "general.architecture")
+  keys = try Gguf.int(h, "qwen3.attention.key_length")
+  if keys != try Gguf.int(h, "qwen3.attention.value_length")
+    return error("the key length #{keys} and the value length differ")
+  end
+
+  scaling: Optional[Scaling] = none
+  if Gguf.has?(h, "qwen3.rope.scaling.type")
+    scaling = some(Scaling(rope_type: some("in the GGUF")))
+  end
+
+  ok(
+    Config(
+      model_type: arch,
+      hidden_size: try Gguf.int(h, "qwen3.embedding_length"),
+      num_hidden_layers: try Gguf.int(h, "qwen3.block_count"),
+      num_attention_heads: try Gguf.int(h, "qwen3.attention.head_count"),
+      num_key_value_heads: try Gguf.int(h, "qwen3.attention.head_count_kv"),
+      head_dim: keys,
+      intermediate_size: try Gguf.int(h, "qwen3.feed_forward_length"),
+      vocab_size: (try Hub.shape(c, "model.embed_tokens.weight"))[0],
+      max_position_embeddings: try Gguf.int(h, "qwen3.context_length"),
+      rms_norm_eps: try Gguf.float(h, "qwen3.attention.layer_norm_rms_epsilon"),
+      rope_theta: try Gguf.float(h, "qwen3.rope.freq_base"),
+      hidden_act: "silu",
+      tie_word_embeddings: not Hub.has?(c, "lm_head.weight"),
+      rope_scaling: scaling,
+      sliding_window: none,
+    ),
+  )
 end
 
 ## The model of an open checkpoint, its shapes checked against `config`.
