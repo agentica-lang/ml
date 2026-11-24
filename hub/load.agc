@@ -61,6 +61,12 @@ def weights_from_env() -> Result[Tensor.Dtype]
   end
 end
 
+## `VULKAN_FP16=1` makes Vulkan multiply in fp16 (`Tensor.vulkan_fp16`), for the tools; it must come before any ggml call.
+def vulkan_fp16_from_env() -> Result[Void]
+  return Tensor.vulkan_fp16(true) if System.env("VULKAN_FP16").unwrap_or("0") == "1"
+  ok()
+end
+
 ## The float tensor `name` as `F32`, of `rank`.
 def weight(c: Hub.Checkpoint, name: String, rank: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
   matrix(c, name, rank, backend, Tensor.Dtype.F32)

@@ -33,6 +33,7 @@ def main() -> Void
     System.exit(2)
   end
 
+  _ = Load.vulkan_fp16_from_env()
   device = Tensor.Device.Cpu
   if args.size > 2 and args[2] == "vulkan"
     device = Tensor.Device.Vulkan(0)

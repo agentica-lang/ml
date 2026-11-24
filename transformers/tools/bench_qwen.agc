@@ -3,6 +3,9 @@
 ## steps after it. Prints `RESULT load_ms prompt_tokens_per_s decode_tokens_per_s`. Run from `transformers/`:
 ##
 ##   agentica tools/bench_qwen.agc MODEL_DIR [cpu|vulkan]
+##
+## `WEIGHTS=f16` loads the big matrices as half weights and `VULKAN_FP16=1` makes Vulkan multiply in fp16;
+## both are off by default.
 
 import Generate from "../generate"
 import Qwen3 from "../qwen3"
@@ -19,6 +22,7 @@ def main() -> Void
     System.exit(2)
   end
 
+  _ = Load.vulkan_fp16_from_env()
   device = Tensor.Device.Cpu
   if args.size > 1 and args[1] == "vulkan"
     device = Tensor.Device.Vulkan(0)

@@ -12,6 +12,8 @@
 ## ```
 ##
 ## MODEL_DIR holds `model.safetensors`, `config.json` and `tokenizer.json`.
+## `WEIGHTS=f16` loads the big matrices as half weights (ggml only) and `VULKAN_FP16=1` makes Vulkan multiply in
+## fp16 (`Tensor.vulkan_fp16`); both are off by default.
 ## BACKEND is `torch` (libtorch, the default), `reference` (the pure one,
 ## slow), `ggml` (ggml on the CPU) or `vulkan` (ggml on Vulkan device 0); CASE
 ## runs only that case's index.
@@ -158,6 +160,7 @@ def spans_match(got: List[Span], want: List[Span], tolerance: Float) -> Bool
 end
 
 def backend_of(name: String) -> Result[Tensor.Backend]
+  _ = Load.vulkan_fp16_from_env()
   case name
     "torch" -> ok(Tensor.Backend.Torch(Tensor.Device.Cpu))
     "reference" -> ok(Tensor.Backend.Reference)
