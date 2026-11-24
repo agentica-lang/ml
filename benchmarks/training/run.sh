@@ -8,7 +8,7 @@
 #
 # Every row runs on the CPUs 0 to THREADS-1 (taskset: ggml and XLA size their pool from the affinity) with
 # OMP_NUM_THREADS=THREADS (libtorch and PyTorch). THREADS is 8, the threads of the machine. `run` refuses to start
-# when the load average is above 0.5. The venvs are `venv-torch` (torch 2.6.0+cpu) and `venv-jax`, in
+# when the load average is above 1.0. The venvs are `venv-torch` (torch 2.6.0+cpu) and `venv-jax`, in
 # ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}.
 set -eu
 
@@ -85,7 +85,7 @@ case ${1:-} in
   check) grid "4 8" 2 "${TMPDIR:-/tmp}/training-check.jsonl" && python3 "$here/table.py" "${TMPDIR:-/tmp}/training-check.jsonl" ;;
   run)
     load=$(cut -d' ' -f1 /proc/loadavg)
-    awk -v l="$load" 'BEGIN { exit !(l > 0.5) }' && { echo "run.sh: the load average is $load, the machine is not quiet" >&2; exit 1; }
+    awk -v l="$load" 'BEGIN { exit !(l > 1.0) }' && { echo "run.sh: the load average is $load, the machine is not quiet" >&2; exit 1; }
     grid "64 256 1024 4096" "" "${2:-results.jsonl}"
     ;;
   *) echo "usage: run.sh setup|check|run [OUT]" >&2; exit 2 ;;
