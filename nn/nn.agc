@@ -239,12 +239,12 @@ def project(
   case p.rope
     some(r) ->
       q = try rotate(r, q, positions)
-      keyed = memory_positions
-      if keyed.none?
-        keyed = positions
+      key_positions = memory_positions
+      if key_positions.none?
+        key_positions = positions
       end
 
-      k = try rotate(r, k, keyed)
+      k = try rotate(r, k, key_positions)
     none -> nil
   end
 
@@ -570,7 +570,7 @@ def merge_heads(x: Tensor.Tensor) -> Result[Tensor.Tensor]
   Tensor.reshape(try Tensor.permute(x, [0, 2, 1, 3]), [shape[0], shape[2], shape[1] * shape[3]])
 end
 
-## `x` (`[batch, heads, seq, width]`) with the positions `0...seq`.
+## `x` (`[batch, heads, seq, width]`) rotated by `positions` if given, otherwise `0...seq`.
 def rotate(r: Rope, x: Tensor.Tensor, positions: Optional[Tensor.Tensor]) -> Result[Tensor.Tensor]
   seq = Tensor.shape(x)[2]
   case positions

@@ -91,7 +91,9 @@ that are the layer's own (rank of `positional`, table length, heads).
   but a decoder that keeps one must rotate the new token's key at its own
   position and read the cached keys as they are: `project` takes the integer
   `positions` (queries) and `memory_positions` (keys; the queries' when only
-  those are given), and `attend` takes the heads or a cache of them.
+  those are given: only `positions` means self-attention, pass
+  `memory_positions` for cross-attention), and `attend` takes the heads or a
+  cache of them.
   `attention` is their composition, with the same results as before.
 - **Attention is `Tensor.attention`.** `attention` splits the projections into
   heads with `reshape` and `permute`, applies the query and key norms, then

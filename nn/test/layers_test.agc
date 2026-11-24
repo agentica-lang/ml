@@ -283,21 +283,19 @@ def test_positions_start_rope_where_they_say() -> Result[Void]
   plain = try S.floats_of(try Nn.attention(p, x, x))
   zero = try Tensor.arange(0, 3, 1, Tensor.Dtype.I32, S.REF)
   later = try Tensor.arange(5, 8, 1, Tensor.Dtype.I32, S.REF)
-  try S.expect_close(try S.floats_of(try Nn.attention(p, x, x, none, false, some(zero))), plain, ABS, REL, "0...3")
-  moved = try S.floats_of(try Nn.attention(p, x, x, none, false, some(later)))
+  try S.expect_close(try S.floats_of(try Nn.attention(p, x, x, positions: some(zero))), plain, ABS, REL, "0...3")
+  moved = try S.floats_of(try Nn.attention(p, x, x, positions: some(later)))
   try Test.assert(moved != plain, "positions 5...8 gave the output of 0...3")
-  try Test.error?(Nn.attention(p, x, x, none, false, some(try Tensor.arange(0, 2, 1, Tensor.Dtype.I32, S.REF))))
+  try Test.error?(Nn.attention(p, x, x, positions: some(try Tensor.arange(0, 2, 1, Tensor.Dtype.I32, S.REF))))
   # Cross-attention over more keys than queries: each side has its own positions.
   memory = try S.f32(Init.uniform_values(40, 1.0, 67), [1, 5, 8])
-  try Test.error?(Nn.attention(p, x, memory, none, false, some(zero)))
+  try Test.error?(Nn.attention(p, x, memory, positions: some(zero)))
   both = try Nn.attention(
     p,
     x,
     memory,
-    none,
-    false,
-    some(zero),
-    some(try Tensor.arange(0, 5, 1, Tensor.Dtype.I32, S.REF)),
+    positions: some(zero),
+    memory_positions: some(try Tensor.arange(0, 5, 1, Tensor.Dtype.I32, S.REF)),
   )
 
   S.expect_close(try S.floats_of(both), try S.floats_of(try Nn.attention(p, x, memory)), ABS, REL, "cross")
