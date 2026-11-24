@@ -54,6 +54,32 @@ def test_a_decoder_block_agrees_with_the_reference() -> Result[Void]
   S.expect_close(try got, try S.floats_of(want), ABS, REL, "decoder_block")
 end
 
+## A Qwen-like block (grouped-query attention, rope, query and key norms, RMS
+## norms, a gated MLP, causal) with random norm scales.
+def test_a_qwen_like_block_agrees_with_the_reference() -> Result[Void]
+  return absent() if !Tensor.available(S.TORCH)
+  data = Init.uniform_values(96, 1.0, 25)
+  options = Nn.BlockOptions(
+    kv_heads: some(2),
+    rope: some(Nn.Rope()),
+    qk_norm: true,
+    bias: false,
+    rms: true,
+    gated: true,
+    eps: 0.000001,
+  )
+
+  start = try Nn.init_encoder_block(16, 4, 24, Nn.Activation.Silu, 8, S.REF, options)
+  block = try S.jitter_encoder_block(start, 40)
+  want = try Nn.encoder_block(block, try S.f32(data, [2, 3, 16]), none, true)
+  got: Result[List[Float]] = Native.arena do
+    on = try S.map_encoder_block(block, ->(t: Tensor.Tensor) { S.move(t, S.TORCH) })
+    S.floats_of(try Nn.encoder_block(on, try S.f32(data, [2, 3, 16], S.TORCH), none, true))
+  end
+
+  S.expect_close(try got, try S.floats_of(want), ABS, REL, "qwen-like block")
+end
+
 ## The block made and run in one arena, the way a caller runs a step.
 def on_torch(data: List[Float]) -> Result[Tensor.Tensor]
   Native.arena do
