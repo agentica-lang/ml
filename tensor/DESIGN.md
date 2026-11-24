@@ -97,8 +97,10 @@ Attention: `permute, attention, rope`. `permute(t, axes)` is the general axis
 permutation (`transpose` reverses every axis). `attention(q, k, v, mask?,
 scale?)` is `softmax(scale q kᵀ + mask) v` over `[batch, heads, q_len, dim]`,
 with grouped-query attention when the kv heads divide the heads; the mask is
-additive, and `causal: true` is the wrapper's, which builds the causal mask
-from `arange` and `lt`. `rope(x, positions, base, dims, neox, inverse)` is the
+additive (finite or `-inf`; `q`, `k`, `v` and the mask are never `NaN`, and a query whose
+every key is `-inf` is an error on every backend), and `causal: true` is the
+wrapper's, which builds the causal mask from `arange` and `lt` (it needs no more
+queries than keys). `rope(x, positions, base, dims, neox, inverse)` is the
 rotary embedding of `x [..., seq, width]`. They are primitives so that ggml and
 libtorch can use their fused kernels, and so that the graph has one node where
 the per-head loop had a hundred; each has a backward rule over the primitives
@@ -357,8 +359,8 @@ end
   repeats the kv heads over a group of query heads, and `soft_max_ext` takes the
   scale and the mask; not `flash_attn_ext`, which wants an `F16` mask padded to
   a multiple of 64 rows and, on Vulkan, an `F16` cache: a node of the same
-  signature can use it later). A scale and a base cross as integers of
-  nine decimals, so `|x| < 9e9`. `eq`, `lt` and `where`
+  signature can use it later). A scale and a base cross as the bits of a
+  double and must fit an `F32`. `eq`, `lt` and `where`
   emulated in `F32` arithmetic (`eq` as `1 - step(|a - b|)`, exact for integers
   below 2^24 and true when an operand is NaN; `where` as `c·x + (1 - c)·y`,
   exact only when both branches are finite): enough for an MLP and softmax
@@ -582,7 +584,7 @@ The price:
   the scores between them), folds the query heads of a group into the rows of
   the scores (`[B, H, Sq, D]` as `[B, Hkv, H/Hkv * Sq, D]`) so every product is
   a rank-4 `batch_matmul` and the kv heads are never repeated, and gives the
-  mask no gradient (it is a constant of the rule). Each is checked against a
+  mask `dscores` summed over the batch and head axes it broadcast. Each is checked against a
   central difference, with grouped heads, a mask per head and the causal flag,
   and on ggml against the reference node by node (`test/ggml_attention_test.agc`).
 - Still open: rules for `pow`, `clamp`, `batch_matmul`, `to_dtype` between

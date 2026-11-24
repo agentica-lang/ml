@@ -169,7 +169,7 @@ end
 
 ## A traced `permute`: the axes of `t` in the order `axes` names.
 def permute(t: Types.Tensor, axes: List[Int]) -> Types.Tensor
-  record(Types.Op.Permute(axes), [t], Shapes.permuted_shape(t.shape, axes), t.dtype)
+  record(Types.Op.Permute(axes), [t], Types.permuted_shape(t.shape, axes), t.dtype)
 end
 
 ## A traced `attention` over `[batch, heads, q_len, value_dim]`; the additive

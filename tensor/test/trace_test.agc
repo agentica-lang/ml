@@ -394,6 +394,28 @@ def test_attention_with_a_group_of_heads_and_a_mask_per_head_matches_a_central_d
   check_grad([q, k, v]) do |xs| weigh(try Tensor.attention(xs[0], xs[1], xs[2], some(Trace.constant(shared)))) end
 end
 
+def test_the_mask_of_attention_matches_a_central_difference() -> Result[Void]
+  q = try f64(gen_floats(1, 2 * 4 * 2 * 2), [2, 4, 2, 2])
+  k = try f64(gen_floats(2, 2 * 2 * 3 * 2), [2, 2, 3, 2])
+  v = try f64(gen_floats(3, 2 * 2 * 3 * 2), [2, 2, 3, 2])
+  for shape in [[2, 3], [1, 1, 2, 3], [2, 1, 2, 3], [1, 4, 2, 3], [2, 4, 2, 3]]
+    n = shape.reduce(1) do |acc, d| acc * d end
+    mask = try f64(gen_floats(4, n), shape)
+    try check_grad([q, k, v, mask]) do |xs| weigh(try Tensor.attention(xs[0], xs[1], xs[2], some(xs[3]))) end
+  end
+
+  ok()
+end
+
+def test_attention_with_minus_infinity_in_its_mask_matches_a_central_difference() -> Result[Void]
+  q = try f64(gen_floats(1, 1 * 4 * 2 * 2), [1, 4, 2, 2])
+  k = try f64(gen_floats(2, 1 * 2 * 3 * 2), [1, 2, 3, 2])
+  v = try f64(gen_floats(3, 1 * 2 * 3 * 2), [1, 2, 3, 2])
+  open = -1.0e308 * 10.0
+  hidden = try f64([0.0, open, 0.5, open, 0.0, open], [2, 3])
+  check_grad([q, k, v]) do |xs| weigh(try Tensor.attention(xs[0], xs[1], xs[2], some(Trace.constant(hidden)))) end
+end
+
 def test_rope_matches_a_central_difference() -> Result[Void]
   x = try f64([0.5, -1.0, 0.2, 0.3, 1.2, -0.7, 0.4, 0.9, 0.1, -0.6, 0.8, 0.3], [3, 4])
   at = try Support.i64([0, 2, 5], [3])

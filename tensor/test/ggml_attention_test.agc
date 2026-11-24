@@ -35,6 +35,32 @@ def agree(
   end
 end
 
+## The same as `agree` with the tolerances given.
+def diff_within(
+  what: String,
+  backend: Tensor.Backend,
+  args: List[Tensor.Tensor],
+  rtol: Float,
+  atol: Float,
+  f: Fn[List[Tensor.Tensor], Result[Tensor.Tensor]],
+) -> Result[Void]
+  d = try Trace.diff(args, REF, backend, rtol: rtol, atol: atol, f: f)
+  case d.first
+    some(n) -> error("#{what} on #{backend}: node #{n.node} (#{n.op}) differs by #{n.max_abs}")
+    none -> ok()
+  end
+end
+
+## `args` on `backend`, through the host.
+def moved(backend: Tensor.Backend, args: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  out: List[Tensor.Tensor] = []
+  for t in args
+    out = out.push(try Tensor.from_list(try Tensor.to_list(t), Tensor.shape(t), Tensor.dtype(t), backend))
+  end
+
+  ok(out)
+end
+
 def f32(seed: Int, shape: List[Int]) -> Result[Tensor.Tensor]
   Support.f32(Support.ramp(seed, shape.reduce(1) do |acc, n| acc * n end), shape)
 end
@@ -62,6 +88,99 @@ def test_attention_agrees_over_grouped_heads_masks_and_the_causal_flag() -> Resu
 
     try agree("causal attention with a mask per batch", backend, [q, k, v, per_head], 6) do |a|
       Tensor.attention(a[0], a[1], a[2], some(a[3]), none, true)
+    end
+  end
+
+  ok()
+end
+
+def test_attention_agrees_for_masks_per_head_and_the_decode_step() -> Result[Void]
+  q = try f32(21, [2, 4, 3, 8])
+  k = try f32(22, [2, 2, 5, 8])
+  v = try f32(23, [2, 2, 5, 6])
+  every = try f32(24, [2, 4, 3, 5])
+  one_batch = try f32(25, [1, 4, 3, 5])
+  step_q = try f32(26, [1, 4, 1, 8])
+  step_k = try f32(27, [1, 2, 7, 8])
+  step_v = try f32(28, [1, 2, 7, 8])
+  step_mask = try f32(29, [1, 7])
+  for backend in try engines()
+    try agree("a mask per batch and head", backend, [q, k, v, every], 1) do |a|
+      Tensor.attention(a[0], a[1], a[2], some(a[3]))
+    end
+
+    try agree("a mask per head over two batches", backend, [q, k, v, one_batch], 1) do |a|
+      Tensor.attention(a[0], a[1], a[2], some(a[3]))
+    end
+
+    try agree("a decode step over grouped heads", backend, [step_q, step_k, step_v], 1) do |a|
+      Tensor.attention(a[0], a[1], a[2])
+    end
+
+    try agree("a masked decode step", backend, [step_q, step_k, step_v, step_mask], 1) do |a|
+      Tensor.attention(a[0], a[1], a[2], some(a[3]), none, true)
+    end
+  end
+
+  ok()
+end
+
+def test_attention_agrees_with_minus_infinity_and_refuses_a_hidden_row() -> Result[Void]
+  q = try f32(31, [1, 4, 3, 4])
+  k = try f32(32, [1, 2, 4, 4])
+  v = try f32(33, [1, 2, 4, 4])
+  open = -1.0e308 * 10.0
+  keep = try Support.f32([0.0, open, 0.5, open, 0.0, open, 0.0, 0.0, 0.0, open, 0.0, 0.0], [3, 4])
+  hidden = try Support.f32([0.0, open, 0.5, open, open, open, open, open, 0.0, open, 0.0, 0.0], [3, 4])
+  for backend in try engines()
+    try agree("attention with -inf in the mask", backend, [q, k, v, keep], 1) do |a|
+      Tensor.attention(a[0], a[1], a[2], some(a[3]))
+    end
+
+    try backward_agrees(backend, [q, k, v, keep])
+    try Test.error?(
+      Trace.eval(try moved(backend, [q, k, v, hidden])) do |a| Tensor.attention(a[0], a[1], a[2], some(a[3])) end,
+    )
+  end
+
+  ok()
+end
+
+## The gradients of an attention over `args` (`q`, `k`, `v`, mask) on `backend` and on the reference, within 1e-4.
+## `Trace.diff` cannot compare these: it reads every node, and the scores hold `-inf`.
+def backward_agrees(backend: Tensor.Backend, args: List[Tensor.Tensor]) -> Result[Void]
+  got = try Trace.value_and_grad(try moved(backend, args.take(3)), loss_over(try moved(backend, args.drop(3))))
+  want = try Trace.value_and_grad(args.take(3), loss_over(args.drop(3)))
+  for i in 0...3
+    have = try Support.floats_of(got.grads[i])
+    exact = try Support.floats_of(want.grads[i])
+    for j in 0...exact.size
+      return error("gradient #{i} value #{j}: #{have[j]} against #{exact[j]}") if (have[j] - exact[j]).abs > 0.0001
+    end
+  end
+
+  ok()
+end
+
+def loss_over(mask: List[Tensor.Tensor]) -> Fn[List[Tensor.Tensor], Result[Tensor.Tensor]]
+  ->(a: List[Tensor.Tensor]) { Tensor.sum(try Tensor.attention(a[0], a[1], a[2], some(Trace.constant(mask[0])))) }
+end
+
+def test_rope_agrees_at_ranks_two_and_three_and_for_a_big_base_and_late_positions() -> Result[Void]
+  two = try f32(41, [5, 8])
+  three = try f32(42, [3, 5, 8])
+  early = try positions([0, 1, 2, 3, 4])
+  late = try positions([1000, 1001, 2047, 4000, 8191])
+  for backend in try engines()
+    try agree("rope of a rank-2 tensor", backend, [two, early], 1) do |t| Tensor.rope(t[0], t[1]) end
+
+    try agree("rope of a rank-3 tensor", backend, [three, early], 1) do |t|
+      Tensor.rope(t[0], t[1], 10000.0, none, false)
+    end
+
+    # ggml turns by an angle it makes in F32: at position 8191 that is a few 1e-4 off a double's
+    try diff_within("rope at late positions", backend, [three, late], 0.002, 0.002) do |t|
+      Tensor.rope(t[0], t[1], 1000000.0)
     end
   end
 
@@ -102,9 +221,9 @@ def test_the_backward_of_attention_agrees() -> Result[Void]
       sum_of(try Trace.gradients(loss, a))
     end
 
-    try agree("the gradient of a masked attention", backend, [q, k, v, per_head], 20) do |a|
+    try agree("the gradient of a masked attention, mask included", backend, [q, k, v, per_head], 20) do |a|
       loss = try Tensor.sum(try Tensor.attention(a[0], a[1], a[2], some(a[3])))
-      sum_of(try Trace.gradients(loss, [a[0], a[1], a[2]]))
+      sum_of(try Trace.gradients(loss, a))
     end
 
     try agree("the gradient of rope", backend, [q, at], 3) do |a|

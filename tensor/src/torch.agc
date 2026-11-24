@@ -567,7 +567,7 @@ end
 def permute(device: Types.Device, t: Types.Tensor, axes: List[Int]) -> Result[Types.Tensor]
   _ = try ready(device, "permute")
   h = try handle_of(t)
-  one(device, t.dtype, TorchShapes.permuted_shape(t.shape, axes)) do Raw.permute(h, axes) end
+  one(device, t.dtype, Types.permuted_shape(t.shape, axes)) do Raw.permute(h, axes) end
 end
 
 ## Scaled dot-product attention (`at::scaled_dot_product_attention`); the

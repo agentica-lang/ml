@@ -256,6 +256,21 @@ def test_attention_agrees_with_the_reference_over_grouped_heads_masks_and_the_ca
   ok()
 end
 
+def test_attention_with_minus_infinity_agrees_and_a_hidden_row_is_an_error() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  open = -1.0e308 * 10.0
+  keep = [0.0, open, 0.5, open, 0.0, open, 0.0, 0.0, 0.0, open, 0.0, 0.0, 0.0, 0.0, 0.0]
+  hidden = [0.0, open, 0.5, open, 0.0, open, open, open, open, open, 0.0, 0.0, 0.0, 0.0, 0.0]
+  try Test.error?(masked_attention(Conform.TORCH, hidden))
+  try Test.error?(masked_attention(Conform.REF, hidden))
+  Conform.agrees(
+    try masked_attention(Conform.TORCH, keep),
+    try masked_attention(Conform.REF, keep),
+    "attention with -inf in the mask",
+  )
+end
+
 def test_permute_agrees_with_the_reference() -> Result[Void]
   return Conform.absent() if !Conform.available()
 
@@ -458,4 +473,12 @@ def rope_agrees(neox: Bool, inverse: Bool, dims: Int) -> Result[Void]
   )
 
   Conform.agrees(got, want, "rope neox #{neox}, inverse #{inverse}, dims #{dims}")
+end
+
+## `attention` over `[2, 4, 3, 4]` queries and two kv heads of five keys, with the `[3, 5]` mask `bias`.
+def masked_attention(backend: Tensor.Backend, bias: List[Float]) -> Result[Tensor.Tensor]
+  q = try Tensor.floats(Support.ramp(1, 2 * 4 * 3 * 4), [2, 4, 3, 4], backend)
+  k = try Tensor.floats(Support.ramp(2, 2 * 2 * 5 * 4), [2, 2, 5, 4], backend)
+  v = try Tensor.floats(Support.ramp(3, 2 * 2 * 5 * 3), [2, 2, 5, 3], backend)
+  Tensor.attention(q, k, v, some(try Tensor.floats(bias, [3, 5], backend)))
 end

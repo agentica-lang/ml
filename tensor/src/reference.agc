@@ -384,11 +384,18 @@ def neg(t: Types.Tensor) -> Result[Types.Tensor]
   ok(out)
 end
 
-## Elementwise `exp`, float only, finite inputs only: saturation to `+inf`
-## is a legitimate answer, but `NaN`/`inf` in never evaluates.
+## Elementwise `exp`, float only, finite inputs or `-inf`: saturation to `+inf`
+## is a legitimate answer, and so is `exp(-inf) = 0` (a masked score), but
+## `NaN` and `+inf` in never evaluate.
 def exp(t: Types.Tensor) -> Result[Types.Tensor]
   return error("exp needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  xs = try require_finite(try data_of(t), "exp")
+  xs = try data_of(t)
+  for i in 0...xs.size
+    if !Types.is_finite(xs[i]) and !(xs[i] < -1.0e308)
+      return error("exp needs finite values or -inf, got a NaN or +inf at index #{i}")
+    end
+  end
+
   out = xs.map do |x: Float| exp_ref(x) end
   ok(make(t.shape, t.dtype, out))
 end
@@ -822,7 +829,9 @@ end
 ## Scaled dot-product attention over `q` `[B, H, Sq, D]`, `k` `[B, Hkv, Sk, D]`
 ## and `v` `[B, Hkv, Sk, Dv]`: `softmax(scale * q k^T + mask) v` per query row,
 ## each head of `q` reading kv head `h / (H / Hkv)`. `mask` is additive, `[Sq, Sk]`
-## or `[Bm, Hm, Sq, Sk]` with `Bm` in `{1, B}` and `Hm` in `{1, H}`.
+## or `[Bm, Hm, Sq, Sk]` with `Bm` in `{1, B}` and `Hm` in `{1, H}`, finite or `-inf`.
+## `q`, `k` and `v` are finite, and a query whose every key is `-inf` is an error,
+## not a `NaN`.
 def attention(
   q: Types.Tensor,
   k: Types.Tensor,
@@ -838,15 +847,21 @@ def attention(
   sk = k.shape[2]
   dv = v.shape[3]
   group = heads / kv_heads
-  qs = try data_of(q)
-  ks = try data_of(k)
-  vs = try data_of(v)
+  qs = try require_finite(try data_of(q), "attention")
+  ks = try require_finite(try data_of(k), "attention")
+  vs = try require_finite(try data_of(v), "attention")
   ms: List[Float] = []
   mask_batches = 1
   mask_heads = 1
   case mask
     some(m) ->
       ms = try data_of(m)
+      for x in ms
+        if !Types.is_finite(x) and !(x < 0.0)
+          return error("attention needs a mask of finite values or -inf, got a NaN or +inf")
+        end
+      end
+
       if m.shape.size == 4
         mask_batches = m.shape[0]
         mask_heads = m.shape[1]
@@ -884,6 +899,12 @@ def attention(
         end
 
         top = scores.max.unwrap_or(0.0)
+        if !Types.is_finite(top)
+          return error(
+            "attention: query #{i} of batch #{bi}, head #{hi} has every key masked (or a score that is not finite)",
+          )
+        end
+
         weights = scores.map { |x| exp_ref(x - top) }
         total = weights.sum
         for c in 0...dv

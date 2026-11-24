@@ -499,12 +499,15 @@ an_term torch_relu(an_env *env, struct torch_TensorHandle_state *a) {
   }
 }
 
+/* `exp` takes finite values and `-inf` (`exp(-inf)` is `0`, a masked score); a NaN or `+inf` never reaches it. */
 an_term torch_exp(an_env *env, struct torch_TensorHandle_state *a) {
-  an_term failure;
+  const torch::Tensor &t = *a->value;
 
   try {
-    if (!all_finite(*a->value, env, "exp", &failure)) return failure;
-    return ok_tensor(env, a->value->exp());
+    if (t.numel() > 0 && (t.isnan().any().item<bool>() || t.isposinf().any().item<bool>())) {
+      return error_text(env, "exp needs finite values or -inf, got a NaN or +inf");
+    }
+    return ok_tensor(env, t.exp());
   } catch (...) {
     return failed(env, "exp");
   }
@@ -1065,6 +1068,14 @@ static an_term attend(an_env *env, const torch::Tensor &q, const torch::Tensor &
                 mask->size(3) == k.size(2);
     if (!plain && !wide) return error_text(env, "attention takes a mask [Sq, Sk] or [B|1, H|1, Sq, Sk], got " + shape_text(*mask));
   }
+  if (mask != NULL && mask->numel() > 0) {
+    if (mask->isnan().any().item<bool>() || mask->isposinf().any().item<bool>()) {
+      return error_text(env, "attention takes a mask of finite values or -inf, got a NaN or +inf");
+    }
+    if ((mask->isneginf().all(-1)).any().item<bool>()) {
+      return error_text(env, "attention: a row of the mask hides every key");
+    }
+  }
 
   try {
     int64_t group = q.size(1) / k.size(1);
@@ -1073,7 +1084,12 @@ static an_term attend(an_env *env, const torch::Tensor &q, const torch::Tensor &
     c10::optional<torch::Tensor> bias;
 
     if (mask != NULL) bias = *mask;
-    return ok_tensor(env, at::scaled_dot_product_attention(q, keys, values, bias, 0.0, false, scale).contiguous());
+    torch::Tensor out = at::scaled_dot_product_attention(q, keys, values, bias, 0.0, false, scale).contiguous();
+
+    if (out.numel() > 0 && !out.isfinite().all().item<bool>()) {
+      return error_text(env, "attention needs finite q, k and v, and a key left for every query");
+    }
+    return ok_tensor(env, out);
   } catch (...) {
     return failed(env, "attention");
   }
