@@ -1465,6 +1465,11 @@ an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t ou
     if (i != output && p->outs[i].held == t->store) alias = true;
   }
   if (!alias) {
+    /* the run writes `t`: what `upload` kept of it on the host is not its value any more */
+    if (t->store != NULL) {
+      free(t->store->mirror);
+      t->store->mirror = NULL;
+    }
     attach(p, &p->outs[output], t);
     attached = p->outs[output].conv == NULL || own_memory(p, &p->outs[output]);
   }
@@ -1630,7 +1635,7 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   for (i = 0; why == NULL && i < p->leaf_count; i++) {
     if (p->leaves[i].conv == NULL) continue;
     if (!own_memory(p, &p->leaves[i])) why = "out of memory";
-    else why = tg_copy(p->leaves[i].conv, p->leaves[i].t);
+    else why = tg_copy(p->leaves[i].conv, p->leaves[i].t, p->leaves[i].held != NULL ? p->leaves[i].held->mirror : NULL);
   }
   d = &devices[p->device + 1];
   if (d->galloc == NULL) d->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(p->backend));
@@ -1670,7 +1675,7 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
       snprintf(text, sizeof text, "output %" PRId64 " of the graph holds a value that is not finite", i);
       why = text;
     } else if (p->outs[i].conv != NULL) {
-      why = tg_copy(p->outs[i].t, p->outs[i].conv);
+      why = tg_copy(p->outs[i].t, p->outs[i].conv, NULL);
     }
   }
   for (i = 0; i < p->view_count; i++) {

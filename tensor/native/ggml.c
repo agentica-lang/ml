@@ -84,6 +84,7 @@ static void free_storage(void *arg) {
 
   if (s->buffer != NULL) ggml_backend_buffer_free(s->buffer);
   if (s->ctx != NULL) ggml_free(s->ctx);
+  free(s->mirror);
   free(s);
 }
 
@@ -317,7 +318,7 @@ static bool make_tensor(an_env *env, int64_t device, ggml_list_Int *shape, enum 
 /* 2^24: the integers F32 holds exactly. */
 #define EXACT 16777216.0f
 
-const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst) {
+const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst, const int32_t *mirror) {
   int64_t n = ggml_nelements(src), i;
   void *bytes;
   const char *why = NULL;
@@ -333,7 +334,8 @@ const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst) {
   }
   bytes = malloc(ggml_nbytes(src) > 0 ? ggml_nbytes(src) : 1);
   if (bytes == NULL) return "out of memory";
-  ggml_backend_tensor_get(src, bytes, 0, ggml_nbytes(src));
+  if (mirror != NULL && src->type == GGML_TYPE_I32) memcpy(bytes, mirror, ggml_nbytes(src));
+  else ggml_backend_tensor_get(src, bytes, 0, ggml_nbytes(src));
   for (i = 0; i < n && why == NULL; i++) {
     if (src->type == GGML_TYPE_I32) {
       int32_t v = ((int32_t *)bytes)[i];
@@ -363,6 +365,10 @@ static void put(void *bytes, int64_t i, enum ggml_type type, double v) {
   else ((float *)bytes)[i] = (float)v;
 }
 
+/* An I32 tensor of up to this many bytes keeps its values on the host too (`mirror`): the ids and positions a graph
+   takes as F32 are then converted without a read from the device. */
+#define MIRROR_MAX 65536
+
 /* Copies `bytes` into the tensor and answers it. */
 static an_term store(an_env *env, struct ggml_TensorHandle_state *state, void *bytes, an_term term) {
   bool held;
@@ -370,7 +376,8 @@ static an_term store(an_env *env, struct ggml_TensorHandle_state *state, void *b
   lock_for(state->vulkan, &held);
   ggml_backend_tensor_set(state->t, bytes, 0, ggml_nbytes(state->t));
   unlock_for(held);
-  free(bytes);
+  if (state->t->type == GGML_TYPE_I32 && ggml_nbytes(state->t) <= MIRROR_MAX) state->store->mirror = (int32_t *)bytes;
+  else free(bytes);
   return ggml_result_TensorHandle_ok(env, term);
 }
 

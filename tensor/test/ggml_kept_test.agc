@@ -254,3 +254,30 @@ def test_a_graph_run_again_reads_the_tensors_of_its_own_run() -> Result[Void]
   Trace.close(compiled)
   ok()
 end
+
+## An I32 tensor keeps its values on the host for the graphs that take it as F32. Once a run wrote the tensor
+## (`into`), a later run reads what was written, not what was uploaded.
+def test_an_i32_tensor_a_run_wrote_is_read_from_its_device() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  ints = ->(first: Int) { (0...46).map { |i| Tensor.Values.Int(first + i) } }
+  spec = Trace.Spec(shape: [46], dtype: Tensor.Dtype.I32, backend: CPU)
+  copied = try Trace.compile([spec], ->(a: List[Tensor.Tensor]) { ok([try Tensor.reshape(a[0], [46])]) })
+  halved = try Trace.compile(
+    [spec],
+    ->(a: List[Tensor.Tensor]) {
+      ok([
+        try Tensor.mul(
+          try Tensor.to_dtype(a[0], Tensor.Dtype.F32),
+          Trace.constant(try floats((0...46).map { |_| 0.5 }, [46])),
+        ),
+      ])
+    },
+  )
+
+  target = try Tensor.from_list(ints.call(100), [46], Tensor.Dtype.I32, CPU)
+  try Test.eq(try run(halved, target), (0...46).map { |i| (100 + i).to_f * 0.5 })
+  source = try Tensor.from_list(ints.call(7), [46], Tensor.Dtype.I32, CPU)
+  _ = try Trace.run(copied, [source], [some(target)])
+  Test.eq(try run(halved, target), (0...46).map { |i| (7 + i).to_f * 0.5 })
+end

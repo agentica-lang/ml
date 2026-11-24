@@ -25,6 +25,8 @@ struct tg_storage {
   int refs; /* atomic */
   int kept; /* atomic: the leaves of cached graphs that stay bound to it between runs (`ggml_graph.c`) */
   int closed; /* atomic: its handle is closed */
+  int32_t *mirror; /* the values of a small I32 tensor as `upload` got them, NULL once a graph writes the tensor; read
+                      and dropped under the device lock */
   struct ggml_context *ctx;
   ggml_backend_buffer_t buffer;
   struct deferred link;
@@ -74,8 +76,10 @@ bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_t
 
 /* Copies `src` into `dst`, converting between F32 and I32 through the host
    when their types differ; NULL, or why it did not (an element count that
-   differs, an integer beyond 2^24). Call under the device lock. */
-const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst);
+   differs, an integer beyond 2^24). `mirror` is NULL or the values of an I32
+   `src` on the host, which then is not read back from its device. Call under
+   the device lock. */
+const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst, const int32_t *mirror);
 
 /* A held graph of the cache (`ggml_graph.c`). */
 struct entry;
