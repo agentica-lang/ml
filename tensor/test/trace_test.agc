@@ -311,6 +311,20 @@ def test_sigmoid_tanh_and_gelu_match_a_central_difference() -> Result[Void]
   check_grad([x]) do |xs| weigh(try Tensor.gelu_tanh_approx(xs[0])) end
 end
 
+## Python's `math.erf` and `math.exp` give the slopes, `Phi(x) + x phi(x)`; `0.0` is the guarded point.
+def test_gelu_erf_matches_a_central_difference_and_python_math() -> Result[Void]
+  try check_grad([try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7], [2, 3])]) do |xs| weigh(try Tensor.gelu_erf(xs[0])) end
+
+  grads = try Trace.grad([try f64(Support.GELU_ERF_POINTS, [8])]) do |xs| Tensor.sum(try Tensor.gelu_erf(xs[0])) end
+  got = try Support.floats_of(grads[0])
+  for i in 0...got.size
+    want = Support.GELU_ERF_SLOPES[i]
+    try Test.assert((got[i] - want).abs < 0.000000000001, "slope #{i} is #{got[i]}, expected #{want}")
+  end
+
+  ok()
+end
+
 def test_max_matches_a_central_difference_away_from_ties() -> Result[Void]
   x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.4, 0.9, -1.3, 0.6, -0.2, 1.4], [2, 3, 2])
   try check_grad([x]) do |xs| weigh(try Tensor.max(xs[0], some([1]))) end

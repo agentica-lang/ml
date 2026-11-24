@@ -140,7 +140,7 @@ Movement: `to_dtype, to_device, copy, contiguous`.
 Deliberately missing: `softmax`, attention, `silu`, beam search — all
 derived (§3.2). `layer_norm` and `rms_norm` are derived too, and a trace
 keeps each as one node. The exact (`erf`) GELU is `gelu_erf`, outside this
-set: inference only (`Trace` records it but has no gradient for it).
+set; `Trace` records it as one node and differentiates it.
 
 ### 3.2 Derived ops (pure Agentica, backend-agnostic)
 
@@ -693,7 +693,9 @@ The price:
   records a node whose rule is zero. `softmax` subtracts its maximum through
   it: the shift cancels out of the value, so it needs no gradient.
 - More rules: `sqrt` (`ct / 2 sqrt(x)`, infinite at `0`), `sigmoid`, `tanh`,
-  `gelu_tanh_approx` (the derivative of the tanh form), `squeeze` and
+  `gelu_tanh_approx` (the derivative of the tanh form), `gelu_erf`
+  (`Phi(x) + x phi(x)`, with `Phi(x)` read back as `gelu_erf(x) / x`, `0.5`
+  at `0`), `squeeze` and
   `unsqueeze` (a `reshape` back), `slice` (`ct` padded with zeros by
   `concat`), `concat` (each argument's window of `ct`), `stack` (entry `i`
   along the axis), `gather` (`scatter_add` of `ct` at the indices: a

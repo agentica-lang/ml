@@ -55,8 +55,7 @@ struct Conv1d
   padding: Int
 end
 
-## `Gelu` is the tanh approximation; `GeluErf` the exact form (no gradient
-## through `Trace`).
+## `Gelu` is the tanh approximation; `GeluErf` the exact form.
 enum Activation
   Relu
   Gelu

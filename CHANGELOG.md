@@ -7,6 +7,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### tensor
 
 - `Trace.stablehlo(specs, f)` writes a traced function as a StableHLO module, for XLA and IREE (the ops of an MLP forward and of a training step); its goldens come from IREE (`make iree-goldens`, local only).
+- `gelu_erf` has a gradient, so a model with the exact GELU (BERT, DistilBERT) can be trained.
 - ggml: a decode step runs fewer kernels (the positions converted and checked once for every cache, a long-row `max` in pieces, SwiGLU as one kernel): Qwen3-0.6B decode on Vulkan is 7 to 11% faster.
 - ggml: a `Trace.compile` function keeps its constants bound to its graph between runs and binds only its inputs; the graph that ran last keeps its allocation.
 - ggml: an `attention` reads a `slice` of an `F16` cache that starts at its first element where it is, with no copy.

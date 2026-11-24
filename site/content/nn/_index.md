@@ -143,7 +143,6 @@ Each layer has an `init_*` function. It takes a seed (a number that makes the ra
 - `decoder_block` has no KV cache (a store of past keys and values): each call recomputes every position. `asr` has its own cache.
 - `causal` and `causal_mask` use `-1e9` for a masked position, which assumes an `F32` or `F64` compute dtype. `causal` needs no more queries than keys.
 - `init_attention` needs a width that is divisible by the head count, and `kv_heads` that divides it. `positional` refuses more positions than its table has.
-- `GeluErf` has no gradient through `Trace`.
 
 ## How it works
 
