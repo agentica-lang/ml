@@ -424,7 +424,9 @@ end
   v on CPU and Vulkan. The lowering sends it a node when the mask is absent or is built from
   `full`s of 0 and of a finite value of -65504 or below (the causal and the padded masks), which
   `F16` holds exactly, the large ones clamped to -65504; a mask of any other values, a width that
-  Vulkan has no kernel for (not a multiple of 8) and a backend without the op use two `mul_mat` and
+  Vulkan has no kernel for (not a multiple of 8), a backend without the op and, on Vulkan with the
+  fp16 products (the default), a query of more than one row (the fp16 products beat the F32 kernel
+  over many queries) use two `mul_mat` and
   one `soft_max_ext` as before: `mul_mat` repeats the kv heads over a group of query heads, and
   `soft_max_ext` takes the scale and the mask. A query with every key hidden by those fills gives the
   softmax of its scores on the flash path, not their mean). A scale and a base cross as the bits of a

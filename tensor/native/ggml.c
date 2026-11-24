@@ -212,6 +212,9 @@ ggml_backend_t tg_backend(int64_t device, char *why, size_t len) {
   return backend;
 }
 
+/* Read once a device is open, when the choice is fixed: it never changes after the first registry call. */
+bool tg_fp16(void) { return want_fp16; }
+
 an_term ggml_vulkan_fp16(an_env *env, bool enabled) {
   bool conflict, fixed;
 

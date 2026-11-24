@@ -524,6 +524,10 @@ static struct ggml_tensor *rows_of(struct entry *p, const struct gnode *n) {
   return t->nb[0] == ggml_type_size(t->type) ? t : ggml_cont(p->ctx, t);
 }
 
+static bool on_vulkan(const struct entry *p) {
+  return ggml_backend_dev_type(ggml_backend_get_device(p->backend)) != GGML_BACKEND_DEVICE_TYPE_CPU;
+}
+
 /* The mask as F16 for flash attention, once for every layer that reads it. The lowering lets flash attention take a
    mask that holds 0 and large negative fills, so F16 keeps it exactly; the large ones are clamped to F16's lowest,
    since -1e9 would become -inf and a row with every key hidden would not stay the mean of v. */
@@ -545,8 +549,13 @@ static struct ggml_tensor *half_mask(struct entry *p, const struct gnode *mask) 
    backend has no kernel for the shapes (Vulkan wants widths that are multiples of 8). */
 static struct ggml_tensor *flash(struct entry *p, const struct gnode *q, const struct gnode *k, const struct gnode *v,
                                  const struct gnode *mask, float scale) {
-  struct ggml_tensor *bias = mask != NULL ? half_mask(p, mask) : NULL;
-  struct ggml_tensor *out = ggml_flash_attn_ext(p->ctx, rows_of(p, q), rows_of(p, k), rows_of(p, v), bias, scale, 0.0f, 0.0f);
+  struct ggml_tensor *bias, *out;
+
+  /* Vulkan multiplies in fp16 by default, and then the two products beat the F32 kernel of flash attention over
+     many queries (3.07 s against 3.12 s for ten prompts of 128 tokens); one query is faster flash. */
+  if (on_vulkan(p) && tg_fp16() && q->ne[1] > 1) return NULL;
+  bias = mask != NULL ? half_mask(p, mask) : NULL;
+  out = ggml_flash_attn_ext(p->ctx, rows_of(p, q), rows_of(p, k), rows_of(p, v), bias, scale, 0.0f, 0.0f);
 
   ggml_prec_set_acc(out, GGML_PREC_F32);
   if (!ggml_backend_supports_op(p->backend, out)) return NULL;
