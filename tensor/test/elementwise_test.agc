@@ -65,6 +65,12 @@ def test_exp_saturates_at_the_boundary() -> Result[Void]
   Test.eq(saturated, [Tensor.Values.Float(1.0e308 * 10.0)])
 end
 
+def test_exp_of_minus_infinity_is_zero_and_of_plus_infinity_an_error() -> Result[Void]
+  open = -1.0e308 * 10.0
+  try Support.expect_floats(try Tensor.exp(try Support.f32([open, 0.0], [2])), [0.0, 1.0])
+  Test.error?(Tensor.exp(try Support.f32([-open], [1])))
+end
+
 def test_exp_of_nan_is_an_error() -> Result[Void]
   saturated = try Tensor.exp(try Support.f32([1000.0], [1]))
   nan = try Tensor.sub(saturated, saturated)

@@ -64,6 +64,153 @@ def test_attention_rejects_a_mask_of_another_shape() -> Result[Void]
   Test.error?(Tensor.multi_head_attention(q, q, q, 1, some(mask)))
 end
 
+def test_attention_reads_the_kv_head_of_a_group_and_masks_the_future() -> Result[Void]
+  q = try Support.f32([0.0, 0.0, 0.0, 1.0], [1, 2, 2, 1])
+  k = try Support.f32([0.0, 1.0], [1, 1, 2, 1])
+  v = try Support.f32([10.0, 20.0], [1, 1, 2, 1])
+  out = try Tensor.attention(q, k, v, none, none, true)
+  try Test.eq(Tensor.shape(out), [1, 2, 2, 1])
+  Support.expect_floats(out, [10.0, 15.0, 10.0, 17.310585786300049])
+end
+
+def test_attention_over_fewer_kv_heads_is_attention_over_repeated_ones() -> Result[Void]
+  q = try Support.f32(gen_data(1, 2 * 4 * 3 * 2), [2, 4, 3, 2])
+  k = try Support.f32(gen_data(2, 2 * 2 * 5 * 2), [2, 2, 5, 2])
+  v = try Support.f32(gen_data(3, 2 * 2 * 5 * 3), [2, 2, 5, 3])
+  grouped = try Tensor.attention(q, k, v)
+  try Test.eq(Tensor.shape(grouped), [2, 4, 3, 3])
+  wide_k = try repeat_heads(k, 2)
+  wide_v = try repeat_heads(v, 2)
+  Support.expect_floats(try Tensor.attention(q, wide_k, wide_v), try Support.floats_of(grouped))
+end
+
+def test_the_causal_flag_is_the_mask_of_a_cache_that_holds_earlier_keys() -> Result[Void]
+  q = try Support.f32(gen_data(4, 1 * 2 * 2 * 2), [1, 2, 2, 2])
+  k = try Support.f32(gen_data(5, 1 * 2 * 4 * 2), [1, 2, 4, 2])
+  v = try Support.f32(gen_data(6, 1 * 2 * 4 * 2), [1, 2, 4, 2])
+  causal = try Tensor.attention(q, k, v, none, none, true)
+  mask = try Support.f32([0.0, 0.0, 0.0, -1000000000.0, 0.0, 0.0, 0.0, 0.0], [2, 4])
+  explicit = try Tensor.attention(q, k, v, some(mask))
+  try Support.expect_floats(causal, try Support.floats_of(explicit))
+  widened = try Tensor.broadcast_to(try Tensor.reshape(mask, [1, 1, 2, 4]), [1, 2, 2, 4])
+  try Support.expect_floats(try Tensor.attention(q, k, v, some(widened)), try Support.floats_of(explicit))
+  both = try Tensor.attention(q, k, v, some(widened), none, true)
+  Support.expect_floats(both, try Support.floats_of(explicit))
+end
+
+def test_a_minus_infinity_mask_hides_a_key_like_a_large_negative_one() -> Result[Void]
+  q = try Support.f32(gen_data(11, 1 * 2 * 2 * 2), [1, 2, 2, 2])
+  k = try Support.f32(gen_data(12, 1 * 2 * 3 * 2), [1, 2, 3, 2])
+  v = try Support.f32(gen_data(13, 1 * 2 * 3 * 2), [1, 2, 3, 2])
+  open = -1.0e308 * 10.0
+  hidden = try Support.f32([0.0, open, 0.5, open, 0.0, open], [2, 3])
+  large = try Support.f32([0.0, -1000000000.0, 0.5, -1000000000.0, 0.0, -1000000000.0], [2, 3])
+  Support.expect_floats(
+    try Tensor.attention(q, k, v, some(hidden)),
+    try Support.floats_of(try Tensor.attention(q, k, v, some(large))),
+  )
+end
+
+def test_a_query_with_every_key_hidden_or_a_value_that_is_not_finite_is_an_error() -> Result[Void]
+  q = try Support.f32(gen_data(14, 1 * 1 * 2 * 2), [1, 1, 2, 2])
+  open = -1.0e308 * 10.0
+  nan = open - open
+  try Test.error?(Tensor.attention(q, q, q, some(try Support.f32([0.0, 0.0, open, open], [2, 2]))))
+  try Test.error?(Tensor.attention(q, q, q, some(try Support.f32([0.0, 0.0, nan, 0.0], [2, 2]))))
+  try Test.error?(Tensor.attention(q, q, q, some(try Support.f32([0.0, 0.0, 1.0e308 * 10.0, 0.0], [2, 2]))))
+  try Test.error?(Tensor.attention(try Support.f32([1.0, nan, 1.0, 1.0], [1, 1, 2, 2]), q, q))
+  Test.error?(Tensor.attention(q, q, try Support.f32([1.0, 1.0, 1.0, open], [1, 1, 2, 2])))
+end
+
+def test_causal_needs_no_more_queries_than_keys_and_holds_in_half_precision() -> Result[Void]
+  q = try Support.f32([0.0, 0.0, 0.0], [1, 1, 3, 1])
+  k = try Support.f32([0.0, 0.0], [1, 1, 2, 1])
+  v = try Support.f32([10.0, 20.0], [1, 1, 2, 1])
+  try Test.error?(Tensor.attention(q, k, v, none, none, true))
+  half = try Tensor.attention(
+    try Tensor.to_dtype(try Support.f32([0.0, 0.0], [1, 1, 2, 1]), Tensor.Dtype.F16),
+    try Tensor.to_dtype(try Support.f32([0.0, 0.0], [1, 1, 2, 1]), Tensor.Dtype.F16),
+    try Tensor.to_dtype(try Support.f32([10.0, 20.0], [1, 1, 2, 1]), Tensor.Dtype.F16),
+    none,
+    none,
+    true,
+  )
+
+  Support.expect_floats(half, [10.0, 15.0])
+end
+
+def test_attention_takes_a_scale() -> Result[Void]
+  q = try Support.f32(gen_data(7, 1 * 1 * 2 * 4), [1, 1, 2, 4])
+  k = try Support.f32(gen_data(8, 1 * 1 * 3 * 4), [1, 1, 3, 4])
+  v = try Support.f32(gen_data(9, 1 * 1 * 3 * 2), [1, 1, 3, 2])
+  try Support.expect_floats(
+    try Tensor.attention(q, k, v, none, some(0.5)),
+    try Support.floats_of(try Tensor.attention(q, k, v)),
+  )
+
+  sharp = try Tensor.attention(q, k, v, none, some(4.0))
+  Test.assert(
+    try Support.floats_of(sharp) != try Support.floats_of(try Tensor.attention(q, k, v)),
+    "the scale changed nothing",
+  )
+end
+
+def test_attention_rejects_what_it_cannot_read() -> Result[Void]
+  q = try Support.f32(gen_data(1, 1 * 3 * 2 * 2), [1, 3, 2, 2])
+  two = try Support.f32(gen_data(2, 1 * 2 * 2 * 2), [1, 2, 2, 2])
+  one = try Support.f32(gen_data(3, 1 * 1 * 2 * 2), [1, 1, 2, 2])
+  try Test.error?(Tensor.attention(q, two, two))
+  try Test.error?(Tensor.attention(one, one, try Support.f32([1.0, 2.0], [1, 1, 1, 2])))
+  try Test.error?(Tensor.attention(one, one, one, some(try Support.f32([0.0, 0.0], [2]))))
+  try Test.error?(Tensor.attention(one, one, one, some(try Support.f32([0.0, 0.0, 0.0, 0.0], [1, 2, 1, 2]))))
+  Test.error?(Tensor.attention(try Tensor.reshape(one, [2, 2]), one, one))
+end
+
+def test_permute_reorders_the_axes() -> Result[Void]
+  x = try Support.f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [1, 2, 3])
+  y = try Tensor.permute(x, [2, 0, 1])
+  try Test.eq(Tensor.shape(y), [3, 1, 2])
+  try Support.expect_floats(y, [1.0, 4.0, 2.0, 5.0, 3.0, 6.0])
+  try Support.expect_floats(try Tensor.permute(y, [1, 2, 0]), try Support.floats_of(x))
+  try Test.error?(Tensor.permute(x, [0, 1]))
+  Test.error?(Tensor.permute(x, [0, 1, 1]))
+end
+
+def test_rope_turns_pairs_by_the_position() -> Result[Void]
+  x = try Support.f32([1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0], [2, 4])
+  at = try Support.i64([0, 1], [2])
+  c0 = Math.cos(1.0)
+  s0 = Math.sin(1.0)
+  c1 = Math.cos(0.01)
+  s1 = Math.sin(0.01)
+  neox = try Tensor.rope(x, at)
+  try Support.expect_floats(
+    neox,
+    [1.0, 2.0, 3.0, 4.0, c0 - 3.0 * s0, 2.0 * c1 - 4.0 * s1, 3.0 * c0 + s0, 4.0 * c1 + 2.0 * s1],
+  )
+
+  pairs = try Tensor.rope(x, at, 10000.0, none, false)
+  try Support.expect_floats(
+    pairs,
+    [1.0, 2.0, 3.0, 4.0, c0 - 2.0 * s0, 2.0 * c0 + s0, 3.0 * c1 - 4.0 * s1, 4.0 * c1 + 3.0 * s1],
+  )
+
+  partial = try Tensor.rope(x, at, 10000.0, some(2))
+  try Support.expect_floats(partial, [1.0, 2.0, 3.0, 4.0, c0 - 2.0 * s0, 2.0 * c0 + s0, 3.0, 4.0])
+  back = try Tensor.rope(neox, at, 10000.0, none, true, true)
+  Support.expect_floats(back, try Support.floats_of(x))
+end
+
+def test_rope_rejects_what_it_cannot_turn() -> Result[Void]
+  x = try Support.f32([1.0, 2.0, 3.0, 4.0], [1, 4])
+  at = try Support.i64([0], [1])
+  try Test.error?(Tensor.rope(x, at, 10000.0, some(3)))
+  try Test.error?(Tensor.rope(x, at, 10000.0, some(6)))
+  try Test.error?(Tensor.rope(x, at, 0.0))
+  try Test.error?(Tensor.rope(x, try Support.i64([0, 1], [2])))
+  Test.error?(Tensor.rope(x, try Support.f32([0.0], [1])))
+end
+
 def test_top_k_takes_the_largest_first() -> Result[Void]
   x = try Support.f32([3.0, 1.0, 4.0, 2.0], [4])
   got = try Tensor.top_k(x, 2)
@@ -318,4 +465,19 @@ def naive_sqrt(x: Float) -> Float
   end
 
   guess
+end
+
+## `[B, Hkv, S, D]` with each head repeated `times` times in a row: head `h` of
+## the answer is head `h / times`.
+def repeat_heads(t: Tensor.Tensor, times: Int) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(t)
+  parts: List[Tensor.Tensor] = []
+  for h in 0...shape[1]
+    one = try Tensor.slice(t, [0, h, 0, 0], [shape[0], h + 1, shape[2], shape[3]])
+    for _n in 0...times
+      parts = parts.push(one)
+    end
+  end
+
+  Tensor.concat(parts, 1)
 end

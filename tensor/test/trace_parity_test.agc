@@ -58,6 +58,11 @@ def all_cases() -> Result[List[Case]]
   sig = try Support.f32([1.0, 2.0, 0.0, -1.0, 3.0, 1.0, 2.0, 0.5], [2, 4])
   kernel = try Support.f32([1.0, -1.0, 0.5, 0.5, 2.0, 1.0, 0.0, 1.0], [2, 2, 2])
   ids = try Support.i64([2, 0], [2])
+  q4 = try Support.f32(Support.ramp(1, 4 * 2 * 4), [1, 4, 2, 4])
+  k4 = try Support.f32(Support.ramp(2, 2 * 3 * 4), [1, 2, 3, 4])
+  v4 = try Support.f32(Support.ramp(3, 2 * 3 * 4), [1, 2, 3, 4])
+  mask = try Support.f32(Support.ramp(4, 2 * 3), [2, 3])
+  at = try Support.i64([0, 5], [2])
   far = try Support.i64([5], [1])
   ok([
     Case(name: "add", args: [v, w], f: ->(x: List[Tensor.Tensor]) { Tensor.add(x[0], x[1]) }),
@@ -102,6 +107,33 @@ def all_cases() -> Result[List[Case]]
     Case(name: "batch_matmul", args: [b3, b2], f: ->(x: List[Tensor.Tensor]) { Tensor.batch_matmul(x[0], x[0]) }),
     Case(name: "batch_matmul 2", args: [b2, b2], f: ->(x: List[Tensor.Tensor]) { Tensor.batch_matmul(x[0], x[1]) }),
     Case(name: "transpose", args: [v], f: ->(x: List[Tensor.Tensor]) { Tensor.transpose(x[0]) }),
+    Case(name: "permute", args: [b3], f: ->(x: List[Tensor.Tensor]) { Tensor.permute(x[0], [2, 0, 1]) }),
+    Case(
+      name: "permute of a repeated axis",
+      args: [b3],
+      f: ->(x: List[Tensor.Tensor]) { Tensor.permute(x[0], [0, 0, 1]) },
+    ),
+    Case(name: "attention", args: [q4, k4, v4], f: ->(x: List[Tensor.Tensor]) { Tensor.attention(x[0], x[1], x[2]) }),
+    Case(
+      name: "causal attention over a mask",
+      args: [q4, k4, v4, mask],
+      f: ->(x: List[Tensor.Tensor]) { Tensor.attention(x[0], x[1], x[2], some(x[3]), some(0.5), true) },
+    ),
+    Case(
+      name: "attention over heads that do not divide",
+      args: [k4, q4, v4],
+      f: ->(x: List[Tensor.Tensor]) { Tensor.attention(x[0], x[1], x[2]) },
+    ),
+    Case(
+      name: "rope",
+      args: [q4, at],
+      f: ->(x: List[Tensor.Tensor]) { Tensor.rope(x[0], x[1], 100.0, some(2), false) },
+    ),
+    Case(
+      name: "rope of an odd width",
+      args: [q4, at],
+      f: ->(x: List[Tensor.Tensor]) { Tensor.rope(x[0], x[1], 100.0, some(3)) },
+    ),
     Case(name: "reshape", args: [v], f: ->(x: List[Tensor.Tensor]) { Tensor.reshape(x[0], [3, 2]) }),
     Case(name: "reshape to another volume", args: [v], f: ->(x: List[Tensor.Tensor]) { Tensor.reshape(x[0], [4]) }),
     Case(name: "squeeze", args: [row], f: ->(x: List[Tensor.Tensor]) { Tensor.squeeze(x[0], some(0)) }),

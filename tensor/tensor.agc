@@ -34,7 +34,7 @@
 ##   truncates float to int, tests nonzero for `Bool`, and range-checks int
 ##   widths. Int overflows are errors, never wrap-around.
 ## - Finite values in, errors out, never a halt or a hang: non-finite storage
-##   (`NaN`, `+-inf`) is refused with `error` at every entry point that could
+##   (`NaN`, `+-inf`; `exp` takes `-inf`, which is `0`) is refused with `error` at every entry point that could
 ##   halt or hang on it (`exp`, `log`, `sqrt`, `pow`, `sigmoid`, `tanh`,
 ##   `gelu_tanh_approx`, `top_k`). Saturating finite inputs stays legitimate
 ##   (`exp` of a large value is `+inf`), but non-finite values never enter
@@ -57,7 +57,7 @@
 ##   (stride and padding 1-D, no dilation and no groups); the wrapper
 ##   validates their window arithmetic before dispatch, so both backends
 ##   accept and refuse the same shapes.
-## - The 45 names of §3.1 all exist below. `Reference` computes all of them;
+## - The 49 names of §3.1 all exist below. `Reference` computes all of them;
 ##   the `Torch` arm computes everything but `batch_matmul` and
 ##   `to_device`, and answers
 ##   `error("<op> is not implemented on the torch backend yet")` for those,
@@ -345,7 +345,7 @@ def neg(t: Types.Tensor) -> Result[Types.Tensor]
   end
 end
 
-## Elementwise `exp`, float only.
+## Elementwise `exp`, float only. `exp(-inf)` is `0` (a masked score); `NaN` and `+inf` are errors.
 def exp(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "exp")
   case t.backend
@@ -610,6 +610,21 @@ def transpose(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.transpose(device, t)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Transpose, [t], t.shape.reverse, t.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("transpose")
+  end
+end
+
+## The axes of `t` in the order `axes` names: output axis `i` is input axis
+## `axes[i]`, so `permute(t, [0, 2, 1, 3])` swaps the middle two of a rank-4
+## tensor. `axes` is a permutation of `0...rank`; the answer is a new
+## row-major tensor.
+def permute(t: Types.Tensor, axes: List[Int]) -> Result[Types.Tensor]
+  return error("permute needs one axis per dimension of #{t.shape}, got #{axes}") if axes.size != t.shape.size
+  _ = try check_axes(axes, t.shape.size, "permute")
+  case t.backend
+    Types.Backend.Reference -> Reference.permute(t, axes)
+    Types.Backend.Torch(device) -> Torch.permute(device, t, axes)
+    Types.Backend.Trace -> ok(Graph.permute(t, axes))
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("permute")
   end
 end
 
@@ -948,12 +963,133 @@ def embedding(ids: Types.Tensor, table: Types.Tensor) -> Result[Types.Tensor]
   gather(table, ids)
 end
 
-## Derived: multi-head attention over §3.1 only, no fused kernel.
-## `query`/`key`/`value` are `[batch, seq, width]` (`value` may differ in
-## width); the heads split along the width without a transpose permutation:
-## each `(batch, head)` pair runs rank-2 `matmul`/`softmax` on slices and the
-## answers are joined with `concat`/`stack`. `mask`, when given, is an
-## additive bias widened to `[batch, heads, q, k]`.
+## Scaled dot-product attention over `q` `[batch, heads, q_len, head_dim]`,
+## `k` `[batch, kv_heads, k_len, head_dim]` and `v` `[batch, kv_heads, k_len,
+## value_dim]`: `softmax(scale * q k^T + mask) v`, shaped `[batch, heads, q_len,
+## value_dim]`. With grouped-query attention `kv_heads` divides `heads` and
+## query head `h` reads kv head `h / (heads / kv_heads)`.
+##
+## `mask` is additive and shaped `[q_len, k_len]`, or `[batch, heads, q_len,
+## k_len]` with `1` allowed for `batch` and for `heads`; it takes finite values
+## and `-inf`, and it has a gradient. `causal` adds the causal mask, built from
+## `arange` and `lt` so it is the same on every backend: query `i` reads keys
+## `0..i + k_len - q_len` (inclusive), so the keys of a cache that holds earlier
+## positions line up with the last queries; with `q_len > k_len` the first
+## queries would have no key to read, which is an error. `scale` defaults to
+## `1 / sqrt(head_dim)`.
+##
+## `q`, `k` and `v` are finite, and a query with every key at `-inf` is an
+## error on every backend, never a `NaN`. To hide a position, add a large finite
+## negative number (the dtype's lowest, as Hugging Face does for padding) or
+## `-inf`; the causal mask uses `-1e9` (`-65504` for `F16`). The reference
+## builds the causal mask with `full`, which holds at most 1,048,576 elements,
+## so on `Reference` `q_len * k_len` stops there; the other backends have no
+## such limit.
+def attention(
+  q: Types.Tensor,
+  k: Types.Tensor,
+  v: Types.Tensor,
+  mask: Optional[Types.Tensor] = none,
+  scale: Optional[Float] = none,
+  causal: Bool = false,
+) -> Result[Types.Tensor]
+  _ = try same_backend(q, k, "attention")
+  _ = try same_backend(q, v, "attention")
+  _ = try same_dtype(q, k, "attention")
+  _ = try same_dtype(q, v, "attention")
+  _ = try float_only(q, "attention")
+  if q.shape.size != 4 or k.shape.size != 4 or v.shape.size != 4
+    return error("attention needs rank-4 tensors, got #{q.shape}, #{k.shape} and #{v.shape}")
+  end
+
+  b = q.shape[0]
+  heads = q.shape[1]
+  sq = q.shape[2]
+  d = q.shape[3]
+  kv_heads = k.shape[1]
+  sk = k.shape[2]
+  if k.shape[0] != b or v.shape[0] != b
+    return error("attention needs one batch, got #{b}, #{k.shape[0]} and #{v.shape[0]}")
+  end
+
+  return error("attention needs key width #{d}, got #{k.shape[3]}") if k.shape[3] != d
+  if v.shape[1] != kv_heads or v.shape[2] != sk
+    return error("attention needs the value to match the key in heads and length, got #{k.shape} and #{v.shape}")
+  end
+
+  if kv_heads < 1 or heads % kv_heads != 0
+    return error("attention needs the #{kv_heads} kv heads to divide the #{heads} heads")
+  end
+
+  if b < 1 or heads < 1 or sq < 1 or sk < 1 or d < 1 or v.shape[3] < 1
+    return error("attention needs nonempty dimensions, got #{q.shape}, #{k.shape} and #{v.shape}")
+  end
+
+  chosen = scale.unwrap_or(1.0 / Math.sqrt(d.to_f))
+  return error("attention needs a finite scale, got #{chosen}") if !Types.is_finite(chosen)
+  case q.backend
+    Types.Backend.Ggml(_) -> return Ggml.compiled_only("attention")
+    _ -> nil
+  end
+
+  return error("attention: causal needs q_len <= k_len, got #{sq} queries over #{sk} keys") if causal and sq > sk
+  bias = try attention_bias(q, sk, mask, causal)
+  case q.backend
+    Types.Backend.Reference -> Reference.attention(q, k, v, bias, chosen)
+    Types.Backend.Torch(device) -> Torch.attention(device, q, k, v, bias, chosen)
+    Types.Backend.Trace -> ok(Graph.attention(q, k, v, bias, chosen))
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("attention")
+  end
+end
+
+## Rotary position embedding of `x` `[..., seq, width]`: the first `dims`
+## columns of row `s` (`width` by default, an even number) are rotated in
+## pairs by the angle `positions[s] * base^(-2i/dims)`, pair `i`; the columns
+## past `dims` pass through. With `neox` pair `i` is columns `(i, i + dims/2)`,
+## the layout of Hugging Face's `rotate_half`; without it, `(2i, 2i + 1)`, as
+## the original Llama does. `positions` is an integer vector of length `seq`
+## (on ggml any integer dtype but `I64`), shared by every batch and head.
+## With `inverse` every pair turns the other way, which undoes the rotation (and
+## is the backward of `rope`).
+def rope(
+  x: Types.Tensor,
+  positions: Types.Tensor,
+  base: Float = 10000.0,
+  dims: Optional[Int] = none,
+  neox: Bool = true,
+  inverse: Bool = false,
+) -> Result[Types.Tensor]
+  _ = try same_backend(x, positions, "rope")
+  _ = try float_only(x, "rope")
+  if !Types.is_int_dtype(positions.dtype)
+    return error("rope needs integer positions, got #{Types.dtype_name(positions.dtype)}")
+  end
+
+  rank = x.shape.size
+  return error("rope needs rank >= 2, got #{x.shape}") if rank < 2
+  seq = x.shape[rank - 2]
+  width = x.shape[rank - 1]
+  return error("rope needs positions of shape [#{seq}], got #{positions.shape}") if positions.shape != [seq]
+  rotated = dims.unwrap_or(width)
+  if rotated < 2 or rotated > width or rotated % 2 != 0
+    return error("rope needs an even dims in 2...#{width}, got #{rotated}")
+  end
+
+  return error("rope needs a finite base > 0, got #{base}") if !Types.is_finite(base) or base <= 0.0
+  return error("rope needs nonempty dimensions, got #{x.shape}") if try Types.volume(x.shape) == 0
+  case x.backend
+    Types.Backend.Reference -> Reference.rope(x, positions, base, rotated, neox, inverse)
+    Types.Backend.Torch(device) -> Torch.rope(device, x, positions, base, rotated, neox, inverse)
+    Types.Backend.Trace -> ok(Graph.rope(x, positions, base, rotated, neox, inverse))
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("rope")
+  end
+end
+
+## Derived: multi-head attention over `[batch, seq, width]` tensors (`value`
+## may differ in width), a thin wrapper over `attention`: the heads split
+## along the width by `reshape` + `permute`, and join back the same way.
+## `mask`, when given, is an additive bias: `[q, k]` as it is, anything else
+## widened to `[batch, heads, q, k]`.
 def multi_head_attention(
   query: Types.Tensor,
   key: Types.Tensor,
@@ -992,41 +1128,26 @@ def multi_head_attention(
     return error("multi_head_attention needs nonempty dimensions, got #{query.shape}, #{key.shape} and #{value.shape}")
   end
 
-  dh = d / heads
-  dvh = dv / heads
-  # The query is scaled before the product, as Whisper does: a constant of the
-  # `[sq, sk]` scores would pass `List.repeat`'s cap at 1500 positions.
-  scale = try full([sq, dh], Types.Values.Float(1.0 / Math.sqrt(dh.to_f)), query.dtype, query.backend)
   widened = case mask
     some(m) ->
       _ = try same_backend(query, m, "multi_head_attention")
       _ = try same_dtype(query, m, "multi_head_attention")
       _ = try float_only(m, "multi_head_attention")
-      some(try broadcast_to(m, [b, heads, sq, sk]))
+      fitted = m
+      if m.shape != [sq, sk]
+        fitted = try broadcast_to(m, [b, heads, sq, sk])
+      end
+
+      some(fitted)
     none -> none
   end
 
-  per_batch: List[Types.Tensor] = []
-  for bb in 0...b
-    head_ctx: List[Types.Tensor] = []
-    for h in 0...heads
-      qbh = try mul(try reshape(try slice(query, [bb, 0, h * dh], [bb + 1, sq, (h + 1) * dh]), [sq, dh]), scale)
-      kbh = try reshape(try slice(key, [bb, 0, h * dh], [bb + 1, sk, (h + 1) * dh]), [sk, dh])
-      scaled = try matmul(qbh, try transpose(kbh))
-      biased = case widened
-        some(w) -> try add(scaled, try reshape(try slice(w, [bb, h, 0, 0], [bb + 1, h + 1, sq, sk]), [sq, sk]))
-        none -> scaled
-      end
-
-      probs = try softmax(biased, 1)
-      vbh = try reshape(try slice(value, [bb, 0, h * dvh], [bb + 1, sk, (h + 1) * dvh]), [sk, dvh])
-      head_ctx = head_ctx.push(try matmul(probs, vbh))
-    end
-
-    per_batch = per_batch.push(try concat(head_ctx, 1))
-  end
-
-  stack(per_batch, 0)
+  split = [0, 2, 1, 3]
+  q = try permute(try reshape(query, [b, sq, heads, d / heads]), split)
+  k = try permute(try reshape(key, [b, sk, heads, d / heads]), split)
+  v = try permute(try reshape(value, [b, sk, heads, dv / heads]), split)
+  merged = try permute(try attention(q, k, v, widened), split)
+  reshape(merged, [b, sq, dv])
 end
 
 ## Derived: one greedy decode step: optional temperature scaling, `softmax`,
@@ -1290,4 +1411,62 @@ def check_broadcast(from: List[Int], to: List[Int], op: String) -> Result[Bool]
   end
 
   ok(true)
+end
+
+## The additive mask `attention` hands its backend: `mask` checked against the
+## shapes it widens to, plus the causal mask when `causal`; `none` when there
+## is neither.
+def attention_bias(
+  q: Types.Tensor,
+  sk: Int,
+  mask: Optional[Types.Tensor],
+  causal: Bool,
+) -> Result[Optional[Types.Tensor]]
+  b = q.shape[0]
+  heads = q.shape[1]
+  sq = q.shape[2]
+  given: Optional[Types.Tensor] = none
+  case mask
+    some(m) ->
+      _ = try same_backend(q, m, "attention")
+      _ = try same_dtype(q, m, "attention")
+      shape = m.shape
+      fits = shape == [sq, sk]
+      if shape.size == 4 and shape[2] == sq and shape[3] == sk
+        fits = (shape[0] == 1 or shape[0] == b) and (shape[1] == 1 or shape[1] == heads)
+      end
+
+      return error("attention needs a mask of [#{sq}, #{sk}] or [batch, heads, #{sq}, #{sk}], got #{shape}") if !fits
+      given = some(m)
+    none -> nil
+  end
+
+  return ok(given) if !causal
+  future = try causal_mask(q, sq, sk)
+  case given
+    some(m) ->
+      return ok(some(try add(m, future))) if m.shape.size == 2
+      ok(some(try add(m, try broadcast_to(try reshape(future, [1, 1, sq, sk]), m.shape))))
+    none -> ok(some(future))
+  end
+end
+
+## `[q_len, k_len]` of `0` where query `i` may read key `j` (`j <= i + k_len -
+## q_len`) and `-1e9` where it may not, in `like`'s dtype, built from
+## `arange` and `lt`.
+def causal_mask(like: Types.Tensor, sq: Int, sk: Int) -> Result[Types.Tensor]
+  rows = try arange(sk - sq, sk, 1, Types.Dtype.I32, like.backend)
+  cols = try arange(0, sk, 1, Types.Dtype.I32, like.backend)
+  later = try lt(
+    try broadcast_to(try reshape(rows, [sq, 1]), [sq, sk]),
+    try broadcast_to(try reshape(cols, [1, sk]), [sq, sk]),
+  )
+
+  lowest = -1.0e9
+  if like.dtype == Types.Dtype.F16
+    lowest = -65504.0
+  end
+
+  blocked = try full([sq, sk], Types.Values.Float(lowest), like.dtype, like.backend)
+  mul(try to_dtype(later, like.dtype), blocked)
 end

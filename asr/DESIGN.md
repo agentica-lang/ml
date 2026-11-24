@@ -68,8 +68,21 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   a step writes its rows at their positions with a 0/1 matrix product (exact
   in F32), and its mask hides the later positions and the padding. A step's
   graph changes shape only with the number of ids and the capacity, so a
-  transcription compiles a few graphs and the next one none. The token ids
-  and positions are I32, which ggml holds.
+  transcription compiles a few graphs and the next one none. The compiled
+  steps and the encoder block are kept by the model (`Model.plans`, a channel
+  of one value that holds the map, which a task takes and puts back at once),
+  named by their kind and the shapes and dtypes of their inputs, so audio of
+  another length gets its own. Every transcription of a model, from any task,
+  finds them: `planned` looks the name up, and compiles and stores on a miss.
+  Two tasks that miss the same name both compile, and one copy is kept. The
+  kept copy has no pin (that stays with the task that compiled), so a run of
+  it builds the graph again if the cache lost it. The map has no bound: a
+  caller that sends many shapes through `encode` adds an entry for each. A task
+  cancelled while it holds the map loses it; the next caller whose take times
+  out (50 ms; a slow holder takes the same path) puts a new, empty map in the
+  channel, which costs one round of compiles. A channel that was closed makes
+  every call compile, as before. The token ids and positions are I32, which
+  ggml holds.
 
 ## The log-mel frontend (`mel.agc`)
 

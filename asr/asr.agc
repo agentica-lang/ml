@@ -58,6 +58,9 @@ struct Model
   decoder_norm: Nn.LayerNorm
   ## The output projection, tied to `tokens`: its table transposed, no bias.
   logits: Nn.Dense
+  ## The compiled functions of this model that its transcriptions share (`planned`): a channel of one value, the map,
+  ## which a task takes to read or change it and puts back at once.
+  plans: Channel[Map[String, Trace.Compiled]]
 end
 
 ## One attention's keys and values, `[1, keys, d_model]` each: `keys` is the
@@ -76,9 +79,11 @@ struct Cache
   cross: List[Heard]
   own: List[Kv]
   length: Int
-  ## On `Ggml`, the one-token steps already compiled (`Trace.compile`), by
-  ## the rows of `own` and of the step's capacity, so a later step of the
-  ## same capacity neither traces nor plans.
+  ## On `Ggml`, the compiled one-token steps this cache has used, by the
+  ## rows of `own` and of the step's capacity, so a later step of the same
+  ## capacity neither traces nor plans. The model keeps its own copies for
+  ## the other caches (`Model.plans`); a function compiled here holds its pin
+  ## until `finish`.
   graphs: Map[String, Trace.Compiled] = {}
 end
 
@@ -228,6 +233,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
       decoder: decoder,
       decoder_norm: try Load.layer_norm(c, "#{d}layer_norm", EPS, backend),
       logits: Nn.Dense(w: try Load.transposed(tokens.table), b: none),
+      plans: try shared_plans(),
     ),
   )
 end
@@ -254,7 +260,9 @@ def encode(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
       if i == 0
         first = m.encoder[0]
         blocks = some(
-          try Trace.compile(
+          try planned(
+            m,
+            "encoder #{Tensor.shape(h)}",
             ([h] + encoder_parts(first)).map { |t| Trace.spec_of(t) },
             ->(xs: List[Tensor.Tensor]) { ok([try Nn.encoder_block(encoder_over(first, xs.drop(1)), xs[0])]) },
           ),
@@ -540,6 +548,8 @@ end
 
 private
 
+## How long a task waits for the model's map, which is held for a few VM steps.
+PLANS_WAIT_MS = 50
 ## 16 kHz audio, and one log-mel frame every 160 samples (`mel.agc`).
 SAMPLE_RATE = 16000
 HOP = 160
@@ -1102,7 +1112,9 @@ def advance(
   if n == 1 and cache.length > 0
     key = "#{Tensor.shape(cache.own[0].key)[1]} #{room} #{picking} #{stamped(rules)}"
     if !graphs.has_key?(key)
-      built = Trace.compile(
+      built = planned(
+        m,
+        key,
         (fed + step_inputs(cache)).map { |t| Trace.spec_of(t) },
         ->(xs: List[Tensor.Tensor]) {
           stepped_graph(traced(m), cache_over(cache, xs.drop(head)), xs.take(head), room, picking, rules)
@@ -1157,6 +1169,54 @@ def fits(spare: List[Tensor.Tensor], cache: Cache, room: Int) -> Bool
   (0...have.size).all? { |i|
     Tensor.shape(spare[i]) == Tensor.shape(have[i]) and Tensor.dtype(spare[i]) == Tensor.dtype(have[i])
   }
+end
+
+def shared_plans() -> Result[Channel[Map[String, Trace.Compiled]]]
+  cell: Channel[Map[String, Trace.Compiled]] = Channel.new(1)
+  empty: Map[String, Trace.Compiled] = {}
+  try cell.send(empty, 1000)
+  ok(cell)
+end
+
+## The function `key` of `m` for `specs` (the key and the shapes and dtypes of the inputs name it), compiled with `f` on a
+## miss and put in the model's map, so that later transcriptions, in any task, find it. The copy kept has no pin, which
+## stays with the task that compiled; a run of it builds the graph again if the cache has lost it. Two tasks that miss the
+## same key both compile, and one copy is kept. The map has no bound: a caller that sends many shapes through `encode`
+## adds an entry for each. A task that is cancelled while it holds the map loses it, so a `recv` that times out (a
+## holder that is slow takes the same path) puts a new, empty map back; with capacity one a second map cannot be made,
+## and a slow holder whose `send` then fails costs one compile.
+def planned(
+  m: Model,
+  key: String,
+  specs: List[Trace.Spec],
+  f: Fn[List[Tensor.Tensor], Result[List[Tensor.Tensor]]],
+) -> Result[Trace.Compiled]
+  named = "#{key} #{specs.map { |sp| "#{sp.shape} #{sp.dtype}" }.join(" ")}"
+  case take_plans(m)
+    some(known) ->
+      _ = m.plans.send(known, 0)
+      return ok(known[named]) if known.has_key?(named)
+    none -> nil
+  end
+
+  compiled = try Trace.compile(specs, f)
+  case take_plans(m)
+    some(kept) -> _ = m.plans.send(kept.put(named, compiled.with(pin: none)), 0)
+    none -> nil
+  end
+
+  ok(compiled)
+end
+
+## The model's map, whose token the caller must put back. When it cannot be taken in time, an empty map is put in the
+## channel in its place (see `planned`) and the answer is `none`.
+def take_plans(m: Model) -> Optional[Map[String, Trace.Compiled]]
+  taken = m.plans.recv(PLANS_WAIT_MS)
+  return some(taken.unwrap!) if taken.ok?
+
+  empty: Map[String, Trace.Compiled] = {}
+  _ = m.plans.send(empty, 0)
+  none
 end
 
 ## What identifies the timestamp rules in the key of a compiled step.

@@ -8,8 +8,8 @@
 #if AN_API_MAJOR != 1
 #error "torch_native.h needs version 1 of the native API (agentica_native.h)"
 #endif
-#if AN_API_MINOR < 2
-#error "torch_native.h needs version 1.2 or later of the native API (agentica_native.h)"
+#if AN_API_MINOR < 5
+#error "torch_native.h needs version 1.5 or later of the native API (agentica_native.h)"
 #endif
 
 #ifdef __cplusplus
@@ -223,6 +223,25 @@ an_term torch_scatter_add(an_env *env, struct torch_TensorHandle_state *indices,
 /* Reverses every axis, as the reference's `transpose` does (rank 2 swaps
    rows and columns; below rank 2 nothing changes). */
 an_term torch_transpose(an_env *env, struct torch_TensorHandle_state *a);
+
+/* The axes of `a` in the order `axes` names (output axis `i` is input axis
+   `axes[i]`), copied into row-major order. */
+an_term torch_permute(an_env *env, struct torch_TensorHandle_state *a, torch_list_Int axes);
+
+/* `softmax(scale * q k^T) v` over `q` `[B, H, Sq, D]`, `k` `[B, Hkv, Sk, D]` and
+   `v` `[B, Hkv, Sk, Dv]`, `Hkv` dividing `H` (query head `h` reads kv head
+   `h / (H / Hkv)`). */
+an_term torch_attention(an_env *env, struct torch_TensorHandle_state *q, struct torch_TensorHandle_state *k, struct torch_TensorHandle_state *v, double scale);
+
+/* The same with the additive `mask` (`[Sq, Sk]`, or `[Bm, Hm, Sq, Sk]` with
+   `Bm` in `{1, B}` and `Hm` in `{1, H}`) added to the scaled scores. */
+an_term torch_attention_masked(an_env *env, struct torch_TensorHandle_state *q, struct torch_TensorHandle_state *k, struct torch_TensorHandle_state *v, struct torch_TensorHandle_state *mask, double scale);
+
+/* Rotary embedding of `x` `[..., S, D]` by the integer `positions` `[S]`: the
+   first `dims` columns turn in pairs by `positions[s] * base^(-2i/dims)`,
+   the pair being `(i, i + dims/2)` with `neox` and `(2i, 2i + 1)` without,
+   the other way round with `inverse`. */
+an_term torch_rope(an_env *env, struct torch_TensorHandle_state *x, struct torch_TensorHandle_state *positions, double base, int64_t dims, bool neox, bool inverse);
 
 /* `a` in the dtype `dtype` names: float to int truncates towards zero and
    range-checks, anything nonzero becomes `true`, an int width that cannot
@@ -806,6 +825,63 @@ static an_term torch_native_transpose(an_env *env, int argc, const an_term *argv
   return torch_transpose(env, a0);
 }
 
+static an_term torch_native_permute(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  torch_list_Int a1;
+  if (!torch_native_open_list_Int(env, argv[1], &a1, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 1);
+  a1.argument = 2;
+  return torch_permute(env, a0, a1);
+}
+
+static an_term torch_native_attention(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  struct torch_TensorHandle_state *a2 = torch_TensorHandle_get(env, argv[2]);
+  if (!a2) return an_badarg(env, 2);
+  double a3;
+  if (!an_get_float(env, argv[3], &a3)) return an_badarg(env, 3);
+  return torch_attention(env, a0, a1, a2, a3);
+}
+
+static an_term torch_native_attention_masked(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  struct torch_TensorHandle_state *a2 = torch_TensorHandle_get(env, argv[2]);
+  if (!a2) return an_badarg(env, 2);
+  struct torch_TensorHandle_state *a3 = torch_TensorHandle_get(env, argv[3]);
+  if (!a3) return an_badarg(env, 3);
+  double a4;
+  if (!an_get_float(env, argv[4], &a4)) return an_badarg(env, 4);
+  return torch_attention_masked(env, a0, a1, a2, a3, a4);
+}
+
+static an_term torch_native_rope(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  double a2;
+  if (!an_get_float(env, argv[2], &a2)) return an_badarg(env, 2);
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  bool a4;
+  if (!an_get_bool(env, argv[4], &a4)) return an_badarg(env, 4);
+  bool a5;
+  if (!an_get_bool(env, argv[5], &a5)) return an_badarg(env, 5);
+  return torch_rope(env, a0, a1, a2, a3, a4, a5);
+}
+
 static an_term torch_native_to_dtype(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
@@ -863,47 +939,51 @@ static an_term torch_native_readback(an_env *env, int argc, const an_term *argv)
 }
 
 static const an_function torch_native_functions[] = {
-  {"create", "(List[Int], List[Float], Int) -> Result[TensorHandle]", torch_native_create, AN_DIRTY},
-  {"fill", "(List[Int], Float, Int) -> Result[TensorHandle]", torch_native_fill, AN_DIRTY},
-  {"load", "(String, Int, List[Int], Int) -> Result[TensorHandle]", torch_native_load, AN_DIRTY},
-  {"from_bytes", "(Bytes, List[Int], Int) -> Result[TensorHandle]", torch_native_from_bytes, AN_DIRTY},
-  {"add", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_add, AN_DIRTY},
-  {"mul", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_mul, AN_DIRTY},
-  {"sub", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_sub, AN_DIRTY},
-  {"div", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_div, AN_DIRTY},
-  {"neg", "(TensorHandle) -> Result[TensorHandle]", torch_native_neg, AN_DIRTY},
-  {"matmul", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_matmul, AN_DIRTY},
-  {"relu", "(TensorHandle) -> Result[TensorHandle]", torch_native_relu, AN_DIRTY},
-  {"exp", "(TensorHandle) -> Result[TensorHandle]", torch_native_exp, AN_DIRTY},
-  {"log", "(TensorHandle) -> Result[TensorHandle]", torch_native_log, AN_DIRTY},
-  {"sqrt", "(TensorHandle) -> Result[TensorHandle]", torch_native_sqrt, AN_DIRTY},
-  {"pow", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_pow, AN_DIRTY},
-  {"sigmoid", "(TensorHandle) -> Result[TensorHandle]", torch_native_sigmoid, AN_DIRTY},
-  {"tanh", "(TensorHandle) -> Result[TensorHandle]", torch_native_tanh, AN_DIRTY},
-  {"gelu_tanh_approx", "(TensorHandle) -> Result[TensorHandle]", torch_native_gelu_tanh_approx, AN_DIRTY},
-  {"gelu_erf", "(TensorHandle) -> Result[TensorHandle]", torch_native_gelu_erf, AN_DIRTY},
-  {"eq", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_eq, AN_DIRTY},
-  {"lt", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_lt, AN_DIRTY},
-  {"where", "(TensorHandle, TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_where, AN_DIRTY},
-  {"clamp", "(TensorHandle, Float, Float) -> Result[TensorHandle]", torch_native_clamp, AN_DIRTY},
-  {"sum", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_sum, AN_DIRTY},
-  {"mean", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_mean, AN_DIRTY},
-  {"max", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_max, AN_DIRTY},
-  {"argmax", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_argmax, AN_DIRTY},
-  {"reshape", "(TensorHandle, List[Int]) -> Result[TensorHandle]", torch_native_reshape, AN_DIRTY},
-  {"squeeze", "(TensorHandle, List[Int]) -> Result[TensorHandle]", torch_native_squeeze, AN_DIRTY},
-  {"unsqueeze", "(TensorHandle, Int) -> Result[TensorHandle]", torch_native_unsqueeze, AN_DIRTY},
-  {"slice", "(TensorHandle, List[Int], List[Int]) -> Result[TensorHandle]", torch_native_slice, AN_DIRTY},
-  {"concat", "(TensorHandle, TensorHandle, Int) -> Result[TensorHandle]", torch_native_concat, AN_DIRTY},
-  {"broadcast_to", "(TensorHandle, List[Int]) -> Result[TensorHandle]", torch_native_broadcast_to, AN_DIRTY},
-  {"gather", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_gather, AN_DIRTY},
-  {"scatter_add", "(TensorHandle, TensorHandle, Int) -> Result[TensorHandle]", torch_native_scatter_add, AN_DIRTY},
-  {"transpose", "(TensorHandle) -> Result[TensorHandle]", torch_native_transpose, AN_DIRTY},
-  {"to_dtype", "(TensorHandle, Int) -> Result[TensorHandle]", torch_native_to_dtype, AN_DIRTY},
-  {"copy", "(TensorHandle) -> Result[TensorHandle]", torch_native_copy, AN_DIRTY},
-  {"contiguous", "(TensorHandle) -> Result[TensorHandle]", torch_native_contiguous, AN_DIRTY},
-  {"conv1d", "(TensorHandle, TensorHandle, Int, Int) -> Result[TensorHandle]", torch_native_conv1d, AN_DIRTY},
-  {"avg_pool1d", "(TensorHandle, Int, Int, Int) -> Result[TensorHandle]", torch_native_avg_pool1d, AN_DIRTY},
+  {"create", "(List[Int], List[Float], Int) -> Result[TensorHandle]", torch_native_create, AN_DIRTY | AN_FRESH},
+  {"fill", "(List[Int], Float, Int) -> Result[TensorHandle]", torch_native_fill, AN_DIRTY | AN_FRESH},
+  {"load", "(String, Int, List[Int], Int) -> Result[TensorHandle]", torch_native_load, AN_DIRTY | AN_FRESH},
+  {"from_bytes", "(Bytes, List[Int], Int) -> Result[TensorHandle]", torch_native_from_bytes, AN_DIRTY | AN_FRESH},
+  {"add", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_add, AN_DIRTY | AN_FRESH},
+  {"mul", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_mul, AN_DIRTY | AN_FRESH},
+  {"sub", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_sub, AN_DIRTY | AN_FRESH},
+  {"div", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_div, AN_DIRTY | AN_FRESH},
+  {"neg", "(TensorHandle) -> Result[TensorHandle]", torch_native_neg, AN_DIRTY | AN_FRESH},
+  {"matmul", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_matmul, AN_DIRTY | AN_FRESH},
+  {"relu", "(TensorHandle) -> Result[TensorHandle]", torch_native_relu, AN_DIRTY | AN_FRESH},
+  {"exp", "(TensorHandle) -> Result[TensorHandle]", torch_native_exp, AN_DIRTY | AN_FRESH},
+  {"log", "(TensorHandle) -> Result[TensorHandle]", torch_native_log, AN_DIRTY | AN_FRESH},
+  {"sqrt", "(TensorHandle) -> Result[TensorHandle]", torch_native_sqrt, AN_DIRTY | AN_FRESH},
+  {"pow", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_pow, AN_DIRTY | AN_FRESH},
+  {"sigmoid", "(TensorHandle) -> Result[TensorHandle]", torch_native_sigmoid, AN_DIRTY | AN_FRESH},
+  {"tanh", "(TensorHandle) -> Result[TensorHandle]", torch_native_tanh, AN_DIRTY | AN_FRESH},
+  {"gelu_tanh_approx", "(TensorHandle) -> Result[TensorHandle]", torch_native_gelu_tanh_approx, AN_DIRTY | AN_FRESH},
+  {"gelu_erf", "(TensorHandle) -> Result[TensorHandle]", torch_native_gelu_erf, AN_DIRTY | AN_FRESH},
+  {"eq", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_eq, AN_DIRTY | AN_FRESH},
+  {"lt", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_lt, AN_DIRTY | AN_FRESH},
+  {"where", "(TensorHandle, TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_where, AN_DIRTY | AN_FRESH},
+  {"clamp", "(TensorHandle, Float, Float) -> Result[TensorHandle]", torch_native_clamp, AN_DIRTY | AN_FRESH},
+  {"sum", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_sum, AN_DIRTY | AN_FRESH},
+  {"mean", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_mean, AN_DIRTY | AN_FRESH},
+  {"max", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_max, AN_DIRTY | AN_FRESH},
+  {"argmax", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_argmax, AN_DIRTY | AN_FRESH},
+  {"reshape", "(TensorHandle, List[Int]) -> Result[TensorHandle]", torch_native_reshape, AN_DIRTY | AN_FRESH},
+  {"squeeze", "(TensorHandle, List[Int]) -> Result[TensorHandle]", torch_native_squeeze, AN_DIRTY | AN_FRESH},
+  {"unsqueeze", "(TensorHandle, Int) -> Result[TensorHandle]", torch_native_unsqueeze, AN_DIRTY | AN_FRESH},
+  {"slice", "(TensorHandle, List[Int], List[Int]) -> Result[TensorHandle]", torch_native_slice, AN_DIRTY | AN_FRESH},
+  {"concat", "(TensorHandle, TensorHandle, Int) -> Result[TensorHandle]", torch_native_concat, AN_DIRTY | AN_FRESH},
+  {"broadcast_to", "(TensorHandle, List[Int]) -> Result[TensorHandle]", torch_native_broadcast_to, AN_DIRTY | AN_FRESH},
+  {"gather", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_gather, AN_DIRTY | AN_FRESH},
+  {"scatter_add", "(TensorHandle, TensorHandle, Int) -> Result[TensorHandle]", torch_native_scatter_add, AN_DIRTY | AN_FRESH},
+  {"transpose", "(TensorHandle) -> Result[TensorHandle]", torch_native_transpose, AN_DIRTY | AN_FRESH},
+  {"permute", "(TensorHandle, List[Int]) -> Result[TensorHandle]", torch_native_permute, AN_DIRTY | AN_FRESH},
+  {"attention", "(TensorHandle, TensorHandle, TensorHandle, Float) -> Result[TensorHandle]", torch_native_attention, AN_DIRTY | AN_FRESH},
+  {"attention_masked", "(TensorHandle, TensorHandle, TensorHandle, TensorHandle, Float) -> Result[TensorHandle]", torch_native_attention_masked, AN_DIRTY | AN_FRESH},
+  {"rope", "(TensorHandle, TensorHandle, Float, Int, Bool, Bool) -> Result[TensorHandle]", torch_native_rope, AN_DIRTY | AN_FRESH},
+  {"to_dtype", "(TensorHandle, Int) -> Result[TensorHandle]", torch_native_to_dtype, AN_DIRTY | AN_FRESH},
+  {"copy", "(TensorHandle) -> Result[TensorHandle]", torch_native_copy, AN_DIRTY | AN_FRESH},
+  {"contiguous", "(TensorHandle) -> Result[TensorHandle]", torch_native_contiguous, AN_DIRTY | AN_FRESH},
+  {"conv1d", "(TensorHandle, TensorHandle, Int, Int) -> Result[TensorHandle]", torch_native_conv1d, AN_DIRTY | AN_FRESH},
+  {"avg_pool1d", "(TensorHandle, Int, Int, Int) -> Result[TensorHandle]", torch_native_avg_pool1d, AN_DIRTY | AN_FRESH},
   {"readback", "(TensorHandle) -> Result[List[Float]]", torch_native_readback, AN_DIRTY},
 };
 
@@ -913,5 +993,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 42, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 46, NULL, 0, torch_native_resources, 1, LOAD)
 #endif

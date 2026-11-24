@@ -52,7 +52,11 @@ GELU_ERF = 27
 CONCAT = 28
 CONV1D = 29
 SCATTER_ADD = 30
-NORM = 31
+PERMUTE = 31
+ATTENTION = 32
+ROPE = 33
+BATCH_MATMUL = 34
+NORM = 35
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -282,6 +286,9 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Concat(axis) -> ints = [axis, 0]
       Types.Op.Stack(axis) -> ints = [axis, 1]
       Types.Op.Conv1d(stride, padding) -> ints = [stride, padding]
+      Types.Op.Permute(axes) -> ints = axes
+      Types.Op.Attention(scale) -> ints = [try bits(scale, n)]
+      Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
       Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
       _ -> nil
     end
@@ -307,6 +314,22 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       keep: keep,
     ),
   )
+end
+
+## The bits of the double `x`, which the C layer reads back as `x`: a node takes integers only. A float
+## that ggml holds in `F32` must fit it.
+def bits(x: Float, n: Types.Node) -> Result[Int]
+  if !Types.is_finite(x) or x.abs > 3.4028234663852886e38
+    return error("node #{n.id} (#{Types.op_name(n.op)}): #{x} is not a float ggml holds")
+  end
+
+  ok(Float.to_bits(x))
+end
+
+## `true` as `1`, `false` as `0`.
+def flag(b: Bool) -> Int
+  return 1 if b
+  0
 end
 
 ## A leaf's tensor, which must live on the backend the graph runs on.
@@ -409,6 +432,10 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Concat(_) -> ok(CONCAT)
     Types.Op.Stack(_) -> ok(CONCAT)
     Types.Op.Conv1d(_, _) -> ok(CONV1D)
+    Types.Op.Permute(_) -> ok(PERMUTE)
+    Types.Op.Attention(_) -> ok(ATTENTION)
+    Types.Op.Rope(_, _, _, _) -> ok(ROPE)
+    Types.Op.BatchMatmul -> ok(BATCH_MATMUL)
     _ -> error("node #{n.id}: #{Types.op_name(n.op)} is not lowered to ggml yet")
   end
 end

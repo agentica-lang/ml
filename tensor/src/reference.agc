@@ -384,11 +384,18 @@ def neg(t: Types.Tensor) -> Result[Types.Tensor]
   ok(out)
 end
 
-## Elementwise `exp`, float only, finite inputs only: saturation to `+inf`
-## is a legitimate answer, but `NaN`/`inf` in never evaluates.
+## Elementwise `exp`, float only, finite inputs or `-inf`: saturation to `+inf`
+## is a legitimate answer, and so is `exp(-inf) = 0` (a masked score), but
+## `NaN` and `+inf` in never evaluate.
 def exp(t: Types.Tensor) -> Result[Types.Tensor]
   return error("exp needs a float dtype, got #{Types.dtype_name(t.dtype)}") if !Types.is_float_dtype(t.dtype)
-  xs = try require_finite(try data_of(t), "exp")
+  xs = try data_of(t)
+  for i in 0...xs.size
+    if !Types.is_finite(xs[i]) and !(xs[i] < -1.0e308)
+      return error("exp needs finite values or -inf, got a NaN or +inf at index #{i}")
+    end
+  end
+
   out = xs.map do |x: Float| exp_ref(x) end
   ok(make(t.shape, t.dtype, out))
 end
@@ -799,6 +806,174 @@ def transpose(t: Types.Tensor) -> Result[Types.Tensor]
   end
 
   ok(make(flipped, t.dtype, out))
+end
+
+## The axes of `t` in the order `axes` names (output axis `i` is input axis
+## `axes[i]`), as a new row-major tensor.
+def permute(t: Types.Tensor, axes: List[Int]) -> Result[Types.Tensor]
+  shape = t.shape
+  out_shape = axes.map { |a| shape[a] }
+  xs = try data_of(t)
+  in_strides = strides_of(shape)
+  out_strides = strides_of(out_shape)
+  moved = axes.map { |a| in_strides[a] }
+  out: List[Float] = []
+  for linear in 0...xs.size
+    index = multi_of(linear, out_shape, out_strides)
+    out = out.push(xs[offset_of(index, moved)])
+  end
+
+  ok(make(out_shape, t.dtype, out))
+end
+
+## Scaled dot-product attention over `q` `[B, H, Sq, D]`, `k` `[B, Hkv, Sk, D]`
+## and `v` `[B, Hkv, Sk, Dv]`: `softmax(scale * q k^T + mask) v` per query row,
+## each head of `q` reading kv head `h / (H / Hkv)`. `mask` is additive, `[Sq, Sk]`
+## or `[Bm, Hm, Sq, Sk]` with `Bm` in `{1, B}` and `Hm` in `{1, H}`, finite or `-inf`.
+## `q`, `k` and `v` are finite, and a query whose every key is `-inf` is an error,
+## not a `NaN`.
+def attention(
+  q: Types.Tensor,
+  k: Types.Tensor,
+  v: Types.Tensor,
+  mask: Optional[Types.Tensor],
+  scale: Float,
+) -> Result[Types.Tensor]
+  batch = q.shape[0]
+  heads = q.shape[1]
+  sq = q.shape[2]
+  d = q.shape[3]
+  kv_heads = k.shape[1]
+  sk = k.shape[2]
+  dv = v.shape[3]
+  group = heads / kv_heads
+  qs = try require_finite(try data_of(q), "attention")
+  ks = try require_finite(try data_of(k), "attention")
+  vs = try require_finite(try data_of(v), "attention")
+  ms: List[Float] = []
+  mask_batches = 1
+  mask_heads = 1
+  case mask
+    some(m) ->
+      ms = try data_of(m)
+      for x in ms
+        if !Types.is_finite(x) and !(x < 0.0)
+          return error("attention needs a mask of finite values or -inf, got a NaN or +inf")
+        end
+      end
+
+      if m.shape.size == 4
+        mask_batches = m.shape[0]
+        mask_heads = m.shape[1]
+      end
+
+    none -> nil
+  end
+
+  out: List[Float] = []
+  for bi in 0...batch
+    for hi in 0...heads
+      kv = hi / group
+      q_base = (bi * heads + hi) * sq * d
+      k_base = (bi * kv_heads + kv) * sk * d
+      v_base = (bi * kv_heads + kv) * sk * dv
+      m_base = 0
+      if !ms.empty?
+        m_base = ((bi % mask_batches) * mask_heads + hi % mask_heads) * sq * sk
+      end
+
+      for i in 0...sq
+        scores: List[Float] = []
+        for j in 0...sk
+          acc = 0.0
+          for c in 0...d
+            acc = acc + qs[q_base + i * d + c] * ks[k_base + j * d + c]
+          end
+
+          acc = acc * scale
+          if !ms.empty?
+            acc = acc + ms[m_base + i * sk + j]
+          end
+
+          scores = scores.push(acc)
+        end
+
+        top = scores.max.unwrap_or(0.0)
+        if !Types.is_finite(top)
+          return error(
+            "attention: query #{i} of batch #{bi}, head #{hi} has every key masked (or a score that is not finite)",
+          )
+        end
+
+        weights = scores.map { |x| exp_ref(x - top) }
+        total = weights.sum
+        for c in 0...dv
+          acc = 0.0
+          for j in 0...sk
+            acc = acc + weights[j] * vs[v_base + j * dv + c]
+          end
+
+          out = out.push(acc / total)
+        end
+      end
+    end
+  end
+
+  ok(make([batch, heads, sq, dv], q.dtype, out))
+end
+
+## Rotary position embedding of `x` `[..., S, D]`: the first `dims` columns of
+## row `s` are rotated in pairs by `positions[s] * base^(-2i/dims)`; the rest
+## pass through. A pair is `(i, i + dims/2)` with `neox` and `(2i, 2i + 1)`
+## without; `inverse` turns every pair the other way.
+def rope(
+  x: Types.Tensor,
+  positions: Types.Tensor,
+  base: Float,
+  dims: Int,
+  neox: Bool,
+  inverse: Bool,
+) -> Result[Types.Tensor]
+  rank = x.shape.size
+  seq = x.shape[rank - 2]
+  width = x.shape[rank - 1]
+  half = dims / 2
+  xs = try data_of(x)
+  ps = try data_of(positions)
+  log_base = Math.log(base)
+  turn = 1.0
+  if inverse
+    turn = -1.0
+  end
+
+  cosines: List[Float] = []
+  sines: List[Float] = []
+  for s in 0...seq
+    for i in 0...half
+      angle = ps[s] * Math.exp(-((2.0 * i.to_f) / dims.to_f) * log_base)
+      cosines = cosines.push(Math.cos(angle))
+      sines = sines.push(turn * Math.sin(angle))
+    end
+  end
+
+  out: List[Float] = []
+  for linear in 0...xs.size
+    c = linear % width
+    s = (linear / width) % seq
+    if c >= dims
+      out = out.push(xs[linear])
+    elsif neox and c < half
+      out = out.push(xs[linear] * cosines[s * half + c] - xs[linear + half] * sines[s * half + c])
+    elsif neox
+      out = out.push(xs[linear] * cosines[s * half + c - half] + xs[linear - half] * sines[s * half + c - half])
+    elsif c % 2 == 0
+      out = out.push(xs[linear] * cosines[s * half + c / 2] - xs[linear + 1] * sines[s * half + c / 2])
+    else
+      out = out.push(xs[linear] * cosines[s * half + c / 2] + xs[linear - 1] * sines[s * half + c / 2])
+    end
+  end
+
+  ok(make(x.shape, x.dtype, out))
 end
 
 ## A tensor of `shape` with the same values: the volumes must match.

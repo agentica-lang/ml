@@ -139,6 +139,9 @@ enum Op
   AvgPool1d(Int, Int, Int)
   Arange(Int, Int, Int)
   StopGrad
+  Permute(List[Int])
+  Attention(Float)
+  Rope(Float, Int, Bool, Bool)
 end
 
 ## One node of a traced graph: unique `id` in the run, its op and its
@@ -376,6 +379,24 @@ def op_name(op: Op) -> String
     Op.Conv1d(_, _) -> "conv1d"
     Op.AvgPool1d(_, _, _) -> "avg_pool1d"
     Op.Arange(_, _, _) -> "arange"
+    Op.Permute(_) -> "permute"
+    Op.Attention(_) -> "attention"
+    Op.Rope(_, _, _, _) -> "rope"
     Op.StopGrad -> "stop_grad"
   end
+end
+
+## `shape` with its axes in the order `axes` names: the shape a `permute`
+## leaves. Output axis `i` is input axis `axes[i]`.
+def permuted_shape(shape: List[Int], axes: List[Int]) -> List[Int] = axes.map { |a| shape[a] }
+
+## The `axes` that undo `axes`: `permute(permute(t, axes), inverse_axes(axes))`
+## is `t`.
+def inverse_axes(axes: List[Int]) -> List[Int]
+  out: List[Int] = axes.map { |_| 0 }
+  for i in 0...axes.size
+    out = out.set(axes[i], i)
+  end
+
+  out
 end
