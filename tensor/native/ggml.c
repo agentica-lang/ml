@@ -14,9 +14,15 @@
 #if !defined(__cplusplus) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L /* setenv, sysconf */
 #endif
+#if !defined(__cplusplus) && defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE /* sched_getaffinity, CPU_COUNT */
+#endif
 #define GGML_NATIVE_IMPLEMENTATION
 #include "ggml_shared.h"
 #include <math.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
 
 #include "float_file.h"
 
@@ -390,19 +396,41 @@ struct half_sink {
   ggml_fp16_t *half;
 };
 
+/* Threads call it at once, each for its own `first` and `n`: it writes only that part of `half`. */
 static bool half_chunk(void *ctx, const float *values, int64_t first, int64_t n, char *why, size_t why_len) {
   struct half_sink *sink = (struct half_sink *)ctx;
+  unsigned bad = 0;
   int64_t i;
 
-  for (i = 0; i < n; i++) {
-    if (isfinite(values[i]) && fabsf(values[i]) > HALF_MAX) {
-      snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)values[i],
-               (long long)first + (long long)i);
-      return false;
+  /* no branch, so that the compiler can vectorize the scan; only a chunk that has a bad value is searched */
+  for (i = 0; i < n; i++) bad |= (unsigned)(fabsf(values[i]) > HALF_MAX) & (unsigned)(fabsf(values[i]) < INFINITY);
+  if (bad != 0) {
+    for (i = 0; i < n; i++) {
+      if (fabsf(values[i]) > HALF_MAX && fabsf(values[i]) < INFINITY) {
+        snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)values[i],
+                 (long long)first + (long long)i);
+        return false;
+      }
     }
   }
   ggml_fp32_to_fp16_row(values, sink->half + first, n);
   return true;
+}
+
+/* The threads that convert a file to F16: the cores this process may run on (the cpuset of a container), else the
+   online ones, at most 8 (the reads are of one file on one disk). */
+#define HALF_MAX_THREADS 8
+
+static int half_threads(void) {
+  long cores = sysconf(_SC_NPROCESSORS_ONLN);
+
+#ifdef __linux__
+  cpu_set_t allowed;
+
+  if (sched_getaffinity(0, sizeof allowed, &allowed) == 0 && CPU_COUNT(&allowed) > 0) cores = CPU_COUNT(&allowed);
+#endif
+  if (cores < 1) return 1;
+  return cores > HALF_MAX_THREADS ? HALF_MAX_THREADS : (int)cores;
 }
 
 /* The tensor is filled where the source is read: in place on a host buffer (the CPU), through a host copy for
@@ -425,8 +453,8 @@ static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const
     if (src->data != NULL) {
       read = ff_each_bytes(src->data, src->len, ggml_nelements(state->t), format, half_chunk, &sink, why, sizeof why);
     } else {
-      read = ff_each(src->path, src->path_len, src->offset, ggml_nelements(state->t), format, half_chunk, &sink, why,
-                     sizeof why);
+      read = ff_each(src->path, src->path_len, src->offset, ggml_nelements(state->t), format, half_chunk, &sink,
+                     half_threads(), why, sizeof why);
     }
   } else if (src->data != NULL) {
     read = ff_from_bytes(src->data, src->len, ggml_nelements(state->t), format, (float *)host, why, sizeof why);

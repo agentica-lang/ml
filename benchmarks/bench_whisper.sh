@@ -82,7 +82,7 @@ if [ "$step" = build ]; then
 fi
 
 mkdir -p "$work/results"
-# ONLY is a regular expression on the row names (agentica-ggml-cpu, wcpp-vulkan-f16, ...): it runs those rows only.
+# ONLY is a regular expression on the row names (agentica-ggml-cpu, agentica-ggml-vulkan-f16, wcpp-vulkan-f16, ...): it runs those rows only.
 wanted() { [ -z "${ONLY:-}" ] || printf '%s\n' "$1" | grep -Eq "$ONLY"; }
 jfk="$wsrc/samples/jfk.wav"
 hola="$root/whisper/live/fixtures/es-hola.wav"
@@ -98,7 +98,7 @@ timed() {  # OUT COMMAND...: the command's stdout in OUT.tsv, `time -v` in OUT.t
 }
 
 # Each row runs the timed pass on both clips, then a pass that stops after the load (jfk only), for the memory of the load.
-ours() {  # ROW BACKEND
+ours() {  # ROW BACKEND [VAR=value...]: the variables go to the tool (WEIGHTS=f16, VULKAN_FP16=1)
   wanted "$1" || return 0
   rm -f "$work/results/$1".*
   engine=$([ "$2" = vulkan ] && echo vulkan || echo cpu)
@@ -120,7 +120,7 @@ ours() {  # ROW BACKEND
         torch_exports=$(cd "$root/tensor" && sh tools/build-torch.sh)
         eval "$torch_exports"
       fi
-      timed "$work/results/$1.$clip$suffix" agentica tools/bench_transcribe.agc "$model_dir" "$(clip_wav "$clip")" "$2" "$(clip_lang "$clip")" "$n"
+      timed "$work/results/$1.$clip$suffix" env WEIGHTS=f32 VULKAN_FP16=0 "${@:3}" agentica tools/bench_transcribe.agc "$model_dir" "$(clip_wav "$clip")" "$2" "$(clip_lang "$clip")" "$n"
     )
   done
 }
@@ -145,6 +145,9 @@ cpp() {  # ROW DEVICE MODEL FLASH_ATTN
 
 ours agentica-ggml-cpu ggml
 ours agentica-ggml-vulkan vulkan
+ours agentica-ggml-cpu-f16 ggml WEIGHTS=f16
+ours agentica-ggml-vulkan-f16 vulkan WEIGHTS=f16
+ours agentica-ggml-vulkan-f16-fp16 vulkan WEIGHTS=f16 VULKAN_FP16=1
 ours agentica-libtorch torch
 cpp wcpp-cpu-f32 cpu f32 1
 cpp wcpp-cpu-f32-nofa cpu f32 0
