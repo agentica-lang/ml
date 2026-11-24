@@ -7,6 +7,7 @@
 ##   agentica tools/qwen_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
 
 import Qwen3 from "../qwen3"
+import Load from "pkg/hub/load"
 import Lift from "../lift"
 import Source from "../tokenizer/source"
 import Tensor from "pkg/tensor/tensor"
@@ -49,7 +50,8 @@ private
 
 def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Float]
   want = try JSON.decode(try Source.read_text(golden), Golden)
-  m = try Qwen3.open(dir, backend)
+  try Load.vulkan_fp16_from_env()
+  m = try Qwen3.open(dir, backend, try Load.weights_from_env())
   gap = checked(m, want)
   Qwen3.close_model(m)
   gap

@@ -13,6 +13,19 @@ VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
 ## The backends of this machine that read a float range from the file in C.
 def native() -> List[Tensor.Backend] = [TORCH, GGML, VULKAN].select { |b: Tensor.Backend| Tensor.available(b) }
 
+## The ggml backends of this machine: none when ggml is not built, an error when it is required
+## (`TENSOR_REQUIRE_GGML`) and not built.
+def ggml_backends() -> Result[List[Tensor.Backend]]
+  if not Tensor.available(GGML)
+    flag = System.env("TENSOR_REQUIRE_GGML")
+    return error("ggml required but not built (TENSOR_REQUIRE_GGML is set)") if flag.ok? and try flag != ""
+    return ok([])
+  end
+
+  return ok([GGML, VULKAN]) if Tensor.available(VULKAN)
+  ok([GGML])
+end
+
 ## Runs `body` on the folder the peer wrote `set` into, then removes it.
 def with_fixtures(set: String, body: Fn[String, Result[Void]]) -> Result[Void]
   p = try Process.spawn_captured("python3", ["-I", "test/peer.py", set])

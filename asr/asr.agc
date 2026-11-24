@@ -193,13 +193,19 @@ def config(path: String) -> Result[Config] = within(path, JSON.decode(try File.r
 
 ## The checkpoint at `path` (a `.safetensors` file or the `.index.json` of a
 ## sharded one) with the `config.json` of its folder.
-def open(path: String, backend: Tensor.Backend) -> Result[Model]
+def open(path: String, backend: Tensor.Backend, weights: Tensor.Dtype = Tensor.Dtype.F32) -> Result[Model]
   parts = path.split("/")
-  load(try Hub.open(path), try config(parts.take(parts.size - 1).push("config.json").join("/")), backend)
+  config_path = parts.take(parts.size - 1).push("config.json").join("/")
+  load(try Hub.open(path), try config(config_path), backend, weights)
 end
 
 ## The model from an open checkpoint, its shapes checked against `config`.
-def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[Model]
+def load(
+  c: Hub.Checkpoint,
+  config: Config,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+) -> Result[Model]
   e = "#{PREFIX}encoder."
   d = "#{PREFIX}decoder."
   width = config.d_model
@@ -212,7 +218,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
   try expect_shape("#{e}conv2.weight", conv2.weight, [width, width, 3])
   encoder_positions = try Load.embedding(c, "#{e}embed_positions.weight", backend)
   try expect_shape("#{e}embed_positions.weight", encoder_positions.table, [config.max_source_positions, width])
-  tokens = try Load.embedding(c, "#{d}embed_tokens.weight", backend)
+  tokens = try Load.embedding(c, "#{d}embed_tokens.weight", backend, weights)
   try expect_shape("#{d}embed_tokens.weight", tokens.table, [config.vocab_size, width])
   decoder_positions = try Load.embedding(c, "#{d}embed_positions.weight", backend)
   try expect_shape("#{d}embed_positions.weight", decoder_positions.table, [config.max_target_positions, width])
@@ -220,13 +226,17 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
   encoder: List[Nn.EncoderBlock] = []
   for i in 0...config.encoder_layers
     names = encoder_names("#{e}layers.#{i}.")
-    encoder = encoder.push(try Load.encoder_block(c, names, config.encoder_attention_heads, activation, EPS, backend))
+    encoder = encoder.push(
+      try Load.encoder_block(c, names, config.encoder_attention_heads, activation, EPS, backend, weights),
+    )
   end
 
   decoder: List[Nn.DecoderBlock] = []
   for i in 0...config.decoder_layers
     names = decoder_names("#{d}layers.#{i}.")
-    decoder = decoder.push(try Load.decoder_block(c, names, config.decoder_attention_heads, activation, EPS, backend))
+    decoder = decoder.push(
+      try Load.decoder_block(c, names, config.decoder_attention_heads, activation, EPS, backend, weights),
+    )
   end
 
   m = Model(

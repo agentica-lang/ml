@@ -163,3 +163,18 @@ def expect_error[T](r: Result[T], phrase: String) -> Result[Void]
     error(e) -> Test.assert(e.message.include?(phrase), "\"#{e.message}\" does not hold \"#{phrase}\"")
   end
 end
+
+def test_an_f64_tensor_comes_as_f32_on_ggml() -> Result[Void]
+  S.with_fixtures("values") do |dir|
+    c = try Hub.open("#{dir}/values.safetensors")
+    for backend in try S.ggml_backends()
+      t = try Hub.tensor(c, "f64", backend)
+      try Test.eq(Tensor.dtype(t), Tensor.Dtype.F32)
+      # the narrowing is silent: 0.1 rounds to F32 and -1e300 is -inf
+      inf = Float.from_bits(0x7FF0000000000000)
+      try Test.eq(try Tensor.to_list(t), [Tensor.Values.Float(0.10000000149011612), Tensor.Values.Float(-inf)])
+    end
+
+    ok()
+  end
+end

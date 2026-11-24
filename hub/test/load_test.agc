@@ -9,6 +9,7 @@ import Load from "../load"
 import Nn from "pkg/nn/nn"
 import S from "support"
 import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
 
 ## The reference computes in doubles, as the peer does.
 ABS = 0.000000001
@@ -219,9 +220,83 @@ def same_norm(n: Nn.LayerNorm, want: JSON.Value) -> Result[Void]
   Test.eq(try S.floats_of(n.beta), try S.floats(try JSON.get(want, "beta")))
 end
 
-def error_text(r: Result[Nn.LayerNorm]) -> String
+def error_text[T](r: Result[T]) -> String
   case r
     ok(_) -> ""
     error(e) -> e.message
+  end
+end
+
+## `linear(ones, w)` of the 320 x 320 `w`: the sum of each of its rows, which `peer.py` wrote as `sums` (reading the
+## 102400 values back one by one would be 100000 steps).
+def row_sums(w: Tensor.Tensor, backend: Tensor.Backend) -> Result[List[Float]]
+  ones = try Tensor.from_list((0...320).map { |_| Tensor.Values.Float(1.0) }, [1, 320], Tensor.Dtype.F32, backend)
+  y = try Trace.eval([ones, w]) do |a| Tensor.linear(a[0], a[1], none, true) end
+  S.floats_of(y)
+end
+
+def test_f16_weights_keep_the_big_matrices_half_on_ggml() -> Result[Void]
+  S.with_fixtures("half") do |dir|
+    c = try Hub.open("#{dir}/half.safetensors")
+    sums = try S.floats(try JSON.get(try S.json(dir, "half.json"), "sums"))
+    for backend in try S.ggml_backends()
+      dense = try Load.dense(c, "big", backend, Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype(dense.w), Tensor.Dtype.F16)
+      try Test.eq(Tensor.shape(dense.w), [320, 320])
+      try Test.eq(Tensor.dtype(dense.b.unwrap!), Tensor.Dtype.F32)
+      try Test.eq(try row_sums(dense.w, backend), sums)
+      # the same values from an F16 file and from a BF16 one
+      try Test.eq(try row_sums((try Load.dense(c, "f16", backend, Tensor.Dtype.F16)).w, backend), sums)
+      try Test.eq(try row_sums((try Load.dense(c, "bf16", backend, Tensor.Dtype.F16)).w, backend), sums)
+      # an F64 file has no half form: it stays F32
+      f64 = try Load.dense(c, "f64", backend, Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype(f64.w), Tensor.Dtype.F32)
+      try Test.eq(try row_sums(f64.w, backend), sums)
+      # the threshold: HALF_MIN_ELEMENTS elements are half, one fewer is not
+      try Test.eq(
+        Tensor.dtype((try Load.embedding(c, "edge.weight", backend, Tensor.Dtype.F16)).table),
+        Tensor.Dtype.F16,
+      )
+
+      try Test.eq(
+        Tensor.dtype((try Load.embedding(c, "under.weight", backend, Tensor.Dtype.F16)).table),
+        Tensor.Dtype.F32,
+      )
+
+      # a table that is big enough, and a matrix under HALF_MIN_ELEMENTS or a vector, which stay F32
+      try Test.eq(
+        Tensor.dtype((try Load.embedding(c, "tok.weight", backend, Tensor.Dtype.F16)).table),
+        Tensor.Dtype.F16,
+      )
+
+      try Test.eq(Tensor.dtype((try Load.dense(c, "small", backend, Tensor.Dtype.F16)).w), Tensor.Dtype.F32)
+      try Test.eq(Tensor.dtype(try Load.weight(c, "norm.weight", 1, backend)), Tensor.Dtype.F32)
+      # F32 is the default, and gives the same sums
+      f32 = try Load.dense(c, "big", backend)
+      try Test.eq(Tensor.dtype(f32.w), Tensor.Dtype.F32)
+      try Test.eq(try row_sums(f32.w, backend), sums)
+      # a value beyond F16 is an error that names the tensor and the element
+      refused = Load.dense(c, "huge", backend, Tensor.Dtype.F16)
+      try Test.error?(refused)
+      try Test.assert(error_text(refused).include?("huge.weight"), "the error names no tensor: #{error_text(refused)}")
+      try Test.assert(error_text(refused).include?("element 5 "), "the error names no element: #{error_text(refused)}")
+    end
+
+    ok()
+  end
+end
+
+def test_f16_weights_need_ggml() -> Result[Void]
+  S.with_fixtures("half") do |dir|
+    c = try Hub.open("#{dir}/half.safetensors")
+    for backend in [S.REF, S.TORCH]
+      refused = Load.dense(c, "big", backend, Tensor.Dtype.F16)
+      try Test.error?(refused)
+      try Test.assert(error_text(refused).include?("ggml"), "the error names no backend: #{error_text(refused)}")
+    end
+
+    refused = Load.dense(c, "big", S.REF, Tensor.Dtype.I32)
+    try Test.error?(refused)
+    Test.assert(error_text(refused).include?("F32 or F16"), "the error says: #{error_text(refused)}")
   end
 end
