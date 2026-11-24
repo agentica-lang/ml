@@ -4,14 +4,18 @@
 ## checkpoint; `tensor` reads one tensor by name from the shard that holds
 ## it. `load.agc` builds `nn/` layers from those tensors.
 
+import Gguf from "gguf"
 import Safetensors from "safetensors"
+import Shards from "shard"
 import Tensor from "pkg/tensor/tensor"
 
 ## A checkpoint: its shards by file name (no folder) and the file of every
 ## tensor.
 struct Checkpoint
-  shards: Map[String, Safetensors.Shard]
+  shards: Map[String, Shards.Shard]
   weight_map: Map[String, String]
+  ## The header of a GGUF file, which holds the model's config and tokenizer; none for safetensors.
+  gguf: Optional[Gguf.Header] = none
 end
 
 ## The JSON form of a sharded checkpoint's index.
@@ -19,9 +23,10 @@ struct Index
   weight_map: Map[String, String]
 end
 
-## Opens a `.safetensors` file, or every shard of an `.index.json`.
+## Opens a `.safetensors` file, a `.gguf` file, or every shard of an `.index.json`.
 def open(path: String) -> Result[Checkpoint]
   return open_index(path) if path.end_with?(".json")
+  return open_gguf(path) if path.end_with?(".gguf")
   shard = try Safetensors.open(path)
   file = path.split("/").last
   weight_map: Map[String, String] = {}
@@ -32,12 +37,24 @@ def open(path: String) -> Result[Checkpoint]
   ok(Checkpoint(shards: {file: shard}, weight_map: weight_map))
 end
 
+def open_gguf(path: String) -> Result[Checkpoint]
+  header = try Gguf.open(path)
+  shard = try Gguf.shard(header)
+  file = path.split("/").last
+  weight_map: Map[String, String] = {}
+  for name in shard.entries.keys
+    weight_map = weight_map.put(name, file)
+  end
+
+  ok(Checkpoint(shards: {file: shard}, weight_map: weight_map, gguf: some(header)))
+end
+
 def open_index(path: String) -> Result[Checkpoint]
   index = try within(path, JSON.decode(try File.read_text(path), Index))
 
   parts = path.split("/")
   dir = parts.take(parts.size - 1).push("").join("/")
-  shards: Map[String, Safetensors.Shard] = {}
+  shards: Map[String, Shards.Shard] = {}
   for name in index.weight_map.keys
     file = index.weight_map[name]
     if not shards.key?(file)
@@ -67,13 +84,13 @@ def tensor(
   dtype: Tensor.Dtype = Tensor.Dtype.F32,
 ) -> Result[Tensor.Tensor]
   file = try c.weight_map.get(name).to_result("no tensor #{name} in the checkpoint")
-  Safetensors.tensor(c.shards[file], name, backend, dtype)
+  Shards.tensor(c.shards[file], name, backend, dtype)
 end
 
 ## The shape of the tensor `name`, from the header: nothing is read.
 def shape(c: Checkpoint, name: String) -> Result[List[Int]]
   file = try c.weight_map.get(name).to_result("no tensor #{name} in the checkpoint")
-  Safetensors.shape(c.shards[file], name)
+  Shards.shape(c.shards[file], name)
 end
 
 ## The `__metadata__` of every shard, by file name.

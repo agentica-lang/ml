@@ -102,3 +102,11 @@ def expect_close(got: List[Float], want: List[Float], abs: Float, rel: Float, wh
 
   ok()
 end
+
+## `r` is an error whose message holds `phrase`.
+def expect_error[T](r: Result[T], phrase: String) -> Result[Void]
+  case r
+    ok(_) -> error("expected an error with \"#{phrase}\", got a value")
+    error(e) -> Test.assert(e.message.include?(phrase), "\"#{e.message}\" does not hold \"#{phrase}\"")
+  end
+end

@@ -365,8 +365,8 @@ end
   transpose, as the second operand of `matmul` (so `linear`), or as the first
   of `gather` (so `embedding`). The rows of that `gather` stay `F16` in the
   trace, as on every backend, and ggml has widened them to `F32` already: only
-  `to_dtype` to `F32` may take them. `ggml_mul_mat` reads the weight with the `F32`
-  activations and answers `F32`. Every other use of a half weight, and an
+  `to_dtype` to `F32` may take them. `ggml_mul_mat` reads the weight with the
+  `F32` activations and answers `F32`. Every other use of a half weight, and an
   `F16` output, is an error naming the op, before anything compiles.
   A half weight is for inference: `Trace.value_and_grad` and `grad` refuse
   one (so does `gradients` for a `Constant` one; an `F16` tensor of another

@@ -43,7 +43,11 @@ end
 
 ## Qwen3
 
+<<<<<<< HEAD
 `Qwen3.open(dir, backend, weights)` loads `config.json` and `model.safetensors` from a folder (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token. With `weights: Dtype.F16` the big matrices (the projections, the token table and the output head) are kept as half weights on ggml: half the memory and a decode 39% to 60% faster on Vulkan, with a load close to `F32`'s (the CPU gain is not claimed: see the hub page). `F32` is the default and the exact path, and Vulkan multiplies in fp16 by default (`Tensor.vulkan_fp16`), which breaks the Hugging Face goldens with `F32` weights too: `Tensor.vulkan_fp16(false)` before the first ggml call makes it exact, as the checks of this package do.
+=======
+`Qwen3.open(dir, backend, weights)` loads `config.json` and `model.safetensors` from a folder (or one `.gguf` file, whose key-values give the config) (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token. With `weights: Dtype.F16` the big matrices (the projections, the token table and the output head) are kept as half weights on ggml: half the memory and a decode 39% to 60% faster on Vulkan, with a load close to `F32`'s (the CPU gain is not claimed: see the hub page). `F32` is the default and the exact path, and `Tensor.vulkan_fp16` stays off by default because it breaks the Hugging Face goldens, with `F32` weights too.
+>>>>>>> origin/main
 
 ```agentica
 import Bpe from "pkg/transformers/tokenizer/bpe"
