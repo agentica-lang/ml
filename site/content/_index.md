@@ -44,20 +44,20 @@ The [tensor page](tensor/_index.md) has their limits.
 
 ## Status
 
-In progress. No package has a release yet. The packages in the repository are `tensor`, `nn`, `train`, `hub`, `asr`, `transformers` and `whisper`. The [roadmap](../../roadmap.md) says what is done and what comes next.
+In progress. Each package is released on its own tag, `<package>-X.Y.Z`, and the first release is 0.2.0. The packages in the repository are `tensor`, `nn`, `train`, `hub`, `asr`, `transformers` and `whisper`. The [roadmap](../../roadmap.md) says what is done and what comes next.
 
 Each package has its own `agentica.toml`, the project file that lists dependencies. So an app installs only what it needs: an inference app takes `nn` and a backend, and a training app adds `train`.
 
 ## Install a package
 
-Add the package to the `agentica.toml` of your project. Give the repository, its folder as `subdir`, and a commit of `main` as `ref`:
+Add the package to the `agentica.toml` of your project. Give the repository, its folder as `subdir`, and the tag of the release as `tag`:
 
 ```toml
 [dependencies]
-tensor = { git = "https://github.com/agentica-lang/ml", ref = "COMMIT", subdir = "tensor" }
+tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.2.0", subdir = "tensor" }
 ```
 
-Replace `COMMIT` with a commit ID from `main`.
+The tag of a package is `<package>-<version>`, such as `nn-0.2.0`. The API is not stable yet, so expect changes between versions.
 
 A package that depends on another, such as `nn` on `tensor`, gets it at the `ref` that the package names.
 
