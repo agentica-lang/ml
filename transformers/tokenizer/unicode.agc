@@ -32,7 +32,7 @@ def lower(cps: List[Int]) -> List[Int]
   out: List[Int] = []
   for cp in cps
     if cp == 0x130
-      out = out + [0x69, 0x307]
+      out = out.push(0x69).push(0x307)
       next
     end
 
@@ -47,12 +47,35 @@ def lower(cps: List[Int]) -> List[Int]
   out
 end
 
+## `xs` after `out`, one push at a time: `+` copies both lists when `xs` has
+## more than 32 items.
+def append(out: List[Int], xs: List[Int]) -> List[Int]
+  joined = out
+  for x in xs
+    joined = joined.push(x)
+  end
+
+  joined
+end
+
+## The characters of `cps` from `from` up to `to`.
+def span(cps: List[Int], from: Int, to: Int) -> List[Int]
+  out: List[Int] = []
+  for i in from...to
+    out = out.push(cps[i])
+  end
+
+  out
+end
+
 ## The canonical decomposition of `cps` with the combining marks in canonical
-## order (NFD).
+## order (NFD). Text below U+00C0 has no decomposition and no mark, and comes
+## back as it is.
 def nfd(cps: List[Int]) -> List[Int]
+  return cps if plain?(cps)
   out: List[Int] = []
   for cp in cps
-    out = out + decomposed(cp)
+    out = append(out, decomposed(cp))
   end
 
   ordered(out)
@@ -62,6 +85,7 @@ end
 ## the last starter when nothing of its class or a higher one stands between
 ## and the pair is a primary composite (Hangul syllables included).
 def nfc(cps: List[Int]) -> List[Int]
+  return cps if plain?(cps)
   out: List[Int] = []
   starter = -1
   for cp in nfd(cps)
@@ -98,6 +122,16 @@ V_COUNT = 21
 T_COUNT = 28
 N_COUNT = 588
 S_COUNT = 11172
+
+## Whether every character is below U+00C0: nothing there decomposes, combines
+## or is combined into.
+def plain?(cps: List[Int]) -> Bool
+  for c in cps
+    return false if c >= 0xC0
+  end
+
+  true
+end
 
 ## Whether `cp` is in one of the ranges `[lo, hi, lo, hi, ...]` (sorted).
 def in_ranges(table: List[Int], cp: Int) -> Bool
@@ -178,14 +212,14 @@ def ordered(cps: List[Int]) -> List[Int]
   run: List[Int] = []
   for cp in cps
     if combining(cp) == 0
-      out = out + run.sort_by { |c| combining(c) } + [cp]
+      out = append(out, run.sort_by { |c| combining(c) }).push(cp)
       run = []
     else
       run = run.push(cp)
     end
   end
 
-  out + run.sort_by { |c| combining(c) }
+  append(out, run.sort_by { |c| combining(c) })
 end
 
 ## The primary composite of `a` followed by `b`, or -1.

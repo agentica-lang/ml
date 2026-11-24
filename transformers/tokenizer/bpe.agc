@@ -11,6 +11,7 @@
 import Unicode from "unicode"
 import Added from "added"
 import Source from "source"
+import Heap from "std/heap"
 
 ## The split pattern of the Qwen family.
 PATTERN = (
@@ -35,6 +36,12 @@ end
 ## The tokenizer of the text of a `tokenizer.json`.
 def parse(text: String) -> Result[ByteLevelBpe]
   file = try JSON.decode(text, Json)
+  try Added.refuse_limits(file.truncation, file.padding)
+  case file.post_processor
+    some(p) -> return error("the post-processor is #{p.type}, not ByteLevel") if p.type != "ByteLevel"
+    none -> 0
+  end
+
   nfc = false
   case file.normalizer
     some(n) ->
@@ -47,6 +54,7 @@ def parse(text: String) -> Result[ByteLevelBpe]
   return error("the decoder is #{file.decoder.type}, not ByteLevel") if file.decoder.type != "ByteLevel"
   m = file.model
   return error("the model is #{m.type}, not BPE") if m.type != "BPE"
+  return error("the BPE model has dropout, which is not supported") if m.dropout.some?
   if (
     m.ignore_merges or
     m.byte_fallback or
@@ -120,7 +128,9 @@ def decode(tok: ByteLevelBpe, ids: List[Int], skip_special: Bool = true) -> Resu
     case found
       ok(a) ->
         if not (skip_special and a.special)
-          bytes = bytes + a.content.bytes.to_a
+          for b in a.content.bytes.to_a
+            bytes = bytes.push(b)
+          end
         end
 
       error(_) ->
@@ -146,7 +156,7 @@ def split(chars: List[Int]) -> List[List[Int]]
   at = 0
   while at < chars.size
     size = piece_size(chars, at)
-    out = out.push(span(chars, at, at + size))
+    out = out.push(Unicode.span(chars, at, at + size))
     at += size
   end
 
@@ -175,9 +185,18 @@ end
 CR = 13
 LF = 10
 
+## A pair of neighbours to join: the symbol at `at` and the one after it.
+struct Candidate
+  rank: Int
+  at: Int
+end
+
 struct Json
+  truncation: Optional[Added.Setting]
+  padding: Optional[Added.Setting]
   added_tokens: List[Added.Entry]
   normalizer: Optional[KindJson]
+  post_processor: Optional[KindJson]
   pre_tokenizer: PreJson
   decoder: KindJson
   model: ModelJson
@@ -207,6 +226,7 @@ struct ModelJson
   merges: List[List[String]]
   continuing_subword_prefix: Optional[String]
   end_of_word_suffix: Optional[String]
+  dropout: Optional[Float]
   byte_fallback: Bool = false
   ignore_merges: Bool = false
 end
@@ -230,52 +250,63 @@ def check_pre_tokenizer(p: PreJson) -> Result[Void]
   ok()
 end
 
-def span(chars: List[Int], from: Int, to: Int) -> List[Int]
-  out: List[Int] = []
-  for i in from...to
-    out = out.push(chars[i])
+## The symbols of one piece: its UTF-8 bytes, each as its character.
+def byte_chars(chars: List[Int]) -> List[String] = Unicode.text_of(chars).bytes.to_a.map { |b| CHAR_OF[b] }
+
+## `symbols` with adjacent pairs joined by rank, lowest first (leftmost first
+## among equal ranks), until no pair is a merge: `tokenizers`' algorithm, a
+## queue of candidate pairs over a linked list of symbols, so a long piece costs
+## O(n log n), not O(n^2).
+def merge(tok: ByteLevelBpe, symbols: List[String]) -> List[String]
+  n = symbols.size
+  return symbols if n < 2
+  text = symbols
+  after = (0...n).to_a.map { |i| i + 1 }.set(n - 1, -1)
+  before = (0...n).to_a.map { |i| i - 1 }
+  alive = List.repeat(true, n)
+  queue = Heap.new do |a: Candidate, b: Candidate| a.rank < b.rank or (a.rank == b.rank and a.at < b.at) end
+  for i in 0...(n - 1)
+    queue = offer(tok, queue, text[i], text[i + 1], i)
+  end
+
+  while not Heap.empty?(queue)
+    popped = Heap.pop(queue).unwrap!
+    queue = popped.remaining
+    at = popped.value.at
+    right = after[at]
+    if alive[at] and right >= 0 and rank_of(tok, text[at], text[right]) == popped.value.rank
+      text = text.set(at, text[at] + text[right])
+      alive = alive.set(right, false)
+      next_at = after[right]
+      after = after.set(at, next_at)
+      if next_at >= 0
+        before = before.set(next_at, at)
+        queue = offer(tok, queue, text[at], text[next_at], at)
+      end
+
+      if before[at] >= 0
+        queue = offer(tok, queue, text[before[at]], text[at], before[at])
+      end
+    end
+  end
+
+  out: List[String] = []
+  at = 0
+  while at >= 0
+    out = out.push(text[at])
+    at = after[at]
   end
 
   out
 end
 
-## The symbols of one piece: its UTF-8 bytes, each as its character.
-def byte_chars(chars: List[Int]) -> List[String] = Unicode.text_of(chars).bytes.to_a.map { |b| CHAR_OF[b] }
+def rank_of(tok: ByteLevelBpe, left: String, right: String) -> Int = tok.ranks.get(left + " " + right).unwrap_or(-1)
 
-## `symbols` with the lowest-ranked adjacent pair joined, everywhere it
-## stands, until no pair is a merge.
-def merge(tok: ByteLevelBpe, symbols: List[String]) -> List[String]
-  current = symbols
-  while current.size > 1
-    best = -1
-    best_at = -1
-    for i in 0...(current.size - 1)
-      rank = tok.ranks.get(current[i] + " " + current[i + 1]).unwrap_or(-1)
-      if rank >= 0 and (best < 0 or rank < best)
-        best = rank
-        best_at = i
-      end
-    end
-
-    break if best_at < 0
-    left = current[best_at]
-    right = current[best_at + 1]
-    out: List[String] = []
-    i = 0
-    while i < current.size
-      if i + 1 < current.size and current[i] == left and current[i + 1] == right
-        out = out.push(left + right)
-        i += 2
-      else
-        out = out.push(current[i])
-        i += 1
-      end
-    end
-
-    current = out
-  end
-
-  current
+## `queue` with the pair `left right` at `at`, when it is a merge.
+def offer(tok: ByteLevelBpe, queue: Heap.Heap[Candidate], left: String, right: String, at: Int) -> Heap.Heap[Candidate]
+  rank = rank_of(tok, left, right)
+  return queue if rank < 0
+  Heap.push(queue, Candidate(rank: rank, at: at))
 end
 
 def newline?(c: Int) -> Bool = c == CR or c == LF

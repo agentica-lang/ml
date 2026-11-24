@@ -4,6 +4,8 @@
 ## (`normalized` false, no `lstrip`, `rstrip` or `single_word`), which is what
 ## BERT and Qwen declare.
 
+import Unicode from "unicode"
+
 ## An entry of `added_tokens`, as the file spells it.
 struct Entry
   id: Int
@@ -22,10 +24,23 @@ struct Added
   chars: List[Int]
 end
 
+## What `truncation` or `padding` holds when the file sets one: any object.
+struct Setting
+  strategy: Optional[String]
+  max_length: Optional[Int]
+end
+
 enum Part
   ## A stretch of text between added tokens, as code points.
   Text(List[Int])
   Token(Int)
+end
+
+## An error when the file truncates or pads: the tokenizers here do neither.
+def refuse_limits(truncation: Optional[Setting], padding: Optional[Setting]) -> Result[Void]
+  return error("the file sets truncation, which is not supported") if truncation.some?
+  return error("the file sets padding, which is not supported") if padding.some?
+  ok()
 end
 
 ## The added tokens that `entries` declare.
@@ -37,6 +52,7 @@ def parse(entries: List[Entry]) -> Result[List[Added]]
     end
 
     return error("the added token #{e.id} has no text") if e.content.empty?
+    return error("the added token #{e.content} has the id #{e.id}") if e.id < 0
     out = out.push(
       Added(id: e.id, content: e.content, special: e.special, chars: e.content.split("").map { |c| c.code }),
     )
@@ -57,7 +73,7 @@ def split(added: List[Added], chars: List[Int]) -> List[Part]
       at += 1
     else
       if at > start
-        out = out.push(Part.Text(chars.drop(start).take(at - start)))
+        out = out.push(Part.Text(Unicode.span(chars, start, at)))
       end
 
       out = out.push(Part.Token(added[best].id))
@@ -67,7 +83,7 @@ def split(added: List[Added], chars: List[Int]) -> List[Part]
   end
 
   if start < chars.size
-    out = out.push(Part.Text(chars.drop(start)))
+    out = out.push(Part.Text(Unicode.span(chars, start, chars.size)))
   end
 
   out

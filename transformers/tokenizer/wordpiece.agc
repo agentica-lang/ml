@@ -43,6 +43,9 @@ end
 ## The tokenizer of the text of a `tokenizer.json`.
 def parse(text: String) -> Result[WordPiece]
   file = try JSON.decode(text, Json)
+  try Added.refuse_limits(file.truncation, file.padding)
+  kind = file.model.type.unwrap_or("WordPiece")
+  return error("the model is #{kind}, not WordPiece") if kind != "WordPiece"
   if file.normalizer.type != "BertNormalizer"
     return error("the normalizer is #{file.normalizer.type}, not BertNormalizer")
   end
@@ -51,11 +54,13 @@ def parse(text: String) -> Result[WordPiece]
     return error("the pre-tokenizer is #{file.pre_tokenizer.type}, not BertPreTokenizer")
   end
 
-  if file.post_processor.type != "TemplateProcessing"
-    return error("the post-processor is #{file.post_processor.type}, not TemplateProcessing")
+  return error("the decoder is #{file.decoder.type}, not WordPiece") if file.decoder.type != "WordPiece"
+  if file.decoder.prefix != file.model.continuing_subword_prefix
+    return error(
+      "the decoder prefix #{file.decoder.prefix} is not the model's #{file.model.continuing_subword_prefix}",
+    )
   end
 
-  return error("the decoder is #{file.decoder.type}, not WordPiece") if file.decoder.type != "WordPiece"
   added = try Added.parse(file.added_tokens)
   vocab = file.model.vocab
   top = 0
@@ -64,11 +69,22 @@ def parse(text: String) -> Result[WordPiece]
     top = [top, id + 1].max.unwrap!
   end
 
+  for a in added
+    top = [top, a.id + 1].max.unwrap!
+  end
+
   pieces = List.repeat("", top)
+  for a in added
+    pieces = pieces.set(a.id, a.content)
+  end
+
   for name in vocab.keys
     pieces = pieces.set(vocab[name], name)
   end
 
+  cls = try token(vocab, "[CLS]")
+  sep = try token(vocab, "[SEP]")
+  try check_template(text, cls, sep)
   n = file.normalizer
   ok(
     WordPiece(
@@ -83,20 +99,20 @@ def parse(text: String) -> Result[WordPiece]
       strip_accents: n.strip_accents.unwrap_or(n.lowercase),
       lowercase: n.lowercase,
       cleanup: file.decoder.cleanup,
-      cls: try token(vocab, "[CLS]"),
-      sep: try token(vocab, "[SEP]"),
+      cls: cls,
+      sep: sep,
     ),
   )
 end
 
 ## The ids of `text` (and of `pair`, after a `[SEP]`), with `[CLS]` and
-## `[SEP]` around them when `special` is true, as `tokenizer.encode` gives them.
+## `[SEP]` around them when `add_special` is true, as `tokenizer.encode` gives them.
 ## Added tokens in the text (`[MASK]`) are one id each.
-def encode(tok: WordPiece, text: String, pair: Optional[String] = none, special: Bool = true) -> Result[Encoding]
+def encode(tok: WordPiece, text: String, pair: Optional[String] = none, add_special: Bool = true) -> Result[Encoding]
   first = tokens(tok, text)
   ids = first
   types = List.repeat(0, first.size)
-  if special
+  if add_special
     ids = [tok.cls] + ids + [tok.sep]
     types = [0] + types + [0]
   end
@@ -106,7 +122,7 @@ def encode(tok: WordPiece, text: String, pair: Optional[String] = none, special:
       rest = tokens(tok, second)
       ids = ids + rest
       types = types + List.repeat(1, rest.size)
-      if special
+      if add_special
         ids = ids.push(tok.sep)
         types = types.push(1)
       end
@@ -150,10 +166,11 @@ end
 private
 
 struct Json
+  truncation: Optional[Added.Setting]
+  padding: Optional[Added.Setting]
   added_tokens: List[Added.Entry]
   normalizer: NormalizerJson
   pre_tokenizer: KindJson
-  post_processor: KindJson
   decoder: DecoderJson
   model: ModelJson
 end
@@ -172,14 +189,44 @@ end
 
 struct DecoderJson
   type: String
+  prefix: String
   cleanup: Bool
 end
 
 struct ModelJson
+  ## Left out of files that older `tokenizers` wrote.
+  type: Optional[String]
   unk_token: String
   continuing_subword_prefix: String
   max_input_chars_per_word: Int
   vocab: Map[String, Int]
+end
+
+## The post-processor must be BERT's template: `[CLS] A [SEP]` for one text
+## and `[CLS] A [SEP] B [SEP]` for a pair (the second with type id 1), with
+## the ids of `[CLS]` and `[SEP]` that `encode` uses.
+def check_template(text: String, cls: Int, sep: Int) -> Result[Void]
+  wanted = try JSON.parse(template(cls, sep))
+  found = try JSON.get(try JSON.parse(text), "post_processor")
+  if found != wanted
+    return error("the post-processor is not the BERT template ([CLS] A [SEP] and [CLS] A [SEP] B [SEP])")
+  end
+
+  ok()
+end
+
+def template(cls: Int, sep: Int) -> String
+  special = ->(name: String, type_id: Int) { "{\"SpecialToken\": {\"id\": \"#{name}\", \"type_id\": #{type_id}}}" }
+  sequence = ->(name: String, type_id: Int) { "{\"Sequence\": {\"id\": \"#{name}\", \"type_id\": #{type_id}}}" }
+  single = [special.call("[CLS]", 0), sequence.call("A", 0), special.call("[SEP]", 0)]
+  pair = single + [sequence.call("B", 1), special.call("[SEP]", 1)]
+  ids = (
+    "{\"[CLS]\": {\"id\": \"[CLS]\", \"ids\": [#{cls}], \"tokens\": [\"[CLS]\"]}, \"[SEP]\": {\"id\": \"[SEP]\", \"ids\": [#{sep}], \"tokens\": [\"[SEP]\"]}}"
+  )
+
+  (
+    "{\"type\": \"TemplateProcessing\", \"single\": [#{single.join(", ")}], \"pair\": [#{pair.join(", ")}], \"special_tokens\": #{ids}}"
+  )
 end
 
 def token(vocab: Map[String, Int], text: String) -> Result[Int]
@@ -197,7 +244,9 @@ def tokens(tok: WordPiece, text: String) -> List[Int]
       Added.Part.Token(id) -> out = out.push(id)
       Added.Part.Text(chars) ->
         for word in words(normalize(tok, chars))
-          out = out + wordpiece(tok, word)
+          for id in wordpiece(tok, word)
+            out = out.push(id)
+          end
         end
     end
   end
@@ -248,7 +297,7 @@ def spaced_chinese(chars: List[Int]) -> List[Int]
   out: List[Int] = []
   for c in chars
     if chinese?(c)
-      out = out + [32, c, 32]
+      out = out.push(32).push(c).push(32)
     else
       out = out.push(c)
     end

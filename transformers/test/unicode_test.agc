@@ -3,6 +3,12 @@
 
 import Unicode from "../tokenizer/unicode"
 
+## The characters Unicode 15.1 added (CJK extension I, the ideographic
+## description characters U+2FFC..U+2FFF, U+31EF): left out of the samples, so
+## that the peer agrees on a Python of Unicode 15.0 (3.12, which CI may run)
+## as on 3.13's 15.1. Nothing else of 15.1 changes what is checked.
+def added_in_15_1?(c: Int) -> Bool = (c >= 0x2EBF0 and c <= 0x2EE5D) or (c >= 0x2FFC and c <= 0x2FFF) or c == 0x31EF
+
 ## Precomposed Latin, Greek and Cyrillic, the combining marks on a base, marks
 ## out of order, Hangul syllables and jamo, compatibility characters (which
 ## NFD and NFC keep), the singletons that decompose to a letter, and one
@@ -28,6 +34,7 @@ end
 
 def test_normalization_and_properties_match_unicodedata() -> Result[Void]
   cases = samples()
+  try Test.assert(not cases.any? { |cps| cps.any? { |c| added_in_15_1?(c) } }, "a sample has a 15.1 character")
   want = try JSON.decode(try peer(cases), List[Want])
   try Test.eq(want.size, cases.size)
   for i in 0...cases.size

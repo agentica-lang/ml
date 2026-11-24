@@ -12,6 +12,11 @@ Ranges are flat lists `[lo, hi, lo, hi, ...]`, both ends included, sorted.
 import sys
 import unicodedata
 
+# The tables are Unicode 15.1's (Python 3.13); another version writes other
+# tables, so this fails loudly instead of changing the checked-in file.
+VERSION = "15.1.0"
+assert unicodedata.unidata_version == VERSION, f"needs Unicode {VERSION}, this Python has {unicodedata.unidata_version}"
+
 LAST = 0x10FFFF
 SURROGATES = range(0xD800, 0xE000)
 
