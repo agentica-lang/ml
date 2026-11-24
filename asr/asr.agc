@@ -57,7 +57,7 @@ struct Model
   decoder_positions: Nn.Embedding
   decoder: List[Nn.DecoderBlock]
   decoder_norm: Nn.LayerNorm
-  ## The output projection, tied to `tokens`: its table transposed, no bias.
+  ## The output projection, tied to `tokens`: its table as `[out, in]`, no bias.
   logits: Nn.Dense
   ## The compiled functions of this model that its transcriptions share (`planned`): a channel of one value, the map,
   ## which a task takes to read or change it and puts back at once.
@@ -247,7 +247,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
     decoder_positions: decoder_positions,
     decoder: decoder,
     decoder_norm: try Load.layer_norm(c, "#{d}layer_norm", EPS, backend),
-    logits: Nn.Dense(w: try Load.transposed(tokens.table), b: none),
+    logits: Nn.Dense(w: tokens.table, b: none, out_in: true),
     plans: try shared_plans(),
     mel: try compile_mel(config, backend),
   )
@@ -1225,7 +1225,7 @@ end
 
 def traced_mlp(p: Nn.Mlp) -> Nn.Mlp = p.with(up: traced_dense(p.up), down: traced_dense(p.down))
 
-def traced_dense(p: Nn.Dense) -> Nn.Dense = Nn.Dense(w: Trace.constant(p.w), b: lifted(p.b))
+def traced_dense(p: Nn.Dense) -> Nn.Dense = p.with(w: Trace.constant(p.w), b: lifted(p.b))
 
 def traced_norm(p: Nn.LayerNorm) -> Nn.LayerNorm = p.with(gamma: Trace.constant(p.gamma), beta: Trace.constant(p.beta))
 
@@ -1520,8 +1520,8 @@ end
 ## `p` with its weight and bias read from `xs` at `at`.
 def dense_over(p: Nn.Dense, xs: List[Tensor.Tensor], at: Int) -> Nn.Dense
   case p.b
-    some(_) -> Nn.Dense(w: xs[at], b: some(xs[at + 1]))
-    none -> Nn.Dense(w: xs[at], b: none)
+    some(_) -> p.with(w: xs[at], b: some(xs[at + 1]))
+    none -> p.with(w: xs[at], b: none)
   end
 end
 

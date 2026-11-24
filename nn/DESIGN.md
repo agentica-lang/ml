@@ -106,9 +106,12 @@ that are the layer's own (rank of `positional`, table length, heads).
   error, and on `Reference` `q * k` of the mask is at most 1,048,576
   (`Tensor.full`). It assumes an `F32` or `F64` compute dtype. There is no KV
   cache and no decode loop: each call recomputes every position.
-- **Weights are `[in, out]`** (`x w`, as `Tensor.linear` takes them).
-  Hugging Face and PyTorch checkpoints store `[out, in]`, so `hub/` transposes
-  at load time.
+- **Weights are `[in, out]`** (`x w`, as `Tensor.linear` takes them), or
+  `[out, in]` with `Dense.out_in`. Hugging Face and PyTorch checkpoints store
+  `[out, in]`, and `hub/` keeps that layout: `dense` multiplies by its
+  transpose, which ggml reads with no copy (a weight `[in, out]` is copied
+  transposed on every run: 170 of the 296 ms of a whisper-medium step on
+  Vulkan).
 - **Attention costs what `tensor/` costs.** `Tensor.attention` is one op on
   every backend (a fused kernel on ggml and libtorch), so a layer is a few
   nodes. `Tensor.multi_head_attention` remains in `tensor/` as a wrapper over

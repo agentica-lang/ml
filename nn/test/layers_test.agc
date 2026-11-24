@@ -50,6 +50,15 @@ def test_dense_matches_the_naive_product_on_rank_2_and_3() -> Result[Void]
   S.expect_close(try S.floats_of(y), flat, ABS, REL, "rank 3")
 end
 
+def test_a_dense_with_out_in_multiplies_by_the_transpose() -> Result[Void]
+  p = try Nn.init_dense(3, 2, 1, S.REF)
+  p = p.with(b: some(try S.f32([0.5, -0.25], [2])))
+  stored = p.with(w: try Tensor.transpose(p.w), out_in: true)
+  x = try S.f32([1.0, -2.0, 0.5, 0.0, 3.0, -1.0, 0.25, 1.5, -0.75, 2.0, -0.5, 1.0], [2, 2, 3])
+  try Test.eq(Tensor.shape(stored.w), [2, 3])
+  S.expect_close(try S.floats_of(try Nn.dense(stored, x)), try S.floats_of(try Nn.dense(p, x)), ABS, REL, "out_in")
+end
+
 def test_layer_norm_scales_and_shifts_the_normalized_rows() -> Result[Void]
   p = Nn.LayerNorm(gamma: try S.f32([1.0, 2.0, 0.5], [3]), beta: try S.f32([0.0, -1.0, 1.0], [3]), eps: 0.00001)
   data = [1.0, 2.0, 3.0, -1.0, 0.0, 4.0]

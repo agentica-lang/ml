@@ -21,10 +21,13 @@ LAYER_NORM_EPS = 0.00001
 MASKED = -1000000000.0
 
 ## `y = x w + b` over the last axis: `w` is `[inputs, outputs]`, `b` is
-## `[outputs]`.
+## `[outputs]`. With `out_in`, `w` is `[outputs, inputs]` as a checkpoint
+## stores it, and `dense` multiplies by its transpose: ggml does that with no
+## copy of `w`, where it copies `[inputs, outputs]` every time it runs.
 struct Dense
   w: Tensor.Tensor
   b: Optional[Tensor.Tensor]
+  out_in: Bool = false
 end
 
 ## `layer_norm` over the last axis, then `* gamma + beta` (both `[width]`).
@@ -153,11 +156,16 @@ end
 ## are folded into rows for `Tensor.linear` and unfolded after.
 def dense(p: Dense, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(x)
-  return Tensor.linear(x, p.w, p.b) if shape.size == 2
+  w = p.w
+  if p.out_in
+    w = try Tensor.transpose(p.w)
+  end
+
+  return Tensor.linear(x, w, p.b) if shape.size == 2
   return error("dense needs rank >= 1, got #{shape}") if shape.size == 0
   lead = shape.take(shape.size - 1)
   rows = lead.reduce(1) do |acc, d| acc * d end
-  y = try Tensor.linear(try Tensor.reshape(x, [rows, shape[shape.size - 1]]), p.w, p.b)
+  y = try Tensor.linear(try Tensor.reshape(x, [rows, shape[shape.size - 1]]), w, p.b)
   Tensor.reshape(y, lead.push(Tensor.shape(y)[1]))
 end
 

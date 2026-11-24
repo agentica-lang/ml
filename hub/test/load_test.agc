@@ -25,7 +25,8 @@ def test_dense_and_layer_norm_match_the_peer() -> Result[Void]
     c = try Hub.open("#{dir}/layer.safetensors")
     want = try S.json(dir, "layer.json")
     dense = try Load.dense(c, "enc.fc", S.REF)
-    try Test.eq(Tensor.shape(dense.w), [4, 3])
+    try Test.eq(Tensor.shape(dense.w), [3, 4])
+    try Test.assert(dense.out_in, "a loaded dense layer keeps the checkpoint's [out, in]")
     norm = try Load.layer_norm(c, "enc.ln", try JSON.float(try JSON.get(want, "eps")), S.REF)
     try Test.eq([Tensor.dtype(norm.gamma), Tensor.dtype(norm.beta)], [Tensor.Dtype.F32, Tensor.Dtype.F32])
     got = try forward(dense, norm, try S.rows(try JSON.get(want, "x")), S.REF)
@@ -85,7 +86,7 @@ def test_a_whisper_style_encoder_block_loads_layer_by_layer() -> Result[Void]
 
     try same_norm(block.norm1, try JSON.get(try JSON.get(want, "norm"), names.norm1))
     try same_norm(block.norm2, try JSON.get(try JSON.get(want, "norm"), names.norm2))
-    try Test.eq(Tensor.shape(block.mlp.up.w), [4, 8])
+    try Test.eq(Tensor.shape(block.mlp.up.w), [8, 4])
     x = try S.f32((0...12).map { |i| i.to_f / 10.0 }, [1, 3, 4], S.REF)
     Test.eq(Tensor.shape(try Nn.encoder_block(block, x)), [1, 3, 4])
   end
@@ -184,9 +185,9 @@ def expect_absent(r: Result[Nn.Dense]) -> Result[Void]
   end
 end
 
-## `d.w` is the peer's weight transposed, and `d.b` its bias or `none`.
+## `d.w` transposed is the peer's `[in, out]` weight, and `d.b` its bias or `none`.
 def same_dense(d: Nn.Dense, want: JSON.Value) -> Result[Void]
-  try Test.eq(try S.floats_of(d.w), try S.floats(try JSON.get(want, "w")))
+  try Test.eq(try S.floats_of(try Tensor.transpose(d.w)), try S.floats(try JSON.get(want, "w")))
   b = try JSON.get(want, "b")
   case d.b
     some(t) -> Test.eq(try S.floats_of(t), try S.floats(b))
