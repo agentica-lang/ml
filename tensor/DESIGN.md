@@ -112,6 +112,13 @@ gather, scatter_add` (embedding lookup and beam gather need `gather`, and its
 backward rule needs `scatter_add(indices, updates, rows)`, which adds the rows
 of `updates` into `rows` zero rows at `indices`; everything fancier is
 derived).
+`set_rows(cache, rows, positions)` is the one op that writes: a copy of `cache`
+with its rows at the (distinct) `positions` replaced, on every backend but
+ggml. In a function run on ggml (`Trace.run`) it writes the cache where it
+lies, which makes the cache an input that no other node reads, the result an
+output, and the output the very tensor given: the tensor is consumed. The
+check is at lowering, naming the nodes, so a KV cache is not copied at every
+step of a generation. It has no gradient.
 Normalization support: `rsqrt, mean_var` are **not** primitives. `layer_norm`
 and `rms_norm` are derived (§3.2) on every backend that computes, but a trace
 records each as one node, `layer_norm` or `rms_norm`, so that ggml can run it
