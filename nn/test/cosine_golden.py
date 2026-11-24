@@ -1,4 +1,4 @@
-"""The PyTorch peer of the cosine tests of `loss_test.agc`: `torch.nn.functional.cosine_similarity` of two fixed
+"""The PyTorch peer of `cosine_test.agc`: `torch.nn.functional.cosine_similarity` of two fixed
 `[3, 4]` tensors, the MSE of it against fixed scores, and the gradients of that loss, in `float64`.
 
 Manual, not run by the tests: it needs `torch` (2.6.0+cpu was used). Its printed lists are the constants of the test.

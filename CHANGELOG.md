@@ -16,13 +16,13 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### nn
 
+- `Nn.cosine_similarity`: the cosine of each pair of rows of two tensors, with a gradient.
 - `Padded.reach` and `Padded.reached`: the rows of a padded cache that an attention reads, the rows in use rounded up to 256 or to an eighth of the capacity.
 
 ### train
 
 - `Metrics`: scalars written to a run folder as JSON lines and as a TensorBoard event file (pure Agentica), and `Train.fit(..., metrics: some(run))` reports `train/loss`, `train/lr` and `train/step_ms` for every step.
 - `Train.stablehlo` writes the step of `fit` as one StableHLO program for every step: Adam's bias corrections are inputs (`Optim.step_scalars`).
-- `Loss.cosine_similarity` and `Loss.cosine_similarity_loss`: the cosine of pairs of rows and its mean squared error against scores.
 - `Params.split`, `join`, `named` and `update` train part of a model: the weights selected by name train, and the frozen rest has no gradient and no optimizer state.
 
 ### hub

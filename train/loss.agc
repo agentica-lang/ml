@@ -5,43 +5,10 @@
 
 import Tensor from "pkg/tensor/tensor"
 
-## Added to `|a|^2 |b|^2` under the root of `cosine_similarity`: the square of the `1e-8` PyTorch clamps a norm to.
-COSINE_EPS = 0.0000000000000001
-
 ## The mean of `(prediction - target)^2`.
 def mse(prediction: Tensor.Tensor, target: Tensor.Tensor) -> Result[Tensor.Tensor]
   diff = try Tensor.sub(prediction, target)
   Tensor.mean(try Tensor.mul(diff, diff))
-end
-
-## The cosine of each pair of rows of `a` and `b` (`[batch, width]` both), as `[batch]`:
-## `a.b / sqrt(|a|^2 |b|^2 + COSINE_EPS)`. The small term keeps a row of zeros at a cosine of 0 with a finite
-## gradient; for any other row it is below `F32` rounding, so the values are those of PyTorch's `cosine_similarity`.
-def cosine_similarity(a: Tensor.Tensor, b: Tensor.Tensor) -> Result[Tensor.Tensor]
-  shape = Tensor.shape(a)
-  if shape.size != 2 or Tensor.shape(b) != shape
-    return error("cosine_similarity needs two [batch, width] tensors, got #{shape} and #{Tensor.shape(b)}")
-  end
-
-  dot = try Tensor.sum(try Tensor.mul(a, b), some([1]))
-  squares = try Tensor.mul(
-    try Tensor.sum(try Tensor.mul(a, a), some([1])),
-    try Tensor.sum(try Tensor.mul(b, b), some([1])),
-  )
-
-  floor = try Tensor.full([shape[0]], Tensor.Values.Float(COSINE_EPS), Tensor.dtype(a), Tensor.backend(a))
-  Tensor.div(dot, try Tensor.sqrt(try Tensor.add(squares, floor)))
-end
-
-## The mean of `(cosine_similarity(a, b) - scores)^2`, with `scores` of `[batch]`: the loss of a sentence-embedding
-## model trained on scored pairs (sentence-transformers' `CosineSimilarityLoss`).
-def cosine_similarity_loss(a: Tensor.Tensor, b: Tensor.Tensor, scores: Tensor.Tensor) -> Result[Tensor.Tensor]
-  cos = try cosine_similarity(a, b)
-  if Tensor.shape(scores) != Tensor.shape(cos)
-    return error("cosine_similarity_loss needs #{Tensor.shape(cos)} scores, got #{Tensor.shape(scores)}")
-  end
-
-  mse(cos, scores)
 end
 
 ## Binary cross-entropy of `logits` against `targets` in `0..1`:

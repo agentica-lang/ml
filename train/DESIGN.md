@@ -11,8 +11,6 @@ dependency (`group = "test"`), used by the XOR test, and so is `prop`.
 Loss.mse(prediction, target)                   mean of (p - t)^2
 Loss.binary_cross_entropy(logits, targets)     mean of softplus(z) - t z
 Loss.cross_entropy(logits, labels)             mean of -log softmax(z)[label]
-Loss.cosine_similarity(a, b)                   the cosine of each pair of rows, [batch]
-Loss.cosine_similarity_loss(a, b, scores)      mean of (cosine - score)^2
 
 Optim.Optimizer = Sgd(Sgd { lr, momentum = 0 }) | Adam(Adam { lr = 1e-3, beta1 = 0.9, beta2 = 0.999, eps = 1e-8 })
 Optim.init(optimizer, params) -> Result[State]
@@ -83,10 +81,6 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   `relu(z) + log(1 + exp(-|z|)) - t z`, stable for any `z`, with
   `|z| = 2 relu(z) - z`: `relu`'s derivative at `0` is `0`, and with this form
   the gradient at `z = 0` is still `sigmoid(0) - t` (a test pins it).
-- **The cosine has no clamp.** PyTorch divides by each norm clamped to
-  `1e-8`; `clamp` has no backward rule, so `cosine_similarity` divides by
-  `sqrt(|a|^2 |b|^2 + 1e-16)`: the same values to `F32` rounding for a row
-  that is not zero, and a cosine of 0 with a finite gradient for one that is.
 - **Softmax cross-entropy takes integer labels.** `logits` are
   `[batch, classes]` and `labels` are `[batch]` class ids. The log-softmax
   subtracts the row maximum through `Tensor.stop_grad`, so it is stable and
