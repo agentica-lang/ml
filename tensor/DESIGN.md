@@ -160,7 +160,7 @@ An op that is neither in §3.1 nor expressible above at acceptable cost enters
 Tensor.zeros(shape, dtype, backend) -> Result[Tensor]
 Tensor.from_list(data: List[Values], shape, dtype, backend)
                                                   -> Result[Tensor]
-Tensor.from_file(path, offset, shape, format, backend)
+Tensor.from_file(path, offset, shape, format, backend, dtype)
                                                   -> Result[Tensor]   # F32/F16/BF16 bytes of a file, read in C
 Tensor.to_list(t) -> Result[List[Values]]         # host readback, tests + decode loop
 Tensor.shape(t) -> Shape                          # no native call
@@ -171,7 +171,8 @@ Tensor.backend(t) -> Backend                      # no native call
 - `from_file` is how weights load: the backend reads the byte range
   itself (`native/float_file.h`: `pread` into the tensor's own memory, F16
   and BF16 widened in chunks) and no value crosses as a list. The tensor is
-  `F32`, the compute dtype (§2); a short file, a bad offset or a missing file
+  `F32`, the compute dtype (§2), or with `dtype: F16` a half weight (ggml
+  only, §7); a short file, a bad offset or a missing file
   is an `error`, checked in C against the size of the file. `Reference` reads
   the bytes in Agentica (`File.seek` and `File.read_bytes`, `src/file_range.agc`)
   and decodes them there, which is slow on a large file. ggml takes it through
@@ -337,8 +338,38 @@ end
   hook (a lease, a tensor) takes only that one: what it must free under the
   device lock is queued for the lock's next holder, so no task's free waits
   for a graph to finish.
+- **Half weights.** `Tensor.from_file(..., dtype: F16)` on ggml keeps a weight
+  in 16 bits (`GGML_TYPE_F16`): the load converts a chunk at a time and fails
+  on a value beyond 65504 (naming its element), never clips it; a value too
+  small for F16, from a BF16 file for instance, becomes a subnormal or zero. A
+  trace takes a half weight as an input or a constant, and the lowering
+  accepts an `F16` node only as that leaf or its transpose, as the second
+  operand of `matmul` (so `linear`), or as the first of `gather` (so
+  `embedding`). The rows of that `gather` stay `F16` in the trace, as on every
+  backend, and ggml has widened them to `F32` already: only `to_dtype` to
+  `F32` may take them. `ggml_mul_mat` reads the weight with the `F32`
+  activations and answers `F32`. Every other use of a half weight, and an
+  `F16` output, is an error naming the op, before anything compiles.
+  A half weight is for inference: `Trace.value_and_grad` and `grad` refuse
+  one (so does `gradients` for a `Constant` one; an `F16` tensor of another
+  backend keeps its gradient). Other paths are not guarded: a gradient graph
+  that needs an `F16` fill, the zeros of a weight the output does not reach,
+  ends in the lowering error, and `gradients` of an `Input` half weight that
+  only feeds `linear` or `matmul` returns an `F32` gradient. Use `linear(..., out_in: true)` with a checkpoint's
+  `[out, in]` weight: without it the lowering transposes (copies) the half
+  weight on every run.
+- **What a half weight costs.** The weight rounds once, at load. The
+  activations of the product stay `F32` on ggml's CPU backend and on Vulkan at
+  the default (measured against a double-precision sum of the same weights:
+  7e-8 and 1e-7 apart). With `Tensor.vulkan_fp16(true)` Vulkan computes the
+  product in fp16, as it does for an `F32` weight: about 2e-3 apart on outputs
+  of 0.4, and an activation beyond 65504 overflows. A kernel that rounded the
+  activations to F16 would do the same, so a half-weight result is good to
+  about 2^-11 relative per product on any backend. `F32` is the exact path
+  and the default.
 - The lowering computes in `F32`. `Bool` (0/1) and integers up to 32 bits are
-  exact there below 2^24; a node of `F16`, `F64` or `I64`, an integer `div`, a
+  exact there below 2^24; a node of `F64` or `I64`, an `F16` node that is not
+  a half weight (below), an integer `div`, a
   `to_dtype` that is not exact in `F32`, an integer fill or `arange` beyond
   2^24, an `arange` that counts down, a `transpose` above rank 2, a tensor with
   no elements and an op without a lowering are errors naming the node, given
@@ -393,7 +424,8 @@ end
   `Tensor.available(Backend.Ggml(device))` is `true` when the module is built
   and, for `Vulkan(i)`, ggml sees device `i`; it opens no device. ggml stores
   `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are stored as `F32` (exact for
-  them), and `F16`, `F64`, `I64` and a rank above 4 are refused.
+  them), `F64`, `I64` and a rank above 4 are refused, and `F16` is stored only
+  as a half weight (§7).
 
 ## 8. Tensor lifetime
 

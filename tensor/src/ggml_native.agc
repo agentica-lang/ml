@@ -33,15 +33,30 @@ extern module "ggml"
   ## A tensor of the row-major `shape` (rank 4 at most) on `device`, holding
   ## `data`, one value per element.
   compute def upload(device: Int, shape: List[Int], data: List[Float], int32: Bool) -> Result[TensorHandle]
-  ## An F32 tensor of the row-major `shape` on `device` from the little-endian
-  ## floats of `format` (a code of `Types.file_code`) that start at byte `offset`
-  ## of the file `path`. C reads the file itself, so no value crosses as a
-  ## list; a range past the end of the file is an error.
-  compute def load(device: Int, path: String, offset: Int, shape: List[Int], format: Int) -> Result[TensorHandle]
+  ## An F32 tensor (F16 when `half`) of the row-major `shape` on `device` from
+  ## the little-endian floats of `format` (a code of `Types.file_code`) that
+  ## start at byte `offset` of the file `path`. C reads the file itself, so no
+  ## value crosses as a list; a range past the end of the file is an error. A
+  ## half tensor converts the values a chunk at a time and refuses one that F16
+  ## does not hold (beyond 65504).
+  compute def load(
+    device: Int,
+    path: String,
+    offset: Int,
+    shape: List[Int],
+    format: Int,
+    half: Bool,
+  ) -> Result[TensorHandle]
   ## The same from `data`, the bytes of the range that Agentica read
   ## (`TENSOR_LOAD=agentica`): the call reads them in place and widens them into
   ## the buffer. `data` must be exactly the range, or the call is an error.
-  compute def from_bytes(device: Int, data: Bytes, shape: List[Int], format: Int) -> Result[TensorHandle]
+  compute def from_bytes(
+    device: Int,
+    data: Bytes,
+    shape: List[Int],
+    format: Int,
+    half: Bool,
+  ) -> Result[TensorHandle]
   ## A tensor of `shape` on `device` with every element `value`, filled in C,
   ## so a large fill never crosses as a list.
   compute def filled(device: Int, shape: List[Int], value: Float, int32: Bool) -> Result[TensorHandle]

@@ -126,33 +126,27 @@ static bool ff_pread(int fd, void *into, size_t len, int64_t at) {
   return true;
 }
 
-/* The `count` values of `format` that start at byte `offset` of the file `path` (`path_len` bytes, no NUL), as
-   floats in `dest` (room for `count`; it may be NULL when `count` is 0). False with the reason in `why`. */
-static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t count, int64_t format, float *dest,
-                    char *why, size_t why_len) {
+/* The file `path` (`path_len` bytes, no NUL) opened for the range of `count` values of `width` bytes at byte `offset`:
+   the descriptor, or -1 with the reason in `why`. The range is checked against the size of the file here. */
+static int ff_open_range(const char *path, size_t path_len, int64_t offset, int64_t count, size_t width, char *why,
+                         size_t why_len) {
   char name[FF_PATH_MAX];
   struct stat info;
-  size_t width = ff_width(format), step, n;
-  int64_t done = 0, bytes;
-  uint8_t *raw;
+  int64_t bytes;
   int fd;
 
-  if (width == 0) {
-    snprintf(why, why_len, "unknown float format code %lld", (long long)format);
-    return false;
-  }
   if (offset < 0 || count < 0) {
     snprintf(why, why_len, "a range starts at 0 or later and holds no negative count, got offset %lld and %lld values",
              (long long)offset, (long long)count);
-    return false;
+    return -1;
   }
   if (path_len == 0 || path_len >= sizeof name || memchr(path, 0, path_len) != NULL) {
     snprintf(why, why_len, "not a usable file path");
-    return false;
+    return -1;
   }
   if (count > (INT64_MAX - offset) / (int64_t)width) {
     snprintf(why, why_len, "the range of %lld values at %lld is too large", (long long)count, (long long)offset);
-    return false;
+    return -1;
   }
   memcpy(name, path, path_len);
   name[path_len] = '\0';
@@ -161,25 +155,43 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
   if (fd < 0) {
     snprintf(why, why_len, "cannot open %s: %s", name, ff_open_why(errno));
-    return false;
+    return -1;
   }
   if (fstat(fd, &info) != 0) {
     close(fd);
     snprintf(why, why_len, "cannot stat %s", name);
-    return false;
+    return -1;
   }
   if (!S_ISREG(info.st_mode)) {
     close(fd);
     snprintf(why, why_len, "%s is not a regular file", name);
-    return false;
+    return -1;
   }
   bytes = count * (int64_t)width;
   if (offset + bytes > (int64_t)info.st_size) {
     close(fd);
     snprintf(why, why_len, "%s has %lld bytes: the range of %lld bytes at %lld ends past them", name,
              (long long)info.st_size, (long long)bytes, (long long)offset);
+    return -1;
+  }
+  return fd;
+}
+
+/* The `count` values of `format` that start at byte `offset` of the file `path` (`path_len` bytes, no NUL), as
+   floats in `dest` (room for `count`; it may be NULL when `count` is 0). False with the reason in `why`. */
+static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t count, int64_t format, float *dest,
+                    char *why, size_t why_len) {
+  size_t width = ff_width(format), step, n;
+  int64_t done = 0;
+  uint8_t *raw;
+  int fd;
+
+  if (width == 0) {
+    snprintf(why, why_len, "unknown float format code %lld", (long long)format);
     return false;
   }
+  fd = ff_open_range(path, path_len, offset, count, width, why, why_len);
+  if (fd < 0) return false;
   if (count == 0) {
     close(fd);
     return true;
@@ -188,7 +200,7 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
   if (format == FF_F32) {
     if (!ff_pread(fd, dest, (size_t)count * 4, offset)) {
       close(fd);
-      snprintf(why, why_len, "%s ended while it was read (it shrank?)", name);
+      snprintf(why, why_len, "%.*s ended while it was read (it shrank?)", (int)path_len, path);
       return false;
     }
     close(fd);
@@ -210,7 +222,7 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
     if (!ff_pread(fd, raw, step, offset + done * 2)) {
       free(raw);
       close(fd);
-      snprintf(why, why_len, "%s ended while it was read (it shrank?)", name);
+      snprintf(why, why_len, "%.*s ended while it was read (it shrank?)", (int)path_len, path);
       return false;
     }
     ff_widen(raw, (int64_t)n, format, dest + done);
@@ -243,6 +255,86 @@ static bool ff_from_bytes(const uint8_t *data, size_t len, int64_t count, int64_
     ff_widen(data, count, format, dest);
   }
   return true;
+}
+
+/* The values read in `FF_VALUES` at a time, which `ff_each` hands to a sink: `first` is the index of the first value
+   of `values`, `n` how many. The sink answers false, with the reason in `why`, to stop. */
+#define FF_VALUES (FF_CHUNK / 2)
+typedef bool (*ff_sink)(void *ctx, const float *values, int64_t first, int64_t n, char *why, size_t why_len);
+
+/* The `count` values of `format` at byte `offset` of the file `path`, one open of the file for the whole range, handed
+   to `sink` a chunk at a time as floats: no buffer of the size of the tensor exists. */
+static inline bool ff_each(const char *path, size_t path_len, int64_t offset, int64_t count, int64_t format,
+                           ff_sink sink, void *ctx, char *why, size_t why_len) {
+  size_t width = ff_width(format);
+  int64_t done = 0, n;
+  uint8_t *raw;
+  float *values;
+  bool ok = true;
+  int fd;
+
+  if (width == 0) {
+    snprintf(why, why_len, "unknown float format code %lld", (long long)format);
+    return false;
+  }
+  fd = ff_open_range(path, path_len, offset, count, width, why, why_len);
+  if (fd < 0) return false;
+  n = count < (int64_t)FF_VALUES ? count : (int64_t)FF_VALUES;
+  raw = (uint8_t *)calloc((size_t)n + 1, width);
+  values = (float *)calloc((size_t)n + 1, sizeof(float));
+  if (raw == NULL || values == NULL) {
+    snprintf(why, why_len, "out of memory");
+    ok = false;
+  }
+  while (ok && done < count) {
+    n = count - done < (int64_t)FF_VALUES ? count - done : (int64_t)FF_VALUES;
+    if (!ff_pread(fd, raw, (size_t)n * width, offset + done * (int64_t)width)) {
+      snprintf(why, why_len, "%.*s ended while it was read (it shrank?)", (int)path_len, path);
+      ok = false;
+    } else {
+      if (format == FF_F32) memcpy(values, raw, (size_t)n * 4);
+      else ff_widen(raw, n, format, values);
+      ok = sink(ctx, values, done, n, why, why_len);
+      done += n;
+    }
+  }
+  free(raw);
+  free(values);
+  close(fd);
+  return ok;
+}
+
+/* The same over the `len` bytes `data` that Agentica read, which must be exactly the range. */
+static inline bool ff_each_bytes(const uint8_t *data, size_t len, int64_t count, int64_t format, ff_sink sink, void *ctx,
+                                 char *why, size_t why_len) {
+  size_t width = ff_width(format);
+  int64_t done = 0, n;
+  float *values;
+  bool ok = true;
+
+  if (width == 0) {
+    snprintf(why, why_len, "unknown float format code %lld", (long long)format);
+    return false;
+  }
+  if (count < 0 || (uint64_t)count > SIZE_MAX / width || len != (size_t)count * width) {
+    snprintf(why, why_len, "%zu bytes are not %lld values of %zu bytes", len, (long long)count, width);
+    return false;
+  }
+  n = count < (int64_t)FF_VALUES ? count : (int64_t)FF_VALUES;
+  values = (float *)calloc((size_t)n + 1, sizeof(float));
+  if (values == NULL) {
+    snprintf(why, why_len, "out of memory");
+    return false;
+  }
+  while (ok && done < count) {
+    n = count - done < (int64_t)FF_VALUES ? count - done : (int64_t)FF_VALUES;
+    if (format == FF_F32) memcpy(values, data + (size_t)done * 4, (size_t)n * 4);
+    else ff_widen(data + (size_t)done * 2, n, format, values);
+    ok = sink(ctx, values, done, n, why, why_len);
+    done += n;
+  }
+  free(values);
+  return ok;
 }
 
 #endif
