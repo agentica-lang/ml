@@ -109,6 +109,19 @@ extern module "ggml"
   ## the graph into the tensors `output` made; every leaf and output must be
   ## set since the last run. An error when an output is not finite.
   compute def run(lease: Lease, fills: List[Float]) -> Result[Void]
+  ## Writes the `count` values of `src_format` (a code of `Types.file_code`) that start at byte `src_offset` of the
+  ## file `src` into the existing file `dst` at byte `dst_offset`, as `dst_format`. The same format is a byte copy;
+  ## F32 to F16 rounds to nearest even and refuses a value beyond 65504, and to BF16 it rounds to nearest even. C
+  ## does it in chunks on several threads, so no value crosses as a list. Past the end of `dst` the file grows.
+  compute def convert_file(
+    src: String,
+    src_offset: Int,
+    src_format: Int,
+    count: Int,
+    dst: String,
+    dst_offset: Int,
+    dst_format: Int,
+  ) -> Result[Void]
   ## How many graphs this process has compiled: the cache's misses.
   compute def compiles() -> Int
   ## Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every

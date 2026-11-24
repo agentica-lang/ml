@@ -144,6 +144,29 @@ def vulkan_fp16(enabled: Bool) -> Result[Void]
   GgmlRaw.vulkan_fp16(enabled)
 end
 
+## `count` values of `src_format` at byte `src_offset` of the file `src`, written as `dst_format` at byte `dst_offset` of
+## the existing file `dst`.
+def convert_file(
+  src: String,
+  src_offset: Int,
+  src_format: Types.FloatFormat,
+  count: Int,
+  dst: String,
+  dst_offset: Int,
+  dst_format: Types.FloatFormat,
+) -> Result[Void]
+  _ = try usable("convert_file")
+  GgmlRaw.convert_file(
+    src,
+    src_offset,
+    Types.file_code(src_format),
+    count,
+    dst,
+    dst_offset,
+    Types.file_code(dst_format),
+  )
+end
+
 ## The device's code for the native calls: `-1` for `Cpu`, the index for
 ## `Vulkan`; the module must be loaded.
 def code_of(device: Types.Device, op: String) -> Result[Int]

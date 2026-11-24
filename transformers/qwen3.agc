@@ -61,14 +61,23 @@ def open(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype = Tensor.Dt
     return load(c, try gguf_config(c), backend, weights)
   end
 
+  load(try checkpoint(dir), try read_config(dir), backend, weights)
+end
+
+## The `config.json` of the model folder `dir`.
+def read_config(dir: String) -> Result[Config]
   text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
-  config = try Source.within("#{dir}/config.json", JSON.decode(text, Config))
+  Source.within("#{dir}/config.json", JSON.decode(text, Config))
+end
+
+## The weights of the model folder `dir`: its `model.safetensors`, or the `model.safetensors.index.json` of a sharded one.
+def checkpoint(dir: String) -> Result[Hub.Checkpoint]
   file = "#{dir}/model.safetensors"
   if not Path.real(file).ok?
     file = "#{dir}/model.safetensors.index.json"
   end
 
-  load(try Hub.open(file), config, backend, weights)
+  Hub.open(file)
 end
 
 ## The config of a `qwen3` GGUF, from the key-values that llama.cpp's converter writes. The output head is the file's
@@ -105,6 +114,25 @@ def gguf_config(c: Hub.Checkpoint) -> Result[Config]
       sliding_window: none,
     ),
   )
+end
+
+## An error when `config` is a model this file does not run: another type, activation, attention bias, rope scaling or
+## sliding window, or head counts that do not divide.
+def check_config(config: Config) -> Result[Void]
+  if config.model_type != "qwen3" and config.model_type != "qwen2"
+    return error("model_type is #{config.model_type}, not qwen3 or qwen2")
+  end
+
+  return error("hidden_act #{config.hidden_act} is not supported, only silu") if config.hidden_act != "silu"
+  return error("attention_bias is not supported") if config.attention_bias
+  return error("rope_scaling is not supported") if config.rope_scaling.some?
+  return error("sliding window attention is not supported") if config.use_sliding_window
+  if config.num_key_value_heads < 1 or config.num_attention_heads % config.num_key_value_heads != 0
+    return error("#{config.num_attention_heads} heads are not a multiple of #{config.num_key_value_heads} key heads")
+  end
+
+  return error("head_dim #{config.head_dim} is not even, which rope needs") if config.head_dim % 2 != 0
+  ok()
 end
 
 ## The model of an open checkpoint, its shapes checked against `config`.
@@ -214,23 +242,6 @@ def with_head_dim(config: Config) -> Result[Config]
   end
 
   ok(config.with(head_dim: config.hidden_size / config.num_attention_heads))
-end
-
-def check_config(config: Config) -> Result[Void]
-  if config.model_type != "qwen3" and config.model_type != "qwen2"
-    return error("model_type is #{config.model_type}, not qwen3 or qwen2")
-  end
-
-  return error("hidden_act #{config.hidden_act} is not supported, only silu") if config.hidden_act != "silu"
-  return error("attention_bias is not supported") if config.attention_bias
-  return error("rope_scaling is not supported") if config.rope_scaling.some?
-  return error("sliding window attention is not supported") if config.use_sliding_window
-  if config.num_key_value_heads < 1 or config.num_attention_heads % config.num_key_value_heads != 0
-    return error("#{config.num_attention_heads} heads are not a multiple of #{config.num_key_value_heads} key heads")
-  end
-
-  return error("head_dim #{config.head_dim} is not even, which rope needs") if config.head_dim % 2 != 0
-  ok()
 end
 
 def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]

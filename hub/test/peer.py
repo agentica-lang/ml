@@ -2,7 +2,7 @@
 standard library alone (struct + json) and the values a reader must find.
 
 Usage: python3 peer.py SET, with SET one of values, malformed, sharded, layer,
-block, decoder, half, gguf or gguf_bad. The gguf sets are GGUF version 3 files,
+block, decoder, half, gguf, gguf_bad or gguf_write. The gguf sets are GGUF version 3 files,
 written by hand from the format's description. Writes that set into a new temporary folder and prints its path.
 """
 
@@ -341,6 +341,71 @@ def half(out):
     (out / "half.json").write_text(json.dumps({"sums": [sum(big[j * 320:(j + 1) * 320]) for j in range(320)]}))
 
 
+def gguf_write(out):
+    """The input of the GGUF writer: tensors of each source format (and of 1 to 4 dimensions) with values that make
+    the rounding to F16 and BF16 matter (ties, subnormals, the largest F16), and `spec.json`: the key-values to write (a `key` and the value under the name of its kind: u32, f32, bool, text, texts or ints)
+    and, for each tensor, its name in the output and its target format."""
+    seed = [12345]
+
+    def rand():
+        seed[0] = (seed[0] * 1103515245 + 12345) % 2**31
+        return seed[0] / 2**31
+
+    def f32_values(n):
+        edges = [0.0, -0.0, 1.00390625, 1.0009765625, 65504.0, -65504.0, 6.1e-5, 1e-8, 3.4e38, float("inf")]
+        return [struct.unpack("<f", struct.pack("<f", v))[0] for v in
+                (edges + [(rand() - 0.5) * 2 ** (rand() * 20 - 10) for _ in range(n)])[:n]]
+
+    def to_bf16_bits(v):
+        b = struct.unpack("<I", struct.pack("<f", v))[0]
+        return ((b + 0x7FFF + ((b >> 16) & 1)) >> 16) & 0xFFFF
+
+    def inside_f16(values):
+        return [v if abs(v) <= 65504.0 else 1.5 for v in values]
+
+    def bf16_inside_f16(n):
+        values = [struct.unpack("<f", struct.pack("<I", to_bf16_bits(v) << 16))[0] for v in inside_f16(f32_values(n))]
+        # the BF16 value just above 65504 (65536) is beyond F16, so a source to F16 holds none
+        return [to_bf16_bits(v if abs(v) < 65504 else 1.5) for v in values]
+
+    sources = {
+        "a": tensor("F32", [2, 3], f32_values(6)),
+        "b": tensor("F32", [3, 5], inside_f16(f32_values(15))),
+        "c": tensor("F32", [7], f32_values(7)),
+        "d": tensor("BF16", [2, 2, 3], bf16_inside_f16(12)),
+        "e": tensor("BF16", [3, 3], bf16_inside_f16(9)),
+        "f": tensor("F16", [11], [struct.unpack("<e", struct.pack("<e", v))[0] for v in inside_f16(f32_values(11))]),
+        "g": tensor("F16", [2, 5], [(i - 5) / 4 for i in range(10)]),
+        "h": tensor("BF16", [4], [to_bf16_bits(v) for v in f32_values(4)]),
+        "i": tensor("F32", [2, 2, 2, 2], f32_values(16)),
+        "n": tensor("I32", [2], [1, 2]),
+    }
+    write(out / "src.safetensors", sources)
+    spec = {
+        "kvs": [
+            {"key": "general.architecture", "text": "qwen3"},
+            {"key": "t.u32", "u32": 4000000000},
+            {"key": "t.f32", "f32": 0.5},
+            {"key": "t.bool", "bool": True},
+            {"key": "t.text", "text": "h\u00e9llo"},
+            {"key": "t.texts", "texts": ["a", "bc", "", "d\u00e9"]},
+            {"key": "t.ints", "ints": [0, -1, 2147483647, -2147483648]},
+        ],
+        "tensors": [
+            {"out": "a.f32", "src": "a", "format": "F32"}, {"out": "b.f16", "src": "b", "format": "F16"},
+            {"out": "c.bf16", "src": "c", "format": "BF16"}, {"out": "d.f32", "src": "d", "format": "F32"},
+            {"out": "e.f16", "src": "e", "format": "F16"}, {"out": "f.bf16", "src": "f", "format": "BF16"},
+            {"out": "g.f16", "src": "g", "format": "F16"}, {"out": "h.bf16", "src": "h", "format": "BF16"},
+            {"out": "i.f32", "src": "i", "format": "F32"}, {"out": "i.bf16", "src": "i", "format": "BF16"},
+            # the last tensor is 28 bytes: the file ends 4 bytes of padding later
+            {"out": "c.f32", "src": "c", "format": "F32"},
+        ],
+        # `i` holds 3.4e38, which F16 does not: the F16 range check refuses it
+        "refused": {"out": "i.f16", "src": "i", "format": "F16"},
+    }
+    (out / "spec.json").write_text(json.dumps(spec))
+
+
 # GGUF: the value types are numbered as in the format, the tensor types as in ggml.
 GGUF_SCALARS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
 GGML_TYPES = {"F32": 0, "F16": 1, "Q8_0": 8, "Q4_K": 12, "I32": 26, "F64": 28, "BF16": 30}
@@ -521,7 +586,7 @@ def gguf_bad(out):
 
 SETS = {"values": values_file, "malformed": malformed, "sharded": sharded,
         "layer": layer, "block": block, "decoder": decoder, "half": half,
-        "gguf": lambda out: (gguf_file(out), gguf_big_header(out)), "gguf_bad": gguf_bad}
+        "gguf": lambda out: (gguf_file(out), gguf_big_header(out)), "gguf_bad": gguf_bad, "gguf_write": gguf_write}
 
 
 def main():

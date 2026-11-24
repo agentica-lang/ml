@@ -12,6 +12,7 @@ Hub.names(c) -> List[String]                sorted
 Hub.has?(c, name) -> Bool
 Hub.tensor(c, name, backend, dtype = F32) -> Result[Tensor]   F32/F16/BF16 as F32 (F16 with dtype F16: ggml half weight), else the file's dtype (F64 on ggml: F32)
 Hub.shape(c, name) -> Result[List[Int]]     from the header
+Hub.source(c, name) -> Result[Shards.Source]   where an F32/F16/BF16 tensor's values are in its file (for the writer)
 Hub.metadata(c) -> Map[file, Map[String, String]]   each shard's __metadata__
 
 Load.dense(c, prefix, backend, weights = F32)   {prefix}.weight [out, in] kept as stored (Dense.out_in); {prefix}.bias if present
@@ -125,6 +126,22 @@ not by its magic. It is the same design as safetensors:
   checked in blocks (a tensor may fill the data), and the tensor is refused
   when read: it has no `tensor/` dtype yet. A type that is not sized here (the
   IQ types) refuses the whole file.
+
+### Writing
+
+`gguf_write.agc` writes version 3 files: `write(path, fields, tensors)` takes
+the key-values (`U32`, `F32`, `Bool`, `Text`, `Texts`, `Ints`) and the
+tensors, each as the place of its values in a file (`Hub.source`) and the
+format to write (`F32`, `F16` or `BF16`). The header is built in Agentica and
+written first; each tensor is then converted straight from its source range
+into its place by `Tensor.convert_file`, aligned to 32 as llama.cpp does, so
+no value goes through a list. The file is written as `path.part` and renamed
+when whole. `Gguf.gguf_name` is the other way of `Gguf.shard`'s name map.
+`transformers/qwen3_gguf.agc` and `transformers/tools/to_gguf.agc` use it to
+write a Qwen3 folder: against llama.cpp's own converter, the F16 and F32 files
+of Qwen3-0.6B have every shared key-value and all 310 tensors byte for byte
+(llama.cpp also writes `output.weight`, a copy of the table, and a few
+`general.*` keys), and llama.cpp loads the F16 file.
 
 ## Cost
 

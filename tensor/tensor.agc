@@ -284,6 +284,30 @@ def from_file(
   end
 end
 
+## Converting a range of one file into another, for writing a checkpoint: the `count` floats of `src_format` that
+## start at byte `src_offset` of the file `src` are written as `dst_format` at byte `dst_offset` of `dst`, which must
+## exist (a file that grows to the end of the range). C does it in chunks on several threads, so no tensor and no
+## list of values exists. The same format is a copy of the
+## bytes; `F32` or `BF16` to `F16` rounds to nearest even and refuses a value beyond 65504, `F32` or `F16` to `BF16`
+## and `BF16` to `F32` round or widen exactly as `from_file` and the converters of llama.cpp do. Needs the ggml
+## module; a bad range or a missing file is an `error`.
+def convert_file(
+  src: String,
+  src_offset: Int,
+  src_format: Types.FloatFormat,
+  count: Int,
+  dst: String,
+  dst_offset: Int,
+  dst_format: Types.FloatFormat,
+) -> Result[Void]
+  if src_offset < 0 or dst_offset < 0
+    return error("convert_file needs offsets of 0 or more, got #{src_offset} and #{dst_offset}")
+  end
+
+  return error("convert_file needs a count of 0 or more, got #{count}") if count < 0
+  Ggml.convert_file(src, src_offset, src_format, count, dst, dst_offset, dst_format)
+end
+
 ## Creation: plain `values` as an `F32` tensor of `shape`, the short form of
 ## `from_list` for floats.
 def floats(
