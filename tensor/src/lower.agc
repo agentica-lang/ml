@@ -56,6 +56,7 @@ PERMUTE = 31
 ATTENTION = 32
 ROPE = 33
 BATCH_MATMUL = 34
+NORM = 35
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -288,6 +289,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Permute(axes) -> ints = axes
       Types.Op.Attention(scale) -> ints = [try bits(scale, n)]
       Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
+      Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
       _ -> nil
     end
 
@@ -426,6 +428,7 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Gather -> ok(GATHER)
     Types.Op.ScatterAdd(_) -> ok(SCATTER_ADD)
     Types.Op.GeluErf -> ok(GELU_ERF)
+    Types.Op.LayerNorm(_) -> ok(NORM)
     Types.Op.Concat(_) -> ok(CONCAT)
     Types.Op.Stack(_) -> ok(CONCAT)
     Types.Op.Conv1d(_, _) -> ok(CONV1D)

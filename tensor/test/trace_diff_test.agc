@@ -62,6 +62,58 @@ def test_diff_with_an_exact_tolerance_names_the_first_inexact_node_on_ggml() -> 
   end
 end
 
+## `layer_norm` is one node of a trace: ggml's norm and the reference's composition agree on it within the default
+## tolerance, over a vector, a single column and a rank 3 tensor, with a big eps that a dropped eps would show.
+def test_diff_of_a_layer_norm_on_ggml_finds_nothing() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  for shape in [[5], [2, 1], [2, 2, 3]]
+    n = shape.reduce(1) do |acc, d| acc * d end
+    data = (0...n).map { |i| 0.7 * (i % 5).to_f - 1.1 + 0.05 * i.to_f }
+    args = [try Support.f32(data, shape)]
+    d = try Trace.diff(args, REF, CPU) do |xs| Tensor.layer_norm(xs[0], 0.1) end
+    try Test.eq(d.nodes, 1)
+    case d.first
+      some(node) -> return error("#{shape}: the norm differs from the reference: #{node.max_abs}")
+      none -> nil
+    end
+  end
+
+  ok()
+end
+
+## The backward of a `layer_norm` is lowered once on ggml, and gives the reference's gradient.
+def test_the_gradient_of_a_layer_norm_on_ggml_matches_the_reference() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  want = try normed_grad(REF)
+  got = try normed_grad(CPU)
+  have = try Support.floats_of(got)
+  exact = try Support.floats_of(want)
+  for j in 0...exact.size
+    return error("gradient #{j}: #{have[j]} against #{exact[j]}") if (have[j] - exact[j]).abs > 0.0001
+  end
+
+  ok()
+end
+
+## The gradient of `sum(layer_norm(x) * w)` at a fixed `x` on `backend`.
+def normed_grad(backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  data = [0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.9, 0.1, -0.4, 1.7, -1.3, 0.6]
+  weights = [0.3, -0.2, 0.7, 0.1, -0.5, 0.4, 0.9, -0.1, 0.2, -0.6, 0.8, 0.05]
+  x = try on(backend, data)
+  w = try on(backend, weights)
+  step = try Trace.value_and_grad([x]) do |xs|
+    Tensor.sum(try Tensor.mul(try Tensor.layer_norm(xs[0], 0.1), Trace.constant(w)))
+  end
+
+  ok(step.grads[0])
+end
+
+def on(backend: Tensor.Backend, data: List[Float]) -> Result[Tensor.Tensor]
+  Tensor.from_list(data.map { |x| Tensor.Values.Float(x) }, [2, 6], Tensor.Dtype.F32, backend)
+end
+
 def test_diff_runs_a_big_graph_in_slices() -> Result[Void]
   return ok() if !try Support.ggml_present()
 
