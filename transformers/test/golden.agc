@@ -51,8 +51,10 @@ def wordpiece(tokenizer_path: String, golden_path: String) -> Result[Int]
 end
 
 ## The same for a byte-level BPE tokenizer.
-def bpe(tokenizer_path: String, golden_path: String) -> Result[Int]
-  tok = try Bpe.open(tokenizer_path)
+def bpe(tokenizer_path: String, golden_path: String) -> Result[Int] = bpe_of(try Bpe.open(tokenizer_path), golden_path)
+
+## The same goldens for a tokenizer that is already loaded.
+def bpe_of(tok: Bpe.ByteLevelBpe, golden_path: String) -> Result[Int]
   golden = try read(golden_path)
   for c in golden.encode
     try agree("encode #{c.text.inspect}", "#{try Bpe.encode(tok, c.text)}", "#{c.ids}")

@@ -43,6 +43,23 @@ def test_the_key_values_read_as_the_peer_wrote_them() -> Result[Void]
   end
 end
 
+def test_an_array_reads_from_the_file_when_asked() -> Result[Void]
+  S.with_fixtures("gguf") do |dir|
+    h = (try Hub.open("#{dir}/model.gguf")).gguf.unwrap!
+    try Test.eq(try Gguf.strings(h, "t.arr_str"), ["a", "bc", ""])
+    try Test.eq(try Gguf.ints(h, "t.arr_u32"), [1, 2, 3])
+    try Test.eq(try Gguf.ints(h, "t.arr_i16"), [-2, 7])
+    try Test.eq(try Gguf.ints(h, "t.arr_empty"), [])
+    try S.expect_error(Gguf.strings(h, "t.arr_u32"), "not an array of strings")
+    try S.expect_error(Gguf.ints(h, "t.arr_str"), "not an array of integers")
+    try S.expect_error(Gguf.strings(h, "t.str"), "not an array")
+    try S.expect_error(Gguf.ints(h, "t.missing"), "no key t.missing")
+    big = (try Hub.open("#{dir}/big.gguf")).gguf.unwrap!
+    try S.expect_error(Gguf.ints(big, "big"), "more than 1000000")
+    ok()
+  end
+end
+
 def test_a_header_longer_than_the_first_read_is_read_whole() -> Result[Void]
   S.with_fixtures("gguf") do |dir|
     c = try Hub.open("#{dir}/big.gguf")
@@ -118,7 +135,7 @@ end
 def test_malformed_files_are_refused() -> Result[Void]
   S.with_fixtures("gguf_bad") do |dir|
     cases = try JSON.decode(try S.json(dir, "cases.json"), Map[String, String])
-    try Test.eq(cases.size, 25)
+    try Test.eq(cases.size, 27)
     for file in cases.keys
       try S.expect_error(Hub.open("#{dir}/#{file}"), cases[file])
     end

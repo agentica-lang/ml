@@ -1,10 +1,10 @@
 ---
 title: transformers
-description: BERT and Qwen3 in Agentica from Hugging Face checkpoints, and the tokenizers of both that give Hugging Face's ids.
+description: BERT, Qwen3 and Qwen2.5 in Agentica from Hugging Face checkpoints, and the tokenizers that give Hugging Face's ids.
 weight: 7
 ---
 
-`transformers` is BERT and Qwen3 in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 (the forward and greedy generation with a KV cache), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
+`transformers` is BERT, Qwen3 and Qwen2.5 in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
 
 ## BERT
 
@@ -43,7 +43,7 @@ end
 
 ## Qwen3
 
-`Qwen3.open(dir, backend, weights)` loads `config.json` and `model.safetensors` from a folder (or one `.gguf` file, whose key-values give the config) (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token. With `weights: Dtype.F16` the big matrices (the projections, the token table and the output head) are kept as half weights on ggml: half the memory and a decode 39% to 60% faster on Vulkan, with a load close to `F32`'s (the CPU gain is not claimed: see the hub page). `F32` is the default and the exact path, and Vulkan multiplies in fp16 by default (`Tensor.vulkan_fp16`), which breaks the Hugging Face goldens with `F32` weights too: `Tensor.vulkan_fp16(false)` before the first ggml call makes it exact, as the checks of this package do.
+`Qwen3.open(dir, backend, weights)` loads `config.json` and `model.safetensors` from a folder (or one `.gguf` file, whose key-values give the config) (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). The same loader reads Qwen2.5 (`Qwen/Qwen2.5-0.5B-Instruct`): its `config.json` says `model_type` `qwen2`, which has no query and key norms and has a bias on the query, key and value projections, and `head_dim` is `hidden_size / num_attention_heads` when the config has none. `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token. With `weights: Dtype.F16` the big matrices (the projections, the token table and the output head) are kept as half weights on ggml: half the memory and a decode 39% to 60% faster on Vulkan, with a load close to `F32`'s (the CPU gain is not claimed: see the hub page). `F32` is the default and the exact path, and Vulkan multiplies in fp16 by default (`Tensor.vulkan_fp16`), which breaks the Hugging Face goldens with `F32` weights too: `Tensor.vulkan_fp16(false)` before the first ggml call makes it exact, as the checks of this package do.
 
 ```agentica
 import Bpe from "pkg/transformers/tokenizer/bpe"
@@ -66,10 +66,11 @@ end
 ```
 
 - The model matches `Qwen3ForCausalLM` in `float32` on ggml CPU and Vulkan: over five prompts of 5 to 50 tokens the largest gap of a logit is 4.9e-5 on the CPU and 8.6e-5 on Vulkan, and the five largest logits name the same ids at every position.
-- The layers are grouped-query attention with a normalized query and key per head, rotary positions with `rope_theta`, a SwiGLU MLP, RMS norms, and an output head tied to the embedding table when the config says so (the file's `lm_head.weight` is then ignored).
+- Qwen2.5-0.5B-Instruct matches `Qwen2ForCausalLM` in `float32` too: the largest gap of a logit is 4.3e-5 on the CPU and 1.3e-4 on Vulkan over the same five prompts, the 24 greedy ids of each prompt are Hugging Face's on Vulkan (prompts 0 to 2 on the CPU too; the CPU run of the other two was left out because the machine was loaded), and its tokenizer agrees with `tokenizers` on 1827 cases. Hugging Face's own `generate` for Qwen2.5-Instruct applies the `repetition_penalty` 1.1 of its `generation_config.json` even when greedy, so its ids differ from ours (the goldens set 1.0).
+- The layers are grouped-query attention (Qwen3 normalizes the query and key per head; Qwen2.5 has no such norms and has a bias on the query, key and value projections), rotary positions with `rope_theta`, a SwiGLU MLP, RMS norms, and an output head tied to the embedding table when the config says so (the file's `lm_head.weight` is then ignored).
 - `Qwen3.run` is the forward over a whole sequence, with no cache: on ggml every call traces and plans a graph (0.6 to 1.7 seconds on the CPU, 0.2 to 0.6 second on Vulkan for these prompts). To generate, use `Generate`.
 - `Qwen3.close_model(m)` frees the weights; the logits belong to the caller (`Lift.close`). `qwen_check` peaks at 3.7 GB on ggml CPU and 1.5 GB on Vulkan, where the weights live in device memory.
-- A `model_type` other than `qwen3`, an activation other than `silu`, attention bias, `rope_scaling`, `use_sliding_window: true` (a `sliding_window` size with it `false` is ignored, as Hugging Face does), a head count that the key heads do not divide, and a tensor of another shape are errors. Qwen2.5 and others come later. Reference and ggml are tested; libtorch is not, and a sharded checkpoint is not tested. On the reference backend attention needs `q * k` of at most 1,048,576, about 1024 tokens with the causal mask; ggml has no such limit.
+- A `model_type` other than `qwen3` or `qwen2`, an activation other than `silu`, `attention_bias: true`, `rope_scaling`, `use_sliding_window: true` (a `sliding_window` size with it `false` is ignored, as Hugging Face does), a head count that the key heads do not divide, and a tensor of another shape are errors. Reference and ggml are tested; libtorch is not, and a sharded checkpoint is not tested. On the reference backend attention needs `q * k` of at most 1,048,576, about 1024 tokens with the causal mask; ggml has no such limit.
 - The pins of `transformers` in `agentica.toml` are those of `asr`, as for BERT.
 
 ## Generation
@@ -105,6 +106,55 @@ For one-step control, `Generate.start()`, then `Generate.step(g, cache, ids)` (a
 - On the reference backend attention needs `q * k` of at most 1,048,576, which the padded prompt counts: a prompt of 600 tokens is padded to 1024. libtorch is not tested. The prompt and the new ids must fit `max_position_embeddings` (40960).
 - Speed on this machine (Ryzen 5 3550H, Radeon Vega iGPU), in `float32`, after a prompt of 128 tokens: 5.6 tokens per second on the CPU and 7.1 on Vulkan, and 56 and 208 tokens per second for the prompt itself (medians of 5 interleaved rounds). llama.cpp on the same weights in F32 is 1.9 to 2.3 times faster, and its F16 weights make the CPU decode 1.7 times faster again: the table and the method are in [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md). Memory: 2.8 GB on the CPU and 0.85 GB on Vulkan, whole process.
 - A batch of one, the prompt in one step (no chunks).
+
+A GGUF file carries its tokenizer: `Bpe.open_gguf("Qwen3-0.6B-F16.gguf")` gives the one of the `tokenizer.json` (the same ids and text), for a file of llama.cpp with `tokenizer.ggml.model` gpt2 and `pre` qwen2; another tokenizer is an error. The text is NFC-normalized, as `Qwen/Qwen3-0.6B`'s `tokenizer.json` says (llama.cpp does not), and `decode` leaves out control tokens by default (`skip_special`), which include `<|fim_prefix|>` and five like it that `tokenizer.json` does not mark special.
+
+## Chat template
+
+`Chat.apply(model_type, messages, add_generation_prompt, enable_thinking)` makes the prompt text of a conversation for the instruct models of the Qwen family, as Hugging Face's `apply_chat_template` does without tools. `model_type` is the one of the model's `config.json` (`qwen2` or `qwen3`), `messages` is a list of `Chat.Message(role, content)` with the roles `system`, `user` and `assistant`, and the answer is text for the tokenizer (`<|im_start|>` and `<|im_end|>` are special tokens it knows). With `add_generation_prompt: true` (the default) it ends with the opening of the assistant's turn; `qwen2` adds the system turn "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." when the first message is not a system one, and `enable_thinking: false` (Qwen3 only) opens the assistant's turn with an empty think block, so the model answers without thinking. For `qwen3`, an assistant message `<think>reasoning</think>answer` is read as the template does: after the last user message the reasoning is kept in a think block, before it only the answer stays, and the leading newlines of the answer are dropped; for `qwen2` the text is written as it is. A `tool` role, an unknown role and no messages are errors. The text equals Hugging Face's on 27 conversations for the two templates (`test/chat_golden.py`).
+
+```agentica
+import Chat from "pkg/transformers/chat"
+
+def main() -> Void
+  messages = [Chat.Message(role: "user", content: "Why is the sky blue?")]
+  puts(Chat.apply("qwen2", messages).unwrap!)
+end
+```
+
+```output
+<|im_start|>system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Why is the sky blue?<|im_end|>
+<|im_start|>assistant
+
+```
+
+To chat, put the text through the tokenizer and `Generate`, and stop at the end of the turn (`<|im_end|>`, id 151645) or the end of text (151643):
+
+```agentica
+import Bpe from "pkg/transformers/tokenizer/bpe"
+import Chat from "pkg/transformers/chat"
+import Generate from "pkg/transformers/generate"
+import Qwen3 from "pkg/transformers/qwen3"
+import Tensor from "pkg/tensor/tensor"
+
+def main() -> Void
+  backend = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+  tok = Bpe.open("Qwen2.5-0.5B-Instruct/tokenizer.json").unwrap!
+  m = Qwen3.open("Qwen2.5-0.5B-Instruct", backend).unwrap!
+  messages = [Chat.Message(role: "user", content: "Name the capital of France in one word.")]
+  prompt = Bpe.encode(tok, Chat.apply(m.config.model_type, messages).unwrap!).unwrap!
+  g = Generate.open(m).unwrap!
+  puts(Bpe.decode(tok, Generate.generate(g, prompt, 16, [151645, 151643]).unwrap!).unwrap!)
+  Generate.close(g)
+end
+```
+
+```output
+Paris
+```
 
 ## Tokenizer example
 

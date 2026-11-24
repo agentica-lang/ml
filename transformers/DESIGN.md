@@ -57,12 +57,25 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 - The forward is one graph on ggml (`Lift.staged`). Every call traces and
   plans the graph again: under two seconds on the CPU, 0.6 s on Vulkan for a 50 token
   prompt. Generation (below) keeps a cache and compiles its steps.
-- Only `qwen3`, `silu`, no attention bias, no `rope_scaling` and
-  `use_sliding_window: false` are read; the rest is an error. `tie_word_embeddings`
-  defaults to `true`, as in Hugging Face, and then the file's `lm_head.weight`
-  is ignored. On the reference backend attention needs `q * k` of at most
-  1,048,576 (about 1024 tokens, causal). A model of Qwen2.5 (bias, no norms) or GPT-2
+- `model_type` `qwen3` or `qwen2` (Qwen2.5), `silu`, no `attention_bias`, no
+  `rope_scaling` and `use_sliding_window: false` are read; the rest is an
+  error. `qwen2` has no `q_norm` and `k_norm` and a bias on `q_proj`, `k_proj`
+  and `v_proj` (`Load.dense` takes a `.bias` when the file has one), and no
+  `head_dim` in its config (`hidden_size / num_attention_heads`, read once in
+  `load`). `tie_word_embeddings` defaults to `true`, as in Hugging Face, and
+  then the file's `lm_head.weight` is ignored. On the reference backend
+  attention needs `q * k` of at most 1,048,576 (about 1024 tokens, causal). GPT-2
   is a later config.
+
+`chat.agc`: `Chat.apply(model_type, messages, add_generation_prompt,
+enable_thinking)` is the ChatML text of `apply_chat_template` for the two
+families, with the system turn of Qwen2.5 by default, the empty think block of
+Qwen3 (`enable_thinking: false`, and before an assistant message that ends the
+conversation), the `</think>` split of an assistant message (Qwen3) and no
+tools (a `tool` role is an error). The golden is
+Hugging Face's own output (`test/chat_golden.py`). The `tokenizer.json` of
+Qwen2.5 writes a merge as `"a b"`, where Qwen3's writes `["a", "b"]`;
+`tokenizer/bpe.agc` reads both.
 
 ## BERT
 
@@ -106,6 +119,18 @@ refuse what they do not implement (another normalizer, pre-tokenizer,
 post-processor or template, decoder or model, `truncation`, `padding`, BPE
 `dropout`, an added token with `lstrip`, `rstrip`, `single_word` or
 `normalized`), so a different tokenizer is an error, never a quiet difference.
+
+`Bpe.open_gguf` reads the same tokenizer from a GGUF (`tokenizer.ggml.tokens`,
+`token_type` and `merges`, written by llama.cpp for `model` gpt2, `pre`
+qwen2): a normal token is a piece, a control or user-defined one is an added
+token, an unused one (the padding of the vocabulary) is no token. The tables
+of Qwen3-0.6B's file equal those of its `tokenizer.json`. Two differences,
+both from the file: it does not say whether the text is NFC-normalized (it is
+here, as in Qwen's `tokenizer.json`; llama.cpp does not normalize), and a
+control token is special, so `decode` leaves out `<|fim_prefix|>` and its five
+neighbours by default (`skip_special`), which `tokenizer.json` does not mark
+special. An unused id after the last token does not decode; one between tokens
+decodes to the empty text.
 
 ```text
 tokenizer/unicode_data.agc   the tables (generated, frozen)

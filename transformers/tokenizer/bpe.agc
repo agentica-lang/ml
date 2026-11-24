@@ -8,6 +8,7 @@
 ## `unicode.agc`'s tables (`PATTERN`, with `\s` as White_Space and `\p{L}`,
 ## `\p{N}` as the L and N categories), alternative by alternative in its order.
 
+import Gguf from "pkg/hub/gguf"
 import Unicode from "unicode"
 import Added from "added"
 import Source from "source"
@@ -35,7 +36,7 @@ end
 
 ## The tokenizer of the text of a `tokenizer.json`.
 def parse(text: String) -> Result[ByteLevelBpe]
-  file = try JSON.decode(text, Json)
+  file = try decoded(text)
   try Added.refuse_limits(file.truncation, file.padding)
   case file.post_processor
     some(p) -> return error("the post-processor is #{p.type}, not ByteLevel") if p.type != "ByteLevel"
@@ -88,6 +89,60 @@ def parse(text: String) -> Result[ByteLevelBpe]
   end
 
   ok(ByteLevelBpe(vocab: m.vocab, pieces: pieces, ranks: ranks, added: added, nfc: nfc))
+end
+
+## The tokenizer in the GGUF at `path`: `from_gguf` of its header.
+def open_gguf(path: String) -> Result[ByteLevelBpe] = from_gguf(try Gguf.open(path))
+
+## The tokenizer that llama.cpp writes into a GGUF of Qwen (`tokenizer.ggml.model` gpt2, `pre` qwen2): the tokens in the
+## order of their ids, their types and the merges as `left right` strings. A normal token (type 1) is a piece, a
+## control (3) or user defined (4) token is an added token, and an unused one (5, the padding of the vocabulary) is no
+## token. The NFC normalization is on, as in Qwen's `tokenizer.json`: the file does not say, and llama.cpp does not
+## normalize. A control token is special: llama.cpp calls some tokens control that `tokenizer.json` does not mark so
+## (`<|fim_prefix|>`), so `decode` leaves those out where the JSON's tokenizer keeps them.
+def from_gguf(h: Gguf.Header) -> Result[ByteLevelBpe]
+  model = try Gguf.string(h, "tokenizer.ggml.model")
+  return error("#{h.path}: the tokenizer model is #{model}, not gpt2") if model != "gpt2"
+  pre = try Gguf.string(h, "tokenizer.ggml.pre")
+  return error("#{h.path}: the pre-tokenizer is #{pre}, not qwen2") if pre != "qwen2"
+  tokens = try Gguf.strings(h, "tokenizer.ggml.tokens")
+  kinds = try Gguf.ints(h, "tokenizer.ggml.token_type")
+  merges = try Gguf.strings(h, "tokenizer.ggml.merges")
+  return error("#{h.path}: #{tokens.size} tokens and #{kinds.size} token types") if tokens.size != kinds.size
+
+  vocab: Map[String, Int] = {}
+  added: List[Added.Added] = []
+  top = 0
+  for id in 0...tokens.size
+    token = tokens[id]
+    case kinds[id]
+      1 ->
+        return error("#{h.path}: the token #{token.inspect} appears twice") if vocab.key?(token)
+        vocab = vocab.put(token, id)
+        top = id + 1
+      3, 4 ->
+        return error("#{h.path}: the token #{id} has no text") if token.empty?
+        added = added.push(Added.of(id, token, kinds[id] == 3))
+        top = id + 1
+      5 -> 0
+      _ -> return error("#{h.path}: the token #{id} has the type #{kinds[id]}, which is not supported")
+    end
+  end
+
+  pieces = List.repeat("", top)
+  for name in vocab.keys
+    pieces = pieces.set(vocab[name], name)
+  end
+
+  ranks: Map[String, Int] = {}
+  for i in 0...merges.size
+    pair = merges[i].split(" ")
+    return error("#{h.path}: merge #{i} is not a pair of tokens") if pair.size != 2 or pair[0].empty? or pair[1].empty?
+
+    ranks = ranks.put(merges[i], i)
+  end
+
+  ok(ByteLevelBpe(vocab: vocab, pieces: pieces, ranks: ranks, added: added, nfc: true))
 end
 
 ## The ids of `text`, as `tokenizer.encode` gives them (no tokens are added
@@ -191,7 +246,7 @@ struct Candidate
   at: Int
 end
 
-struct Json
+struct Json[M]
   truncation: Optional[Added.Setting]
   padding: Optional[Added.Setting]
   added_tokens: List[Added.Entry]
@@ -199,7 +254,7 @@ struct Json
   post_processor: Optional[KindJson]
   pre_tokenizer: PreJson
   decoder: KindJson
-  model: ModelJson
+  model: M
 end
 
 struct KindJson
@@ -220,6 +275,7 @@ struct StepJson
   use_regex: Optional[Bool]
 end
 
+## The model of a `tokenizer.json` that writes a merge as `["a", "b"]` (Qwen3's).
 struct ModelJson
   type: String
   vocab: Map[String, Int]
@@ -229,6 +285,68 @@ struct ModelJson
   dropout: Optional[Float]
   byte_fallback: Bool = false
   ignore_merges: Bool = false
+end
+
+## The model of one that writes it as `"a b"` (Qwen2.5's, the older form); `tokenizers` reads both.
+struct ModelLinesJson
+  type: String
+  vocab: Map[String, Int]
+  merges: List[String]
+  continuing_subword_prefix: Optional[String]
+  end_of_word_suffix: Optional[String]
+  dropout: Optional[Float]
+  byte_fallback: Bool = false
+  ignore_merges: Bool = false
+end
+
+## The file of `text` with its model in the first form, or in the second, turned into the first.
+def decoded(text: String) -> Result[Json[ModelJson]]
+  first = JSON.decode(text, Json[ModelJson])
+  return first if first.ok?
+  second = JSON.decode(text, Json[ModelLinesJson])
+  if not second.ok?
+    case second
+      error(e) -> return error(e.message) if lines_shape?(text)
+      ok(_) -> nil
+    end
+
+    return first
+  end
+
+  f = second.unwrap!
+  m = f.model
+  ok(
+    Json(
+      truncation: f.truncation,
+      padding: f.padding,
+      added_tokens: f.added_tokens,
+      normalizer: f.normalizer,
+      post_processor: f.post_processor,
+      pre_tokenizer: f.pre_tokenizer,
+      decoder: f.decoder,
+      model: ModelJson(
+        type: m.type,
+        vocab: m.vocab,
+        merges: m.merges.map { |line| line.split(" ") },
+        continuing_subword_prefix: m.continuing_subword_prefix,
+        end_of_word_suffix: m.end_of_word_suffix,
+        dropout: m.dropout,
+        byte_fallback: m.byte_fallback,
+        ignore_merges: m.ignore_merges,
+      ),
+    ),
+  )
+end
+
+## Whether the file writes its merges as "a b" lines, so that is the shape whose error to report.
+def lines_shape?(text: String) -> Bool
+  parsed = JSON.parse(text)
+  return false if not parsed.ok?
+  merges = JSON.get(JSON.get(parsed.unwrap!, "model").unwrap_or(JSON.null()), "merges")
+  return false if not merges.ok?
+  items: List[JSON.Value] = JSON.list(merges.unwrap!).unwrap_or([])
+  return false if items.empty?
+  JSON.string(items[0]).ok?
 end
 
 ## The pre-tokenizer must be the Qwen split (isolated, as written in

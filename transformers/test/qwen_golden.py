@@ -1,5 +1,5 @@
-"""Prints what Hugging Face's `Qwen3ForCausalLM` answers for `Qwen/Qwen3-0.6B`
-on a few prompts, for `tools/qwen_check.agc` to compare: per prompt, the input
+"""Prints what Hugging Face's `AutoModelForCausalLM` (`Qwen3ForCausalLM` for `Qwen/Qwen3-0.6B`, `Qwen2ForCausalLM`
+for `Qwen/Qwen2.5-0.5B-Instruct`) answers on a few prompts, for `tools/qwen_check.agc` to compare: per prompt, the input
 ids (the check does not need our tokenizer), the logits of the last position
 over the whole vocabulary, for every position the ids of the five largest
 logits, and the ids that greedy `generate` adds (at most `NEW`, stopping at an
@@ -13,7 +13,7 @@ with Python's isolated mode:
     python -I test/qwen_golden.py MODEL_DIR > GOLDEN.json
 
 MODEL_DIR holds `model.safetensors`, `config.json` and `tokenizer.json` of
-`Qwen/Qwen3-0.6B`.
+`Qwen/Qwen3-0.6B` or `Qwen/Qwen2.5-0.5B-Instruct`.
 """
 
 import json
@@ -42,7 +42,9 @@ def main():
         with torch.no_grad():
             logits = model(ids).logits[0]
         with torch.no_grad():
-            made = model.generate(ids, do_sample=False, max_new_tokens=NEW, output_scores=True,
+            # Qwen2.5-Instruct's generation_config.json sets repetition_penalty 1.1, which `generate` applies even
+            # when greedy; 1.0 is plain greedy, as ours is.
+            made = model.generate(ids, do_sample=False, repetition_penalty=1.0, max_new_tokens=NEW, output_scores=True,
                                   return_dict_in_generate=True, pad_token_id=tok.pad_token_id)
         top2 = [step[0].topk(2).values for step in made.scores]
         cases.append({
