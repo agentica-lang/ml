@@ -2,7 +2,8 @@
 ## such a view gives what the reference gives, node by node with `Trace.diff`, on ggml CPU (and Vulkan when it is
 ## there). The classes: a binary op (the view first or second, and as the source of a broadcast), a reduction over a
 ## trailing and a leading block, a product, a gather, `concat`, `rms_norm`, `rope` (which permutes the view back) and
-## `attention`.
+## `attention`, also with one key head over a batch (a view whose head axis is 1 and whose batch stride is not packed:
+## ggml-vulkan copies such a product operand through F16).
 
 import Support from "support"
 import Tensor from "../tensor"
@@ -112,6 +113,22 @@ def test_concat_norm_rope_and_attention_take_a_view() -> Result[Void]
 
     try agree("causal attention over views", backend, [a, b, k]) do |x|
       Tensor.attention(try heads(x[0]), try heads(x[1]), try heads(x[1]), none, none, true)
+    end
+  end
+
+  ok()
+end
+
+def test_a_product_takes_a_view_of_one_head_over_a_batch() -> Result[Void]
+  q = try f32(10, [2, 3, 2, 4])
+  k = try f32(11, [2, 3, 1, 4])
+  v = try f32(12, [2, 3, 1, 4])
+  at = try Tensor.from_list([0, 1, 2].map { |i| Tensor.Values.Int(i) }, [3], Tensor.Dtype.I32, REF)
+  for backend in try engines()
+    try agree("attention over the rope of one key head", backend, [q, k, v, at]) do |x|
+      query = try Tensor.rope(try heads(x[0]), x[3], dims: some(4))
+      key = try Tensor.rope(try heads(x[1]), x[3], dims: some(4))
+      Tensor.attention(query, key, try heads(x[2]), none, none, true)
     end
   end
 

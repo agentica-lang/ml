@@ -392,6 +392,19 @@ static struct ggml_tensor *dense(struct entry *p, const struct gnode *n) {
   return node->dense;
 }
 
+/* The node as an operand of ggml_mul_mat. ggml calls a tensor contiguous when its strides match wherever an extent is
+   above 1, but ggml-vulkan wants every stride to match (it copies the operand through F16 otherwise), so a view with an
+   extent 1 axis (one head) is copied too. */
+static struct ggml_tensor *operand(struct entry *p, const struct gnode *n) {
+  struct ggml_tensor *t = dense(p, n);
+  int i;
+
+  for (i = 1; i < GGML_MAX_DIMS; i++) {
+    if (t->nb[i] != t->nb[i - 1] * (size_t)t->ne[i - 1]) return ggml_cont(p->ctx, t);
+  }
+  return t;
+}
+
 /* The node's own tensor, copied when it is a view (a permute that kept axis 0): for the ops that take `->t` raw. */
 static struct ggml_tensor *plain(struct entry *p, const struct gnode *n) { return contiguous(p, n->t); }
 
@@ -502,7 +515,7 @@ static struct ggml_tensor *scatter_add(struct entry *p, const struct gnode *indi
    checked every extent these asserts of ggml read. */
 static struct ggml_tensor *attention(struct entry *p, const struct gnode *q, const struct gnode *k, const struct gnode *v,
                                      const struct gnode *mask, float scale) {
-  struct ggml_tensor *scores = ggml_mul_mat(p->ctx, dense(p, k), dense(p, q)); /* [Sk, Sq, H, B] */
+  struct ggml_tensor *scores = ggml_mul_mat(p->ctx, operand(p, k), operand(p, q)); /* [Sk, Sq, H, B] */
   struct ggml_tensor *weights = ggml_soft_max_ext(p->ctx, scores, mask != NULL ? dense(p, mask) : NULL, scale, 0.0f);
   struct ggml_tensor *rows = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, v), 1, 0, 2, 3)); /* [Sk, Dv, Hkv, B] */
 
@@ -699,9 +712,9 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
          mul_mat(bᵀ, a). When b is a transpose (the backward's ct · wᵀ), bᵀ
          is its argument and no copy is made. */
       if (b->op == OP_TRANSPOSE) {
-        t = ggml_mul_mat(p->ctx, dense(p, &p->nodes[b->arg]), dense(p, a));
+        t = ggml_mul_mat(p->ctx, operand(p, &p->nodes[b->arg]), operand(p, a));
       } else {
-        t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b))), dense(p, a));
+        t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b))), operand(p, a));
       }
       break;
     case OP_TRANSPOSE:
@@ -942,7 +955,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         return tg_error(env, "batch_matmul takes [B..., m, k] and [B..., k, n]");
       }
       /* like matmul: a · b is mul_mat(bᵀ, a), per batch */
-      t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, b), 1, 0, 2, 3)), dense(p, a));
+      t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, b), 1, 0, 2, 3)), operand(p, a));
       break;
     case OP_CONV1D:
       if (nints != 2 || ints[0] < 1 || ints[1] < 0) return tg_error(env, "conv1d takes a stride >= 1 and a padding >= 0");
