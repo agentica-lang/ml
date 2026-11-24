@@ -56,6 +56,7 @@ A tensor has a shape, a dtype (its number type, such as `F32`, a 32-bit float) a
 - Shape: `reshape`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `broadcast_to`, `gather` (rows at integer indices), `top_ids(x, k)` (the ids of the `k` largest of a float vector, `I32` `[k]`: descending on the reference, in no order on ggml, where it is one device node and only `k` ids cross to the host; the derived `top_k` reads the whole vector), `set_rows(cache, rows, positions)` (a copy of `cache` `[..., rows, width]` with its rows `positions[i]` replaced, the positions distinct; see `Trace.run`), `scatter_add(indices, updates, rows)` (the inverse of `gather`: it adds the rows of `updates` into `rows` zero rows, and a repeated index sums its rows).
 - Convolution: `conv1d` (stride and padding; no dilation or groups), `avg_pool1d`.
 - Movement and dtype: `to_dtype`, `to_device`, `copy`, `contiguous`, `stop_grad`.
+- Sorting and decoding: `top_k(x, k)` gives the `k` largest values of a rank-1 float tensor, descending, as a `TopK` with `values` and `indices` (`I64`). Ties keep an unspecified order, and a non-finite value is an `error`. `beam_search(logits, width)` reads `[steps, vocab]` logits and gives the `width` best token rows as `I64 [width, steps]`, best first. It ranks each path by the sum of its logits, with no softmax and no end token, and `width` is from 1 to `vocab`. `greedy_step(logits, temperature: none)` takes the argmax of rank-1 logits; a `temperature` above 0 scales them first. `dropout(x, p)` is the identity at inference, and `p` must lie in `0..1`.
 - Built from the above: `softmax`, `gelu` (the tanh form), `silu`, `dot`, `linear`, `embedding`, `multi_head_attention` (over `[batch, seq, width]`, it is `attention` between a split and a join of the heads), `greedy_step`. `layer_norm` and `rms_norm` are built from them too, but a trace records each as one node, so ggml runs one norm (ggml's Vulkan backend can fuse the product by a weight after an rms norm) and the gradient has a rule of its own.
 
 ## Backends
@@ -113,9 +114,11 @@ end
 
 - `Trace.eval(args, f)` gives the value of `f` on the backend of `args`.
 - `Trace.grad(args, f)` gives the gradient of a scalar function for each argument.
+- `Trace.gradients(out, wrt)` is the same step on traced tensors: it gives the gradient graph of the traced scalar `out` for each traced tensor of `wrt`, and zeros for a tensor `out` does not depend on.
 - `Trace.value_and_grad(args, f)` gives `value` and `grads` from one evaluation.
 - `Trace.eval_many(args, f)` gives several tensors from one evaluation: `f` answers a `List` of tensors, and on `Ggml` they are one compiled graph.
 - `Trace.constant(t)` adds a tensor from outside, such as data or labels, to the trace. No gradient is taken for it.
+- `Trace.node_count(outs)` gives the number of distinct nodes that `outs` reach, which is what one evaluation computes.
 - `Trace.compile(specs, f)` traces `f` once and gives a `Compiled` function. `Trace.run(compiled, args)` runs it any number of times and gives what `eval_many` gives, without tracing `f` or planning the graph again.
 
 `Trace.eval` and `eval_many` trace `f` and plan the graph on every call, then reuse the compiled ggml graph by its structure. `Trace.compile` does that work once:
