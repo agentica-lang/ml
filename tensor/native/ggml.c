@@ -737,4 +737,22 @@ an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t) {
   return ggml_result_list_Float_ok(env, list);
 }
 
+an_term ggml_append_file(an_env *env, struct ggml_TensorHandle_state *t, ng_str path) {
+  char why[FF_PATH_MAX + 160];
+  void *bytes;
+  bool held, ok;
+
+  if (t->t == NULL) return tg_error(env, "append_file of a tensor that was never made");
+  if (t->t->type != GGML_TYPE_F32) return tg_error(env, "append_file writes an F32 tensor");
+  bytes = host_bytes(t->t);
+  if (bytes == NULL) return tg_error(env, "out of memory");
+  lock_for(t->vulkan, &held);
+  ggml_backend_tensor_get(t->t, bytes, 0, ggml_nbytes(t->t));
+  unlock_for(held);
+  ok = ff_append(path.data, path.len, bytes, ggml_nbytes(t->t), why, sizeof why);
+  free(bytes);
+  if (!ok) return tg_error(env, why);
+  return ggml_result_Void_ok(env, an_void(env));
+}
+
 GGML_NATIVE_MODULE(NULL)

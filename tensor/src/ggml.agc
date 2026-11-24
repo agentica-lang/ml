@@ -129,6 +129,12 @@ def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   ok(out)
 end
 
+## Appends the `F32` values of `t` to the file `path`, written by C.
+def append_file(t: Types.Tensor, path: String) -> Result[Void]
+  _ = try usable("append_file")
+  GgmlRaw.append_file(try handle_of(t), path)
+end
+
 ## `t` copied to `device`: between ggml's CPU and a Vulkan device, or between
 ## two Vulkan devices.
 def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]

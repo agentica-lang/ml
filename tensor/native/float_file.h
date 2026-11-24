@@ -218,6 +218,45 @@ static inline bool ff_read_bytes(const char *path, size_t path_len, int64_t offs
   return true;
 }
 
+/* Appends `len` bytes to the regular file `path`, which must exist (`Tensor.append_file`). */
+static inline bool ff_append(const char *path, size_t path_len, const void *from, size_t len, char *why, size_t why_len) {
+  const uint8_t *p = (const uint8_t *)from;
+  char name[FF_PATH_MAX];
+  struct stat info;
+  ssize_t put;
+  int fd;
+
+  if (path_len == 0 || path_len >= sizeof name || memchr(path, 0, path_len) != NULL) {
+    snprintf(why, why_len, "not a usable file path");
+    return false;
+  }
+  memcpy(name, path, path_len);
+  name[path_len] = '\0';
+  fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+  if (fd < 0) {
+    snprintf(why, why_len, "cannot open %s: %s", name, ff_open_why(errno));
+    return false;
+  }
+  if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
+    close(fd);
+    snprintf(why, why_len, "%s is not a regular file", name);
+    return false;
+  }
+  while (len > 0) {
+    put = write(fd, p, len);
+    if (put < 0 && errno == EINTR) continue;
+    if (put <= 0) {
+      close(fd);
+      snprintf(why, why_len, "%s could not be written (no space left?)", name);
+      return false;
+    }
+    p += put;
+    len -= (size_t)put;
+  }
+  close(fd);
+  return true;
+}
+
 /* The `count` values of a Q8_0 range (whole blocks) dequantized into `dest`, a chunk of blocks at a time. */
 static bool ff_read_q8_0(const char *path, size_t path_len, int64_t offset, int64_t count, float *dest, char *why,
                          size_t why_len) {

@@ -9,3 +9,4 @@ blank_line_after_end = true
 tensor = { git = "https://github.com/agentica-lang/ml", ref = "3185826fd76079adad69f5158822c88b3e89cd5d", subdir = "tensor" }
 nn = { git = "https://github.com/agentica-lang/ml", ref = "49ca1c77e11c1e70e695f5e332592bb7db53f025", subdir = "nn" }
 hub = { git = "https://github.com/agentica-lang/ml", ref = "0db3d790591ca52fc211d27183e818223e66e1e9", subdir = "hub" }
+train = { git = "https://github.com/agentica-lang/ml", ref = "e774dd18a2900e17e7a1892d363fd13e9898918a", subdir = "train", group = "test" }

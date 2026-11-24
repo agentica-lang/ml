@@ -365,6 +365,20 @@ def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   end
 end
 
+## Appends the values of the `F32` tensor `t`, row-major and little-endian, to the file `path`, which must exist: what
+## `from_file` reads back with `FloatFormat.F32`, for writing a checkpoint. The native backends write from C, so no
+## value crosses as an Agentica list; the reference encodes them in Agentica and is slow on a large tensor.
+def append_file(t: Types.Tensor, path: String) -> Result[Void]
+  return error("append_file writes an F32 tensor, got #{Types.dtype_name(t.dtype)}") if t.dtype != Types.Dtype.F32
+
+  case t.backend
+    Types.Backend.Reference -> Reference.append_file(t, path)
+    Types.Backend.Torch(_) -> Torch.append_file(t, path)
+    Types.Backend.Trace -> error("a traced tensor has no values: run it with Trace.eval")
+    Types.Backend.Ggml(_) -> Ggml.append_file(t, path)
+  end
+end
+
 ## Elementwise `a + b`, float only, exact shapes.
 def add(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try same_backend(a, b, "add")
