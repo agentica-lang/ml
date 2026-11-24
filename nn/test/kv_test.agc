@@ -27,6 +27,22 @@ def test_the_capacity_is_a_power_of_two_up_to_the_limit() -> Result[Void]
   Test.eq(Padded.capacity(70, 100), 100)
 end
 
+## The rows an attention reads: every row of a small cache, steps of 256 rows up to a capacity of 2048 and of an
+## eighth of the capacity above, never fewer than the rows in use.
+def test_the_reach_is_the_rows_in_use_rounded_up_to_a_step() -> Result[Void]
+  try Test.eq(Padded.reach(1, 8), 8)
+  try Test.eq(Padded.reach(200, 256), 256)
+  try Test.eq(Padded.reach(257, 512), 512)
+  try Test.eq(Padded.reach(513, 1024), 768)
+  try Test.eq(Padded.reach(768, 1024), 768)
+  try Test.eq(Padded.reach(769, 1024), 1024)
+  try Test.eq(Padded.reach(1025, 2048), 1280)
+  try Test.eq(Padded.reach(2049, 4096), 2560)
+  try Test.eq(Padded.reach(4096, 4096), 4096)
+  try Test.eq(Padded.reach(4097, 8192), 5120)
+  Test.eq(Padded.reach(70, 100), 100)
+end
+
 def test_the_mask_hides_the_later_rows() -> Result[Void]
   slots = Padded.Slots(positions: try positions([1, 3]), capacity: 4)
   got = try S.floats_of(try Padded.padded_mask(slots, Tensor.Dtype.F32))

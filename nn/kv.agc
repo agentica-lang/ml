@@ -1,7 +1,8 @@
 ## The padded cache of a decoder, shared by the models that step one: the rows
 ## a cache has (8, 16, 32, ... so a compiled step changes shape only when the
-## capacity grows), the mask that hides the later positions and the padding,
-## and the write of new rows into a cache. Each model keeps its own forward.
+## capacity grows), the rows of it an attention reads (`reach`), the mask that
+## hides the later positions and the padding, and the write of new rows into a
+## cache. Each model keeps its own forward.
 
 import Nn from "nn"
 import Tensor from "pkg/tensor/tensor"
@@ -22,6 +23,26 @@ def capacity(needed: Int, limit: Int) -> Int
   end
 
   [rows, limit].min.unwrap!
+end
+
+## The rows of a cache of `capacity` rows that an attention reads when `needed`
+## of them are in use: `needed` rounded up to a step of 256 rows, or of an eighth
+## of the capacity when that is more, and at most the capacity. The rest is
+## padding, which costs as much to read as a row in use. A step that reads other
+## rows is another graph, so the step is no smaller than that.
+def reach(needed: Int, capacity: Int) -> Int
+  step = [256, capacity / 8].max.unwrap!
+  [capacity, ((needed + step - 1) / step) * step].min.unwrap!
+end
+
+## The first `rows` rows of a cache tensor `t` (`[1, heads, capacity, width]`):
+## what an attention reads of it, with a mask of `rows` keys (`padded_mask` of
+## slots whose capacity is `rows`).
+def reached(t: Tensor.Tensor, rows: Int) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(t)
+  return error("reached takes a cache [1, heads, rows, width], got #{shape}") if shape.size != 4
+  return ok(t) if shape[2] == rows
+  Tensor.slice(t, [0, 0, 0, 0], [shape[0], shape[1], rows, shape[3]])
 end
 
 ## `[n, capacity]`: `MASKED` where the key's row is after the query's position

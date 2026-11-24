@@ -595,9 +595,10 @@ def half_node(t: Types.Tensor, n: Types.Node) -> Result[Bool]
     Types.Op.Gather -> ok(true)
     Types.Op.SetRows -> ok(t.dtype == Types.Dtype.F16)
     Types.Op.ToDtype -> ok(t.dtype == Types.Dtype.F16)
+    Types.Op.Slice(_, _) -> ok(t.dtype == Types.Dtype.F16)
     _ ->
       error(
-        "node #{n.id} (#{Types.op_name(n.op)}) is #{Types.dtype_name(t.dtype)}, which ggml holds only for a packed weight read by matmul, linear, gather and embedding, or an F16 cache that set_rows writes, to_dtype makes and attention reads: " +
+        "node #{n.id} (#{Types.op_name(n.op)}) is #{Types.dtype_name(t.dtype)}, which ggml holds only for a packed weight read by matmul, linear, gather and embedding, or an F16 cache that set_rows writes, to_dtype makes and attention reads (whole, or a slice of it): " +
         "a packed weight is read-only, so no gradient is taken for it",
       )
   end
@@ -606,7 +607,7 @@ end
 ## The `F16` and `Q8_0` operands of a node: the weight of a `matmul` (second operand) and
 ## the table of a `gather` (first), the argument of a transpose, or the rows of a
 ## `gather` that `to_dtype` widens, an `F16` input that `to_dtype` widens, the cache of a `set_rows` and the key and
-## value of an attention (F16 only). Anywhere else the packed weight would need an
+## value of an attention, or a slice of a cache that an attention reads (F16 only). Anywhere else the packed weight would need an
 ## op that ggml does not run on it. A `Q8_0` weight goes into a `matmul` only as the
 ## transpose that `linear(..., out_in: true)` makes, which is read in place.
 def half_operands(n: Types.Node) -> Result[Bool]
@@ -618,7 +619,8 @@ def half_operands(n: Types.Node) -> Result[Bool]
         Types.Op.Transpose -> n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i])
         Types.Op.ToDtype -> try gathered(n.args[0]) or (n.args[i].dtype == Types.Dtype.F16 and try an_input(n.args[0]))
         Types.Op.SetRows -> i == 0 and n.args[i].dtype == Types.Dtype.F16 and try an_input(n.args[0])
-        Types.Op.Attention(_) -> (i == 1 or i == 2) and n.args[i].dtype == Types.Dtype.F16 and try cached(n.args[i])
+        Types.Op.Attention(_) -> (i == 1 or i == 2) and n.args[i].dtype == Types.Dtype.F16 and try attended(n.args[i])
+        Types.Op.Slice(_, _) -> n.args[i].dtype == Types.Dtype.F16 and try cached(n.args[i])
         _ -> false
       end
 
@@ -660,6 +662,15 @@ def cached(t: Types.Tensor) -> Result[Bool]
     Types.Op.SetRows -> ok(true)
     Types.Op.ToDtype -> ok(true)
     _ -> ok(false)
+  end
+end
+
+## The `F16` tensor `t` is a cache (`cached`), or a slice of one: what an attention reads.
+def attended(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Slice(_, _) -> cached(n.args[0])
+    _ -> cached(t)
   end
 end
 
