@@ -61,7 +61,7 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
 - **Reference, libtorch and ggml**: the model runs on all three. The tiny
   test model matches the peer within 1e-5 on libtorch and on ggml, which
   compute in F32. On `Ggml` (the CPU or Vulkan) each encoder stage, each
-  decoder block of `listen` (2 outputs per head, under ggml's 256) and each
+  decoder block of `listen` and each
   `step` is one compiled graph, with the model's tensors and the cache as
   trace constants. There the self-attention cache is padded with zero rows
   to a capacity of 8, 16, 32 and so on rows (at most `max_target_positions`):
@@ -184,8 +184,8 @@ and the KV cache that feeds them one token at a time.
   whole text is one segment from 0. A segment is `start`, `stop`, `text`
   (`end` is a reserved word in Agentica).
 - **The KV cache** lives in `asr/`, over `nn/`'s layers: `listen` projects the
-  encoder output to every block's cross-attention keys and values once, split
-  by head (keys transposed); `step` keeps each block's self-attention keys and
+  encoder output to every block's cross-attention keys and values once, as
+  `[1, heads, frames, head_width]` for `Tensor.attention`; `step` keeps each block's self-attention keys and
   values and feeds one token at a time (a prompt at once, under the causal
   mask), and returns only the last token's logits.
 
