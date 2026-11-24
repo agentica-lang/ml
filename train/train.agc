@@ -10,6 +10,7 @@
 ## (`data.agc`).
 
 import Data from "data"
+import Metrics from "metrics"
 import Optim from "optim"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
@@ -30,7 +31,11 @@ end
 ## Trains `params` for `epochs` passes over the batches of `data`, one
 ## optimizer step per batch. `loss(params, batch)` must answer a float scalar;
 ## inside it the parameters and the batch are `Trace` tensors. The loader's
-## prefetch task, if any, ends before `fit` returns, on every path.
+## prefetch task, if any, ends before `fit` returns, on every path. With `metrics`,
+## every step writes `train/loss`, `train/lr` and `train/step_ms` to that run at
+## its step count (from 1); `fit` does not close the run. A metric that
+## `Metrics.scalar` refuses (a loss that is not finite, for one) stops `fit`
+## with an error that names the epoch and the batch.
 def fit(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],
@@ -38,10 +43,11 @@ def fit(
   optimizer: Optim.Optimizer,
   epochs: Int,
   on_epoch: Optional[Fn[Epoch, Void]] = none,
+  metrics: Optional[Metrics.Run] = none,
 ) -> Result[Fit]
   state = try Optim.init(optimizer, params)
   feed = try Data.feed(data, epochs)
-  result = run(Run(loss: loss, feed: feed, epochs: epochs, on_epoch: on_epoch), state, params)
+  result = run(Run(loss: loss, feed: feed, epochs: epochs, on_epoch: on_epoch, metrics: metrics), state, params)
   Data.stop(feed)
   result
 end
@@ -74,6 +80,7 @@ struct Run
   feed: Data.Feed
   epochs: Int
   on_epoch: Optional[Fn[Epoch, Void]]
+  metrics: Optional[Metrics.Run]
 end
 
 struct Stepped
@@ -90,9 +97,18 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Result[Fit]
     feed = Data.epoch(r.feed, e)
     total = 0.0
     for i in 0...batches
+      started = Time.monotonic_ns()
       stepped = take_step(r.loss, feed, i, state, current)
       return error("epoch #{e}, batch #{i}: #{stepped.message}") if !stepped.ok?
       done = stepped.unwrap!
+      case r.metrics
+        some(m) ->
+          ms = (Time.monotonic_ns() - started).to_f / 1000000.0
+          logged = log_step(m, done, Optim.learning_rate(state), ms)
+          return error("epoch #{e}, batch #{i}: #{logged.message}") if !logged.ok?
+        none -> nil
+      end
+
       state = done.step.state
       current = done.step.params
       total = total + done.loss
@@ -107,6 +123,13 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Result[Fit]
   end
 
   ok(Fit(params: current, history: history))
+end
+
+def log_step(m: Metrics.Run, done: Stepped, lr: Float, ms: Float) -> Result[Void]
+  n = done.step.state.steps
+  try Metrics.scalar(m, "train/loss", n, done.loss)
+  try Metrics.scalar(m, "train/lr", n, lr)
+  Metrics.scalar(m, "train/step_ms", n, ms)
 end
 
 def take_step(

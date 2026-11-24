@@ -20,6 +20,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### train
 
+- `Metrics`: scalars written to a run folder as JSON lines and as a TensorBoard event file (pure Agentica), and `Train.fit(..., metrics: some(run))` reports `train/loss`, `train/lr` and `train/step_ms` for every step.
 - `Train.stablehlo` writes the step of `fit` as one StableHLO program for every step: Adam's bias corrections are inputs (`Optim.step_scalars`).
 - `Params.split`, `join`, `named` and `update` train part of a model: the weights selected by name train, and the frozen rest has no gradient and no optimizer state.
 
