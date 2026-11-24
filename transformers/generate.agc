@@ -152,7 +152,8 @@ end
 
 ## `step_logits` for the `k` largest logits only: their ids and values, largest first, and the cache. The cut is in the
 ## graph (`Tensor.top_ids`), so `k` values and ids cross to the host and not `vocab_size` logits. Ids with equal logits
-## at the edge of the `k` are not specified.
+## at the edge of the `k` are not specified. A `-inf` logit among the `k` makes the step an error on ggml (its outputs
+## are checked to be finite).
 def step_top(g: Generator, cache: Cache, ids: List[Int], k: Int) -> Result[Candidates]
   vocab = g.model.config.vocab_size
   if k < 1 or k > vocab
@@ -189,9 +190,10 @@ def finish(cache: Cache) -> Void
 end
 
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`).
-## Greedy (the choice runs in the graph) unless `sampling` says how to draw: then each step reads the largest logits (cut in the graph) and
-## `Sample.pick_top` draws among the largest, the same ids for the same seed. The prompt and the new ids must fit
-## `max_position_embeddings`.
+## Greedy (the choice runs in the graph) unless `sampling` says how to draw: then each step reads the largest logits
+## (cut in the graph) and `Sample.pick_top` draws among them, the same ids for the same seed (up to float noise). An
+## unusable `sampling` (`Sample.check`) is an error before the first step, also at temperature 0. The prompt and the new
+## ids must fit `max_position_embeddings`.
 def generate(
   g: Generator,
   ids: List[Int],
@@ -200,6 +202,14 @@ def generate(
   sampling: Optional[Sample.Sampling] = none,
 ) -> Result[List[Int]]
   return error("generate needs max_new of 0 or more, got #{max_new}") if max_new < 0
+  case sampling
+    some(s) ->
+      checked_sampling = Sample.check(s)
+      return error(checked_sampling.message) if not checked_sampling.ok?
+
+    none -> nil
+  end
+
   limit = g.model.config.max_position_embeddings
   if max_new > 0 and ids.size + max_new - 1 > limit
     return error("generate needs at most #{limit} positions, a prompt of #{ids.size} and #{max_new} new ids need more")
@@ -230,8 +240,8 @@ def generate(
   ok(out)
 end
 
-## The id after `feed` and the cache, by the greedy step or, with `sampling`, by a draw among the largest logits (`state` is
-## the generator of the draws, which the answer carries on).
+## The id after `feed` and the cache, by the greedy step or, with `sampling`, by a draw among the largest logits (`state`
+## is the generator of the draws, which the answer carries on).
 def chosen_next(
   g: Generator,
   cache: Cache,
@@ -308,6 +318,10 @@ end
 
 ## The `k` largest of `logits` as `[2k]` floats: their values, then their ids (exact in F32 below 2^24).
 def top_candidates(logits: Tensor.Tensor, k: Int) -> Result[Tensor.Tensor]
+  if Tensor.dtype(logits) != Tensor.Dtype.F32
+    return error("the logits are #{Tensor.dtype(logits)}: step_top needs F32, or the ids would round")
+  end
+
   ids = try Tensor.top_ids(logits, k)
   values = try Tensor.gather(logits, ids)
   Tensor.concat([values, try Tensor.to_dtype(ids, Tensor.dtype(logits))], 0)
@@ -586,7 +600,6 @@ def checked(m: Qwen3.Qwen3, cache: Cache, ids: List[Int]) -> Result[Void]
   ok()
 end
 
-## The id the pick found, an error for none (a NaN in the logits: no score equals the maximum).
 def head_key(mode: Head) -> String
   case mode
     Head.Logits -> "logits"
@@ -595,6 +608,7 @@ def head_key(mode: Head) -> String
   end
 end
 
+## The id the pick found, an error for none (a NaN in the logits: no score equals the maximum).
 def chosen(head: List[Tensor.Values], vocab: Int) -> Result[Int]
   case head[0]
     Tensor.Values.Float(f) ->

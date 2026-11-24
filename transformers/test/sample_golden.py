@@ -2,6 +2,10 @@
 id after Hugging Face's `TemperatureLogitsWarper`, `TopKLogitsWarper` and `TopPLogitsWarper` (in that order, which is
 the order `generate` uses) and a softmax, in `float64`. `test/sample_test.agc` compares `Sample.probabilities` to it.
 
+It also holds the ids drawn from fixed logits: a stdlib peer of `Sample.pick` (Park-Miller `x = 48271 x mod 2^31-1`
+started from the seed with three states skipped, the ids sorted by logit, then cut by `top_k` and `top_p`, then a
+cumulative scan against `u * total`), for `test/sample_test.agc` to compare with `Sample.pick` state after state.
+
 Manual, not run by the tests: it needs `torch` and `transformers` (4.57.6 was used). Run it in a throwaway venv, from
 `transformers/`, with Python's isolated mode:
 
@@ -9,6 +13,7 @@ Manual, not run by the tests: it needs `torch` and `transformers` (4.57.6 was us
 """
 
 import json
+import math
 import random
 
 import torch
@@ -52,4 +57,58 @@ for logits in LOGITS:
             {"logits": logits, "temperature": temperature, "top_k": top_k, "top_p": top_p, "probabilities": probs}
         )
 
-print(json.dumps({"cases": cases}))
+MODULUS = 2147483647
+
+
+def draw_ids(logits, temperature, top_k, top_p, seed, count):
+    state = seed % (MODULUS - 1) + 1
+    for _ in range(3):
+        state = state * 48271 % MODULUS
+    out = []
+    for _ in range(count):
+        state = state * 48271 % MODULUS
+        u = state / MODULUS
+        order = sorted(range(len(logits)), key=lambda i: (-logits[i], i))
+        top = logits[order[0]]
+        kept = [(i, logits[i] / temperature) for i in order if logits[i] >= top - 30.0 * temperature]
+        if top_k > 0 and len(kept) > top_k:
+            edge = kept[top_k - 1][1]
+            kept = [c for c in kept if c[1] >= edge]
+        if top_p < 1.0:
+            weights = [math.exp(score - kept[0][1]) for _, score in kept]
+            total = sum(weights)
+            before, cut = 0.0, []
+            for c, w in zip(kept, weights):
+                if before / total >= top_p:
+                    break
+                cut.append(c)
+                before += w
+            kept = cut
+        weights = [math.exp(score - kept[0][1]) for _, score in kept]
+        target = u * sum(weights)
+        seen, chosen = 0.0, kept[-1][0]
+        for (i, _), w in zip(kept, weights):
+            seen += w
+            if seen > target:
+                chosen = i
+                break
+        out.append(chosen)
+    return out
+
+
+draws = []
+for logits in (LOGITS[0], LOGITS[2]):
+    for temperature, top_k, top_p in ((1.0, 0, 1.0), (0.8, 10, 0.95), (1.5, 3, 0.5)):
+        for seed in (0, 7, 123456):
+            draws.append(
+                {
+                    "logits": logits,
+                    "temperature": temperature,
+                    "top_k": top_k,
+                    "top_p": top_p,
+                    "seed": seed,
+                    "ids": draw_ids(logits, temperature, top_k, top_p, seed, 16),
+                }
+            )
+
+print(json.dumps({"cases": cases, "draws": draws}))

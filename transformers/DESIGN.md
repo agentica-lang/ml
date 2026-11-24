@@ -1,17 +1,17 @@
 # transformers — design
 
 BERT and Qwen3 for inference, from Hugging Face checkpoints, over `tensor/`,
-`nn/` and `hub/`. BERT, the Qwen3 forward, greedy generation with a KV cache and the
-tokenizers are here; sampling and more models come in later PRs of ml#78.
+`nn/` and `hub/`. BERT, the Qwen3 forward, generation with a KV cache (greedy or
+sampled) and the tokenizers are here; more models come in later PRs of ml#128.
 
 ## Generation
 
 `generate.agc`, the design of `asr/`'s decoder copied and adapted (ml#117 tracks
 sharing it): `Generate.open(m)` is the generator of a model, which holds its
 compiled steps in a one-slot channel (as `Asr.Model.plans`), and
-`Generate.generate(g, ids, max_new, stop, sampling)` decodes greedily, or by `sample.agc` (below); `start`, then `step`
-(the id with the largest logit) or `step_logits` per call, then `finish`, are
-the same by hand. `Generate.close(g)` ends the compiled steps, before
+`Generate.generate(g, ids, max_new, stop, sampling)` decodes greedily, or by
+`sample.agc` (below); `start`, then `step` (the id with the largest logit) or
+`step_logits` per call, then `finish`, are the same by hand. `Generate.close(g)` ends the compiled steps, before
 `Qwen3.close_model`. Batch of one, one task at a time.
 
 - The cache of a layer is `[1, kv_heads, rows, head_dim]`: the keys already
@@ -201,10 +201,17 @@ drawn: with `top_k` unset the draw is from the top 256, whose mass after a real
 temperature is negligible, and a tie across the edge of the K keeps one id where
 Hugging Face keeps all of them. The order is Hugging Face's warpers: the logits
 over the temperature, the `top_k` largest, then the ids whose mass before them
-is under `top_p`, a softmax over what is left and a draw by inverse CDF. The
-generator is Park-Miller's minimal standard (as `nn/init.agc`), started from the
-seed, so a seed gives the same ids on every backend. Only ids within 30 of the
-largest scaled logit are candidates (a mass under 1e-13); a `-inf` logit is a
-masked id and a NaN is an error. The probabilities after the three steps equal
-Hugging Face's on fixed logits (`test/sample_golden.py`,
-`fixtures/sample_golden.json`, 1e-9 in `float64`).
+is under `top_p`, a softmax over what is left and a draw by inverse CDF; with
+the window of 256, `top_p` is measured against the mass of those 256, not of the
+whole vocabulary. The generator is Park-Miller's minimal standard (as
+`nn/init.agc`), started from the seed with three states skipped (a small seed
+would give a first draw near 0, which is the largest id), so a seed gives the
+same ids up to the float noise of each backend; a seed is from 0 to 2147483645
+and a temperature is 0 or at least 1e-6. `generate` checks the `Sampling`
+(`Sample.check`) before the first step. Only ids within 30 of the largest scaled
+logit are candidates (a mass under 1e-13); a `-inf` logit is a masked id on
+`Sample.pick`, and an error in `step_top` on ggml (the outputs of a graph are
+checked to be finite); a NaN is an error. The probabilities after the three
+steps equal Hugging Face's on fixed logits, and the ids drawn equal those of a
+stdlib peer (`test/sample_golden.py`, `fixtures/sample_golden.json`, 1e-9 in
+`float64`).

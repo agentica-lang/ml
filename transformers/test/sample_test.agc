@@ -13,8 +13,18 @@ struct Case
   probabilities: List[Float]
 end
 
+struct Drawn
+  logits: List[Float]
+  temperature: Float
+  top_k: Int
+  top_p: Float
+  seed: Int
+  ids: List[Int]
+end
+
 struct Golden
   cases: List[Case]
+  draws: List[Drawn]
 end
 
 def test_the_probabilities_are_those_of_the_warpers() -> Result[Void]
@@ -32,6 +42,19 @@ def test_the_probabilities_are_those_of_the_warpers() -> Result[Void]
         "id #{i} of #{c.temperature}, #{c.top_k}, #{c.top_p}: #{ours[i]} against #{c.probabilities[i]}",
       )
     end
+  end
+
+  ok()
+end
+
+## The ids drawn, state after state, are those of the stdlib peer in `sample_golden.py` (Park-Miller and a cumulative
+## scan), with `pick` over every logit and `pick_top` over the window.
+def test_the_draws_are_those_of_the_peer() -> Result[Void]
+  golden = try JSON.decode(try File.read_text("test/fixtures/sample_golden.json"), Golden)
+  try Test.eq(golden.draws.size, 18)
+  for d in golden.draws
+    s = Sample.Sampling(temperature: d.temperature, top_k: d.top_k, top_p: d.top_p, seed: d.seed)
+    try Test.eq(try draws(d.logits, s, d.ids.size), d.ids)
   end
 
   ok()
@@ -62,6 +85,33 @@ def test_picking_among_the_largest_logits_is_picking_among_all() -> Result[Void]
   try Test.eq(Sample.window(Sample.Sampling(top_k: 40), 152000), 40)
   try Test.eq(Sample.window(Sample.Sampling(top_k: 400), 152000), 400)
   Test.eq(Sample.window(Sample.Sampling(), 100), 100)
+end
+
+## With more ids than the window (256), what lies below the 256th largest logit is never drawn, though `pick` over every
+## logit draws it at a temperature that flattens the distribution.
+def test_the_window_cap_drops_the_smallest_logits() -> Result[Void]
+  logits = (0...300).map { |i| 0.0 - i.to_f * 0.001 }
+  s = Sample.Sampling(temperature: 1.0, seed: 1)
+  k = Sample.window(s, 300)
+  try Test.eq(k, 256)
+  ids = (0...k).to_a
+  window = ids.map { |i| logits[i] }
+  state = Sample.start(s)
+  full_state = state
+  below = 0
+  for _ in 0...400
+    top = try Sample.pick_top(ids, window, s, state)
+    try Test.assert(top.id < 256, "pick_top drew id #{top.id}, outside the window")
+    state = top.state
+    full = try Sample.pick(logits, s, full_state)
+    full_state = full.state
+    if full.id >= 256
+      below += 1
+    end
+  end
+
+  try Test.assert(below > 0, "pick over all the logits never drew an id below the window")
+  ok()
 end
 
 def test_temperature_zero_is_the_first_largest_and_draws_nothing() -> Result[Void]
@@ -115,6 +165,10 @@ end
 def test_bad_settings_and_logits_are_errors() -> Result[Void]
   logits = [1.0, 2.0]
   try Test.error?(Sample.pick(logits, Sample.Sampling(temperature: -1.0), 1))
+  try Test.error?(Sample.pick(logits, Sample.Sampling(temperature: 0.0000001), 1))
+  try Test.error?(Sample.check(Sample.Sampling(seed: -1)))
+  try Test.error?(Sample.check(Sample.Sampling(seed: 2147483646)))
+  try Sample.check(Sample.Sampling(seed: 2147483645))
   try Test.error?(Sample.pick(logits, Sample.Sampling(top_k: -1), 1))
   try Test.error?(Sample.pick(logits, Sample.Sampling(top_p: 0.0), 1))
   try Test.error?(Sample.pick(logits, Sample.Sampling(top_p: 1.5), 1))

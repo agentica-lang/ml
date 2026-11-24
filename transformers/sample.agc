@@ -1,18 +1,23 @@
 ## Choosing the next id from the logits by sampling, with the order of Hugging Face's warpers: the temperature, then
 ## `top_k`, then `top_p`, and a draw from what is left. The pick is on the host, over the logits that
-## `Generate.step_logits` reads back; greedy decoding (`none`) stays in the graph.
+## `Generate.step_top` reads back (the largest logits only); greedy decoding (`none`) stays in the graph.
 
 ## Logits more than this below the largest carry less than e^-30 (1e-13) of the mass: they are not candidates.
 SPAN = 30.0
 
 ## The ids `window` keeps when `top_k` is not set: the largest 256 logits. The mass of the others, after the temperature
-## of a real use, is negligible; they are never drawn.
+## of a real use, is negligible; they are never drawn, and `top_p` is measured against the mass of these 256, not of
+## the whole vocabulary.
 MAX_CANDIDATES = 256
+
+## The temperatures below this are refused (`logit / temperature` would overflow): use 0 for greedy.
+MIN_TEMPERATURE = 1.0e-6
 
 MODULUS = 2147483647
 
 ## How to sample. `temperature` 0 is greedy (the first id of the largest logit); `top_k` 0 and `top_p` 1.0 keep all
-## the ids. The same `seed` gives the same ids on every backend.
+## the ids. The same `seed` gives the same ids, up to the float noise of the logits of each backend. `seed` is from 0 to
+## 2147483645.
 struct Sampling
   temperature: Float = 1.0
   top_k: Int = 0
@@ -26,8 +31,17 @@ struct Drawn
   state: Int
 end
 
-## The state of the generator of `s`: Park-Miller's minimal standard (`x = 48271 x mod 2^31-1`, as `nn/init.agc`), never 0.
-def start(s: Sampling) -> Int = s.seed % (MODULUS - 1) + 1
+## The state of the generator of `s`: Park-Miller's minimal standard (`x = 48271 x mod 2^31-1`, as `nn/init.agc`), never
+## 0. The first three states after `seed + 1` are skipped: a small seed would otherwise give a first draw near 0, which
+## is the largest id.
+def start(s: Sampling) -> Int
+  state = s.seed % (MODULUS - 1) + 1
+  for _ in 0...3
+    state = (state * 48271) % MODULUS
+  end
+
+  state
+end
 
 ## The id of one draw over `logits` under `s`, from `state`. Temperature 0 does not draw: the state is the same.
 def pick(logits: List[Float], s: Sampling, state: Int) -> Result[Drawn]
@@ -60,13 +74,13 @@ def pick_top(ids: List[Int], logits: List[Float], s: Sampling, state: Int) -> Re
     return error("pick_top needs ids and as many logits, got #{ids.size} and #{logits.size}")
   end
 
-  return ok(Drawn(id: ids[0], state: state)) if s.temperature == 0.0
-
   found: List[Candidate] = []
   for i in 0...ids.size
     return error("logit #{i} is NaN") if logits[i] != logits[i]
     found = found.push(Candidate(id: ids[i], score: logits[i]))
   end
+
+  return ok(Drawn(id: ids[first_largest(logits)], state: state)) if s.temperature == 0.0
 
   next_state = (state * 48271) % MODULUS
   kept = try shaped(found, s)
@@ -91,18 +105,24 @@ def probabilities(logits: List[Float], s: Sampling) -> Result[List[Float]]
   ok(out)
 end
 
+## An error when `s` is not usable: the temperature is not 0 or at least `MIN_TEMPERATURE`, `top_k` is negative, `top_p`
+## is not in `(0, 1]`, or the seed is outside 0 to 2147483645.
+def check(s: Sampling) -> Result[Void]
+  if not (s.temperature == 0.0 or s.temperature >= MIN_TEMPERATURE)
+    return error("temperature must be 0 or at least #{MIN_TEMPERATURE}, got #{s.temperature}")
+  end
+
+  return error("top_k must be 0 or more, got #{s.top_k}") if s.top_k < 0
+  return error("top_p must be above 0 and at most 1, got #{s.top_p}") if not (s.top_p > 0.0 and s.top_p <= 1.0)
+  return error("seed must be from 0 to #{MODULUS - 2}, got #{s.seed}") if s.seed < 0 or s.seed > MODULUS - 2
+  ok()
+end
+
 private
 
 struct Candidate
   id: Int
   score: Float
-end
-
-def check(s: Sampling) -> Result[Void]
-  return error("temperature must be 0 or more, got #{s.temperature}") if not (s.temperature >= 0.0)
-  return error("top_k must be 0 or more, got #{s.top_k}") if s.top_k < 0
-  return error("top_p must be above 0 and at most 1, got #{s.top_p}") if not (s.top_p > 0.0 and s.top_p <= 1.0)
-  ok()
 end
 
 def first_largest(logits: List[Float]) -> Int
@@ -133,18 +153,12 @@ def candidates(logits: List[Float], s: Sampling) -> Result[List[Candidate]]
   shaped(found.sort_by { |c| 0.0 - c.score }, s)
 end
 
-## `ordered` (raw logits, largest first) as the ids that can be drawn: those within `SPAN` of the largest, their scores
-## over the temperature, the `top_k` largest (a tie at the last kept stays) and the smallest set whose mass reaches
-## `top_p`.
+## `ordered` (raw logits, largest first) as the ids that can be drawn: their scores over the temperature, the `top_k`
+## largest (a tie at the last kept stays) and the smallest set whose mass reaches `top_p`.
 def shaped(ordered: List[Candidate], s: Sampling) -> Result[List[Candidate]]
   top = ordered[0].score
   return error("the logits are not finite") if top - top != 0.0
-  scaled: List[Candidate] = []
-  for c in ordered
-    if c.score >= top - SPAN * s.temperature
-      scaled = scaled.push(Candidate(id: c.id, score: c.score / s.temperature))
-    end
-  end
+  scaled = ordered.map { |c| Candidate(id: c.id, score: c.score / s.temperature) }
 
   if s.top_k > 0 and scaled.size > s.top_k
     edge = scaled[s.top_k - 1].score

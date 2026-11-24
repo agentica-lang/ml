@@ -140,8 +140,6 @@ end
 
 private
 
-## Seven ids after a prompt of three: the cache goes from 8 to 16 rows. The ids are those of the forward without a cache.
-## A second call finds the steps of the first: it compiles none.
 def sampling(dir: String, backend: Tensor.Backend) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", backend)
   g = try Generate.open(m)
@@ -163,10 +161,14 @@ def sampling(dir: String, backend: Tensor.Backend) -> Result[Void]
 
   try Test.assert(differs, "four seeds drew the same ids")
   try Test.error?(Generate.generate(g, prompt, 8, [], some(Sample.Sampling(top_p: 0.0))))
+  try Test.error?(Generate.generate(g, prompt, 8, [], some(Sample.Sampling(temperature: -1.0))))
+  try Test.error?(Generate.generate(g, prompt, 8, [], some(Sample.Sampling(top_k: -1, temperature: 0.0))))
   Generate.close(g)
   ok()
 end
 
+## Seven ids after a prompt of three: the cache goes from 8 to 16 rows. The ids are those of the forward without a cache.
+## A second call finds the steps of the first: it compiles none.
 def generating(dir: String, backend: Tensor.Backend) -> Result[Void]
   prompt = [1, 5, 2]
   m = try Qwen3.open("#{dir}/tiny", backend)
