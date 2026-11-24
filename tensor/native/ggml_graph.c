@@ -116,6 +116,8 @@ struct gnode {
   int in_place; /* a set_rows that writes its leaf: its result is that leaf, an output with no copy and no check */
   int rank; /* of the recorded shape */
   struct ggml_tensor *guard; /* a gather's or scatter_add's count of indices out of range */
+  struct ggml_tensor *dense; /* the contiguous copy of a view, made once for every op that needs one */
+  struct ggml_tensor *at; /* the node as the I32 positions of a rope, made once */
 };
 
 #define MAX_OUTPUTS 256
@@ -383,7 +385,28 @@ static struct ggml_tensor *contiguous(struct entry *p, struct ggml_tensor *t) {
   return ggml_is_contiguous(t) ? t : ggml_cont(p->ctx, t);
 }
 
-static struct ggml_tensor *dense(struct entry *p, const struct gnode *n) { return contiguous(p, full_of(p, n)); }
+static struct ggml_tensor *dense(struct entry *p, const struct gnode *n) {
+  struct gnode *node = (struct gnode *)n; /* the nodes are `p->nodes`; the copy is a cache */
+
+  if (node->dense == NULL) node->dense = contiguous(p, full_of(p, n));
+  return node->dense;
+}
+
+/* The node as an operand of ggml_mul_mat. ggml calls a tensor contiguous when its strides match wherever an extent is
+   above 1, but ggml-vulkan wants every stride to match (it copies the operand through F16 otherwise), so a view with an
+   extent 1 axis (one head) is copied too. */
+static struct ggml_tensor *operand(struct entry *p, const struct gnode *n) {
+  struct ggml_tensor *t = dense(p, n);
+  int i;
+
+  for (i = 1; i < GGML_MAX_DIMS; i++) {
+    if (t->nb[i] != t->nb[i - 1] * (size_t)t->ne[i - 1]) return ggml_cont(p->ctx, t);
+  }
+  return t;
+}
+
+/* The node's own tensor, copied when it is a view (a permute that kept axis 0): for the ops that take `->t` raw. */
+static struct ggml_tensor *plain(struct entry *p, const struct gnode *n) { return contiguous(p, n->t); }
 
 static struct ggml_tensor *reshape(struct entry *p, struct ggml_tensor *t, const int64_t ne[4]) {
   if (same_ne(t, ne)) return t;
@@ -395,8 +418,8 @@ typedef struct ggml_tensor *(*binary_fn)(struct ggml_context *, struct ggml_tens
 /* `a op b` at `a`'s recorded shape, with `b` broadcast by ggml when lazy. */
 static struct ggml_tensor *binary(struct entry *p, binary_fn fn, int commutes, const struct gnode *a,
                                   const struct gnode *b) {
-  if (a->lazy && !b->lazy && commutes) return fn(p->ctx, b->t, a->t);
-  return fn(p->ctx, full_of(p, a), b->t);
+  if (a->lazy && !b->lazy && commutes) return fn(p->ctx, plain(p, b), a->t);
+  return fn(p->ctx, full_of(p, a), plain(p, b));
 }
 
 /* `1 - m` for a 0/1 mask. */
@@ -492,7 +515,7 @@ static struct ggml_tensor *scatter_add(struct entry *p, const struct gnode *indi
    checked every extent these asserts of ggml read. */
 static struct ggml_tensor *attention(struct entry *p, const struct gnode *q, const struct gnode *k, const struct gnode *v,
                                      const struct gnode *mask, float scale) {
-  struct ggml_tensor *scores = ggml_mul_mat(p->ctx, dense(p, k), dense(p, q)); /* [Sk, Sq, H, B] */
+  struct ggml_tensor *scores = ggml_mul_mat(p->ctx, operand(p, k), operand(p, q)); /* [Sk, Sq, H, B] */
   struct ggml_tensor *weights = ggml_soft_max_ext(p->ctx, scores, mask != NULL ? dense(p, mask) : NULL, scale, 0.0f);
   struct ggml_tensor *rows = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, v), 1, 0, 2, 3)); /* [Sk, Dv, Hkv, B] */
 
@@ -522,14 +545,16 @@ static bool attends(const struct gnode *q, const struct gnode *k, const struct g
    here and ggml takes I32; `inverse` negates them, which turns every pair the other way. */
 static struct ggml_tensor *rope(struct entry *p, const struct gnode *x, const struct gnode *positions, int dims,
                                 bool neox, float base, bool inverse) {
-  struct ggml_tensor *rows = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, x), 0, 2, 1, 3));
-  struct ggml_tensor *at = ggml_cont(p->ctx, dense(p, positions));
+  struct ggml_tensor *rows = contiguous(p, ggml_permute(p->ctx, full_of(p, x), 0, 2, 1, 3));
+  struct gnode *source = (struct gnode *)positions; /* the nodes are `p->nodes`; the cast is a cache */
+  struct ggml_tensor *at = source->at;
   struct ggml_tensor *turned;
 
-  if (inverse) at = ggml_neg(p->ctx, at);
-  turned = ggml_rope_ext(p->ctx, rows, ggml_cast(p->ctx, at, GGML_TYPE_I32), NULL, dims,
+  if (inverse) at = ggml_cast(p->ctx, ggml_neg(p->ctx, dense(p, positions)), GGML_TYPE_I32);
+  else if (at == NULL) at = source->at = ggml_cast(p->ctx, dense(p, positions), GGML_TYPE_I32);
+  turned = ggml_rope_ext(p->ctx, rows, at, NULL, dims,
                          neox ? GGML_ROPE_TYPE_NEOX : GGML_ROPE_TYPE_NORMAL, 4096, base, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
-  return ggml_cont(p->ctx, ggml_permute(p->ctx, turned, 0, 2, 1, 3));
+  return ggml_permute(p->ctx, turned, 0, 2, 1, 3); /* a view: the next op copies it only if it must */
 }
 
 /* Whether the args, of the output's rank (one less for a stack), match `ne`
@@ -687,9 +712,9 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
          mul_mat(bᵀ, a). When b is a transpose (the backward's ct · wᵀ), bᵀ
          is its argument and no copy is made. */
       if (b->op == OP_TRANSPOSE) {
-        t = ggml_mul_mat(p->ctx, dense(p, &p->nodes[b->arg]), dense(p, a));
+        t = ggml_mul_mat(p->ctx, operand(p, &p->nodes[b->arg]), operand(p, a));
       } else {
-        t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b))), dense(p, a));
+        t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b))), operand(p, a));
       }
       break;
     case OP_TRANSPOSE:
@@ -718,6 +743,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       }
       t = a->t;
       n->lazy = !same_ne(t, n->ne);
+      if (n->lazy) t = plain(p, a);
       n->zero = a->zero;
       break;
     case OP_SUM:
@@ -777,9 +803,9 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       if (c->zero) {
         t = binary(p, ggml_mul, 1, b, a);
       } else if (b->zero) {
-        t = ggml_mul(p->ctx, flip(p, dense(p, a)), full_of(p, c));
+        t = ggml_mul(p->ctx, flip(p, dense(p, a)), dense(p, c));
       } else {
-        t = ggml_add(p->ctx, binary(p, ggml_mul, 1, b, a), ggml_mul(p->ctx, flip(p, dense(p, a)), full_of(p, c)));
+        t = ggml_add(p->ctx, binary(p, ggml_mul, 1, b, a), ggml_mul(p->ctx, flip(p, dense(p, a)), dense(p, c)));
       }
       break;
     case OP_SLICE:
@@ -897,7 +923,10 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         seen[ints[i]] = true;
         order[rank - 1 - (int)ints[i]] = rank - 1 - i; /* source ggml axis -> its place in the answer */
       }
-      t = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, a), order[0], order[1], order[2], order[3]));
+      /* Axis 0 kept (the width of a head, say): a view, and whoever needs it contiguous (`dense`) copies it, or
+         permutes it back and finds the source again. Any other permute is a copy now. */
+      if (order[0] == 0) t = ggml_permute(p->ctx, full_of(p, a), order[0], order[1], order[2], order[3]);
+      else t = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, a), order[0], order[1], order[2], order[3]));
       break;
     }
     case OP_ATTENTION: {
@@ -926,7 +955,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         return tg_error(env, "batch_matmul takes [B..., m, k] and [B..., k, n]");
       }
       /* like matmul: a · b is mul_mat(bᵀ, a), per batch */
-      t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, b), 1, 0, 2, 3)), dense(p, a));
+      t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, b), 1, 0, 2, 3)), operand(p, a));
       break;
     case OP_CONV1D:
       if (nints != 2 || ints[0] < 1 || ints[1] < 0) return tg_error(env, "conv1d takes a stride >= 1 and a padding >= 0");
