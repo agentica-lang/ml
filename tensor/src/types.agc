@@ -119,6 +119,7 @@ enum Op
   Gelu
   GeluErf
   LayerNorm(Float)
+  RmsNorm(Float)
   SetRows
   Eq
   Clamp(Float, Float)
@@ -361,6 +362,7 @@ def op_name(op: Op) -> String
     Op.Gelu -> "gelu_tanh_approx"
     Op.GeluErf -> "gelu_erf"
     Op.LayerNorm(_) -> "layer_norm"
+    Op.RmsNorm(_) -> "rms_norm"
     Op.SetRows -> "set_rows"
     Op.Eq -> "eq"
     Op.Clamp(_, _) -> "clamp"
