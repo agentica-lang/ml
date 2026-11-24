@@ -24,14 +24,14 @@ end
 This makes `runs/demo/metrics.jsonl` and `runs/demo/events.out.tfevents.*`. View every run under `runs` with `tensorboard --logdir runs`, or read the JSON lines with anything that reads JSON.
 
 - `Metrics.open(root, name, sinks)` makes the folder `root/name` if it is missing and opens the files of `sinks`: `Metrics.Sinks.Jsonl`, `Metrics.Sinks.TensorBoard` or `Metrics.Sinks.Both` (the default). A run folder that exists gets lines appended and a new event file.
-- `Metrics.scalar(run, name, step, value)` writes the value of the series `name` at `step`, which is 0 or more, with the time. A `/` in the name groups series in TensorBoard (`train/loss`). It flushes, so a viewer sees the value at once. A value that is not finite is an `error`.
+- `Metrics.scalar(run, name, step, value)` writes the value of the series `name` at `step`, which is 0 or more, with the time. A `/` in the name groups series in TensorBoard (`train/loss`). It flushes, so a viewer sees the value at once. A value that is not finite, or beyond the range of a 32-bit float, is an `error`, and so is a run name that is not one folder name.
 - `Metrics.close(run)` closes the files.
 
 A line of `metrics.jsonl` is `{"run": "demo", "name": "loss", "step": 1, "value": 1.0, "time": 1795561234.5}`, where `time` is the Unix time in seconds.
 
 ## Training
 
-`Train.fit(..., on_epoch, metrics)` takes an open run. Each step writes `train/loss`, `train/lr` and `train/step_ms` at the optimizer's step count, which starts at 1. `fit` does not open or close the run, and a loss that is not finite stops it with an `error`.
+`Train.fit(..., on_epoch, metrics)` takes an open run. Each step writes `train/loss`, `train/lr` and `train/step_ms` at the optimizer's step count, which starts at 1. `fit` does not open or close the run. A value that `Metrics.scalar` refuses, such as a loss that is not finite, stops it with an `error` that names the epoch and the batch.
 
 ```agentica
 run = Metrics.open("runs", "xor").unwrap!

@@ -33,8 +33,9 @@ end
 ## inside it the parameters and the batch are `Trace` tensors. The loader's
 ## prefetch task, if any, ends before `fit` returns, on every path. With `metrics`,
 ## every step writes `train/loss`, `train/lr` and `train/step_ms` to that run at
-## its step count (from 1); `fit` does not close the run. A loss that is not
-## finite stops `fit` with an error there.
+## its step count (from 1); `fit` does not close the run. A metric that
+## `Metrics.scalar` refuses (a loss that is not finite, for one) stops `fit`
+## with an error that names the epoch and the batch.
 def fit(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],
@@ -96,12 +97,15 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Result[Fit]
     feed = Data.epoch(r.feed, e)
     total = 0.0
     for i in 0...batches
-      started = Time.monotonic_ms()
+      started = Time.monotonic_ns()
       stepped = take_step(r.loss, feed, i, state, current)
       return error("epoch #{e}, batch #{i}: #{stepped.message}") if !stepped.ok?
       done = stepped.unwrap!
       case r.metrics
-        some(m) -> try log_step(m, done, Optim.learning_rate(state), Time.monotonic_ms() - started)
+        some(m) ->
+          ms = (Time.monotonic_ns() - started).to_f / 1000000.0
+          logged = log_step(m, done, Optim.learning_rate(state), ms)
+          return error("epoch #{e}, batch #{i}: #{logged.message}") if !logged.ok?
         none -> nil
       end
 
@@ -121,11 +125,11 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Result[Fit]
   ok(Fit(params: current, history: history))
 end
 
-def log_step(m: Metrics.Run, done: Stepped, lr: Float, ms: Int) -> Result[Void]
+def log_step(m: Metrics.Run, done: Stepped, lr: Float, ms: Float) -> Result[Void]
   n = done.step.state.steps
   try Metrics.scalar(m, "train/loss", n, done.loss)
   try Metrics.scalar(m, "train/lr", n, lr)
-  Metrics.scalar(m, "train/step_ms", n, ms.to_f)
+  Metrics.scalar(m, "train/step_ms", n, ms)
 end
 
 def take_step(

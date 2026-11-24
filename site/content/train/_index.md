@@ -68,11 +68,12 @@ The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, par
 
 ## Train.fit
 
-`Train.fit(loss, params, data, optimizer, epochs, on_epoch)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).
+`Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).
 
 - `loss` has the type `Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]]`. It gets the parameters and a batch, and it returns a float scalar.
 - Inside `loss`, the batch `inputs` and `targets` are traced constants, so the loss is written once, as plain code.
 - `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1) and `loss`. `fit` prints nothing.
+- `metrics` is optional. It is an open [`Metrics.Run`](metrics.md) that gets `train/loss`, `train/lr` and `train/step_ms` for every step. A value it refuses, such as a loss that is not finite, stops `fit` too.
 - A failed step stops `fit` with an error that names the epoch and the batch, for example `epoch 1, batch 0: ...`.
 
 Parameters are a plain `List[Tensor.Tensor]`, the list that `Trace` takes. The loss rebuilds the layer structs from that list, for example `Nn.Dense(w: ps[0], b: some(ps[1]))`.

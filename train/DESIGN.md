@@ -91,9 +91,10 @@ Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Modu
   value)` writes to each sink of the run and flushes, so TensorBoard and
   `tail -f` see a value as it happens. Histograms, text and images are not
   there; the series name is free text (`train/loss`, `/` groups in TensorBoard).
-  A value that is not finite and a negative step are errors: JSON cannot hold
-  `NaN`, so the two sinks agree on what a run holds. `fit` then stops on a loss
-  that is `NaN`, which a diverged run is better for.
+  A value that is not finite or beyond float32 (the event file holds a float32)
+  and a negative step are errors: JSON cannot hold `NaN`, so the two sinks
+  agree on what a run holds. `fit` then stops, naming the epoch and the batch,
+  on a loss that is `NaN`, which a diverged run is better for.
 - **JSONL line.** `{"run", "name", "step", "value", "time"}`, `time` the Unix
   time in seconds as a float. A run folder that exists is appended to.
 - **TensorBoard file, by hand.** The file holds the records of the TFRecord
@@ -110,7 +111,7 @@ Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Modu
   `test/tfevents_peer.py` reads a file with the standard library only and
   recomputes every CRC, so the test does not check the encoder with itself.
 - **`fit` reports per step.** With `metrics`, each step writes `train/loss`,
-  `train/lr` and `train/step_ms` at the optimizer's step count (from 1).
+  `train/lr` and `train/step_ms` (from a monotonic clock) at the optimizer's step count (from 1).
   `fit` does not open or close the run.
 - **Reporting is a callback and a history.** `fit` answers the mean loss of
   every epoch and calls `on_epoch` after each; a caller logs from there
