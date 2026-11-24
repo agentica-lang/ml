@@ -5,7 +5,7 @@
 ##   python -I test/tokenizer_golden.py golden wordpiece TOKENIZER_JSON > GOLDEN.json
 ##   agentica tools/tokenizer_check.agc wordpiece TOKENIZER_JSON GOLDEN.json
 ##
-## `wordpiece` is `bert-base-uncased`, `bpe` is `Qwen/Qwen3-0.6B`.
+## `wordpiece` is `bert-base-uncased`, `bpe` is `Qwen/Qwen3-0.6B` or `Qwen/Qwen2.5-0.5B-Instruct`, which share the tokenizer.
 
 import Golden from "../test/golden"
 

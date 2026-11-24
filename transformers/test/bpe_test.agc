@@ -15,6 +15,21 @@ def test_encode_and_decode_agree_with_tokenizers() -> Result[Void]
   Test.assert(checked > 100, "only #{checked} cases ran")
 end
 
+## Qwen2.5's `tokenizer.json` writes a merge as "a b", Qwen3's as ["a", "b"]: both give the ids of `tokenizers`.
+def test_merges_written_as_lines_are_read_too() -> Result[Void]
+  checked = try Golden.bpe("test/fixtures/bpe_lines.json", "test/fixtures/bpe_golden.json")
+  Test.assert(checked > 100, "only #{checked} cases ran")
+end
+
+## A broken file in the "a b" lines form is reported against that form.
+def test_a_broken_lines_file_reports_the_lines_form() -> Result[Void]
+  text = try File.read_text("test/fixtures/bpe_lines.json")
+  case Bpe.parse(try S.replaced(text, "\"merges\": [\"h e\", ", "\"merges\": [\"h e\", 7, "))
+    ok(_) -> error("a merge that is a number was accepted")
+    error(e) -> Test.assert(e.message.include?("model.merges[1]: expected String"), e.message)
+  end
+end
+
 ## The tokenizer of llama.cpp's GGUF (written by `bpe_gguf_peer.py` from the same tokens and merges) is the one of the
 ## `tokenizer.json`: the same tables, and the same ids and text on the goldens. Two unused ids (padding) are no tokens.
 def test_a_gguf_tokenizer_is_the_json_tokenizer() -> Result[Void]

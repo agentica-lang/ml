@@ -1,5 +1,5 @@
 ## Checks greedy generation with the cache (`generate.agc`) against Hugging Face's
-## `generate` (`test/qwen_golden.py`) on `Qwen3-0.6B` in `float32` on ggml: the ids
+## `generate` (`test/qwen_golden.py`) on a Qwen3 or Qwen2.5 checkpoint in `float32` on ggml: the ids
 ## it adds to each prompt must be the same, and the speed is printed: the first
 ## call (which traces and plans the steps), then a second one with the steps
 ## compiled. Manual (it needs the checkpoint); run from `transformers/`:
@@ -39,9 +39,9 @@ def main() -> Void
   end
 
   case run(args[0], args[1], Tensor.Backend.Ggml(device))
-    ok(_) -> puts("qwen3: generates what Hugging Face does")
+    ok(_) -> puts("generates what Hugging Face does")
     error(e) ->
-      puts("qwen3: #{e.message}")
+      puts("generate_check: #{e.message}")
       System.exit(1)
   end
 end
@@ -52,6 +52,7 @@ def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Void]
   want = try JSON.decode(try Source.read_text(golden), Golden)
   try Load.vulkan_fp16_from_env()
   m = try Qwen3.open(dir, backend, try Load.weights_from_env())
+  puts("model_type #{m.config.model_type}")
   g = try Generate.open(m)
   done = checked(g, want)
   Generate.close(g)

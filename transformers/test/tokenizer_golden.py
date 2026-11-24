@@ -7,7 +7,7 @@ in a throwaway venv, from `transformers/`, with Python's isolated mode.
 
     python -I test/tokenizer_golden.py fixtures test/fixtures
 
-writes `wordpiece.json` and `bpe.json` (tiny hand-made tokenizers, in
+writes `wordpiece.json`, `bpe.json` and `bpe_lines.json` (`bpe.json` with its merges as "a b" lines) (tiny hand-made tokenizers, in
 `tokenizer.json` form) and the goldens `wordpiece_golden.json` and
 `bpe_golden.json` (the ids of the strings below and their decoded text).
 
@@ -205,6 +205,12 @@ def make_bpe(directory):
     )
     tok.add_tokens([AddedToken("<think>", special=False, normalized=False)])
     tok.save(f"{directory}/bpe.json")
+    # Qwen2.5's tokenizer.json writes a merge as "a b" where Qwen3's writes ["a", "b"]; `tokenizers` reads both.
+    with open(f"{directory}/bpe.json", encoding="utf-8") as f:
+        written = json.load(f)
+    written["model"]["merges"] = [" ".join(pair) if isinstance(pair, list) else pair for pair in written["model"]["merges"]]
+    with open(f"{directory}/bpe_lines.json", "w", encoding="utf-8") as f:
+        json.dump(written, f, ensure_ascii=False)
 
 
 # Pieces for the random strings: letters of several scripts, digits, marks,
