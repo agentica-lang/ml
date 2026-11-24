@@ -132,6 +132,7 @@ def test_a_closed_model_is_an_error_to_use() -> Result[Void]
       pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
       try Test.eq(Tensor.shape(try Asr.features(m, pcm, 6)), [1, 3, 6])
       Asr.close_model(m)
+      Asr.close_model(m)
       try Test.error?(Asr.encode(m, mel))
       try Test.error?(Asr.features(m, pcm, 6))
       again = try Asr.open(path, backend)
@@ -732,6 +733,42 @@ def test_long_audio_is_read_in_windows_that_seek() -> Result[Void]
     end
 
     ok()
+  end
+end
+
+## The window is 2 * `max_source_positions` frames (30 s of 3000 for Whisper, 6 frames and 960 samples here), as Hugging
+## Face's `truncation=False` features count them: `samples / 160` frames, so up to 159 samples past the window are still
+## one window, which may go without timestamps, and the next frame is audio that seeks, which needs them.
+def test_the_window_boundary_is_in_frames() -> Result[Void]
+  with_fixtures do |dir|
+    m = try Asr.open("#{dir}/speech/model.safetensors", REF)
+    tok = try Tokenizer.open("test/fixtures/tokenizer.json")
+    off = Asr.Options(timestamps: false)
+    for n in [960, 1119]
+      _ = try Asr.transcribe(m, tok, (0...n).map { |i| (i % 37).to_f / 37.0 - 0.5 }, off)
+    end
+
+    long = (0...1120).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    try Test.error?(Asr.transcribe(m, tok, long, off))
+    Test.eq((try Asr.transcribe(m, tok, long)).truncated, false)
+  end
+end
+
+## At most `max_windows` windows are decoded (by default `2 * ceil(frames / window) + 2`, a budget that stops a model
+## that never advances), and the transcript says it stopped short; what was decoded is the start of the whole one.
+def test_a_budget_of_windows_stops_a_transcription_short() -> Result[Void]
+  with_fixtures do |dir|
+    m = try Asr.open("#{dir}/speech/model.safetensors", REF)
+    tok = try Tokenizer.open("test/fixtures/tokenizer.json")
+    pcm = (0...3000).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    whole = try Asr.transcribe(m, tok, pcm, Asr.Options(max_windows: some(100)))
+    try Test.eq(whole.truncated, false)
+    one = try Asr.transcribe(m, tok, pcm, Asr.Options(max_windows: some(1)))
+    try Test.eq(one.truncated, true)
+    try Test.assert(whole.tokens.size > one.tokens.size, "the first window is not all of it")
+    try Test.eq(whole.tokens.take(one.tokens.size), one.tokens)
+    try Test.eq(whole.segments.take(one.segments.size), one.segments)
+    Test.error?(Asr.transcribe(m, tok, pcm, Asr.Options(max_windows: some(0))))
   end
 end
 

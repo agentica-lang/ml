@@ -54,6 +54,8 @@ def run(args: List[String]) -> Result[Void]
 
   puts("text\t#{got.text}")
   puts("tokens\t#{got.tokens.map { |t| t.to_s }.join(" ")}")
+  # The stage pass is of one window.
+  return ok() if pcm.size >= 2 * m.config.max_source_positions * 160 + 160
   phases(m, tok, pcm, got.tokens, args[3])
 end
 

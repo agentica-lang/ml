@@ -163,6 +163,11 @@ struct Options
   ## `max_target_positions`, as Hugging Face's `max_length` (448 for
   ## Whisper) does. OpenAI's `sample_len` is 224.
   max_tokens: Optional[Int] = none
+  ## Audio over one window only: at most this many windows, at least 1; none is
+  ## `2 * ceil(frames / window) + 2`, which a transcription that seeks normally
+  ## never reaches (a window that advances less than half of itself on average
+  ## does), so it stops a model that hallucinates (`Transcript.truncated`).
+  max_windows: Optional[Int] = none
 end
 
 struct Transcript
@@ -184,6 +189,9 @@ struct Transcript
   ## `<|startoftranscript|>` at `<|nospeech|>` (0.0 without that token); over
   ## 30 s, that of the first window.
   no_speech_prob: Float
+  ## Audio over one window only: true when `Options.max_windows` ran out before
+  ## the end of the audio, so the transcript stops short of it.
+  truncated: Bool = false
 end
 
 ## Hugging Face's `config.json` at `path`.
@@ -527,6 +535,11 @@ def transcribe(
     none -> nil
   end
 
+  case options.max_windows
+    some(n) -> return error("transcribe needs max_windows >= 1, got #{n}") if n < 1
+    none -> nil
+  end
+
   # A named language and the job are checked before the audio costs anything.
   _ = try Tokenizer.prompt(tok, options.language, job(options), options.timestamps)
   # On libtorch the call runs in a task of its own: when it ends, the task
@@ -677,7 +690,7 @@ def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Optio
   mel = try features(m, pcm, frames)
   audio = try encode(m, mel)
   close([mel])
-  spoken = try speak(m, tok, audio, options, options.language)
+  spoken = try speak(m, tok, audio, options, options.language, true)
   emitted = spoken.decided.tokens
   average = spoken.decided.logprob / (emitted.size + 1).to_f
   duration = pcm.size.to_f / SAMPLE_RATE.to_f
@@ -696,24 +709,27 @@ end
 
 ## `transcribe` of more than one window: the log-mel of the whole of `pcm`, then a window at a time from `seek`, in
 ## frames: the next 30 s of it, padded with zeros when fewer remain (Hugging Face pads the features, not the audio),
-## decoded as `decoded` does, and `seek` moves on as `Greedy.window` says. The language is detected in the first window
-## and kept; the segments' times are the window's plus its start.
+## decoded as `decoded` does, and `seek` moves on as `Greedy.window` says, for at most the budget of windows. The language
+## is detected in the first window and kept; the segments' times are the window's plus its start.
 def sought(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Options, frames: Int) -> Result[Transcript]
   total = pcm.size / HOP
   everything = try Mel.features(pcm, m.config.num_mel_bins, total, Tensor.backend(m.tokens.table), none)
   known = options.language
+  budget = options.max_windows.unwrap_or(2 * ((total + frames - 1) / frames) + 2)
+  windows = 0
   first: Optional[Spoken] = none
   tokens: List[Int] = []
   segments: List[Greedy.Segment] = []
   logprob = 0.0
   count = 0
   seek = 0
-  while seek < total
+  while seek < total and windows < budget
+    windows += 1
     size = [frames, total - seek].min.unwrap!
     mel = try cut(everything, seek, size, frames)
     audio = try encode(m, mel)
     close([mel])
-    spoken = try speak(m, tok, audio, options, known)
+    spoken = try speak(m, tok, audio, options, known, first.none?)
     emitted = spoken.decided.tokens
     average = spoken.decided.logprob / (emitted.size + 1).to_f
     found = try Greedy.window(tok, emitted, size, average)
@@ -743,6 +759,7 @@ def sought(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Option
       segments: segments,
       avg_logprob: logprob / count.to_f,
       no_speech_prob: head.no_speech,
+      truncated: seek < total,
     ),
   )
 end
@@ -776,13 +793,15 @@ def windowed(everything: Tensor.Tensor, seek: Int, size: Int, frames: Int) -> Re
 end
 
 ## The language, the no-speech probability and the greedy decoding of one window of `audio` (the output of `encode`,
-## which it closes). `known` is the language, none to detect it.
+## which it closes). `known` is the language, none to detect it. `read` is whether to read the step after `sot` alone
+## (the language and `no_speech_prob`): only the first window of a clip does.
 def speak(
   m: Model,
   tok: Tokenizer.Tokenizer,
   audio: Tensor.Tensor,
   options: Options,
   known: Optional[String],
+  read: Bool,
 ) -> Result[Spoken]
   cache = try listen(m, audio)
   close([audio])
@@ -791,7 +810,7 @@ def speak(
   no_speech = 0.0
   detect = known == none and tok.multilingual
   # One step after `sot` alone, only when something reads its logits.
-  if detect or tok.no_speech != none
+  if detect or (read and tok.no_speech != none)
     first = try step(m, cache, [tok.sot])
     close(kept(first.cache))
     case tok.no_speech

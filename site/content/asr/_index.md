@@ -38,7 +38,7 @@ end
 ## Main API
 
 - `Asr.open(path, backend)` loads a `.safetensors` file, or the `.index.json` of a sharded one, with the `config.json` in its folder.
-- `Asr.close_model(model)` frees the weights now, as a server does when it replaces a model. Using the model afterwards is an error.
+- `Asr.close_model(model)` frees the weights and the log-mel plan now, as a server does when it replaces a model. Using the model afterwards is an error, and a second call changes nothing.
 - `Asr.transcribe(model, tok, pcm, options)` runs the whole pipeline on one clip and gives a `Result` of `Transcript`.
 - `Tokenizer.open(path)` reads a `tokenizer.json`.
 - `Asr.encode(model, mel)` and `Asr.decode(model, tokens, audio)` are the model's forward passes (one run of the network), for callers who want the parts.
@@ -49,7 +49,8 @@ end
 - `language`, an `Optional[String]` such as `some("es")`. `none`, the default, detects the language.
 - `translate`, default `false`: translate to English instead of transcribing.
 - `timestamps`, default `true`: timestamp tokens, which give the segments. On ggml the next token is chosen on the device, with or without the timestamp rules, and only its id and log-probability come back.
-- `max_tokens`, an `Optional[Int]`. `none`, the default, decodes up to the model's `max_target_positions`.
+- `max_tokens`, an `Optional[Int]`. `none`, the default, decodes up to the model's `max_target_positions`. For audio over 30 s it applies to each window.
+- `max_windows`, an `Optional[Int]`, for audio over 30 s: at most that many windows. `none`, the default, is `2 * ceil(frames / window) + 2`, which audio that seeks normally never reaches, so a model that hallucinates and never advances is stopped.
 
 `Asr.Transcript` has these fields:
 
@@ -58,10 +59,17 @@ end
 - `tokens`, the ids after the prompt, without the end-of-text token.
 - `segments`, a list of `Greedy.Segment`, each with `start` and `stop` in seconds, `text`, `tokens` and `avg_logprob`.
 - `avg_logprob` and `no_speech_prob`, as OpenAI's Whisper reports them.
+- `truncated`, `false` unless `max_windows` ran out before the end of the audio.
 
 ## Limits
 
-- Audio over one window (30 s of 16 kHz audio for Whisper's checkpoints; a window is the chunk the model takes in one pass) needs `timestamps: true`, the default. It is read as OpenAI's `transcribe` and Hugging Face's long-form `generate` do: each window starts where the last timestamp of the one before said its segments end, with no previous text in the prompt, and the language is the first window's. The segments' times count from the start of the audio, `tokens` are the ids of the segments of every window (each window with its own timestamps), and `no_speech_prob` is the first window's.
+- Audio over one window (30 s of 16 kHz audio for Whisper's checkpoints; a window is the chunk the model takes in one pass) needs `timestamps: true`, the default. It is read as OpenAI's `transcribe` and Hugging Face's long-form `generate` (with `truncation=False` features) do: each window starts where the last timestamp of the one before said its segments end, with no previous text in the prompt, and the language is the first window's. For such audio:
+  - the segments' times count from the start of the audio, and a segment with no text is left out;
+  - `tokens` are the ids of the segments of every window, each window with its own timestamps;
+  - `language_probability` and `no_speech_prob` are the first window's, and `avg_logprob` covers all the windows;
+  - `max_tokens` applies to each window;
+  - a window whose timestamps would seek by zero is done instead, so it always advances;
+  - at most `max_windows` windows are decoded (see `Options`), and `truncated` says when that stopped the transcript short.
 - Decoding is greedy: at each step it takes the most likely token (temperature 0). It follows OpenAI's rules for suppressed tokens and timestamps. There is no beam search (a search that keeps several candidate outputs).
 - The samples must be mono 16 kHz floats. The frontend, the part that turns audio into the model's input, does not resample (change the sample rate).
 - `Tokenizer.vocab_size` must equal the model's `vocab_size`, or `transcribe` is an error.

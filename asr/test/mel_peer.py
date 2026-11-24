@@ -80,7 +80,9 @@ def signal(n, seed):
 
 def main():
     cases = []
-    for mels, frames, n, seed in [(80, 21, 2500, 1), (128, 10, 2000, 2)]:
+    # The last two: 5 frames and 37 or 159 samples over, as every clip that is not a
+    # multiple of 160 samples is (the last frame reads the samples past `frames * HOP`).
+    for mels, frames, n, seed in [(80, 21, 2500, 1), (128, 10, 2000, 2), (80, 5, 5 * HOP + 37, 3), (80, 5, 5 * HOP + 159, 4)]:
         samples = signal(n, seed)
         cases.append({"mels": mels, "frames": frames, "samples": samples, "mel": log_mel(samples, mels, frames)})
     print(json.dumps(cases))

@@ -29,10 +29,13 @@ VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
 private
 
 ## 80 mels over 21 frames of a short signal (padded, with silent frames and an
-## odd last frame), and 128 mels over 10 frames of a longer one (trimmed).
+## odd last frame), 128 mels over 10 frames of a longer one (trimmed), and 80
+## mels over 5 frames of signals 37 and 159 samples longer than that (the last
+## frame reads the samples past the frames, and the end reflection starts at the
+## end of the signal).
 def test_the_log_mel_matches_the_peer() -> Result[Void]
   cases = try JSON.list(try JSON.parse(try peer()))
-  try Test.eq(cases.size, 2)
+  try Test.eq(cases.size, 4)
   for c in cases
     mels = try JSON.int(try JSON.get(c, "mels"))
     frames = try JSON.int(try JSON.get(c, "frames"))
@@ -57,6 +60,22 @@ def test_the_graph_matches_the_fft() -> Result[Void]
   out = try Mel.spectrogram(samples, 3, 2, REF)
   try Test.eq(Tensor.shape(out), [1, 3, 2])
   expect_close(try tensor_floats(out), try Mel.log_mel(samples, 3, 2), "1000 samples")
+end
+
+## The graph on every backend against the peer, for the signals that are not a multiple of 160 samples.
+def test_the_graph_reads_the_samples_past_its_frames() -> Result[Void]
+  cases = try JSON.list(try JSON.parse(try peer()))
+  for backend in try backends()
+    for c in cases.drop(2)
+      samples = try floats(try JSON.get(c, "samples"))
+      frames = try JSON.int(try JSON.get(c, "frames"))
+      mels = try JSON.int(try JSON.get(c, "mels"))
+      got = try Mel.features(samples, mels, frames, backend)
+      try expect_close(try tensor_floats(got), try floats(try JSON.get(c, "mel")), "#{samples.size} samples")
+    end
+  end
+
+  ok()
 end
 
 def test_the_graph_refuses_a_bad_size() -> Result[Void]

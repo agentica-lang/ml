@@ -14,7 +14,7 @@ struct Config   the fields of HF config.json: d_model, encoder_layers, decoder_l
                 vocab_size, max_source_positions, max_target_positions
 Asr.config(path) -> Result[Config]
 Asr.open(path, backend) -> Result[Model]     a .safetensors or .index.json, config.json beside it
-Asr.close_model(m)                          frees the weights; later use is an error
+Asr.close_model(m)                          frees the weights and the log-mel plan; later use is an error
 Asr.load(checkpoint, config, backend) -> Result[Model]
 Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_model]
 Asr.decode(m, tokens [batch, t] integer, audio) -> logits [batch, t, vocab_size]
@@ -259,6 +259,19 @@ tokenizer before the audio costs anything.
   `no_speech_prob` and `language_probability` are the first window's. It needs
   timestamps, as Hugging Face's does (the seek reads them). The audio is a
   `List[Float]` and the whole log-mel one tensor (80 * 100 floats a second).
+  The Hugging Face call matched is the feature extractor with
+  `truncation=False, padding="longest"` (OpenAI's `log_mel_spectrogram` over
+  the unpadded audio), not the default `processor(audio)`, which pads or cuts
+  the audio to 30 s: so a clip is long when `samples / 160 > 3000` (480160
+  samples), and 480000 to 480159 samples are one window, the samples past 30 s
+  read as the end of the signal for its last frame. `Greedy.window` drops a
+  segment with no text, and a seek of zero (a pair of timestamps at the start)
+  finishes the window instead, so each window advances. The budget is
+  `Options.max_windows`, by default `2 * ceil(frames / window) + 2`: when it
+  runs out the transcript holds what was decoded and `truncated` is true,
+  which a model that never advances reaches and normal audio does not. Only
+  the first window reads the step after `<|startoftranscript|>` alone (the
+  language and `no_speech_prob`).
 
 - **Greedy decoding on the device.** On ggml, `decide` calls `step_pick` with
   `Greedy.mask` (0 or `FORBIDDEN` per id: the begin-suppressed ids for the

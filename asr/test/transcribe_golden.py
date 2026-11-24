@@ -52,11 +52,13 @@ def silence(seconds):
 
 def long_clips(es_hola, jfk):
     """The two long clips, built from the short ones: jfk six times with gaps
-    of silence (73.5 s), and es-hola 24 times with half a second between
-    (75.5 s). `tools/transcribe_check.agc` builds them the same way."""
+    of silence and 37 samples more (73.5 s, not a multiple of 160 samples, as
+    a real clip is), and es-hola 24 times with half a second between (75.5 s).
+    `tools/transcribe_check.agc` builds them the same way."""
     parts = [jfk]
     for gap in [1.0, 3.0, 0.5, 2.0, 1.0]:
         parts += [silence(gap), jfk]
+    parts.append(np.zeros(37, dtype=np.float32))
     es = []
     for _ in range(24):
         es += [es_hola, silence(0.5)]
@@ -143,8 +145,14 @@ def main(model_dir, es_hola, jfk):
         lang_id = config.lang_to_id[f"<|{language}|>"] if language else languages[best]
         prompt = [sot, lang_id, config.task_to_id[task]] + ([] if timestamps else [config.no_timestamps_token_id])
         # Older versions of `generate` (4.46.3) answer the prompt too, newer
-        # ones (4.57.6) only what follows it.
-        generated = ids[len(prompt):] if ids[: len(prompt)] == prompt else ids
+        # ones (4.57.6) only what follows it: no special token before the first
+        # timestamp, which is `no_timestamps_token_id + 1`.
+        if ids[: len(prompt)] == prompt:
+            generated = ids[len(prompt):]
+        else:
+            started = ids[:4]
+            assert not sot <= ids[0] <= config.no_timestamps_token_id, f"{clip}: ids start with {started}, not {prompt}"
+            generated = ids
         out.append({
             "clip": clip,
             "language": language,
