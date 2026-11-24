@@ -806,13 +806,19 @@ def set_rows(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) 
   rank = cache.shape.size
   return error("set_rows needs a cache of rank 2 to 4, got #{cache.shape}") if rank < 2 or rank > 4
   _ = try float_only(cache, "set_rows")
-  return error("set_rows needs rows of #{Types.dtype_name(cache.dtype)}, got #{Types.dtype_name(fresh.dtype)}") if fresh.dtype != cache.dtype
+  if fresh.dtype != cache.dtype
+    return error("set_rows needs rows of #{Types.dtype_name(cache.dtype)}, got #{Types.dtype_name(fresh.dtype)}")
+  end
+
   if positions.shape.size != 1 or positions.dtype != Types.Dtype.I32
     return error("set_rows needs positions of I32 [n], got #{Types.dtype_name(positions.dtype)} #{positions.shape}")
   end
 
   want = cache.shape.set(rank - 2, positions.shape[0])
-  return error("set_rows needs rows of shape #{want} for a cache #{cache.shape}, got #{fresh.shape}") if fresh.shape != want
+  if fresh.shape != want
+    return error("set_rows needs rows of shape #{want} for a cache #{cache.shape}, got #{fresh.shape}")
+  end
+
   case cache.backend
     Types.Backend.Trace -> Graph.same(Types.Op.SetRows, [cache, fresh, positions], cache)
     _ -> set_rows_composed(cache, fresh, positions)

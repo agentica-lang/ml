@@ -213,7 +213,10 @@ def execute(
       end
 
       if p.donates[i] >= 0
-        return error("#{op}: output #{i} is the input it writes in place, so `into` cannot name a tensor for it") if target.some?
+        if target.some?
+          return error("#{op}: output #{i} is the input it writes in place, so `into` cannot name a tensor for it")
+        end
+
         out = out.push(inputs[p.donates[i]])
         next
       end
@@ -364,7 +367,10 @@ def donations(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[T
     n = try Graph.node_of(t)
     case n.op
       Types.Op.SetRows ->
-        return error("node #{n.id} (set_rows) writes its input in place, so it must be an output") if !output_ids.include?(n.id)
+        if !output_ids.include?(n.id)
+          return error("node #{n.id} (set_rows) writes its input in place, so it must be an output")
+        end
+
         dst = try Graph.node_of(n.args[0])
         case dst.op
           Types.Op.Input -> nil
@@ -374,11 +380,14 @@ def donations(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[T
             )
         end
 
-        return error("node #{n.id} (set_rows): its cache, node #{dst.id}, is also an output") if output_ids.include?(dst.id)
+        if output_ids.include?(dst.id)
+          return error("node #{n.id} (set_rows): its cache, node #{dst.id}, is also an output")
+        end
+
         return error("node #{n.id} (set_rows) writes node #{dst.id} in place twice") if donated.include?(dst.id)
         for u in walked
           m = try Graph.node_of(u)
-          if m.id != n.id and (m.args.any? { |a| Graph.id_of(a) == dst.id })
+          if (m.id != n.id and m.args.any? { |a| Graph.id_of(a) == dst.id })
             return error(
               "node #{m.id} (#{Types.op_name(m.op)}) reads node #{dst.id}, which node #{n.id} (set_rows) writes in place",
             )
