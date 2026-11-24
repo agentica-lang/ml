@@ -402,7 +402,10 @@ end
   be an output), `set_rows` writes `F32` rows into an `F16` input in place
   (ggml rounds them), `attention` takes an `F16` key and value (flash attention
   reads them as they are, the products read them in `mul_mat`), and
-  `to_dtype(input, F32)` widens an `F16` input.
+  `to_dtype(input, F32)` widens an `F16` input. A `slice` of the cache goes
+  into an `attention` and nowhere else: when it starts at the first element,
+  flash attention reads it as a view of the cache (the first rows of every
+  head, no copy), which is how a decode step reads only the rows in use.
   A half weight is for inference: `Trace.value_and_grad` and `grad` refuse
   one (so does `gradients` for a `Constant` one; an `F16` tensor of another
   backend keeps its gradient). Other paths are not guarded: a gradient graph

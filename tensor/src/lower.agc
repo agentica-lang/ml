@@ -583,7 +583,8 @@ end
 
 ## An `F16` or `Q8_0` node ggml holds: a packed weight (an input or a constant), its
 ## transpose, which a `matmul` reads in place, or the rows a `gather` reads from
-## one, which ggml has widened to F32 already and only `to_dtype` may take.
+## one, which ggml has widened to F32 already and only `to_dtype` may take, or
+## a slice of an `F16` cache, which an attention reads.
 ## Any other such node is an error: a packed weight is read-only, so a gradient
 ## taken for one (its fill of zeros included) ends here.
 def half_node(t: Types.Tensor, n: Types.Node) -> Result[Bool]
@@ -595,13 +596,23 @@ def half_node(t: Types.Tensor, n: Types.Node) -> Result[Bool]
     Types.Op.Gather -> ok(true)
     Types.Op.SetRows -> ok(t.dtype == Types.Dtype.F16)
     Types.Op.ToDtype -> ok(t.dtype == Types.Dtype.F16)
-    Types.Op.Slice(_, _) -> ok(t.dtype == Types.Dtype.F16)
-    _ ->
-      error(
-        "node #{n.id} (#{Types.op_name(n.op)}) is #{Types.dtype_name(t.dtype)}, which ggml holds only for a packed weight read by matmul, linear, gather and embedding, or an F16 cache that set_rows writes, to_dtype makes and attention reads (whole, or a slice of it): " +
-        "a packed weight is read-only, so no gradient is taken for it",
-      )
+    Types.Op.Slice(_, _) ->
+      if t.dtype == Types.Dtype.F16
+        ok(true)
+      else
+        unheld(t, n)
+      end
+
+    _ -> unheld(t, n)
   end
+end
+
+## The error of a packed node that ggml does not hold.
+def unheld(t: Types.Tensor, n: Types.Node) -> Result[Bool]
+  error(
+    "node #{n.id} (#{Types.op_name(n.op)}) is #{Types.dtype_name(t.dtype)}, which ggml holds only for a packed weight read by matmul, linear, gather and embedding, or an F16 cache that set_rows writes, to_dtype makes and attention reads (whole, or a slice of it): " +
+    "a packed weight is read-only, so no gradient is taken for it",
+  )
 end
 
 ## The `F16` and `Q8_0` operands of a node: the weight of a `matmul` (second operand) and

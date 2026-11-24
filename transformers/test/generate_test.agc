@@ -111,6 +111,29 @@ def test_a_step_reads_the_rows_in_use_and_gives_the_logits_of_the_whole_cache() 
   end
 end
 
+## One sequence that grows from 760 to 1290 rows, a token at a time: it crosses the reach of 768 rows, the growth of
+## the capacity from 1024 to 2048 rows and the reach of 1280, with the logits of the whole cache at every step, and
+## it leaves one step per capacity.
+def test_a_sequence_that_crosses_three_reaches_gives_the_logits_of_the_whole_cache() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.ggml_backends()
+      m = try Qwen3.open("#{dir}/roomy", backend)
+      g = try Generate.open(m)
+      whole = try Generate.open(m, true)
+      try reading(g, whole, 760, 530)
+      # the prompt, the reaches of 768 and 1024, the growth, the reaches of 1280 and 1536
+      try Test.eq(Generate.compiles(g), 6)
+      try Test.eq(Generate.held(g), 4)
+      try Test.eq(Generate.compiles(whole), 4)
+      Generate.close(g)
+      Generate.close(whole)
+      Qwen3.close_model(m)
+    end
+
+    ok()
+  end
+end
+
 ## A prompt of `first` ids and `steps` more, one at a time, through `g` and through `whole`: the same logits at each.
 def reading(g: Generate.Generator, whole: Generate.Generator, first: Int, steps: Int) -> Result[Void]
   vocab = g.model.config.vocab_size

@@ -12,7 +12,9 @@
 ##   `Generator` of the model: the prompt, padded to a power-of-2 capacity
 ##   (8, 16, ...), takes only its last hidden row to the head, and every later
 ##   step is one token. The choice of the next id runs in the graph, so one
-##   number leaves the device, not the logits.
+##   number leaves the device, not the logits. A one-token step reads the rows
+##   of the cache in use, rounded up (`Padded.reach`), not the padding after
+##   them; each reach is a graph, and a capacity keeps the one of its largest.
 ## - Elsewhere the same graph runs eagerly in an arena. On the reference
 ##   backend attention needs `q * k` of at most 1,048,576, which the padded
 ##   prompt counts (a prompt of 600 tokens is padded to 1024). libtorch is not
