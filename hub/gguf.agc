@@ -78,19 +78,16 @@ enum Value
   Array(Items)
 end
 
-## An array of the header is not read when the file opens: where its items start and how many there are.
+## An array of the header is not read when the file opens: its item type and how many items there are.
 struct Items
   kind: Int
   count: Int
-  at: Int
 end
 
 ## A parsed file: `base` is the byte where the data buffer starts, `tensors` hold the names of the file and the shapes
 ## the other way round (the first dimension of GGUF is the last of a row-major shape).
 struct Header
   path: String
-  version: Int
-  alignment: Int
   base: Int
   values: Map[String, Value]
   tensors: List[Shards.Entry]
@@ -125,6 +122,7 @@ def shard(h: Header) -> Result[Shards.Shard]
   entries: Map[String, Shards.Entry] = {}
   for e in h.tensors
     name = hf_name(e.name)
+    return error("#{h.path}: the tensors #{e.name} and #{entries[name].name} are both #{name}") if entries.key?(name)
     entries = entries.put(name, e.with(name: name))
   end
 
@@ -234,10 +232,12 @@ def parse(b: Bytes, size: Int) -> Result[Header]
     end
 
     ggml = try u32(b, pos, size)
+    return error("tensor #{name.text} has the ggml type #{ggml}, which is not supported") if not KIND_BLOCKS.key?(ggml)
+
     offset = try u64(b, pos + 4, size)
     at = pos + 12
     infos = infos.push(
-      Shards.Entry(name: name.text, dtype: kind_name(ggml), shape: shape, start: offset, stop: offset),
+      Shards.Entry(name: name.text, dtype: KIND_NAMES[ggml], shape: shape, start: offset, stop: offset),
     )
 
     types = types.push(ggml)
@@ -246,16 +246,10 @@ def parse(b: Bytes, size: Int) -> Result[Header]
   base = ((at + alignment - 1) / alignment) * alignment
   return error("the data starts at #{base}, past the end of the file") if base > size
   checked = try check_tensors(infos, types, alignment, size - base)
-  ok(Header(path: "", version: version, alignment: alignment, base: base, values: values, tensors: checked))
+  ok(Header(path: "", base: base, values: values, tensors: checked))
 end
 
 def count_bad?(n: Int, size: Int) -> Bool = n > MAX_COUNT or n > size / 12
-
-## The name of a type of ggml, or `GGML_TYPE_n` for one this reader does not size.
-def kind_name(ggml: Int) -> String
-  return KIND_NAMES[ggml] if KIND_NAMES.key?(ggml)
-  "GGML_TYPE_#{ggml}"
-end
 
 ## Each tensor's size from its shape and type, inside the `room` bytes of data, aligned, and clear of the others.
 def check_tensors(infos: List[Shards.Entry], kinds: List[Int], alignment: Int, room: Int) -> Result[List[Shards.Entry]]
@@ -265,20 +259,19 @@ def check_tensors(infos: List[Shards.Entry], kinds: List[Int], alignment: Int, r
     e = infos[i]
     return error("tensor #{e.name} appears twice") if names.include?(e.name)
     names = names.add(e.name)
-    if not KIND_BLOCKS.key?(kinds[i])
-      return error("tensor #{e.name} has the ggml type #{kinds[i]}, which is not supported")
-    end
-
     block = KIND_BLOCKS[kinds[i]]
     last = e.shape[e.shape.size - 1]
     return error("tensor #{e.name}: #{last} values per row is not a multiple of #{block[0]}") if last % block[0] != 0
-    count = 1
-    for d in e.shape
-      return error("tensor #{e.name}: #{e.shape} has too many values") if count > room / d
-      count = count * d
+    # counted in blocks, so that a quantized tensor that fills the data is not refused
+    blocks = last / block[0]
+    fits = room / block[1]
+    for d in e.shape.take(e.shape.size - 1)
+      return error("tensor #{e.name}: #{e.shape} has too many values") if blocks > fits / d
+      blocks = blocks * d
     end
 
-    need = (count / block[0]) * block[1]
+    return error("tensor #{e.name}: #{e.shape} has too many values") if blocks > fits
+    need = blocks * block[1]
     start = e.start
     return error("tensor #{e.name}: offset #{start} is not a multiple of #{alignment}") if start % alignment != 0
     return error("tensor #{e.name}: #{need} bytes at #{start} are past the #{room} of data") if need > room - start
@@ -294,19 +287,13 @@ def check_tensors(infos: List[Shards.Entry], kinds: List[Int], alignment: Int, r
   ok(out)
 end
 
-def order(e: Shards.Entry) -> Int
-  return e.start * 2 if e.stop == e.start
-  e.start * 2 + 1
-end
+def order(e: Shards.Entry) -> Int = e.start
 
 ## A read of `n` bytes at `at` is inside the bytes, which end before the file does only when `TRUNCATED`.
 def need(b: Bytes, at: Int, n: Int, size: Int) -> Result[Void]
   return error("a length of #{n} is past the end of the file") if n < 0 or n > size
-  if at + n > b.size
-    return error(TRUNCATED) if b.size < size
-    return error("the file ends inside the header")
-  end
-
+  return error("the file ends inside the header") if at + n > size
+  return error(TRUNCATED) if at + n > b.size
   ok()
 end
 
@@ -413,11 +400,11 @@ def array(b: Bytes, at: Int, size: Int) -> Result[Read]
       pos = pos + 8 + n
     end
 
-    return ok(Read(value: Value.Array(Items(kind: kind, count: count, at: start)), at: pos))
+    return ok(Read(value: Value.Array(Items(kind: kind, count: count)), at: pos))
   end
 
   return error("the array item type #{kind} is not known") if not WIDTHS.key?(kind)
   width = WIDTHS[kind]
   try need(b, start, count * width, size)
-  ok(Read(value: Value.Array(Items(kind: kind, count: count, at: start)), at: start + count * width))
+  ok(Read(value: Value.Array(Items(kind: kind, count: count)), at: start + count * width))
 end

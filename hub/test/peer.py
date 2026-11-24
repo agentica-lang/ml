@@ -343,7 +343,7 @@ def half(out):
 
 # GGUF: the value types are numbered as in the format, the tensor types as in ggml.
 GGUF_SCALARS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
-GGML_TYPES = {"F32": 0, "F16": 1, "Q8_0": 8, "I32": 26, "F64": 28, "BF16": 30}
+GGML_TYPES = {"F32": 0, "F16": 1, "Q8_0": 8, "Q4_K": 12, "I32": 26, "F64": 28, "BF16": 30}
 
 
 def g_string(s):
@@ -360,16 +360,17 @@ def g_value(kind, v):
     return struct.pack("<" + GGUF_SCALARS[kind], v)
 
 
-def gguf(path, kvs, tensors, alignment=32, version=3, pad_to=None):
-    """kvs: [(key, kind, value)]; tensors: [(name, dims as GGUF has them, ggml type, raw bytes)]."""
+def gguf(path, kvs, tensors, alignment=32, version=3, offsets=None):
+    """kvs: [(key, kind, value)]; tensors: [(name, dims as GGUF has them, ggml type, raw bytes)]; `offsets` puts each
+    tensor's info at that offset instead of where its bytes are."""
     head = b"GGUF" + struct.pack("<IQQ", version, len(tensors), len(kvs))
     for key, kind, v in kvs:
         head += g_string(key) + struct.pack("<I", kind) + g_value(kind, v)
     data, infos = b"", b""
-    for name, dims, ggml, raw in tensors:
+    for i, (name, dims, ggml, raw) in enumerate(tensors):
         data += b"\0" * (-len(data) % alignment)
         infos += g_string(name) + struct.pack("<I", len(dims)) + b"".join(struct.pack("<Q", x) for x in dims)
-        infos += struct.pack("<IQ", ggml, len(data))
+        infos += struct.pack("<IQ", ggml, len(data) if offsets is None else offsets[i])
         data += raw
     head += infos
     head += b"\0" * (-len(head) % alignment)
@@ -421,6 +422,8 @@ def gguf_file(out):
     raw, dims = g_tensor("F32", [2], [1.0, 2.0])
     gguf(out / "q8.gguf", [kvs[0]], [("token_embd.weight", dims, 0, raw),
                                      ("blk.0.ffn_up.weight", [32, 1], GGML_TYPES["Q8_0"], blocks)])
+    # one Q4_K block (256 values, 144 bytes) that is all of the data: the file opens, and reading the tensor is refused
+    gguf(out / "q4k.gguf", [kvs[0]], [("blk.0.ffn_up.weight", [256, 1], GGML_TYPES["Q4_K"], bytes(144))])
     # big enough for `weights: F16`: a table, a BF16 matrix and an F32 one
     def pattern(n):
         return [((i * 7) % 17 - 8) / 16.0 for i in range(n)]
@@ -431,8 +434,6 @@ def gguf_file(out):
     gguf(out / "half.gguf", [kvs[0]],
          [(n, list(reversed(shape)), GGML_TYPES[dt], tensor(dt, shape, vs)["raw"]) for n, dt, shape, vs in big])
     (out / "model.json").write_text(json.dumps({k: v for k, v in expected.items()}))
-    (out / "keys.json").write_text(json.dumps({"qwen3.rope.freq_base": 1000000.0, "t.f64": 0.1, "t.f32": 0.5,
-                                               "t.u64": 2**40, "t.i8": -5, "t.u16": 65000, "t.str": "h\u00e9llo"}))
 
 
 def gguf_big_header(out):
@@ -448,7 +449,7 @@ def gguf_bad(out):
     """One malformed file per reason: the reader must refuse each with a message that holds the word in `cases`."""
     arch = ("general.architecture", 8, "qwen3")
     good = g_tensor("F32", [2, 2], [1.0, 2.0, 3.0, 4.0])
-    row = lambda name, dims=None, ggml=0, raw=None, off=None: (name, dims or good[1], ggml, good[0] if raw is None else raw)
+    row = lambda name, dims=None, ggml=0, raw=None: (name, dims or good[1], ggml, good[0] if raw is None else raw)
     write = lambda name, kvs, tensors, **kw: gguf(out / (name + ".gguf"), kvs, tensors, **kw)
     cases = {}
 
@@ -466,6 +467,10 @@ def gguf_bad(out):
     case("same_key", "twice", [arch, arch], [row("token_embd.weight")])
     case("nested_array", "array of arrays", [arch, ("a", 9, (9, []))], [row("token_embd.weight")])
     case("other_arch", "llama", [("general.architecture", 8, "llama")], [row("token_embd.weight")])
+    case("alignment0", "power of two", [arch, ("general.alignment", 4, 0)], [row("token_embd.weight")])
+    case("too_many_values", "too many values", [arch], [row("token_embd.weight", dims=[2**62, 4])])
+    case("overlap", "overlaps", [arch], [row("token_embd.weight"), row("output.weight")], offsets=[0, 0])
+    case("unaligned", "multiple of 32", [arch], [row("token_embd.weight")], offsets=[8])
     case("block_row", "multiple of 32", [arch], [row("token_embd.weight", dims=[31, 1], ggml=8, raw=b"\0" * 34)])
     # raw edits of a good file
     base = out / "ok.gguf"
@@ -490,6 +495,24 @@ def gguf_bad(out):
     huge[24:32] = struct.pack("<Q", 2**62)
     (out / "huge_string.gguf").write_bytes(bytes(huge))
     cases["huge_string.gguf"] = "past the end"
+    # a count of items past the end, a value type that does not exist, a string that is not UTF-8, a data start past
+    # the end of the file
+    gguf(out / "array_count.gguf", [arch, ("a", 9, (4, [1, 2, 3]))], [row("token_embd.weight")])
+    raw = (out / "array_count.gguf").read_bytes()
+    (out / "array_count.gguf").write_bytes(raw.replace(struct.pack("<IQ", 4, 3), struct.pack("<IQ", 4, 2**40)))
+    cases["array_count.gguf"] = "does not fit in the file"
+    gguf(out / "kv_type.gguf", [arch, ("u", 7, True)], [row("token_embd.weight")])
+    raw = (out / "kv_type.gguf").read_bytes()
+    (out / "kv_type.gguf").write_bytes(raw.replace(g_string("u") + struct.pack("<I", 7), g_string("u") + struct.pack("<I", 13)))
+    cases["kv_type.gguf"] = "value type 13"
+    gguf(out / "utf8.gguf", [arch, ("s", 8, "abcd")], [row("token_embd.weight")])
+    raw = (out / "utf8.gguf").read_bytes()
+    (out / "utf8.gguf").write_bytes(raw.replace(b"abcd", b"\xff\xfe\xfd\xfc"))
+    cases["utf8.gguf"] = "UTF-8"
+    gguf(out / "data_start.gguf", [arch], [], alignment=4096)
+    raw = (out / "data_start.gguf").read_bytes()
+    (out / "data_start.gguf").write_bytes(raw[:-100])
+    cases["data_start.gguf"] = "past the end of the file"
     (out / "cases.json").write_text(json.dumps(cases))
 
 

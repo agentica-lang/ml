@@ -92,8 +92,6 @@ def test_a_sharded_index_reads_each_shard() -> Result[Void]
   end
 end
 
-## Every tensor of `expected` (name -> dtype, shape, values) reads back the
-## same from `c`.
 def test_an_f64_tensor_comes_as_f32_on_ggml() -> Result[Void]
   S.with_fixtures("values") do |dir|
     c = try Hub.open("#{dir}/values.safetensors")

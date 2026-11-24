@@ -96,14 +96,16 @@ def test_f16_weights_keep_the_big_matrices_half_and_the_logits_close() -> Result
   end
 end
 
-## The same models as GGUF files (llama.cpp's names, `output.weight` also for the tied one) give the peer's logits, from
-## the key-values alone: no `config.json`.
+## The same models as GGUF files (llama.cpp's names; the tied one with `output.weight` as llama.cpp writes it, and
+## without) give the peer's logits, from the key-values alone: no `config.json`.
 def test_a_gguf_gives_the_same_logits_as_the_safetensors() -> Result[Void]
   with_peer do |dir|
     try matches_path(dir, "tiny.gguf", "tiny", S.REF, ABS, REL)
+    try matches_path(dir, "tied.gguf", "tiny", S.REF, ABS, REL)
     try matches_path(dir, "untied.gguf", "untied", S.REF, ABS, REL)
     for backend in try S.ggml_backends()
       try matches_path(dir, "tiny.gguf", "tiny", backend, F32_ABS, F32_REL)
+      try matches_path(dir, "tied.gguf", "tiny", backend, F32_ABS, F32_REL)
     end
 
     ok()

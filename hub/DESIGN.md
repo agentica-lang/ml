@@ -89,7 +89,9 @@ The test fixtures drop the `model.` part of the prefix
 ## GGUF
 
 `gguf.agc` reads version 3 files and, for now, the `qwen3` architecture only
-(another one is an error that names it). It is the same design as safetensors:
+(another one is an error that names it). Little-endian files only, which is
+every file in use. `Hub.open` takes a file for GGUF by its `.gguf` extension,
+not by its magic. It is the same design as safetensors:
 
 - **Checked whole at `open`**: the magic, the version, the counts against the
   size of the file, every string and array length, the alignment (a power of
@@ -111,13 +113,17 @@ The test fixtures drop the `model.` part of the prefix
 - **The config is the file's key-values** (`Qwen3.gguf_config`): the key-values
   are typed (`Gguf.int`, `Gguf.float`, `Gguf.string`), and `Hub.Checkpoint.gguf`
   keeps the header. `rope.scaling.*` is refused.
-- **A tied model holds its table twice.** llama.cpp writes `output.weight` for
-  a tied model too, and the loader then reads it as an untied head: an F16 GGUF
-  of Qwen3-0.6B takes 0.3 GB more than its safetensors file.
+- **A tied model's loaded copy holds its table twice.** llama.cpp writes
+  `output.weight` for a tied model too (the file is as large as the
+  safetensors one, which keeps `lm_head.weight` as well), and the loader then
+  reads it as an untied head: the loaded Qwen3-0.6B holds the table twice,
+  0.3 GB more with `weights: F16` and 0.6 GB more in `F32`. A file without
+  `output.weight` is read as tied.
 - **Types.** F32, F16, BF16 (read by the backend), and F64 and the integers (as
   in safetensors). A quantized type (Q8_0, Q4_K and the others) is sized and
-  checked, and the tensor is refused when read: it has no `tensor/` dtype yet.
-  A type that is not sized here (the IQ types) refuses the whole file.
+  checked in blocks (a tensor may fill the data), and the tensor is refused
+  when read: it has no `tensor/` dtype yet. A type that is not sized here (the
+  IQ types) refuses the whole file.
 
 ## Cost
 

@@ -139,8 +139,9 @@ def bools(b: Bytes, at: Int, count: Int) -> Result[List[Tensor.Values]]
   ok(out)
 end
 
-# The readers below index without checks: `check_layout` already put every
-# tensor inside the buffer, so `at` is in range.
+# The readers below index without checks: the format's check (`check_layout` of
+# safetensors, `check_tensors` of GGUF) already put every tensor inside the
+# buffer, so `at` is in range.
 def u16(b: Bytes, at: Int) -> Int = b[at].bit_or(b[at + 1].shift_left(8))
 
 def u32(b: Bytes, at: Int) -> Int = u16(b, at).bit_or(u16(b, at + 2).shift_left(16))

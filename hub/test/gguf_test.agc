@@ -106,9 +106,19 @@ def test_a_quantized_tensor_is_refused_alone() -> Result[Void]
   end
 end
 
+## A quantized tensor that is all of the data: sized in blocks, not in values, so the file opens.
+def test_a_quantized_tensor_that_fills_the_data_opens() -> Result[Void]
+  S.with_fixtures("gguf") do |dir|
+    c = try Hub.open("#{dir}/q4k.gguf")
+    try Test.eq(try Hub.shape(c, "model.layers.0.mlp.up_proj.weight"), [1, 256])
+    S.expect_error(Hub.tensor(c, "model.layers.0.mlp.up_proj.weight", S.REF), "Q4_K")
+  end
+end
+
 def test_malformed_files_are_refused() -> Result[Void]
   S.with_fixtures("gguf_bad") do |dir|
     cases = try JSON.decode(try S.json(dir, "cases.json"), Map[String, String])
+    try Test.eq(cases.size, 25)
     for file in cases.keys
       try S.expect_error(Hub.open("#{dir}/#{file}"), cases[file])
     end

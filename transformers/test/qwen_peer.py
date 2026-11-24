@@ -10,7 +10,7 @@ path, and leaves:
   ignore (`Qwen3-0.6B`'s file has one too);
 - `untied/`: `float32` weights and its own `lm_head.weight`;
 - `missing/`: `tiny` without one weight;
-- `tiny.gguf`, `untied.gguf`, `half.gguf` (and `llama.gguf`, `scaled.gguf`, which the loader must refuse): the same models as GGUF version 3 with llama.cpp's names, `output.weight`
+- `tiny.gguf`, `tied.gguf` (no `output.weight`), `untied.gguf`, `half.gguf` (and `llama.gguf`, `scaled.gguf`, which the loader must refuse): the same models as GGUF version 3 with llama.cpp's names, `output.weight`
   written for the tied one too (a copy of the table, as its converter does), and `half.gguf` in `float16`;
 - `half/`: `float32`, tied, one layer of width 256, so that the table and the
   MLP matrices reach the half-weight threshold (no expected logits: the test
@@ -224,9 +224,10 @@ def g_string(s):
     return struct.pack("<Q", len(raw)) + raw
 
 
-def write_gguf(path, model, config, dtype, tied_copy, arch="qwen3", extra=()):
-    """GGUF version 3, written from the format's description. `tied_copy`: write `output.weight` as a copy of the
-    table (llama.cpp does for a tied model). The tensor values are `dtype` ("F32" or "F16")."""
+def write_gguf(path, model, config, dtype, head, arch="qwen3", extra=()):
+    """GGUF version 3, written from the format's description. `head`: "copy" writes `output.weight` as a copy of the
+    table (llama.cpp does for a tied model), "none" writes no head (the table is it), "own" the model's `lm_head`.
+    The tensor values are `dtype` ("F32" or "F16")."""
     c = config
     kvs = [("general.architecture", 8, arch), ("qwen3.block_count", 4, c["num_hidden_layers"]),
            ("qwen3.context_length", 4, c["max_position_embeddings"]), ("qwen3.embedding_length", 4, c["hidden_size"]),
@@ -239,10 +240,10 @@ def write_gguf(path, model, config, dtype, tied_copy, arch="qwen3", extra=()):
     head = b"GGUF"
     tensors = []
     for name in sorted(model.values):
-        if name == "lm_head.weight" and tied_copy:
+        if name == "lm_head.weight" and head != "own":
             continue
         tensors.append((gguf_name(name), model.shapes[name], model.values[name]))
-    if tied_copy:
+    if head == "copy":
         tensors.append(("output.weight", model.shapes["model.embed_tokens.weight"],
                         model.values["model.embed_tokens.weight"]))
     head += struct.pack("<IQQ", 3, len(tensors), len(kvs))
@@ -277,11 +278,12 @@ def write(out):
     (out / "half").mkdir()
     half().save(out / "half" / "model.safetensors")
     (out / "half" / "config.json").write_text(json.dumps(HALF_CONFIG))
-    write_gguf(out / "tiny.gguf", tied, CONFIG, "F32", True)
-    write_gguf(out / "untied.gguf", untied, dict(CONFIG, tie_word_embeddings=False), "F32", False)
-    write_gguf(out / "half.gguf", half(), HALF_CONFIG, "F16", True)
-    write_gguf(out / "llama.gguf", tied, CONFIG, "F32", True, arch="llama")
-    write_gguf(out / "scaled.gguf", tied, CONFIG, "F32", True, extra=[("qwen3.rope.scaling.type", 8, "yarn")])
+    write_gguf(out / "tiny.gguf", tied, CONFIG, "F32", "copy")
+    write_gguf(out / "tied.gguf", tied, CONFIG, "F32", "none")
+    write_gguf(out / "untied.gguf", untied, dict(CONFIG, tie_word_embeddings=False), "F32", "own")
+    write_gguf(out / "half.gguf", half(), HALF_CONFIG, "F16", "copy")
+    write_gguf(out / "llama.gguf", tied, CONFIG, "F32", "copy", arch="llama")
+    write_gguf(out / "scaled.gguf", tied, CONFIG, "F32", "copy", extra=[("qwen3.rope.scaling.type", 8, "yarn")])
     (out / "expected.json").write_text(json.dumps(expected))
 
 
