@@ -229,6 +229,19 @@ whisper.cpp's `whisper-cli` gives the same words (`-l en -nt -bs 1 -bo 1 -nf -t 
 
 `convert_whisper_ggml.py` writes whisper.cpp's file format from `model.safetensors` with the standard library and numpy only (no torch, no transformers). It follows whisper.cpp's `models/convert-h5-to-ggml.py`: the header, the mel filters, the vocabulary, the tensor names and which tensors stay F32 in an F16 file. One difference: the original rounds every tensor through float16 first, so its F32 files hold fp16-rounded weights. Ours keeps the checkpoint's float32 values, so F32 against F32 is a fair row; in the F16 file too, the tensors that stay F32 (biases, norms, positions) keep float32 values, where the original rounds them through fp16. whisper.cpp loads both files and transcribes jfk with them.
 
+### Where a Vulkan step goes: the per-kernel timer
+
+`GGML_VK_PERF_LOGGER=1 GGML_VK_PERF_LOGGER_FREQUENCY=1` makes ggml-vulkan print the time of each kernel of each graph to stderr (the GPU timestamps, so the host does not show). On the pick step of whisper-tiny and whisper-medium the largest kernel was not a matmul. The greedy pick (`Asr.picked`) takes two maxima over the 51,865 logits, and a max over one row lowered to `ggml_pool_1d` with the window as wide as the row, which one thread walks: 13.6 ms a call, 27 ms a step, the same on both models. Over one row of 1,024 floats or more a max is now `ggml_argmax` (a workgroup reduction) and a `ggml_get_rows` of its value; max over many rows keeps the pool. Alternating runs of `bench_step.agc` (pick, 5 passes, medium 3), ml `cbcc6a5` against that change:
+
+| Decoder step | before | after |
+|---|---|---|
+| tiny, Vulkan | 50.3, 50.4, 50.3 ms | 22.0, 20.8, 22.5 ms |
+| medium, Vulkan | 300.6, 299.5 ms | 266.5, 269.5 ms |
+| tiny, ggml CPU | 39.6, 35.3, 37.5 ms | 35.7, 35.7, 46.9 ms |
+| medium, ggml CPU | 2,380 ms | 2,446 ms |
+
+The CPU rows are within the noise of this shared machine: the CPU takes the same argmax path, and its pool was not slow. The rest of a medium step on Vulkan is mostly `CONT` (436 copies, 187 ms of 296), which the next change looks at.
+
 The inputs of the run above, from the official sources:
 
 | File | sha256 |
