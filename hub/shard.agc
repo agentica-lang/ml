@@ -40,6 +40,23 @@ struct Shard
   metadata: Map[String, String]
 end
 
+## Where the values of a float tensor are: its file, the byte they start at, and their format.
+struct Source
+  path: String
+  offset: Int
+  format: Tensor.FloatFormat
+  shape: List[Int]
+end
+
+## The place of the float tensor `name` of `shard`, for a native call that reads or copies the range. A tensor of
+## another dtype is an error.
+def source(shard: Shard, name: String) -> Result[Source]
+  e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
+  return error("#{shard.path}: tensor #{name} is #{e.dtype}, not F32, F16 or BF16") if not FORMATS.key?(e.dtype)
+
+  ok(Source(path: shard.path, offset: shard.base + e.start, format: FORMATS[e.dtype], shape: e.shape))
+end
+
 ## The shape of the tensor `name` of `shard`, read from the header.
 def shape(shard: Shard, name: String) -> Result[List[Int]]
   e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")

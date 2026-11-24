@@ -37,6 +37,7 @@ The layer's weight is stored as `[out, in]` and comes back as it is, with `out_i
 - `Hub.open(path)` takes one `.safetensors` file, one `.gguf` file (llama.cpp's format, see below), or the `.index.json` of a sharded checkpoint. A sharded checkpoint is one model split over several files. The index says which file holds each tensor. The shards must be file names in the index's folder.
 - `Hub.names(c)` gives every tensor name, sorted. `Hub.has?(c, name)` tells whether one exists.
 - `Hub.tensor(c, name, backend, dtype)` reads one tensor on `backend`; `Hub.shape(c, name)` gives its shape from the header without reading it. `F32`, `F16` and `BF16` come as `F32`, read by the backend from the file (`Tensor.from_file`); every other dtype keeps the dtype of the file, except `F64` on the ggml backend, which holds no `F64`: it comes as `F32`, silently (`-1e300` becomes `-inf`). With `dtype: Dtype.F16` a float tensor is kept in 16 bits on the ggml backend (a half weight, see the tensor page).
+- `Hub.source(c, name)` gives the file and the byte where an `F32`, `F16` or `BF16` tensor starts, with its shape, for [writing GGUF](#writing-gguf).
 - `Hub.metadata(c)` gives the `__metadata__` of each shard.
 
 ## Loading layers
@@ -54,6 +55,10 @@ Float weights of 16 and 64 bits (`F16`, `BF16` and `F64`) become `F32`, the comp
 ## GGUF
 
 A `.gguf` file opens like a safetensors one: `Hub.names`, `Hub.shape` and `Hub.tensor` work on it, with the tensor names of Hugging Face's checkpoint (`blk.0.attn_q.weight` is `model.layers.0.self_attn.q_proj.weight`) and the shape as a row-major array has it. Only the `qwen3` architecture is read for now; another one is an error that names it. `F32`, `F16` and `BF16` tensors are read as safetensors ones are, so `weights: Dtype.F16` keeps their big matrices as half weights too. A quantized tensor (`Q8_0`, `Q4_K` and the others) opens with the file, and reading it is an error. The key-values of the file (`Gguf.string`, `Gguf.int`, `Gguf.float` on `Hub.Checkpoint.gguf`; `Gguf.strings` and `Gguf.ints` read an array, a vocabulary for one, from the file when asked) give the config, so `Qwen3.open("model.gguf", backend)` needs no `config.json`. A file is read as GGUF by its `.gguf` extension, and only little-endian files are read. llama.cpp writes `output.weight` for a tied model too, so the loaded Qwen3-0.6B holds the embedding table twice: 0.3 GB more with `weights: Dtype.F16`, 0.6 GB more in `F32`.
+
+## Writing GGUF
+
+`GgufWrite.write(path, fields, tensors)` writes a version 3 file. `fields` are key-values (`Meta.U32`, `F32`, `Bool`, `Text`, `Texts` for an array of strings, `Ints` for an array of 32-bit integers) and each of `tensors` is `Out(name, source, format)`: `source` comes from `Hub.source(checkpoint, name)` (the file and the byte where an `F32`, `F16` or `BF16` tensor starts) and `format` is the `Tensor.FloatFormat` to write it in. The weights are converted by the ggml module straight from the source file into the new one, so a model of several GB is never in memory, and the data is aligned to 32 bytes. A value beyond 65504 is an error for `F16`. The file is written as `path.part` and renamed when whole, so a failure leaves no half file. It needs the ggml module. `transformers/tools/to_gguf.agc` writes a Qwen3 folder this way.
 
 ## Limits
 

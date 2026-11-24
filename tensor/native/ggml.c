@@ -488,6 +488,139 @@ an_term ggml_from_bytes(an_env *env, int64_t device, ng_buf data, ggml_list_Int 
   return load_from(env, device, shape, &src, format, half);
 }
 
+/* What `ggml_convert_file` writes: an open file, where the values go, and the format they take. */
+struct convert_sink {
+  int fd;
+  int64_t offset;
+  int64_t format;
+};
+
+static bool pwrite_all(int fd, const void *from, size_t len, int64_t at) {
+  const uint8_t *p = (const uint8_t *)from;
+  ssize_t put;
+
+  while (len > 0) {
+    put = pwrite(fd, p, len, (off_t)at);
+    if (put < 0 && errno == EINTR) continue;
+    if (put <= 0) return false;
+    p += put;
+    at += put;
+    len -= (size_t)put;
+  }
+  return true;
+}
+
+/* Writes the values of a chunk at their place in the file as F32, F16 (a value beyond 65504 is an error, as for a half
+   weight) or BF16 (round to nearest even). Threads call it at once, each for its own `first` and `n`. */
+static bool convert_chunk(void *ctx, const float *values, int64_t first, int64_t n, char *why, size_t why_len) {
+  const struct convert_sink *sink = (const struct convert_sink *)ctx;
+  size_t width = ff_width(sink->format);
+  uint16_t *out = NULL;
+  bool ok;
+
+  if (sink->format == FF_F32) {
+    ok = pwrite_all(sink->fd, values, (size_t)n * 4, sink->offset + first * 4);
+    if (!ok) snprintf(why, why_len, "the file could not be written (no space left?)");
+    return ok;
+  }
+  if (sink->format == FF_F16) {
+    int64_t i;
+
+    for (i = 0; i < n; i++) {
+      if (fabsf(values[i]) > HALF_MAX && fabsf(values[i]) < INFINITY) {
+        snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)",
+                 (double)values[i], (long long)first + (long long)i);
+        return false;
+      }
+    }
+  }
+  out = (uint16_t *)calloc((size_t)n + 1, width);
+  if (out == NULL) {
+    snprintf(why, why_len, "out of memory");
+    return false;
+  }
+  if (sink->format == FF_F16) ggml_fp32_to_fp16_row(values, (ggml_fp16_t *)out, n);
+  else ggml_fp32_to_bf16_row_ref(values, (ggml_bf16_t *)out, n);
+  ok = pwrite_all(sink->fd, out, (size_t)n * width, sink->offset + first * (int64_t)width);
+  if (!ok) snprintf(why, why_len, "the file could not be written (no space left?)");
+  free(out);
+  return ok;
+}
+
+/* The same format on both sides: the bytes are copied as they are, so a NaN keeps its payload and nothing is rounded. */
+static bool copy_range(const char *src, size_t src_len, int64_t src_offset, int64_t count, int fd, int64_t offset,
+                       size_t width, char *why, size_t why_len) {
+  int64_t done = 0, n;
+  uint8_t *raw;
+  int in = ff_open_range(src, src_len, src_offset, count, width, why, why_len);
+
+  if (in < 0) return false;
+  raw = (uint8_t *)calloc(FF_CHUNK, 1);
+  if (raw == NULL) {
+    close(in);
+    snprintf(why, why_len, "out of memory");
+    return false;
+  }
+  while (done < count * (int64_t)width) {
+    n = count * (int64_t)width - done;
+    if (n > (int64_t)FF_CHUNK) n = (int64_t)FF_CHUNK;
+    if (!ff_pread(in, raw, (size_t)n, src_offset + done)) {
+      snprintf(why, why_len, "%.*s ended while it was read (it shrank?)", (int)src_len, src);
+      break;
+    }
+    if (!pwrite_all(fd, raw, (size_t)n, offset + done)) {
+      snprintf(why, why_len, "the file could not be written (no space left?)");
+      break;
+    }
+    done += n;
+  }
+  free(raw);
+  close(in);
+  return done == count * (int64_t)width;
+}
+
+an_term ggml_convert_file(an_env *env, ng_str src, int64_t src_offset, int64_t src_format, int64_t count, ng_str dst,
+                          int64_t dst_offset, int64_t dst_format) {
+  struct convert_sink sink;
+  char why[FF_PATH_MAX + 160];
+  char name[FF_PATH_MAX];
+  struct stat info;
+  bool ok;
+  int fd;
+
+  if (ff_width(dst_format) == 0 || ff_width(src_format) == 0) return tg_error(env, "unknown float format code");
+  if (dst_offset < 0 || count < 0 || count > (INT64_MAX - dst_offset) / 4) {
+    return tg_error(env, "the range to write is not inside what a file holds");
+  }
+  if (dst.len == 0 || dst.len >= sizeof name || memchr(dst.data, 0, dst.len) != NULL) {
+    return tg_error(env, "not a usable file path");
+  }
+  memcpy(name, dst.data, dst.len);
+  name[dst.len] = '\0';
+  fd = open(name, O_WRONLY | O_CLOEXEC | O_NONBLOCK);
+  if (fd < 0) {
+    snprintf(why, sizeof why, "cannot open %s: %s", name, ff_open_why(errno));
+    return tg_error(env, why);
+  }
+  if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
+    close(fd);
+    snprintf(why, sizeof why, "%s is not a regular file", name);
+    return tg_error(env, why);
+  }
+  sink.fd = fd;
+  sink.offset = dst_offset;
+  sink.format = dst_format;
+  if (src_format == dst_format) {
+    ok = copy_range(src.data, src.len, src_offset, count, fd, dst_offset, ff_width(src_format), why, sizeof why);
+  } else {
+    ok = ff_each(src.data, src.len, src_offset, count, src_format, convert_chunk, &sink, half_threads(), why,
+                 sizeof why);
+  }
+  close(fd);
+  if (!ok) return tg_error(env, why);
+  return ggml_result_Void_ok(env, an_void(env));
+}
+
 an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double value, bool int32) {
   an_term term, failure;
   struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);

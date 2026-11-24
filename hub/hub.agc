@@ -87,6 +87,12 @@ def tensor(
   Shards.tensor(c.shards[file], name, backend, dtype)
 end
 
+## Where the float tensor `name` is in its file (`Shards.source`), nothing read.
+def source(c: Checkpoint, name: String) -> Result[Shards.Source]
+  file = try c.weight_map.get(name).to_result("no tensor #{name} in the checkpoint")
+  Shards.source(c.shards[file], name)
+end
+
 ## The shape of the tensor `name`, from the header: nothing is read.
 def shape(c: Checkpoint, name: String) -> Result[List[Int]]
   file = try c.weight_map.get(name).to_result("no tensor #{name} in the checkpoint")

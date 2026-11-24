@@ -266,15 +266,49 @@ def write_gguf(path, model, config, dtype, head, arch="qwen3", extra=()):
     path.write_bytes(buf + data)
 
 
+IDS_OF_FILES = {"bos_token_id": 9, "eos_token_id": 10}
+CHAT_TEMPLATE = "{% for m in messages %}<|im_start|>{{ m.content }}{% endfor %}"
+
+
+def write_tokenizer(folder):
+    """A tokenizer of 13 ids in Qwen's `tokenizer.json` form (the structure of the BPE fixture of the tokenizer tests),
+    with the three kinds of added token: special (`<|endoftext|>`), written `<|...|>` but not special
+    (`<|fim_prefix|>`: llama.cpp's converter makes it a control token) and plain (`<think>`). Id 12 has no token: the
+    converter pads the vocabulary of the config with it."""
+    j = json.loads((Path("test/fixtures/bpe.json")).read_text())
+    vocab = {"a": 0, "b": 1, "c": 2, "\u0120": 3, "ab": 4, "\u0120a": 5, "abc": 6, "d": 7, "e": 8}
+    j["model"]["vocab"] = vocab
+    j["model"]["merges"] = [["a", "b"], ["\u0120", "a"], ["ab", "c"]]
+    template = j["added_tokens"][0]
+    j["added_tokens"] = [dict(template, id=9, content="<|endoftext|>", special=True),
+                         dict(template, id=10, content="<|fim_prefix|>", special=False),
+                         dict(template, id=11, content="<think>", special=False)]
+    (folder / "tokenizer.json").write_text(json.dumps(j))
+    (folder / "tokenizer_config.json").write_text(json.dumps({"chat_template": CHAT_TEMPLATE,
+                                                              "pad_token": "<|endoftext|>", "bos_token": None}))
+
+
+def f16_rounded(m):
+    """The model with its matrices rounded to binary16, as a GGUF of `F16` holds them (vectors stay as they are)."""
+    out = Model(0, m.dtype, m.head)
+    out.shapes = m.shapes
+    out.values = {name: ([struct.unpack("<e", struct.pack("<e", v))[0] for v in values] if len(m.shapes[name]) > 1
+                         else values) for name, values in m.values.items()}
+    return out
+
+
 def write(out):
     tied, untied = qwen("BF16", False), qwen("F32", True)
     expected = {"ids": IDS, "tiny": [tied.logits(r) for r in IDS], "untied": [untied.logits(r) for r in IDS],
-                "long": LONG, "tiny_long": tied.logits(LONG)}
-    for folder, model, config, skip in [("tiny", tied, CONFIG, ()), ("untied", untied, dict(CONFIG, tie_word_embeddings=False), ()),
+                "long": LONG, "tiny_long": tied.logits(LONG), "tiny_f16": [f16_rounded(tied).logits(r) for r in IDS],
+                "untied_f16": [f16_rounded(untied).logits(r) for r in IDS]}
+    for folder, model, config, skip in [("tiny", tied, dict(CONFIG, **IDS_OF_FILES), ()),
+                                        ("untied", untied, dict(CONFIG, tie_word_embeddings=False, **IDS_OF_FILES), ()),
                                         ("missing", tied, CONFIG, MISSING)]:
         (out / folder).mkdir()
         model.save(out / folder / "model.safetensors", skip)
         (out / folder / "config.json").write_text(json.dumps(config))
+        write_tokenizer(out / folder)
     (out / "half").mkdir()
     half().save(out / "half" / "model.safetensors")
     (out / "half" / "config.json").write_text(json.dumps(HALF_CONFIG))

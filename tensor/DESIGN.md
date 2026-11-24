@@ -183,6 +183,14 @@ Tensor.dtype(t) -> Dtype                          # no native call
 Tensor.backend(t) -> Backend                      # no native call
 ```
 
+- `convert_file` is how weights are written (`hub/` writes GGUF with it):
+  the same chunked, threaded read as `from_file` (`ff_each`), each chunk
+  rounded to the target format and written with `pwrite` at its place in an
+  existing file, so a checkpoint converts with no tensor and no list in
+  memory. Same format on both sides is a byte copy (nothing is rounded, a NaN
+  keeps its payload). It lives in the ggml module (`native/ggml.c`), the one
+  that compiles `float_file.h` for conversion; F16 refuses a value beyond
+  65504 as the half load does.
 - `from_file` is how weights load: the backend reads the byte range
   itself (`native/float_file.h`: `pread` into the tensor's own memory, F16
   and BF16 widened in chunks) and no value crosses as a list. The tensor is

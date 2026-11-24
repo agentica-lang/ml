@@ -136,6 +136,24 @@ def shard(h: Header) -> Result[Shards.Shard]
   ok(Shards.Shard(path: h.path, base: h.base, entries: entries, metadata: {}))
 end
 
+## The GGUF name of the Hugging Face tensor `name` of a `qwen3` model (`model.layers.0.self_attn.q_proj.weight` is
+## `blk.0.attn_q.weight`): the other way of `shard`. A name that has no GGUF one is an error.
+def gguf_name(name: String) -> Result[String]
+  for top in TOP_NAMES.keys
+    return ok(top) if TOP_NAMES[top] == name
+  end
+
+  parts = name.split(".")
+  if parts.size > 3 and parts[0] == "model" and parts[1] == "layers"
+    rest = parts.drop(3).join(".")
+    for block in BLOCK_NAMES.keys
+      return ok("blk.#{parts[2]}.#{block}") if BLOCK_NAMES[block] == rest
+    end
+  end
+
+  error("the tensor #{name} has no GGUF name here (only qwen3)")
+end
+
 ## The string, integer or float under `key`. A key that is missing, or of another type, is an error naming it.
 def string(h: Header, key: String) -> Result[String]
   case try value(h, key)
