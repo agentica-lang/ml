@@ -1,8 +1,33 @@
 # transformers — design
 
 BERT and Qwen3 for inference, from Hugging Face checkpoints, over `tensor/`,
-`nn/` and `hub/`. BERT and the tokenizers are here; Qwen3 comes in later PRs of
-ml#78.
+`nn/` and `hub/`. BERT, the Qwen3 forward and the tokenizers are here; the
+KV cache and generation come in later PRs of ml#78.
+
+## Qwen3
+
+`qwen3.agc`: `Qwen3.open(dir, backend)` (`config.json` and `model.safetensors`),
+`Qwen3.run(m, rows, last)` over rows of ids and `Qwen3.logits(m, ids, last)`
+over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
+
+- Blocks are `Nn.EncoderBlock`s with `norm_first: true` under a causal mask
+  (`Nn.encoder_stack(..., causal: true)`): `input_layernorm` and
+  `post_attention_layernorm` are `LayerNorm.rms` (the `beta` is zeros and
+  unused), `Nn.Attention` has `kv_heads`, `Rope(base: rope_theta)` in the
+  `rotate_half` layout, and `q_norm` and `k_norm` per head before the
+  rotation; the head width is `head_dim`, not `hidden_size / heads`
+  (`q_proj` is `[hidden, heads * head_dim]`). The MLP is the gated `Nn.Mlp`
+  with `Silu`.
+- The head is `Load.transposed(embedding)` when `tie_word_embeddings` is true,
+  which costs one more copy of the table (0.6 GB for Qwen3-0.6B), else
+  `lm_head`. The `bfloat16` weights come as `F32` through `hub`.
+- The forward is one graph on ggml (`Lift.staged`). Every call traces and
+  plans the graph again: seconds on the CPU, a second on Vulkan for a 50 token
+  prompt. The next PR keeps a padded KV cache, compiles one step per capacity
+  and runs the pick on the device, as `asr/` does.
+- Only `qwen3`, `silu`, no attention bias, no `rope_scaling`, no sliding window
+  are read; the rest is an error. A model of Qwen2.5 (bias, no norms) or GPT-2
+  is a later config.
 
 ## BERT
 
@@ -83,6 +108,17 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
 
 ## Tests
 
+- `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
+  a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
+  projection is wider than the model) in `bfloat16` with tied embeddings and
+  in `float32` untied, the logits of every position of two rows, on the
+  reference and on ggml; the last row alone; refusals; bad inputs; a closed
+  model.
+- `tools/qwen_check.agc` against Hugging Face's `Qwen3ForCausalLM`
+  (`test/qwen_golden.py`, manual): five prompts of 5 to 50 tokens, the logits
+  of the last position over the vocabulary and the five largest logits of every
+  position, in `float32`. Largest gap of a logit: 4.9e-5 on ggml CPU and
+  8.6e-5 on Vulkan; the top five ids are the same at every position.
 - `test/bert_test.agc` against `test/bert_peer.py` (standard library, doubles):
   a tiny random BERT in both namings, a padded batch, the hidden state, the
   pooler and the mean embedding, on the reference and on ggml (CPU, and Vulkan
