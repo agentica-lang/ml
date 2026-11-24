@@ -50,11 +50,10 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
   unused), `Nn.Attention` has `kv_heads`, `Rope(base: rope_theta)` in the
   `rotate_half` layout, and `q_norm` and `k_norm` per head before the
   rotation; the head width is `head_dim`, not `hidden_size / heads`
-  (`q_proj` is `[hidden, heads * head_dim]`). The MLP is the gated `Nn.Mlp`
+  (`q_proj.weight` is `[heads * head_dim, hidden]`, as stored). The MLP is the gated `Nn.Mlp`
   with `Silu`.
-- The head is `Load.transposed(embedding)` when `tie_word_embeddings` is true,
-  which costs one more copy of the table (0.6 GB for Qwen3-0.6B), else
-  `lm_head`. The `bfloat16` weights come as `F32` through `hub`.
+- The head is the embedding table itself (`out_in`) when
+  `tie_word_embeddings` is true, with no copy of it, else `lm_head`. The `bfloat16` weights come as `F32` through `hub`.
 - The forward is one graph on ggml (`Lift.staged`). Every call traces and
   plans the graph again: seconds on the CPU, a second on Vulkan for a 50 token
   prompt. Generation (below) keeps a cache and compiles its steps.

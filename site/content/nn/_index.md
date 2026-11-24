@@ -32,7 +32,7 @@ The shapes are the ones the layers take. `dense` takes any rank. Attention needs
 
 | Struct | Holds | Function |
 |---|---|---|
-| `Dense` | `w` as `[in, out]`, `b` optional `[out]` | `dense(p, x)`: `x w + b` on the last axis |
+| `Dense` | `w` as `[in, out]` (or `[out, in]` with `out_in`), `b` optional `[out]` | `dense(p, x)`: `x w + b` on the last axis |
 | `LayerNorm` | `gamma`, `beta`, `eps`, `rms` | `layer_norm(p, x)`; with `rms` it is an RMS norm and `beta` is ignored |
 | `Embedding` | `table` as `[rows, width]` | `embedding(p, ids)`; `positional(p, x)` adds the first rows of the table |
 | `Conv1d` | `weight` as `[out, in, kernel]`, `bias`, `stride`, `padding` | `conv1d(p, x)` |

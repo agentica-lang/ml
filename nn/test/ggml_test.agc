@@ -48,6 +48,32 @@ def test_a_configured_stack_agrees_with_the_reference_on_ggml() -> Result[Void]
   ok()
 end
 
+## A dense layer whose weight is stored `[out, in]` (`out_in`) agrees with the reference on ggml, where it multiplies by
+## the transpose with no copy of the weight.
+def test_a_dense_with_out_in_agrees_with_the_reference_on_ggml() -> Result[Void]
+  args = [
+    try S.f32(Init.uniform_values(12, 1.0, 81), [4, 3]),
+    try S.f32(Init.uniform_values(15, 1.0, 82), [5, 3]),
+    try S.f32(Init.uniform_values(5, 1.0, 83), [5]),
+  ]
+
+  for backend in try engines()
+    d = try Trace.diff(
+      args,
+      S.REF,
+      backend,
+      f: ->(a: List[Tensor.Tensor]) { Nn.dense(Nn.Dense(w: a[1], b: some(a[2]), out_in: true), a[0]) },
+    )
+
+    case d.first
+      some(n) -> return error("on #{backend}: node #{n.node} (#{n.op} #{n.shape}) differs by #{n.max_abs}")
+      none -> try Test.assert(d.nodes >= 3, "only #{d.nodes} nodes compared")
+    end
+  end
+
+  ok()
+end
+
 ## The stack with the weights in `a` (`a[0]` is the input), run causally.
 def run(stack: Nn.EncoderStack, a: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
   blocks = [S.qwen_block(stack.blocks[0], a.drop(1).take(11)), S.qwen_block(stack.blocks[1], a.drop(12).take(11))]

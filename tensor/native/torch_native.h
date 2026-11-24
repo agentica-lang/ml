@@ -134,6 +134,10 @@ an_term torch_neg(an_env *env, struct torch_TensorHandle_state *a);
 /* The rank-2 product `[rows, inner] . [inner, cols]`. */
 an_term torch_matmul(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b);
 
+/* `a . bᵀ` for `a` `[rows, inner]` and `b` `[cols, inner]`: libtorch's `linear`
+   without a bias, which reads `b` as it is (no transposed copy). */
+an_term torch_linear(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b);
+
 /* `max(0, x)`, elementwise. */
 an_term torch_relu(an_env *env, struct torch_TensorHandle_state *a);
 
@@ -565,6 +569,15 @@ static an_term torch_native_matmul(an_env *env, int argc, const an_term *argv) {
   return torch_matmul(env, a0, a1);
 }
 
+static an_term torch_native_linear(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  return torch_linear(env, a0, a1);
+}
+
 static an_term torch_native_relu(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
@@ -949,6 +962,7 @@ static const an_function torch_native_functions[] = {
   {"div", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_div, AN_DIRTY | AN_FRESH},
   {"neg", "(TensorHandle) -> Result[TensorHandle]", torch_native_neg, AN_DIRTY | AN_FRESH},
   {"matmul", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_matmul, AN_DIRTY | AN_FRESH},
+  {"linear", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_linear, AN_DIRTY | AN_FRESH},
   {"relu", "(TensorHandle) -> Result[TensorHandle]", torch_native_relu, AN_DIRTY | AN_FRESH},
   {"exp", "(TensorHandle) -> Result[TensorHandle]", torch_native_exp, AN_DIRTY | AN_FRESH},
   {"log", "(TensorHandle) -> Result[TensorHandle]", torch_native_log, AN_DIRTY | AN_FRESH},
@@ -993,5 +1007,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 46, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 47, NULL, 0, torch_native_resources, 1, LOAD)
 #endif

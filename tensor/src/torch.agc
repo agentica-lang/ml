@@ -242,6 +242,21 @@ def matmul(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Typ
   one(device, a.dtype, [a.shape[0], b.shape[1]]) do Raw.matmul(ha, hb) end
 end
 
+## `a . bᵀ` for `a` `[rows, inner]` and `b` `[cols, inner]`, float only: `b` is read as it is, where `matmul` of a
+## transposed `b` would copy it.
+def linear(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "linear")
+  _ = try same_dtype(a, b, "linear")
+  _ = try float_only(a, "linear")
+  return error("linear needs rank-2 tensors, got #{a.shape} and #{b.shape}") if a.shape.size != 2 or b.shape.size != 2
+
+  return error("linear needs #{a.shape[1]} in the inner dimension, got #{b.shape[1]}") if a.shape[1] != b.shape[1]
+
+  ha = try handle_of(a)
+  hb = try handle_of(b)
+  one(device, a.dtype, [a.shape[0], b.shape[0]]) do Raw.linear(ha, hb) end
+end
+
 ## `max(0, x)`, elementwise, float only.
 def relu(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
   _ = try ready(device, "relu")

@@ -38,7 +38,7 @@ end
 
 def embedding(p: Nn.Embedding) -> Nn.Embedding = Nn.Embedding(table: Trace.constant(p.table))
 
-def dense(p: Nn.Dense) -> Nn.Dense = Nn.Dense(w: Trace.constant(p.w), b: p.b.map { |b| Trace.constant(b) })
+def dense(p: Nn.Dense) -> Nn.Dense = p.with(w: Trace.constant(p.w), b: p.b.map { |b| Trace.constant(b) })
 
 def norm(p: Nn.LayerNorm) -> Nn.LayerNorm = p.with(gamma: Trace.constant(p.gamma), beta: Trace.constant(p.beta))
 

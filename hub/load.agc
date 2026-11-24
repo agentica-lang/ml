@@ -1,14 +1,13 @@
 ## `nn/` layers from a checkpoint, by tensor name (`hub/DESIGN.md`).
 ##
 ## Names follow Hugging Face: a dense layer is `{prefix}.weight` stored
-## `[out, in]` (transposed here to `nn/`'s `[in, out]`) and an optional
+## `[out, in]`, kept as it is (`Nn.Dense.out_in`) and an optional
 ## `{prefix}.bias`; a layer norm is `{prefix}.weight` and `{prefix}.bias`.
 ## Float weights become `F32`, the compute dtype (`tensor/DESIGN.md` §6).
 
 import Hub from "hub"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
-import Trace from "pkg/tensor/trace"
 
 ## The prefix of every layer of one encoder block.
 struct BlockNames
@@ -57,15 +56,7 @@ end
 def dense(c: Hub.Checkpoint, prefix: String, backend: Tensor.Backend) -> Result[Nn.Dense]
   w = try weight(c, "#{prefix}.weight", 2, backend)
   b = try bias(c, prefix, Tensor.shape(w)[0], backend)
-  t = transposed(w)
-  close(w)
-  ok(Nn.Dense(w: try t, b: b))
-end
-
-## `t` transposed, through a trace: a backend that computes only whole graphs
-## (`Ggml`) loads too.
-def transposed(t: Tensor.Tensor) -> Result[Tensor.Tensor]
-  Trace.eval([t], ->(xs: List[Tensor.Tensor]) { Tensor.transpose(xs[0]) })
+  ok(Nn.Dense(w: w, b: b, out_in: true))
 end
 
 ## A conv layer: `{prefix}.weight` `[out, in, kernel]`, as stored; `{prefix}.bias` if present.

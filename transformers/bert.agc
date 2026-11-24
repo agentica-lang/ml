@@ -93,7 +93,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[B
       backend,
     )
 
-    try expect_shape("layer #{i} up", block.mlp.up.w, [width, config.intermediate_size])
+    try expect_shape("layer #{i} up", block.mlp.up.w, [config.intermediate_size, width])
     blocks = blocks.push(block.with(norm_first: false))
   end
 
