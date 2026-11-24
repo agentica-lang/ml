@@ -263,6 +263,31 @@ def close(compiled: Compiled) -> Void
   end
 end
 
+## `close` and then the constants of `compiled` (what its function read from
+## outside its inputs through `constant`) closed too: for a function that owns
+## them, as a log-mel graph owns its basis. A run afterwards is an error naming
+## a closed constant. A second call is harmless. Do not call it when the
+## constants are tensors somebody else still reads.
+def close_constants(compiled: Compiled) -> Void
+  close(compiled)
+  case compiled.program
+    some(program) ->
+      for leaf in program.leaves
+        case leaf.fixed
+          some(t) ->
+            case t.handle
+              Types.Handle.Ggml(h) -> Native.close(h)
+              _ -> nil
+            end
+
+          none -> nil
+        end
+      end
+
+    none -> nil
+  end
+end
+
 ## The value of the scalar function `f` at `args` and its gradient for every
 ## argument. The trace is built once, the gradient graph is derived from it,
 ## and one evaluation runs both, sharing the forward values.
