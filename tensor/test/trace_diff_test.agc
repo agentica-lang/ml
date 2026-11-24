@@ -155,9 +155,7 @@ def normed_grad(backend: Tensor.Backend, rms: Bool) -> Result[Tensor.Tensor]
   weights = [0.3, -0.2, 0.7, 0.1, -0.5, 0.4, 0.9, -0.1, 0.2, -0.6, 0.8, 0.05]
   x = try on(backend, data)
   w = try on(backend, weights)
-  step = try Trace.value_and_grad([x]) do |xs|
-    weighed_norm(xs[0], Trace.constant(w), rms)
-  end
+  step = try Trace.value_and_grad([x]) do |xs| weighed_norm(xs[0], Trace.constant(w), rms) end
 
   ok(step.grads[0])
 end
