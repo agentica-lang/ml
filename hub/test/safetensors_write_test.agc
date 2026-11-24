@@ -24,7 +24,7 @@ end
 ## The header of `sample`, before its padding.
 def header() -> String
   [
-    "{\"__metadata__\":{\"format\":\"pt\"}",
+    "{\"__metadata__\":{\"a\":\"b\",\"format\":\"pt\"}",
     "\"a.b\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[0,8]}",
     "\"w\":{\"dtype\":\"F32\",\"shape\":[1,3],\"data_offsets\":[8,20]}",
     "\"z\":{\"dtype\":\"F32\",\"shape\":[0,4],\"data_offsets\":[20,20]}}",
@@ -51,7 +51,7 @@ def test_the_file_is_the_format_byte_for_byte_on_each_backend() -> Result[Void]
   with_dir do |dir|
     for backend in try backends()
       path = "#{dir}/out.safetensors"
-      try Write.write(path, try sample(backend), {"format": "pt"})
+      try Write.write(path, try sample(backend), {"format": "pt", "a": "b"})
       padded = header() + " " * ((8 - header().bytes.size % 8) % 8)
       want = [padded.bytes.size, 0, 0, 0, 0, 0, 0, 0] + padded.bytes.to_a + DATA
       try Test.eq(try bytes_of(path), want)
@@ -65,7 +65,7 @@ end
 def test_what_is_read_writes_back_the_same_bytes() -> Result[Void]
   with_dir do |dir|
     first = "#{dir}/first.safetensors"
-    try Write.write(first, try sample(S.REF), {"format": "pt"})
+    try Write.write(first, try sample(S.REF), {"format": "pt", "a": "b"})
     for backend in try backends()
       c = try Hub.open(first)
       read = try Hub.tensors(c, backend)

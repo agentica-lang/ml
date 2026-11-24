@@ -299,9 +299,14 @@ def append_file(t: Types.Tensor, path: String) -> Result[Void]
   File.open(path, "append") do |f|
     at = 0
     while at < values.size
-      part = values.drop(at).take(APPEND_VALUES).map { |x: Float| Binary.write_f32_le(x) }
+      stop = [at + APPEND_VALUES, values.size].min.unwrap!
+      part: List[Bytes] = []
+      for i in at...stop
+        part = part.push(Binary.write_f32_le(values[i]))
+      end
+
       try File.write_bytes(f, Bytes.concat(part))
-      at = at + APPEND_VALUES
+      at = stop
     end
 
     ok()

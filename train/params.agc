@@ -42,7 +42,7 @@ end
 ## `params` are traced, the frozen ones are constants of the trace (`Trace.constant`).
 def join(s: Split, params: List[Tensor.Tensor]) -> Result[Map[String, Tensor.Tensor]]
   out = try named(s, params)
-  traced = params[0].backend == Tensor.Backend.Trace
+  traced = params.any? { |p: Tensor.Tensor| p.backend == Tensor.Backend.Trace }
   for name in s.frozen.keys
     frozen = s.frozen[name]
     if traced

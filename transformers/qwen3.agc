@@ -263,9 +263,11 @@ def weights(m: Qwen3) -> Map[String, Tensor.Tensor]
   norm_weights(out, "model.norm", m.stack.final_norm)
 end
 
-## `m` with the tensors of `weights` in place of its own: every name of `weights(m)` must be there. Inside a loss the
-## tensors are traced and `logits` of the result is part of the trace.
+## `m` with the tensors of `weights` in place of its own: the names must be those of `weights(m)`, no more and no
+## fewer, each with the shape the model holds. Inside a loss the tensors are traced and `logits` of the result is part
+## of the trace.
 def with_weights(m: Qwen3, weights: Map[String, Tensor.Tensor]) -> Result[Qwen3]
+  try fitting(m, weights)
   tokens = Nn.Embedding(table: try named(weights, "model.embed_tokens.weight"))
   head = Nn.Dense(w: tokens.table, b: none, out_in: true)
   if not m.config.tie_word_embeddings
@@ -312,6 +314,19 @@ def with_weights(m: Qwen3, weights: Map[String, Tensor.Tensor]) -> Result[Qwen3]
 end
 
 private
+
+## An error when `given` has a name `m` lacks or a tensor of another shape than the model's.
+def fitting(m: Qwen3, given: Map[String, Tensor.Tensor]) -> Result[Void]
+  own = weights(m)
+  for name in given.keys.sort
+    old = try own.get(name).to_result("the model has no weight #{name}")
+    if Tensor.shape(given[name]) != Tensor.shape(old)
+      return error("#{name}: the model holds #{Tensor.shape(old)}, got #{Tensor.shape(given[name])}")
+    end
+  end
+
+  ok()
+end
 
 def dense_weights(out: Map[String, Tensor.Tensor], prefix: String, d: Nn.Dense) -> Map[String, Tensor.Tensor]
   named = out.put("#{prefix}.weight", d.w)

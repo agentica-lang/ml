@@ -31,7 +31,8 @@ private
 def header(names: List[String], tensors: Map[String, Tensor.Tensor], metadata: Map[String, String]) -> Result[Bytes]
   fields: List[String] = []
   if not metadata.empty?
-    fields = fields.push("\"__metadata__\":#{JSON.encode(metadata)}")
+    pairs = metadata.keys.sort.map { |key: String| "#{JSON.encode(key)}:#{JSON.encode(metadata[key])}" }
+    fields = fields.push("\"__metadata__\":{#{pairs.join(",")}}")
   end
 
   at = 0
@@ -66,10 +67,14 @@ def fill(part: String, head: Bytes, tensors: List[Tensor.Tensor]) -> Result[Void
     ok()
   end
 
+  size = head.size
   for t in tensors
     try Tensor.append_file(t, part)
+    size = size + 4 * volume(Tensor.shape(t))
   end
 
+  written = (try File.stat(part)).size_bytes
+  return error("the file holds #{written} bytes, not the #{size} of its header and tensors") if written != size
   ok()
 end
 

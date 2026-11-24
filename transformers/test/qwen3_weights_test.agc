@@ -37,6 +37,9 @@ def test_the_names_are_the_checkpoints_and_the_weights_go_back() -> Result[Void]
       back = try Qwen3.with_weights(m, w)
       try Test.eq(try bits(try Qwen3.run(back, IDS)), try bits(try Qwen3.run(m, IDS)))
       try S.expect_error(Qwen3.with_weights(m, w.delete("model.norm.weight")), "model.norm.weight")
+      try S.expect_error(Qwen3.with_weights(m, w.put("model.extra.weight", w["model.norm.weight"])), "model.extra")
+      other = w.put("model.norm.weight", w["model.embed_tokens.weight"])
+      try S.expect_error(Qwen3.with_weights(m, other), "model.norm.weight: the model holds")
     end
 
     ok()

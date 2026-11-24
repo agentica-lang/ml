@@ -218,13 +218,26 @@ static inline bool ff_read_bytes(const char *path, size_t path_len, int64_t offs
   return true;
 }
 
-/* Appends `len` bytes to the regular file `path`, which must exist (`Tensor.append_file`). */
+/* What a failed `write` or `close` means, in words that do not need `strerror` (not thread safe). */
+static const char *ff_write_why(int err) {
+  switch (err) {
+    case ENOSPC: return "no space left on the device";
+    case EDQUOT: return "the disk quota is used up";
+    case EFBIG: return "the file would be too large";
+    case EIO: return "an I/O error";
+    case EROFS: return "the file system is read-only";
+    default: return "the write failed";
+  }
+}
+
+/* Appends `len` bytes to the regular file `path`, which must exist (`Tensor.append_file`). A failed write cuts the
+   file back to the size it had; a failed `close` (where a network file system or a quota reports it) is a failure. */
 static inline bool ff_append(const char *path, size_t path_len, const void *from, size_t len, char *why, size_t why_len) {
   const uint8_t *p = (const uint8_t *)from;
   char name[FF_PATH_MAX];
   struct stat info;
   ssize_t put;
-  int fd;
+  int fd, cut, err = 0;
 
   if (path_len == 0 || path_len >= sizeof name || memchr(path, 0, path_len) != NULL) {
     snprintf(why, why_len, "not a usable file path");
@@ -242,18 +255,26 @@ static inline bool ff_append(const char *path, size_t path_len, const void *from
     snprintf(why, why_len, "%s is not a regular file", name);
     return false;
   }
-  while (len > 0) {
+  while (len > 0 && err == 0) {
     put = write(fd, p, len);
     if (put < 0 && errno == EINTR) continue;
-    if (put <= 0) {
-      close(fd);
-      snprintf(why, why_len, "%s could not be written (no space left?)", name);
-      return false;
+    if (put < 0) err = errno;
+    else if (put == 0) err = EIO;
+    else {
+      p += put;
+      len -= (size_t)put;
     }
-    p += put;
-    len -= (size_t)put;
   }
-  close(fd);
+  if (err != 0) {
+    /* The write error is the one reported, whether or not the cut works. */
+    cut = ftruncate(fd, info.st_size);
+    (void)cut;
+  }
+  if (close(fd) != 0 && err == 0) err = errno;
+  if (err != 0) {
+    snprintf(why, why_len, "cannot write %s: %s", name, ff_write_why(err));
+    return false;
+  }
   return true;
 }
 
