@@ -74,6 +74,7 @@ def test_a_model_that_is_not_qwen3_is_refused() -> Result[Void]
       try S.replaced(config, "\"rope_scaling\": null", "\"rope_scaling\": {\"rope_type\": \"yarn\"}"),
       try S.replaced(config, "\"num_key_value_heads\": 2", "\"num_key_value_heads\": 3"),
       try S.replaced(config, "\"head_dim\": 4", "\"head_dim\": 5"),
+      try S.replaced(config, "\"head_dim\": 4", "\"head_dim\": 6"),
       try S.replaced(config, "\"hidden_size\": 8", "\"hidden_size\": 9"),
       try S.replaced(config, "\"vocab_size\": 13", "\"vocab_size\": 14"),
     ]
@@ -83,6 +84,22 @@ def test_a_model_that_is_not_qwen3_is_refused() -> Result[Void]
 
     try Test.error?(Qwen3.open("#{dir}/missing", S.REF))
     Test.error?(Qwen3.open("#{dir}/absent", S.REF))
+  end
+end
+
+## Hugging Face's defaults: the embeddings are tied when the config does not say, and a
+## `sliding_window` size does nothing while `use_sliding_window` is false.
+def test_the_defaults_and_an_unused_sliding_window_are_read_as_hugging_face_does() -> Result[Void]
+  with_peer do |dir|
+    config = try File.read_text("#{dir}/tiny/config.json")
+    try File.write_text("#{dir}/tiny/config.json", try S.replaced(config, "\"tie_word_embeddings\": true, ", ""))
+    try matches(dir, "tiny", S.REF, ABS, REL)
+    try File.write_text(
+      "#{dir}/tiny/config.json",
+      try S.replaced(config, "\"sliding_window\": null", "\"sliding_window\": 4096"),
+    )
+
+    matches(dir, "tiny", S.REF, ABS, REL)
   end
 end
 

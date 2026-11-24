@@ -6,8 +6,8 @@ Usage: python3 qwen_peer.py. Writes into a new temporary folder, prints its
 path, and leaves:
 
 - `tiny/`: `bfloat16` weights (rounded as the converter rounds), tied
-  embeddings, with an `lm_head.weight` that repeats the table, as
-  `Qwen3-0.6B`'s file does;
+  embeddings, with an `lm_head.weight` of other values that the model must
+  ignore (`Qwen3-0.6B`'s file has one too);
 - `untied/`: `float32` weights and its own `lm_head.weight`;
 - `missing/`: `tiny` without one weight;
 - `expected.json`: for the batch `IDS`, the logits of every position of every
@@ -50,7 +50,8 @@ def f32(x):
 class Model:
     """Weights by HF name (flat, row-major) already rounded to `dtype`."""
 
-    def __init__(self, seed, dtype):
+    def __init__(self, seed, dtype, head):
+        self.head = head
         self.rng = random.Random(seed)
         self.round = bf16 if dtype == "BF16" else f32
         self.dtype = dtype
@@ -138,7 +139,7 @@ class Model:
             p = "model.layers.%d." % i
             h = plus(h, self.attention(p + "self_attn.", self.rms(p + "input_layernorm.weight", h)))
             h = plus(h, self.mlp(p + "mlp.", self.rms(p + "post_attention_layernorm.weight", h)))
-        return self.linear("lm_head.weight", self.rms("model.norm.weight", h))
+        return self.linear(self.head, self.rms("model.norm.weight", h))
 
 
 def plus(a, b):
@@ -146,7 +147,8 @@ def plus(a, b):
 
 
 def qwen(dtype, untied):
-    c, m = CONFIG, Model(2025 if not untied else 2026, dtype)
+    c = CONFIG
+    m = Model(2026 if untied else 2025, dtype, "lm_head.weight" if untied else "model.embed_tokens.weight")
     d, hd = c["hidden_size"], c["head_dim"]
     m.add("model.embed_tokens.weight", [c["vocab_size"], d])
     for i in range(c["num_hidden_layers"]):
@@ -163,11 +165,8 @@ def qwen(dtype, untied):
         m.add(p + "mlp.up_proj.weight", [c["intermediate_size"], d])
         m.add(p + "mlp.down_proj.weight", [d, c["intermediate_size"]])
     m.add("model.norm.weight", [d], 1.0, 0.25)
-    if untied:
-        m.add("lm_head.weight", [c["vocab_size"], d])
-    else:
-        m.shapes["lm_head.weight"] = m.shapes["model.embed_tokens.weight"]
-        m.values["lm_head.weight"] = m.values["model.embed_tokens.weight"]
+    # The tied file also has an `lm_head.weight`, a different one: the model ignores it.
+    m.add("lm_head.weight", [c["vocab_size"], d])
     return m
 
 

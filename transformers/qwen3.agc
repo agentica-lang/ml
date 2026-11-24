@@ -27,7 +27,7 @@ struct Config
   rms_norm_eps: Float
   rope_theta: Float
   hidden_act: String
-  tie_word_embeddings: Bool = false
+  tie_word_embeddings: Bool = true
   attention_bias: Bool = false
   use_sliding_window: Bool = false
   rope_scaling: Optional[Scaling]
@@ -72,12 +72,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[Q
     blocks = blocks.push(try block(c, "model.layers.#{i}.", config, backend))
   end
 
-  head: Nn.Dense = Nn.Dense(w: try Load.transposed(tokens.table), b: none)
-  if not config.tie_word_embeddings
-    head = try Load.dense(c, "lm_head", backend)
-    try expect_shape("lm_head.weight", head.w, [width, config.vocab_size])
-  end
-
+  head = try head_of(c, config, tokens, backend)
   ok(
     Qwen3(
       config: config,
@@ -179,6 +174,16 @@ def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void
   ok()
 end
 
+## The output head: the embedding table transposed when the config ties them
+## (the file's `lm_head.weight`, if any, is then ignored), else `lm_head`.
+def head_of(c: Hub.Checkpoint, config: Config, tokens: Nn.Embedding, backend: Tensor.Backend) -> Result[Nn.Dense]
+  return ok(Nn.Dense(w: try Load.transposed(tokens.table), b: none)) if config.tie_word_embeddings
+
+  head = try Load.dense(c, "lm_head", backend)
+  try expect_shape("lm_head.weight", head.w, [config.hidden_size, config.vocab_size])
+  ok(head)
+end
+
 ## An RMS norm of `{prefix}.weight`: `beta` is unused, so zeros stand in.
 def rms(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Backend) -> Result[Nn.LayerNorm]
   gamma = try Load.weight(c, "#{prefix}.weight", 1, backend)
@@ -216,6 +221,7 @@ def block(c: Hub.Checkpoint, p: String, config: Config, backend: Tensor.Backend)
   try expect_shape("#{a}v_proj.weight", attention.value.w, [width, kv_width])
   try expect_shape("#{a}o_proj.weight", attention.output.w, [q_width, width])
   try expect_shape("#{a}q_norm.weight", attention.query_norm.unwrap!.gamma, [config.head_dim])
+  try expect_shape("#{a}k_norm.weight", attention.key_norm.unwrap!.gamma, [config.head_dim])
   m = "#{p}mlp."
   mlp = Nn.Mlp(
     up: try Load.dense(c, "#{m}up_proj", backend),
@@ -225,6 +231,8 @@ def block(c: Hub.Checkpoint, p: String, config: Config, backend: Tensor.Backend)
   )
 
   try expect_shape("#{m}up_proj.weight", mlp.up.w, [width, config.intermediate_size])
+  try expect_shape("#{m}gate_proj.weight", mlp.gate.unwrap!.w, [width, config.intermediate_size])
+  try expect_shape("#{m}down_proj.weight", mlp.down.w, [config.intermediate_size, width])
   ok(
     Nn.EncoderBlock(
       norm1: try rms(c, "#{p}input_layernorm", eps, backend),

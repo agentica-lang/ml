@@ -25,8 +25,11 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
   plans the graph again: seconds on the CPU, a second on Vulkan for a 50 token
   prompt. The next PR keeps a padded KV cache, compiles one step per capacity
   and runs the pick on the device, as `asr/` does.
-- Only `qwen3`, `silu`, no attention bias, no `rope_scaling`, no sliding window
-  are read; the rest is an error. A model of Qwen2.5 (bias, no norms) or GPT-2
+- Only `qwen3`, `silu`, no attention bias, no `rope_scaling` and
+  `use_sliding_window: false` are read; the rest is an error. `tie_word_embeddings`
+  defaults to `true`, as in Hugging Face, and then the file's `lm_head.weight`
+  is ignored. On the reference backend attention needs `q * k` of at most
+  1,048,576 (about 1024 tokens, causal). A model of Qwen2.5 (bias, no norms) or GPT-2
   is a later config.
 
 ## BERT

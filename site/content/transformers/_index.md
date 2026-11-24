@@ -69,7 +69,7 @@ end
 - The layers are grouped-query attention with a normalized query and key per head, rotary positions with `rope_theta`, a SwiGLU MLP, RMS norms, and an output head tied to the embedding table when the config says so (the file's `lm_head.weight` is then ignored).
 - On ggml the forward is one graph with the weights as constants. There is no cache yet: every call reads the whole sequence, and it traces and plans a graph (5 to 20 seconds on the CPU, 0.5 to 1 second on Vulkan for these prompts).
 - `Qwen3.close_model(m)` frees the weights; the logits belong to the caller (`Lift.close`). Qwen3-0.6B takes about 5 GB on ggml CPU and 1.4 GB on Vulkan, where the weights live in device memory.
-- A `model_type` other than `qwen3`, an activation other than `silu`, attention bias, `rope_scaling`, a sliding window, a head count that the key heads do not divide, and a tensor of another shape are errors. Qwen2.5 and others come later. Reference and ggml are tested; libtorch is not, and a sharded checkpoint is not tested.
+- A `model_type` other than `qwen3`, an activation other than `silu`, attention bias, `rope_scaling`, `use_sliding_window: true` (a `sliding_window` size with it `false` is ignored, as Hugging Face does), a head count that the key heads do not divide, and a tensor of another shape are errors. Qwen2.5 and others come later. Reference and ggml are tested; libtorch is not, and a sharded checkpoint is not tested. On the reference backend attention needs `q * k` of at most 1,048,576, about 1024 tokens with the causal mask; ggml has no such limit.
 - The pins of `transformers` in `agentica.toml` are those of `asr`, as for BERT.
 
 ## Tokenizer example

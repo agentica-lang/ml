@@ -7,6 +7,7 @@
 ##   agentica tools/qwen_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
 
 import Qwen3 from "../qwen3"
+import Lift from "../lift"
 import Source from "../tokenizer/source"
 import Tensor from "pkg/tensor/tensor"
 
@@ -49,6 +50,13 @@ private
 def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Float]
   want = try JSON.decode(try Source.read_text(golden), Golden)
   m = try Qwen3.open(dir, backend)
+  gap = checked(m, want)
+  Qwen3.close_model(m)
+  gap
+end
+
+## The largest gap of a logit over the prompts of `want`, or the first error.
+def checked(m: Qwen3.Qwen3, want: Golden) -> Result[Float]
   worst = 0.0
   for i in 0...want.cases.size
     c = want.cases[i]
@@ -56,7 +64,9 @@ def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Float]
     all = try Qwen3.run(m, [c.ids])
     took = Time.monotonic_ms - started
     vocab = Tensor.shape(all)[2]
-    values = try floats(all)
+    read = floats(all)
+    Lift.close([all])
+    values = try read
     last = values.drop((c.ids.size - 1) * vocab)
     worst = [worst, try compare("prompt #{i} last position", last, c.last)].max.unwrap!
     for at in 0...c.ids.size
