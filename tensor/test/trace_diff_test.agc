@@ -82,6 +82,34 @@ def test_diff_of_a_layer_norm_on_ggml_finds_nothing() -> Result[Void]
   ok()
 end
 
+## A max over one row of 1024 floats or more is found with argmax on ggml (the pool of ggml-vulkan walks a row in one
+## thread); a max over many rows is not. Both agree with the reference, with the largest value present twice.
+def test_diff_of_a_long_row_max_finds_nothing_on_cpu_and_vulkan() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  backends = [CPU]
+  vulkan = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+  if Tensor.available(vulkan)
+    backends = backends.push(vulkan)
+  end
+
+  for backend in backends
+    for shape in [[1500], [8192], [3, 2000], [1, 3000]]
+      n = shape.reduce(1) do |acc, d| acc * d end
+      ramp = Support.ramp(3, n)
+      data = ramp.take(7) + [9.5] + ramp.drop(8).take(n - 9) + [9.5]
+      args = [try Support.f32(data, shape)]
+      d = try Trace.diff(args, REF, backend) do |xs| Tensor.max(xs[0], some([shape.size - 1]), false) end
+      case d.first
+        some(node) -> return error("#{shape} on #{backend}: max differs from the reference: #{node.max_abs}")
+        none -> nil
+      end
+    end
+  end
+
+  ok()
+end
+
 ## The backward of a `layer_norm` is lowered once on ggml, and gives the reference's gradient.
 def test_the_gradient_of_a_layer_norm_on_ggml_matches_the_reference() -> Result[Void]
   return ok() if !try Support.ggml_present()

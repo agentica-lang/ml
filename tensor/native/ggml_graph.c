@@ -399,6 +399,9 @@ static struct ggml_tensor *flip(struct entry *p, struct ggml_tensor *m) {
   return ggml_scale_bias(p->ctx, contiguous(p, m), -1.0f, 1.0f);
 }
 
+/* A max over one row at least this long is found with argmax, not pool_1d. */
+#define LONG_ROW 1024
+
 /* `x` as a 2-D tensor whose rows (ne[0]) are the reduced block: reshaped to
    [inner, outer] for trailing axes, transposed from [outer, inner] for
    leading ones. NULL for axes that are neither block. */
@@ -727,7 +730,11 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
                  op_names[op]);
         return tg_error(env, text);
       }
-      if (op == OP_MAX) {
+      if (op == OP_MAX && rows->ne[1] == 1 && rows->ne[0] >= LONG_ROW) {
+        /* One thread walks a pooled row: 14 ms for 51,865 floats on Vulkan. argmax reduces it in a workgroup, and
+           the value is read back with get_rows; which of several equal maxima it finds does not matter. */
+        t = ggml_get_rows(p->ctx, ggml_reshape_2d(p->ctx, rows, 1, rows->ne[0]), ggml_argmax(p->ctx, rows));
+      } else if (op == OP_MAX) {
         t = ggml_pool_1d(p->ctx, rows, GGML_OP_POOL_MAX, (int)rows->ne[0], (int)rows->ne[0], 0);
       } else {
         t = ggml_sum_rows(p->ctx, rows);
