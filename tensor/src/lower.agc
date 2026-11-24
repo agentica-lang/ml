@@ -436,10 +436,10 @@ def bits(x: Float, n: Types.Node) -> Result[Int]
   ok(Float.to_bits(x))
 end
 
-## `true` as `1`, `false` as `0`.
 ## Whether flash attention may take the mask of an attention node: it reads the mask in F16, so the mask must be absent
-## or hold only the fills 0 and a finite value of `-65504` or below (what `where` of two `full`s, or a comparison times a
-## `full`, gives: the padded mask of a decoder and the causal mask).
+## or hold only the fills 0 and a value from F32's lowest to `-65504` (what `where` of two `full`s, or a comparison times
+## a `full`, gives: the padded mask of a decoder and the causal mask). A fill below F32's lowest is `-inf` in the fill
+## store, and its product with 0 is NaN.
 def flash_mask(args: List[Types.Tensor]) -> Result[Bool]
   return ok(true) if args.size == 3
   fills_only(args[3])
@@ -450,7 +450,7 @@ def fills_only(t: Types.Tensor) -> Result[Bool]
   case n.op
     Types.Op.Full(v) ->
       x = try Types.value_to_float(v, t.dtype)
-      ok(x == 0.0 or (Types.is_finite(x) and x <= -65504.0))
+      ok(x == 0.0 or (x >= -3.4028234663852886e38 and x <= -65504.0))
     Types.Op.Where -> ok(try fills_only(n.args[1]) and try fills_only(n.args[2]))
     Types.Op.Mul -> ok(try indicator(n.args[0]) and try fills_only(n.args[1]))
     Types.Op.Reshape -> fills_only(n.args[0])
@@ -472,6 +472,7 @@ def indicator(t: Types.Tensor) -> Result[Bool]
   end
 end
 
+## `true` as `1`, `false` as `0`.
 def flag(b: Bool) -> Int
   return 1 if b
   0

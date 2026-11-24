@@ -442,7 +442,7 @@ end
   is an error), `attention` (one `flash_attn_ext` that reads q, k and v as the views they are, with the scale
   and an `F16` mask, in `F32` accumulation: the pinned ggml takes an unpadded mask and `F32` k and
   v on CPU and Vulkan. The lowering sends it a node when the mask is absent or is built from
-  `full`s of 0 and of a finite value of -65504 or below (the causal and the padded masks), which
+  `full`s of 0 and of a value from F32's lowest to -65504 (the causal and the padded masks), which
   `F16` holds exactly, the large ones clamped to -65504; a mask of any other values, a width that
   Vulkan has no kernel for (not a multiple of 8), a backend without the op and, on Vulkan with the
   fp16 products (the default), a query of more than one row (the fp16 products beat the F32 kernel
