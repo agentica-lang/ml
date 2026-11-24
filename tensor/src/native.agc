@@ -43,109 +43,149 @@ extern module "torch"
   ## A tensor of `shape` from row-major `data` in the dtype `dtype` names
   ## (`TorchDtypes.code`). The values cross as doubles; an integer dtype must hold
   ## integral values in range, which the callers of `create` check first.
+  ## @fresh
   compute def create(shape: List[Int], data: List[Float], dtype: Int) -> Result[TensorHandle]
   ## A tensor of `shape` whose every element is `value`, in the dtype `dtype`
   ## names (`TorchDtypes.code`). No list crosses, so the element count is not
   ## capped by one. An integer dtype must get an integral `value` in range,
   ## which the callers of `fill` check first.
+  ## @fresh
   compute def fill(shape: List[Int], value: Float, dtype: Int) -> Result[TensorHandle]
   ## An `F32` tensor of `shape` from the little-endian floats of `format` (a
   ## code of `Types.file_code`) that start at byte `offset` of the file `path`.
   ## C reads the file into the tensor's own memory, so no value crosses as a
   ## list; a range past the end of the file is an error.
+  ## @fresh
   compute def load(path: String, offset: Int, shape: List[Int], format: Int) -> Result[TensorHandle]
   ## The same from `data`, the bytes of the range that Agentica read
   ## (`TENSOR_LOAD=agentica`): the call reads them in place and widens them into
   ## the tensor's own memory. `data` must be exactly the range, or the call is
   ## an error.
+  ## @fresh
   compute def from_bytes(data: Bytes, shape: List[Int], format: Int) -> Result[TensorHandle]
   ## Elementwise `a + b`, two tensors of one shape.
+  ## @fresh
   compute def add(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## Elementwise `a * b`, two tensors of one shape.
+  ## @fresh
   compute def mul(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## Elementwise `a - b`, two tensors of one shape.
+  ## @fresh
   compute def sub(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## Elementwise `a / b`, two tensors of one shape; a zero divisor is an
   ## error, never an infinity that travels on as a value.
+  ## @fresh
   compute def div(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## Elementwise `-x`.
+  ## @fresh
   compute def neg(a: TensorHandle) -> Result[TensorHandle]
   ## The rank-2 product `[rows, inner] . [inner, cols]`.
+  ## @fresh
   compute def matmul(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## `max(0, x)`, elementwise.
+  ## @fresh
   compute def relu(a: TensorHandle) -> Result[TensorHandle]
   ## `exp(x)`, elementwise, finite inputs only: a non-finite value is an
   ## error here rather than a `NaN` in the result.
+  ## @fresh
   compute def exp(a: TensorHandle) -> Result[TensorHandle]
   ## `log(x)`, elementwise, finite positive inputs only.
+  ## @fresh
   compute def log(a: TensorHandle) -> Result[TensorHandle]
   ## `sqrt(x)`, elementwise, finite inputs with `x >= 0` only.
+  ## @fresh
   compute def sqrt(a: TensorHandle) -> Result[TensorHandle]
   ## `base ** exponent`, elementwise over two tensors of one shape, finite
   ## inputs with `base > 0` only.
+  ## @fresh
   compute def pow(base: TensorHandle, exponent: TensorHandle) -> Result[TensorHandle]
   ## Sigmoid, elementwise, finite inputs only.
+  ## @fresh
   compute def sigmoid(a: TensorHandle) -> Result[TensorHandle]
   ## Tanh, elementwise, finite inputs only.
+  ## @fresh
   compute def tanh(a: TensorHandle) -> Result[TensorHandle]
   ## The tanh approximation of GELU, elementwise, finite inputs only.
+  ## @fresh
   compute def gelu_tanh_approx(a: TensorHandle) -> Result[TensorHandle]
   ## The exact (erf) GELU, elementwise, finite inputs only.
+  ## @fresh
   compute def gelu_erf(a: TensorHandle) -> Result[TensorHandle]
   ## `a == b` elementwise as a `Bool` tensor, two tensors of one shape.
+  ## @fresh
   compute def eq(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## `a < b` elementwise as a `Bool` tensor, two tensors of one shape.
+  ## @fresh
   compute def lt(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## `cond ? a : b`: a `Bool` condition and the two same-shape, same-dtype
   ## tensors it picks between.
+  ## @fresh
   compute def where(cond: TensorHandle, a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## Elementwise clamp to `[lo, hi]`, `lo <= hi`.
+  ## @fresh
   compute def clamp(a: TensorHandle, lo: Float, hi: Float) -> Result[TensorHandle]
   ## The sum over `axes`, dropping them or keeping them as `1` as `keep_dims`
   ## asks. `[]` is no reduction at all, never "every axis".
+  ## @fresh
   compute def sum(a: TensorHandle, axes: List[Int], keep_dims: Bool) -> Result[TensorHandle]
   ## The mean over `axes`, same conventions as `sum`; zero reduced elements
   ## is an error, as in the reference, not a `NaN`.
+  ## @fresh
   compute def mean(a: TensorHandle, axes: List[Int], keep_dims: Bool) -> Result[TensorHandle]
   ## The largest value over `axes`, same conventions as `sum`; an empty tensor
   ## is an error, as the reference says, never `-inf`.
+  ## @fresh
   compute def max(a: TensorHandle, axes: List[Int], keep_dims: Bool) -> Result[TensorHandle]
   ## The first position of the largest value over `axes`, as `I64`; `[]`
   ## reduces nothing and answers zeros, as the reference does.
+  ## @fresh
   compute def argmax(a: TensorHandle, axes: List[Int], keep_dims: Bool) -> Result[TensorHandle]
   ## The same values with `shape`; the element counts must agree.
+  ## @fresh
   compute def reshape(a: TensorHandle, shape: List[Int]) -> Result[TensorHandle]
   ## Drops the size-1 axes `axes` names, or every size-1 axis for `[]`.
+  ## @fresh
   compute def squeeze(a: TensorHandle, axes: List[Int]) -> Result[TensorHandle]
   ## Inserts a size-1 axis at `axis`.
+  ## @fresh
   compute def unsqueeze(a: TensorHandle, axis: Int) -> Result[TensorHandle]
   ## The `[starts[i], ends[i])` window per axis, row-major in the result.
+  ## @fresh
   compute def slice(a: TensorHandle, starts: List[Int], ends: List[Int]) -> Result[TensorHandle]
   ## `a` and `b` joined along `axis`: one rank, one dtype, every other
   ## dimension equal.
+  ## @fresh
   compute def concat(a: TensorHandle, b: TensorHandle, axis: Int) -> Result[TensorHandle]
   ## `a` widened to `shape`: trailing axes align, size-1 axes widen.
+  ## @fresh
   compute def broadcast_to(a: TensorHandle, shape: List[Int]) -> Result[TensorHandle]
   ## The rows of `a` at the integer tensor `indices`:
   ## `indices.dims ++ a.dims[1:]`.
+  ## @fresh
   compute def gather(a: TensorHandle, indices: TensorHandle) -> Result[TensorHandle]
   ## The inverse of `gather`: the rows of the float tensor `updates`
   ## (`indices.dims ++ tail`) added into `rows` zero rows of `tail`, each at
   ## the row its integer index names. A repeated index sums its rows.
+  ## @fresh
   compute def scatter_add(indices: TensorHandle, updates: TensorHandle, rows: Int) -> Result[TensorHandle]
   ## Reverses every axis, as the reference's `transpose` does (rank 2 swaps
   ## rows and columns; below rank 2 nothing changes).
+  ## @fresh
   compute def transpose(a: TensorHandle) -> Result[TensorHandle]
   ## `a` in the dtype `dtype` names: float to int truncates towards zero and
   ## range-checks, anything nonzero becomes `true`, an int width that cannot
   ## hold a value is an error.
+  ## @fresh
   compute def to_dtype(a: TensorHandle, dtype: Int) -> Result[TensorHandle]
   ## A copy that shares no buffer with `a`.
+  ## @fresh
   compute def copy(a: TensorHandle) -> Result[TensorHandle]
   ## `a` in row-major order, copied when it is not already.
+  ## @fresh
   compute def contiguous(a: TensorHandle) -> Result[TensorHandle]
   ## The cross-correlation of `input` with `weight` over the last axis, moved
   ## by `stride`, with `padding` zeros on each side.
+  ## @fresh
   compute def conv1d(
     input: TensorHandle,
     weight: TensorHandle,
@@ -154,6 +194,7 @@ extern module "torch"
   ) -> Result[TensorHandle]
   ## The mean over a window of `kernel` positions, moved by `stride`, with
   ## `padding` zeros on each side and a divisor of `kernel`.
+  ## @fresh
   compute def avg_pool1d(input: TensorHandle, kernel: Int, stride: Int, padding: Int) -> Result[TensorHandle]
   ## Host readback: the row-major values as storage doubles, which the caller
   ## tags with the tensor's dtype. `I64` values past 2^53 lose precision.
