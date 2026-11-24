@@ -14,9 +14,15 @@
 #if !defined(__cplusplus) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L /* setenv, sysconf */
 #endif
+#if !defined(__cplusplus) && defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE /* sched_getaffinity, CPU_COUNT */
+#endif
 #define GGML_NATIVE_IMPLEMENTATION
 #include "ggml_shared.h"
 #include <math.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
 
 #include "float_file.h"
 
@@ -411,12 +417,18 @@ static bool half_chunk(void *ctx, const float *values, int64_t first, int64_t n,
   return true;
 }
 
-/* The threads that convert a file to F16: the online cores, at most 8 (the reads are of one file on one disk). */
+/* The threads that convert a file to F16: the cores this process may run on (the cpuset of a container), else the
+   online ones, at most 8 (the reads are of one file on one disk). */
 #define HALF_MAX_THREADS 8
 
 static int half_threads(void) {
   long cores = sysconf(_SC_NPROCESSORS_ONLN);
 
+#ifdef __linux__
+  cpu_set_t allowed;
+
+  if (sched_getaffinity(0, sizeof allowed, &allowed) == 0 && CPU_COUNT(&allowed) > 0) cores = CPU_COUNT(&allowed);
+#endif
   if (cores < 1) return 1;
   return cores > HALF_MAX_THREADS ? HALF_MAX_THREADS : (int)cores;
 }

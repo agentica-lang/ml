@@ -264,9 +264,12 @@ static bool ff_from_bytes(const uint8_t *data, size_t len, int64_t count, int64_
 typedef bool (*ff_sink)(void *ctx, const float *values, int64_t first, int64_t n, char *why, size_t why_len);
 
 /* The values `begin` to `end` (a part of the `count` that start at byte `offset`) of the open file `fd`, handed to `sink`
-   a chunk at a time as floats. `path` is only for the message of a short file. */
+   a chunk at a time as floats. `path` is only for the message of a short file. The run number `mine` and `lowest`, the
+   lowest number of a run that failed (shared by the threads, NULL for a lone run), let a run stop between chunks once
+   an earlier run has failed: it can no longer be the first failure in file order. */
 static inline bool ff_each_span(int fd, const char *path, size_t path_len, int64_t offset, int64_t begin, int64_t end,
-                                int64_t format, ff_sink sink, void *ctx, char *why, size_t why_len) {
+                                int64_t format, ff_sink sink, void *ctx, int mine, int *lowest, char *why,
+                                size_t why_len) {
   size_t width = ff_width(format);
   int64_t done = begin, n;
   uint8_t *raw;
@@ -280,7 +283,7 @@ static inline bool ff_each_span(int fd, const char *path, size_t path_len, int64
     snprintf(why, why_len, "out of memory");
     ok = false;
   }
-  while (ok && done < end) {
+  while (ok && done < end && (lowest == NULL || __atomic_load_n(lowest, __ATOMIC_RELAXED) > mine)) {
     n = end - done < (int64_t)FF_VALUES ? end - done : (int64_t)FF_VALUES;
     if (!ff_pread(fd, raw, (size_t)n * width, offset + done * (int64_t)width)) {
       snprintf(why, why_len, "%.*s ended while it was read (it shrank?)", (int)path_len, path);
@@ -294,6 +297,13 @@ static inline bool ff_each_span(int fd, const char *path, size_t path_len, int64
   }
   free(raw);
   free(values);
+  if (!ok && lowest != NULL) {
+    int seen = __atomic_load_n(lowest, __ATOMIC_RELAXED);
+
+    while (mine < seen) {
+      if (__atomic_compare_exchange_n(lowest, &seen, mine, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) break;
+    }
+  }
   return ok;
 }
 
@@ -308,6 +318,8 @@ struct ff_job {
   int64_t offset, begin, end, format;
   ff_sink sink;
   void *ctx;
+  int mine;
+  int *lowest;
   char *why;
   size_t why_len;
   bool ok;
@@ -317,7 +329,7 @@ static void *ff_job_run(void *arg) {
   struct ff_job *job = (struct ff_job *)arg;
 
   job->ok = ff_each_span(job->fd, job->path, job->path_len, job->offset, job->begin, job->end, job->format, job->sink,
-                         job->ctx, job->why, job->why_len);
+                         job->ctx, job->mine, job->lowest, job->why, job->why_len);
   return NULL;
 }
 
@@ -332,7 +344,7 @@ static inline bool ff_each(const char *path, size_t path_len, int64_t offset, in
   char *whys[FF_MAX_THREADS];
   int64_t chunks, k;
   bool ok = true;
-  int fd, t, used;
+  int fd, t, used, lowest;
 
   if (width == 0) {
     snprintf(why, why_len, "unknown float format code %lld", (long long)format);
@@ -344,13 +356,13 @@ static inline bool ff_each(const char *path, size_t path_len, int64_t offset, in
   used = threads < 1 ? 1 : (threads > FF_MAX_THREADS ? FF_MAX_THREADS : threads);
   if ((int64_t)used > chunks) used = chunks < 1 ? 1 : (int)chunks;
   if (used == 1) {
-    ok = ff_each_span(fd, path, path_len, offset, 0, count, format, sink, ctx, why, why_len);
+    ok = ff_each_span(fd, path, path_len, offset, 0, count, format, sink, ctx, 0, NULL, why, why_len);
     close(fd);
     return ok;
   }
 
+  lowest = used;
   for (t = 0; t < used; t++) {
-    k = chunks * t / used;
     jobs[t].fd = fd;
     jobs[t].path = path;
     jobs[t].path_len = path_len;
@@ -360,6 +372,8 @@ static inline bool ff_each(const char *path, size_t path_len, int64_t offset, in
     jobs[t].ctx = ctx;
     jobs[t].why_len = why_len;
     jobs[t].ok = false;
+    jobs[t].mine = t;
+    jobs[t].lowest = &lowest;
     jobs[t].begin = chunks * t / used * (int64_t)FF_VALUES;
     k = chunks * (t + 1) / used * (int64_t)FF_VALUES;
     jobs[t].end = k < count ? k : count;

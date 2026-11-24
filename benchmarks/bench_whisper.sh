@@ -120,7 +120,7 @@ ours() {  # ROW BACKEND [VAR=value...]: the variables go to the tool (WEIGHTS=f1
         torch_exports=$(cd "$root/tensor" && sh tools/build-torch.sh)
         eval "$torch_exports"
       fi
-      timed "$work/results/$1.$clip$suffix" env "${@:3}" agentica tools/bench_transcribe.agc "$model_dir" "$(clip_wav "$clip")" "$2" "$(clip_lang "$clip")" "$n"
+      timed "$work/results/$1.$clip$suffix" env WEIGHTS=f32 VULKAN_FP16=0 "${@:3}" agentica tools/bench_transcribe.agc "$model_dir" "$(clip_wav "$clip")" "$2" "$(clip_lang "$clip")" "$n"
     )
   done
 }
