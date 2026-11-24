@@ -204,6 +204,43 @@ def test_a_position_outside_the_cache_is_an_error_of_the_run() -> Result[Void]
   failed(Trace.run(compiled, [args[0], args[1], try at([-1], CPU)]), "outside the rows")
 end
 
+## Several caches written at the same positions (every layer of a decode step) share one conversion of the positions
+## and one check of them per cache size: each cache is written, and a position outside any of them is still an error.
+def test_caches_written_at_the_same_positions_share_one_check() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  fresh = [-1.0, -2.0, -3.0, -4.0, -5.0, -6.0]
+  args = [
+    try floats(counting(36), [2, 6, 3], CPU),
+    try floats(counting(24), [2, 4, 3], CPU),
+    try floats(counting(24), [2, 4, 3], CPU),
+    try floats(fresh, [2, 1, 3], CPU),
+    try at([3], CPU),
+  ]
+
+  compiled = try Trace.compile(
+    specs_of(args),
+    ->(xs: List[Tensor.Tensor]) {
+      ok([
+        try Tensor.set_rows(xs[0], xs[3], xs[4]),
+        try Tensor.set_rows(xs[1], xs[3], xs[4]),
+        try Tensor.set_rows(xs[2], xs[3], xs[4]),
+      ])
+    },
+  )
+
+  _ = try Trace.run(compiled, args)
+  try Test.eq(try Support.floats_of(args[0]), expected(counting(36), 2, 6, 3, fresh, [3]))
+  try Test.eq(try Support.floats_of(args[1]), expected(counting(24), 2, 4, 3, fresh, [3]))
+  try Test.eq(try Support.floats_of(args[2]), expected(counting(24), 2, 4, 3, fresh, [3]))
+  # 4 is outside the caches of 4 rows only (written after the one of 6 rows), 6 outside all of them.
+  for position in [4, 6, -1]
+    try failed(Trace.run(compiled, args.take(4) + [try at([position], CPU)]), "outside the rows")
+  end
+
+  ok()
+end
+
 ## What a function that would write in place unsoundly is refused for, at compile time, naming the nodes.
 def test_a_function_that_cannot_write_in_place_is_refused() -> Result[Void]
   return ok() if !try Support.ggml_present()
