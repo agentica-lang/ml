@@ -44,7 +44,7 @@ The [tensor page](tensor/_index.md) has their limits.
 
 ## Status
 
-In progress. No package has a release yet. The packages in the repository are `tensor`, `nn`, `train`, `hub`, `asr` and `whisper`. The [roadmap](../../roadmap.md) says what is done and what comes next.
+In progress. No package has a release yet. The packages in the repository are `tensor`, `nn`, `train`, `hub`, `asr`, `transformers` and `whisper`. The [roadmap](../../roadmap.md) says what is done and what comes next.
 
 Each package has its own `agentica.toml`, the project file that lists dependencies. So an app installs only what it needs: an inference app takes `nn` and a backend, and a training app adds `train`.
 
@@ -61,4 +61,4 @@ Replace `COMMIT` with a commit ID from `main`.
 
 A package that depends on another, such as `nn` on `tensor`, gets it at the `ref` that the package names.
 
-Inside the repository, `tensor`, `nn`, `train`, `hub` and `asr` are members of one workspace. They read each other from their folders. `whisper` is a project of its own.
+Inside the repository, `tensor`, `nn`, `train`, `hub`, `asr` and `transformers` are members of one workspace. They read each other from their folders. `whisper` is a project of its own.
