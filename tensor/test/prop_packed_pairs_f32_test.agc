@@ -1,0 +1,13 @@
+## Every pair of ops (`prop_packed_support.agc`), from the input and from the weight itself, with ggml holding the weight as
+## F32: each answers within the derived bound of the reference or is refused, and the number ggml runs is pinned. A
+## file of its own: `agentica test` gives each file its step budget.
+
+import Packed from "prop_packed_support"
+
+def test_every_pair_of_ops_from_the_input_matches_the_reference_or_is_refused() -> Result[Void]
+  Packed.pairs_for(Packed.kinds()[0], 0)
+end
+
+def test_every_pair_of_ops_from_the_weight_matches_the_reference_or_is_refused() -> Result[Void]
+  Packed.pairs_for(Packed.kinds()[0], 1)
+end
