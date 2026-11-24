@@ -25,7 +25,11 @@ Data.feed(loader, epochs) -> Result[Feed]; Data.epoch(feed, e); Data.take(feed, 
 Data.release(batch)                                          frees its native tensors
 Data.Batch { inputs, targets, index? }
 
-Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Result[Fit { params, history }]
+Metrics.open(root, name, sinks = Both) -> Result[Run]   ROOT/NAME/metrics.jsonl, events.out.tfevents.*
+Metrics.scalar(run, name, step, value) -> Result[Void]
+Metrics.close(run) -> Result[Void]
+
+Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?, metrics?) -> Result[Fit { params, history }]
   loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
   on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
 Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Module]
@@ -78,6 +82,36 @@ Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Modu
   libtorch and only the new state, parameters and loss leave it
   (`tensor/DESIGN.md` §8). The previous parameters and state were made
   before the arena, so it does not free them: they wait for the GC.
+- **Metrics live in `train/`.** Only `fit` reports through them, and the logger
+  needs no native code and no `tensor/` type, so a package of its own would be
+  a `agentica.toml`, a lock, a version pin and a CI job for one consumer. It is
+  three small modules (`metrics.agc`, `events.agc`, `crc32c.agc`), and a
+  package can take them out when a second consumer appears.
+- **One call, every sink, scalars only.** `Metrics.scalar(run, name, step,
+  value)` writes to each sink of the run and flushes, so TensorBoard and
+  `tail -f` see a value as it happens. Histograms, text and images are not
+  there; the series name is free text (`train/loss`, `/` groups in TensorBoard).
+  A value that is not finite and a negative step are errors: JSON cannot hold
+  `NaN`, so the two sinks agree on what a run holds. `fit` then stops on a loss
+  that is `NaN`, which a diverged run is better for.
+- **JSONL line.** `{"run", "name", "step", "value", "time"}`, `time` the Unix
+  time in seconds as a float. A run folder that exists is appended to.
+- **TensorBoard file, by hand.** The file holds the records of the TFRecord
+  framing: a `u64` length, the masked CRC-32C of those 8 bytes, the data, and the
+  masked CRC-32C of the data, little-endian (the mask is the CRC rotated right
+  by 15 bits, plus `0xA282EAD8`). The first record is an `Event` with
+  `file_version = "brain.Event:2"`, the others an `Event` with `wall_time`
+  (double), `step` and a `Summary` with one `Value { tag, simple_value }`
+  (a float32). The protobuf is a dozen lines (a varint, a key, a length) and
+  the checksum a table of 256 entries; the file is named
+  `events.out.tfevents.<seconds>.agentica.<pid>.<microseconds>`, which is what
+  TensorBoard looks for. No protobuf or TensorFlow dependency, and no C: neither
+  `std` nor `packages` has a CRC-32C (`Zlib.crc32` is the other polynomial).
+  `test/tfevents_peer.py` reads a file with the standard library only and
+  recomputes every CRC, so the test does not check the encoder with itself.
+- **`fit` reports per step.** With `metrics`, each step writes `train/loss`,
+  `train/lr` and `train/step_ms` at the optimizer's step count (from 1).
+  `fit` does not open or close the run.
 - **Reporting is a callback and a history.** `fit` answers the mean loss of
   every epoch and calls `on_epoch` after each; a caller logs from there
   (`std/logger` or `puts`). `fit` itself prints nothing.

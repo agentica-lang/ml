@@ -36,9 +36,7 @@ The numbers and the machine are in
 
 By milestone (`gh issue list -R agentica-lang/ml -m <version>`).
 
-- 0.3.0, training: [ml#46](https://github.com/agentica-lang/ml/issues/46)
-  metrics (a logger with JSONL and TensorBoard sinks),
-  [ml#50](https://github.com/agentica-lang/ml/issues/50) benchmarks against
+- 0.3.0, training: [ml#50](https://github.com/agentica-lang/ml/issues/50) benchmarks against
   PyTorch and JAX, [ml#136](https://github.com/agentica-lang/ml/issues/136)
   freezing layers, [ml#102](https://github.com/agentica-lang/ml/issues/102) the
   embedding gradient on Vulkan, and the minors of the GGUF and property-test

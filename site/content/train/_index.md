@@ -6,7 +6,7 @@ weight: 3
 
 `train` fits a model to data. You give it a loss function, starting weights, a data loader and an optimizer, and `Train.fit` runs the training epochs for you. An epoch is one pass over all the batches.
 
-The batches come from a data loader, which has [its own page](data.md).
+The batches come from a data loader, which has [its own page](data.md). `fit` can report its loss, learning rate and step time to [metrics](metrics.md).
 
 ## Example
 
