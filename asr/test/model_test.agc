@@ -45,24 +45,10 @@ def test_the_compiled_steps_are_shared_by_every_decoding_of_a_model() -> Result[
 end
 
 ## The compiled steps are named by the shapes of their inputs: audio of another length on the same model gets steps of
-## its own, and the first audio still gets its own.
-def test_the_compiled_steps_follow_the_audio_length() -> Result[Void]
-  with_fixtures do |dir|
-    for backend in try ggml_backends()
-      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
-      longer = try Asr.encode(m, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
-      shorter = try Asr.encode(m, try f32((0...12).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 4], backend))
-      a = try decoded(m, longer)
-      b = try decoded(m, shorter)
-      try Test.eq(try decoded(m, shorter), b)
-      try Test.eq(try decoded(m, longer), a)
-      fresh = try Asr.open("#{dir}/speech/model.safetensors", backend)
-      try Test.eq(try decoded(fresh, shorter), b)
-    end
+## its own, and the first audio still gets its own. One test per backend, each with its own 30 s of the runner.
+def test_the_compiled_steps_follow_the_audio_length_on_ggml_cpu() -> Result[Void] = steps_follow_the_audio_length(0)
 
-    ok()
-  end
-end
+def test_the_compiled_steps_follow_the_audio_length_on_vulkan() -> Result[Void] = steps_follow_the_audio_length(1)
 
 ## The steps one task compiled serve the others: after a decoding in a task, the caller's is warm, and three tasks at
 ## once agree with each other and leave the map whole, so a fourth decoding is warm too.
@@ -797,6 +783,24 @@ def sum_exp(xs: List[Float]) -> Float = xs.reduce(0.0) do |acc, x| acc + Math.ex
 
 def close_to(got: Float, want: Float, what: String) -> Result[Void]
   Test.assert((got - want).abs <= 0.000000001 * (1.0 + want.abs), "#{what}: #{got}, expected #{want}")
+end
+
+## The `at`-th ggml backend of this machine, if it has one: the audio length makes steps of their own on it.
+def steps_follow_the_audio_length(at: Int) -> Result[Void]
+  backends = try ggml_backends()
+  return ok() if backends.size <= at
+  backend = backends[at]
+  with_fixtures do |dir|
+    m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+    longer = try Asr.encode(m, try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend))
+    shorter = try Asr.encode(m, try f32((0...12).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 4], backend))
+    a = try decoded(m, longer)
+    b = try decoded(m, shorter)
+    try Test.eq(try decoded(m, shorter), b)
+    try Test.eq(try decoded(m, longer), a)
+    fresh = try Asr.open("#{dir}/speech/model.safetensors", backend)
+    Test.eq(try decoded(fresh, shorter), b)
+  end
 end
 
 ## Runs `body` on the folder the peer wrote, then removes it.

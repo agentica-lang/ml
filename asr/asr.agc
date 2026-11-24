@@ -344,20 +344,7 @@ end
 ## to the tasks that compiled them).
 def close_model(m: Model) -> Void
   case m.mel
-    some(plan) ->
-      Trace.close(plan)
-      case plan.program
-        some(program) ->
-          for leaf in program.leaves
-            case leaf.fixed
-              some(t) -> close([t])
-              none -> nil
-            end
-          end
-
-        none -> nil
-      end
-
+    some(plan) -> Trace.close_constants(plan)
     none -> nil
   end
 
