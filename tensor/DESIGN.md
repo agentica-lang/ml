@@ -113,19 +113,20 @@ backward rule needs `scatter_add(indices, updates, rows)`, which adds the rows
 of `updates` into `rows` zero rows at `indices`; everything fancier is
 derived).
 Normalization support: `rsqrt, mean_var` are **not** primitives. `layer_norm`
-is derived (§3.2) on every backend that computes, but a trace records it as
-one node, `layer_norm`, so that ggml can run it as one norm (a trace of a
-transformer step holds a dozen of them, each 10 nodes composed); the
-gradient has a rule of its own, checked against a central difference.
+and `rms_norm` are derived (§3.2) on every backend that computes, but a trace
+records each as one node, `layer_norm` or `rms_norm`, so that ggml can run it
+as one norm (a trace of a transformer step holds a dozen of them, each 10
+nodes composed); the gradient has a rule of its own, checked against a central
+difference.
 Convolution/pooling: `conv1d, avg_pool1d` (stride and padding; no dilation or
 groups).
 Random: none (dropout is identity at inference).
 Movement: `to_dtype, to_device, copy, contiguous`.
 
 Deliberately missing: `softmax`, attention, `silu`, beam search — all
-derived (§3.2). `layer_norm` is derived too, and a trace keeps it as one
-node. The exact (`erf`) GELU is `gelu_erf`, outside this set: inference only
-(`Trace` records it but has no gradient for it).
+derived (§3.2). `layer_norm` and `rms_norm` are derived too, and a trace
+keeps each as one node. The exact (`erf`) GELU is `gelu_erf`, outside this
+set: inference only (`Trace` records it but has no gradient for it).
 
 ### 3.2 Derived ops (pure Agentica, backend-agnostic)
 

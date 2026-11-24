@@ -934,16 +934,22 @@ def layer_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   end
 end
 
-## Derived: `rms_norm` over the last axis, from §3.1 only (no affine).
+## `rms_norm` over the last axis, no affine: `x / sqrt(mean(x * x) + eps)`. Like `layer_norm`, in a trace it is one node,
+## `RmsNorm`, so that ggml can run it as one norm (and fuse the product by a weight after it); `eps` must then be a float
+## the node holds. On every other backend it is the derived composition of §3.1's ops (`rms_norm_composed`).
 def rms_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
-  return error("rms_norm needs eps > 0, got #{eps}") if eps <= 0.0
-  rank = x.shape.size
-  return error("rms_norm needs rank >= 1, got #{x.shape}") if rank < 1
-  last = rank - 1
-  ms = try mean(try mul(x, x), some([last]), true)
-  eps_full = try full(x.shape, Types.Values.Float(eps), x.dtype, x.backend)
-  denom = try sqrt(try add(try broadcast_to(ms, x.shape), eps_full))
-  div(x, denom)
+  return error("rms_norm needs a finite eps > 0, got #{eps}") if !Types.is_finite(eps) or eps <= 0.0
+  return error("rms_norm needs rank >= 1, got #{x.shape}") if x.shape.size < 1
+  _ = try float_only(x, "rms_norm")
+  case x.backend
+    Types.Backend.Trace ->
+      if eps > 3.4028234663852886e38 or Float.to_bits32(eps) == 0
+        return error("rms_norm needs an eps that is neither above F32's range nor 0 in F32, got #{eps}")
+      end
+
+      Graph.same(Types.Op.RmsNorm(eps), [x], x)
+    _ -> rms_norm_composed(x, eps)
+  end
 end
 
 ## Derived: the user-facing `gelu` is the `tanh` approximation (§3.2).
@@ -1325,6 +1331,15 @@ def layer_norm_composed(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   eps_full = try full(x.shape, Types.Values.Float(eps), x.dtype, x.backend)
   denom = try sqrt(try add(try broadcast_to(var, x.shape), eps_full))
   div(centered, denom)
+end
+
+## The ops `rms_norm` stands for, from §3.1 only.
+def rms_norm_composed(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
+  last = x.shape.size - 1
+  ms = try mean(try mul(x, x), some([last]), true)
+  eps_full = try full(x.shape, Types.Values.Float(eps), x.dtype, x.backend)
+  denom = try sqrt(try add(try broadcast_to(ms, x.shape), eps_full))
+  div(x, denom)
 end
 
 ## Two tensors share their backend.
