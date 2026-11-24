@@ -4,7 +4,8 @@
 ## trailing and a leading block, a product, a gather, `concat`, `rms_norm`, `rope` (which permutes the view back, also
 ## after a norm that ggml-vulkan fuses with it), `where` (a mask that is a view) and `attention`, also with one key head
 ## over a batch (a view whose head axis is 1 and whose batch stride is not packed: ggml-vulkan copies such a product
-## operand through F16).
+## operand through F16). CI has no Vulkan: the Vulkan cases run on a machine that has it, so the one-head case there
+## cannot fail in CI if `operand` goes; ggml's CPU backend takes both paths.
 
 import Support from "support"
 import Tensor from "../tensor"
@@ -122,9 +123,10 @@ def test_reductions_products_and_gathers_take_a_view() -> Result[Void]
 end
 
 def test_concat_norm_rope_and_attention_take_a_view() -> Result[Void]
-  a = try f32(7, [1, 3, 2, 4])
-  b = try f32(8, [1, 3, 2, 4])
-  k = try f32(9, [1, 5, 1, 4])
+  a = try f32(7, [1, 3, 2, 8])
+  b = try f32(8, [1, 3, 2, 8])
+  k = try f32(9, [1, 5, 1, 8])
+  v = try f32(15, [1, 5, 1, 8])
   wide = try f32(13, [2, 3, 2, 4])
   scale = try f32(14, [4])
   at = try Tensor.from_list([0, 1, 2].map { |i| Tensor.Values.Int(i) }, [3], Tensor.Dtype.I32, REF)
@@ -148,8 +150,8 @@ def test_concat_norm_rope_and_attention_take_a_view() -> Result[Void]
       Tensor.rope(try Tensor.rope(try heads(x[0]), x[1], dims: some(4)), x[1], dims: some(4), inverse: true)
     end
 
-    try agree("causal attention over views", backend, [a, b, k]) do |x|
-      Tensor.attention(try heads(x[0]), try heads(x[1]), try heads(x[1]), none, none, true)
+    try agree("causal attention over views", backend, [a, k, v]) do |x|
+      Tensor.attention(try heads(x[0]), try heads(x[1]), try heads(x[2]), none, none, true)
     end
   end
 
@@ -172,27 +174,87 @@ def test_a_product_takes_a_view_of_one_head_over_a_batch() -> Result[Void]
   ok()
 end
 
+def test_slices_norms_unary_ops_and_a_cache_write_take_a_view() -> Result[Void]
+  a = try f32(30, [2, 3, 4, 5])
+  x = try f32(31, [1, 3, 2, 4])
+  cache = try f32(32, [1, 2, 8, 4])
+  at = try Tensor.from_list([5, 0, 3].map { |i| Tensor.Values.Int(i) }, [3], Tensor.Dtype.I32, REF)
+  for backend in try engines()
+    try agree("a slice of a view", backend, [a]) do |y| Tensor.slice(try heads(y[0]), [0, 1, 1, 0], [2, 3, 3, 4]) end
+
+    try agree("a layer norm of a view", backend, [a]) do |y| Tensor.layer_norm(try heads(y[0]), 0.000001) end
+
+    try agree("a unary op of a view", backend, [a]) do |y| Tensor.exp(try heads(y[0])) end
+
+    try agree_run("rows of a cache write that are a view", backend, [cache, x, at]) do |y|
+      Tensor.set_rows(y[0], try heads(y[1]), y[2])
+    end
+  end
+
+  ok()
+end
+
+## A compiled function, run on `backend` and on the reference: the cache write runs in place on ggml.
+def agree_run(
+  what: String,
+  backend: Tensor.Backend,
+  args: List[Tensor.Tensor],
+  f: Fn[List[Tensor.Tensor], Result[Tensor.Tensor]],
+) -> Result[Void]
+  want = try run_once(REF, args, f)
+  got = try run_once(backend, args, f)
+  try Test.eq(got.size, want.size)
+  for i in 0...want.size
+    if (got[i] - want[i]).abs > 0.000001
+      return error("#{what} on #{backend}: value #{i} is #{got[i]}, expected #{want[i]}")
+    end
+  end
+
+  ok()
+end
+
+def run_once(
+  backend: Tensor.Backend,
+  args: List[Tensor.Tensor],
+  f: Fn[List[Tensor.Tensor], Result[Tensor.Tensor]],
+) -> Result[List[Float]]
+  moved: List[Tensor.Tensor] = []
+  for t in args
+    moved = moved.push(try Tensor.from_list(try Tensor.to_list(t), t.shape, t.dtype, backend))
+  end
+
+  compiled = try Trace.compile(moved.map { |t| Trace.spec_of(t) }) do |y| ok([try f.call(y)]) end
+  out = try Trace.run(compiled, moved)
+  Trace.close(compiled)
+  Support.floats_of(out[0])
+end
+
 ## Flash attention takes the heads as views and a mask of fills (0 and -1e9, as the padded mask of a decoder is):
 ## grouped heads, a batch, a width of 8 (ggml-vulkan has a kernel from there), a causal mask, an explicit one and one query
 ## (the only shape Vulkan takes with fp16 products, its default). `lower_flash_test.agc` tells which masks take this path.
 def test_attention_reads_the_heads_as_views_and_a_mask_of_fills() -> Result[Void]
-  q = try f32(20, [2, 4, 5, 8])
-  k = try f32(21, [2, 2, 9, 8])
-  v = try f32(22, [2, 2, 9, 8])
-  one = try f32(23, [2, 4, 1, 8])
+  q = try f32(20, [2, 5, 4, 8])
+  k = try f32(21, [2, 9, 2, 8])
+  v = try f32(22, [2, 9, 2, 8])
+  long = try f32(24, [1, 70, 2, 8])
+  one = try f32(23, [2, 1, 4, 8])
   last = try Tensor.from_list([Tensor.Values.Int(6)], [1], Tensor.Dtype.I32, REF)
   positions = try Tensor.from_list([4, 5, 6, 7, 8].map { |i| Tensor.Values.Int(i) }, [5], Tensor.Dtype.I32, REF)
   for backend in try engines()
     try agree_end("causal attention", backend, [q, k, v]) do |x|
-      Tensor.attention(x[0], x[1], x[2], none, none, true)
+      Tensor.attention(try heads(x[0]), try heads(x[1]), try heads(x[2]), none, none, true)
     end
 
     try agree_end("attention with a padded mask", backend, [q, k, v, positions]) do |x|
-      Tensor.attention(x[0], x[1], x[2], some(try fills_mask(x[3])), none, false)
+      Tensor.attention(try heads(x[0]), try heads(x[1]), try heads(x[2]), some(try fills_mask(x[3])), none, false)
     end
 
     try agree_end("attention of one query (a decode step)", backend, [one, k, v, last]) do |x|
-      Tensor.attention(x[0], x[1], x[2], some(try fills_mask(x[3])), none, false)
+      Tensor.attention(try heads(x[0]), try heads(x[1]), try heads(x[2]), some(try fills_mask(x[3])), none, false)
+    end
+
+    try agree_end("causal attention of 70 queries (the tiled kernel of the CPU)", backend, [long]) do |x|
+      Tensor.attention(try heads(x[0]), try heads(x[0]), try heads(x[0]), none, none, true)
     end
   end
 
