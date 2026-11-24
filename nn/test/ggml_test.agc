@@ -55,6 +55,49 @@ def run(stack: Nn.EncoderStack, a: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
   Nn.encoder_stack(Nn.EncoderStack(blocks: blocks, final_norm: some(final)), a[0], none, true)
 end
 
+## A decode step: two tokens projected at positions 0 and 1 make the cache, the third is projected alone at position 2
+## and attends over the cache and itself. The graph is the one a decoder compiles; it agrees with the reference on ggml.
+def test_a_decode_step_at_its_position_agrees_with_the_reference_on_ggml() -> Result[Void]
+  options = Nn.BlockOptions(
+    kv_heads: some(2),
+    rope: some(Nn.Rope()),
+    qk_norm: true,
+    bias: false,
+    rms: true,
+    gated: true,
+  )
+
+  start = try Nn.init_encoder_block(16, 4, 24, Nn.Activation.Silu, 73, S.REF, options)
+  block = try S.jitter_encoder_block(start, 74)
+  args = [try S.f32(Init.uniform_values(48, 1.0, 75), [1, 3, 16])] + S.qwen_params(block)
+  for backend in try engines()
+    d = try Trace.diff(
+      args,
+      S.REF,
+      backend,
+      rtol: 0.001,
+      atol: 0.0001,
+      f: ->(a: List[Tensor.Tensor]) { step(S.qwen_block(block, a.drop(1)).attention, a[0]) },
+    )
+
+    case d.first
+      some(n) -> return error("on #{backend}: node #{n.node} (#{n.op} #{n.shape}) differs by #{n.max_abs}")
+      none -> try Test.assert(d.nodes > 30, "only #{d.nodes} nodes compared")
+    end
+  end
+
+  ok()
+end
+
+def step(p: Nn.Attention, x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  backend = Tensor.backend(x)
+  past = try Tensor.slice(x, [0, 0, 0], [1, 2, 16])
+  now = try Tensor.slice(x, [0, 2, 0], [1, 3, 16])
+  cached = try Nn.project(p, past, past, some(try Tensor.arange(0, 2, 1, Tensor.Dtype.I32, backend)))
+  h = try Nn.project(p, now, now, some(try Tensor.arange(2, 3, 1, Tensor.Dtype.I32, backend)))
+  Nn.attend(p, h.query, try Tensor.concat([cached.key, h.key], 2), try Tensor.concat([cached.value, h.value], 2))
+end
+
 ## The ggml backends this machine has: the CPU one, and Vulkan when it is there.
 ## With the CPU one missing and `TENSOR_REQUIRE_GGML` unset, none.
 def engines() -> Result[List[Tensor.Backend]]

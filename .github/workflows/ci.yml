@@ -176,12 +176,26 @@ jobs:
         # The 10x loosens the runaway guard for every member; that is fine
         # here, because the guard only catches an infinite loop, which still
         # ends, and the job has its own timeout-minutes.
-        # TENSOR_REQUIRE_GGML: tensor/, nn/, train/ and asr/ build ggml in the
+        # TENSOR_REQUIRE_GGML: tensor/, nn/, train/, asr/ and transformers/ build ggml in the
         # engine step, so a ggml module that did not build fails their tests
         # instead of passing them through the absent path.
         env:
-          TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "nn", "train", "asr"]'), matrix.package) && '1' || '' }}
+          TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "nn", "train", "asr", "transformers"]'), matrix.package) && '1' || '' }}
         run: agentica test --max-steps 10000000
+
+      # A package with a long/ folder runs its long-input tests here, with a
+      # budget of their own: transformers/long/ sends 200k characters through
+      # the tokenizers (the heaviest test about 580 M VM steps, the file 1.33 G;
+      # a file gets the budget times its tests plus one).
+      - name: Long-input tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d long ]; then
+            echo "no long/: nothing to run"
+            exit 0
+          fi
+          agentica test --max-steps 400000000 long/
 
       # The round-trip tests of tensor/ (from_file) again, with the weights read
       # in Agentica (TENSOR_LOAD=agentica: File.seek and File.read_bytes, then

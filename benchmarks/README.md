@@ -208,6 +208,18 @@ The Vulkan weights sit in the device's own buffers, which on this iGPU are syste
 - Where a step goes (a profile run, which slows the VM): the device run (`ml.run`, the graph dispatch plus compute) is about 74% of a step of 24 ms and about 70% of one of 19 ms; the host's trace, lowering and binding is the rest.
 - Tracing and lowering the step on every batch (about 3 ms of VM time per step) can be removed by compiling it once per batch shape, with the optimizer's per-step numbers as inputs. Measured on Vulkan over 6 alternating runs, the wall time went down by 6% (19.8 to 18.6 ms) on the first model and by 3% (18.4 to 17.9 ms) on the second, with the device share unchanged: the rest of the host time is not the trace. That change is not in `main`.
 
+## BERT (ml#78), ours against llama.cpp
+
+`bert-base-uncased` (the Hugging Face checkpoint, `float32`), the forward over token ids, so the tokenizer is not in the time. Ours is `transformers/tools/bench_bert.agc` (a warm-up run, then the median of 5 runs, 3 for the batch of 8; each run traces and runs the whole graph) on ml `d14bfd6`'s `transformers/` (`bert.agc` before its memory fixes), same machine as above, load average under 2. llama.cpp (`4f5d1f64b`, build 2172, CPU only: this checkout has no Vulkan build) runs the GGUF that its own converter makes from the same weights (`convert_hf_to_gguf.py --outtype f32`), with `llama-bench -p 128,512 -n 0 -t 8 -r 5`. Every row is one sentence unless it says a batch.
+
+| Row | 1 x 128 tokens | 1 x 512 tokens | 8 x 128 tokens | Load | Peak memory |
+|---|---|---|---|---|---|
+| ours, ggml CPU | 261 tokens/s | 275 | 342 | 0.65 s | 0.70 GB |
+| ours, ggml Vulkan | 888 | 1137 | 1338 | 0.58 s | 0.39 GB |
+| llama.cpp CPU, F32 | 615 | 615 | | | |
+
+llama.cpp is about 2.3 times faster than ours on the CPU for one sentence; the gap was not profiled. Two things that could account for part of it, untested: ours traces and plans the whole graph at every call, and its attention is the unfused one. The Vulkan row has no llama.cpp counterpart on this machine. The numbers are the same weights in F32 everywhere; `float16` weights would halve the memory and are not read yet (ml#35). Correctness: the last hidden state and the pooler output match `BertModel` to 5.0e-5 on CPU and 2.8e-5 on Vulkan (`transformers/tools/bert_check.agc`).
+
 ## Run it
 
 You need the Hugging Face checkout of `openai/whisper-tiny`, openai/whisper's `whisper/assets/mel_filters.npz`, a whisper.cpp checkout (never modified), `cmake`, a C++ compiler, `/usr/bin/time` (GNU time), `agentica` 0.36.0 on `PATH`, libtorch, and the Vulkan headers and `glslc` for the Vulkan rows. Python needs only the system numpy: the scripts run with `python3 -I`, which ignores virtual environments and `PYTHONPATH`.

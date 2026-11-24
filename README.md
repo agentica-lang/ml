@@ -44,6 +44,7 @@ not stable yet, so keep the commit pin.
 | `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam), a data loader (seeded shuffle, background prefetch), the training loop over `tensor/`'s gradients | `tensor`, `hub` (and `nn` through it) |
 | `hub/` | `safetensors` checkpoints (one file or sharded with an index) read in Agentica, and `nn` layers loaded from them by name | `tensor`, `nn` |
 | `asr/` | Whisper in Agentica: the model forward loaded from a Hugging Face checkpoint, its log-mel frontend, its tokenizer and `transcribe` (greedy decoding with a KV cache, language detection, timestamps, translation) for audio of any length, in windows of 30 s that seek; on the reference backend, libtorch and ggml (CPU and Vulkan) | `tensor`, `nn`, `hub` |
+| `transformers/` | BERT and the Qwen3 forward from Hugging Face checkpoints (generation to come), and the WordPiece and byte-level BPE tokenizers, which give Hugging Face's ids | `tensor`, `nn`, `hub` |
 | `whisper/` | a binding over the pinned whisper.cpp engine, with WAV reading, microphone capture and long-audio chunking | whisper.cpp (a submodule), a C/C++ compiler |
 
 An inference app depends on `nn` and one backend; a training app adds `train`.
@@ -56,9 +57,10 @@ Each package has a page on the site with its API and its limits:
   [data loader](https://www.agentica-lang.com/ml/train/data/)
 - [hub](https://www.agentica-lang.com/ml/hub/)
 - [asr](https://www.agentica-lang.com/ml/asr/)
+- [transformers](https://www.agentica-lang.com/ml/transformers/)
 - [whisper](https://www.agentica-lang.com/ml/whisper/)
 
-Inside this repository `tensor`, `nn`, `train`, `hub` and `asr` are members of
+Inside this repository `tensor`, `nn`, `train`, `hub`, `asr` and `transformers` are members of
 one Agentica workspace (the root `agentica.toml`), so they read each other from
 their folders; `whisper` is a project of its own, not a member. Each package
 pins its own Agentica version (`AGENTICA_VERSION`), and CI runs `check`,

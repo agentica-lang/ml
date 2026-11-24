@@ -44,7 +44,7 @@ The layer's weight is stored as `[out, in]` and comes back as `[in, out]`, the l
 Each `Load` function reads a layer by the prefix of its tensor names. It gives a `Result` of the `nn` struct.
 
 - `Load.dense(c, prefix, backend)` reads `{prefix}.weight` as `[out, in]` and keeps it so: the `Nn.Dense` has `out_in` set. It reads `{prefix}.bias` when the file has one.
-- `Load.layer_norm(c, prefix, eps, backend)` reads `{prefix}.weight` and `{prefix}.bias`.
+- `Load.layer_norm(c, prefix, eps, backend)` reads `{prefix}.weight` and `{prefix}.bias`, or `{prefix}.gamma` and `{prefix}.beta` when the checkpoint has no `{prefix}.weight` (the names `bert-base-uncased` keeps).
 - `Load.embedding(c, name, backend)` reads one table by its full name.
 - `Load.conv1d(c, prefix, stride, padding, backend)` reads a `[out, in, kernel]` weight and an optional bias.
 - `Load.encoder_block` and `Load.decoder_block` take the names of one block (`BlockNames` or `DecoderBlockNames`), the head count, the activation, `eps` and the backend.

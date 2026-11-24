@@ -66,11 +66,27 @@ def conv1d(c: Hub.Checkpoint, prefix: String, stride: Int, padding: Int, backend
   ok(Nn.Conv1d(weight: w, bias: b, stride: stride, padding: padding))
 end
 
+## `{prefix}.weight` and `{prefix}.bias`, or, when the checkpoint has no
+## `{prefix}.weight` but a `{prefix}.gamma`, that and `{prefix}.beta` (the
+## names TensorFlow-era checkpoints such as BERT's keep).
 def layer_norm(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Backend) -> Result[Nn.LayerNorm]
-  gamma = try weight(c, "#{prefix}.weight", 1, backend)
-  beta = try weight(c, "#{prefix}.bias", 1, backend)
+  scale = "#{prefix}.weight"
+  shift = "#{prefix}.bias"
+  if not Hub.has?(c, scale)
+    if not Hub.has?(c, "#{prefix}.gamma")
+      return error(
+        "#{prefix}: the checkpoint has neither #{scale} and #{shift} nor #{prefix}.gamma and #{prefix}.beta",
+      )
+    end
+
+    scale = "#{prefix}.gamma"
+    shift = "#{prefix}.beta"
+  end
+
+  gamma = try weight(c, scale, 1, backend)
+  beta = try weight(c, shift, 1, backend)
   if Tensor.shape(beta) != Tensor.shape(gamma)
-    return error("#{prefix}: weight #{Tensor.shape(gamma)} and bias #{Tensor.shape(beta)} differ")
+    return error("#{prefix}: #{scale} #{Tensor.shape(gamma)} and #{shift} #{Tensor.shape(beta)} differ")
   end
 
   ok(Nn.LayerNorm(gamma: gamma, beta: beta, eps: eps))
