@@ -392,6 +392,7 @@ def gguf_file(out):
         ("t.i32", 5, -2000000000), ("t.f32", 6, 0.5), ("t.bool", 7, True), ("t.u64", 10, 2**40),
         ("t.i64", 11, -2**40), ("t.f64", 12, 0.1), ("t.str", 8, "h\u00e9llo"),
         ("t.arr_u32", 9, (4, [1, 2, 3])), ("t.arr_str", 9, (8, ["a", "bc", ""])), ("t.arr_empty", 9, (4, [])),
+        ("t.arr_i16", 9, (3, [-2, 7])),
         ("qwen3.rope.freq_base", 6, 1000000.0),
     ]
     f32 = [1.5, -2.25, 0.0, 3.0, 0.5, -0.125]
@@ -464,9 +465,11 @@ def gguf_bad(out):
     case("unknown_type", "ggml type 19", [arch], [row("token_embd.weight", ggml=19)])
     case("short_data", "past the", [arch], [row("token_embd.weight", dims=[2, 3])])
     case("same_name", "twice", [arch], [row("token_embd.weight"), row("token_embd.weight")])
+    case("same_hf_name", "both become", [arch], [row("token_embd.weight"), row("model.embed_tokens.weight")])
     case("same_key", "twice", [arch, arch], [row("token_embd.weight")])
     case("nested_array", "array of arrays", [arch, ("a", 9, (9, []))], [row("token_embd.weight")])
     case("other_arch", "llama", [("general.architecture", 8, "llama")], [row("token_embd.weight")])
+    case("offset_past_data", "is past the", [arch], [row("token_embd.weight")], offsets=[1 << 20])
     case("alignment0", "power of two", [arch, ("general.alignment", 4, 0)], [row("token_embd.weight")])
     case("too_many_values", "past the", [arch], [row("token_embd.weight", dims=[2**62, 4])])
     case("overlap", "overlaps", [arch], [row("token_embd.weight"), row("output.weight")], offsets=[0, 0])

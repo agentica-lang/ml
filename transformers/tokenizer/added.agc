@@ -43,6 +43,11 @@ def refuse_limits(truncation: Optional[Setting], padding: Optional[Setting]) -> 
   ok()
 end
 
+## The added token `content` of `id`.
+def of(id: Int, content: String, special: Bool) -> Added
+  Added(id: id, content: content, special: special, chars: content.split("").map { |c| c.code })
+end
+
 ## The added tokens that `entries` declare.
 def parse(entries: List[Entry]) -> Result[List[Added]]
   out: List[Added] = []
@@ -53,9 +58,7 @@ def parse(entries: List[Entry]) -> Result[List[Added]]
 
     return error("the added token #{e.id} has no text") if e.content.empty?
     return error("the added token #{e.content} has the id #{e.id}") if e.id < 0
-    out = out.push(
-      Added(id: e.id, content: e.content, special: e.special, chars: e.content.split("").map { |c| c.code }),
-    )
+    out = out.push(of(e.id, e.content, e.special))
   end
 
   ok(out)
