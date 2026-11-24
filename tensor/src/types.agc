@@ -29,14 +29,18 @@ enum Dtype
   I64
   U8
   Bool
+  Q8_0
 end
 
-## The float formats `Tensor.from_file` reads: little-endian IEEE binary32,
-## binary16 and bfloat16. The tensor it makes is `F32` whichever one it reads.
+## The formats `Tensor.from_file` reads: little-endian IEEE binary32, binary16
+## and bfloat16, and Q8_0 (ggml's blocks of 32 values: a binary16 scale and 32
+## signed bytes). The tensor it makes is `F32` whichever one it reads, or a
+## `Q8_0` weight that keeps the blocks of a Q8_0 file (ggml only).
 enum FloatFormat
   F32
   F16
   BF16
+  Q8_0
 end
 
 ## Where a backend computes: the host CPU, or the Vulkan device of that index
@@ -177,12 +181,16 @@ def volume(shape: List[Int]) -> Result[Int]
   ok(total)
 end
 
-## The bytes of one element of `format`.
-def file_width(format: FloatFormat) -> Int
+## The bytes of `n` values of `format`: a Q8_0 range holds whole blocks of 32 values.
+def file_bytes(format: FloatFormat, n: Int) -> Result[Int]
+  return error("#{n} values hold more bytes than an Int counts") if n > 2305843009213693951
   case format
-    FloatFormat.F32 -> 4
-    FloatFormat.F16 -> 2
-    FloatFormat.BF16 -> 2
+    FloatFormat.F32 -> ok(n * 4)
+    FloatFormat.F16 -> ok(n * 2)
+    FloatFormat.BF16 -> ok(n * 2)
+    FloatFormat.Q8_0 ->
+      return error("Q8_0 holds whole blocks of 32 values, got #{n}") if n % 32 != 0
+      ok((n / 32) * 34)
   end
 end
 
@@ -192,6 +200,26 @@ def file_code(format: FloatFormat) -> Int
     FloatFormat.F32 -> 0
     FloatFormat.F16 -> 1
     FloatFormat.BF16 -> 2
+    FloatFormat.Q8_0 -> 3
+  end
+end
+
+## What a loaded ggml tensor holds, for the native layer: 0 F32, 1 F16, 2 Q8_0 (the type of a graph's leaf too).
+def held_code(dtype: Dtype) -> Int
+  case dtype
+    Dtype.F16 -> 1
+    Dtype.Q8_0 -> 2
+    _ -> 0
+  end
+end
+
+## True for the dtypes a weight is kept in on ggml to save memory: `F16` and `Q8_0`. Read-only, and only the weight
+## of a matmul or the table of a gather (`tensor/DESIGN.md` §7).
+def is_packed_dtype(dtype: Dtype) -> Bool
+  case dtype
+    Dtype.F16 -> true
+    Dtype.Q8_0 -> true
+    _ -> false
   end
 end
 
@@ -222,6 +250,7 @@ def dtype_name(dtype: Dtype) -> String
   case dtype
     Dtype.F32 -> "F32"
     Dtype.F16 -> "F16"
+    Dtype.Q8_0 -> "Q8_0"
     Dtype.F64 -> "F64"
     Dtype.I8 -> "I8"
     Dtype.I16 -> "I16"
@@ -283,6 +312,7 @@ def float_to_value(x: Float, dtype: Dtype) -> Result[Values]
   case dtype
     Dtype.F32 -> ok(Values.Float(x))
     Dtype.F16 -> ok(Values.Float(x))
+    Dtype.Q8_0 -> ok(Values.Float(x))
     Dtype.F64 -> ok(Values.Float(x))
     Dtype.Bool ->
       return ok(Values.Bool(true)) if x == 1.0

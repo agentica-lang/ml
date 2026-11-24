@@ -37,6 +37,7 @@ The shapes are the ones the layers take. `dense` takes any rank. Attention needs
 | `Embedding` | `table` as `[rows, width]` | `embedding(p, ids)`; `positional(p, x)` adds the first rows of the table |
 | `Conv1d` | `weight` as `[out, in, kernel]`, `bias`, `stride`, `padding` | `conv1d(p, x)` |
 | `Attention` | four `Dense` projections, `heads`, and optional `kv_heads`, `rope`, `query_norm`, `key_norm` | `attention(p, queries, memory, mask?, causal?, positions?, memory_positions?)`, `self_attention(p, x, mask?, causal?)`; `project` and `attend`, the two halves of `attention` |
+| `Heads` | `query`, `key`, `value`: the heads that `project` returns, `[batch, heads, q, head]` (the keys and values with `kv_heads`) | `attend(p, query, key, value, mask?, causal?)` takes them |
 | `Mlp` | `up`, `down`, `activation`, optional `gate` | `mlp(p, x)`: `dense`, activation, `dense`; with a `gate`, `down(activation(gate(x)) * up(x))` |
 | `EncoderBlock` | two norms, attention, MLP, `norm_first` | `encoder_block(p, x, mask?, causal?)` |
 | `DecoderBlock` | three norms, self and cross attention, MLP, `norm_first` | `decoder_block(p, x, memory)`, causal self attention, then cross attention |
@@ -47,6 +48,8 @@ An activation is a function applied to each value, such as `relu`. The `Activati
 - `Relu` and `Silu`.
 - `Gelu`, a smooth activation in its tanh approximation. `Trace` can take its gradient.
 - `GeluErf`, the exact form that Whisper uses. `Trace` refuses it.
+
+`activate(activation, x)` applies one of them to a tensor. `mlp` uses it.
 
 A causal mask stops each position from seeing the positions after it. `causal: true` applies it inside `attention`, and `causal_mask(size, dtype, backend)` builds the same additive mask for a caller that wants it.
 
@@ -114,8 +117,8 @@ end
 
 Each layer has an `init_*` function. It takes a seed (a number that makes the random start the same on every run) and a backend, and returns a `Result`:
 
-- `init_dense(inputs, outputs, seed, backend)`
-- `init_layer_norm(width, backend)`
+- `init_dense(inputs, outputs, seed, backend, bias?)`
+- `init_layer_norm(width, backend, rms?, eps?)`
 - `init_embedding(rows, width, seed, backend)`
 - `init_attention(width, heads, seed, backend, options?)`
 - `init_mlp(width, hidden, activation, seed, backend, options?)`
@@ -124,7 +127,8 @@ Each layer has an `init_*` function. It takes a seed (a number that makes the ra
 - `init_encoder_stack(layers, width, heads, hidden, activation, seed, backend, options?)` and `init_decoder_stack`, with the same arguments
 
 - A dense weight starts with Glorot-uniform values (random, on a common scale), and a bias starts at zero. A layer norm starts as the plain normalization.
-- `import Init from "pkg/nn/init"` gives `Init.glorot_uniform(shape, seed, backend)` for a rank-2 shape, and `Init.uniform(shape, limit, seed, backend)`.
+- `bias: false` leaves out a dense bias. `rms` makes the layer norm an RMS norm, and `eps` sets its epsilon.
+- `import Init from "pkg/nn/init"` gives `Init.glorot_uniform(shape, seed, backend)` for a rank-2 shape, and `Init.uniform(shape, limit, seed, backend)`. `Init.uniform_values(count, limit, seed)` gives the same draws as a plain list of floats.
 - One seed gives the same `F32` values on every backend. The sub-layers of one block take their seeds from `Init.derive(seed, k)`.
 - The random generator only makes starting weights. Real weights come from a checkpoint, loaded with [hub](../hub/_index.md).
 

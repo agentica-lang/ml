@@ -75,7 +75,7 @@ end
 struct Leaf
   input: Int
   fixed: Optional[Types.Tensor]
-  half: Bool
+  held: Int
 end
 
 ## A traced graph lowered once: what a run sends to the C layer (the nodes,
@@ -181,9 +181,9 @@ def execute(
           none -> inputs[leaf.input]
         end
 
-        if (t.dtype == Types.Dtype.F16) != leaf.half
+        if Types.held_code(t.dtype) != leaf.held
           return error(
-            "#{op}: leaf #{i} was lowered as #{leaf_name(leaf.half)} and the tensor given is #{Types.dtype_name(t.dtype)}",
+            "#{op}: leaf #{i} was lowered as #{leaf_name(leaf.held)} and the tensor given is #{Types.dtype_name(t.dtype)}",
           )
         end
 
@@ -283,15 +283,15 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
     _ = try half_operands(n)
     op = try code(t, n)
     ints: List[Int] = []
-    half = t.dtype == Types.Dtype.F16
+    held = Types.held_code(t.dtype)
     case n.op
       Types.Op.Input ->
-        leaves = leaves.push(Leaf(input: positions[n.id], fixed: none, half: half))
-        ints = [flag(half)]
+        leaves = leaves.push(Leaf(input: positions[n.id], fixed: none, held: held))
+        ints = [held]
         op = LEAF
       Types.Op.Constant(c) ->
-        leaves = leaves.push(Leaf(input: -1, fixed: some(try bound(c, backend, "a constant")), half: half))
-        ints = [flag(half)]
+        leaves = leaves.push(Leaf(input: -1, fixed: some(try bound(c, backend, "a constant")), held: held))
+        ints = [held]
       Types.Op.Full(v) ->
         x = try Types.value_to_float(v, t.dtype)
         if Types.is_int_dtype(t.dtype) and x.abs > 16777216.0
@@ -332,10 +332,10 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   end
 
   for i in 0...outs.size
-    if outs[i].dtype == Types.Dtype.F16
+    if Types.is_packed_dtype(outs[i].dtype)
       n = try Graph.node_of(outs[i])
       return error(
-        "output #{i} (node #{n.id}, #{Types.op_name(n.op)}) is F16: ggml returns F32 only, so widen it with to_dtype first",
+        "output #{i} (node #{n.id}, #{Types.op_name(n.op)}) is #{Types.dtype_name(outs[i].dtype)}: ggml returns F32 only, so widen it with to_dtype first",
       )
     end
   end
@@ -477,9 +477,10 @@ def flag(b: Bool) -> Int
   0
 end
 
-def leaf_name(half: Bool) -> String
-  return "F16" if half
-  "not F16"
+def leaf_name(held: Int) -> String
+  return "F16" if held == 1
+  return "Q8_0" if held == 2
+  "F32"
 end
 
 ## A leaf's tensor, which must live on the backend the graph runs on.
@@ -517,23 +518,24 @@ end
 
 ## A dtype whose values F32 holds exactly here: F32 itself, `Bool` as 0/1,
 ## and integers of up to 32 bits (exact below 2^24, which labels and `arange`
-## positions are). `I64`, `F64` and `F16` are refused.
+## positions are). `I64`, `F64`, `F16` and `Q8_0` are refused.
 def exact(dtype: Types.Dtype) -> Bool
   case dtype
     Types.Dtype.F64 -> false
     Types.Dtype.F16 -> false
+    Types.Dtype.Q8_0 -> false
     Types.Dtype.I64 -> false
     _ -> true
   end
 end
 
-## An `F16` node ggml holds: a half weight (an input or a constant), its
+## An `F16` or `Q8_0` node ggml holds: a packed weight (an input or a constant), its
 ## transpose, which a `matmul` reads in place, or the rows a `gather` reads from
 ## one, which ggml has widened to F32 already and only `to_dtype` may take.
-## Any other `F16` node is an error: a half weight is read-only, so a gradient
+## Any other such node is an error: a packed weight is read-only, so a gradient
 ## taken for one (its fill of zeros included) ends here.
 def half_node(t: Types.Tensor, n: Types.Node) -> Result[Bool]
-  return ok(false) if t.dtype != Types.Dtype.F16
+  return ok(false) if !Types.is_packed_dtype(t.dtype)
   case n.op
     Types.Op.Input -> ok(true)
     Types.Op.Constant(_) -> ok(true)
@@ -541,30 +543,31 @@ def half_node(t: Types.Tensor, n: Types.Node) -> Result[Bool]
     Types.Op.Gather -> ok(true)
     _ ->
       error(
-        "node #{n.id} (#{Types.op_name(n.op)}) is F16, which ggml holds only for a half weight read by matmul, linear, gather and embedding: " +
-        "a half weight is read-only, so no gradient is taken for it",
+        "node #{n.id} (#{Types.op_name(n.op)}) is #{Types.dtype_name(t.dtype)}, which ggml holds only for a packed weight read by matmul, linear, gather and embedding: " +
+        "a packed weight is read-only, so no gradient is taken for it",
       )
   end
 end
 
-## The `F16` operands of a node: the weight of a `matmul` (second operand) and
+## The `F16` and `Q8_0` operands of a node: the weight of a `matmul` (second operand) and
 ## the table of a `gather` (first), the argument of a transpose, or the rows of a
-## `gather` that `to_dtype` widens. Anywhere else the half weight would need an
-## op that ggml does not run on it.
+## `gather` that `to_dtype` widens. Anywhere else the packed weight would need an
+## op that ggml does not run on it. A `Q8_0` weight goes into a `matmul` only as the
+## transpose that `linear(..., out_in: true)` makes, which is read in place.
 def half_operands(n: Types.Node) -> Result[Bool]
   for i in 0...n.args.size
-    if n.args[i].dtype == Types.Dtype.F16
+    if Types.is_packed_dtype(n.args[i].dtype)
       fits = case n.op
-        Types.Op.Matmul -> i == 1
-        Types.Op.Gather -> i == 0
-        Types.Op.Transpose -> true
+        Types.Op.Matmul -> i == 1 and (n.args[i].dtype != Types.Dtype.Q8_0 or try transposed(n.args[i]))
+        Types.Op.Gather -> i == 0 and (n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i]))
+        Types.Op.Transpose -> n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i])
         Types.Op.ToDtype -> try gathered(n.args[0])
         _ -> false
       end
 
       if !fits
         return error(
-          "node #{n.id} (#{Types.op_name(n.op)}) takes an F16 operand: a half weight goes only into the weight of matmul and linear and the table of gather and embedding",
+          "node #{n.id} (#{Types.op_name(n.op)}) takes an #{Types.dtype_name(n.args[i].dtype)} operand: a packed weight goes only into the weight of matmul and linear (a Q8_0 one with out_in) and the table of gather and embedding",
         )
       end
     end
@@ -573,7 +576,26 @@ def half_operands(n: Types.Node) -> Result[Bool]
   ok(true)
 end
 
-## The F16 tensor `t` is the rows of a `gather`.
+## The tensor `t` is an input or a constant: a quantized weight is read only where it is made, never a view of it.
+def leaf(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Input -> ok(true)
+    Types.Op.Constant(_) -> ok(true)
+    _ -> ok(false)
+  end
+end
+
+## The tensor `t` is the transpose of another.
+def transposed(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Transpose -> ok(true)
+    _ -> ok(false)
+  end
+end
+
+## The `F16` or `Q8_0` tensor `t` is the rows of a `gather`.
 def gathered(t: Types.Tensor) -> Result[Bool]
   n = try Graph.node_of(t)
   case n.op

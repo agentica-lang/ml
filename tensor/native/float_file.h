@@ -4,7 +4,9 @@
 
    The range is checked against the size of the file before anything is read, so a short file, a bad offset or a
    directory is an error and never a read past the end. An F32 range is read straight into `dest`; F16 and BF16
-   are read in chunks and widened into it, so no other buffer of the size of the tensor exists. */
+   are read in chunks and widened into it, so no other buffer of the size of the tensor exists. A Q8_0 range (blocks
+   of 32 values: a binary16 scale and 32 signed bytes) is dequantized the same way, or read as the blocks it is
+   (`ff_read_bytes`) for a tensor that keeps them. */
 #ifndef TENSOR_FLOAT_FILE_H
 #define TENSOR_FLOAT_FILE_H
 
@@ -34,7 +36,11 @@ _Static_assert(sizeof(off_t) == 8, "float_file.h needs a 64-bit off_t");
 #endif
 
 /* The codes of `Types.file_code` in `src/types.agc`. */
-enum { FF_F32 = 0, FF_F16 = 1, FF_BF16 = 2 };
+enum { FF_F32 = 0, FF_F16 = 1, FF_BF16 = 2, FF_Q8_0 = 3 };
+
+/* A Q8_0 block: 32 values in 34 bytes. */
+#define FF_Q8_0_VALUES 32
+#define FF_Q8_0_BLOCK 34
 
 /* The raw bytes read at a time for F16 and BF16. */
 #define FF_CHUNK ((size_t)1 << 20)
@@ -94,6 +100,25 @@ static void ff_widen(const uint8_t *raw, int64_t count, int64_t format, float *d
 
     dest[i] = format == FF_F16 ? ff_half(v) : ff_bfloat(v);
   }
+}
+
+/* `blocks` Q8_0 blocks in `raw`, dequantized into `dest` as ggml does: the scale (binary16, widened) times the byte. */
+static void ff_dequant_q8_0(const uint8_t *raw, int64_t blocks, float *dest) {
+  int64_t b;
+  int j;
+
+  for (b = 0; b < blocks; b++) {
+    const uint8_t *block = raw + (size_t)b * FF_Q8_0_BLOCK;
+    float scale = ff_half((uint16_t)(block[0] | (block[1] << 8)));
+
+    for (j = 0; j < FF_Q8_0_VALUES; j++) dest[b * FF_Q8_0_VALUES + j] = scale * (float)(int8_t)block[2 + j];
+  }
+}
+
+/* The bytes of `count` values of `format`, or -1 when `format` is unknown or `count` is not whole blocks. */
+static int64_t ff_bytes(int64_t format, int64_t count) {
+  if (format == FF_Q8_0) return count % FF_Q8_0_VALUES == 0 ? count / FF_Q8_0_VALUES * FF_Q8_0_BLOCK : -1;
+  return ff_width(format) == 0 ? -1 : count * (int64_t)ff_width(format);
 }
 
 /* What an `open` failure means, in words that do not need `strerror` (not thread safe). */
@@ -178,6 +203,56 @@ static int ff_open_range(const char *path, size_t path_len, int64_t offset, int6
   return fd;
 }
 
+/* The `len` bytes at `offset` of the file `path`, as they are, into `dest`. False with the reason in `why`. */
+static inline bool ff_read_bytes(const char *path, size_t path_len, int64_t offset, int64_t len, uint8_t *dest, char *why,
+                          size_t why_len) {
+  int fd = ff_open_range(path, path_len, offset, len, 1, why, why_len);
+
+  if (fd < 0) return false;
+  if (len > 0 && !ff_pread(fd, dest, (size_t)len, offset)) {
+    close(fd);
+    snprintf(why, why_len, "%.*s ended while it was read (it shrank?)", (int)path_len, path);
+    return false;
+  }
+  close(fd);
+  return true;
+}
+
+/* The `count` values of a Q8_0 range (whole blocks) dequantized into `dest`, a chunk of blocks at a time. */
+static bool ff_read_q8_0(const char *path, size_t path_len, int64_t offset, int64_t count, float *dest, char *why,
+                         size_t why_len) {
+  int64_t blocks = count / FF_Q8_0_VALUES, done = 0, n;
+  uint8_t *raw;
+  int fd;
+
+  if (count % FF_Q8_0_VALUES != 0) {
+    snprintf(why, why_len, "%lld values are not whole Q8_0 blocks of %d", (long long)count, FF_Q8_0_VALUES);
+    return false;
+  }
+  fd = ff_open_range(path, path_len, offset, blocks, FF_Q8_0_BLOCK, why, why_len);
+  if (fd < 0) return false;
+  raw = (uint8_t *)calloc((size_t)(FF_CHUNK / FF_Q8_0_BLOCK), FF_Q8_0_BLOCK);
+  if (raw == NULL) {
+    close(fd);
+    snprintf(why, why_len, "out of memory");
+    return false;
+  }
+  while (done < blocks) {
+    n = blocks - done < (int64_t)(FF_CHUNK / FF_Q8_0_BLOCK) ? blocks - done : (int64_t)(FF_CHUNK / FF_Q8_0_BLOCK);
+    if (!ff_pread(fd, raw, (size_t)n * FF_Q8_0_BLOCK, offset + done * FF_Q8_0_BLOCK)) {
+      free(raw);
+      close(fd);
+      snprintf(why, why_len, "%.*s ended while it was read (it shrank?)", (int)path_len, path);
+      return false;
+    }
+    ff_dequant_q8_0(raw, n, dest + done * FF_Q8_0_VALUES);
+    done += n;
+  }
+  free(raw);
+  close(fd);
+  return true;
+}
+
 /* The `count` values of `format` that start at byte `offset` of the file `path` (`path_len` bytes, no NUL), as
    floats in `dest` (room for `count`; it may be NULL when `count` is 0). False with the reason in `why`. */
 static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t count, int64_t format, float *dest,
@@ -187,6 +262,7 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
   uint8_t *raw;
   int fd;
 
+  if (format == FF_Q8_0) return ff_read_q8_0(path, path_len, offset, count, dest, why, why_len);
   if (width == 0) {
     snprintf(why, why_len, "unknown float format code %lld", (long long)format);
     return false;
@@ -241,6 +317,15 @@ static bool ff_from_bytes(const uint8_t *data, size_t len, int64_t count, int64_
                           size_t why_len) {
   size_t width = ff_width(format);
 
+  if (format == FF_Q8_0) {
+    if (count < 0 || count % FF_Q8_0_VALUES != 0 || len != (size_t)ff_bytes(format, count)) {
+      snprintf(why, why_len, "%zu bytes are not %lld Q8_0 values of whole blocks of %d bytes", len, (long long)count,
+               FF_Q8_0_BLOCK);
+      return false;
+    }
+    ff_dequant_q8_0(data, count / FF_Q8_0_VALUES, dest);
+    return true;
+  }
   if (width == 0) {
     snprintf(why, why_len, "unknown float format code %lld", (long long)format);
     return false;

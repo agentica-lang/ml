@@ -39,7 +39,7 @@ the grad-in-Agentica decision),
 ## 2. Types
 
 ```text
-Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool
+Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool | Q8_0   # Q8_0: a quantized weight of ggml only (§7)
 Device  = Cpu | Vulkan(Int)                                    # enum; Vulkan(i): ggml's device i
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
@@ -176,7 +176,7 @@ Tensor.zeros(shape, dtype, backend) -> Result[Tensor]
 Tensor.from_list(data: List[Values], shape, dtype, backend)
                                                   -> Result[Tensor]
 Tensor.from_file(path, offset, shape, format, backend, dtype)
-                                                  -> Result[Tensor]   # F32/F16/BF16 bytes of a file, read in C
+                                                  -> Result[Tensor]   # F32/F16/BF16/Q8_0 bytes of a file, read in C
 Tensor.to_list(t) -> Result[List[Values]]         # host readback, tests + decode loop
 Tensor.shape(t) -> Shape                          # no native call
 Tensor.dtype(t) -> Dtype                          # no native call
@@ -194,8 +194,11 @@ Tensor.backend(t) -> Backend                      # no native call
 - `from_file` is how weights load: the backend reads the byte range
   itself (`native/float_file.h`: `pread` into the tensor's own memory, F16
   and BF16 widened in chunks) and no value crosses as a list. The tensor is
-  `F32`, the compute dtype (§2), or with `dtype: F16` a half weight (ggml
-  only, §7); a short file, a bad offset or a missing file
+  `F32`, the compute dtype (§2), or with `dtype: F16` a half weight or with
+  `dtype: Q8_0` a quantized weight (ggml only, §7). A `format: Q8_0` range
+  (ggml's blocks of 32 values: a binary16 scale and 32 signed bytes, 34
+  bytes) loads as `F32` on every backend, each value the scale times the
+  byte, as ggml dequantizes it; `convert_file` does not take it; a short file, a bad offset or a missing file
   is an `error`, checked in C against the size of the file. `Reference` reads
   the bytes in Agentica (`File.seek` and `File.read_bytes`, `src/file_range.agc`)
   and decodes them there, which is slow on a large file. ggml takes it through
@@ -384,6 +387,23 @@ end
   only feeds `linear` or `matmul` returns an `F32` gradient. Use
   `linear(..., out_in: true)` with a checkpoint's `[out, in]` weight: without
   it the lowering transposes (copies) the half weight on every run.
+- **Quantized weights.** `Tensor.from_file(..., format: Q8_0, dtype: Q8_0)` on
+  ggml keeps the blocks of a Q8_0 file as they are (`GGML_TYPE_Q8_0`: 34 bytes
+  for 32 values, about a quarter of `F32`; the range is copied, nothing is
+  converted). It is a rank-2 weight whose rows hold whole blocks, and a trace
+  uses it where it uses a half weight (a leaf, the weight of `matmul` and
+  `linear`, the table of `gather` and `embedding`, no gradient, no output),
+  with one more rule: a product reads it only as `linear(..., out_in: true)`
+  does, in place (a quantized transpose would need blocks along the other
+  axis, so `matmul` by the weight itself and any other op are an error naming
+  the op). ggml reads the weight with `F32` activations and answers `F32`;
+  its CPU kernels round the activations of the product to Q8_0 blocks (the
+  same rounding llama.cpp does) and Vulkan's to Q8_1 or F16, so the result is
+  good to the half step of that rounding and of its scale's rounding to F16,
+  `amax * (1 / 254 + 2^-11)` of a block of 32 activations per product, not to `F32`'s 1e-7. `gather` of the table is
+  exact (ggml widens the rows). `to_list` of a quantized weight dequantizes it.
+  A Q8_0 file of another backend or of `weights: F32` is read as `F32`, which is
+  exact (a binary16 scale times a byte has 19 significant bits).
 - **What a half weight costs.** The weight rounds once, at load. The
   activations of the product stay `F32` on ggml's CPU backend and on Vulkan at
   the F32 choice (measured against a double-precision sum of the same weights:
@@ -463,8 +483,8 @@ end
   `Tensor.available(Backend.Ggml(device))` is `true` when the module is built
   and, for `Vulkan(i)`, ggml sees device `i`; it opens no device. ggml stores
   `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are stored as `F32` (exact for
-  them), `F64`, `I64` and a rank above 4 are refused, and `F16` is stored only
-  as a half weight (§7).
+  them), `F64`, `I64` and a rank above 4 are refused, and `F16` and `Q8_0` are
+  stored only as a half or quantized weight (§7).
 
 ## 8. Tensor lifetime
 

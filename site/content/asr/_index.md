@@ -39,10 +39,16 @@ end
 
 - `Asr.open(path, backend, weights)` loads a `.safetensors` file, or the `.index.json` of a sharded one, with the `config.json` in its folder. With `weights: Dtype.F16` the big dense matrices and the token table (also the tied output head) are kept as half weights on ggml, which halves the weights' memory; whisper-medium transcribes 9% faster on Vulkan and no faster on the CPU, and whisper-tiny gains little (see the hub page for the numbers). `F32` is the default and the exact path, and Vulkan multiplies in fp16 by default (`Tensor.vulkan_fp16`), which breaks token-exactness against Hugging Face with `F32` weights too: `Tensor.vulkan_fp16(false)` before the first ggml call makes it exact, as the checks of this package do.
 - `Asr.close_model(model)` frees the weights and the log-mel plan now, as a server does when it replaces a model. Using the model afterwards is an error, and a second call changes nothing.
+- `Asr.config(path)` reads the `config.json` of a checkpoint as a `Config`: the sizes, head counts and position limits the forward needs, and the suppressed token lists. `Asr.load(checkpoint, config, backend, weights)` makes the model from a checkpoint from `Hub.open` and a `Config`. `open` does both.
 - `Asr.transcribe(model, tok, pcm, options)` runs the whole pipeline on one clip and gives a `Result` of `Transcript`.
-- `Tokenizer.open(path)` reads a `tokenizer.json`.
+- `Asr.features(model, pcm, frames)` gives the log-mel of `pcm` as a `[1, num_mel_bins, frames]` `F32` tensor on the model's backend. The caller closes it.
+- `Tokenizer.open(path)` reads a `tokenizer.json`. The tokenizer decodes ids to text; it does not encode text.
+  - `Tokenizer.decode(tok, ids)` gives the text of the ids. Special and timestamp tokens give no text, and a character split across tokens joins back.
+  - `Tokenizer.prompt(tok, language, job, timestamps)` gives the ids that start the decoder. `language` is `none` or a code, and `job` is `Tokenizer.Job.Transcribe` or `Tokenizer.Job.Translate`.
+  - `Tokenizer.language_id(tok, code)` gives the id of a language, and `Tokenizer.seconds(tok, id)` the time of a timestamp token in seconds.
+  - `Tokenizer.parse(text)` reads the text of a `tokenizer.json` instead of a path.
 - `Asr.encode(model, mel)` and `Asr.decode(model, tokens, audio)` are the model's forward passes (one run of the network), for callers who want the parts.
-- `Asr.listen`, `Asr.step`, `Asr.step_pick` and the `Cache` they use decode one token at a time. The cache is a KV cache: it keeps the past keys and values, so earlier tokens are not computed again. `Asr.step` gives the logits of the last token; `Asr.step_pick(model, cache, ids, mask)` adds `mask` to them (0 for an id that may be emitted, a very negative number for one that may not) and gives the first largest id and its log-probability as a `Picked`; with `stamps`, an `Asr.Stamps(rules, state)`, it applies Whisper's timestamp rules in the graph too: `rules` are the `Greedy.Rules`, and `state` is `Greedy.state(rules, emitted)` as an F32 tensor of 4 on the model's backend, made for each step and closed by the caller.
+- `Asr.listen`, `Asr.step`, `Asr.step_pick` and the `Cache` they use decode one token at a time. The cache is a KV cache: it keeps the past keys and values, so earlier tokens are not computed again, and its `length` counts the tokens so far. `Asr.step` gives a `Stepped`, with the logits of the last token and the new cache; `Asr.step_pick(model, cache, ids, mask)` adds `mask` to them (0 for an id that may be emitted, a very negative number for one that may not) and gives the first largest id and its log-probability as a `Picked`; with `stamps`, an `Asr.Stamps(rules, state)`, it applies Whisper's timestamp rules in the graph too: `rules` are the `Greedy.Rules`, and `state` is `Greedy.state(rules, emitted)` as an F32 tensor of 4 on the model's backend, made for each step and closed by the caller.
 
 `Asr.Options` has these fields:
 
@@ -60,6 +66,24 @@ end
 - `segments`, a list of `Greedy.Segment`, each with `start` and `stop` in seconds, `text`, `tokens` and `avg_logprob`.
 - `avg_logprob` and `no_speech_prob`, as OpenAI's Whisper reports them.
 - `truncated`, `false` unless `max_windows` ran out before the end of the audio.
+
+## Greedy rules
+
+`pkg/asr/greedy` has the rules of greedy decoding over plain lists. Use it for a loop of your own over `step_pick`:
+
+- `Greedy.rules(tok, suppress, begin_suppress, timestamps)` makes the `Rules` for a tokenizer. `suppress` and `begin_suppress` are the config's lists, or `none` for the defaults. `timestamps: false` turns the timestamp rules off.
+- `Greedy.mask(rules, size, first)` gives the scores of a `step_pick` mask: 0 for an id that may come, `Greedy.FORBIDDEN` for one that may not. `Greedy.state(rules, emitted)` gives the four numbers that `Asr.Stamps` takes.
+- `Greedy.allowed(rules, logits, emitted)` applies the rules to a list of logits, and `Greedy.pick(logits)` gives the first largest id.
+- `Greedy.segments(tok, emitted, duration, avg_logprob)` makes the `Segment`s of emitted ids. `Greedy.window(tok, emitted, frames, avg_logprob)` also gives the ids to keep and how many 10 ms frames the next window advances.
+- `Greedy.probability(logits, i)` and `Greedy.log_probability(logits, i)` score one id of a list of logits.
+
+## Frontend
+
+`pkg/asr/mel` is the log-mel frontend:
+
+- `Mel.log_mel(samples, mels, frames)` gives the log-mel as a flat list, row-major `[mels, frames]`, computed with an exact FFT in doubles. `frames` defaults to 3000, which is 30 s. Non-finite samples, or samples far outside -1..1, are errors.
+- `Mel.spectrogram(samples, mels, frames, backend)` is the same computation as one traced graph on any backend. In F32 it is about 1e-5 from `log_mel`.
+- `Mel.features` picks between them: `Reference` gets `log_mel`, and every other backend the graph. `Asr.features` calls it.
 
 ## Limits
 

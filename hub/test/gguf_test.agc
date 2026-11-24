@@ -114,12 +114,62 @@ def test_an_f16_gguf_keeps_half_weights_on_ggml() -> Result[Void]
   end
 end
 
-def test_a_quantized_tensor_is_refused_alone() -> Result[Void]
-  S.with_fixtures("gguf") do |dir|
+## The values the peer wrote for the tensor `name` (floats as text).
+def peer_floats(want: JSON.Value, name: String) -> Result[List[Float]]
+  out: List[Float] = []
+  for v in try JSON.list(try JSON.get(try JSON.get(want, name), "values"))
+    out = out.push(try S.float(try JSON.string(v)))
+  end
+
+  ok(out)
+end
+
+## Q8_0 tensors read as the peer dequantizes them (a half scale times the byte), on every backend that reads a file.
+def test_a_q8_0_tensor_reads_as_the_peer_dequantizes_it() -> Result[Void]
+  S.with_fixtures("gguf_q8") do |dir|
     c = try Hub.open("#{dir}/q8.gguf")
+    want = try S.json(dir, "q8.json")
+    try S.same_as_peer(c, want)
     try Test.eq(try Hub.shape(c, "model.layers.0.mlp.up_proj.weight"), [1, 32])
-    try S.expect_error(Hub.tensor(c, "model.layers.0.mlp.up_proj.weight", S.REF), "Q8_0")
-    Test.eq(Tensor.shape(try Hub.tensor(c, "model.embed_tokens.weight", S.REF)), [2])
+    try Test.eq(try Hub.dtype(c, "model.layers.0.mlp.up_proj.weight"), "Q8_0")
+    for backend in try S.native()
+      for name in Hub.names(c)
+        t = try Hub.tensor(c, name, backend)
+        expected = try peer_floats(want, name)
+        try Test.eq(try S.floats_of(t), expected)
+      end
+    end
+
+    ok()
+  end
+end
+
+## With `weights: Q8_0` the Q8_0 matrices of a file stay as blocks on ggml (they hold the same values), and nothing else
+## changes: a norm stays F32, a Q8_0 matrix read as F32 or F16 is F32, and another backend or another dtype is refused.
+def test_weights_q8_0_keeps_the_blocks_of_a_q8_0_file() -> Result[Void]
+  S.with_fixtures("gguf_q8") do |dir|
+    c = try Hub.open("#{dir}/q8.gguf")
+    want = try S.json(dir, "q8.json")
+    q = "model.layers.0.self_attn.q_proj"
+    for backend in try S.ggml_backends()
+      kept = try Load.dense(c, q, backend, Tensor.Dtype.Q8_0)
+      try Test.eq(Tensor.dtype(kept.w), Tensor.Dtype.Q8_0)
+      try Test.eq(Tensor.shape(kept.w), [3, 96])
+      try Test.eq(try S.floats_of(kept.w), try peer_floats(want, "#{q}.weight"))
+      table = try Load.embedding(c, "model.embed_tokens.weight", backend, Tensor.Dtype.Q8_0)
+      try Test.eq(Tensor.dtype(table.table), Tensor.Dtype.Q8_0)
+      norm = try Load.weight(c, "model.layers.0.input_layernorm.weight", 1, backend)
+      try Test.eq(Tensor.dtype(norm), Tensor.Dtype.F32)
+      try Test.eq(Tensor.dtype((try Load.dense(c, q, backend)).w), Tensor.Dtype.F32)
+      try Test.eq(Tensor.dtype((try Load.dense(c, q, backend, Tensor.Dtype.F16)).w), Tensor.Dtype.F32)
+      try S.expect_error(
+        Hub.tensor(c, "model.layers.0.input_layernorm.weight", backend, Tensor.Dtype.Q8_0),
+        "only a Q8_0",
+      )
+    end
+
+    try S.expect_error(Load.dense(c, q, S.REF, Tensor.Dtype.Q8_0), "needs the ggml backend")
+    S.expect_error(Hub.tensor(c, "model.embed_tokens.weight", S.REF, Tensor.Dtype.Q8_0), "ggml")
   end
 end
 
