@@ -2,6 +2,7 @@
 ## lists, and a naive model of every layer over plain `List[List[Float]]`
 ## matrices, written without `Tensor.*` so it can be the oracle.
 
+import Init from "../init"
 import Nn from "../nn"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
@@ -15,57 +16,77 @@ def lift(t: Tensor.Tensor, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
   ok(Trace.constant(try Tensor.to_dtype(t, dtype)))
 end
 
-def lift_dense(d: Nn.Dense, dtype: Tensor.Dtype) -> Result[Nn.Dense]
+## `t` on `backend`, through the host.
+def move(t: Tensor.Tensor, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  Tensor.from_list(try Tensor.to_list(t), Tensor.shape(t), Tensor.dtype(t), backend)
+end
+
+## The layer with `f` applied to every tensor it holds.
+def map_dense(d: Nn.Dense, f: Fn[Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Nn.Dense]
   b: Optional[Tensor.Tensor] = case d.b
-    some(t) -> some(try lift(t, dtype))
+    some(t) -> some(try f.call(t))
     none -> none
   end
 
-  ok(Nn.Dense(w: try lift(d.w, dtype), b: b))
+  ok(Nn.Dense(w: try f.call(d.w), b: b))
 end
 
-def lift_norm(n: Nn.LayerNorm, dtype: Tensor.Dtype) -> Result[Nn.LayerNorm]
-  ok(n.with(gamma: try lift(n.gamma, dtype), beta: try lift(n.beta, dtype)))
+def map_norm(n: Nn.LayerNorm, f: Fn[Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Nn.LayerNorm]
+  ok(n.with(gamma: try f.call(n.gamma), beta: try f.call(n.beta)))
 end
 
-def lift_optional_norm(n: Optional[Nn.LayerNorm], dtype: Tensor.Dtype) -> Result[Optional[Nn.LayerNorm]]
+def map_optional_norm(
+  n: Optional[Nn.LayerNorm],
+  f: Fn[Tensor.Tensor, Result[Tensor.Tensor]],
+) -> Result[Optional[Nn.LayerNorm]]
   case n
-    some(norm) -> ok(some(try lift_norm(norm, dtype)))
+    some(norm) -> ok(some(try map_norm(norm, f)))
     none -> ok(none)
   end
 end
 
-def lift_attention(a: Nn.Attention, dtype: Tensor.Dtype) -> Result[Nn.Attention]
+def map_attention(a: Nn.Attention, f: Fn[Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Nn.Attention]
   ok(
     a.with(
-      query: try lift_dense(a.query, dtype),
-      key: try lift_dense(a.key, dtype),
-      value: try lift_dense(a.value, dtype),
-      output: try lift_dense(a.output, dtype),
-      query_norm: try lift_optional_norm(a.query_norm, dtype),
-      key_norm: try lift_optional_norm(a.key_norm, dtype),
+      query: try map_dense(a.query, f),
+      key: try map_dense(a.key, f),
+      value: try map_dense(a.value, f),
+      output: try map_dense(a.output, f),
+      query_norm: try map_optional_norm(a.query_norm, f),
+      key_norm: try map_optional_norm(a.key_norm, f),
     ),
   )
 end
 
-def lift_mlp(m: Nn.Mlp, dtype: Tensor.Dtype) -> Result[Nn.Mlp]
+def map_mlp(m: Nn.Mlp, f: Fn[Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Nn.Mlp]
   gate: Optional[Nn.Dense] = case m.gate
-    some(g) -> some(try lift_dense(g, dtype))
+    some(g) -> some(try map_dense(g, f))
     none -> none
   end
 
-  ok(m.with(up: try lift_dense(m.up, dtype), down: try lift_dense(m.down, dtype), gate: gate))
+  ok(m.with(up: try map_dense(m.up, f), down: try map_dense(m.down, f), gate: gate))
 end
 
-def lift_decoder_block(p: Nn.DecoderBlock, dtype: Tensor.Dtype) -> Result[Nn.DecoderBlock]
+def map_decoder_block(p: Nn.DecoderBlock, f: Fn[Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Nn.DecoderBlock]
   ok(
     p.with(
-      norm1: try lift_norm(p.norm1, dtype),
-      self_attention: try lift_attention(p.self_attention, dtype),
-      norm2: try lift_norm(p.norm2, dtype),
-      cross_attention: try lift_attention(p.cross_attention, dtype),
-      norm3: try lift_norm(p.norm3, dtype),
-      mlp: try lift_mlp(p.mlp, dtype),
+      norm1: try map_norm(p.norm1, f),
+      self_attention: try map_attention(p.self_attention, f),
+      norm2: try map_norm(p.norm2, f),
+      cross_attention: try map_attention(p.cross_attention, f),
+      norm3: try map_norm(p.norm3, f),
+      mlp: try map_mlp(p.mlp, f),
+    ),
+  )
+end
+
+def map_encoder_block(p: Nn.EncoderBlock, f: Fn[Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Nn.EncoderBlock]
+  ok(
+    p.with(
+      norm1: try map_norm(p.norm1, f),
+      attention: try map_attention(p.attention, f),
+      norm2: try map_norm(p.norm2, f),
+      mlp: try map_mlp(p.mlp, f),
     ),
   )
 end
@@ -106,6 +127,55 @@ def qwen_block(p: Nn.EncoderBlock, ps: List[Tensor.Tensor]) -> Nn.EncoderBlock
   )
 
   p.with(norm1: p.norm1.with(gamma: ps[6]), attention: attention, norm2: p.norm2.with(gamma: ps[7]), mlp: mlp)
+end
+
+## `n` with a random `gamma` (around 1) and `beta` of the same shape, so a
+## test sees whether a norm reads them. The seeds of two norms must differ.
+def jitter_norm(n: Nn.LayerNorm, seed: Int) -> Result[Nn.LayerNorm]
+  width = Tensor.shape(n.gamma)[0]
+  gamma = Init.uniform_values(width, 0.5, seed).map { |v| 1.0 + v }
+  ok(n.with(gamma: try f32(gamma, [width]), beta: try f32(Init.uniform_values(width, 0.5, seed + 1000), [width])))
+end
+
+def jitter_optional_norm(n: Optional[Nn.LayerNorm], seed: Int) -> Result[Optional[Nn.LayerNorm]]
+  case n
+    some(norm) -> ok(some(try jitter_norm(norm, seed)))
+    none -> ok(none)
+  end
+end
+
+## Every norm of the block, the query and key norms included, with its own
+## `gamma` and `beta`.
+def jitter_encoder_block(p: Nn.EncoderBlock, seed: Int) -> Result[Nn.EncoderBlock]
+  ok(
+    p.with(
+      norm1: try jitter_norm(p.norm1, seed),
+      norm2: try jitter_norm(p.norm2, seed + 1),
+      attention: p.attention.with(
+        query_norm: try jitter_optional_norm(p.attention.query_norm, seed + 2),
+        key_norm: try jitter_optional_norm(p.attention.key_norm, seed + 3),
+      ),
+    ),
+  )
+end
+
+def jitter_decoder_block(p: Nn.DecoderBlock, seed: Int) -> Result[Nn.DecoderBlock]
+  ok(
+    p.with(
+      norm1: try jitter_norm(p.norm1, seed),
+      norm2: try jitter_norm(p.norm2, seed + 1),
+      norm3: try jitter_norm(p.norm3, seed + 2),
+    ),
+  )
+end
+
+def jitter_encoder_stack(p: Nn.EncoderStack, seed: Int) -> Result[Nn.EncoderStack]
+  blocks: List[Nn.EncoderBlock] = []
+  for i in 0...p.blocks.size
+    blocks = blocks.push(try jitter_encoder_block(p.blocks[i], seed + 10 * (i + 1)))
+  end
+
+  ok(Nn.EncoderStack(blocks: blocks, final_norm: try jitter_optional_norm(p.final_norm, seed + 99)))
 end
 
 def f32(data: List[Float], shape: List[Int], backend: Tensor.Backend = REF) -> Result[Tensor.Tensor]
@@ -236,7 +306,7 @@ end
 def rotate_rows(r: Nn.Rope, x: List[List[Float]]) -> List[List[Float]]
   (0...x.size).to_a.map do |at: Int|
     row = x[at]
-    d = row.size
+    d = r.dims.unwrap_or(row.size)
     pos = at.to_f
     out = row
     for i in 0...(d / 2)
@@ -339,29 +409,39 @@ def relu(v: Float) -> Float
   0.0
 end
 
+## `erf` by its Maclaurin series, which holds to 1e-12 for `|x| <= 3`.
+def erf(x: Float) -> Float
+  term = x
+  sum = x
+  for n in 1...60
+    term = (-term * x * x) / n.to_f
+    sum = sum + term / (2 * n + 1).to_f
+  end
+
+  (sum * 2.0) / Math.sqrt(3.141592653589793)
+end
+
+def activate(a: Nn.Activation, v: Float) -> Float
+  case a
+    Nn.Activation.Relu -> relu(v)
+    Nn.Activation.Silu -> v / (1.0 + exp(-v))
+    Nn.Activation.GeluErf -> 0.5 * v * (1.0 + erf(v / Math.sqrt(2.0)))
+    Nn.Activation.Gelu -> v
+  end
+end
+
 def mlp(p: Nn.Mlp, x: List[List[Float]]) -> Result[List[List[Float]]]
-  if p.activation == Nn.Activation.Gelu or p.activation == Nn.Activation.GeluErf
-    return error("the naive model has no gelu")
-  end
-
-  h = try dense(p.up, x)
-  act = case p.activation
-    Nn.Activation.Relu -> h.map { |row| row.map { |v| relu(v) } }
-    Nn.Activation.Silu -> h.map { |row| row.map { |v| v / (1.0 + exp(-v)) } }
-    Nn.Activation.Gelu -> h
-    Nn.Activation.GeluErf -> h
-  end
-
+  return error("the naive model has no tanh gelu") if p.activation == Nn.Activation.Gelu
+  up = try dense(p.up, x)
   case p.gate
     some(g) ->
       gated = try dense(g, x)
-      silu_gate = case p.activation
-        Nn.Activation.Relu -> gated.map { |row| row.map { |v| relu(v) } }
-        _ -> gated.map { |row| row.map { |v| v / (1.0 + exp(-v)) } }
+      mixed = (0...up.size).to_a.map do |i: Int|
+        (0...up[i].size).to_a.map { |j| activate(p.activation, gated[i][j]) * up[i][j] }
       end
 
-      dense(p.down, (0...h.size).to_a.map { |i| (0...h[i].size).to_a.map { |j| silu_gate[i][j] * h[i][j] } })
-    none -> dense(p.down, act)
+      dense(p.down, mixed)
+    none -> dense(p.down, up.map { |row| row.map { |v| activate(p.activation, v) } })
   end
 end
 

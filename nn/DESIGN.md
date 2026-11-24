@@ -1,8 +1,10 @@
 # nn — design
 
 Functional layers over `tensor/`, forward only (inference). Depends only on
-`tensor/` (a member of the same workspace, read from `../tensor`), so it runs
-on every backend `tensor/` has: the reference and libtorch today.
+`tensor/` (a member of the same workspace, read from `../tensor`). The
+reference and libtorch run a layer eagerly; ggml runs it traced only: the
+layer is called on `Trace` tensors and the graph goes to `Trace.eval` or
+`Trace.compile` (`tensor/DESIGN.md` §10).
 
 ## API
 
@@ -22,7 +24,7 @@ struct DecoderBlock { norm1, self_attention: Attention, norm2, cross_attention: 
                       norm3: LayerNorm, mlp: Mlp, norm_first: Bool = true }
 struct EncoderStack { blocks: List[EncoderBlock], final_norm: Optional[LayerNorm] = none }
 struct DecoderStack { blocks: List[DecoderBlock], final_norm: Optional[LayerNorm] = none }
-struct BlockOptions { kv_heads, rope, qk_norm, bias, rms, gated, norm_first }   (for init_*)
+struct BlockOptions { kv_heads, rope, qk_norm, bias, rms, gated, norm_first, eps }   (for init_*)
 
 Nn.dense(p, x)                     x [..., in] -> [..., out]
 Nn.layer_norm(p, x)                last axis, then * gamma + beta
@@ -76,7 +78,11 @@ that are the layer's own (rank of `positional`, table length, heads).
   blocks. Each default is the old behaviour, so a struct built field by field
   (as `hub/` does) keeps working. `BlockOptions` carries the same choices to
   `init_*`; it is not a layer. The cross-attention of a decoder block takes
-  only its `bias`.
+  only its `bias`. A loader that rebuilds a layer (`hub/`, ml#78) must use
+  `.with(...)` on the struct it has, not a constructor call, or it drops the
+  options added later. The head width is the width of `query` over `heads`,
+  so loaded weights may have a head width other than `width / heads`
+  (Qwen3); `init_attention` makes only `width / heads`.
 - **Attention is `Tensor.attention`.** `attention` splits the projections into
   heads with `reshape` and `permute`, applies the query and key norms, then
   `rope` (positions `0...seq` of each input, so a cross-attention gets rope
@@ -88,14 +94,17 @@ that are the layer's own (rank of `positional`, table length, heads).
   Qwen and Llama; `false` is BERT's post-norm. A pre-norm stack ends in
   `final_norm`; a post-norm one has none. `causal: true` on `encoder_block`
   makes it a decoder-only block (Qwen). `RMSNorm` is `LayerNorm` with `rms`:
-  `beta` is kept (zeros) and not read.
+  `beta` is kept and ignored.
 - **The decoder is Whisper's, pre-norm by default.** Self-attention is causal
   (`causal: true` in `Tensor.attention`, which adds `-1e9` where a query must
   not see a key: finite, and far enough down that its softmax weight is `0`;
   `causal_mask` builds the same bias for a caller that wants it) and
   cross-attention reuses `attention(p, queries, memory)`: queries come from
   the decoder and keys and values from the encoder output, so `t` and `s`
-  differ freely. It assumes an `F32` or `F64` compute dtype. There is no KV
+  differ freely. With fewer queries than keys the mask ends on the last key
+  (the end-aligned mask of a decode step); more queries than keys is an
+  error, and on `Reference` `q * k` of the mask is at most 1,048,576
+  (`Tensor.full`). It assumes an `F32` or `F64` compute dtype. There is no KV
   cache and no decode loop: each call recomputes every position.
 - **Weights are `[in, out]`** (`x w`, as `Tensor.linear` takes them).
   Hugging Face and PyTorch checkpoints store `[out, in]`, so `hub/` transposes

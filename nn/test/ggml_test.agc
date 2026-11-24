@@ -1,7 +1,6 @@
-## A stack of configured blocks (grouped-query attention, rope, query and key
-## norms, RMS norms, a gated MLP, causal) on ggml (CPU, and Vulkan when it is
-## there) against the reference, node by node with `Trace.diff`. Where ggml is
-## not built, the test passes, unless `TENSOR_REQUIRE_GGML` is set.
+## A stack of configured blocks (grouped-query attention, rope, query and key norms, RMS norms with random
+## gammas, a gated MLP, causal) on ggml (CPU, and Vulkan when it is there) against the reference, node by node
+## with `Trace.diff`. Where ggml is not built, the test passes, unless `TENSOR_REQUIRE_GGML` is set.
 
 import Init from "../init"
 import Nn from "../nn"
@@ -23,9 +22,11 @@ def test_a_configured_stack_agrees_with_the_reference_on_ggml() -> Result[Void]
     bias: false,
     rms: true,
     gated: true,
+    eps: 0.000001,
   )
 
-  stack = try Nn.init_encoder_stack(2, 16, 4, 24, Nn.Activation.Silu, 71, S.REF, options)
+  start = try Nn.init_encoder_stack(2, 16, 4, 24, Nn.Activation.Silu, 71, S.REF, options)
+  stack = try S.jitter_encoder_stack(start, 60)
   weights = S.qwen_params(stack.blocks[0]) + S.qwen_params(stack.blocks[1]) + [stack.final_norm.unwrap!.gamma]
   args = [try S.f32(Init.uniform_values(96, 1.0, 72), [2, 3, 16])] + weights
   for backend in backends

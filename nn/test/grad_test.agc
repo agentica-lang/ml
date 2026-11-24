@@ -65,7 +65,11 @@ end
 ## cross-attention), differentiated together. The block's `F32` weights enter
 ## as `F64` constants.
 def test_the_gradient_of_a_decoder_block_matches_a_central_difference() -> Result[Void]
-  block = try S.lift_decoder_block(try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF), Tensor.Dtype.F64)
+  block = try S.map_decoder_block(
+    try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF),
+    ->(t: Tensor.Tensor) { S.lift(t, Tensor.Dtype.F64) },
+  )
+
   check(
     [try filler([1, 2, 2], 10), try filler([1, 3, 2], 9)],
     ->(ps: List[Tensor.Tensor]) { squared(try Nn.decoder_block(block, ps[0], ps[1])) },
@@ -194,8 +198,12 @@ def test_a_training_step_through_the_configured_block_lowers_the_loss() -> Resul
   loss = ->(ps: List[Tensor.Tensor]) { fit_loss(start, ps, x, target) }
 
   losses: List[Float] = []
-  for _ in 0...6
+  for round in 0...6
     step = try Trace.value_and_grad(params, loss)
+    if round == 0
+      try live(step.grads)
+    end
+
     losses = losses.push((try S.floats_of(step.value))[0])
     moved: List[Tensor.Tensor] = []
     for i in 0...params.size
@@ -211,6 +219,45 @@ def test_a_training_step_through_the_configured_block_lowers_the_loss() -> Resul
   end
 
   ok()
+end
+
+## Every gradient has a non-zero value and no infinity or NaN.
+def live(grads: List[Tensor.Tensor]) -> Result[Void]
+  for i in 0...grads.size
+    values = try S.floats_of(grads[i])
+    try Test.assert(values.all? { |v| v.abs < 1.0e100 }, "gradient #{i} is not finite")
+    try Test.assert(values.any? { |v| v != 0.0 }, "gradient #{i} is all zero")
+  end
+
+  ok()
+end
+
+## The gradient of every weight of a small grouped-query block with rotary
+## positions, query and key norms, RMS norms and a gate (causal), against a
+## central difference.
+def test_the_gradient_through_a_grouped_query_rope_block_matches_a_central_difference() -> Result[Void]
+  options = Nn.BlockOptions(
+    kv_heads: some(1),
+    rope: some(Nn.Rope()),
+    qk_norm: true,
+    bias: false,
+    rms: true,
+    gated: true,
+  )
+
+  start = try S.jitter_encoder_block(try Nn.init_encoder_block(4, 2, 3, Nn.Activation.Silu, 67, S.REF, options), 50)
+  args = [try filler([1, 3, 4], 5)]
+  for t in S.qwen_params(start)
+    args = args.push(try as_f64(t))
+  end
+
+  check(
+    args,
+    ->(ps: List[Tensor.Tensor]) {
+      y = try Nn.encoder_block(S.qwen_block(start, ps.drop(1)), ps[0], none, true)
+      squared(y)
+    },
+  )
 end
 
 def fit_loss(

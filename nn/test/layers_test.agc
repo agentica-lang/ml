@@ -193,38 +193,68 @@ end
 
 ## The layouts of a Qwen-like model (grouped-query attention, rotary
 ## positions, query and key norms, RMS norms, a gated MLP, no biases) and of a
-## BERT-like one (post-norm), with and without the causal mask, against the
-## naive model.
+## BERT-like one (post-norm, exact gelu), with and without the causal mask,
+## against the naive model. Every norm has its own random `gamma` and `beta`
+## (the RMS ones must ignore `beta`), so a dropped scale or swapped query and
+## key norms shows.
 def test_configured_encoder_blocks_match_the_naive_model() -> Result[Void]
-  data = Init.uniform_values(96, 1.0, 41)
-  qwen = Nn.BlockOptions(kv_heads: some(2), rope: some(Nn.Rope()), qk_norm: true, bias: false, rms: true, gated: true)
+  qwen = Nn.BlockOptions(
+    kv_heads: some(2),
+    rope: some(Nn.Rope()),
+    qk_norm: true,
+    bias: false,
+    rms: true,
+    gated: true,
+    eps: 0.000001,
+  )
 
   variants = [
     qwen,
     qwen.with(rope: some(Nn.Rope(base: 100.0, neox: false)), kv_heads: some(1)),
-    Nn.BlockOptions(norm_first: false),
+    qwen.with(rope: some(Nn.Rope(dims: some(2)))),
   ]
 
   for options in variants
-    for causal in [false, true]
-      block = try Nn.init_encoder_block(16, 4, 24, Nn.Activation.Silu, 43, S.REF, options)
-      got = try Nn.encoder_block(block, try S.f32(data, [2, 3, 16]), none, causal)
-      want: List[Float] = []
-      for b in 0...2
-        want = want + (try S.encoder_block(block, S.item(data, b, 3, 16), causal)).flat_map { |row| row }
-      end
+    try expect_encoder(options, Nn.Activation.Silu)
+  end
 
-      try S.expect_close(try S.floats_of(got), want, ABS, REL, "encoder block #{options} causal #{causal}")
+  expect_encoder(Nn.BlockOptions(norm_first: false), Nn.Activation.GeluErf)
+end
+
+def expect_encoder(options: Nn.BlockOptions, activation: Nn.Activation) -> Result[Void]
+  data = Init.uniform_values(96, 1.0, 41)
+  for causal in [false, true]
+    start = try Nn.init_encoder_block(16, 4, 24, activation, 43, S.REF, options)
+    block = try S.jitter_encoder_block(start, 90)
+    got = try Nn.encoder_block(block, try S.f32(data, [2, 3, 16]), none, causal)
+    want: List[Float] = []
+    for b in 0...2
+      want = want + (try S.encoder_block(block, S.item(data, b, 3, 16), causal)).flat_map { |row| row }
     end
+
+    try S.expect_close(try S.floats_of(got), want, ABS, REL, "encoder block #{options} causal #{causal}")
   end
 
   ok()
 end
 
+## A causal query past the keys it has seen: with fewer queries than keys, the
+## last query sees every key (the end-aligned mask of a decode step).
+def test_causal_attention_with_fewer_queries_than_keys_ends_on_the_last_key() -> Result[Void]
+  p = try Nn.init_attention(4, 2, 3, S.REF)
+  memory = Init.uniform_values(16, 1.0, 14)
+  queries = memory.drop(8)
+  got = try Nn.attention(p, try S.f32(queries, [1, 2, 4]), try S.f32(memory, [1, 4, 4]), none, true)
+  mask = [[0.0, 0.0, 0.0, Nn.MASKED], [0.0, 0.0, 0.0, 0.0]]
+  want = try S.attention(p, S.item(queries, 0, 2, 4), S.item(memory, 0, 4, 4), some(mask))
+  S.expect_close(try S.floats_of(got), want.flat_map { |row| row }, ABS, REL, "end-aligned causal")
+end
+
 def test_a_post_norm_decoder_block_matches_the_naive_model() -> Result[Void]
   x = Init.uniform_values(24, 1.0, 47)
   memory = Init.uniform_values(40, 1.0, 48)
-  block = try Nn.init_decoder_block(4, 2, 8, Nn.Activation.Relu, 49, S.REF, Nn.BlockOptions(norm_first: false))
+  start = try Nn.init_decoder_block(4, 2, 8, Nn.Activation.Relu, 49, S.REF, Nn.BlockOptions(norm_first: false))
+  block = try S.jitter_decoder_block(start, 70)
   got = try Nn.decoder_block(block, try S.f32(x, [2, 3, 4]), try S.f32(memory, [2, 5, 4]))
   want: List[Float] = []
   for b in 0...2
@@ -237,7 +267,7 @@ end
 def test_stacks_apply_their_blocks_in_order_and_a_pre_norm_one_ends_in_a_norm() -> Result[Void]
   x = try S.f32(Init.uniform_values(24, 1.0, 51), [1, 3, 8])
   memory = try S.f32(Init.uniform_values(32, 1.0, 52), [1, 4, 8])
-  encoder = try Nn.init_encoder_stack(2, 8, 2, 12, Nn.Activation.Relu, 5, S.REF)
+  encoder = try S.jitter_encoder_stack(try Nn.init_encoder_stack(2, 8, 2, 12, Nn.Activation.Relu, 5, S.REF), 80)
   once = try Nn.encoder_block(encoder.blocks[0], x)
   twice = try Nn.encoder_block(encoder.blocks[1], once)
   final = try Nn.layer_norm(encoder.final_norm.unwrap!, twice)
@@ -272,4 +302,21 @@ def test_a_layer_refuses_a_head_layout_it_cannot_run() -> Result[Void]
   queries = try S.f32(Init.uniform_values(8, 1.0, 1), [1, 2, 4])
   memory = try S.f32(Init.uniform_values(4, 1.0, 2), [1, 1, 4])
   Test.error?(Nn.attention(p, queries, memory, none, true))
+end
+
+## A head width other than `width / heads`, as Qwen3 has: the projections are
+## `[width, heads * head_width]` and the output is `[heads * head_width, width]`.
+def test_attention_runs_weights_with_a_head_width_of_its_own() -> Result[Void]
+  dense = ->(i: Int, o: Int, seed: Int) { Nn.init_dense(i, o, seed, S.REF) }
+  p = Nn.Attention(
+    query: try dense.call(4, 6, 1),
+    key: try dense.call(4, 3, 2),
+    value: try dense.call(4, 3, 3),
+    output: try dense.call(6, 4, 4),
+    heads: 2,
+    kv_heads: some(1),
+  )
+
+  x = try S.f32(Init.uniform_values(8, 1.0, 5), [1, 2, 4])
+  Test.eq(Tensor.shape(try Nn.self_attention(p, x)), [1, 2, 4])
 end

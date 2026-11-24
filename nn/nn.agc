@@ -28,8 +28,8 @@ struct Dense
 end
 
 ## `layer_norm` over the last axis, then `* gamma + beta` (both `[width]`).
-## With `rms` it is `rms_norm`, then `* gamma`: `beta` is not read (a zeros
-## tensor does).
+## With `rms` it is `rms_norm`, then `* gamma`: `beta` is ignored, so any
+## tensor of the right shape will do (`init_layer_norm` makes zeros).
 struct LayerNorm
   gamma: Tensor.Tensor
   beta: Tensor.Tensor
@@ -72,7 +72,9 @@ end
 ## Multi-head attention with its four projections: `query` projects to
 ## `heads` heads and `key` and `value` to `kv_heads` (`heads` when none, fewer
 ## for grouped-query attention: `kv_heads` must divide `heads`); `output`
-## projects the merged heads back. `query_norm` and `key_norm` normalize each
+## projects the merged heads back. The head width is the width of `query`'s
+## output over `heads`, so loaded weights may have a head width other than
+## `width / heads` (Qwen3); `init_attention` makes only `width / heads`. `query_norm` and `key_norm` normalize each
 ## head over its width (Qwen3), before `rope`.
 struct Attention
   query: Dense
@@ -133,8 +135,9 @@ end
 
 ## The choices of `init_*` beyond the sizes: `kv_heads`, `rope` and `qk_norm`
 ## (Qwen3's query and key norms) shape the self-attention, `bias` is whether
-## every `Dense` has one, `rms` makes the norms RMS norms, `gated` makes the
-## `Mlp` gated and `norm_first` picks pre-norm.
+## every `Dense` has one, `rms` makes the norms RMS norms with `eps` (Qwen3
+## uses `0.000001`), `gated` makes the `Mlp` gated and `norm_first` picks
+## pre-norm.
 struct BlockOptions
   kv_heads: Optional[Int] = none
   rope: Optional[Rope] = none
@@ -143,6 +146,7 @@ struct BlockOptions
   rms: Bool = false
   gated: Bool = false
   norm_first: Bool = true
+  eps: Float = LAYER_NORM_EPS
 end
 
 ## `x w + b` on the last axis of an input of any rank >= 1: the leading axes
@@ -206,7 +210,10 @@ end
 ## Attention of `queries` (`[batch, q, width]`) over `memory`
 ## (`[batch, k, width]`), through `Tensor.attention`. `mask` is its additive
 ## bias (`[q, k]`, or `[batch|1, heads|1, q, k]`); `causal` keeps each query
-## off the keys after it and needs `q <= k`.
+## off the keys after it, aligned at the end: with `q < k` the last query sees
+## every key (the queries are the last positions of the keys, as in decoding
+## with a cache), and `q > k` is an error. On `Reference` it needs `q * k` of
+## at most 1,048,576.
 def attention(
   p: Attention,
   queries: Tensor.Tensor,
@@ -326,10 +333,15 @@ end
 
 ## A `LayerNorm` that starts as the plain normalization: `gamma` ones,
 ## `beta` zeros.
-def init_layer_norm(width: Int, backend: Tensor.Backend, rms: Bool = false) -> Result[LayerNorm]
+def init_layer_norm(
+  width: Int,
+  backend: Tensor.Backend,
+  rms: Bool = false,
+  eps: Float = LAYER_NORM_EPS,
+) -> Result[LayerNorm]
   gamma = try Tensor.ones([width], Tensor.Dtype.F32, backend)
   beta = try Tensor.zeros([width], Tensor.Dtype.F32, backend)
-  ok(LayerNorm(gamma: gamma, beta: beta, eps: LAYER_NORM_EPS, rms: rms))
+  ok(LayerNorm(gamma: gamma, beta: beta, eps: eps, rms: rms))
 end
 
 def init_embedding(rows: Int, width: Int, seed: Int, backend: Tensor.Backend) -> Result[Embedding]
@@ -353,8 +365,8 @@ def init_attention(
   query_norm: Optional[LayerNorm] = none
   key_norm: Optional[LayerNorm] = none
   if options.qk_norm
-    query_norm = some(try init_layer_norm(head_width, backend, options.rms))
-    key_norm = some(try init_layer_norm(head_width, backend, options.rms))
+    query_norm = some(try init_layer_norm(head_width, backend, options.rms, options.eps))
+    key_norm = some(try init_layer_norm(head_width, backend, options.rms, options.eps))
   end
 
   ok(
@@ -401,9 +413,9 @@ def init_encoder_block(
 ) -> Result[EncoderBlock]
   ok(
     EncoderBlock(
-      norm1: try init_layer_norm(width, backend, options.rms),
+      norm1: try init_layer_norm(width, backend, options.rms, options.eps),
       attention: try init_attention(width, heads, Init.derive(seed, 0), backend, options),
-      norm2: try init_layer_norm(width, backend, options.rms),
+      norm2: try init_layer_norm(width, backend, options.rms, options.eps),
       mlp: try init_mlp(width, hidden, activation, Init.derive(seed, 1), backend, options),
       norm_first: options.norm_first,
     ),
@@ -424,11 +436,11 @@ def init_decoder_block(
   cross = BlockOptions(bias: options.bias)
   ok(
     DecoderBlock(
-      norm1: try init_layer_norm(width, backend, options.rms),
+      norm1: try init_layer_norm(width, backend, options.rms, options.eps),
       self_attention: try init_attention(width, heads, Init.derive(seed, 0), backend, options),
-      norm2: try init_layer_norm(width, backend, options.rms),
+      norm2: try init_layer_norm(width, backend, options.rms, options.eps),
       cross_attention: try init_attention(width, heads, Init.derive(seed, 1), backend, cross),
-      norm3: try init_layer_norm(width, backend, options.rms),
+      norm3: try init_layer_norm(width, backend, options.rms, options.eps),
       mlp: try init_mlp(width, hidden, activation, Init.derive(seed, 2), backend, options),
       norm_first: options.norm_first,
     ),
@@ -483,7 +495,7 @@ private
 
 def init_final_norm(width: Int, backend: Tensor.Backend, options: BlockOptions) -> Result[Optional[LayerNorm]]
   return ok(none) if !options.norm_first
-  ok(some(try init_layer_norm(width, backend, options.rms)))
+  ok(some(try init_layer_norm(width, backend, options.rms, options.eps)))
 end
 
 def finished(norm: Optional[LayerNorm], h: Tensor.Tensor) -> Result[Tensor.Tensor]
