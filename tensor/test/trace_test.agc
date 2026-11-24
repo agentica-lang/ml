@@ -54,7 +54,28 @@ def test_layer_norm_matches_a_central_difference() -> Result[Void]
   end
 
   data = [0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.9, 0.1, -0.4, 1.7, -1.3, 0.6]
-  check_grad([try f64(data, [2, 2, 3])]) do |xs| weigh(try Tensor.layer_norm(xs[0], 0.001)) end
+  try check_grad([try f64(data, [2, 2, 3])]) do |xs| weigh(try Tensor.layer_norm(xs[0], 0.001)) end
+  check_grad([try f64(data, [2, 6])]) do |xs| weigh(try Tensor.layer_norm(xs[0], 0.5)) end
+end
+
+## A last axis of size 1 has no variance: the output is 0 whatever the input, so the gradient is exactly 0.
+def test_layer_norm_of_a_single_column_has_a_zero_gradient() -> Result[Void]
+  step = try Trace.value_and_grad([try f64([0.5, -1.0, 2.0], [3, 1])]) do |xs|
+    weigh(try Tensor.layer_norm(xs[0], 0.00001))
+  end
+
+  try Test.eq(try Support.floats_of(step.grads[0]), [0.0, 0.0, 0.0])
+  Test.eq(try Support.floats_of(step.value), [0.0])
+end
+
+def test_layer_norm_in_a_trace_refuses_an_eps_its_node_cannot_hold() -> Result[Void]
+  x = Trace.constant(try f64([1.0, 2.0], [1, 2]))
+  inf = 1.0e308 * 10.0
+  for eps in [0.0, -1.0, inf, inf - inf, 1.0e39, 1.0e-50]
+    try Test.error?(Tensor.layer_norm(x, eps))
+  end
+
+  Test.assert(Tensor.layer_norm(x, 1.0e-30).ok?, "a small eps that F32 holds")
 end
 
 def test_neg_matches_a_central_difference() -> Result[Void]

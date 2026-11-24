@@ -886,15 +886,21 @@ def softmax(x: Types.Tensor, axis: Int) -> Result[Types.Tensor]
   div(e, try broadcast_to(s, x.shape))
 end
 
-## `layer_norm` over the last axis, no affine: `(x - mean) / sqrt(variance + eps)`. A primitive of a trace, so that a
-## backend can run it as one node (ggml's norm); everywhere else, and in the trace of a gradient, it is the derived
-## composition of §3.1's ops (`layer_norm_composed`), so the values are those of the composition.
+## `layer_norm` over the last axis, no affine: `(x - mean) / sqrt(variance + eps)`. In a trace it is one node, `LayerNorm`,
+## so that ggml can run it as one norm; `eps` must then be a float the node holds (finite, within `F32`'s range, and not 0
+## once rounded to `F32`). A trace that takes a gradient still records that one node in the forward; only the backward is
+## composed of §3.1's ops. On every other backend it is the derived composition of those ops (`layer_norm_composed`).
 def layer_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
-  return error("layer_norm needs eps > 0, got #{eps}") if eps <= 0.0
+  return error("layer_norm needs a finite eps > 0, got #{eps}") if !Types.is_finite(eps) or eps <= 0.0
   return error("layer_norm needs rank >= 1, got #{x.shape}") if x.shape.size < 1
   _ = try float_only(x, "layer_norm")
   case x.backend
-    Types.Backend.Trace -> Graph.same(Types.Op.LayerNorm(eps), [x], x)
+    Types.Backend.Trace ->
+      if eps > 3.4028234663852886e38 or Float.to_bits32(eps) == 0
+        return error("layer_norm needs an eps that is neither above F32's range nor 0 in F32, got #{eps}")
+      end
+
+      Graph.same(Types.Op.LayerNorm(eps), [x], x)
     _ -> layer_norm_composed(x, eps)
   end
 end
