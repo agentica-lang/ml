@@ -19,17 +19,14 @@
    Do not edit the generated header: change `src/native.agc` and make the
    header again. */
 
-/* Every `compute def` row of the table is AN_FRESH too (API 1.5): a tensor handle owns a `torch::Tensor` of its own,
-   made with `new`; a view holds its base by libtorch's refcount, never by pointing into another handle's state. So
-   an arena that keeps a result keeps it alone, not the tensors it came from. The generated header says AN_DIRTY on
-   every row, and native-gen has no per-function marker, so the mode is widened here for all of them: a new row must
-   make a handle that owns all its memory (no `from_blob` over borrowed data, no view of memory that is not
-   refcounted), or the arguments may be freed under it. */
+/* A row whose `def` has a `## @fresh` line in `src/native.agc` is AN_FRESH (API 1.5): a tensor handle owns a
+   `torch::Tensor` of its own, made with `new`; a view holds its base by libtorch's refcount, never by pointing into
+   another handle's state. So an arena that keeps a result keeps it alone, not the tensors it came from. A new row that
+   makes a handle must make one that owns all its memory (no `from_blob` over borrowed data, no view of memory that is
+   not refcounted), or the arguments may be freed under it. */
 #include "agentica_native.h"
-#define AN_DIRTY (AN_DIRTY | AN_FRESH)
 #define TORCH_NATIVE_IMPLEMENTATION
 #include "torch_native.h"
-#undef AN_DIRTY
 #include "float_file.h"
 
 #include <torch/torch.h>
