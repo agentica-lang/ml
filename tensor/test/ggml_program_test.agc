@@ -270,6 +270,24 @@ def test_a_closed_constant_is_an_error() -> Result[Void]
   refused(Trace.run(compiled, [x]), "closed")
 end
 
+## `close_constants` closes what the function read from outside: the next run is an error naming the constant, and a
+## second call changes nothing.
+def test_close_constants_closes_the_constants_of_a_function() -> Result[Void]
+  return ok() if !try present()
+
+  x = try floats(uniform(12, 1), [3, 4], CPU)
+  w = try floats(uniform(20, 2), [4, 5], CPU)
+  compiled = try Trace.compile(
+    specs_of([x]),
+    ->(a: List[Tensor.Tensor]) { ok([try Tensor.matmul(a[0], Trace.constant(w))]) },
+  )
+
+  _ = try Trace.run(compiled, [x])
+  Trace.close_constants(compiled)
+  Trace.close_constants(compiled)
+  refused(Trace.run(compiled, [x]), "closed")
+end
+
 ## `x` times a `[k, 1]` ramp: a graph of its own for each `k`, to fill the cache of 32 graphs.
 def ramp(k: Int) -> Result[Void]
   x = try floats(uniform(k, k), [1, k], CPU)
