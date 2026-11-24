@@ -355,10 +355,16 @@ end
   its gradient). Use `linear(..., out_in: true)` with a checkpoint's
   `[out, in]` weight: without it the lowering transposes (copies) the half
   weight on every run.
-- **What a half weight costs.** The weight rounds once, at load. On ggml's CPU
-  backend the activations of the product round to F16 too (its `vec_dot_type`),
-  so each product is good to 2^-11 relative, and an activation beyond 65504
-  becomes infinite. VULKAN_NOTE F32 is the exact path and the default.
+- **What a half weight costs.** The weight rounds once, at load. The
+  activations of the product stay `F32` on ggml's CPU backend and on Vulkan at
+  the default (measured against a double-precision sum of the same weights:
+  7e-8 and 1e-7 apart). With `Tensor.vulkan_fp16(true)` Vulkan computes the
+  product in fp16, as it does for an `F32` weight: about 2e-3 apart on outputs
+  of 0.4, and an activation beyond 65504 overflows. A CPU kernel that rounds
+  the activations to F16 (ggml's `vec_dot_type` for F16 does where its
+  llamafile path is not used) would do the same, so a half-weight result is
+  good to about 2^-11 relative per product on any backend. `F32` is the exact
+  path and the default.
 - The lowering computes in `F32`. `Bool` (0/1) and integers up to 32 bits are
   exact there below 2^24; a node of `F64` or `I64`, an `F16` node that is not
   a half weight (below), an integer `div`, a

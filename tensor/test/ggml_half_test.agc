@@ -2,8 +2,9 @@
 ## value beyond 65504, naming its element; a compiled graph reads a half weight as the weight of `linear` and the table of
 ## `embedding`; any other use of one, and a gradient for one, is an error. An `F16` table still gathers on the reference.
 ##
-## ggml's CPU backend rounds the activations of a half-weight product to F16 as well, so the activations here are
-## checked at 2^-11 of the products, and the weights are multiples of 1/8, which F16 holds exactly. Without the ggml
+## A backend may round the activations of a half-weight product to F16 (ggml's Vulkan does with `vulkan_fp16` on; its CPU
+## kernels did not here), so the activations here are checked at 2^-11 of the products, and the weights are multiples
+## of 1/8, which F16 holds exactly. Without the ggml
 ## module the checks pass by asserting nothing, unless `TENSOR_REQUIRE_GGML` is set (CI sets it).
 
 import Tensor from "../tensor"
@@ -36,7 +37,7 @@ def devices() -> Result[List[Tensor.Device]]
   error("ggml required but not built (TENSOR_REQUIRE_GGML is set)")
 end
 
-def with_file(data: Bytes, body: Fn[String, Result[Void]]) -> Result[Void]
+def with_file(data: List[Bytes], body: Fn[String, Result[Void]]) -> Result[Void]
   dir = "/tmp/agentica-half-#{Random.int(0, 999999999)}"
   try Dir.mkdir_private(dir, 5000)
   path = "#{dir}/data.bin"
@@ -45,9 +46,13 @@ def with_file(data: Bytes, body: Fn[String, Result[Void]]) -> Result[Void]
   result
 end
 
-def within(path: String, data: Bytes, body: Fn[String, Result[Void]]) -> Result[Void]
+## A write takes at most 1 MiB, so the file is written in parts.
+def within(path: String, data: List[Bytes], body: Fn[String, Result[Void]]) -> Result[Void]
   try File.open(path, "write", 5000) do |f|
-    try File.write_bytes(f, data, 5000)
+    for part in data
+      try File.write_bytes(f, part, 5000)
+    end
+
     ok()
   end
 
@@ -82,18 +87,23 @@ def weights() -> List[Float]
   out
 end
 
-def weight_bytes() -> Result[Bytes] = Bytes.from_list(weights().flat_map { |x: Float| f32_bytes(x) })
+def weight_bytes() -> Result[List[Bytes]] = ok([try Bytes.from_list(weights().flat_map { |x: Float| f32_bytes(x) })])
 
-## `count` zero F32 values (a power of two), then the F32 `tail`.
-def zeros_then(count: Int, tail: List[Int]) -> Result[Bytes]
+def bytes_of(values: List[Int]) -> Result[List[Bytes]] = ok([try Bytes.from_list(values)])
+
+## `count` zero F32 values (a power of two, at least 262144), in parts of 1 MiB, then the F32 `tail`.
+def zeros_then(count: Int, tail: List[Int]) -> Result[List[Bytes]]
   block = try Bytes.from_list([0, 0, 0, 0])
-  size = 1
-  while size < count
+  for _ in 0...18
     block = Bytes.concat([block, block])
-    size = size * 2
   end
 
-  ok(Bytes.concat([block, try Bytes.from_list(tail)]))
+  parts: List[Bytes] = []
+  for _ in 0...(count / 262144)
+    parts = parts.push(block)
+  end
+
+  ok(parts.push(try Bytes.from_list(tail)))
 end
 
 def run_model(path: String, device: Tensor.Device, dtype: Tensor.Dtype, xs: List[Float]) -> Result[List[Tensor.Tensor]]
@@ -116,7 +126,7 @@ end
 
 ## Loads the `count` values of `format` in `data` as a half tensor and expects an error that names `element`.
 def overflows(
-  data: Bytes,
+  data: List[Bytes],
   format: Tensor.FloatFormat,
   count: Int,
   element: Int,
@@ -132,7 +142,7 @@ end
 def test_a_half_load_converts_each_format() -> Result[Void]
   for device in try devices()
     backend = Tensor.Backend.Ggml(device)
-    try with_file(try Bytes.from_list(BYTES)) do |path|
+    try with_file(try bytes_of(BYTES)) do |path|
       f32 = try Tensor.from_file(path, 3, [3, 1], Tensor.FloatFormat.F32, backend, Tensor.Dtype.F16)
       try Test.eq(Tensor.dtype(f32), Tensor.Dtype.F16)
       try Test.eq(try floats(f32), [1.5, -2.25, 0.0])
@@ -143,7 +153,7 @@ def test_a_half_load_converts_each_format() -> Result[Void]
       ok()
     end
 
-    try with_file(try Bytes.from_list(LIMITS)) do |path|
+    try with_file(try bytes_of(LIMITS)) do |path|
       limits = try Tensor.from_file(path, 0, [2], Tensor.FloatFormat.F32, backend, Tensor.Dtype.F16)
       try Test.eq(try floats(limits), [65504.0, -65504.0])
       ok()
@@ -157,13 +167,13 @@ def test_a_value_beyond_f16_is_an_error_naming_its_element() -> Result[Void]
   for device in try devices()
     backend = Tensor.Backend.Ggml(device)
     # 70000.0 at element 1, after 1.0
-    try overflows(try Bytes.from_list([0, 0, 128, 63, 0, 184, 136, 71]), Tensor.FloatFormat.F32, 2, 1, backend)
+    try overflows(try bytes_of([0, 0, 128, 63, 0, 184, 136, 71]), Tensor.FloatFormat.F32, 2, 1, backend)
     # -70000.0 at element 1, after 0.5
-    try overflows(try Bytes.from_list([0, 0, 0, 63, 0, 184, 136, 199]), Tensor.FloatFormat.F32, 2, 1, backend)
+    try overflows(try bytes_of([0, 0, 0, 63, 0, 184, 136, 199]), Tensor.FloatFormat.F32, 2, 1, backend)
     # 65505.0, one past the largest F16
-    try overflows(try Bytes.from_list([0, 0, 128, 63, 0, 225, 127, 71]), Tensor.FloatFormat.F32, 2, 1, backend)
+    try overflows(try bytes_of([0, 0, 128, 63, 0, 225, 127, 71]), Tensor.FloatFormat.F32, 2, 1, backend)
     # BF16 1.0, then 99840.0
-    try overflows(try Bytes.from_list([128, 63, 195, 71]), Tensor.FloatFormat.BF16, 2, 1, backend)
+    try overflows(try bytes_of([128, 63, 195, 71]), Tensor.FloatFormat.BF16, 2, 1, backend)
     # the first value of the second chunk
     try overflows(try zeros_then(CHUNK, [0, 184, 136, 71]), Tensor.FloatFormat.F32, CHUNK + 1, CHUNK, backend)
   end
@@ -172,7 +182,7 @@ def test_a_value_beyond_f16_is_an_error_naming_its_element() -> Result[Void]
 end
 
 def test_only_ggml_holds_a_half_weight() -> Result[Void]
-  try with_file(try Bytes.from_list(BYTES)) do |path|
+  try with_file(try bytes_of(BYTES)) do |path|
     try refused(
       Tensor.from_file(path, 3, [3], Tensor.FloatFormat.F32, Tensor.Backend.Reference, Tensor.Dtype.F16),
       "ggml",
@@ -203,7 +213,7 @@ def test_a_compiled_graph_reads_a_half_weight_as_the_f32_weight() -> Result[Void
           try Test.eq(Tensor.dtype(half[i]), Tensor.Dtype.F32)
         end
 
-        # linear: the activations may round to F16 (ggml's CPU backend does), so each product is good to 2^-11
+        # linear: the activations may round to F16, so each product is good to 2^-11
         a = try floats(half[0])
         b = try floats(whole[0])
         for r in 0...2
