@@ -120,6 +120,7 @@ struct gnode {
   struct ggml_tensor *dense; /* the contiguous copy of a view, made once for every op that needs one */
   struct ggml_tensor *at; /* the node as the I32 positions of a rope, made once */
   struct ggml_tensor *half; /* the node as the F16 mask of a flash attention, made once */
+  struct ggml_tensor *packed; /* the node as an operand of mul_mat when `dense` is not packed, made once */
 };
 
 #define MAX_OUTPUTS 256
@@ -398,18 +399,23 @@ static struct ggml_tensor *dense(struct entry *p, const struct gnode *n) {
    above 1, but ggml-vulkan wants every stride to match (it copies the operand through F16 otherwise), so a view with an
    extent 1 axis (one head) is copied too. */
 static struct ggml_tensor *operand(struct entry *p, const struct gnode *n) {
+  struct gnode *node = (struct gnode *)n; /* the nodes are `p->nodes`; the copy is a cache */
   struct ggml_tensor *t = dense(p, n);
   int i;
 
   if (ggml_is_quantized(t->type)) return t; /* a weight's blocks: its strides count bytes of blocks, and it is a leaf */
   for (i = 1; i < GGML_MAX_DIMS; i++) {
-    if (t->nb[i] != t->nb[i - 1] * (size_t)t->ne[i - 1]) return ggml_cont(p->ctx, t);
+    if (t->nb[i] == t->nb[i - 1] * (size_t)t->ne[i - 1]) continue;
+    if (node->packed == NULL) node->packed = ggml_cont(p->ctx, t);
+    return node->packed;
   }
   return t;
 }
 
 /* The node's own tensor, copied when it is a view (a permute that kept axis 0): for the ops that take `->t` raw. */
-static struct ggml_tensor *plain(struct entry *p, const struct gnode *n) { return contiguous(p, n->t); }
+static struct ggml_tensor *plain(struct entry *p, const struct gnode *n) {
+  return n->lazy ? contiguous(p, n->t) : dense(p, n);
+}
 
 static struct ggml_tensor *reshape(struct entry *p, struct ggml_tensor *t, const int64_t ne[4]) {
   if (same_ne(t, ne)) return t;
@@ -516,7 +522,8 @@ static bool swapped_back(const struct ggml_tensor *t) {
   const struct ggml_tensor *s = t->src[0];
 
   return t->op == GGML_OP_PERMUTE && s->ne[1] == t->ne[2] && s->ne[2] == t->ne[1] && s->nb[1] == t->nb[2] &&
-         s->nb[2] == t->nb[1] && s->ne[0] == t->ne[0] && s->ne[3] == t->ne[3];
+         s->nb[2] == t->nb[1] && s->ne[0] == t->ne[0] && s->ne[3] == t->ne[3] && s->nb[0] == t->nb[0] &&
+         s->nb[3] == t->nb[3];
 }
 
 /* The node as an operand of flash attention: its rows must be dense, its other strides may be a view's. */
@@ -531,23 +538,21 @@ static bool on_vulkan(const struct entry *p) {
 }
 
 /* The mask as F16 for flash attention, once for every layer that reads it. The lowering lets flash attention take a
-   mask that holds 0 and large negative fills, so F16 keeps it exactly; the large ones are clamped to F16's lowest,
-   since -1e9 would become -inf and a row with every key hidden would not stay the mean of v. */
+   mask that holds 0 and large negative fills (-1e9, say), which F16 keeps exactly once clamped to its lowest, -65504:
+   -1e9 itself would become -inf, and a row with every key hidden would not stay finite. The clamp works in place, so
+   it runs on a copy: the mask may be read by the products of another layer. */
 static struct ggml_tensor *half_mask(struct entry *p, const struct gnode *mask) {
   struct gnode *node = (struct gnode *)mask; /* the nodes are `p->nodes`; the conversion is a cache */
-  struct ggml_tensor *t = dense(p, mask);
 
   if (node->half == NULL) {
-    if (t->type == GGML_TYPE_F16) node->half = t;
-    else node->half = ggml_cast(p->ctx, ggml_clamp(p->ctx, ggml_cont(p->ctx, t), -65504.0f, 65504.0f), GGML_TYPE_F16);
+    node->half = ggml_cast(p->ctx, ggml_clamp(p->ctx, ggml_cont(p->ctx, dense(p, mask)), -65504.0f, 65504.0f), GGML_TYPE_F16);
   }
   return node->half;
 }
 
 /* softmax(scale * q kᵀ + mask) v over q [B, H, Sq, D], k [B, Hkv, Sk, D] and v [B, Hkv, Sk, Dv] (ne [D, Sq, H, B]
    and so on), as one ggml_flash_attn_ext that reads the heads as the views they are: no copy of q, k or v, no
-   scores in memory. It takes the mask in F16 (so a mask value is rounded to 11 bits; the causal mask is 0 and
-   -inf, exact) and answers [Dv, H, Sq, B], which is permuted back to [Dv, Sq, H, B] as a view. NULL when the
+   scores in memory. It takes the mask in F16 (the fills it gets, 0 and -1e9 clamped to -65504, are exact) and answers [Dv, H, Sq, B], which is permuted back to [Dv, Sq, H, B] as a view. NULL when the
    backend has no kernel for the shapes (Vulkan wants widths that are multiples of 8). */
 static struct ggml_tensor *flash(struct entry *p, const struct gnode *q, const struct gnode *k, const struct gnode *v,
                                  const struct gnode *mask, float scale) {
