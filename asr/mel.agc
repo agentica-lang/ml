@@ -96,12 +96,24 @@ end
 
 ## The features the encoder takes, `[1, mels, frames]` `F32` on `backend`. On
 ## `Reference` they are `log_mel` (the exact FFT in doubles); on every other
-## backend `spectrogram`, one graph that stays on the device.
-def features(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+## backend `spectrogram`, one graph that stays on the device. With a `plan`
+## (`Trace.compile` of `graph` over `specs`, on ggml) the graph runs as
+## compiled, with its constants made once; without one it is traced and run
+## once, uncached (`keep: false`), so it does not evict the graphs of a
+## decoder. The result is the caller's to close.
+def features(
+  samples: List[Float],
+  mels: Int,
+  frames: Int,
+  backend: Tensor.Backend,
+  plan: Optional[Trace.Compiled] = none,
+) -> Result[Tensor.Tensor]
   case backend
     Tensor.Backend.Reference -> Tensor.floats(try log_mel(samples, mels, frames), [1, mels, frames], backend)
-    Tensor.Backend.Ggml(_) -> spectrogram(samples, mels, frames, backend)
-    _ -> Native.arena do spectrogram(samples, mels, frames, backend) end
+    # No arena here: the result must outlive the call, and `run` closes the
+    # inputs and the check.
+    Tensor.Backend.Ggml(_) -> run(samples, mels, frames, backend, plan)
+    _ -> Native.arena do run(samples, mels, frames, backend, plan) end
   end
 end
 
@@ -110,31 +122,10 @@ end
 ## a matmul with a `[N_FFT, 2 * bins]` cosine and sine basis, the power, the
 ## mel filters as a second matmul, then the log, the floor and the scale. It
 ## computes in the backend's `F32` (the gap to `log_mel` is about 1e-5), and
-## an `Inf` or `NaN` sample, or one so large that the power overflows, is an
-## error.
+## an `Inf` or `NaN` sample, or one so large that the power overflows (about
+## 1.8e19), is an error.
 def spectrogram(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  inputs = try signal(samples, mels, frames, backend)
-  out = try Trace.eval_many(inputs, ->(xs: List[Tensor.Tensor]) { graph(xs, mels, frames, backend) })
-  checked(out)
-end
-
-## The three inputs of `graph`, `F32` on `backend`: the reflection of the first
-## samples, the `frames * HOP` samples (padded with zeros or trimmed), and the
-## reflection of the last ones.
-def signal(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
-  return error("log_mel needs mels >= 1, got #{mels}") if mels < 1
-  return error("log_mel needs frames >= 2, got #{frames}") if frames < 2
-  size = frames * HOP
-  half = N_FFT / 2
-  x = samples.take(size)
-  x = x + List.repeat(0.0, size - x.size)
-  left = x.drop(1).take(half).reverse
-  right = x.drop(size - half - 1).take(half).reverse
-  ok([
-    try Tensor.floats(left, [half], backend),
-    try Tensor.floats(x, [size], backend),
-    try Tensor.floats(right, [half], backend),
-  ])
+  run(samples, mels, frames, backend, none)
 end
 
 ## The specs of the three tensors of `signal`, for `Trace.compile`.
@@ -148,10 +139,11 @@ def specs(frames: Int, backend: Tensor.Backend) -> List[Trace.Spec]
 end
 
 ## The graph of `spectrogram` over the tensors of `signal`: the features, and
-## the sum of the features and of the samples, which is not finite when a
-## sample was not (`relu` hides a `NaN` inside the features). A caller that runs
-## it often compiles it once (`Trace.compile`), which keeps the constants for as
-## long as the task that built them lives.
+## the sum of the features, of the samples and the largest power, which is not
+## finite when a sample was not or its power overflowed (`relu` hides a `NaN`
+## or an `Inf` inside the features). A caller that runs it often compiles it
+## once (`Trace.compile`), which keeps the constants for as long as the task
+## that built them lives.
 def graph(xs: List[Tensor.Tensor], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   bins = N_FFT / 2 + 1
   basis = Trace.constant(try Tensor.floats(dft_basis(), [N_FFT, 2 * bins], backend))
@@ -173,36 +165,8 @@ def graph(xs: List[Tensor.Tensor], mels: Int, frames: Int, backend: Tensor.Backe
   floored = try Tensor.add(low, try Tensor.relu(try Tensor.sub(logs, low)))
   scaled = try Tensor.div(try Tensor.add(floored, try filled(4.0, floored)), try filled(4.0, floored))
   mel = try Tensor.reshape(try Tensor.transpose(scaled), [1, mels, frames])
-  ok([mel, try Tensor.add(try Tensor.sum(mel), try Tensor.sum(signal))])
-end
-
-## The features of the answer of `graph`, once their sum is finite.
-def checked(out: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
-  seen = try Tensor.to_list(out[1])
-  case seen[0]
-    Tensor.Values.Float(total) -> return error("log_mel needs finite samples of about -1..1") if total - total != 0.0
-    _ -> return error("the log-mel check is not a float")
-  end
-
-  ok(out[0])
-end
-
-## The mel filters as a row-major `[N_FFT / 2 + 1, mels]` matrix: bin `k`, filter `m`.
-def filter_matrix(mels: Int) -> List[Float]
-  bank = filters(mels)
-  out: List[Float] = []
-  for k in 0...(N_FFT / 2 + 1)
-    for f in bank
-      at = k - f.start
-      if at >= 0 and at < f.weights.size
-        out = out.push(f.weights[at])
-      else
-        out = out.push(0.0)
-      end
-    end
-  end
-
-  out
+  seen = try Tensor.add(try Tensor.sum(mel), try Tensor.sum(signal))
+  ok([mel, try Tensor.add(seen, try Tensor.max(power))])
 end
 
 private
@@ -296,6 +260,85 @@ def fft(z: Spectrum, order: List[Int], table: Spectrum) -> Spectrum
   end
 
   cur
+end
+
+## `features` once the plan is chosen: the three inputs, the graph (the plan,
+## or traced and run once), and the check.
+def run(
+  samples: List[Float],
+  mels: Int,
+  frames: Int,
+  backend: Tensor.Backend,
+  plan: Optional[Trace.Compiled],
+) -> Result[Tensor.Tensor]
+  inputs = try signal(samples, mels, frames, backend)
+  ran = case plan
+    some(p) -> Trace.run(p, inputs)
+    none -> Trace.eval_many(inputs, ->(xs: List[Tensor.Tensor]) { graph(xs, mels, frames, backend) }, false)
+  end
+
+  close(inputs)
+  checked(try ran)
+end
+
+## The three inputs of `graph`, `F32` on `backend`: the reflection of the first
+## samples, the `frames * HOP` samples (padded with zeros or trimmed), and the
+## reflection of the last ones.
+def signal(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  return error("log_mel needs mels >= 1, got #{mels}") if mels < 1
+  return error("log_mel needs frames >= 2, got #{frames}") if frames < 2
+  size = frames * HOP
+  half = N_FFT / 2
+  x = samples.take(size)
+  x = x + List.repeat(0.0, size - x.size)
+  left = x.drop(1).take(half).reverse
+  right = x.drop(size - half - 1).take(half).reverse
+  ok([
+    try Tensor.floats(left, [half], backend),
+    try Tensor.floats(x, [size], backend),
+    try Tensor.floats(right, [half], backend),
+  ])
+end
+
+## The features of the answer of `graph`, once their sum is finite; it closes the check.
+def checked(out: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  seen = Tensor.to_list(out[1])
+  close([out[1]])
+  case seen
+    ok(values) ->
+      case values[0]
+        Tensor.Values.Float(total) ->
+          return ok(out[0]) if total - total == 0.0
+
+          close([out[0]])
+          error("log_mel needs finite samples of about -1..1")
+        _ ->
+          close([out[0]])
+          error("the log-mel check is not a float")
+      end
+
+    error(e) ->
+      close([out[0]])
+      error(e)
+  end
+end
+
+## The mel filters as a row-major `[N_FFT / 2 + 1, mels]` matrix: bin `k`, filter `m`.
+def filter_matrix(mels: Int) -> List[Float]
+  bank = filters(mels)
+  out: List[Float] = []
+  for k in 0...(N_FFT / 2 + 1)
+    for f in bank
+      at = k - f.start
+      if at >= 0 and at < f.weights.size
+        out = out.push(f.weights[at])
+      else
+        out = out.push(0.0)
+      end
+    end
+  end
+
+  out
 end
 
 ## `max(x, floor)` from the primitives the backends lower.
@@ -543,4 +586,14 @@ end
 def log10(x: Float) -> Float
   return -10.0 if x <= FLOOR
   Math.log10(x)
+end
+
+## Closes the ggml tensors of `ts` now; the other backends' are the arena's.
+def close(ts: List[Tensor.Tensor]) -> Void
+  for t in ts
+    case t.handle
+      Tensor.Handle.Ggml(h) -> Native.close(h)
+      _ -> nil
+    end
+  end
 end

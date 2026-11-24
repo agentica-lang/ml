@@ -254,6 +254,26 @@ def test_on_libtorch_the_tiny_whisper_matches_the_peer() -> Result[Void]
   end
 end
 
+## On ggml a loaded model carries the compiled log-mel graph (`Model.mel`); the
+## features it runs equal those of the same graph traced and run once, which
+## is what a model without the plan does. Both have the window's shape.
+def test_on_ggml_the_log_mel_plan_and_the_traced_graph_agree() -> Result[Void]
+  with_fixtures do |dir|
+    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    for backend in try ggml_backends()
+      m = try Asr.open("#{dir}/speech/model.safetensors", backend)
+      try Test.assert(!m.mel.none?, "a ggml model has no log-mel plan")
+      frames = 2 * m.config.max_source_positions
+      planned = try Asr.features(m, pcm, frames)
+      traced = try Asr.features(m.with(mel: none), pcm, frames)
+      try Test.eq(Tensor.shape(planned), [1, m.config.num_mel_bins, frames])
+      try expect_close(try floats_of(planned), try floats_of(traced), F32, F32, "the log-mel plan")
+    end
+
+    ok()
+  end
+end
+
 ## A prompt of two ids, then one id twice (the second step concatenates onto
 ## a cache that already did), give the last three rows of the peer's logits
 ## for the same four tokens.

@@ -61,6 +61,10 @@ struct Model
   ## The compiled functions of this model that its transcriptions share (`planned`): a channel of one value, the map,
   ## which a task takes to read or change it and puts back at once.
   plans: Channel[Map[String, Trace.Compiled]]
+  ## On `Ggml`, the compiled log-mel graph (`compile_mel`), made once by `load`: its constants and its pin belong to the
+  ## task that opened the model. A plain field and not an entry of `plans`, because a lost map would lose a plan that
+  ## no transcription's task can build again.
+  mel: Optional[Trace.Compiled] = none
 end
 
 ## One attention's keys and values, `[1, keys, d_model]` each: `keys` is the
@@ -232,33 +236,17 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
     decoder_norm: try Load.layer_norm(c, "#{d}layer_norm", EPS, backend),
     logits: Nn.Dense(w: try Load.transposed(tokens.table), b: none),
     plans: try shared_plans(),
+    mel: try compile_mel(config, backend),
   )
 
-  try compile_mel(m)
   ok(m)
 end
 
-## The log-mel features of `pcm` as `[1, num_mel_bins, frames]` on the model's backend. On `Ggml` they are one graph
-## (`Mel.graph`) that `load` compiled, which keeps its constants (the DFT basis and the mel filters) for every
-## transcription: they are made there because a transcription's task closes what it opens. When the plan is not at hand
-## (`planned` could not take the model's map in time), the graph runs once as it is. On `Reference` the features are
-## `Mel.log_mel`, and on libtorch the same graph each time.
+## The log-mel features of `pcm` as `[1, num_mel_bins, frames]` on the model's backend (`Mel.features`), which the
+## caller closes. On `Ggml` they run the graph that `load` compiled; elsewhere `Mel.log_mel` on `Reference` and the same
+## graph, traced each time, on libtorch.
 def features(m: Model, pcm: List[Float], frames: Int) -> Result[Tensor.Tensor]
-  backend = Tensor.backend(m.tokens.table)
-  mels = m.config.num_mel_bins
-  return Mel.features(pcm, mels, frames, backend) if !compiled(backend)
-  inputs = try Mel.signal(pcm, mels, frames, backend)
-  plan = planned(
-    m,
-    mel_key(mels),
-    inputs.map { |t| Trace.spec_of(t) },
-    ->(_xs: List[Tensor.Tensor]) { error("not compiled") },
-  )
-
-  case plan
-    ok(p) -> Mel.checked(try Trace.run(p, inputs))
-    error(_) -> Mel.features(pcm, mels, frames, backend)
-  end
+  Mel.features(pcm, m.config.num_mel_bins, frames, Tensor.backend(m.tokens.table), m.mel)
 end
 
 ## The encoder output `[batch, ceil(frames / 2), d_model]` of a log-mel batch
@@ -608,24 +596,23 @@ struct Decided
   logprob: Float
 end
 
-## The name of the compiled log-mel graph of a model with `mels` bins (its size is always `2 * max_source_positions`).
-def mel_key(mels: Int) -> String = "mel #{mels}"
-
-## On `Ggml`, compiles the log-mel graph into the model's plans. It runs in the task that opens the model, so the
-## graph's constants outlive every transcription.
-def compile_mel(m: Model) -> Result[Void]
-  backend = Tensor.backend(m.tokens.table)
-  return ok() if !compiled(backend)
-  mels = m.config.num_mel_bins
-  frames = 2 * m.config.max_source_positions
-  _ = try planned(
-    m,
-    mel_key(mels),
-    Mel.specs(frames, backend),
-    ->(xs: List[Tensor.Tensor]) { Mel.graph(xs, mels, frames, backend) },
+## On `Ggml`, the log-mel graph compiled for the model's window. It runs in the task that opens the model, which is why
+## it is made here: a transcription's task closes what it opens, and the DFT basis and the mel filters are constants of
+## the graph. The plan keeps its pin, so the graph stays in ggml's cache and is not built again from its program on
+## every transcription; the pin belongs to this task and lives as long as the model does. `load` pays about 35 ms of
+## Agentica to make the basis, plus the upload of the constants.
+def compile_mel(config: Config, backend: Tensor.Backend) -> Result[Optional[Trace.Compiled]]
+  return ok(none) if !compiled(backend)
+  mels = config.num_mel_bins
+  frames = 2 * config.max_source_positions
+  ok(
+    some(
+      try Trace.compile(
+        Mel.specs(frames, backend),
+        ->(xs: List[Tensor.Tensor]) { Mel.graph(xs, mels, frames, backend) },
+      ),
+    ),
   )
-
-  ok()
 end
 
 ## `transcribe` once its arguments are checked. Each step's self-attention
@@ -633,7 +620,9 @@ end
 ## holds one cache at a time.
 def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Options, frames: Int) -> Result[Transcript]
   mel = try features(m, pcm, frames)
-  cache = try listen(m, try encode(m, mel))
+  audio = try encode(m, mel)
+  close([mel])
+  cache = try listen(m, audio)
   language = options.language.unwrap_or("en")
   probability = 1.0
   no_speech = 0.0

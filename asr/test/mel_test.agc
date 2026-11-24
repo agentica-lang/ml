@@ -17,7 +17,7 @@ HF_CLOSE = 0.000001
 CLOSE = 0.000000001
 
 ## The graph computes in `F32`; its gap to the doubles is about 1e-5.
-GRAPH_CLOSE = 0.0001
+GRAPH_CLOSE = 0.00005
 ## The golden values are in the first second: 100 frames.
 FIRST = 100
 
@@ -69,11 +69,20 @@ end
 def test_the_features_on_every_backend_match_hugging_face() -> Result[Void]
   golden = try JSON.parse(try String.from_bytes(try read_bytes(GOLDEN)))
   samples = (try pcm16(try read_bytes(WAV))).take(try JSON.int(try JSON.get(golden, "samples")))
-  nan = 1.0e308 * 10.0 - 1.0e308 * 10.0
+  inf = 1.0e308 * 10.0
+  nan = inf - inf
   all = try backends()
   for at in 0...all.size
     backend = all[at]
-    try Test.error?(Mel.features([0.5, nan], 4, 8, backend))
+    small = some(
+      try Trace.compile(Mel.specs(8, backend), ->(xs: List[Tensor.Tensor]) { Mel.graph(xs, 4, 8, backend) }),
+    )
+
+    try Test.error?(Mel.features([0.5, nan], 4, 8, backend, small))
+    try Test.error?(Mel.features([0.5, inf], 4, 8, backend, small))
+    # 1e30 is finite in F32 but its power is not.
+    try Test.error?(Mel.features([0.5, 1.0e30], 4, 8, backend, small))
+    try Test.ok?(Mel.features([0.5, 1.0e15], 4, 8, backend, small))
     # 128 mels (large-v3) on the first backend only: the graph is the same.
     sizes = [80]
     if at == 0
