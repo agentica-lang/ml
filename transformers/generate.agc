@@ -295,7 +295,8 @@ def compiled_step(g: Generator, cache: Cache, fed: List[Tensor.Tensor], room: In
 
   ran: Result[List[Tensor.Tensor]] = error("no step ran")
   case planned_step
-    # The plan stays cached in the generator, so a failed run leaves it in place (asr closes it: its plans die with the call).
+    # The plan stays cached in the generator, so a failed run leaves it in place (asr closes it: its plans die with
+    # the call).
     ok(plan) -> ran = Trace.run(plan, args, into)
     error(e) -> ran = error(e.message)
   end
