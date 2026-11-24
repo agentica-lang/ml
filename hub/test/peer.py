@@ -2,7 +2,8 @@
 standard library alone (struct + json) and the values a reader must find.
 
 Usage: python3 peer.py SET, with SET one of values, malformed, sharded, layer,
-block, decoder or half. Writes that set into a new temporary folder and prints its path.
+block, decoder, half, gguf or gguf_bad. The gguf sets are GGUF version 3 files,
+written by hand from the format's description. Writes that set into a new temporary folder and prints its path.
 """
 
 import json
@@ -340,8 +341,184 @@ def half(out):
     (out / "half.json").write_text(json.dumps({"sums": [sum(big[j * 320:(j + 1) * 320]) for j in range(320)]}))
 
 
+# GGUF: the value types are numbered as in the format, the tensor types as in ggml.
+GGUF_SCALARS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
+GGML_TYPES = {"F32": 0, "F16": 1, "Q8_0": 8, "Q4_K": 12, "I32": 26, "F64": 28, "BF16": 30}
+
+
+def g_string(s):
+    raw = s.encode()
+    return struct.pack("<Q", len(raw)) + raw
+
+
+def g_value(kind, v):
+    if kind == 8:
+        return g_string(v)
+    if kind == 9:
+        item, items = v
+        return struct.pack("<IQ", item, len(items)) + b"".join(g_value(item, x) for x in items)
+    return struct.pack("<" + GGUF_SCALARS[kind], v)
+
+
+def gguf(path, kvs, tensors, alignment=32, version=3, offsets=None):
+    """kvs: [(key, kind, value)]; tensors: [(name, dims as GGUF has them, ggml type, raw bytes)]; `offsets` puts each
+    tensor's info at that offset instead of where its bytes are."""
+    head = b"GGUF" + struct.pack("<IQQ", version, len(tensors), len(kvs))
+    for key, kind, v in kvs:
+        head += g_string(key) + struct.pack("<I", kind) + g_value(kind, v)
+    data, infos = b"", b""
+    for i, (name, dims, ggml, raw) in enumerate(tensors):
+        data += b"\0" * (-len(data) % alignment)
+        infos += g_string(name) + struct.pack("<I", len(dims)) + b"".join(struct.pack("<Q", x) for x in dims)
+        infos += struct.pack("<IQ", ggml, len(data) if offsets is None else offsets[i])
+        data += raw
+    head += infos
+    head += b"\0" * (-len(head) % alignment)
+    path.write_bytes(head + data)
+
+
+def g_tensor(dtype, shape, values):
+    """A tensor as GGUF has it: the dims are the shape reversed."""
+    t = tensor(dtype, shape, values)
+    return t["raw"], list(reversed(shape))
+
+
+def gguf_file(out):
+    """Every value type, an array of each kind, and tensors of F32, F16, BF16, F64, I32 and one Q8_0 block row."""
+    kvs = [
+        ("general.architecture", 8, "qwen3"),
+        ("general.alignment", 4, 32),
+        ("t.u8", 0, 200), ("t.i8", 1, -5), ("t.u16", 2, 65000), ("t.i16", 3, -30000), ("t.u32", 4, 4000000000),
+        ("t.i32", 5, -2000000000), ("t.f32", 6, 0.5), ("t.bool", 7, True), ("t.u64", 10, 2**40),
+        ("t.i64", 11, -2**40), ("t.f64", 12, 0.1), ("t.str", 8, "h\u00e9llo"),
+        ("t.arr_u32", 9, (4, [1, 2, 3])), ("t.arr_str", 9, (8, ["a", "bc", ""])), ("t.arr_empty", 9, (4, [])),
+        ("qwen3.rope.freq_base", 6, 1000000.0),
+    ]
+    f32 = [1.5, -2.25, 0.0, 3.0, 0.5, -0.125]
+    f16 = [1.0, -2.0, 0.5, 65504.0]
+    bf = [0x3F80, 0xC040, 0x0001, 0x7F7F]
+    blocks = struct.pack("<e", 0.5) + bytes(range(32))
+    entries = {
+        "token_embd.weight": ("F32", [3, 2], f32),
+        "output_norm.weight": ("F32", [2], [1.0, 2.0]),
+        "output.weight": ("F16", [2, 2], f16[:4]),
+        "blk.0.attn_q.weight": ("BF16", [2, 2], bf),
+        "blk.0.ffn_down.weight": ("F64", [2], [0.1, -1e300]),
+        "blk.1.attn_norm.weight": ("I32", [3], [-7, 0, 7]),
+        "rope_freqs.weight": ("F32", [1], [9.0]),
+    }
+    tensors = []
+    expected = {}
+    names = {"token_embd.weight": "model.embed_tokens.weight", "output_norm.weight": "model.norm.weight",
+             "output.weight": "lm_head.weight", "blk.0.attn_q.weight": "model.layers.0.self_attn.q_proj.weight",
+             "blk.0.ffn_down.weight": "model.layers.0.mlp.down_proj.weight",
+             "blk.1.attn_norm.weight": "model.layers.1.input_layernorm.weight", "rope_freqs.weight": "rope_freqs.weight"}
+    for name, (dtype, shape, values) in entries.items():
+        raw, dims = g_tensor(dtype, shape, values)
+        tensors.append((name, dims, GGML_TYPES[dtype], raw))
+        expected[names[name]] = decoded(tensor(dtype, shape, values))
+    gguf(out / "model.gguf", kvs, tensors)
+    # a Q8_0 row of one block (32 values, 34 bytes: a half scale, 32 bytes) has no dtype of tensor/: refused alone
+    raw, dims = g_tensor("F32", [2], [1.0, 2.0])
+    gguf(out / "q8.gguf", [kvs[0]], [("token_embd.weight", dims, 0, raw),
+                                     ("blk.0.ffn_up.weight", [32, 1], GGML_TYPES["Q8_0"], blocks)])
+    # one Q4_K block (256 values, 144 bytes) that is all of the data: the file opens, and reading the tensor is refused
+    gguf(out / "q4k.gguf", [kvs[0]], [("blk.0.ffn_up.weight", [256, 1], GGML_TYPES["Q4_K"], bytes(144))])
+    # big enough for `weights: F16`: a table, a BF16 matrix and an F32 one
+    def pattern(n):
+        return [((i * 7) % 17 - 8) / 16.0 for i in range(n)]
+    bf = lambda vs: [struct.unpack("<I", struct.pack("<f", v))[0] >> 16 for v in vs]
+    big = [("token_embd.weight", "F16", [400, 300], pattern(400 * 300)),
+           ("output.weight", "BF16", [320, 320], bf(pattern(320 * 320))),
+           ("blk.0.attn_q.weight", "F32", [320, 320], pattern(320 * 320))]
+    gguf(out / "half.gguf", [kvs[0]],
+         [(n, list(reversed(shape)), GGML_TYPES[dt], tensor(dt, shape, vs)["raw"]) for n, dt, shape, vs in big])
+    (out / "model.json").write_text(json.dumps({k: v for k, v in expected.items()}))
+
+
+def gguf_big_header(out):
+    """A header over the first read (8 MiB): a u8 array of 9 MiB, then the tensors."""
+    kvs = [("general.architecture", 8, "qwen3"), ("big", 9, (0, [7] * (9 * 1024 * 1024)))]
+    raw, dims = g_tensor("F32", [2, 2], [1.0, 2.0, 3.0, 4.0])
+    gguf(out / "big.gguf", kvs, [("token_embd.weight", dims, 0, raw)])
+    (out / "big.json").write_text(json.dumps(
+        {"model.embed_tokens.weight": {"dtype": "F32", "shape": [2, 2], "values": ["1.0", "2.0", "3.0", "4.0"]}}))
+
+
+def gguf_bad(out):
+    """One malformed file per reason: the reader must refuse each with a message that holds the word in `cases`."""
+    arch = ("general.architecture", 8, "qwen3")
+    good = g_tensor("F32", [2, 2], [1.0, 2.0, 3.0, 4.0])
+    row = lambda name, dims=None, ggml=0, raw=None: (name, dims or good[1], ggml, good[0] if raw is None else raw)
+    write = lambda name, kvs, tensors, **kw: gguf(out / (name + ".gguf"), kvs, tensors, **kw)
+    cases = {}
+
+    def case(name, word, kvs, tensors, **kw):
+        write(name, kvs, tensors, **kw)
+        cases[name + ".gguf"] = word
+
+    case("version2", "version 2", [arch], [row("token_embd.weight")], version=2)
+    case("alignment3", "power of two", [arch, ("general.alignment", 4, 3)], [row("token_embd.weight")])
+    case("two_dims_zero", "dimension of 0", [arch], [row("token_embd.weight", dims=[0, 2])])
+    case("five_dims", "5 dimensions", [arch], [row("token_embd.weight", dims=[1, 1, 1, 1, 2])])
+    case("unknown_type", "ggml type 19", [arch], [row("token_embd.weight", ggml=19)])
+    case("short_data", "past the", [arch], [row("token_embd.weight", dims=[2, 3])])
+    case("same_name", "twice", [arch], [row("token_embd.weight"), row("token_embd.weight")])
+    case("same_key", "twice", [arch, arch], [row("token_embd.weight")])
+    case("nested_array", "array of arrays", [arch, ("a", 9, (9, []))], [row("token_embd.weight")])
+    case("other_arch", "llama", [("general.architecture", 8, "llama")], [row("token_embd.weight")])
+    case("alignment0", "power of two", [arch, ("general.alignment", 4, 0)], [row("token_embd.weight")])
+    case("too_many_values", "past the", [arch], [row("token_embd.weight", dims=[2**62, 4])])
+    case("overlap", "overlaps", [arch], [row("token_embd.weight"), row("output.weight")], offsets=[0, 0])
+    case("unaligned", "multiple of 32", [arch], [row("token_embd.weight")], offsets=[8])
+    case("block_row", "multiple of 32", [arch], [row("token_embd.weight", dims=[31, 1], ggml=8, raw=b"\0" * 34)])
+    # raw edits of a good file
+    base = out / "ok.gguf"
+    gguf(base, [arch], [row("token_embd.weight")])
+    data = base.read_bytes()
+    (out / "magic.gguf").write_bytes(b"GGUX" + data[4:])
+    flag = g_string("b") + struct.pack("<I", 7)
+    gguf(out / "bad_bool.gguf", [arch, ("b", 7, True)], [row("token_embd.weight")])
+    raw = (out / "bad_bool.gguf").read_bytes()
+    (out / "bad_bool.gguf").write_bytes(raw.replace(flag + b"\x01", flag + b"\x02"))
+    cases["bad_bool.gguf"] = "boolean"
+    cases["magic.gguf"] = "not a GGUF"
+    (out / "cut.gguf").write_bytes(data[:30])
+    cases["cut.gguf"] = "ends inside the header"
+    (out / "empty.gguf").write_bytes(b"")
+    cases["empty.gguf"] = "ends inside the header"
+    huge = bytearray(data)
+    huge[8:16] = struct.pack("<Q", 2**40)
+    (out / "huge_count.gguf").write_bytes(bytes(huge))
+    cases["huge_count.gguf"] = "do not fit"
+    huge = bytearray(data)
+    huge[24:32] = struct.pack("<Q", 2**62)
+    (out / "huge_string.gguf").write_bytes(bytes(huge))
+    cases["huge_string.gguf"] = "past the end"
+    # a count of items past the end, a value type that does not exist, a string that is not UTF-8, a data start past
+    # the end of the file
+    gguf(out / "array_count.gguf", [arch, ("a", 9, (4, [1, 2, 3]))], [row("token_embd.weight")])
+    raw = (out / "array_count.gguf").read_bytes()
+    (out / "array_count.gguf").write_bytes(raw.replace(struct.pack("<IQ", 4, 3), struct.pack("<IQ", 4, 2**40)))
+    cases["array_count.gguf"] = "does not fit in the file"
+    gguf(out / "kv_type.gguf", [arch, ("u", 7, True)], [row("token_embd.weight")])
+    raw = (out / "kv_type.gguf").read_bytes()
+    (out / "kv_type.gguf").write_bytes(raw.replace(g_string("u") + struct.pack("<I", 7), g_string("u") + struct.pack("<I", 13)))
+    cases["kv_type.gguf"] = "value type 13"
+    gguf(out / "utf8.gguf", [arch, ("s", 8, "abcd")], [row("token_embd.weight")])
+    raw = (out / "utf8.gguf").read_bytes()
+    (out / "utf8.gguf").write_bytes(raw.replace(b"abcd", b"\xff\xfe\xfd\xfc"))
+    cases["utf8.gguf"] = "UTF-8"
+    gguf(out / "data_start.gguf", [arch, ("general.alignment", 4, 4096)], [], alignment=4096)
+    raw = (out / "data_start.gguf").read_bytes()
+    (out / "data_start.gguf").write_bytes(raw[:-100])
+    cases["data_start.gguf"] = "past the end of the file"
+    (out / "cases.json").write_text(json.dumps(cases))
+
+
 SETS = {"values": values_file, "malformed": malformed, "sharded": sharded,
-        "layer": layer, "block": block, "decoder": decoder, "half": half}
+        "layer": layer, "block": block, "decoder": decoder, "half": half,
+        "gguf": lambda out: (gguf_file(out), gguf_big_header(out)), "gguf_bad": gguf_bad}
 
 
 def main():

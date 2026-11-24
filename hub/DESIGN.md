@@ -1,12 +1,13 @@
 # hub — design
 
-Checkpoints in safetensors files, read in Agentica, and `nn/` layers built
-from them by tensor name. Local files only. Depends on `tensor/` and `nn/`.
+Checkpoints in safetensors files or GGUF files (llama.cpp's format), read in
+Agentica, and `nn/` layers built from them by tensor name. Local files only.
+Depends on `tensor/` and `nn/`.
 
 ## API
 
 ```text
-Hub.open(path) -> Result[Checkpoint]        a .safetensors file, or a sharded .index.json
+Hub.open(path) -> Result[Checkpoint]        a .safetensors file, a .gguf file, or a sharded .index.json
 Hub.names(c) -> List[String]                sorted
 Hub.has?(c, name) -> Bool
 Hub.tensor(c, name, backend, dtype = F32) -> Result[Tensor]   F32/F16/BF16 as F32 (F16 with dtype F16: ggml half weight), else the file's dtype (F64 on ggml: F32)
@@ -84,6 +85,45 @@ The test fixtures drop the `model.` part of the prefix
   `BF16` (an `F64` one) has no half form and stays `F32`. A `BF16` value under
   about 6e-8 (F16's smallest) becomes zero, and under 6e-5 it loses digits.
   `WEIGHTS=f16` (`Load.weights_from_env`) sets it for the tools.
+
+## GGUF
+
+`gguf.agc` reads version 3 files and, for now, the `qwen3` architecture only
+(another one is an error that names it). Little-endian files only, which is
+every file in use. `Hub.open` takes a file for GGUF by its `.gguf` extension,
+not by its magic. It is the same design as safetensors:
+
+- **Checked whole at `open`**: the magic, the version, the counts against the
+  size of the file, every string and array length, the alignment (a power of
+  two, 32 unless `general.alignment` says), and for each tensor the number of
+  dimensions (at most 4), its type, its size from its shape and type, its
+  offset (aligned, inside the data, clear of the others) and its name (once).
+  The header is read in one piece (8 MiB, then twice that until it fits, at
+  most 256 MiB); an array is skipped, not decoded, so a vocabulary of 150000
+  strings costs a length read each, and is read only when asked for.
+- **One reader for both formats.** A GGUF becomes a `Shards.Shard` (`shard.agc`,
+  which safetensors fills too), with the names of Hugging Face's checkpoint
+  (`blk.N.attn_q.weight` is `model.layers.N.self_attn.q_proj.weight`; the
+  table is `BLOCK_NAMES` and `TOP_NAMES`) and the shape the other way round
+  (GGUF lists the first dimension last). So `Hub.tensor`, `Load.*` and the
+  half path (`weights: F16`) work on it unchanged: an F32, F16 or BF16 tensor
+  is one `Tensor.from_file` of its byte range. No row permutation applies to
+  Qwen3 (checked against the F32 file of llama.cpp's converter, value for
+  value); a Llama-style rope would need one.
+- **The config is the file's key-values** (`Qwen3.gguf_config`): the key-values
+  are typed (`Gguf.int`, `Gguf.float`, `Gguf.string`), and `Hub.Checkpoint.gguf`
+  keeps the header. `rope.scaling.*` is refused.
+- **A tied model's loaded copy holds its table twice.** llama.cpp writes
+  `output.weight` for a tied model too (the file is as large as the
+  safetensors one, which keeps `lm_head.weight` as well), and the loader then
+  reads it as an untied head: the loaded Qwen3-0.6B holds the table twice,
+  0.3 GB more with `weights: F16` and 0.6 GB more in `F32`. A file without
+  `output.weight` is read as tied.
+- **Types.** F32, F16, BF16 (read by the backend), and F64 and the integers (as
+  in safetensors). A quantized type (Q8_0, Q4_K and the others) is sized and
+  checked in blocks (a tensor may fill the data), and the tensor is refused
+  when read: it has no `tensor/` dtype yet. A type that is not sized here (the
+  IQ types) refuses the whole file.
 
 ## Cost
 
