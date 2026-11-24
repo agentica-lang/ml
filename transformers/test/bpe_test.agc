@@ -28,7 +28,29 @@ def test_a_gguf_tokenizer_is_the_json_tokenizer() -> Result[Void]
     try Test.eq(gguf.nfc, json.nfc)
     checked = try Golden.bpe_of(gguf, "test/fixtures/bpe_golden.json")
     try Test.assert(checked > 100, "only #{checked} cases ran")
-    Test.error?(Bpe.decode(gguf, [json.pieces.size]))
+    # the padding after the last token is no id, the added tokens are cut out of the text, and a type 3 token is
+    # special while a type 4 one is not
+    try Test.error?(Bpe.decode(gguf, [json.pieces.size]))
+    try Test.eq(try Bpe.decode(gguf, [421]), "")
+    try Test.eq(try Bpe.decode(gguf, [421], false), "<|im_start|>")
+    Test.eq(try Bpe.decode(gguf, [423]), "<think>")
+  end
+end
+
+## An unused token (padding) before the added tokens moves their ids up and nothing else: the pieces keep theirs, and
+## the id in the gap decodes to nothing. A control token that `tokenizer.json` leaves visible is dropped by `decode`.
+def test_unused_and_control_tokens_in_a_gguf() -> Result[Void]
+  S.with_fixtures("test/bpe_gguf_peer.py", "agentica-bpe-gguf-") do |dir|
+    json = try Bpe.open(FIXTURE)
+    gap = try Bpe.open_gguf("#{dir}/unused_middle.gguf")
+    try Test.eq(gap.vocab, json.vocab)
+    try Test.eq(try Bpe.encode(gap, "<|im_start|>"), [422])
+    try Test.eq(try Bpe.encode(json, "<|im_start|>"), [421])
+    try Test.eq(try Bpe.decode(gap, [420], false), "")
+    try Test.eq(try Bpe.decode(gap, [422], false), "<|im_start|>")
+    control = try Bpe.open_gguf("#{dir}/think_control.gguf")
+    try Test.eq(try Bpe.decode(json, [423]), "<think>")
+    Test.eq(try Bpe.decode(control, [423]), "")
   end
 end
 

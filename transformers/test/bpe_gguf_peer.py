@@ -28,13 +28,15 @@ def g_array(kind, items):
     return struct.pack("<IQ", kind, len(items)) + b"".join(items)
 
 
-def gguf(path, tokens, types, merges, model="gpt2", pre="qwen2"):
+def gguf(path, tokens, types, merges, model="gpt2", pre="qwen2", omit=(), text=()):
+    """`omit` leaves keys out, `text` writes them as a string instead of an array."""
     kvs = [("general.architecture", 8, g_string("qwen3")),
            ("tokenizer.ggml.model", 8, g_string(model)),
            ("tokenizer.ggml.pre", 8, g_string(pre)),
            ("tokenizer.ggml.tokens", 9, g_array(8, [g_string(t) for t in tokens])),
            ("tokenizer.ggml.token_type", 9, g_array(5, [struct.pack("<i", t) for t in types])),
            ("tokenizer.ggml.merges", 9, g_array(8, [g_string(m) for m in merges]))]
+    kvs = [(k, 8, g_string("x")) if k in text else (k, kind, body) for k, kind, body in kvs if k not in omit]
     head = b"GGUF" + struct.pack("<IQQ", 3, 0, len(kvs))
     for key, kind, body in kvs:
         head += g_string(key) + struct.pack("<I", kind) + body
@@ -54,11 +56,23 @@ def write(out, source):
         else:
             tokens.append(added[i]["content"])
             types.append(CONTROL if added[i]["special"] else USER_DEFINED)
+    first = min(added)
     merges = [m if isinstance(m, str) else " ".join(m) for m in j["model"]["merges"]]
     gguf(out / "bpe.gguf", tokens + ["[PAD%d]" % top, "[PAD%d]" % (top + 1)], types + [UNUSED, UNUSED], merges)
+    # an unused id between the normal tokens and the added ones: the added tokens move up by one
+    gguf(out / "unused_middle.gguf", tokens[:first] + ["[PAD]"] + tokens[first:], types[:first] + [UNUSED] + types[first:],
+         merges)
+    # `<think>` as llama.cpp's control token: special for `decode`, which `tokenizer.json` does not say
+    gguf(out / "think_control.gguf", tokens, types[:-1] + [CONTROL], merges)
     gguf(out / "other_model.gguf", tokens, types, merges, model="llama")
     gguf(out / "other_pre.gguf", tokens, types, merges, pre="llama3")
     gguf(out / "byte_token.gguf", tokens, types[:-1] + [BYTE], merges)
+    gguf(out / "type_undefined.gguf", tokens, [0] + types[1:], merges)
+    gguf(out / "type_unknown.gguf", tokens, [2] + types[1:], merges)
+    gguf(out / "no_types.gguf", tokens, types, merges, omit=("tokenizer.ggml.token_type",))
+    gguf(out / "no_merges.gguf", tokens, types, merges, omit=("tokenizer.ggml.merges",))
+    gguf(out / "tokens_text.gguf", tokens, types, merges, text=("tokenizer.ggml.tokens",))
+    gguf(out / "merge_empty_half.gguf", tokens, types, merges + [" b"])
     gguf(out / "types_short.gguf", tokens, types[:-1], merges)
     gguf(out / "token_twice.gguf", tokens + [tokens[0]], types + [NORMAL], merges)
     gguf(out / "merge_no_space.gguf", tokens, types, merges + ["ab"])

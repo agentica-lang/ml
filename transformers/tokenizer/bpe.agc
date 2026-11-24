@@ -114,15 +114,15 @@ def from_gguf(h: Gguf.Header) -> Result[ByteLevelBpe]
   added: List[Added.Added] = []
   top = 0
   for id in 0...tokens.size
+    token = tokens[id]
     case kinds[id]
       1 ->
-        return error("#{h.path}: the token #{tokens[id].inspect} appears twice") if vocab.key?(tokens[id])
-        vocab = vocab.put(tokens[id], id)
+        return error("#{h.path}: the token #{token.inspect} appears twice") if vocab.key?(token)
+        vocab = vocab.put(token, id)
         top = id + 1
       3, 4 ->
-        return error("#{h.path}: the token #{id} has no text") if tokens[id].empty?
-        chars = tokens[id].split("").map { |c| c.code }
-        added = added.push(Added.Added(id: id, content: tokens[id], special: kinds[id] == 3, chars: chars))
+        return error("#{h.path}: the token #{id} has no text") if token.empty?
+        added = added.push(Added.of(id, token, kinds[id] == 3))
         top = id + 1
       5 -> 0
       _ -> return error("#{h.path}: the token #{id} has the type #{kinds[id]}, which is not supported")
@@ -136,7 +136,9 @@ def from_gguf(h: Gguf.Header) -> Result[ByteLevelBpe]
 
   ranks: Map[String, Int] = {}
   for i in 0...merges.size
-    return error("#{h.path}: merge #{i} is not a pair of tokens") if merges[i].split(" ").size != 2
+    pair = merges[i].split(" ")
+    return error("#{h.path}: merge #{i} is not a pair of tokens") if pair.size != 2 or pair[0].empty? or pair[1].empty?
+
     ranks = ranks.put(merges[i], i)
   end
 

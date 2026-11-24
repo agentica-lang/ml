@@ -115,7 +115,9 @@ of Qwen3-0.6B's file equal those of its `tokenizer.json`. Two differences,
 both from the file: it does not say whether the text is NFC-normalized (it is
 here, as in Qwen's `tokenizer.json`; llama.cpp does not normalize), and a
 control token is special, so `decode` leaves out `<|fim_prefix|>` and its five
-neighbours, which `tokenizer.json` does not mark special.
+neighbours by default (`skip_special`), which `tokenizer.json` does not mark
+special. An unused id after the last token does not decode; one between tokens
+decodes to the empty text.
 
 ```text
 tokenizer/unicode_data.agc   the tables (generated, frozen)

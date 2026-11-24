@@ -13,7 +13,7 @@ FIRST_READ = 8388608
 MAX_HEADER = 268435456
 ## What `parse` says when the bytes it was given end inside the header, and the file goes on.
 TRUNCATED = "the header continues past the bytes read"
-## The key-values and the tensors that a header may count.
+## The key-values, the tensors and the items of an array that is read that a header may count.
 MAX_COUNT = 1000000
 ## ggml's `GGML_MAX_DIMS`.
 MAX_DIMS = 4
@@ -163,10 +163,11 @@ def strings(h: Header, key: String) -> Result[List[String]]
   items = try array_of(h, key)
   return error("#{h.path}: #{key} is not an array of strings") if items.kind != 8
   b = try items_bytes(h, items)
+  where = "#{h.path}: #{key}"
   out: List[String] = []
   at = 0
   for _ in 0...items.count
-    t = try Shards.within("#{h.path}: #{key}", text(b, at, b.size))
+    t = try Shards.within(where, text(b, at, b.size))
     out = out.push(t.text)
     at = t.at
   end
@@ -211,7 +212,9 @@ end
 
 def array_of(h: Header, key: String) -> Result[Items]
   case try value(h, key)
-    Value.Array(items) -> ok(items)
+    Value.Array(items) ->
+      return error("#{h.path}: #{key} has #{items.count} items, more than #{MAX_COUNT}") if items.count > MAX_COUNT
+      ok(items)
     _ -> error("#{h.path}: #{key} is not an array")
   end
 end
