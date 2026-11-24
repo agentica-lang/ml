@@ -50,6 +50,8 @@ An activation is a function applied to each value, such as `relu`. The `Activati
 
 A causal mask stops each position from seeing the positions after it. `causal: true` applies it inside `attention`, and `causal_mask(size, dtype, backend)` builds the same additive mask for a caller that wants it.
 
+The module `pkg/nn/kv` holds what a decoder that steps one token at a time shares: `capacity(needed, limit)` (8, 16, 32, ... rows, so a compiled step changes shape only when the capacity grows), `Slots`, `padded_mask(slots, dtype)`, `spread_of(slots, dtype)` and `written(old, fresh, spread, axis)`, which puts the new rows of `fresh` at the positions of the slots in a cache padded with zeros (`axis` is the rows axis of both). On `Ggml` a model can write the rows in place with `Tensor.set_rows` instead.
+
 ## Transformer block
 
 An encoder block on the reference backend, run on an input of shape `[1, 5, 4]`:
