@@ -16,8 +16,8 @@ ABS = 0.000000001
 REL = 0.000000001
 
 # The cache on ggml is F16: its keys and values are rounded to 11 bits, so the logits of the tiny model drift by up to
-# 2.4e-4 (the real Qwen3-0.6B by 7e-3 on logits of 10 to 30); the bound is that gap with a margin, and no
-# relative part.
+# 2.4e-4 (the real Qwen3-0.6B by 7e-3 on logits of 10 to 30); the bound is that gap with a margin, and a
+# relative part of 1e-3 only.
 HALF_ABS = 0.0006
 HALF_REL = 0.001
 
