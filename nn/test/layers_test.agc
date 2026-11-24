@@ -250,6 +250,57 @@ def test_causal_attention_with_fewer_queries_than_keys_ends_on_the_last_key() ->
   S.expect_close(try S.floats_of(got), want.flat_map { |row| row }, ABS, REL, "end-aligned causal")
 end
 
+## A decoder that keeps the keys and values of its past: each token projected alone at its own position (`project`),
+## its key appended to the cache already rotated, and `attend` over the cache, gives the rows of the causal attention
+## over the whole sequence. Grouped-query attention with rope and query and key norms, as Qwen has.
+def test_a_token_projected_at_its_position_attends_as_the_full_sequence_does() -> Result[Void]
+  options = Nn.BlockOptions(kv_heads: some(2), rope: some(Nn.Rope()), qk_norm: true, bias: false, rms: true)
+  p = try S.jitter_attention(try Nn.init_attention(16, 4, 61, S.REF, options), 62)
+  data = Init.uniform_values(64, 1.0, 63)
+  x = try S.f32(data, [1, 4, 16])
+  full = try S.floats_of(try Nn.attention(p, x, x, none, true))
+  keys: List[Tensor.Tensor] = []
+  values: List[Tensor.Tensor] = []
+  rows: List[Float] = []
+  for t in 0...4
+    one = try Tensor.slice(x, [0, t, 0], [1, t + 1, 16])
+    at = try Tensor.arange(t, t + 1, 1, Tensor.Dtype.I32, S.REF)
+    h = try Nn.project(p, one, one, some(at))
+    keys = keys.push(h.key)
+    values = values.push(h.value)
+    out = try Nn.attend(p, h.query, try Tensor.concat(keys, 2), try Tensor.concat(values, 2))
+    rows = rows + try S.floats_of(out)
+  end
+
+  S.expect_close(rows, full, ABS, REL, "the steps of a cache")
+end
+
+## Positions that name `0...n` change nothing, others do, and rope reads one position per row.
+def test_positions_start_rope_where_they_say() -> Result[Void]
+  options = Nn.BlockOptions(rope: some(Nn.Rope()))
+  p = try S.jitter_attention(try Nn.init_attention(8, 2, 64, S.REF, options), 65)
+  x = try S.f32(Init.uniform_values(24, 1.0, 66), [1, 3, 8])
+  plain = try S.floats_of(try Nn.attention(p, x, x))
+  zero = try Tensor.arange(0, 3, 1, Tensor.Dtype.I32, S.REF)
+  later = try Tensor.arange(5, 8, 1, Tensor.Dtype.I32, S.REF)
+  try S.expect_close(try S.floats_of(try Nn.attention(p, x, x, positions: some(zero))), plain, ABS, REL, "0...3")
+  moved = try S.floats_of(try Nn.attention(p, x, x, positions: some(later)))
+  try Test.assert(moved != plain, "positions 5...8 gave the output of 0...3")
+  try Test.error?(Nn.attention(p, x, x, positions: some(try Tensor.arange(0, 2, 1, Tensor.Dtype.I32, S.REF))))
+  # Cross-attention over more keys than queries: each side has its own positions.
+  memory = try S.f32(Init.uniform_values(40, 1.0, 67), [1, 5, 8])
+  try Test.error?(Nn.attention(p, x, memory, positions: some(zero)))
+  both = try Nn.attention(
+    p,
+    x,
+    memory,
+    positions: some(zero),
+    memory_positions: some(try Tensor.arange(0, 5, 1, Tensor.Dtype.I32, S.REF)),
+  )
+
+  S.expect_close(try S.floats_of(both), try S.floats_of(try Nn.attention(p, x, memory)), ABS, REL, "cross")
+end
+
 def test_a_post_norm_decoder_block_matches_the_naive_model() -> Result[Void]
   x = Init.uniform_values(24, 1.0, 47)
   memory = Init.uniform_values(40, 1.0, 48)

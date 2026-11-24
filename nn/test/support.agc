@@ -144,6 +144,16 @@ def jitter_optional_norm(n: Optional[Nn.LayerNorm], seed: Int) -> Result[Optiona
   end
 end
 
+## The query and key norms of `p` with their own `gamma` and `beta`.
+def jitter_attention(p: Nn.Attention, seed: Int) -> Result[Nn.Attention]
+  ok(
+    p.with(
+      query_norm: try jitter_optional_norm(p.query_norm, seed),
+      key_norm: try jitter_optional_norm(p.key_norm, seed + 1),
+    ),
+  )
+end
+
 ## Every norm of the block, the query and key norms included, with its own
 ## `gamma` and `beta`.
 def jitter_encoder_block(p: Nn.EncoderBlock, seed: Int) -> Result[Nn.EncoderBlock]
