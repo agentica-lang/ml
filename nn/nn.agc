@@ -243,8 +243,8 @@ def project(
   memory_positions: Optional[Tensor.Tensor] = none,
 ) -> Result[Heads]
   kv_heads = p.kv_heads.unwrap_or(p.heads)
-  q = try normalized(p.query_norm, try split_heads(try dense(p.query, queries), p.heads))
-  k = try normalized(p.key_norm, try split_heads(try dense(p.key, memory), kv_heads))
+  q = try split_heads(try dense(p.query, queries), p.heads, p.query_norm)
+  k = try split_heads(try dense(p.key, memory), kv_heads, p.key_norm)
   v = try split_heads(try dense(p.value, memory), kv_heads)
   case p.rope
     some(r) ->
@@ -566,13 +566,14 @@ def finished(norm: Optional[LayerNorm], h: Tensor.Tensor) -> Result[Tensor.Tenso
   end
 end
 
-## `[batch, seq, heads * width]` to `[batch, heads, seq, width]`.
-def split_heads(x: Tensor.Tensor, heads: Int) -> Result[Tensor.Tensor]
+## `[batch, seq, heads * width]` to `[batch, heads, seq, width]`. The norm of each head, when there is one, runs
+## before the permute, on the contiguous `[batch, seq, heads, width]`: ggml then lowers the permute to a view.
+def split_heads(x: Tensor.Tensor, heads: Int, norm: Optional[LayerNorm] = none) -> Result[Tensor.Tensor]
   shape = Tensor.shape(x)
   return error("attention needs a rank-3 input, got #{shape}") if shape.size != 3
   return error("attention needs width #{shape[2]} divisible by #{heads} heads") if heads < 1 or shape[2] % heads != 0
   split = try Tensor.reshape(x, [shape[0], shape[1], heads, shape[2] / heads])
-  Tensor.permute(split, [0, 2, 1, 3])
+  Tensor.permute(try normalized(norm, split), [0, 2, 1, 3])
 end
 
 def merge_heads(x: Tensor.Tensor) -> Result[Tensor.Tensor]
