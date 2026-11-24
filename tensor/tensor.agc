@@ -857,7 +857,7 @@ end
 ## An index outside `[0, rows)` is an error. On every backend but `Ggml` the answer is a new tensor. In a trace that
 ## runs on `Ggml` it is the cache written in place (`Trace.run`): `cache` must be an input of the function, read by no
 ## other node, and the result must be an output, which is the very tensor given; `cache` is consumed (see
-## `Trace.run`), even when the run fails, and the cache must be `F32`; the written cache is not checked for finite
+## `Trace.run`), even when the run fails, and the cache must be `F32`, or `F16` for `F32` rows (ggml rounds them; a value beyond 65504 becomes infinite, as in llama.cpp); the written cache is not checked for finite
 ## values. `Trace.eval` writes a copy. No gradient.
 def set_rows(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) -> Result[Types.Tensor]
   _ = try same_backend(cache, fresh, "set_rows")

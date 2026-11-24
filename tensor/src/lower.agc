@@ -573,9 +573,9 @@ def half_operands(n: Types.Node) -> Result[Bool]
         Types.Op.Matmul -> i == 1 and (n.args[i].dtype != Types.Dtype.Q8_0 or try transposed(n.args[i]))
         Types.Op.Gather -> i == 0 and (n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i]))
         Types.Op.Transpose -> n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i])
-        Types.Op.ToDtype -> try gathered(n.args[0]) or (n.args[i].dtype == Types.Dtype.F16 and try leaf(n.args[0]))
-        Types.Op.SetRows -> i == 0 and n.args[i].dtype == Types.Dtype.F16
-        Types.Op.Attention(_) -> (i == 1 or i == 2) and n.args[i].dtype == Types.Dtype.F16
+        Types.Op.ToDtype -> try gathered(n.args[0]) or (n.args[i].dtype == Types.Dtype.F16 and try an_input(n.args[0]))
+        Types.Op.SetRows -> i == 0 and n.args[i].dtype == Types.Dtype.F16 and try an_input(n.args[0])
+        Types.Op.Attention(_) -> (i == 1 or i == 2) and n.args[i].dtype == Types.Dtype.F16 and try cached(n.args[i])
         _ -> false
       end
 
@@ -596,6 +596,26 @@ def cache_output(t: Types.Tensor, n: Types.Node) -> Result[Bool]
   case n.op
     Types.Op.ToDtype -> ok(true)
     Types.Op.SetRows -> ok(true)
+    _ -> ok(false)
+  end
+end
+
+## The tensor `t` is an input of the graph (a constant is a weight, which is not widened or written).
+def an_input(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Input -> ok(true)
+    _ -> ok(false)
+  end
+end
+
+## The `F16` tensor `t` is an input, the result of a `set_rows` or of a `to_dtype`: where a cache comes from.
+def cached(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Input -> ok(true)
+    Types.Op.SetRows -> ok(true)
+    Types.Op.ToDtype -> ok(true)
     _ -> ok(false)
   end
 end

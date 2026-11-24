@@ -127,15 +127,29 @@ def test_an_f16_cache_goes_nowhere_else() -> Result[Void]
   return ok() if !try Support.ggml_present()
 
   cache = try halved(try floats(odd(8, 5), [2, 4], CPU))
-  try refused(cache, "add") do |x| Tensor.add(x, x) end
-  refused(cache, "output 0") do |x| Tensor.transpose(x) end
+  rows = try floats(odd(4, 7), [1, 4], CPU)
+  half_rows = try halved(rows)
+  row = try Tensor.from_list([Tensor.Values.Int(1)], [1], Tensor.Dtype.I32, CPU)
+  try refused([cache], "add") do |x| Tensor.add(x[0], x[0]) end
+  try refused([cache], "output 0") do |x| Tensor.transpose(x[0]) end
+  try refused([cache], "reshape") do |x| Tensor.reshape(x[0], [4, 2]) end
+  # an F16 query, F16 rows for set_rows, a cache that is not an input, and a weight (a constant) widened
+  q = try halved(try floats(odd(8, 3), [1, 1, 1, 8], CPU))
+  k = try halved(try floats(odd(64, 5), [1, 1, 8, 8], CPU))
+  try refused([q, k], "(attention)") do |x| Tensor.attention(x[0], x[1], x[1], none, none, false) end
+  try refused([cache, half_rows, row], "F16 operand") do |x| Tensor.set_rows(x[0], x[1], x[2]) end
+  try refused([rows, rows, row], "operand") do |x|
+    Tensor.set_rows(try Tensor.to_dtype(try Tensor.reshape(x[0], [1, 4]), Tensor.Dtype.F16), x[1], x[2])
+  end
+
+  refused([rows], "operand") do |_x| Tensor.to_dtype(Trace.constant(cache), Tensor.Dtype.F32) end
 end
 
-## The function of the F16 `cache` that does not run, and says `text`.
-def refused(cache: Tensor.Tensor, text: String, f: Fn[Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Void]
-  compiled = Trace.compile([Trace.spec_of(cache)], ->(xs: List[Tensor.Tensor]) { ok([try f.call(xs[0])]) })
+## The function of `args` that does not run, and says `text`.
+def refused(args: List[Tensor.Tensor], text: String, f: Fn[List[Tensor.Tensor], Result[Tensor.Tensor]]) -> Result[Void]
+  compiled = Trace.compile(args.map { |t| Trace.spec_of(t) }, ->(xs: List[Tensor.Tensor]) { ok([try f.call(xs)]) })
   ran = case compiled
-    ok(c) -> Trace.run(c, [cache])
+    ok(c) -> Trace.run(c, args)
     error(e) -> error(e.message)
   end
 

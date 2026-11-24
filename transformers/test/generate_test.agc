@@ -16,9 +16,10 @@ ABS = 0.000000001
 REL = 0.000000001
 
 # The cache on ggml is F16: its keys and values are rounded to 11 bits, so the logits of the tiny model drift by up to
-# 3e-4 (the real Qwen3-0.6B by 7e-3 on logits of 10 to 30).
+# 2.4e-4 (the real Qwen3-0.6B by 7e-3 on logits of 10 to 30); the bound is that gap with a margin, and no
+# relative part.
 HALF_ABS = 0.0006
-HALF_REL = 0.03
+HALF_REL = 0.001
 
 ## Prompts of 5 (padded to 8), exactly 8 and 9 (padded to 16).
 def test_each_step_matches_the_forward_over_the_whole_row() -> Result[Void]
