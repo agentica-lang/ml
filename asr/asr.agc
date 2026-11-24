@@ -87,11 +87,10 @@ struct Cache
   graphs: Map[String, Trace.Compiled] = {}
 end
 
-## One block's cross-attention keys and values, split by head: `keys[h]` is
-## `[head_width, frames]` (transposed), `values[h]` is `[frames, head_width]`.
+## One block's cross-attention keys and values, each `[1, heads, frames, head_width]`.
 struct Heard
-  keys: List[Tensor.Tensor]
-  values: List[Tensor.Tensor]
+  key: Tensor.Tensor
+  value: Tensor.Tensor
 end
 
 ## One step's forward: the logits of the last token, and per decoder block
@@ -346,12 +345,14 @@ def listen(m: Model, audio: Tensor.Tensor) -> Result[Cache]
     return error("listen needs audio [1, frames, #{m.config.d_model}] from encode, got #{heard}")
   end
 
-  # One graph per block keeps each under ggml's 256 outputs: 2 per head.
   cross: List[Heard] = []
   for i in 0...m.decoder.size
-    heads = try run(m, [audio], ->(model: Model, xs: List[Tensor.Tensor]) { split_heads(model.decoder[i], xs[0]) })
-    n = m.decoder[i].cross_attention.heads
-    cross = cross.push(Heard(keys: heads.take(n), values: heads.drop(n)))
+    case run(m, [audio], ->(model: Model, xs: List[Tensor.Tensor]) { split_heads(model.decoder[i], xs[0]) })
+      ok(kv) -> cross = cross.push(Heard(key: kv[0], value: kv[1]))
+      error(e) ->
+        close(cross.flat_map { |h| [h.key, h.value] })
+        return error(e)
+    end
   end
 
   ok(Cache(cross: cross, own: [], length: 0, graphs: {}))
@@ -568,6 +569,28 @@ def picked(scores: Tensor.Tensor) -> Result[Tensor.Tensor]
   id = try Tensor.sub(try Tensor.full([1], Tensor.Values.Float(v.to_f), dtype, backend), best)
   total = try Tensor.sum(try Tensor.exp(try Tensor.sub(scores, top)), some([0]), true)
   Tensor.concat([id, try Tensor.neg(try Tensor.log(total))], 0)
+end
+
+## The tensors of `c` a compiled step takes after the ids and the positions:
+## per decoder block the cross-attention key then value, then the
+## self-attention keys and values.
+def step_inputs(c: Cache) -> List[Tensor.Tensor] = c.cross.flat_map { |h| [h.key, h.value] } + kept(c)
+
+## `c` with its tensors replaced, in the order of `step_inputs`, by `xs`.
+def cache_over(c: Cache, xs: List[Tensor.Tensor]) -> Cache
+  at = 0
+  cross: List[Heard] = []
+  for _ in c.cross
+    cross = cross.push(Heard(key: xs[at], value: xs[at + 1]))
+    at += 2
+  end
+
+  own: List[Kv] = []
+  for i in 0...c.own.size
+    own = own.push(Kv(key: xs[at + 2 * i], value: xs[at + 2 * i + 1]))
+  end
+
+  c.with(cross: cross, own: own)
 end
 
 private
@@ -829,23 +852,16 @@ def stem(m: Model, mel: Tensor.Tensor) -> Result[Tensor.Tensor]
   Nn.positional(m.encoder_positions, try Tensor.stack(items, 0))
 end
 
-## The cross-attention keys of each head of `block` over the encoder output
-## `audio` (transposed), then the values of each head.
+## The cross-attention key and value of `block` over the encoder output `audio`, each `[1, heads, frames, head_width]`.
 def split_heads(block: Nn.DecoderBlock, audio: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
-  frames = Tensor.shape(audio)[1]
-  d = Tensor.shape(audio)[2]
   a = block.cross_attention
-  k = try Tensor.reshape(try Nn.dense(a.key, audio), [frames, d])
-  v = try Tensor.reshape(try Nn.dense(a.value, audio), [frames, d])
-  width = d / a.heads
-  keys: List[Tensor.Tensor] = []
-  values: List[Tensor.Tensor] = []
-  for h in 0...a.heads
-    keys = keys.push(try Tensor.transpose(try Tensor.slice(k, [0, h * width], [frames, (h + 1) * width])))
-    values = values.push(try Tensor.slice(v, [0, h * width], [frames, (h + 1) * width]))
-  end
+  ok([try by_head(try Nn.dense(a.key, audio), a.heads), try by_head(try Nn.dense(a.value, audio), a.heads)])
+end
 
-  ok(keys + values)
+## `x` `[1, n, d]` as `[1, heads, n, d / heads]`.
+def by_head(x: Tensor.Tensor, heads: Int) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(x)
+  Tensor.permute(try Tensor.reshape(x, [1, shape[1], heads, shape[2] / heads]), [0, 2, 1, 3])
 end
 
 ## The forward of the integer ids `ids` (`[n]`) after the tokens of `cache`.
@@ -908,8 +924,14 @@ def forward(m: Model, cache: Cache, ids: Tensor.Tensor, slots: Optional[Slots] =
 
     c = block.cross_attention
     x = try Nn.layer_norm(block.norm2, h)
-    heard = try attend(try Tensor.reshape(try Nn.dense(c.query, x), [n, d]), cache.cross[i])
-    h = try Tensor.add(h, try Nn.dense(c.output, try Tensor.reshape(heard, [1, n, d])))
+    heard = try Tensor.attention(
+      try by_head(try Nn.dense(c.query, x), c.heads),
+      cache.cross[i].key,
+      cache.cross[i].value,
+    )
+
+    heard = try Tensor.reshape(try Tensor.permute(heard, [0, 2, 1, 3]), [1, n, d])
+    h = try Tensor.add(h, try Nn.dense(c.output, heard))
     h = try Tensor.add(h, try Nn.mlp(block.mlp, try Nn.layer_norm(block.norm3, h)))
   end
 
@@ -1067,9 +1089,7 @@ def lifted(t: Optional[Tensor.Tensor]) -> Optional[Tensor.Tensor] = t.map { |x| 
 ## `c` with every tensor a constant of the current trace.
 def traced_cache(c: Cache) -> Cache
   c.with(
-    cross: c.cross.map { |h|
-      Heard(keys: h.keys.map { |t| Trace.constant(t) }, values: h.values.map { |t| Trace.constant(t) })
-    },
+    cross: c.cross.map { |h| Heard(key: Trace.constant(h.key), value: Trace.constant(h.value)) },
     own: c.own.map { |kv| Kv(key: Trace.constant(kv.key), value: Trace.constant(kv.value)) },
   )
 end
@@ -1274,29 +1294,6 @@ def state_at(state: Tensor.Tensor, k: Int, v: Int) -> Result[Tensor.Tensor]
   Tensor.broadcast_to(try Tensor.slice(state, [k], [k + 1]), [v])
 end
 
-## The tensors of `c` a compiled step takes after the ids and the positions:
-## per decoder block the cross-attention keys then values of every head, then
-## the self-attention keys and values.
-def step_inputs(c: Cache) -> List[Tensor.Tensor] = c.cross.flat_map { |h| h.keys + h.values } + kept(c)
-
-## `c` with its tensors replaced, in the order of `step_inputs`, by `xs`.
-def cache_over(c: Cache, xs: List[Tensor.Tensor]) -> Cache
-  at = 0
-  cross: List[Heard] = []
-  for h in c.cross
-    n = h.keys.size
-    cross = cross.push(Heard(keys: xs.drop(at).take(n), values: xs.drop(at + n).take(n)))
-    at += 2 * n
-  end
-
-  own: List[Kv] = []
-  for i in 0...c.own.size
-    own = own.push(Kv(key: xs[at + 2 * i], value: xs[at + 2 * i + 1]))
-  end
-
-  c.with(cross: cross, own: own)
-end
-
 ## The weights of an encoder block, in the order `encoder_over` reads them.
 def encoder_parts(b: Nn.EncoderBlock) -> List[Tensor.Tensor]
   a = b.attention
@@ -1352,28 +1349,6 @@ def dense_over(p: Nn.Dense, xs: List[Tensor.Tensor], at: Int) -> Nn.Dense
     some(_) -> Nn.Dense(w: xs[at], b: some(xs[at + 1]))
     none -> Nn.Dense(w: xs[at], b: none)
   end
-end
-
-## Attention of the queries `[n, d_model]` over one block's cached heads, as
-## `Tensor.multi_head_attention` computes it, without slicing the keys and
-## values again at every step.
-def attend(queries: Tensor.Tensor, heard: Heard) -> Result[Tensor.Tensor]
-  n = Tensor.shape(queries)[0]
-  width = Tensor.shape(heard.values[0])[1]
-  scale = try Tensor.full(
-    [n, width],
-    Tensor.Values.Float(1.0 / Math.sqrt(width.to_f)),
-    Tensor.dtype(queries),
-    Tensor.backend(queries),
-  )
-
-  parts: List[Tensor.Tensor] = []
-  for h in 0...heard.keys.size
-    q = try Tensor.mul(try Tensor.slice(queries, [0, h * width], [n, (h + 1) * width]), scale)
-    parts = parts.push(try Tensor.matmul(try Tensor.softmax(try Tensor.matmul(q, heard.keys[h]), 1), heard.values[h]))
-  end
-
-  Tensor.concat(parts, 1)
 end
 
 def floats(t: Tensor.Tensor) -> Result[List[Float]]

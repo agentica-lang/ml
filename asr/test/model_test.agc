@@ -120,6 +120,49 @@ RULES = Greedy.Rules(
   max_initial: 2,
 )
 
+## `cache_over` reads the tensors `step_inputs` lists in the same order, across several blocks: a cache of three blocks,
+## each tensor of its own value, comes back unchanged, and the order of the list is the blocks' cross key and value, then
+## the self-attention keys and values.
+def test_a_cache_over_its_own_inputs_is_the_same_cache() -> Result[Void]
+  next = 0.0
+  cross: List[Asr.Heard] = []
+  own: List[Asr.Kv] = []
+  for _ in 0...3
+    cross = cross.push(Asr.Heard(key: try tagged(next), value: try tagged(next + 1.0)))
+    next += 2.0
+  end
+
+  for _ in 0...3
+    own = own.push(Asr.Kv(key: try tagged(next), value: try tagged(next + 1.0)))
+    next += 2.0
+  end
+
+  c = Asr.Cache(cross: cross, own: own, length: 2, graphs: {})
+  inputs = Asr.step_inputs(c)
+  try Test.eq(inputs.size, 12)
+  try Test.eq(try firsts(inputs), (0...12).map { |i| i.to_f })
+  back = Asr.cache_over(c, inputs)
+  try Test.eq(Asr.step_inputs(back).size, 12)
+  for i in 0...12
+    try Test.eq(try floats_of(Asr.step_inputs(back)[i]), try floats_of(inputs[i]))
+  end
+
+  ok()
+end
+
+## The first number of each tensor of `ts`.
+def firsts(ts: List[Tensor.Tensor]) -> Result[List[Float]]
+  out: List[Float] = []
+  for t in ts
+    out = out.push((try floats_of(t))[0])
+  end
+
+  ok(out)
+end
+
+## A one-element tensor holding `x`.
+def tagged(x: Float) -> Result[Tensor.Tensor] = f32([x], [1])
+
 def test_the_tiny_whisper_matches_the_peer() -> Result[Void]
   with_fixtures do |dir|
     want = try JSON.parse(try File.read_text("#{dir}/expected.json"))

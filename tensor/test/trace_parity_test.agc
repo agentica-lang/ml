@@ -82,6 +82,8 @@ def all_cases() -> Result[List[Case]]
     Case(name: "tanh", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.tanh(x[0]) }),
     Case(name: "gelu", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.gelu_tanh_approx(x[0]) }),
     Case(name: "gelu_erf", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.gelu_erf(x[0]) }),
+    Case(name: "layer_norm", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.layer_norm(x[0], 0.00001) }),
+    Case(name: "layer_norm of a bad eps", args: [w], f: ->(x: List[Tensor.Tensor]) { Tensor.layer_norm(x[0], 0.0) }),
     Case(name: "eq", args: [v, w], f: ->(x: List[Tensor.Tensor]) { Tensor.eq(x[0], x[1]) }),
     Case(name: "lt", args: [v, w], f: ->(x: List[Tensor.Tensor]) { Tensor.lt(x[0], x[1]) }),
     Case(
