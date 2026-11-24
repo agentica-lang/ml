@@ -176,11 +176,11 @@ jobs:
         # The 10x loosens the runaway guard for every member; that is fine
         # here, because the guard only catches an infinite loop, which still
         # ends, and the job has its own timeout-minutes.
-        # TENSOR_REQUIRE_GGML: tensor/, train/ and asr/ build ggml in the
+        # TENSOR_REQUIRE_GGML: tensor/, nn/, train/ and asr/ build ggml in the
         # engine step, so a ggml module that did not build fails their tests
         # instead of passing them through the absent path.
         env:
-          TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "train", "asr"]'), matrix.package) && '1' || '' }}
+          TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "nn", "train", "asr"]'), matrix.package) && '1' || '' }}
         run: agentica test --max-steps 10000000
 
       # The round-trip tests of tensor/ (from_file) again, with the weights read

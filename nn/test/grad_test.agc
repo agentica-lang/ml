@@ -65,7 +65,7 @@ end
 ## cross-attention), differentiated together. The block's `F32` weights enter
 ## as `F64` constants.
 def test_the_gradient_of_a_decoder_block_matches_a_central_difference() -> Result[Void]
-  block = try lift_block(try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF))
+  block = try S.lift_decoder_block(try Nn.init_decoder_block(2, 2, 3, Nn.Activation.Silu, 29, S.REF), Tensor.Dtype.F64)
   check(
     [try filler([1, 2, 2], 10), try filler([1, 3, 2], 9)],
     ->(ps: List[Tensor.Tensor]) { squared(try Nn.decoder_block(block, ps[0], ps[1])) },
@@ -131,44 +131,6 @@ def mlp_loss(ps: List[Tensor.Tensor], x: Tensor.Tensor) -> Result[Tensor.Tensor]
   squared(try Nn.mlp(m, Trace.constant(x)))
 end
 
-def lift(t: Tensor.Tensor) -> Result[Tensor.Tensor] = ok(Trace.constant(try Tensor.to_dtype(t, Tensor.Dtype.F64)))
-
-def lift_dense(d: Nn.Dense) -> Result[Nn.Dense]
-  b: Optional[Tensor.Tensor] = case d.b
-    some(t) -> some(try lift(t))
-    none -> none
-  end
-
-  ok(Nn.Dense(w: try lift(d.w), b: b))
-end
-
-def lift_norm(n: Nn.LayerNorm) -> Result[Nn.LayerNorm] = ok(n.with(gamma: try lift(n.gamma), beta: try lift(n.beta)))
-
-def lift_attention(a: Nn.Attention) -> Result[Nn.Attention]
-  ok(
-    a.with(
-      query: try lift_dense(a.query),
-      key: try lift_dense(a.key),
-      value: try lift_dense(a.value),
-      output: try lift_dense(a.output),
-    ),
-  )
-end
-
-## The block with every weight as an `F64` `Trace` constant.
-def lift_block(p: Nn.DecoderBlock) -> Result[Nn.DecoderBlock]
-  ok(
-    Nn.DecoderBlock(
-      norm1: try lift_norm(p.norm1),
-      self_attention: try lift_attention(p.self_attention),
-      norm2: try lift_norm(p.norm2),
-      cross_attention: try lift_attention(p.cross_attention),
-      norm3: try lift_norm(p.norm3),
-      mlp: p.mlp.with(up: try lift_dense(p.mlp.up), down: try lift_dense(p.mlp.down)),
-    ),
-  )
-end
-
 def squared(y: Tensor.Tensor) -> Result[Tensor.Tensor] = Tensor.sum(try Tensor.mul(y, y))
 
 ## The gradient of `loss` at `args` against its central difference, value by
@@ -207,3 +169,58 @@ def at(
   out = try S.floats_of(try Trace.eval(moved, loss))
   ok(out[0])
 end
+
+## Plain gradient descent on a Qwen-like block (grouped-query attention, rope,
+## query and key norms, RMS norms, a gated MLP, causal) towards a fixed
+## target: the loss falls on every step.
+def test_a_training_step_through_the_configured_block_lowers_the_loss() -> Result[Void]
+  options = Nn.BlockOptions(
+    kv_heads: some(1),
+    rope: some(Nn.Rope()),
+    qk_norm: true,
+    bias: false,
+    rms: true,
+    gated: true,
+  )
+
+  start = try Nn.init_encoder_block(8, 4, 12, Nn.Activation.Silu, 61, S.REF, options)
+  params: List[Tensor.Tensor] = []
+  for t in S.qwen_params(start)
+    params = params.push(try as_f64(t))
+  end
+
+  x = try filler([1, 3, 8], 3)
+  target = try filler([1, 3, 8], 7)
+  loss = ->(ps: List[Tensor.Tensor]) { fit_loss(start, ps, x, target) }
+
+  losses: List[Float] = []
+  for _ in 0...6
+    step = try Trace.value_and_grad(params, loss)
+    losses = losses.push((try S.floats_of(step.value))[0])
+    moved: List[Tensor.Tensor] = []
+    for i in 0...params.size
+      rate = try Tensor.full(Tensor.shape(params[i]), Tensor.Values.Float(0.002), Tensor.Dtype.F64, S.REF)
+      moved = moved.push(try Tensor.sub(params[i], try Tensor.mul(step.grads[i], rate)))
+    end
+
+    params = moved
+  end
+
+  for i in 1...losses.size
+    try Test.assert(losses[i] < losses[i - 1], "the loss rose at step #{i}: #{losses}")
+  end
+
+  ok()
+end
+
+def fit_loss(
+  start: Nn.EncoderBlock,
+  ps: List[Tensor.Tensor],
+  x: Tensor.Tensor,
+  target: Tensor.Tensor,
+) -> Result[Tensor.Tensor]
+  y = try Nn.encoder_block(S.qwen_block(start, ps), Trace.constant(x), none, true)
+  squared(try Tensor.sub(y, Trace.constant(target)))
+end
+
+def as_f64(t: Tensor.Tensor) -> Result[Tensor.Tensor] = Tensor.to_dtype(t, Tensor.Dtype.F64)

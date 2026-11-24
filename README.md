@@ -40,7 +40,7 @@ not stable yet, so keep the commit pin.
 | Folder | What | Needs |
 |---|---|---|
 | `tensor/` | the tensor API, the backend interface, a slow reference backend in Agentica, the libtorch (eager) backend behind a thin C++ layer, and the ggml backend (CPU and Vulkan), which runs a traced function as one graph | nothing native for the reference backend; libtorch 2.4.1+cpu, **optional**, for `Backend.Torch`; ggml (the `third_party/ggml` submodule, built by `tensor/tools/build-engine.sh`), **optional**, for `Backend.Ggml` |
-| `nn/` | functional layers, forward only: dense, layer norm, embeddings, convolution, attention, MLP, transformer encoder and decoder blocks, seeded initializers | `tensor` |
+| `nn/` | functional layers, forward only: dense, layer norm, embeddings, convolution, attention (grouped-query, rotary), MLP, transformer encoder and decoder blocks and stacks, seeded initializers | `tensor` |
 | `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam), a data loader (seeded shuffle, background prefetch), the training loop over `tensor/`'s gradients | `tensor`, `hub` (and `nn` through it) |
 | `hub/` | `safetensors` checkpoints (one file or sharded with an index) read in Agentica, and `nn` layers loaded from them by name | `tensor`, `nn` |
 | `asr/` | Whisper in Agentica: the model forward loaded from a Hugging Face checkpoint, its log-mel frontend, its tokenizer and `transcribe` (greedy decoding with a KV cache, language detection, timestamps, translation) for up to 30 s of audio; on the reference backend, libtorch and ggml (CPU and Vulkan) | `tensor`, `nn`, `hub` |

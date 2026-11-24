@@ -15,7 +15,7 @@ Works today.
 | Piece | What is in |
 |---|---|
 | `tensor/` | the API, 49 backend primitives and the derived ops over them, the pure Agentica reference backend (the oracle), the libtorch CPU backend (47 of the 49), the ggml backend on CPU and Vulkan (a traced graph compiles to one ggml graph, with a structural cache), tracing, `value_and_grad` and backward rules for most ops, property tests |
-| `nn/` | dense, layer norm, embeddings, convolution, attention, MLP, encoder and decoder blocks, seeded initializers, `gelu_tanh_approx` on libtorch |
+| `nn/` | dense, layer norm, embeddings, convolution, attention (grouped-query, rotary), MLP, encoder and decoder blocks and stacks (pre or post norm), seeded initializers, `gelu_tanh_approx` on libtorch |
 | `train/` | `mse`, binary and softmax cross-entropy, SGD, Adam, `Train.fit`, a data loader (seeded shuffle, background prefetch) |
 | `hub/` | safetensors (one file or sharded), `nn` layers loaded by name, float weights read by the backend from the file (`Tensor.from_file`, [PR #67](https://github.com/agentica-lang/ml/pull/67)) |
 | `asr/` | Whisper end to end (Via B): log-mel, tokenizer, greedy decoding with a padded KV cache, timestamps, language detection, translation, up to 30 s of audio. It runs on the reference backend, libtorch and ggml (CPU and Vulkan), and its tokens equal Hugging Face's on the test clips (`asr/test/fixtures/transcribe_golden.json`) |

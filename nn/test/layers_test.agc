@@ -190,3 +190,86 @@ def test_a_later_token_does_not_change_the_earlier_decoder_outputs() -> Result[V
   try Test.eq(b.take(8), a.take(8))
   Test.assert(b.drop(8) != a.drop(8), "the moved token did not change its own output")
 end
+
+## The layouts of a Qwen-like model (grouped-query attention, rotary
+## positions, query and key norms, RMS norms, a gated MLP, no biases) and of a
+## BERT-like one (post-norm), with and without the causal mask, against the
+## naive model.
+def test_configured_encoder_blocks_match_the_naive_model() -> Result[Void]
+  data = Init.uniform_values(96, 1.0, 41)
+  qwen = Nn.BlockOptions(kv_heads: some(2), rope: some(Nn.Rope()), qk_norm: true, bias: false, rms: true, gated: true)
+
+  variants = [
+    qwen,
+    qwen.with(rope: some(Nn.Rope(base: 100.0, neox: false)), kv_heads: some(1)),
+    Nn.BlockOptions(norm_first: false),
+  ]
+
+  for options in variants
+    for causal in [false, true]
+      block = try Nn.init_encoder_block(16, 4, 24, Nn.Activation.Silu, 43, S.REF, options)
+      got = try Nn.encoder_block(block, try S.f32(data, [2, 3, 16]), none, causal)
+      want: List[Float] = []
+      for b in 0...2
+        want = want + (try S.encoder_block(block, S.item(data, b, 3, 16), causal)).flat_map { |row| row }
+      end
+
+      try S.expect_close(try S.floats_of(got), want, ABS, REL, "encoder block #{options} causal #{causal}")
+    end
+  end
+
+  ok()
+end
+
+def test_a_post_norm_decoder_block_matches_the_naive_model() -> Result[Void]
+  x = Init.uniform_values(24, 1.0, 47)
+  memory = Init.uniform_values(40, 1.0, 48)
+  block = try Nn.init_decoder_block(4, 2, 8, Nn.Activation.Relu, 49, S.REF, Nn.BlockOptions(norm_first: false))
+  got = try Nn.decoder_block(block, try S.f32(x, [2, 3, 4]), try S.f32(memory, [2, 5, 4]))
+  want: List[Float] = []
+  for b in 0...2
+    want = want + (try S.decoder_block(block, S.item(x, b, 3, 4), S.item(memory, b, 5, 4))).flat_map { |row| row }
+  end
+
+  S.expect_close(try S.floats_of(got), want, ABS, REL, "post-norm decoder block")
+end
+
+def test_stacks_apply_their_blocks_in_order_and_a_pre_norm_one_ends_in_a_norm() -> Result[Void]
+  x = try S.f32(Init.uniform_values(24, 1.0, 51), [1, 3, 8])
+  memory = try S.f32(Init.uniform_values(32, 1.0, 52), [1, 4, 8])
+  encoder = try Nn.init_encoder_stack(2, 8, 2, 12, Nn.Activation.Relu, 5, S.REF)
+  once = try Nn.encoder_block(encoder.blocks[0], x)
+  twice = try Nn.encoder_block(encoder.blocks[1], once)
+  final = try Nn.layer_norm(encoder.final_norm.unwrap!, twice)
+  try S.expect_close(
+    try S.floats_of(try Nn.encoder_stack(encoder, x)),
+    try S.floats_of(final),
+    ABS,
+    REL,
+    "encoder stack",
+  )
+
+  decoder = try Nn.init_decoder_stack(2, 8, 2, 12, Nn.Activation.Relu, 6, S.REF)
+  first = try Nn.decoder_block(decoder.blocks[0], x, memory)
+  second = try Nn.decoder_block(decoder.blocks[1], first, memory)
+  try S.expect_close(
+    try S.floats_of(try Nn.decoder_stack(decoder, x, memory)),
+    try S.floats_of(try Nn.layer_norm(decoder.final_norm.unwrap!, second)),
+    ABS,
+    REL,
+    "decoder stack",
+  )
+
+  post = try Nn.init_encoder_stack(2, 8, 2, 12, Nn.Activation.Relu, 5, S.REF, Nn.BlockOptions(norm_first: false))
+  Test.assert(post.final_norm.none?, "a post-norm stack has no final norm")
+end
+
+def test_a_layer_refuses_a_head_layout_it_cannot_run() -> Result[Void]
+  try Test.error?(Nn.init_attention(8, 4, 1, S.REF, Nn.BlockOptions(kv_heads: some(3))))
+  try Test.error?(Nn.init_attention(8, 3, 1, S.REF))
+  try Test.error?(Nn.init_encoder_stack(0, 8, 2, 12, Nn.Activation.Relu, 5, S.REF))
+  p = try Nn.init_attention(4, 2, 1, S.REF)
+  queries = try S.f32(Init.uniform_values(8, 1.0, 1), [1, 2, 4])
+  memory = try S.f32(Init.uniform_values(4, 1.0, 2), [1, 1, 4])
+  Test.error?(Nn.attention(p, queries, memory, none, true))
+end
