@@ -58,22 +58,29 @@ end
 struct Stepped
   step: Optim.Step
   loss: Float
+  plans: Map[String, Trace.Compiled]
 end
 
 def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Result[Fit]
   state = start
   current = params
   history: List[Float] = []
+  plans: Map[String, Trace.Compiled] = {}
   batches = Data.count(r.feed.loader)
   for e in 1..r.epochs
     feed = Data.epoch(r.feed, e)
     total = 0.0
     for i in 0...batches
-      stepped = take_step(r.loss, feed, i, state, current)
-      return error("epoch #{e}, batch #{i}: #{stepped.message}") if !stepped.ok?
+      stepped = take_step(r.loss, feed, i, plans, state, current)
+      if !stepped.ok?
+        close(plans)
+        return error("epoch #{e}, batch #{i}: #{stepped.message}")
+      end
+
       done = stepped.unwrap!
       state = done.step.state
       current = done.step.params
+      plans = done.plans
       total = total + done.loss
     end
 
@@ -85,58 +92,104 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Result[Fit]
     end
   end
 
+  close(plans)
   ok(Fit(params: current, history: history))
+end
+
+## Ends the pins of the compiled steps; their graphs stay in the cache.
+def close(plans: Map[String, Trace.Compiled]) -> Void
+  for key in plans.keys
+    Trace.close(plans[key])
+  end
 end
 
 def take_step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   feed: Data.Feed,
   i: Int,
+  plans: Map[String, Trace.Compiled],
   state: Optim.State,
   params: List[Tensor.Tensor],
 ) -> Result[Stepped]
   batch = try Data.take(feed, i)
-  done = step(loss, state, params, batch)
+  done = step(loss, plans, state, params, batch)
   Data.release(batch)
   done
 end
 
-## One step in its own native arena: only the new state, parameters and the
-## loss outlive it (`tensor/DESIGN.md` §8).
+## One step, run from a function compiled once per batch shape: the parameters, the optimizer state, the numbers of the
+## step that change (`Optim.scalars`) and the batch are its inputs, so nothing is traced or planned after the first
+## batch of a shape. Only the new state, parameters and the loss outlive the step's native arena (`tensor/DESIGN.md` §8).
 def step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  plans: Map[String, Trace.Compiled],
   state: Optim.State,
   params: List[Tensor.Tensor],
   batch: Data.Batch,
 ) -> Result[Stepped]
-  Native.arena do
-    n = params.size
-    k = state.first.size
-    outs = try Trace.eval_many(
-      params + state.first + state.second,
-      ->(xs: List[Tensor.Tensor]) { traced_step(loss, state, batch, n, k, xs) },
-    )
-
-    moved = state.with(steps: state.steps + 1, first: outs.drop(1 + n).take(k), second: outs.drop(1 + n + k))
-    ok(Stepped(step: Optim.Step(state: moved, params: outs.drop(1).take(n)), loss: try scalar(outs[0])))
+  n = params.size
+  k = state.first.size
+  m = state.second.size
+  key = "#{Tensor.shape(batch.inputs)} #{Tensor.shape(batch.targets)}"
+  known = plans.get(key)
+  fresh = known.none?
+  held = plans
+  plan = case known
+    some(p) -> p
+    none ->
+      try Trace.compile(
+        (params + state.first + state.second + try Optim.scalars(state, params[0])).map { |t| Trace.spec_of(t) } +
+        [Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)],
+        ->(xs: List[Tensor.Tensor]) { traced_step(loss, state, n, k, m, xs) },
+      )
   end
+
+  inputs = params + state.first + state.second + try Optim.scalars(state, params[0]) + [batch.inputs, batch.targets]
+  stepped = Native.arena do ran(plan, inputs, state, params.size, held, fresh, key) end
+
+  if !stepped.ok? and fresh
+    Trace.close(plan)
+  end
+
+  stepped
 end
 
-## The traced step over `xs`, the `n` parameters then the optimizer's `k`
-## first and its second moments: the loss, then the new parameters, first
-## and second moments.
+def ran(
+  plan: Trace.Compiled,
+  inputs: List[Tensor.Tensor],
+  state: Optim.State,
+  n: Int,
+  held: Map[String, Trace.Compiled],
+  fresh: Bool,
+  key: String,
+) -> Result[Stepped]
+  k = state.first.size
+  values = try Trace.run(plan, inputs)
+  moved = state.with(steps: state.steps + 1, first: values.drop(1 + n).take(k), second: values.drop(1 + n + k))
+  kept = held
+  if fresh
+    kept = held.put(key, plan)
+  end
+
+  ok(Stepped(step: Optim.Step(state: moved, params: values.drop(1).take(n)), loss: try scalar(values[0]), plans: kept))
+end
+
+## The traced step over `xs`: the `n` parameters, the optimizer's `k` first and its second moments, its scalars, then the
+## batch. It answers the loss, then the new parameters, first and second moments.
 def traced_step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   state: Optim.State,
-  batch: Data.Batch,
   n: Int,
   k: Int,
+  m: Int,
   xs: List[Tensor.Tensor],
 ) -> Result[List[Tensor.Tensor]]
   ps = xs.take(n)
-  value = try loss.call(ps, Data.Batch(inputs: Trace.constant(batch.inputs), targets: Trace.constant(batch.targets)))
+  extra = xs.size - n - k - m - 2
+  value = try loss.call(ps, Data.Batch(inputs: xs[xs.size - 2], targets: xs[xs.size - 1]))
   grads = try Trace.gradients(value, ps)
-  stepped = try Optim.step(state.with(first: xs.drop(n).take(k), second: xs.drop(n + k)), ps, grads)
+  moments = state.with(first: xs.drop(n).take(k), second: xs.drop(n + k).take(m))
+  stepped = try Optim.step(moments, ps, grads, xs.drop(n + k + m).take(extra))
   ok([value] + stepped.params + stepped.state.first + stepped.state.second)
 end
 
