@@ -156,15 +156,16 @@ def normed_grad(backend: Tensor.Backend, rms: Bool) -> Result[Tensor.Tensor]
   x = try on(backend, data)
   w = try on(backend, weights)
   step = try Trace.value_and_grad([x]) do |xs|
-    normed = try Tensor.layer_norm(xs[0], 0.1)
-    if rms
-      normed = try Tensor.rms_norm(xs[0], 0.1)
-    end
-
-    Tensor.sum(try Tensor.mul(normed, Trace.constant(w)))
+    weighed_norm(xs[0], Trace.constant(w), rms)
   end
 
   ok(step.grads[0])
+end
+
+## `sum(norm(x) * w)`, with the rms norm when `rms`.
+def weighed_norm(x: Tensor.Tensor, w: Tensor.Tensor, rms: Bool) -> Result[Tensor.Tensor]
+  return Tensor.sum(try Tensor.mul(try Tensor.rms_norm(x, 0.1), w)) if rms
+  Tensor.sum(try Tensor.mul(try Tensor.layer_norm(x, 0.1), w))
 end
 
 def on(backend: Tensor.Backend, data: List[Float]) -> Result[Tensor.Tensor]

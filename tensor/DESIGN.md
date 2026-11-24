@@ -125,8 +125,8 @@ Movement: `to_dtype, to_device, copy, contiguous`.
 
 Deliberately missing: `softmax`, attention, `silu`, beam search — all
 derived (§3.2). `layer_norm` and `rms_norm` are derived too, and a trace
-keeps each as one node. The exact (`erf`) GELU is `gelu_erf`, outside this set: inference only
-(`Trace` records it but has no gradient for it).
+keeps each as one node. The exact (`erf`) GELU is `gelu_erf`, outside this
+set: inference only (`Trace` records it but has no gradient for it).
 
 ### 3.2 Derived ops (pure Agentica, backend-agnostic)
 

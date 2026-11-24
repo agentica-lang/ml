@@ -53,7 +53,7 @@ A tensor has a shape, a dtype (its number type, such as `F32`, a 32-bit float) a
 - Shape: `reshape`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `broadcast_to`, `gather` (rows at integer indices), `scatter_add(indices, updates, rows)` (the inverse of `gather`: it adds the rows of `updates` into `rows` zero rows, and a repeated index sums its rows).
 - Convolution: `conv1d` (stride and padding; no dilation or groups), `avg_pool1d`.
 - Movement and dtype: `to_dtype`, `to_device`, `copy`, `contiguous`, `stop_grad`.
-- Built from the above: `softmax`, `gelu` (the tanh form), `silu`, `dot`, `linear`, `embedding`, `multi_head_attention` (over `[batch, seq, width]`, it is `attention` between a split and a join of the heads), `greedy_step`. `layer_norm` and `rms_norm` are built from them too, but a trace records each as one node, so ggml runs one norm (and fuses the product by a weight after an rms norm) and the gradient has a rule of its own.
+- Built from the above: `softmax`, `gelu` (the tanh form), `silu`, `dot`, `linear`, `embedding`, `multi_head_attention` (over `[batch, seq, width]`, it is `attention` between a split and a join of the heads), `greedy_step`. `layer_norm` and `rms_norm` are built from them too, but a trace records each as one node, so ggml runs one norm (ggml's Vulkan backend can fuse the product by a weight after an rms norm) and the gradient has a rule of its own.
 
 ## Backends
 

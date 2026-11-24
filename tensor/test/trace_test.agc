@@ -78,11 +78,7 @@ def test_layer_norm_in_a_trace_refuses_an_eps_its_node_cannot_hold() -> Result[V
   Test.assert(Tensor.layer_norm(x, 1.0e-30).ok?, "a small eps that F32 holds")
 end
 
-## `rms_norm` is a primitive of a trace too, with its own rule.
-def test_rms_norm_matches_a_central_difference() -> Result[Void]
-  data = [0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.9, 0.1, -0.4, 1.7, -1.3, 0.6]
-  try check_grad([try f64(data, [2, 6])]) do |xs| weigh(try Tensor.rms_norm(xs[0], 0.001)) end
-  try check_grad([try f64(data, [2, 2, 3])]) do |xs| weigh(try Tensor.rms_norm(xs[0], 0.5)) end
+def test_rms_norm_in_a_trace_refuses_an_eps_its_node_cannot_hold() -> Result[Void]
   x = Trace.constant(try f64([1.0, 2.0], [1, 2]))
   inf = 1.0e308 * 10.0
   for eps in [0.0, -1.0, inf, inf - inf, 1.0e39, 1.0e-50]
@@ -395,7 +391,10 @@ def test_layer_norm_and_rms_norm_match_a_central_difference() -> Result[Void]
   x = try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.4, 0.9], [2, 4])
   try check_grad([x]) do |xs| weigh(try Tensor.layer_norm(xs[0], 0.00001)) end
 
-  check_grad([x]) do |xs| weigh(try Tensor.rms_norm(xs[0], 0.00001)) end
+  try check_grad([x]) do |xs| weigh(try Tensor.rms_norm(xs[0], 0.00001)) end
+  data = [0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.9, 0.1, -0.4, 1.7, -1.3, 0.6]
+  try check_grad([try f64(data, [2, 6])]) do |xs| weigh(try Tensor.rms_norm(xs[0], 0.001)) end
+  check_grad([try f64(data, [2, 2, 3])]) do |xs| weigh(try Tensor.rms_norm(xs[0], 0.5)) end
 end
 
 def test_multi_head_attention_matches_a_central_difference() -> Result[Void]
