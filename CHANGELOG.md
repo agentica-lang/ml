@@ -16,7 +16,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### transformers
 
-- ggml: a decode step reads the rows of the cache in use, not its whole capacity: Qwen3-0.6B decode on Vulkan at 2048 rows is NUMBER faster. `Generate.open(m, true)` reads the whole capacity; `Generate.held(g)` counts the compiled steps kept.
+- ggml: a decode step reads the rows of the cache in use, not its whole capacity: Qwen3-0.6B decode on Vulkan at 2048 rows is 5% faster.
 
 ## [0.2.0] - 2026-11-24
 

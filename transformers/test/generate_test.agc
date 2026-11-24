@@ -75,6 +75,17 @@ end
 
 def closed?(t: Tensor.Tensor) -> Result[Bool] = ok(Native.closed?(try Ggml.handle_of(t)))
 
+## A generator of `m` whose steps read the whole capacity of the cache: its own plans, and the logits that a step
+## over the rows in use must give.
+def reading_all(m: Qwen3.Qwen3) -> Result[Generate.Generator] = ok((try Generate.open(m)).with(whole: true))
+
+## How many compiled steps `g` keeps now.
+def held(g: Generate.Generator) -> Result[Int]
+  plans = try g.plans.recv(1000)
+  try g.plans.send(plans, 0)
+  ok(plans.graphs.size)
+end
+
 ## On ggml a one-token step reads the rows of the cache in use, rounded up to a reach, and each reach is a compiled
 ## step of its own. Three sequences each cross one: 768 rows inside a capacity of 1024, 1024 rows where the capacity
 ## grows to 2048 (reach 1280), and 1280 rows inside it. Every step gives the logits of a step that reads the whole
@@ -84,24 +95,24 @@ def test_a_step_reads_the_rows_in_use_and_gives_the_logits_of_the_whole_cache() 
     for backend in try S.ggml_backends()
       m = try Qwen3.open("#{dir}/roomy", backend)
       g = try Generate.open(m)
-      whole = try Generate.open(m, true)
+      whole = try reading_all(m)
       # the prompt, a step of each reach: 768 and 1024
       try reading(g, whole, 765, 5)
       try Test.eq(Generate.compiles(g), 3)
       try Test.eq(Generate.compiles(whole), 2)
-      try Test.eq(Generate.held(g), 2)
+      try Test.eq(try held(g), 2)
       # nothing new up to 1024 rows; then the step that grows the capacity and the step of reach 1280
       try reading(g, whole, 1022, 4)
       try Test.eq(Generate.compiles(g), 5)
-      try Test.eq(Generate.held(g), 4)
+      try Test.eq(try held(g), 4)
       # the prompt of 2048, the reach of 1280 as it is, and the reach of 1536, which ends that one
       try reading(g, whole, 1278, 4)
       try Test.eq(Generate.compiles(g), 7)
-      try Test.eq(Generate.held(g), 5)
+      try Test.eq(try held(g), 5)
       # a second sequence at the reach that ended compiles it again, and the larger one stays
       try reading(g, whole, 1278, 1)
       try Test.eq(Generate.compiles(g), 8)
-      try Test.eq(Generate.held(g), 6)
+      try Test.eq(try held(g), 6)
       Generate.close(g)
       Generate.close(whole)
       Qwen3.close_model(m)
@@ -119,11 +130,11 @@ def test_a_sequence_that_crosses_three_reaches_gives_the_logits_of_the_whole_cac
     for backend in try S.ggml_backends()
       m = try Qwen3.open("#{dir}/roomy", backend)
       g = try Generate.open(m)
-      whole = try Generate.open(m, true)
+      whole = try reading_all(m)
       try reading(g, whole, 760, 530)
       # the prompt, the reaches of 768 and 1024, the growth, the reaches of 1280 and 1536
       try Test.eq(Generate.compiles(g), 6)
-      try Test.eq(Generate.held(g), 4)
+      try Test.eq(try held(g), 4)
       try Test.eq(Generate.compiles(whole), 4)
       Generate.close(g)
       Generate.close(whole)

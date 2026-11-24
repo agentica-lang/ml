@@ -30,10 +30,10 @@ compiled steps in a one-slot channel (as `Asr.Model.plans`), and
   more (llama.cpp rounds up to 256). At 2049 rows of a capacity of 4096 that
   is 2560 rows. Each reach is a compiled graph, and the graph of a reach ends
   the graphs of the smaller reaches of its capacity, so a long sequence keeps
-  one per capacity (`Generate.held(g)` counts the graphs kept). Growing the
-  capacity itself in steps of 256 was measured and dropped: a growth is two new
-  graphs and a copy of the cache, 0.4 s at 256 rows and 1.1 s at 2048.
-  `Generate.open(m, true)` reads the whole capacity, for a comparison.
+  one per capacity. Growing the capacity itself in steps of 256 was measured
+  and dropped: a growth is two new graphs and a copy of the cache, 0.4 s at 256
+  rows and 1.1 s at 2048. The tests compare every step with a generator whose
+  field `whole` is set, which reads the whole capacity.
 - On ggml each (tokens, rows, capacity) is one compiled graph (`Trace.compile`,
   kept in the generator at once, so an error path loses none, and a second call
   compiles none: `Generate.compiles(g)` counts them), and the pick

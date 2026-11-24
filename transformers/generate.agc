@@ -38,7 +38,8 @@ import Sample from "sample"
 struct Generator
   model: Qwen3.Qwen3
   plans: Channel[Plans]
-  ## Every step reads the whole capacity of the cache (`open`).
+  ## Every step reads the whole capacity of the cache, not only the rows in use: `false` from `open`. The tests set it
+  ## to have the logits of the other way of reading the same cache.
   whole: Bool
 end
 
@@ -90,13 +91,11 @@ struct Scored
   cache: Cache
 end
 
-## The generator of `m`. On `Ggml` a one-token step reads the rows of the cache in use, rounded up (`Padded.reach`),
-## and not the padding after them; with `whole` it reads the whole capacity, which gives the same ids and is slower on
-## a long cache (for a comparison of the two).
-def open(m: Qwen3.Qwen3, whole: Bool = false) -> Result[Generator]
+## The generator of `m`.
+def open(m: Qwen3.Qwen3) -> Result[Generator]
   cell: Channel[Plans] = Channel.new(1)
   try cell.send(Plans(graphs: {}, compiles: 0), 1000)
-  ok(Generator(model: m, plans: cell, whole: whole))
+  ok(Generator(model: m, plans: cell, whole: false))
 end
 
 ## How many steps `g` has compiled: a shape it has seen compiles no more.
@@ -105,17 +104,6 @@ def compiles(g: Generator) -> Int
     some(p) ->
       _ = g.plans.send(p, 0)
       p.compiles
-    none -> 0
-  end
-end
-
-## How many compiled steps `g` holds now: one per shape it ran, and among the one-token steps of a capacity only
-## the one of the largest reach (the others ended when it was compiled).
-def held(g: Generator) -> Int
-  case take_plans(g)
-    some(p) ->
-      _ = g.plans.send(p, 0)
-      p.graphs.size
     none -> 0
   end
 end
