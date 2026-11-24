@@ -2,12 +2,13 @@
 standard library alone (struct + json) and the values a reader must find.
 
 Usage: python3 peer.py SET, with SET one of values, malformed, sharded, layer,
-block, decoder, half, gguf, gguf_bad or gguf_write. The gguf sets are GGUF version 3 files,
+block, decoder, half, gguf, gguf_q8, gguf_bad or gguf_write. The gguf sets are GGUF version 3 files,
 written by hand from the format's description. Writes that set into a new temporary folder and prints its path.
 """
 
 import json
 import math
+import random
 import shutil
 import struct
 import sys
@@ -463,7 +464,6 @@ def gguf_file(out):
     f32 = [1.5, -2.25, 0.0, 3.0, 0.5, -0.125]
     f16 = [1.0, -2.0, 0.5, 65504.0]
     bf = [0x3F80, 0xC040, 0x0001, 0x7F7F]
-    blocks = struct.pack("<e", 0.5) + bytes(range(32))
     entries = {
         "token_embd.weight": ("F32", [3, 2], f32),
         "output_norm.weight": ("F32", [2], [1.0, 2.0]),
@@ -484,10 +484,6 @@ def gguf_file(out):
         tensors.append((name, dims, GGML_TYPES[dtype], raw))
         expected[names[name]] = decoded(tensor(dtype, shape, values))
     gguf(out / "model.gguf", kvs, tensors)
-    # a Q8_0 row of one block (32 values, 34 bytes: a half scale, 32 bytes) has no dtype of tensor/: refused alone
-    raw, dims = g_tensor("F32", [2], [1.0, 2.0])
-    gguf(out / "q8.gguf", [kvs[0]], [("token_embd.weight", dims, 0, raw),
-                                     ("blk.0.ffn_up.weight", [32, 1], GGML_TYPES["Q8_0"], blocks)])
     # one Q4_K block (256 values, 144 bytes) that is all of the data: the file opens, and reading the tensor is refused
     gguf(out / "q4k.gguf", [kvs[0]], [("blk.0.ffn_up.weight", [256, 1], GGML_TYPES["Q4_K"], bytes(144))])
     # big enough for `weights: F16`: a table, a BF16 matrix and an F32 one
@@ -500,6 +496,49 @@ def gguf_file(out):
     gguf(out / "half.gguf", [kvs[0]],
          [(n, list(reversed(shape)), GGML_TYPES[dt], tensor(dt, shape, vs)["raw"]) for n, dt, shape, vs in big])
     (out / "model.json").write_text(json.dumps({k: v for k, v in expected.items()}))
+
+
+def q8_0(values):
+    """ggml's Q8_0 of `values` (a multiple of 32 of them): per block of 32 a half scale `amax / 127` and the values over
+    the scale in single precision, rounded half away from zero. Returns the bytes and the values they dequantize to."""
+    raw, back = b"", []
+    for i in range(0, len(values), 32):
+        block = values[i:i + 32]
+        d = max(abs(v) for v in block) / 127
+        inv = 1 / d if d else 0.0
+        qs = [int(math.floor(abs(v * inv) + 0.5)) * (-1 if v < 0 else 1) for v in block]
+        scale = struct.unpack("<e", struct.pack("<e", d))[0]
+        raw += struct.pack("<e", d) + struct.pack("<32b", *qs)
+        back += [scale * q for q in qs]
+    return raw, back
+
+
+def gguf_q8(out):
+    """A GGUF with Q8_0 tensors (blocks with scales from 1e-5 to 1e2, an all-zero one, one with an outlier) next to an
+    F32 one: `q8.gguf`, and `q8.json` with the values each Q8_0 tensor dequantizes to, as text."""
+    rng = random.Random(7)
+    shapes = {"token_embd.weight": [5, 64], "blk.0.attn_q.weight": [3, 96], "blk.0.ffn_up.weight": [1, 32],
+              "output.weight": [2, 128]}
+    tensors, expected = [], {}
+    for name, shape in shapes.items():
+        n = shape[0] * shape[1]
+        values = [rng.uniform(-1, 1) * 10 ** rng.choice([-3, -1, 0, 2]) for _ in range(n)]
+        if name == "blk.0.attn_q.weight":
+            values[32:64] = [0.0] * 32
+            values[64] = 1e4
+        raw, back = q8_0(values)
+        tensors.append((name, list(reversed(shape)), GGML_TYPES["Q8_0"], raw))
+        expected[name] = {"dtype": "F32", "shape": shape, "values": [repr(v) for v in back]}
+    norm = [rng.uniform(0.5, 1.5) for _ in range(64)]
+    norm = [struct.unpack("<f", struct.pack("<f", v))[0] for v in norm]
+    raw, dims = g_tensor("F32", [64], norm)
+    tensors.append(("blk.0.attn_norm.weight", dims, 0, raw))
+    expected["blk.0.attn_norm.weight"] = {"dtype": "F32", "shape": [64], "values": [repr(v) for v in norm]}
+    names = {"token_embd.weight": "model.embed_tokens.weight", "blk.0.attn_q.weight": "model.layers.0.self_attn.q_proj.weight",
+             "blk.0.ffn_up.weight": "model.layers.0.mlp.up_proj.weight", "output.weight": "lm_head.weight",
+             "blk.0.attn_norm.weight": "model.layers.0.input_layernorm.weight"}
+    gguf(out / "q8.gguf", [("general.architecture", 8, "qwen3")], tensors)
+    (out / "q8.json").write_text(json.dumps({names[k]: v for k, v in expected.items()}))
 
 
 def gguf_big_header(out):
@@ -586,7 +625,7 @@ def gguf_bad(out):
 
 SETS = {"values": values_file, "malformed": malformed, "sharded": sharded,
         "layer": layer, "block": block, "decoder": decoder, "half": half,
-        "gguf": lambda out: (gguf_file(out), gguf_big_header(out)), "gguf_bad": gguf_bad, "gguf_write": gguf_write}
+        "gguf": lambda out: (gguf_file(out), gguf_big_header(out)), "gguf_q8": gguf_q8, "gguf_bad": gguf_bad, "gguf_write": gguf_write}
 
 
 def main():

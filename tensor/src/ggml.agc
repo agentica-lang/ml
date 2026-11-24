@@ -12,8 +12,9 @@
 ## never a slow op-by-op path (§7).
 ##
 ## Storage: ggml holds `F32` and `I32`. `Bool`, `I8`, `I16` and `U8` are held
-## as `F32`, which represents each of their values exactly; `F16`, `F64` and
-## `I64` are refused, as the spike's lowering refuses them.
+## as `F32`, which represents each of their values exactly; `F16`, `Q8_0`,
+## `F64` and `I64` are refused, as the spike's lowering refuses them, except
+## the weights `from_file` makes.
 ##
 ## Lifetimes (§8): one `Native.arena` per call, as in `src/torch.agc`.
 
@@ -85,11 +86,12 @@ def from_list(
   upload(device, shape, dtype, values, "from_list")
 end
 
-## Creation: a tensor of `shape` from the floats of `format` at byte `offset`
+## Creation: a tensor of `shape` from the values of `format` at byte `offset`
 ## of the file `path`, read by C; on Vulkan through one host copy. It is `F32`,
-## or `F16` with `dtype: F16` (half the memory and the bandwidth of a weight;
-## a value beyond 65504 is an error). With `TENSOR_LOAD=agentica` Agentica
-## reads the range and C widens the bytes.
+## `F16` with `dtype: F16` (half the memory and the bandwidth of a weight; a
+## value beyond 65504 is an error), or `Q8_0` with `dtype: Q8_0` (the blocks of
+## a Q8_0 file as they are). With `TENSOR_LOAD=agentica` Agentica reads the
+## range and C widens or copies the bytes.
 def from_file(
   device: Types.Device,
   path: String,
@@ -99,20 +101,20 @@ def from_file(
   dtype: Types.Dtype,
 ) -> Result[Types.Tensor]
   code = try ready(device, shape, Types.Dtype.F32, "from_file")
-  half = dtype == Types.Dtype.F16
-  if dtype != Types.Dtype.F32 and !half
-    return error("from_file: a ggml tensor read from a file is F32 or F16, got #{Types.dtype_name(dtype)}")
+  if dtype != Types.Dtype.F32 and !Types.is_packed_dtype(dtype)
+    return error("from_file: a ggml tensor read from a file is F32, F16 or Q8_0, got #{Types.dtype_name(dtype)}")
   end
 
+  held = Types.held_code(dtype)
   if FileRange.agentica_read?()
     n = try Types.volume(shape)
-    bytes = try FileRange.read_range(path, offset, n * Types.file_width(format))
+    bytes = try FileRange.read_range(path, offset, try Types.file_bytes(format, n))
     return made("from_file", device, shape, dtype) do
-      GgmlRaw.from_bytes(code, bytes, shape, Types.file_code(format), half)
+      GgmlRaw.from_bytes(code, bytes, shape, Types.file_code(format), held)
     end
   end
 
-  made("from_file", device, shape, dtype) do GgmlRaw.load(code, path, offset, shape, Types.file_code(format), half) end
+  made("from_file", device, shape, dtype) do GgmlRaw.load(code, path, offset, shape, Types.file_code(format), held) end
 end
 
 ## Host readback: the row-major values tagged with `t`'s dtype.
@@ -235,6 +237,7 @@ end
 def storable(dtype: Types.Dtype, op: String) -> Result[Bool]
   case dtype
     Types.Dtype.F16 -> refused(dtype, op)
+    Types.Dtype.Q8_0 -> refused(dtype, op)
     Types.Dtype.F64 -> refused(dtype, op)
     Types.Dtype.I64 -> refused(dtype, op)
     _ -> ok(true)

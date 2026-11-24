@@ -202,6 +202,22 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
   of the last position over the vocabulary and the five largest logits of every
   position, in `float32`. Largest gap of a logit: 4.9e-5 on ggml CPU and
   8.6e-5 on Vulkan; the top five ids are the same at every position.
+- `test/qwen3_test.agc` on a Q8_0 GGUF of the peer (width 32): the dequantized
+  model gives the peer's logits (doubles), and with `weights: Q8_0` the matrices stay
+  blocks and the logits stay within 0.1 of them (the largest gap measured on the CPU
+  is 0.08: ggml rounds every activation of a product to Q8_0 blocks).
+- `tools/llama_golden.c` and `tools/qwen_check.agc` with `QUANTIZED=1` (manual): the
+  logits of llama.cpp for the same Q8_0 file (made by `llama-quantize` from the F16
+  one of Qwen3-0.6B), five prompts of 5 to 50 tokens, on logits of up to 30. The
+  largest gap of a logit is 0.32 to 0.59 on ggml CPU with `weights: Q8_0`, and 0.29
+  to 0.67 with `F32` weights (the file dequantized, exact activations). That is the
+  noise of the Q8_0 rounding of the activations, and it is chaotic: llama.cpp against
+  itself with an `F32` KV cache instead of its `F16` one moves by 0.35 to 0.65, and its
+  Q8_0 file against its own F16 one by 0.1 on average and 0.84 at most. The graph is
+  the same: ours with `F32` weights against llama.cpp on the same file dequantized to
+  `F32` (`llama-quantize --allow-requantize`) differs by 0.018 at most, which is its
+  `F16` KV cache. The Q8_0 run takes 2.0 GB at its peak against 4.1 GB with `F32`
+  weights, and its prompts 15% to 25% less time (one run).
 - `test/bert_test.agc` against `test/bert_peer.py` (standard library, doubles):
   a tiny random BERT in both namings, a padded batch, the hidden state, the
   pooler and the mean embedding, on the reference and on ggml (CPU, and Vulkan
