@@ -14,7 +14,7 @@ Hub.metadata(c) -> Map[file, Map[String, String]]   each shard's __metadata__
 
 Load.dense(c, prefix, backend)          {prefix}.weight [out, in] -> w [in, out]; {prefix}.bias if present
 Load.conv1d(c, prefix, stride, padding, backend)   {prefix}.weight [out, in, kernel] as stored; bias if present
-Load.layer_norm(c, prefix, eps, backend)   {prefix}.weight, {prefix}.bias
+Load.layer_norm(c, prefix, eps, backend)   {prefix}.weight, {prefix}.bias; or {prefix}.gamma, {prefix}.beta when there is no .weight (BERT)
 Load.embedding(c, name, backend)        [rows, width]
 Load.encoder_block(c, BlockNames { norm1, query, key, value, output, norm2, up, down },
                    heads, activation, eps, backend)

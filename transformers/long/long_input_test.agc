@@ -2,8 +2,10 @@
 ## characters of mixed text and 50k CJK characters through the Unicode
 ## functions and both tokenizers, 20k letters in one BPE piece (base64 in a
 ## code prompt), each under a time bound that a quadratic loop misses by far
-## (they run in about a second). They spend a few hundred million steps, so CI
-## runs this package with a larger `--max-steps`. Run from `transformers/`.
+## (they run in about a second). They spend 1.33 G steps (580 M for the heaviest),
+## far over a test file's usual budget, so they live in `long/` and CI runs
+## them in a step of their own with `--max-steps 400000000`. Run from
+## `transformers/`: `agentica test --max-steps 400000000 long/`.
 
 import Bpe from "../tokenizer/bpe"
 import Unicode from "../tokenizer/unicode"

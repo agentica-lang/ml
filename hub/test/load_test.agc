@@ -50,6 +50,25 @@ def test_dense_and_layer_norm_match_the_peer_on_libtorch() -> Result[Void]
   end
 end
 
+def test_a_layer_norm_with_gamma_and_beta_names_loads() -> Result[Void]
+  S.with_fixtures("layer") do |dir|
+    c = try Hub.open("#{dir}/layer.safetensors")
+    norm = try Load.layer_norm(c, "enc.old", 0.00001, S.REF)
+    try Test.eq(try S.floats_of(norm.gamma), [2.0, 1.0, 0.5])
+    try Test.eq(try S.floats_of(norm.beta), [1.0, 0.0, -1.0])
+    try Test.eq(try S.floats_of((try Load.layer_norm(c, "enc.ln", 0.00001, S.REF)).gamma), [1.0, 0.5, 2.0])
+    both = try Load.layer_norm(c, "enc.both", 0.00001, S.REF)
+    try Test.eq(try S.floats_of(both.gamma), [1.0, 1.0, 1.0])
+    # The error names both spellings, and the keys that differ in shape.
+    missing = Load.layer_norm(c, "enc.none", 0.00001, S.REF)
+    try Test.error?(missing)
+    try Test.assert(error_text(missing).include?("enc.none.gamma"), "the error names no gamma: #{error_text(missing)}")
+    mismatch = Load.layer_norm(c, "enc.half", 0.00001, S.REF)
+    try Test.assert(error_text(mismatch).include?("enc.half.beta"), "the error names no beta: #{error_text(mismatch)}")
+    Test.error?(mismatch)
+  end
+end
+
 def test_a_weight_of_the_wrong_kind_is_refused() -> Result[Void]
   S.with_fixtures("layer") do |dir|
     c = try Hub.open("#{dir}/layer.safetensors")
@@ -197,4 +216,11 @@ end
 def same_norm(n: Nn.LayerNorm, want: JSON.Value) -> Result[Void]
   try Test.eq(try S.floats_of(n.gamma), try S.floats(try JSON.get(want, "gamma")))
   Test.eq(try S.floats_of(n.beta), try S.floats(try JSON.get(want, "beta")))
+end
+
+def error_text(r: Result[Nn.LayerNorm]) -> String
+  case r
+    ok(_) -> ""
+    error(e) -> e.message
+  end
 end

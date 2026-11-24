@@ -33,6 +33,11 @@ Stop and report if one fails:
   open, the owner must agree to move them first.
 - CI is green on `main`:
   `gh run list -R agentica-lang/ml --workflow ci.yml --branch main -L 1`.
+- Member pins point at a commit that has every change the member needs: each
+  `agentica.toml` pin of `tensor`, `nn` and `hub` (for example, `transformers/`
+  needs the `hub` that reads `gamma` and `beta` layer norms) names a commit
+  that holds what the member's code calls, or the member fails when installed
+  from outside this repository.
 - The owner gave an explicit OK for the tags, with the packages and versions.
 
 ## 2. Docs pruning PR (merged first)

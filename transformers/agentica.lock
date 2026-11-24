@@ -1,0 +1,30 @@
+version = 1
+
+[[package]]
+name = "hub"
+git = "https://github.com/agentica-lang/ml"
+subdir = "hub"
+ref = "0db3d790591ca52fc211d27183e818223e66e1e9"
+workspace = true
+
+[[package]]
+name = "native-gen"
+git = "https://github.com/agentica-lang/packages"
+subdir = "native-gen"
+tag = "native-gen-0.5.0"
+commit = "32ebb6ea25d60e0f7a44e811c1f280db76c3e882"
+hash = "sha256:c1be453b21abab840feaa03242f0be32c1145fefe068dc131c8ce7c1b7b80652"
+
+[[package]]
+name = "nn"
+git = "https://github.com/agentica-lang/ml"
+subdir = "nn"
+ref = "49ca1c77e11c1e70e695f5e332592bb7db53f025"
+workspace = true
+
+[[package]]
+name = "tensor"
+git = "https://github.com/agentica-lang/ml"
+subdir = "tensor"
+ref = "3185826fd76079adad69f5158822c88b3e89cd5d"
+workspace = true
