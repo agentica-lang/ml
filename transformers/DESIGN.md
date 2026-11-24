@@ -107,6 +107,16 @@ post-processor or template, decoder or model, `truncation`, `padding`, BPE
 `dropout`, an added token with `lstrip`, `rstrip`, `single_word` or
 `normalized`), so a different tokenizer is an error, never a quiet difference.
 
+`Bpe.open_gguf` reads the same tokenizer from a GGUF (`tokenizer.ggml.tokens`,
+`token_type` and `merges`, written by llama.cpp for `model` gpt2, `pre`
+qwen2): a normal token is a piece, a control or user-defined one is an added
+token, an unused one (the padding of the vocabulary) is no token. The tables
+of Qwen3-0.6B's file equal those of its `tokenizer.json`. Two differences,
+both from the file: it does not say whether the text is NFC-normalized (it is
+here, as in Qwen's `tokenizer.json`; llama.cpp does not normalize), and a
+control token is special, so `decode` leaves out `<|fim_prefix|>` and its five
+neighbours, which `tokenizer.json` does not mark special.
+
 ```text
 tokenizer/unicode_data.agc   the tables (generated, frozen)
 tokenizer/unicode.agc        letter?/number?/mark?/punctuation?/other?/space?, lower, nfd, nfc

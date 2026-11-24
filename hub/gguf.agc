@@ -48,6 +48,8 @@ KIND_BLOCKS = {
 
 ## The bytes of one scalar of each value type that has a fixed width.
 WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+## The item types that `ints` reads.
+INT_KINDS = [0, 1, 2, 3, 4, 5, 10, 11]
 
 ## The GGUF names of one `qwen3` block and of the rest, to the names of Hugging Face's checkpoint.
 BLOCK_NAMES = {
@@ -78,10 +80,13 @@ enum Value
   Array(Items)
 end
 
-## An array of the header is not read when the file opens: its item type and how many items there are.
+## An array of the header is not read when the file opens: its item type, how many items there are, and the bytes
+## they take (from `at` to `stop`).
 struct Items
   kind: Int
   count: Int
+  at: Int
+  stop: Int
 end
 
 ## A parsed file: `base` is the byte where the data buffer starts, `tensors` hold the names of the file and the shapes
@@ -120,10 +125,12 @@ def shard(h: Header) -> Result[Shards.Shard]
   arch = try string(h, "general.architecture")
   return error("#{h.path}: the architecture #{arch} has no tensor names here (only qwen3)") if arch != "qwen3"
   entries: Map[String, Shards.Entry] = {}
+  origin: Map[String, String] = {}
   for e in h.tensors
     name = hf_name(e.name)
-    return error("#{h.path}: the tensors #{e.name} and #{entries[name].name} are both #{name}") if entries.key?(name)
+    return error("#{h.path}: the tensors #{origin[name]} and #{e.name} both become #{name}") if entries.key?(name)
     entries = entries.put(name, e.with(name: name))
+    origin = origin.put(name, e.name)
   end
 
   ok(Shards.Shard(path: h.path, base: h.base, entries: entries, metadata: {}))
@@ -151,6 +158,42 @@ def float(h: Header, key: String) -> Result[Float]
   end
 end
 
+## The strings of the array under `key`, read from the file now (a vocabulary is megabytes, so `open` skips it).
+def strings(h: Header, key: String) -> Result[List[String]]
+  items = try array_of(h, key)
+  return error("#{h.path}: #{key} is not an array of strings") if items.kind != 8
+  b = try items_bytes(h, items)
+  out: List[String] = []
+  at = 0
+  for _ in 0...items.count
+    t = try Shards.within("#{h.path}: #{key}", text(b, at, b.size))
+    out = out.push(t.text)
+    at = t.at
+  end
+
+  ok(out)
+end
+
+## The integers of the array under `key`, read from the file now.
+def ints(h: Header, key: String) -> Result[List[Int]]
+  items = try array_of(h, key)
+  return error("#{h.path}: #{key} is not an array of integers") if not INT_KINDS.include?(items.kind)
+  b = try items_bytes(h, items)
+  out: List[Int] = []
+  at = 0
+  for _ in 0...items.count
+    r = try item(b, at, items.kind, b.size)
+    case r.value
+      Value.Int(n) -> out = out.push(n)
+      _ -> return error("#{h.path}: #{key} has an item that is not an integer")
+    end
+
+    at = r.at
+  end
+
+  ok(out)
+end
+
 ## Whether the file has a key-value `key`.
 def has?(h: Header, key: String) -> Bool = h.values.key?(key)
 
@@ -164,6 +207,17 @@ end
 struct Read
   value: Value
   at: Int
+end
+
+def array_of(h: Header, key: String) -> Result[Items]
+  case try value(h, key)
+    Value.Array(items) -> ok(items)
+    _ -> error("#{h.path}: #{key} is not an array")
+  end
+end
+
+def items_bytes(h: Header, items: Items) -> Result[Bytes]
+  Shards.within(h.path, Shards.read_range(h.path, items.at, items.stop - items.at))
 end
 
 def value(h: Header, key: String) -> Result[Value] = h.values.get(key).to_result("#{h.path}: no key #{key}")
@@ -274,7 +328,10 @@ def check_tensors(infos: List[Shards.Entry], kinds: List[Int], alignment: Int, r
     need = blocks * block[1]
     start = e.start
     return error("tensor #{e.name}: offset #{start} is not a multiple of #{alignment}") if start % alignment != 0
-    return error("tensor #{e.name}: #{need} bytes at #{start} are past the #{room} of data") if need > room - start
+    if need > room - start
+      return error("tensor #{e.name}: #{need} bytes at #{start} is past the #{room} bytes of data")
+    end
+
     out = out.push(e.with(stop: start + need))
   end
 
@@ -400,11 +457,16 @@ def array(b: Bytes, at: Int, size: Int) -> Result[Read]
       pos = pos + 8 + n
     end
 
-    return ok(Read(value: Value.Array(Items(kind: kind, count: count)), at: pos))
+    return ok(Read(value: Value.Array(Items(kind: kind, count: count, at: start, stop: pos)), at: pos))
   end
 
   return error("the array item type #{kind} is not known") if not WIDTHS.key?(kind)
   width = WIDTHS[kind]
   try need(b, start, count * width, size)
-  ok(Read(value: Value.Array(Items(kind: kind, count: count)), at: start + count * width))
+  ok(
+    Read(
+      value: Value.Array(Items(kind: kind, count: count, at: start, stop: start + count * width)),
+      at: start + count * width,
+    ),
+  )
 end

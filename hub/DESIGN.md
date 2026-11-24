@@ -111,8 +111,9 @@ not by its magic. It is the same design as safetensors:
   Qwen3 (checked against the F32 file of llama.cpp's converter, value for
   value); a Llama-style rope would need one.
 - **The config is the file's key-values** (`Qwen3.gguf_config`): the key-values
-  are typed (`Gguf.int`, `Gguf.float`, `Gguf.string`), and `Hub.Checkpoint.gguf`
-  keeps the header. `rope.scaling.*` is refused.
+  are typed (`Gguf.int`, `Gguf.float`, `Gguf.string`; `Gguf.strings` and
+  `Gguf.ints` read an array from the file, which `open` skipped), and
+  `Hub.Checkpoint.gguf` keeps the header. `rope.scaling.*` is refused.
 - **A tied model's loaded copy holds its table twice.** llama.cpp writes
   `output.weight` for a tied model too (the file is as large as the
   safetensors one, which keeps `lm_head.weight` as well), and the loader then

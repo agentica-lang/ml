@@ -118,7 +118,7 @@ end
 def test_malformed_files_are_refused() -> Result[Void]
   S.with_fixtures("gguf_bad") do |dir|
     cases = try JSON.decode(try S.json(dir, "cases.json"), Map[String, String])
-    try Test.eq(cases.size, 25)
+    try Test.eq(cases.size, 27)
     for file in cases.keys
       try S.expect_error(Hub.open("#{dir}/#{file}"), cases[file])
     end

@@ -106,6 +106,8 @@ For one-step control, `Generate.start()`, then `Generate.step(g, cache, ids)` (a
 - Speed on this machine (Ryzen 5 3550H, Radeon Vega iGPU), in `float32`, after a prompt of 128 tokens: 5.6 tokens per second on the CPU and 7.1 on Vulkan, and 56 and 208 tokens per second for the prompt itself (medians of 5 interleaved rounds). llama.cpp on the same weights in F32 is 1.9 to 2.3 times faster, and its F16 weights make the CPU decode 1.7 times faster again: the table and the method are in [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md). Memory: 2.8 GB on the CPU and 0.85 GB on Vulkan, whole process.
 - A batch of one, the prompt in one step (no chunks).
 
+A GGUF file carries its tokenizer: `Bpe.open_gguf("Qwen3-0.6B-F16.gguf")` gives the one of the `tokenizer.json` (the same ids and text), for a file of llama.cpp with `tokenizer.ggml.model` gpt2 and `pre` qwen2; another tokenizer is an error. The text is NFC-normalized, as `Qwen/Qwen3-0.6B`'s `tokenizer.json` says (llama.cpp does not), and `decode` leaves out every control token, which includes `<|fim_prefix|>` and five like it that `tokenizer.json` does not mark special.
+
 ## Tokenizer example
 
 Encode and decode with `bert-base-uncased` and with `Qwen/Qwen3-0.6B`. Each folder holds the `tokenizer.json` of the model:

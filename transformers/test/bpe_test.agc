@@ -15,6 +15,38 @@ def test_encode_and_decode_agree_with_tokenizers() -> Result[Void]
   Test.assert(checked > 100, "only #{checked} cases ran")
 end
 
+## The tokenizer of llama.cpp's GGUF (written by `bpe_gguf_peer.py` from the same tokens and merges) is the one of the
+## `tokenizer.json`: the same tables, and the same ids and text on the goldens. Two unused ids (padding) are no tokens.
+def test_a_gguf_tokenizer_is_the_json_tokenizer() -> Result[Void]
+  S.with_fixtures("test/bpe_gguf_peer.py", "agentica-bpe-gguf-") do |dir|
+    json = try Bpe.open(FIXTURE)
+    gguf = try Bpe.open_gguf("#{dir}/bpe.gguf")
+    try Test.eq(gguf.vocab, json.vocab)
+    try Test.eq(gguf.pieces, json.pieces)
+    try Test.eq(gguf.ranks, json.ranks)
+    try Test.eq(gguf.added, json.added)
+    try Test.eq(gguf.nfc, json.nfc)
+    checked = try Golden.bpe_of(gguf, "test/fixtures/bpe_golden.json")
+    try Test.assert(checked > 100, "only #{checked} cases ran")
+    Test.error?(Bpe.decode(gguf, [json.pieces.size]))
+  end
+end
+
+def test_a_gguf_tokenizer_of_another_kind_is_refused() -> Result[Void]
+  S.with_fixtures("test/bpe_gguf_peer.py", "agentica-bpe-gguf-") do |dir|
+    words = {
+      "other_model": "not gpt2", "other_pre": "not qwen2", "byte_token": "type 6", "types_short": "token types",
+      "token_twice": "twice", "merge_no_space": "not a pair", "merge_three": "not a pair",
+    }
+
+    for file in words.keys
+      try S.expect_error(Bpe.open_gguf("#{dir}/#{file}.gguf"), words[file])
+    end
+
+    ok()
+  end
+end
+
 def test_the_split_follows_the_pattern() -> Result[Void]
   try Test.eq(pieces("Hello, world!"), ["Hello", ",", " world", "!"])
   try Test.eq(pieces("it's DON'T"), ["it", "'s", " DON", "'T"])
