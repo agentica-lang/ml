@@ -181,7 +181,9 @@ jobs:
         # instead of passing them through the absent path.
         env:
           TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "nn", "train", "asr"]'), matrix.package) && '1' || '' }}
-        run: agentica test --max-steps 10000000
+        # transformers/ has long-input tests (200k characters through the
+        # tokenizers: a few hundred million steps), so its budget is larger.
+        run: agentica test --max-steps ${{ matrix.package == 'transformers' && '400000000' || '10000000' }}
 
       # The round-trip tests of tensor/ (from_file) again, with the weights read
       # in Agentica (TENSOR_LOAD=agentica: File.seek and File.read_bytes, then
