@@ -12,6 +12,7 @@
 import Greedy from "greedy"
 import Hub from "pkg/hub/hub"
 import Load from "pkg/hub/load"
+import Padded from "pkg/nn/kv"
 import Nn from "pkg/nn/nn"
 import Mel from "mel"
 import Tensor from "pkg/tensor/tensor"
@@ -78,7 +79,7 @@ end
 ## What `step` keeps between calls: per decoder block the projected encoder
 ## output, made once by `listen`, and the self-attention keys and values of
 ## the `length` tokens so far. On `Ggml` those are padded with zero rows to a
-## capacity (`capacity`), so a step's graph changes shape only when the
+## capacity (`Padded.capacity`), so a step's graph changes shape only when the
 ## capacity grows.
 struct Cache
   cross: List[Heard]
@@ -106,13 +107,6 @@ struct Forward
   keys: List[Tensor.Tensor]
   values: List[Tensor.Tensor]
   own: List[Kv]
-end
-
-## Where a step writes into a padded cache: `positions` are the new tokens'
-## positions (`I32`, `[n]`) and `capacity` the rows the cache has after it.
-struct Slots
-  positions: Tensor.Tensor
-  capacity: Int
 end
 
 ## What one step's arena hands back: the last logits, and per block the
@@ -1012,7 +1006,7 @@ end
 ## The forward of the integer ids `ids` (`[n]`) after the tokens of `cache`.
 ## With `slots`, the cache is padded (`Ggml`): the new rows are written at
 ## their positions, and the mask hides the later positions and the padding.
-def forward(m: Model, cache: Cache, ids: Tensor.Tensor, slots: Optional[Slots] = none) -> Result[Forward]
+def forward(m: Model, cache: Cache, ids: Tensor.Tensor, slots: Optional[Padded.Slots] = none) -> Result[Forward]
   n = Tensor.shape(ids)[0]
   d = m.config.d_model
   rows = try Nn.embedding(m.tokens, ids)
@@ -1026,8 +1020,8 @@ def forward(m: Model, cache: Cache, ids: Tensor.Tensor, slots: Optional[Slots] =
   spread: Optional[Tensor.Tensor] = none
   case slots
     some(s) ->
-      mask = some(try padded_mask(s, Tensor.dtype(h)))
-      spread = some(try spread_of(s, Tensor.dtype(h)))
+      mask = some(try Padded.padded_mask(s, Tensor.dtype(h)))
+      spread = some(try Padded.spread_of(s, Tensor.dtype(h)))
     none ->
       if n > 1
         mask = some(try Nn.causal_mask(n, Tensor.dtype(h), Tensor.backend(h)))
@@ -1052,8 +1046,8 @@ def forward(m: Model, cache: Cache, ids: Tensor.Tensor, slots: Optional[Slots] =
           mine = some(cache.own[i])
         end
 
-        k = try written(mine.map { |kv| kv.key }, k, p)
-        v = try written(mine.map { |kv| kv.value }, v, p)
+        k = try Padded.written(mine.map { |kv| kv.key }, k, p, 1)
+        v = try Padded.written(mine.map { |kv| kv.value }, v, p, 1)
       none ->
         if cache.length > 0
           k = try Tensor.concat([cache.own[i].key, k], 1)
@@ -1095,7 +1089,7 @@ def stepped_graph(
   picking: Bool,
   stamps: Optional[Greedy.Rules],
 ) -> Result[List[Tensor.Tensor]]
-  f = try forward(m, cache, xs[0], some(Slots(positions: xs[1], capacity: room)))
+  f = try forward(m, cache, xs[0], some(Padded.Slots(positions: xs[1], capacity: room)))
   head = f.logits
   if picking
     over: Optional[Stamps] = none
@@ -1108,74 +1102,6 @@ def stepped_graph(
   end
 
   ok([head] + f.own.map { |kv| kv.key } + f.own.map { |kv| kv.value })
-end
-
-## The rows a padded cache has for `needed` tokens: 8, 16, 32 and so on, at
-## most `limit`.
-def capacity(needed: Int, limit: Int) -> Int
-  rows = 8
-  while rows < needed
-    rows *= 2
-  end
-
-  [rows, limit].min.unwrap!
-end
-
-## `[n, capacity]`: `MASKED` where the key's position is after the query's
-## (later tokens and the padding), 0 elsewhere.
-def padded_mask(s: Slots, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
-  n = Tensor.shape(s.positions)[0]
-  backend = Tensor.backend(s.positions)
-  grid = [n, s.capacity]
-  queries = try Tensor.broadcast_to(try Tensor.reshape(s.positions, [n, 1]), grid)
-  keys = try Tensor.broadcast_to(
-    try Tensor.reshape(try Tensor.arange(0, s.capacity, 1, Tensor.Dtype.I32, backend), [1, s.capacity]),
-    grid,
-  )
-
-  blocked = try Tensor.full(grid, Tensor.Values.Float(Nn.MASKED), dtype, backend)
-  Tensor.where(try Tensor.lt(queries, keys), blocked, try Tensor.zeros(grid, dtype, backend))
-end
-
-## `[capacity, n]`: 1 at row `positions[j]` of column `j`, 0 elsewhere.
-def spread_of(s: Slots, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
-  n = Tensor.shape(s.positions)[0]
-  grid = [s.capacity, n]
-  rows = try Tensor.broadcast_to(
-    try Tensor.reshape(
-      try Tensor.arange(0, s.capacity, 1, Tensor.Dtype.I32, Tensor.backend(s.positions)),
-      [s.capacity, 1],
-    ),
-    grid,
-  )
-
-  at = try Tensor.broadcast_to(try Tensor.reshape(s.positions, [1, n]), grid)
-  Tensor.to_dtype(try Tensor.eq(rows, at), dtype)
-end
-
-## `fresh` (`[1, n, d]`) written into `old` (`[1, rows, d]`, zero past the
-## cache's length; none when empty) at the rows `spread` (`[capacity, n]`)
-## names, padded with zeros to `capacity` rows. A product with a 0/1 matrix
-## and a sum with zeros, so exact in F32.
-def written(old: Optional[Tensor.Tensor], fresh: Tensor.Tensor, spread: Tensor.Tensor) -> Result[Tensor.Tensor]
-  shape = Tensor.shape(fresh)
-  room = Tensor.shape(spread)[0]
-  placed = try Tensor.reshape(
-    try Tensor.matmul(spread, try Tensor.reshape(fresh, [shape[1], shape[2]])),
-    [1, room, shape[2]],
-  )
-
-  case old
-    none -> ok(placed)
-    some(o) ->
-      rows = Tensor.shape(o)[1]
-      if rows < room
-        gap = try Tensor.zeros([1, room - rows, shape[2]], Tensor.dtype(o), Tensor.backend(o))
-        o = try Tensor.concat([o, gap], 1)
-      end
-
-      Tensor.add(o, placed)
-  end
 end
 
 ## `m` with every tensor a constant of the current trace.
@@ -1302,7 +1228,7 @@ def advance(
     none -> nil
   end
 
-  room = capacity(cache.length + n, m.config.max_target_positions)
+  room = Padded.capacity(cache.length + n, m.config.max_target_positions)
   graphs = cache.graphs
   got: Result[List[Tensor.Tensor]] = error("no step ran")
   reuse = n == 1 and cache.length > 0 and fits(spare, cache, room)
