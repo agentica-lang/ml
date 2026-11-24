@@ -82,6 +82,10 @@ extern module "torch"
   ## The rank-2 product `[rows, inner] . [inner, cols]`.
   ## @fresh
   compute def matmul(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
+  ## `a . bᵀ` for `a` `[rows, inner]` and `b` `[cols, inner]`: libtorch's `linear`
+  ## without a bias, which reads `b` as it is (no transposed copy).
+  ## @fresh
+  compute def linear(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## `max(0, x)`, elementwise.
   ## @fresh
   compute def relu(a: TensorHandle) -> Result[TensorHandle]

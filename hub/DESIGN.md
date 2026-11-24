@@ -12,7 +12,7 @@ Hub.has?(c, name) -> Bool
 Hub.tensor(c, name, backend) -> Result[Tensor]   F32/F16/BF16 as F32, else the file's dtype
 Hub.metadata(c) -> Map[file, Map[String, String]]   each shard's __metadata__
 
-Load.dense(c, prefix, backend)          {prefix}.weight [out, in] -> w [in, out]; {prefix}.bias if present
+Load.dense(c, prefix, backend)          {prefix}.weight [out, in] kept as stored (Dense.out_in); {prefix}.bias if present
 Load.conv1d(c, prefix, stride, padding, backend)   {prefix}.weight [out, in, kernel] as stored; bias if present
 Load.layer_norm(c, prefix, eps, backend)   {prefix}.weight, {prefix}.bias; or {prefix}.gamma, {prefix}.beta when there is no .weight (BERT)
 Load.embedding(c, name, backend)        [rows, width]

@@ -51,12 +51,19 @@ def test_dense_matches_the_naive_product_on_rank_2_and_3() -> Result[Void]
 end
 
 def test_a_dense_with_out_in_multiplies_by_the_transpose() -> Result[Void]
-  p = try Nn.init_dense(3, 2, 1, S.REF)
-  p = p.with(b: some(try S.f32([0.5, -0.25], [2])))
+  p = try Nn.init_dense(3, 3, 1, S.REF)
+  p = p.with(b: some(try S.f32([0.5, -0.25, 1.0], [3])))
   stored = p.with(w: try Tensor.transpose(p.w), out_in: true)
   x = try S.f32([1.0, -2.0, 0.5, 0.0, 3.0, -1.0, 0.25, 1.5, -0.75, 2.0, -0.5, 1.0], [2, 2, 3])
-  try Test.eq(Tensor.shape(stored.w), [2, 3])
   S.expect_close(try S.floats_of(try Nn.dense(stored, x)), try S.floats_of(try Nn.dense(p, x)), ABS, REL, "out_in")
+end
+
+## A layer mapped over its tensors keeps its layout: a weight that lost `out_in` would be read transposed.
+def test_map_dense_keeps_out_in() -> Result[Void]
+  p = Nn.Dense(w: try S.f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3]), b: none, out_in: true)
+  mapped = try S.map_dense(p, ->(t: Tensor.Tensor) { Tensor.contiguous(t) })
+  try Test.assert(mapped.out_in, "map_dense dropped out_in")
+  Test.eq(Tensor.shape(try Nn.dense(mapped, try S.f32([1.0, 0.0, -1.0], [1, 3]))), [1, 2])
 end
 
 def test_layer_norm_scales_and_shifts_the_normalized_rows() -> Result[Void]

@@ -165,16 +165,11 @@ end
 ## are folded into rows for `Tensor.linear` and unfolded after.
 def dense(p: Dense, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(x)
-  w = p.w
-  if p.out_in
-    w = try Tensor.transpose(p.w)
-  end
-
-  return Tensor.linear(x, w, p.b) if shape.size == 2
+  return Tensor.linear(x, p.w, p.b, p.out_in) if shape.size == 2
   return error("dense needs rank >= 1, got #{shape}") if shape.size == 0
   lead = shape.take(shape.size - 1)
   rows = lead.reduce(1) do |acc, d| acc * d end
-  y = try Tensor.linear(try Tensor.reshape(x, [rows, shape[shape.size - 1]]), w, p.b)
+  y = try Tensor.linear(try Tensor.reshape(x, [rows, shape[shape.size - 1]]), p.w, p.b, p.out_in)
   Tensor.reshape(y, lead.push(Tensor.shape(y)[1]))
 end
 

@@ -28,7 +28,7 @@ def map_dense(d: Nn.Dense, f: Fn[Tensor.Tensor, Result[Tensor.Tensor]]) -> Resul
     none -> none
   end
 
-  ok(Nn.Dense(w: try f.call(d.w), b: b))
+  ok(d.with(w: try f.call(d.w), b: b))
 end
 
 def map_norm(n: Nn.LayerNorm, f: Fn[Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Nn.LayerNorm]

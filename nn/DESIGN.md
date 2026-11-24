@@ -9,7 +9,7 @@ layer is called on `Trace` tensors and the graph goes to `Trace.eval` or
 ## API
 
 ```text
-struct Dense        { w: [in, out], b: Optional [out] }
+struct Dense        { w: [in, out] ([out, in] with out_in), b: Optional [out], out_in: Bool = false }
 struct LayerNorm    { gamma: [width], beta: [width], eps: Float, rms: Bool = false }
 struct Embedding    { table: [rows, width] }
 struct Conv1d       { weight: [out, in, kernel], bias: Optional [out], stride, padding: Int }
@@ -122,8 +122,9 @@ that are the layer's own (rank of `positional`, table length, heads).
   `[out, in]` with `Dense.out_in`. Hugging Face and PyTorch checkpoints store
   `[out, in]`, and `hub/` keeps that layout: `dense` multiplies by its
   transpose, which ggml reads with no copy (a weight `[in, out]` is copied
-  transposed on every run: 170 of the 296 ms of a whisper-medium step on
-  Vulkan).
+  transposed on every run: 171 of the 296 ms of kernels of a whisper-medium
+  step on Vulkan). `Tensor.linear(..., out_in)` reads it as it is on ggml and
+  libtorch.
 - **Attention costs what `tensor/` costs.** `Tensor.attention` is one op on
   every backend (a fused kernel on ggml and libtorch), so a layer is a few
   nodes. `Tensor.multi_head_attention` remains in `tensor/` as a wrapper over

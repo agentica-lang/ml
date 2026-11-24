@@ -138,8 +138,10 @@ Built only from §3.1, in `tensor/` (generic) or `nn/` (model-shaped):
   cannot be expressed over §3.1, so `gelu_erf` is an op of its own: the
   reference sums a series for `erf` (to about 1e-14), libtorch calls
   `torch::gelu`. `silu` derives from `sigmoid` and `mul`.
-- `dot(a, b)` as `reshape` + `matmul`; `linear(x, w, b?)`, `embedding(ids,
-  table)` via `matmul`/`gather`.
+- `dot(a, b)` as `reshape` + `matmul`; `linear(x, w, b?, out_in)`, `embedding(ids,
+  table)` via `matmul`/`gather`. With `out_in`, `w` is `[out, in]` and the
+  product is `x wᵀ`: libtorch's `linear` reads `w` as it is, and the trace
+  records a transpose that ggml's lowering folds into `mul_mat`.
 - `multi_head_attention(q, k, v, heads, mask?)` over `[batch, seq, width]`: a
   wrapper over `attention`. The width splits into heads by `reshape` +
   `permute`, and the answer joins back the same way. A mask that is not

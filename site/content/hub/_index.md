@@ -27,10 +27,10 @@ end
 
 ```output
 ["fc.bias", "fc.weight"]
-[3, 2]
+[2, 3]
 ```
 
-The layer's weight is stored as `[out, in]` and comes back as `[in, out]`, the layout of `nn`.
+The layer's weight is stored as `[out, in]` and comes back as it is, with `out_in` set on the `Nn.Dense`: `Nn.dense` multiplies by its transpose.
 
 ## Opening
 
