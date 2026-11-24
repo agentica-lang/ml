@@ -38,6 +38,7 @@ end
 ## Main API
 
 - `Asr.open(path, backend)` loads a `.safetensors` file, or the `.index.json` of a sharded one, with the `config.json` in its folder.
+- `Asr.close_model(model)` frees the weights now, as a server does when it replaces a model. Using the model afterwards is an error.
 - `Asr.transcribe(model, tok, pcm, options)` runs the whole pipeline on one clip and gives a `Result` of `Transcript`.
 - `Tokenizer.open(path)` reads a `tokenizer.json`.
 - `Asr.encode(model, mel)` and `Asr.decode(model, tokens, audio)` are the model's forward passes (one run of the network), for callers who want the parts.

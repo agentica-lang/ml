@@ -120,6 +120,25 @@ RULES = Greedy.Rules(
   max_initial: 2,
 )
 
+## A closed model frees its weights: using it afterwards is an error, and a model opened again over the same file works.
+def test_a_closed_model_is_an_error_to_use() -> Result[Void]
+  with_fixtures do |dir|
+    for backend in try ggml_backends()
+      path = "#{dir}/speech/model.safetensors"
+      m = try Asr.open(path, backend)
+      mel = try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend)
+      before = try floats_of(try Asr.encode(m, mel))
+      Asr.close_model(m)
+      try Test.error?(Asr.encode(m, mel))
+      again = try Asr.open(path, backend)
+      try Test.eq(try floats_of(try Asr.encode(again, mel)), before)
+      Asr.close_model(again)
+    end
+
+    ok()
+  end
+end
+
 ## `cache_over` reads the tensors `step_inputs` lists in the same order, across several blocks: a cache of three blocks,
 ## each tensor of its own value, comes back unchanged, and the order of the list is the blocks' cross key and value, then
 ## the self-attention keys and values.

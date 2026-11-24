@@ -313,6 +313,13 @@ def decode(m: Model, tokens: Tensor.Tensor, audio: Tensor.Tensor) -> Result[Tens
   Nn.dense(m.logits, try Nn.layer_norm(m.decoder_norm, h))
 end
 
+## Frees the weights of `m` now, not at the end of the task that made them, as a server does when it replaces a model.
+## Nothing may use `m` afterwards, nor a cache made from it: a call that does is an error, never a read of freed memory.
+## The compiled functions `m` shares are not closed (their pins belong to the tasks that compiled them).
+def close_model(m: Model) -> Void
+  close(weights(m))
+end
+
 ## The empty cache over `audio`, the `[1, frames, d_model]` output of
 ## `encode`: the cross-attention keys and values of every decoder block.
 def listen(m: Model, audio: Tensor.Tensor) -> Result[Cache]
@@ -1256,6 +1263,35 @@ end
 ## Number `k` of `state`, repeated `v` times.
 def state_at(state: Tensor.Tensor, k: Int, v: Int) -> Result[Tensor.Tensor]
   Tensor.broadcast_to(try Tensor.slice(state, [k], [k + 1]), [v])
+end
+
+## Every tensor of `m`.
+def weights(m: Model) -> List[Tensor.Tensor]
+  out: List[Tensor.Tensor] = []
+  for c in [m.conv1, m.conv2]
+    out = out + [c.weight] + c.bias.map { |b| [b] }.unwrap_or([])
+  end
+
+  out = out + [m.encoder_positions.table] + m.encoder.flat_map { |b| encoder_parts(b) }
+  out = out + norm_parts(m.encoder_norm) + [m.tokens.table, m.decoder_positions.table]
+  out = out + m.decoder.flat_map { |b| decoder_weights(b) } + norm_parts(m.decoder_norm)
+  out + dense_parts(m.logits)
+end
+
+def decoder_weights(b: Nn.DecoderBlock) -> List[Tensor.Tensor]
+  [
+    norm_parts(b.norm1),
+    attention_weights(b.self_attention),
+    norm_parts(b.norm2),
+    attention_weights(b.cross_attention),
+    norm_parts(b.norm3),
+    dense_parts(b.mlp.up),
+    dense_parts(b.mlp.down),
+  ].flat_map { |part| part }
+end
+
+def attention_weights(a: Nn.Attention) -> List[Tensor.Tensor]
+  [dense_parts(a.query), dense_parts(a.key), dense_parts(a.value), dense_parts(a.output)].flat_map { |part| part }
 end
 
 ## The weights of an encoder block, in the order `encoder_over` reads them.

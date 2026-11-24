@@ -14,6 +14,7 @@ struct Config   the fields of HF config.json: d_model, encoder_layers, decoder_l
                 vocab_size, max_source_positions, max_target_positions
 Asr.config(path) -> Result[Config]
 Asr.open(path, backend) -> Result[Model]     a .safetensors or .index.json, config.json beside it
+Asr.close_model(m)                          frees the weights; later use is an error
 Asr.load(checkpoint, config, backend) -> Result[Model]
 Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_model]
 Asr.decode(m, tokens [batch, t] integer, audio) -> logits [batch, t, vocab_size]
