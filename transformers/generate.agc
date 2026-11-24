@@ -41,14 +41,13 @@ struct Plans
 end
 
 ## What `step` keeps between calls: per layer the keys and the values of the
-## `length` tokens so far, and `spare`, the keys and values of the cache before
-## (on `Ggml`), which the next step overwrites with its own instead of making new
-## tensors.
+## `length` tokens so far, padded to the capacity. On `Ggml` a one-token step of
+## the same capacity writes its row into these very tensors (they are the
+## tensors of the cache it returns), so a cache that was stepped is dead.
 struct Cache
   keys: List[Tensor.Tensor]
   values: List[Tensor.Tensor]
   length: Int
-  spare: List[Tensor.Tensor]
 end
 
 ## `step`: the id with the largest logit after the last token fed (the first on a
@@ -96,13 +95,14 @@ def close(g: Generator) -> Void
 end
 
 ## The empty cache.
-def start() -> Cache = Cache(keys: [], values: [], length: 0, spare: [])
+def start() -> Cache = Cache(keys: [], values: [], length: 0)
 
 ## Feeds `ids` after the tokens of `cache`: a prompt of any length when the
-## cache is empty, one id after that. The cache that `step` takes is dead, even
-## when the step fails: on ggml its tensors become the spare of the cache it gives
-## (a later step overwrites them), elsewhere they are closed. Use the one it gives;
-## never step a cache twice or read one after it was stepped.
+## cache is empty, one id after that. The cache that `step` takes is dead
+## afterwards, even when the step fails: on ggml a step of the same capacity
+## writes the new row into its tensors, which are the ones of the cache it gives,
+## elsewhere they are closed. Use the one it gives; never step a cache twice or
+## read one after it was stepped.
 def step(g: Generator, cache: Cache, ids: List[Int]) -> Result[Picked]
   s = try advance(g, cache, ids, true)
   found = chosen(s.head, g.model.config.vocab_size)
@@ -131,7 +131,7 @@ end
 
 ## Ends a sequence: closes the tensors of `cache`.
 def finish(cache: Cache) -> Void
-  Lift.close(cache.keys + cache.values + cache.spare)
+  Lift.close(cache.keys + cache.values)
 end
 
 ## Greedy decoding from the prompt `ids`: at most `max_new` ids, stopping before
@@ -244,14 +244,15 @@ def advance(g: Generator, cache: Cache, ids: List[Int], picking: Bool) -> Result
 
   fed = made.unwrap!
   held = cache.keys + cache.values
+  in_place = written_in_place?(backend, cache, width, room)
   outs = case backend
-    Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, room, picking)
+    Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, room, picking, in_place)
     _ -> eager_step(m, cache, fed, room, picking)
   end
 
   Lift.close(fed)
-  # A compiled step keeps the old keys and values as the spare of the new cache, and closes the spare of the old one.
-  if not compiled?(backend) or not outs.ok?
+  # A step in place keeps the tensors of `cache` as the ones of the new cache; any other step is done with them.
+  if not in_place or not outs.ok?
     Lift.close(held)
   end
 
@@ -259,15 +260,25 @@ def advance(g: Generator, cache: Cache, ids: List[Int], picking: Bool) -> Result
   ok(Advanced(head: s.head, cache: s.cache.with(length: cache.length + n)))
 end
 
-def compiled?(backend: Tensor.Backend) -> Bool
+## Whether a step writes its row into the tensors of `cache`: on `Ggml`, one token after a cache that already has the
+## capacity of the step.
+def written_in_place?(backend: Tensor.Backend, cache: Cache, width: Int, room: Int) -> Bool
   case backend
-    Tensor.Backend.Ggml(_) -> true
+    Tensor.Backend.Ggml(_) -> width == 1 and not cache.keys.empty? and Tensor.shape(cache.keys[0])[2] == room
     _ -> false
   end
 end
 
-## The graph of one step as a compiled function of its inputs on `Ggml`.
-def compiled_step(g: Generator, cache: Cache, fed: List[Tensor.Tensor], room: Int, picking: Bool) -> Result[Advanced]
+## The graph of one step as a compiled function of its inputs on `Ggml`; `in_place` writes the new row into the cache's own
+## tensors, which come back as the keys and values of the new one.
+def compiled_step(
+  g: Generator,
+  cache: Cache,
+  fed: List[Tensor.Tensor],
+  room: Int,
+  picking: Bool,
+  in_place: Bool,
+) -> Result[Advanced]
   m = g.model
   args = fed + cache.keys + cache.values
   rows = 0
@@ -275,65 +286,23 @@ def compiled_step(g: Generator, cache: Cache, fed: List[Tensor.Tensor], room: In
     rows = Tensor.shape(cache.keys[0])[2]
   end
 
-  layers = m.config.num_hidden_layers
-  into: List[Optional[Tensor.Tensor]] = []
-  reuse = Tensor.shape(fed[0])[0] == 1 and rows == room and fits(cache)
-  if reuse
-    lead: List[Optional[Tensor.Tensor]] = [none]
-    into = lead + cache.spare.map { |t| some(t) }
-  else
-    Lift.close(cache.spare)
-  end
-
   key = "#{Tensor.shape(fed[0])[0]} #{rows} #{room} #{picking}"
-  planned_step = planned(
+  plan = try planned(
     g,
     key,
     args.map { |t| Trace.spec_of(t) },
-    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, picking) },
+    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, picking, in_place) },
   )
 
-  ran: Result[List[Tensor.Tensor]] = error("no step ran")
-  case planned_step
-    # The plan stays cached in the generator, so a failed run leaves it in place (asr closes it: its plans die with
-    # the call).
-    ok(plan) -> ran = Trace.run(plan, args, into)
-    error(e) -> ran = error(e.message)
-  end
-
-  if not ran.ok?
-    if reuse
-      Lift.close(cache.spare)
-    end
-
-    return error(ran.message)
-  end
-
-  outs = ran.unwrap!
+  outs = try Trace.run(plan, args)
+  layers = m.config.num_hidden_layers
   head = Tensor.to_list(outs[0])
   Lift.close([outs[0]])
   if not head.ok?
     Lift.close(outs.drop(1))
   end
 
-  fresh = Cache(
-    keys: outs.drop(1).take(layers),
-    values: outs.drop(1 + layers),
-    length: 0,
-    spare: cache.keys + cache.values,
-  )
-
-  ok(Advanced(head: try head, cache: fresh))
-end
-
-## Whether the spare tensors of `cache` have the shapes and dtype of its own keys and values (so a step of the same
-## capacity can write its new ones there).
-def fits(cache: Cache) -> Bool
-  have = cache.keys + cache.values
-  return false if cache.spare.size != have.size or have.empty?
-  (0...have.size).all? { |i|
-    Tensor.shape(cache.spare[i]) == Tensor.shape(have[i]) and Tensor.dtype(cache.spare[i]) == Tensor.dtype(have[i])
-  }
+  ok(Advanced(head: try head, cache: Cache(keys: outs.drop(1).take(layers), values: outs.drop(1 + layers), length: 0)))
 end
 
 ## The compiled function `key` of `g` for `specs`, compiled with `f` on a miss and
@@ -378,7 +347,7 @@ def eager_step(m: Qwen3.Qwen3, cache: Cache, fed: List[Tensor.Tensor], room: Int
     ok(
       Advanced(
         head: try Tensor.to_list(outs[0]),
-        cache: Cache(keys: outs.drop(1).take(layers), values: outs.drop(1 + layers), length: 0, spare: []),
+        cache: Cache(keys: outs.drop(1).take(layers), values: outs.drop(1 + layers), length: 0),
       ),
     )
   end
@@ -389,7 +358,13 @@ end
 ## The step: `xs` are the ids `[width]`, their positions, the one-hot `[1, width]` of the row whose
 ## prediction is wanted, and per layer the keys then the values. The outputs are the head (the logits `[vocab_size]`,
 ## or the choice `[1]`), then the keys and the values of every layer.
-def stepped(m: Qwen3.Qwen3, xs: List[Tensor.Tensor], room: Int, picking: Bool) -> Result[List[Tensor.Tensor]]
+def stepped(
+  m: Qwen3.Qwen3,
+  xs: List[Tensor.Tensor],
+  room: Int,
+  picking: Bool,
+  in_place: Bool = false,
+) -> Result[List[Tensor.Tensor]]
   layers = m.config.num_hidden_layers
   width = Tensor.shape(xs[0])[0]
   d = m.config.hidden_size
@@ -405,7 +380,7 @@ def stepped(m: Qwen3.Qwen3, xs: List[Tensor.Tensor], room: Int, picking: Bool) -
       old = some(Kv(key: xs[3 + i], value: xs[3 + layers + i]))
     end
 
-    r = try layer(m.stack.blocks[i], h, slots.positions, mask, spread, old)
+    r = try layer(m.stack.blocks[i], h, slots.positions, mask, spread, old, in_place)
     h = r.hidden
     keys = keys.push(r.key)
     values = values.push(r.value)
@@ -435,11 +410,17 @@ def layer(
   mask: Tensor.Tensor,
   spread: Tensor.Tensor,
   old: Optional[Kv],
+  in_place: Bool,
 ) -> Result[Layer]
   x = try Nn.layer_norm(b.norm1, h)
   heads = try Nn.project(b.attention, x, x, some(positions))
   key = try written(old.map { |kv| kv.key }, heads.key, spread)
   value = try written(old.map { |kv| kv.value }, heads.value, spread)
+  if in_place
+    key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
+    value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
+  end
+
   seen = try Nn.attend(b.attention, heads.query, key, value, some(mask))
   mid = try Tensor.add(h, seen)
   out = try Tensor.add(mid, try Nn.mlp(b.mlp, try Nn.layer_norm(b.norm2, mid)))
