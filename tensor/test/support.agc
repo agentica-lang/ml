@@ -77,3 +77,15 @@ end
 def expect_close(a: Float, b: Float, what: String) -> Result[Void]
   Test.assert((a - b).abs <= TOL, "#{what}: expected #{b}, got #{a}")
 end
+
+## `count` deterministic values in `[-1, 1]`, a different series for each `seed`.
+def ramp(seed: Int, count: Int) -> List[Float]
+  s = seed * 7919 + 13
+  out: List[Float] = []
+  for _i in 0...count
+    s = (s * 1103515245 + 12345).bit_and(2147483647)
+    out = out.push((s.to_f / 2147483647.0) * 2.0 - 1.0)
+  end
+
+  out
+end

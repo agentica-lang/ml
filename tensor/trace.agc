@@ -507,6 +507,9 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.ToDtype -> no_rule("to_dtype")
     Types.Op.Conv1d(_, _) -> no_rule("conv1d")
     Types.Op.AvgPool1d(_, _, _) -> no_rule("avg_pool1d")
+    Types.Op.Permute(axes) -> part(Tensor.permute(ct, Types.inverse_axes(axes)))
+    Types.Op.Attention(scale) -> attention_rule(n, ct, scale, i)
+    Types.Op.Rope(base, dims, neox, inverse) -> rope_rule(n, ct, base, dims, neox, inverse, i)
   end
 end
 
@@ -667,6 +670,86 @@ def scatter_add_rule(n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Optional
   part(Tensor.gather(ct, n.args[0]))
 end
 
+## The backward of `attention` for its query (`i` 0), key (1), value (2) or mask (3),
+## recomputed from the arguments: `softmax(scale q k^T + mask)` is `p`, the
+## value gets `p^T ct`, and with `dp = ct v^T` the scores get `p (dp - sum(dp p))`,
+## which `scale` carries on to the query (`. k`) and the key (`^T q`). The
+## query heads that share a kv head are folded into the rows, `[B, H, Sq, D]`
+## as `[B, Hkv, H / Hkv * Sq, D]`, so every product is rank 4 and the key and
+## the value need no repeat: the sum over the group is the sum of the product.
+## The mask gets `dscores`, summed over the batch and head axes it broadcast.
+def attention_rule(n: Types.Node, ct: Types.Tensor, scale: Float, i: Int) -> Result[Optional[Types.Tensor]]
+  q = n.args[0]
+  k = n.args[1]
+  v = n.args[2]
+  kv_heads = k.shape[1]
+  group = q.shape[1] / kv_heads
+  rows = group * q.shape[2]
+  grouped = try Tensor.reshape(q, [q.shape[0], kv_heads, rows, q.shape[3]])
+  ct_grouped = try Tensor.reshape(ct, [q.shape[0], kv_heads, rows, v.shape[3]])
+  swap = [0, 1, 3, 2]
+  scores = try Tensor.batch_matmul(grouped, try Tensor.permute(k, swap))
+  scaled = try Tensor.mul(scores, try const(scores, scale))
+  biased = case n.args.size
+    4 -> try Tensor.add(scaled, try grouped_mask(n.args[3], q, k, group))
+    _ -> scaled
+  end
+
+  probs = try Tensor.softmax(biased, 3)
+  return part(Tensor.batch_matmul(try Tensor.permute(probs, swap), ct_grouped)) if i == 2
+  d_probs = try Tensor.batch_matmul(ct_grouped, try Tensor.permute(v, swap))
+  dots = try Tensor.sum(try Tensor.mul(d_probs, probs), some([3]), true)
+  d_scores = try Tensor.mul(probs, try Tensor.sub(d_probs, try Tensor.broadcast_to(dots, d_probs.shape)))
+  if i == 3
+    return part(
+      unbroadcast(try Tensor.reshape(d_scores, [q.shape[0], q.shape[1], q.shape[2], k.shape[2]]), n.args[3].shape),
+    )
+  end
+
+  d_scaled = try Tensor.mul(d_scores, try const(d_scores, scale))
+  return part(Tensor.reshape(try Tensor.batch_matmul(d_scaled, k), q.shape)) if i == 0
+  part(Tensor.batch_matmul(try Tensor.permute(d_scaled, swap), grouped))
+end
+
+## The additive mask of `attention` laid over the folded scores `[B, Hkv, H / Hkv
+## * Sq, Sk]`: the mask repeated once per head of a group along the query rows,
+## or, when it has a mask per head, reshaped to the folded heads.
+def grouped_mask(mask: Types.Tensor, q: Types.Tensor, k: Types.Tensor, group: Int) -> Result[Types.Tensor]
+  kv_heads = k.shape[1]
+  rows = group * q.shape[2]
+  target = [q.shape[0], kv_heads, rows, k.shape[2]]
+  if mask.shape.size == 4 and mask.shape[1] == q.shape[1] and group > 1
+    return Tensor.broadcast_to(try Tensor.reshape(mask, [mask.shape[0], kv_heads, rows, k.shape[2]]), target)
+  end
+
+  plain = mask
+  if mask.shape.size == 2
+    plain = try Tensor.reshape(mask, [1, 1, q.shape[2], k.shape[2]])
+  end
+
+  repeated = plain
+  if group > 1
+    repeated = try Tensor.concat(List.repeat(plain, group), 2)
+  end
+
+  Tensor.broadcast_to(repeated, target)
+end
+
+## The backward of `rope` for `x`: the opposite rotation. The positions have
+## no gradient.
+def rope_rule(
+  n: Types.Node,
+  ct: Types.Tensor,
+  base: Float,
+  dims: Int,
+  neox: Bool,
+  inverse: Bool,
+  i: Int,
+) -> Result[Optional[Types.Tensor]]
+  return ok(none) if i == 1
+  part(Tensor.rope(ct, n.args[1], base, some(dims), neox, !inverse))
+end
+
 ## The value of `t` on `backend` from the values of its node's arguments, by
 ## the public API. A lifted constant must live on `backend`.
 def apply(t: Types.Tensor, values: Map[Ref, Types.Tensor], backend: Types.Backend) -> Result[Types.Tensor]
@@ -740,6 +823,15 @@ def compute(
     Types.Op.AvgPool1d(kernel, stride, padding) -> Tensor.avg_pool1d(args[0], kernel, stride, padding)
     Types.Op.Arange(start, stop, step) -> Tensor.arange(start, stop, step, t.dtype, backend)
     Types.Op.StopGrad -> Tensor.stop_grad(args[0])
+    Types.Op.Permute(axes) -> Tensor.permute(args[0], axes)
+    Types.Op.Attention(scale) ->
+      mask: Optional[Types.Tensor] = none
+      if args.size > 3
+        mask = some(args[3])
+      end
+
+      Tensor.attention(args[0], args[1], args[2], mask, some(scale))
+    Types.Op.Rope(base, dims, neox, inverse) -> Tensor.rope(args[0], args[1], base, some(dims), neox, inverse)
   end
 end
 

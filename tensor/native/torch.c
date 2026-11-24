@@ -499,12 +499,15 @@ an_term torch_relu(an_env *env, struct torch_TensorHandle_state *a) {
   }
 }
 
+/* `exp` takes finite values and `-inf` (`exp(-inf)` is `0`, a masked score); a NaN or `+inf` never reaches it. */
 an_term torch_exp(an_env *env, struct torch_TensorHandle_state *a) {
-  an_term failure;
+  const torch::Tensor &t = *a->value;
 
   try {
-    if (!all_finite(*a->value, env, "exp", &failure)) return failure;
-    return ok_tensor(env, a->value->exp());
+    if (t.numel() > 0 && (t.isnan().any().item<bool>() || t.isposinf().any().item<bool>())) {
+      return error_text(env, "exp needs finite values or -inf, got a NaN or +inf");
+    }
+    return ok_tensor(env, t.exp());
   } catch (...) {
     return failed(env, "exp");
   }
@@ -1010,6 +1013,141 @@ an_term torch_transpose(an_env *env, struct torch_TensorHandle_state *a) {
     return ok_tensor(env, t.permute(dims).contiguous());
   } catch (...) {
     return failed(env, "transpose");
+  }
+}
+
+an_term torch_permute(an_env *env, struct torch_TensorHandle_state *a, torch_list_Int axes_list) {
+  const torch::Tensor &t = *a->value;
+  std::vector<int64_t> axes;
+  std::vector<bool> seen((size_t)t.dim(), false);
+  int64_t axis;
+  int next;
+
+  while ((next = torch_list_Int_next(env, &axes_list, &axis)) == 1) axes.push_back(axis);
+  if (next < 0) return an_void(env);
+  if ((int64_t)axes.size() != t.dim()) {
+    return error_text(env, "permute needs one axis per dimension, got " + dims_text(axes) + "]");
+  }
+  for (int64_t at : axes) {
+    if (at < 0 || at >= t.dim() || seen[(size_t)at]) {
+      return error_text(env, "permute needs the axes of 0.." + std::to_string(t.dim()) + " once each, got " +
+                                 dims_text(axes) + "]");
+    }
+    seen[(size_t)at] = true;
+  }
+
+  try {
+    return ok_tensor(env, t.permute(axes).contiguous());
+  } catch (...) {
+    return failed(env, "permute");
+  }
+}
+
+/* `softmax(scale q k^T + mask) v` as at::scaled_dot_product_attention, with the
+   kv heads repeated up to the query heads (libtorch 2.4 has no grouped-query
+   form): query head h reads kv head h / (H / Hkv), which is repeat_interleave. */
+static an_term attend(an_env *env, const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v,
+                      const torch::Tensor *mask, double scale) {
+  if (q.dim() != 4 || k.dim() != 4 || v.dim() != 4) {
+    return error_text(env, "attention takes rank-4 tensors, got " + shape_text(q) + ", " + shape_text(k) + " and " +
+                               shape_text(v));
+  }
+  if (!q.is_floating_point() || k.scalar_type() != q.scalar_type() || v.scalar_type() != q.scalar_type() ||
+      (mask != NULL && mask->scalar_type() != q.scalar_type())) {
+    return error_text(env, "attention takes float tensors of one dtype");
+  }
+  if (k.size(1) < 1 || q.size(1) % k.size(1) != 0 || v.size(1) != k.size(1) || v.size(2) != k.size(2) ||
+      k.size(3) != q.size(3) || k.size(0) != q.size(0) || v.size(0) != q.size(0)) {
+    return error_text(env, "attention takes q [B, H, Sq, D], k [B, Hkv, Sk, D] and v [B, Hkv, Sk, Dv] with Hkv dividing H, got " +
+                               shape_text(q) + ", " + shape_text(k) + " and " + shape_text(v));
+  }
+  if (mask != NULL) {
+    bool plain = mask->dim() == 2 && mask->size(0) == q.size(2) && mask->size(1) == k.size(2);
+    bool wide = mask->dim() == 4 && (mask->size(0) == 1 || mask->size(0) == q.size(0)) &&
+                (mask->size(1) == 1 || mask->size(1) == q.size(1)) && mask->size(2) == q.size(2) &&
+                mask->size(3) == k.size(2);
+    if (!plain && !wide) return error_text(env, "attention takes a mask [Sq, Sk] or [B|1, H|1, Sq, Sk], got " + shape_text(*mask));
+  }
+  try {
+    if (mask != NULL && mask->numel() > 0) {
+      if (mask->isnan().any().item<bool>() || mask->isposinf().any().item<bool>()) {
+        return error_text(env, "attention takes a mask of finite values or -inf, got a NaN or +inf");
+      }
+      if ((mask->isneginf().all(-1)).any().item<bool>()) {
+        return error_text(env, "attention: a row of the mask hides every key");
+      }
+    }
+
+    int64_t group = q.size(1) / k.size(1);
+    torch::Tensor keys = group == 1 ? k : k.repeat_interleave(group, 1);
+    torch::Tensor values = group == 1 ? v : v.repeat_interleave(group, 1);
+    c10::optional<torch::Tensor> bias;
+
+    if (mask != NULL) bias = *mask;
+    torch::Tensor out = at::scaled_dot_product_attention(q, keys, values, bias, 0.0, false, scale).contiguous();
+
+    if (out.numel() > 0 && !out.isfinite().all().item<bool>()) {
+      return error_text(env, "attention needs finite q, k and v, and a key left for every query");
+    }
+    return ok_tensor(env, out);
+  } catch (...) {
+    return failed(env, "attention");
+  }
+}
+
+an_term torch_attention(an_env *env, struct torch_TensorHandle_state *q, struct torch_TensorHandle_state *k,
+                        struct torch_TensorHandle_state *v, double scale) {
+  return attend(env, *q->value, *k->value, *v->value, NULL, scale);
+}
+
+an_term torch_attention_masked(an_env *env, struct torch_TensorHandle_state *q, struct torch_TensorHandle_state *k,
+                               struct torch_TensorHandle_state *v, struct torch_TensorHandle_state *mask, double scale) {
+  return attend(env, *q->value, *k->value, *v->value, mask->value, scale);
+}
+
+/* Rotary embedding as a composite: the angles are made in doubles, then cast to
+   the dtype of `x`, and the first `dims` columns turn in pairs. */
+an_term torch_rope(an_env *env, struct torch_TensorHandle_state *x, struct torch_TensorHandle_state *positions,
+                   double base, int64_t dims, bool neox, bool inverse) {
+  const torch::Tensor &input = *x->value;
+  const torch::Tensor &where = *positions->value;
+
+  if (input.dim() < 2 || !input.is_floating_point()) return error_text(env, "rope takes a float tensor of rank 2 or more");
+  if (!is_index_type(where.scalar_type()) || where.dim() != 1 || where.size(0) != input.size(-2)) {
+    return error_text(env, "rope takes one integer position per row, got " + shape_text(where));
+  }
+  if (dims < 2 || dims % 2 != 0 || dims > input.size(-1) || !(base > 0.0)) {
+    return error_text(env, "rope takes an even dims in 2.." + std::to_string(input.size(-1)) + " and a base > 0, got " +
+                               std::to_string(dims) + " and " + std::to_string(base));
+  }
+
+  try {
+    int64_t half = dims / 2;
+    torch::Tensor pace = torch::exp(-(torch::arange(half, torch::kFloat64) * (2.0 / (double)dims)) * std::log(base));
+    torch::Tensor angle = where.to(torch::kFloat64).unsqueeze(1) * pace.unsqueeze(0);
+    torch::Tensor cosine = angle.cos().to(input.scalar_type());
+    torch::Tensor sine = angle.sin().to(input.scalar_type());
+    torch::Tensor head = input.narrow(-1, 0, dims);
+    torch::Tensor first, second, turned;
+
+    if (inverse) sine = -sine;
+    if (neox) {
+      first = head.narrow(-1, 0, half);
+      second = head.narrow(-1, half, half);
+      turned = torch::cat({first * cosine - second * sine, second * cosine + first * sine}, -1);
+    } else {
+      std::vector<int64_t> pairs(head.sizes().begin(), head.sizes().end() - 1);
+      pairs.push_back(half);
+      pairs.push_back(2);
+      torch::Tensor both = head.reshape(pairs);
+      first = both.select(-1, 0);
+      second = both.select(-1, 1);
+      turned = torch::stack({first * cosine - second * sine, second * cosine + first * sine}, -1).flatten(-2);
+    }
+    if (dims < input.size(-1)) turned = torch::cat({turned, input.narrow(-1, dims, input.size(-1) - dims)}, -1);
+    return ok_tensor(env, turned.contiguous());
+  } catch (...) {
+    return failed(env, "rope");
   }
 }
 

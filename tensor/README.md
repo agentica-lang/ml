@@ -70,8 +70,8 @@ change that lets the backend move out into its own package again.
 
 ## What is implemented, and what is not
 
-`DESIGN.md` §3.1 names 46 primitives. Both backends compute them: the
-**reference computes all 46**, and the **libtorch backend implements 44** and
+`DESIGN.md` §3.1 names 49 primitives. Both backends compute them: the
+**reference computes all 49**, and the **libtorch backend implements 47** and
 answers `error("<op> is not implemented on the torch backend yet (see tensor/README.md)")` for the
 other two, so the gap is an error naming the op, never a wrong number. Every
 implemented one is checked against the reference on the same inputs, values and
@@ -83,6 +83,7 @@ shape/dtype, plus its error paths.
 | Elementwise (17) | `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `sqrt`, `pow`, `relu`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `eq`, `lt`, `where`, `clamp` | — |
 | Reductions (4) | `sum`, `mean`, `max`, `argmax` (each with `axes` and `keep_dims`) | — |
 | Linear algebra (3) | `matmul`, `transpose` | `batch_matmul` |
+| Attention (3) | `permute`, `attention` (grouped heads, additive mask, `scale`), `rope` (`neox` or paired, `dims`, `inverse`) | — |
 | Shape (9) | `reshape`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `broadcast_to`, `gather`, `scatter_add` | — |
 | Convolution/pooling (2) | `conv1d` (`stride`, `padding`), `avg_pool1d` (`kernel`, `stride`, `padding`) | — |
 | Movement (4) | `to_dtype`, `copy`, `contiguous` | `to_device` |
@@ -216,7 +217,7 @@ integer parameters), not by the values of its inputs, constants or fills, so a
 training loop that retraces every step compiles once. Inputs are read in place
 and outputs written into fresh tensors, with no copy. The ops lowered are those
 of an MLP and softmax cross-entropy with their gradients, plus `slice`,
-`gather` and `scatter_add` (the list is in §7); a `gather` or `scatter_add` index outside the rows, any
+`gather` and `scatter_add`, and attention's `permute`, `batch_matmul`, `rope` and `attention` (the list is in §7); a `gather` or `scatter_add` index outside the rows, any
 other op, a dtype `F32` does not hold exactly and an output that is not
 finite are errors. Vulkan computes in `F32`; `Tensor.vulkan_fp16(true)`, before
 any other ggml call (a CPU one or `Tensor.available` included), switches the
@@ -235,7 +236,7 @@ the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan device.
 and of the cross-entropy against the reference within 1e-6 (relative to the
 largest value), on the CPU backend and on Vulkan, that a retrace with new values
 compiles nothing, `slice`, `gather` and `scatter_add` (an index outside the rows is an error),
-`concat` and `stack` on every axis, the ops of Whisper's forward (`conv1d`,
+`concat` and `stack` on every axis, `test/ggml_attention_test.agc` (`attention` over grouped heads, masks and the causal flag, `rope`, `permute`, `batch_matmul` and the backward of attention, node by node with `Trace.diff`), the ops of Whisper's forward (`conv1d`,
 `gelu_erf`, layer norm, softmax, masked attention) and the refusals. `test/ggml_turns_test.agc`, in a process of its own, that a
 graph without fills does not write into the buffer the shared allocator freed
 when a larger graph grew it. `test/ggml_vulkan_mlp_test.agc` checks the
