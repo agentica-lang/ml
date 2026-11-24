@@ -98,6 +98,47 @@ def test_the_causal_flag_is_the_mask_of_a_cache_that_holds_earlier_keys() -> Res
   Support.expect_floats(both, try Support.floats_of(explicit))
 end
 
+def test_a_minus_infinity_mask_hides_a_key_like_a_large_negative_one() -> Result[Void]
+  q = try Support.f32(gen_data(11, 1 * 2 * 2 * 2), [1, 2, 2, 2])
+  k = try Support.f32(gen_data(12, 1 * 2 * 3 * 2), [1, 2, 3, 2])
+  v = try Support.f32(gen_data(13, 1 * 2 * 3 * 2), [1, 2, 3, 2])
+  open = -1.0e308 * 10.0
+  hidden = try Support.f32([0.0, open, 0.5, open, 0.0, open], [2, 3])
+  large = try Support.f32([0.0, -1000000000.0, 0.5, -1000000000.0, 0.0, -1000000000.0], [2, 3])
+  Support.expect_floats(
+    try Tensor.attention(q, k, v, some(hidden)),
+    try Support.floats_of(try Tensor.attention(q, k, v, some(large))),
+  )
+end
+
+def test_a_query_with_every_key_hidden_or_a_value_that_is_not_finite_is_an_error() -> Result[Void]
+  q = try Support.f32(gen_data(14, 1 * 1 * 2 * 2), [1, 1, 2, 2])
+  open = -1.0e308 * 10.0
+  nan = open - open
+  try Test.error?(Tensor.attention(q, q, q, some(try Support.f32([0.0, 0.0, open, open], [2, 2]))))
+  try Test.error?(Tensor.attention(q, q, q, some(try Support.f32([0.0, 0.0, nan, 0.0], [2, 2]))))
+  try Test.error?(Tensor.attention(q, q, q, some(try Support.f32([0.0, 0.0, 1.0e308 * 10.0, 0.0], [2, 2]))))
+  try Test.error?(Tensor.attention(try Support.f32([1.0, nan, 1.0, 1.0], [1, 1, 2, 2]), q, q))
+  Test.error?(Tensor.attention(q, q, try Support.f32([1.0, 1.0, 1.0, open], [1, 1, 2, 2])))
+end
+
+def test_causal_needs_no_more_queries_than_keys_and_holds_in_half_precision() -> Result[Void]
+  q = try Support.f32([0.0, 0.0, 0.0], [1, 1, 3, 1])
+  k = try Support.f32([0.0, 0.0], [1, 1, 2, 1])
+  v = try Support.f32([10.0, 20.0], [1, 1, 2, 1])
+  try Test.error?(Tensor.attention(q, k, v, none, none, true))
+  half = try Tensor.attention(
+    try Tensor.to_dtype(try Support.f32([0.0, 0.0], [1, 1, 2, 1]), Tensor.Dtype.F16),
+    try Tensor.to_dtype(try Support.f32([0.0, 0.0], [1, 1, 2, 1]), Tensor.Dtype.F16),
+    try Tensor.to_dtype(try Support.f32([10.0, 20.0], [1, 1, 2, 1]), Tensor.Dtype.F16),
+    none,
+    none,
+    true,
+  )
+
+  Support.expect_floats(half, [10.0, 15.0])
+end
+
 def test_attention_takes_a_scale() -> Result[Void]
   q = try Support.f32(gen_data(7, 1 * 1 * 2 * 4), [1, 1, 2, 4])
   k = try Support.f32(gen_data(8, 1 * 1 * 3 * 4), [1, 1, 3, 4])

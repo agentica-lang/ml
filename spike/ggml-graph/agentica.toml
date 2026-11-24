@@ -11,7 +11,7 @@ blank_line_after_end = true
 # lowers the graph `Trace` records today, not a pinned copy of it. `override`
 # makes this `tensor` and this `hub` the ones `train` reads too.
 [dependencies]
-native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.4.0", subdir = "native-gen" }
+native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.5.0", subdir = "native-gen" }
 tensor = { path = "../../tensor", override = true }
 train = { path = "../../train" }
 hub = { path = "../../hub", override = true }

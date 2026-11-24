@@ -36,6 +36,7 @@
 
 #include "ggml-alloc.h"
 
+#include <float.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
@@ -76,8 +77,8 @@ enum {
   OP_CONV1D, /* ints: stride, padding */
   OP_SCATTER_ADD, /* ints: the rows */
   OP_PERMUTE,     /* ints: the axes, row-major */
-  OP_ATTENTION,   /* args: q, k, v, then an optional mask; ints: the scale times 1e9 */
-  OP_ROPE,        /* args: x, positions; ints: dims, neox, the base times 1e9, inverse */
+  OP_ATTENTION,   /* args: q, k, v, then an optional mask; ints: the bits of the scale, a double */
+  OP_ROPE,        /* args: x, positions; ints: dims, neox, the bits of the base, inverse */
   OP_BATCH_MATMUL,
   OP_COUNT
 };
@@ -488,6 +489,14 @@ static struct ggml_tensor *attention(struct entry *p, const struct gnode *q, con
   return ggml_mul_mat(p->ctx, rows, weights); /* [Dv, Sq, H, B] */
 }
 
+/* The double whose bits `lower.agc` sent as an int. */
+static double from_bits(int64_t bits) {
+  double x;
+
+  memcpy(&x, &bits, sizeof x);
+  return x;
+}
+
 /* Whether an attention's arguments hold the shapes `attention` reads. */
 static bool attends(const struct gnode *q, const struct gnode *k, const struct gnode *v, const struct gnode *mask) {
   if (q->rank != 4 || k->rank != 4 || v->rank != 4) return false;
@@ -814,11 +823,13 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
     case OP_ATTENTION: {
       const struct gnode *mask = nargs == 4 ? &p->nodes[args[3]] : NULL;
 
-      if (nints != 1) return tg_error(env, "attention takes its scale");
+      if (nints != 1 || !isfinite(from_bits(ints[0])) || fabs(from_bits(ints[0])) > FLT_MAX) {
+        return tg_error(env, "attention takes a finite scale that a float holds");
+      }
       if (!attends(a, b, c, mask)) {
         return tg_error(env, "attention takes q [B, H, Sq, D], k, v [B, Hkv, Sk, D | Dv] with Hkv dividing H, and a mask [Sq, Sk] or [B|1, H|1, Sq, Sk]");
       }
-      t = attention(p, a, b, c, mask, (float)((double)ints[0] / 1e9));
+      t = attention(p, a, b, c, mask, (float)from_bits(ints[0]));
       break;
     }
     case OP_ROPE:
@@ -826,7 +837,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         return tg_error(env, "rope takes a tensor of rank 2 to 4, an even dims within its width, the layout and the base");
       }
       if (b->rank != 1 || b->ne[0] != a->ne[1]) return tg_error(env, "rope takes one position per row");
-      t = rope(p, a, b, (int)ints[0], ints[1] != 0, (float)((double)ints[2] / 1e9), ints[3] != 0);
+      if (!(from_bits(ints[2]) > 0.0) || from_bits(ints[2]) > FLT_MAX) return tg_error(env, "rope takes a base in (0, a float's maximum]");
+      t = rope(p, a, b, (int)ints[0], ints[1] != 0, (float)from_bits(ints[2]), ints[3] != 0);
       break;
     case OP_BATCH_MATMUL:
       if (a->rank != rank || b->rank != rank || rank < 2 || a->ne[2] != b->ne[2] || a->ne[3] != b->ne[3] ||

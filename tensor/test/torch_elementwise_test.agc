@@ -71,6 +71,16 @@ def test_exp_saturation_is_a_documented_difference() -> Result[Void]
   Test.error?(Conform.agrees(ours, theirs, "exp saturation"))
 end
 
+def test_exp_of_minus_infinity_is_zero_and_of_plus_infinity_an_error() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  open = -1.0e308 * 10.0
+  got = try Conform.floats_of(try Tensor.exp(try Conform.on_torch([open, 0.0], [2])))
+  try Test.eq(got, [0.0, 1.0])
+  try Test.error?(Tensor.exp(try Conform.on_torch([1.0e308 * 10.0], [1])))
+  Test.error?(Tensor.exp(try Conform.on_torch([open - open], [1])))
+end
+
 def test_log_agrees_with_the_reference() -> Result[Void]
   return Conform.absent() if !Conform.available()
 

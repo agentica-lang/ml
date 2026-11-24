@@ -34,7 +34,7 @@
 ##   truncates float to int, tests nonzero for `Bool`, and range-checks int
 ##   widths. Int overflows are errors, never wrap-around.
 ## - Finite values in, errors out, never a halt or a hang: non-finite storage
-##   (`NaN`, `+-inf`) is refused with `error` at every entry point that could
+##   (`NaN`, `+-inf`; `exp` takes `-inf`, which is `0`) is refused with `error` at every entry point that could
 ##   halt or hang on it (`exp`, `log`, `sqrt`, `pow`, `sigmoid`, `tanh`,
 ##   `gelu_tanh_approx`, `top_k`). Saturating finite inputs stays legitimate
 ##   (`exp` of a large value is `+inf`), but non-finite values never enter
@@ -345,7 +345,7 @@ def neg(t: Types.Tensor) -> Result[Types.Tensor]
   end
 end
 
-## Elementwise `exp`, float only.
+## Elementwise `exp`, float only. `exp(-inf)` is `0` (a masked score); `NaN` and `+inf` are errors.
 def exp(t: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(t, "exp")
   case t.backend
@@ -971,11 +971,21 @@ end
 ## query head `h` reads kv head `h / (heads / kv_heads)`.
 ##
 ## `mask` is additive and shaped `[q_len, k_len]`, or `[batch, heads, q_len,
-## k_len]` with `1` allowed for `batch` and for `heads`. `causal` adds the
-## causal mask, built from `arange` and `lt` so it is the same on every
-## backend: query `i` reads keys `0...i + k_len - q_len`, so the keys of a cache
-## that holds earlier positions line up with the last queries. `scale` defaults
-## to `1 / sqrt(head_dim)`.
+## k_len]` with `1` allowed for `batch` and for `heads`; it takes finite values
+## and `-inf`, and it has a gradient. `causal` adds the causal mask, built from
+## `arange` and `lt` so it is the same on every backend: query `i` reads keys
+## `0..i + k_len - q_len` (inclusive), so the keys of a cache that holds earlier
+## positions line up with the last queries; with `q_len > k_len` the first
+## queries would have no key to read, which is an error. `scale` defaults to
+## `1 / sqrt(head_dim)`.
+##
+## `q`, `k` and `v` are finite, and a query with every key at `-inf` is an
+## error on every backend, never a `NaN`. To hide a position, add a large finite
+## negative number (the dtype's lowest, as Hugging Face does for padding) or
+## `-inf`; the causal mask uses `-1e9` (`-65504` for `F16`). The reference
+## builds the causal mask with `full`, which holds at most 1,048,576 elements,
+## so on `Reference` `q_len * k_len` stops there; the other backends have no
+## such limit.
 def attention(
   q: Types.Tensor,
   k: Types.Tensor,
@@ -1018,6 +1028,12 @@ def attention(
 
   chosen = scale.unwrap_or(1.0 / Math.sqrt(d.to_f))
   return error("attention needs a finite scale, got #{chosen}") if !Types.is_finite(chosen)
+  case q.backend
+    Types.Backend.Ggml(_) -> return Ggml.compiled_only("attention")
+    _ -> nil
+  end
+
+  return error("attention: causal needs q_len <= k_len, got #{sq} queries over #{sk} keys") if causal and sq > sk
   bias = try attention_bias(q, sk, mask, causal)
   case q.backend
     Types.Backend.Reference -> Reference.attention(q, k, v, bias, chosen)
@@ -1032,7 +1048,8 @@ end
 ## pairs by the angle `positions[s] * base^(-2i/dims)`, pair `i`; the columns
 ## past `dims` pass through. With `neox` pair `i` is columns `(i, i + dims/2)`,
 ## the layout of Hugging Face's `rotate_half`; without it, `(2i, 2i + 1)`, as
-## the original Llama does. `positions` is an integer vector of length `seq`.
+## the original Llama does. `positions` is an integer vector of length `seq`
+## (on ggml any integer dtype but `I64`), shared by every batch and head.
 ## With `inverse` every pair turns the other way, which undoes the rotation (and
 ## is the backward of `rope`).
 def rope(
@@ -1434,6 +1451,11 @@ def causal_mask(like: Types.Tensor, sq: Int, sk: Int) -> Result[Types.Tensor]
     try broadcast_to(try reshape(cols, [1, sk]), [sq, sk]),
   )
 
-  blocked = try full([sq, sk], Types.Values.Float(-1.0e9), like.dtype, like.backend)
+  lowest = -1.0e9
+  if like.dtype == Types.Dtype.F16
+    lowest = -65504.0
+  end
+
+  blocked = try full([sq, sk], Types.Values.Float(lowest), like.dtype, like.backend)
   mul(try to_dtype(later, like.dtype), blocked)
 end

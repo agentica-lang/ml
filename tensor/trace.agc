@@ -12,7 +12,6 @@
 import GgmlRaw from "src/ggml_native"
 import Graph from "src/graph"
 import Lower from "src/lower"
-import Shapes from "src/torch_shapes"
 import Tensor from "tensor"
 import Types from "src/types"
 
@@ -508,7 +507,7 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.ToDtype -> no_rule("to_dtype")
     Types.Op.Conv1d(_, _) -> no_rule("conv1d")
     Types.Op.AvgPool1d(_, _, _) -> no_rule("avg_pool1d")
-    Types.Op.Permute(axes) -> part(Tensor.permute(ct, Shapes.inverse_axes(axes)))
+    Types.Op.Permute(axes) -> part(Tensor.permute(ct, Types.inverse_axes(axes)))
     Types.Op.Attention(scale) -> attention_rule(n, ct, scale, i)
     Types.Op.Rope(base, dims, neox, inverse) -> rope_rule(n, ct, base, dims, neox, inverse, i)
   end
@@ -671,16 +670,15 @@ def scatter_add_rule(n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Optional
   part(Tensor.gather(ct, n.args[0]))
 end
 
-## The backward of `attention` for its query (`i` 0), key (1) or value (2),
+## The backward of `attention` for its query (`i` 0), key (1), value (2) or mask (3),
 ## recomputed from the arguments: `softmax(scale q k^T + mask)` is `p`, the
 ## value gets `p^T ct`, and with `dp = ct v^T` the scores get `p (dp - sum(dp p))`,
 ## which `scale` carries on to the query (`. k`) and the key (`^T q`). The
 ## query heads that share a kv head are folded into the rows, `[B, H, Sq, D]`
 ## as `[B, Hkv, H / Hkv * Sq, D]`, so every product is rank 4 and the key and
 ## the value need no repeat: the sum over the group is the sum of the product.
-## The mask has no gradient.
+## The mask gets `dscores`, summed over the batch and head axes it broadcast.
 def attention_rule(n: Types.Node, ct: Types.Tensor, scale: Float, i: Int) -> Result[Optional[Types.Tensor]]
-  return ok(none) if i == 3
   q = n.args[0]
   k = n.args[1]
   v = n.args[2]
@@ -702,6 +700,12 @@ def attention_rule(n: Types.Node, ct: Types.Tensor, scale: Float, i: Int) -> Res
   d_probs = try Tensor.batch_matmul(ct_grouped, try Tensor.permute(v, swap))
   dots = try Tensor.sum(try Tensor.mul(d_probs, probs), some([3]), true)
   d_scores = try Tensor.mul(probs, try Tensor.sub(d_probs, try Tensor.broadcast_to(dots, d_probs.shape)))
+  if i == 3
+    return part(
+      unbroadcast(try Tensor.reshape(d_scores, [q.shape[0], q.shape[1], q.shape[2], k.shape[2]]), n.args[3].shape),
+    )
+  end
+
   d_scaled = try Tensor.mul(d_scores, try const(d_scores, scale))
   return part(Tensor.reshape(try Tensor.batch_matmul(d_scaled, k), q.shape)) if i == 0
   part(Tensor.batch_matmul(try Tensor.permute(d_scaled, swap), grouped))

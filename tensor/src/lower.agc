@@ -286,8 +286,8 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Stack(axis) -> ints = [axis, 1]
       Types.Op.Conv1d(stride, padding) -> ints = [stride, padding]
       Types.Op.Permute(axes) -> ints = axes
-      Types.Op.Attention(scale) -> ints = [try fixed(scale, n)]
-      Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try fixed(base, n), flag(inverse)]
+      Types.Op.Attention(scale) -> ints = [try bits(scale, n)]
+      Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
       _ -> nil
     end
 
@@ -314,14 +314,14 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   )
 end
 
-## `x` as the integer the C layer reads back as `x / 1e9`: the C layer takes
-## integers only, and a scale or a base is held to nine decimals.
-def fixed(x: Float, n: Types.Node) -> Result[Int]
-  if !Types.is_finite(x) or x.abs >= 9.0e9
-    return error("node #{n.id} (#{Types.op_name(n.op)}): #{x} is not held by ggml here, which takes |x| < 9e9")
+## The bits of the double `x`, which the C layer reads back as `x`: a node takes integers only. A float
+## that ggml holds in `F32` must fit it.
+def bits(x: Float, n: Types.Node) -> Result[Int]
+  if !Types.is_finite(x) or x.abs > 3.4028234663852886e38
+    return error("node #{n.id} (#{Types.op_name(n.op)}): #{x} is not a float ggml holds")
   end
 
-  ok((x * 1.0e9).round)
+  ok(Float.to_bits(x))
 end
 
 ## `true` as `1`, `false` as `0`.
