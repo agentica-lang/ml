@@ -55,7 +55,7 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 - The head is the embedding table itself (`out_in`) when
   `tie_word_embeddings` is true, with no copy of it, else `lm_head`. The `bfloat16` weights come as `F32` through `hub`.
 - The forward is one graph on ggml (`Lift.staged`). Every call traces and
-  plans the graph again: seconds on the CPU, a second on Vulkan for a 50 token
+  plans the graph again: under two seconds on the CPU, 0.6 s on Vulkan for a 50 token
   prompt. Generation (below) keeps a cache and compiles its steps.
 - Only `qwen3`, `silu`, no attention bias, no `rope_scaling` and
   `use_sliding_window: false` are read; the rest is an error. `tie_word_embeddings`
