@@ -481,15 +481,25 @@ static struct ggml_tensor *rows_max(struct entry *p, struct ggml_tensor *t) {
   return ggml_reshape_2d(p->ctx, picked, t->ne[1], 1);
 }
 
-/* The largest value of a long row [n, 1] (contiguous). One workgroup over the whole row is slow (1.2 ms for 151,936
-   floats on Vulkan), so the row is cut into k pieces of m (about the square root of n), the last one overlapping
-   the others when m does not divide n, and the largest of the pieces' maxima is the answer. */
-static struct ggml_tensor *long_row_max(struct entry *p, struct ggml_tensor *row) {
-  int64_t n = row->ne[0], m = (int64_t)ceil(sqrt((double)n)), k = n / m;
-  struct ggml_tensor *maxima = rows_max(p, ggml_view_2d(p->ctx, row, m, k, (size_t)m * row->nb[0], 0));
+/* argmax reads its source at the start of a storage buffer binding, which Vulkan aligns to at most 256 bytes
+   (`minStorageBufferOffsetAlignment`): ggml-vulkan aborts on a view that starts in between. */
+#define PIECE_ALIGN_BYTES 256
 
+/* The largest value of a long row [n, 1] (contiguous). One workgroup over the whole row is slow (1.2 ms for 151,936
+   floats on Vulkan), so the row is cut into k pieces of m values, m about the square root of n rounded up to 256 bytes
+   (64 floats), and a tail of the n - k * m left; the largest of the pieces' maxima is the answer. Every piece and the
+   tail start at a multiple of 256 bytes from the row, and a row that is a view starting in between is copied first. */
+static struct ggml_tensor *long_row_max(struct entry *p, struct ggml_tensor *row) {
+  int64_t align = PIECE_ALIGN_BYTES / (int64_t)row->nb[0];
+  int64_t n = row->ne[0], m = ((int64_t)ceil(sqrt((double)n)) + align - 1) / align * align, k = n / m;
+  size_t step = (size_t)m * row->nb[0];
+  struct ggml_tensor *maxima;
+
+  if (row->view_offs % PIECE_ALIGN_BYTES != 0) row = ggml_cont(p->ctx, row);
+  GGML_ASSERT(row->view_offs % PIECE_ALIGN_BYTES == 0 && step % PIECE_ALIGN_BYTES == 0);
+  maxima = rows_max(p, ggml_view_2d(p->ctx, row, m, k, step, 0));
   if (k * m < n) {
-    struct ggml_tensor *tail = ggml_view_2d(p->ctx, row, m, 1, (size_t)m * row->nb[0], (size_t)(n - m) * row->nb[0]);
+    struct ggml_tensor *tail = ggml_view_2d(p->ctx, row, n - k * m, 1, step, (size_t)k * step);
 
     maxima = ggml_concat(p->ctx, maxima, rows_max(p, tail), 0);
   }
@@ -538,7 +548,8 @@ static struct ggml_tensor *slice(struct entry *p, const struct gnode *x, const i
    so `node` refuses a table with more rows. The ids are made once per indices,
    rows and op (a decode step writes every layer's cache at the same
    positions): a later node gets them with no guard of its own, since the
-   first one's guard already checks them. */
+   first one's guard already checks them. One slot per indices node: caches of
+   alternating sizes at the same positions make the ids again for each. */
 static struct ggml_tensor *row_ids(struct entry *p, const struct gnode *indices, int64_t rows, int op,
                                    struct ggml_tensor **guard) {
   struct gnode *source = (struct gnode *)indices; /* the nodes are `p->nodes`; the ids are a cache */

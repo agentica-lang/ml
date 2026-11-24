@@ -110,9 +110,10 @@ def test_diff_of_a_long_row_max_finds_nothing_on_cpu_and_vulkan() -> Result[Void
   ok()
 end
 
-## A long row is cut into k pieces of m floats (m the ceiling of its square root), the last piece overlapping the
-## others when m does not divide it: the largest value is found wherever it lies, at either end of a piece or only in
-## the overlapping tail (1500 = 38 pieces of 39 and a tail; 1521 = 39 * 39; 151936, a vocabulary).
+## A long row is cut into k pieces of m floats (the ceiling of its square root, rounded up to a multiple of 64, so
+## every piece starts aligned for Vulkan) and a tail of what is left: a 3.0 planted in a ramp of [-1, 1] is found
+## wherever it lies, at either end of a piece or of the tail (1500 = 23 pieces of 64 and a tail of 28; 1536 = 24 * 64;
+## 151936, a vocabulary: 339 pieces of 448 and a tail of 64).
 def test_a_long_row_max_finds_the_largest_at_the_seams_of_its_pieces() -> Result[Void]
   return ok() if !try Support.ggml_present()
 
@@ -122,20 +123,17 @@ def test_a_long_row_max_finds_the_largest_at_the_seams_of_its_pieces() -> Result
     backends = backends.push(vulkan)
   end
 
-  for n in [1500, 1521, 151936]
-    m = Math.sqrt(n.to_f).ceil
+  for n in [1500, 1536, 151936]
+    m = ((Math.sqrt(n.to_f).ceil + 63) / 64) * 64
     k = n / m
     ramp = Support.ramp(5, n)
-    seams = [0, m - 1, m, k * m - 1, k * m, n - m, n - 1].uniq.select { |i| i < n }
+    seams = [0, m - 1, m, k * m - 1, k * m, n - 1].uniq.select { |i| i < n }
     for at in seams
       data = ramp.set(at, 3.0)
-      args = [try Support.f32(data, [n])]
       for backend in backends
-        d = try Trace.diff(args, REF, backend) do |xs| Tensor.max(xs[0], some([0]), false) end
-        case d.first
-          some(node) -> return error("#{n} floats, the largest at #{at} on #{backend}: #{node.max_abs}")
-          none -> nil
-        end
+        top = try Trace.eval([try Tensor.floats(data, [n], backend)]) do |xs| Tensor.max(xs[0], some([0]), false) end
+        got = (try Support.floats_of(top))[0]
+        return error("#{n} floats, the largest (3.0) at #{at} on #{backend}: #{got}") if got != 3.0
       end
     end
   end
