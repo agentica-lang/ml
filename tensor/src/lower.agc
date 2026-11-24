@@ -58,6 +58,7 @@ ROPE = 33
 BATCH_MATMUL = 34
 NORM = 35
 RMS_NORM = 36
+SET_ROWS = 37
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -78,8 +79,10 @@ end
 
 ## A traced graph lowered once: what a run sends to the C layer (the nodes,
 ## only on a cache miss), the structural key, where each leaf's tensor comes
-## from, the fill values and the outputs, in the C layer's order. A program
-## never changes, so any number of tasks may run it.
+## from, the fill values and the outputs, in the C layer's order. `donates`
+## names, per output, the input it is: a `set_rows` writes its input in place,
+## and the run gives that very tensor back (`-1` for an output that is new).
+## A program never changes, so any number of tasks may run it.
 struct Program
   device: Types.Device
   nodes: List[Lowered]
@@ -87,6 +90,7 @@ struct Program
   leaves: List[Leaf]
   fills: List[Float]
   outputs: List[Int]
+  donates: List[Int]
   shapes: List[List[Int]]
   dtypes: List[Types.Dtype]
   keep: Bool
@@ -102,7 +106,7 @@ def evaluate(
   keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
   ids = env.keys
-  program = try System.Profile.measure("ml.plan") do lower(outs, ids, device, keep) end
+  program = try System.Profile.measure("ml.plan") do lower(outs, ids, device, keep, false) end
   inputs: List[Types.Tensor] = []
   for id in ids
     inputs = inputs.push(try bound(env[id], Types.Backend.Ggml(device), "an input"))
@@ -114,7 +118,7 @@ end
 ## The program of the traced tensors `outs` over the input nodes `inputs`
 ## (traced `Input` tensors, in the order a run takes its tensors).
 def program(outs: List[Types.Tensor], inputs: List[Types.Tensor], device: Types.Device) -> Result[Program]
-  System.Profile.measure("ml.plan") do lower(outs, inputs.map { |t| Graph.id_of(t) }, device, true) end
+  System.Profile.measure("ml.plan") do lower(outs, inputs.map { |t| Graph.id_of(t) }, device, true, true) end
 end
 
 ## The graph of `p` in the structural cache, built if it is not there, kept
@@ -208,6 +212,15 @@ def execute(
         target = into[i]
       end
 
+      if p.donates[i] >= 0
+        if target.some?
+          return error("#{op}: output #{i} is the input it writes in place, so `into` cannot name a tensor for it")
+        end
+
+        out = out.push(inputs[p.donates[i]])
+        next
+      end
+
       case target
         some(t) ->
           if t.shape != p.shapes[i] or t.dtype != p.dtypes[i] or t.backend != Types.Backend.Ggml(p.device)
@@ -244,7 +257,7 @@ end
 private
 
 ## The program of the graph `outs` reach; the input nodes are `ids`, in run order.
-def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: Bool) -> Result[Program]
+def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: Bool, donate: Bool) -> Result[Program]
   positions: Map[Ref, Int] = {}
   for i in 0...ids.size
     positions = positions.put(ids[i], i)
@@ -256,7 +269,8 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   parts: List[String] = []
   leaves: List[Leaf] = []
   fills: List[Float] = []
-  for t in try walk(outs, positions)
+  walked = try walk(outs, positions)
+  for t in walked
     n = try Graph.node_of(t)
     half_ok = try half_node(t, n)
     if !exact(t.dtype) and !half_ok
@@ -304,6 +318,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Attention(scale) -> ints = [try bits(scale, n)]
       Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
       Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
+      Types.Op.SetRows -> ints = [flag(!donate)]
       Types.Op.RmsNorm(eps) -> ints = [Float.to_bits32(eps)]
       _ -> nil
     end
@@ -324,6 +339,11 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   end
 
   outputs = outs.map { |o| pos[Graph.id_of(o)] }
+  donates = outs.map { |_| -1 }
+  if donate
+    donates = try donations(outs, positions, walked)
+  end
+
   key = parts.join(";") + " -> #{outputs}"
   ok(
     Program(
@@ -333,11 +353,75 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       leaves: leaves,
       fills: fills,
       outputs: outputs,
+      donates: donates,
       shapes: outs.map { |o| o.shape },
       dtypes: outs.map { |o| o.dtype },
       keep: keep,
     ),
   )
+end
+
+## Per output, the position of the input a `set_rows` writes in place (`-1` for the others), when the writes are sound:
+## the cache of a `set_rows` is an input read by no other node, the `set_rows` is an output (its result is the input
+## itself, so it is not given twice), and an input is not also an output.
+def donations(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[Types.Tensor]) -> Result[List[Int]]
+  output_ids = outs.map { |o| Graph.id_of(o) }
+  written: Map[Ref, Int] = {}
+  for t in walked
+    n = try Graph.node_of(t)
+    case n.op
+      Types.Op.SetRows ->
+        if !output_ids.include?(n.id)
+          return error("node #{n.id} (set_rows) writes its input in place, so it must be an output")
+        end
+
+        dst = try Graph.node_of(n.args[0])
+        case dst.op
+          Types.Op.Input -> nil
+          _ ->
+            return error(
+              "node #{n.id} (set_rows) writes its cache in place, which must be an input, got node #{dst.id} (#{Types.op_name(dst.op)})",
+            )
+        end
+
+        if output_ids.include?(dst.id)
+          return error("node #{n.id} (set_rows): its cache, node #{dst.id}, is also an output")
+        end
+
+        if (output_ids.select { |id| id == n.id }.size > 1)
+          return error("node #{n.id} (set_rows) is listed twice as an output, and its result is the input itself")
+        end
+
+        for u in walked
+          m = try Graph.node_of(u)
+          # the rows and the positions of the set_rows itself are read too, the cache (its first argument) is written
+          reads = m.args
+          if m.id == n.id
+            reads = m.args.drop(1)
+          end
+
+          if (reads.any? { |a| Graph.id_of(a) == dst.id })
+            return error(
+              "node #{m.id} (#{Types.op_name(m.op)}) reads node #{dst.id}, which node #{n.id} (set_rows) writes in place",
+            )
+          end
+        end
+
+        written = written.put(n.id, positions[dst.id])
+      _ -> nil
+    end
+  end
+
+  per_output: List[Int] = []
+  for id in output_ids
+    if written.has_key?(id)
+      per_output = per_output.push(written[id])
+    else
+      per_output = per_output.push(-1)
+    end
+  end
+
+  ok(per_output)
 end
 
 ## The bits of the double `x`, which the C layer reads back as `x`: a node takes integers only. A float
@@ -514,6 +598,7 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.GeluErf -> ok(GELU_ERF)
     Types.Op.LayerNorm(_) -> ok(NORM)
     Types.Op.RmsNorm(_) -> ok(RMS_NORM)
+    Types.Op.SetRows -> ok(SET_ROWS)
     Types.Op.Concat(_) -> ok(CONCAT)
     Types.Op.Stack(_) -> ok(CONCAT)
     Types.Op.Conv1d(_, _) -> ok(CONV1D)

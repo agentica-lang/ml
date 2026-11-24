@@ -794,6 +794,54 @@ def scatter_add(indices: Types.Tensor, updates: Types.Tensor, rows: Int) -> Resu
   end
 end
 
+## `cache` `[..., rows, width]` (rank 2 to 4) with its rows `positions[i]` replaced by the rows `fresh[..., i, :]`
+## (`fresh` is `[..., n, width]`, `positions` an `I32` `[n]`). The positions must be distinct: a repeat is unspecified.
+## An index outside `[0, rows)` is an error. On every backend but `Ggml` the answer is a new tensor. In a trace that
+## runs on `Ggml` it is the cache written in place (`Trace.run`): `cache` must be an input of the function, read by no
+## other node, and the result must be an output, which is the very tensor given; `cache` is consumed (see
+## `Trace.run`), even when the run fails, and the cache must be `F32`; the written cache is not checked for finite
+## values. `Trace.eval` writes a copy. No gradient.
+def set_rows(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) -> Result[Types.Tensor]
+  _ = try same_backend(cache, fresh, "set_rows")
+  _ = try same_backend(cache, positions, "set_rows")
+  rank = cache.shape.size
+  return error("set_rows needs a cache of rank 2 to 4, got #{cache.shape}") if rank < 2 or rank > 4
+  _ = try float_only(cache, "set_rows")
+  if fresh.dtype != cache.dtype
+    return error("set_rows needs rows of #{Types.dtype_name(cache.dtype)}, got #{Types.dtype_name(fresh.dtype)}")
+  end
+
+  if positions.shape.size != 1 or positions.dtype != Types.Dtype.I32
+    return error("set_rows needs positions of I32 [n], got #{Types.dtype_name(positions.dtype)} #{positions.shape}")
+  end
+
+  want = cache.shape.set(rank - 2, positions.shape[0])
+  if fresh.shape != want
+    return error("set_rows needs rows of shape #{want} for a cache #{cache.shape}, got #{fresh.shape}")
+  end
+
+  case cache.backend
+    Types.Backend.Trace -> Graph.same(Types.Op.SetRows, [cache, fresh, positions], cache)
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("set_rows")
+    _ -> set_rows_composed(cache, fresh, positions)
+  end
+end
+
+## The ops `set_rows` stands for: the cache with the written rows zeroed, plus the rows scattered into place.
+def set_rows_composed(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) -> Result[Types.Tensor]
+  rank = cache.shape.size
+  rows = cache.shape[rank - 2]
+  axes = [rank - 2] + (0...rank).select { |i| i != rank - 2 }
+  back = (0...rank).map { |i| axes.index(i).unwrap! }
+  moved = try permute(cache, axes)
+  width = try Types.volume(moved.shape.drop(1))
+  placed = try scatter_add(positions, try reshape(try permute(fresh, axes), [positions.shape[0], width]), rows)
+  ones_in = try ones([positions.shape[0], 1], cache.dtype, cache.backend)
+  kept = try sub(try ones([rows, 1], cache.dtype, cache.backend), try scatter_add(positions, ones_in, rows))
+  held = try mul(try reshape(moved, [rows, width]), try broadcast_to(kept, [rows, width]))
+  permute(try reshape(try add(held, placed), moved.shape), back)
+end
+
 ## Moves `t` to `dtype` (float to int truncates, anything nonzero is `true`).
 def to_dtype(t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
   case t.backend

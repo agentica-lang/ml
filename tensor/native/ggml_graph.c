@@ -82,6 +82,7 @@ enum {
   OP_BATCH_MATMUL,
   OP_NORM,        /* a layer norm over the last axis; ints: eps as the bits of an F32 */
   OP_RMS_NORM,    /* an rms norm over the last axis; ints: eps as the bits of an F32 */
+  OP_SET_ROWS,    /* args: a cache leaf, the rows, their positions; written in place, its result is an output that is the leaf */
   OP_COUNT
 };
 
@@ -89,7 +90,7 @@ static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
   "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
-  "norm", "rms_norm",
+  "norm", "rms_norm", "set_rows",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -100,6 +101,7 @@ struct port {
   ggml_backend_buffer_t own;
   struct ggml_tensor *conv; /* the bound tensor, converted to or from `own`; else NULL. Its memory is `held` */
   bool set;                               /* bound or prepared for the next run */
+  bool donated;                           /* a leaf a `set_rows` writes in place, or the output that is that leaf: no copy in or out */
   struct tg_storage *held;                /* the memory of the bound tensor, kept until the run is over */
 };
 
@@ -110,6 +112,7 @@ struct gnode {
   int lazy; /* t has fewer elements than ne and repeats to it */
   int zero; /* a fill of 0.0, possibly broadcast or reshaped */
   int arg;  /* a transpose's argument, for matmul's layout */
+  int in_place; /* a set_rows that writes its leaf: its result is that leaf, an output with no copy and no check */
   int rank; /* of the recorded shape */
   struct ggml_tensor *guard; /* a gather's or scatter_add's count of indices out of range */
 };
@@ -636,8 +639,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT || op == OP_GATHER ||
       op == OP_SCATTER_ADD || op == OP_CONV1D || op == OP_ROPE || op == OP_BATCH_MATMUL) {
     if (nargs != 2) return tg_error(env, "a binary op takes 2 args");
-  } else if (op == OP_WHERE) {
-    if (nargs != 3) return tg_error(env, "where takes 3 args");
+  } else if (op == OP_WHERE || op == OP_SET_ROWS) {
+    if (nargs != 3) return tg_error(env, "where and set_rows take 3 args");
   } else if (op == OP_ATTENTION) {
     if (nargs != 3 && nargs != 4) return tg_error(env, "attention takes q, k, v and an optional mask");
   } else if (op == OP_CONCAT) {
@@ -811,6 +814,39 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       t = reshape(p, scatter_add(p, a, b, ints[0], &n->guard), n->ne);
       break;
     case OP_GELU_ERF: t = ggml_gelu_erf(p->ctx, dense(p, a)); break;
+    case OP_SET_ROWS: {
+      struct ggml_tensor *rows;
+      int copy;
+
+      if (nints != 1 || (ints[0] != 0 && ints[0] != 1)) return tg_error(env, "set_rows takes a flag, 1 to write a copy of its cache");
+      copy = (int)ints[0];
+      if (a->ne[1] > 16777216) {
+        return tg_error(env, "set_rows into more than 2^24 rows is not lowered to ggml: F32 row ids are exact below that");
+      }
+      if (a->ne[0] != b->ne[0] || a->ne[2] != b->ne[2] || a->ne[3] != b->ne[3] || volume(c->ne) != b->ne[1]) {
+        return tg_error(env, "set_rows takes rows of the cache's width, one for each position");
+      }
+      if (copy) {
+        if (a->t->type != GGML_TYPE_F32) return tg_error(env, "set_rows writes an F32 cache");
+        rows = row_ids(p, c, a->ne[1], &n->guard);
+        t = ggml_set_rows(p->ctx, ggml_dup(p->ctx, dense(p, a)), dense(p, b), rows);
+      } else {
+        struct port *leaf = NULL;
+        int64_t k;
+
+        if (a->op != OP_LEAF) return tg_error(env, "set_rows writes a leaf, an input of the graph, in place");
+        if (b == a || c == a) return tg_error(env, "set_rows reads the cache it writes in place");
+        for (k = 0; k < p->leaf_count; k++) {
+          if (p->leaves[k].t == a->t) leaf = &p->leaves[k];
+        }
+        if (leaf == NULL || a->t->type != GGML_TYPE_F32) return tg_error(env, "set_rows writes an F32 input in place");
+        if (leaf->donated) return tg_error(env, "set_rows writes a leaf in place twice");
+        leaf->donated = true;
+        n->in_place = 1;
+        t = ggml_set_rows(p->ctx, a->t, dense(p, b), row_ids(p, c, a->ne[1], &n->guard));
+      }
+      break;
+    }
     case OP_NORM: {
       uint32_t bits;
       float eps;
@@ -930,10 +966,17 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   p->checks = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, nouts + p->guard_count);
   for (i = 0; i < nouts; i++) {
     struct gnode *n = &p->nodes[outs[i]];
-    struct ggml_tensor *value = dense(p, n);
+    struct ggml_tensor *value;
     struct ggml_tensor *check;
 
     p->outs[i].t = ggml_new_tensor_4d(p->port_ctx, GGML_TYPE_F32, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
+    if (n->in_place) {
+      /* the output is the leaf itself: nothing to copy or to check, the node only has to run */
+      p->outs[i].donated = true;
+      ggml_build_forward_expand(p->graph, n->t);
+      continue;
+    }
+    value = dense(p, n);
     ggml_set_output(p->outs[i].t);
     ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, value, p->outs[i].t));
     /* 0 * x is NaN for an inf or a NaN; sum_rows first, since one ggml_sum
@@ -1131,7 +1174,18 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
     if (!p->leaves[i].set) return tg_error(env, "run with every leaf bound");
   }
   for (i = 0; i < p->output_count; i++) {
-    if (!p->outs[i].set) return tg_error(env, "run with every output made");
+    if (!p->outs[i].set && !p->outs[i].donated) return tg_error(env, "run with every output made");
+  }
+  for (i = 0; i < p->leaf_count; i++) {
+    int64_t k;
+
+    if (!p->leaves[i].donated) continue;
+    if (p->leaves[i].conv != NULL) return tg_error(env, "an input a set_rows writes in place must be F32");
+    for (k = 0; k < p->leaf_count; k++) {
+      if (k != i && p->leaves[k].held != NULL && p->leaves[k].held == p->leaves[i].held) {
+        return tg_error(env, "an input a set_rows writes in place is bound to another input too");
+      }
+    }
   }
   i = 0;
   values = (float *)malloc((size_t)(p->fill_count + p->output_count + p->guard_count) * sizeof(float));
