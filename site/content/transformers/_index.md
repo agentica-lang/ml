@@ -32,11 +32,14 @@ end
 [2, 768]
 ```
 
+- A run's outputs, and the model itself, hold ggml memory that `Bert.close(out)` and `Bert.close_model(m)` free at once; `embed` frees what it made. Nothing may use a closed model: a call that does is an error.
 - The padding is masked as Hugging Face does, so a sentence in a padded batch gets what it gets alone.
 - The model matches `BertModel` in `float32` on ggml CPU and Vulkan: the largest gap is 5e-5 on `bert-base-uncased`, over six sentences and a padded batch.
 - Checkpoints with the `bert.` prefix and `gamma`/`beta` layer norms (`bert-base-uncased`) and those without (`save_pretrained` today) both load; the `cls.*` head is ignored. A `model_type` other than `bert`, a position embedding other than `absolute` and an activation other than `gelu`, `gelu_new`, `gelu_pytorch_tanh` and `relu` are errors.
 - On ggml the forward is one graph with the weights as constants; the other backends run it eagerly. The weights are `F32` in memory (about 0.4 GB for `bert-base-uncased`).
-- `sequence length` may not pass `max_position_embeddings` (512).
+- The sequence length may not pass `max_position_embeddings` (512), and every encoding needs a token.
+- Reference and ggml are tested; libtorch is not. A sharded checkpoint (`model.safetensors.index.json`) is not supported yet.
+- Installed from outside this repository, `transformers` pins the `hub` of an earlier commit, which does not read `bert-base-uncased`'s `gamma` and `beta` layer norms: it needs the next ml release, which moves the pins.
 
 ## Tokenizer example
 

@@ -81,7 +81,13 @@ end
 def layer_norm(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Backend) -> Result[Nn.LayerNorm]
   scale = "#{prefix}.weight"
   shift = "#{prefix}.bias"
-  if not Hub.has?(c, scale) and Hub.has?(c, "#{prefix}.gamma")
+  if not Hub.has?(c, scale)
+    if not Hub.has?(c, "#{prefix}.gamma")
+      return error(
+        "#{prefix}: the checkpoint has neither #{scale} and #{shift} nor #{prefix}.gamma and #{prefix}.beta",
+      )
+    end
+
     scale = "#{prefix}.gamma"
     shift = "#{prefix}.beta"
   end
@@ -89,7 +95,7 @@ def layer_norm(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Ba
   gamma = try weight(c, scale, 1, backend)
   beta = try weight(c, shift, 1, backend)
   if Tensor.shape(beta) != Tensor.shape(gamma)
-    return error("#{prefix}: weight #{Tensor.shape(gamma)} and bias #{Tensor.shape(beta)} differ")
+    return error("#{prefix}: #{scale} #{Tensor.shape(gamma)} and #{shift} #{Tensor.shape(beta)} differ")
   end
 
   ok(Nn.LayerNorm(gamma: gamma, beta: beta, eps: eps))

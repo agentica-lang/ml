@@ -210,7 +210,7 @@ The Vulkan weights sit in the device's own buffers, which on this iGPU are syste
 
 ## BERT (ml#78), ours against llama.cpp
 
-`bert-base-uncased` (the Hugging Face checkpoint, `float32`), the forward over token ids, so the tokenizer is not in the time. Ours is `transformers/tools/bench_bert.agc` (a warm-up run, then the median of 5 runs, 3 for the batch of 8; each run traces and runs the whole graph) on ml `35f01ca`'s `transformers/`, same machine as above, load average under 2. llama.cpp (`4f5d1f64b`, build 2172, CPU only: this checkout has no Vulkan build) runs the GGUF that its own converter makes from the same weights (`convert_hf_to_gguf.py --outtype f32`), with `llama-bench -p 128,512 -n 0 -t 8 -r 5`. Every row is one sentence unless it says a batch.
+`bert-base-uncased` (the Hugging Face checkpoint, `float32`), the forward over token ids, so the tokenizer is not in the time. Ours is `transformers/tools/bench_bert.agc` (a warm-up run, then the median of 5 runs, 3 for the batch of 8; each run traces and runs the whole graph) on ml `d14bfd6`'s `transformers/` (`bert.agc` before its memory fixes), same machine as above, load average under 2. llama.cpp (`4f5d1f64b`, build 2172, CPU only: this checkout has no Vulkan build) runs the GGUF that its own converter makes from the same weights (`convert_hf_to_gguf.py --outtype f32`), with `llama-bench -p 128,512 -n 0 -t 8 -r 5`. Every row is one sentence unless it says a batch.
 
 | Row | 1 x 128 tokens | 1 x 512 tokens | 8 x 128 tokens | Load | Peak memory |
 |---|---|---|---|---|---|
@@ -218,7 +218,7 @@ The Vulkan weights sit in the device's own buffers, which on this iGPU are syste
 | ours, ggml Vulkan | 888 | 1137 | 1338 | 0.58 s | 0.39 GB |
 | llama.cpp CPU, F32 | 615 | 615 | | | |
 
-llama.cpp is about 2.3 times faster than ours on the CPU for one sentence; the gap was not profiled. Ours traces and plans the whole graph at every call, and its attention is the unfused one. The Vulkan row has no llama.cpp counterpart on this machine. The numbers are the same weights in F32 everywhere; `float16` weights would halve the memory and are not read yet (ml#35). Correctness: the last hidden state and the pooler output match `BertModel` to 5.0e-5 on CPU and 2.8e-5 on Vulkan (`transformers/tools/bert_check.agc`).
+llama.cpp is about 2.3 times faster than ours on the CPU for one sentence; the gap was not profiled. Two things that could account for part of it, untested: ours traces and plans the whole graph at every call, and its attention is the unfused one. The Vulkan row has no llama.cpp counterpart on this machine. The numbers are the same weights in F32 everywhere; `float16` weights would halve the memory and are not read yet (ml#35). Correctness: the last hidden state and the pooler output match `BertModel` to 5.0e-5 on CPU and 2.8e-5 on Vulkan (`transformers/tools/bert_check.agc`).
 
 ## Run it
 

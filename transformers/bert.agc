@@ -10,9 +10,9 @@ import Hub from "pkg/hub/hub"
 import Load from "pkg/hub/load"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
-import Trace from "pkg/tensor/trace"
 import WordPiece from "tokenizer/wordpiece"
 import Source from "tokenizer/source"
+import Lift from "lift"
 
 ## The fields of `config.json` that the model reads.
 struct Config
@@ -116,54 +116,39 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[B
 end
 
 ## The batch of `encodings` (`WordPiece.encode`), padded with `pad_token_id`
-## to the longest, through the model.
+## to the longest, through the model. Every encoding needs a token. The
+## outputs belong to the caller, who closes them (`Bert.close`).
 def run(m: Bert, encodings: List[WordPiece.Encoding]) -> Result[Output]
-  return error("run needs at least one encoding") if encodings.empty?
-  seq = encodings.map { |e| e.ids.size }.max.unwrap!
-  return error("run needs at least one token in an encoding") if seq == 0
-  ids: List[Tensor.Values] = []
-  types: List[Tensor.Values] = []
-  keep: List[Tensor.Values] = []
-  for e in encodings
-    return error("an encoding has #{e.ids.size} ids but #{e.type_ids.size} type ids") if e.ids.size != e.type_ids.size
-    for i in 0...seq
-      ids = ids.push(Tensor.Values.Int(padded(e.ids, i, m.config.pad_token_id)))
-      types = types.push(Tensor.Values.Int(padded(e.type_ids, i, 0)))
-      keep = keep.push(Tensor.Values.Float(real_token(e.ids.size, i)))
-    end
-  end
-
-  backend = Tensor.backend(m.words.table)
-  shape = [encodings.size, seq]
-  forward(
-    m,
-    try Tensor.from_list(ids, shape, Tensor.Dtype.I32, backend),
-    try Tensor.from_list(types, shape, Tensor.Dtype.I32, backend),
-    try Tensor.from_list(keep, shape, Tensor.Dtype.F32, backend),
-  )
+  batch = try inputs(m, encodings)
+  outs = through(m, batch, true)
+  Lift.close([batch.ids, batch.type_ids, batch.keep])
+  to_output(try outs)
 end
 
 ## The sentence embedding of each encoding: the mean of its token vectors
-## (padding left out) as `[batch, hidden_size]`.
+## (padding left out) as `[batch, hidden_size]`, which the caller closes. The
+## pooler does not run.
 def embed(m: Bert, encodings: List[WordPiece.Encoding]) -> Result[Tensor.Tensor]
-  out = try run(m, encodings)
-  # The mask is rebuilt from the sizes, so the pooling needs no second tensor.
-  seq = Tensor.shape(out.hidden)[1]
-  keep: List[Tensor.Values] = []
-  for e in encodings
-    for i in 0...seq
-      keep = keep.push(Tensor.Values.Float(real_token(e.ids.size, i)))
-    end
+  batch = try inputs(m, encodings)
+  outs = through(m, batch, false)
+  mean: Result[List[Tensor.Tensor]] = case outs
+    ok(xs) ->
+      Lift.staged(
+        m,
+        ->(p: Bert) { p },
+        [xs[0], batch.keep],
+        ->(_: Bert, ys: List[Tensor.Tensor]) { ok([try mean_pooled(ys[0], ys[1])]) },
+      )
+    error(e) -> error(e.message)
   end
 
-  mask = try Tensor.from_list(keep, [encodings.size, seq], Tensor.Dtype.F32, Tensor.backend(out.hidden))
-  pooled = try staged(
-    m,
-    [out.hidden, mask],
-    ->(_: Bert, xs: List[Tensor.Tensor]) { ok([try mean_pooled(xs[0], xs[1])]) },
-  )
+  Lift.close([batch.ids, batch.type_ids, batch.keep])
+  case outs
+    ok(xs) -> Lift.close(xs)
+    error(_) -> nil
+  end
 
-  ok(pooled[0])
+  ok((try mean)[0])
 end
 
 ## `ids` and `type_ids` (`I32`, `[batch, seq]`) and `mask` (`F32`, `[batch, seq]`:
@@ -175,28 +160,50 @@ def forward(m: Bert, ids: Tensor.Tensor, type_ids: Tensor.Tensor, mask: Tensor.T
     return error("forward needs ids, type_ids and mask of one [batch, seq] shape, got #{shape}")
   end
 
-  outs = try staged(m, [ids, type_ids, mask], ->(p: Bert, xs: List[Tensor.Tensor]) { graph(p, xs[0], xs[1], xs[2]) })
-  pooled: Optional[Tensor.Tensor] = none
-  if outs.size > 1
-    pooled = some(outs[1])
-  end
-
-  ok(Output(hidden: outs[0], pooled: pooled))
+  to_output(try through(m, Inputs(ids: ids, type_ids: type_ids, keep: mask), true))
 end
 
-## The tensors of `m` and `Trace` constants in their place.
-def traced(m: Bert) -> Bert
-  m.with(
-    words: Nn.Embedding(table: Trace.constant(m.words.table)),
-    positions: Nn.Embedding(table: Trace.constant(m.positions.table)),
-    types: Nn.Embedding(table: Trace.constant(m.types.table)),
-    norm: traced_norm(m.norm),
-    stack: Nn.EncoderStack(blocks: m.stack.blocks.map { |b| traced_block(b) }),
-    pooler: m.pooler.map { |p| traced_dense(p) },
-  )
+## Closes the tensors of an `Output`.
+def close(out: Output) -> Void
+  Lift.close([out.hidden] + out.pooled.map { |p| [p] }.unwrap_or([]))
+end
+
+## Closes the weights of `m` now. Nothing may use `m` afterwards: a call that
+## does is an error, never a read of freed memory.
+def close_model(m: Bert) -> Void
+  tensors = [m.words.table, m.positions.table, m.types.table] + Lift.norm_parts(m.norm)
+  for b in m.stack.blocks
+    tensors = tensors + Lift.block_parts(b)
+  end
+
+  case m.pooler
+    some(p) -> tensors = tensors + Lift.dense_parts(p)
+    none -> nil
+  end
+
+  Lift.close(tensors)
 end
 
 private
+
+## The three input tensors of a batch: ids and type ids (`I32`) and the mask (`F32`).
+struct Inputs
+  ids: Tensor.Tensor
+  type_ids: Tensor.Tensor
+  keep: Tensor.Tensor
+end
+
+## The tensors of `m` as `Trace` constants (`Lift`).
+def traced(m: Bert) -> Bert
+  m.with(
+    words: Lift.embedding(m.words),
+    positions: Lift.embedding(m.positions),
+    types: Lift.embedding(m.types),
+    norm: Lift.norm(m.norm),
+    stack: Nn.EncoderStack(blocks: m.stack.blocks.map { |b| Lift.block(b) }),
+    pooler: m.pooler.map { |p| Lift.dense(p) },
+  )
+end
 
 ## The names of one block, under `p` (`bert.encoder.layer.N.`).
 def block_names(p: String) -> Load.BlockNames
@@ -238,22 +245,72 @@ def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void
   ok()
 end
 
-## `f` over the model and `args`: one compiled graph of the traced model on
-## `Ggml`, which computes only graphs; the call itself elsewhere.
-def staged(
-  m: Bert,
-  args: List[Tensor.Tensor],
-  f: Fn[Bert, List[Tensor.Tensor], Result[List[Tensor.Tensor]]],
-) -> Result[List[Tensor.Tensor]]
-  case Tensor.backend(args[0])
-    Tensor.Backend.Ggml(_) -> Trace.eval_many(args, ->(xs: List[Tensor.Tensor]) { f.call(traced(m), xs) })
-    _ -> f.call(m, args)
-  end
+## The model over `batch`: the hidden state, and the pooler with `pool`.
+def through(m: Bert, batch: Inputs, pool: Bool) -> Result[List[Tensor.Tensor]]
+  Lift.staged(
+    m,
+    ->(p: Bert) { traced(p) },
+    [batch.ids, batch.type_ids, batch.keep],
+    ->(p: Bert, xs: List[Tensor.Tensor]) { graph(p, xs[0], xs[1], xs[2], pool) },
+  )
 end
 
-## The embeddings, the blocks and the pooler: the hidden state and, with a
-## pooler, `tanh(pooler(hidden[:, 0]))`.
-def graph(m: Bert, ids: Tensor.Tensor, type_ids: Tensor.Tensor, mask: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
+def to_output(outs: List[Tensor.Tensor]) -> Result[Output]
+  pooled: Optional[Tensor.Tensor] = none
+  if outs.size > 1
+    pooled = some(outs[1])
+  end
+
+  ok(Output(hidden: outs[0], pooled: pooled))
+end
+
+## The batch of `encodings` as tensors: padded to the longest, with the mask.
+def inputs(m: Bert, encodings: List[WordPiece.Encoding]) -> Result[Inputs]
+  return error("run needs at least one encoding") if encodings.empty?
+  seq = encodings.map { |e| e.ids.size }.max.unwrap!
+  ids: List[Tensor.Values] = []
+  types: List[Tensor.Values] = []
+  for e in encodings
+    return error("an encoding has no tokens") if e.ids.empty?
+    return error("an encoding has #{e.ids.size} ids but #{e.type_ids.size} type ids") if e.ids.size != e.type_ids.size
+    for i in 0...seq
+      ids = ids.push(Tensor.Values.Int(padded(e.ids, i, m.config.pad_token_id)))
+      types = types.push(Tensor.Values.Int(padded(e.type_ids, i, 0)))
+    end
+  end
+
+  backend = Tensor.backend(m.words.table)
+  shape = [encodings.size, seq]
+  ok(
+    Inputs(
+      ids: try Tensor.from_list(ids, shape, Tensor.Dtype.I32, backend),
+      type_ids: try Tensor.from_list(types, shape, Tensor.Dtype.I32, backend),
+      keep: try Tensor.from_list(keep_mask(encodings, seq), shape, Tensor.Dtype.F32, backend),
+    ),
+  )
+end
+
+## 1.0 for each token of each encoding and 0.0 for its padding, row after row.
+def keep_mask(encodings: List[WordPiece.Encoding], seq: Int) -> List[Tensor.Values]
+  keep: List[Tensor.Values] = []
+  for e in encodings
+    for i in 0...seq
+      keep = keep.push(Tensor.Values.Float(real_token(e.ids.size, i)))
+    end
+  end
+
+  keep
+end
+
+## The embeddings, the blocks and, with `pool` and a pooler, the pooler: the
+## hidden state and `tanh(pooler(hidden[:, 0]))`.
+def graph(
+  m: Bert,
+  ids: Tensor.Tensor,
+  type_ids: Tensor.Tensor,
+  mask: Tensor.Tensor,
+  pool: Bool,
+) -> Result[List[Tensor.Tensor]]
   shape = Tensor.shape(ids)
   batch = shape[0]
   seq = shape[1]
@@ -263,6 +320,7 @@ def graph(m: Bert, ids: Tensor.Tensor, type_ids: Tensor.Tensor, mask: Tensor.Ten
   kinds = try Tensor.reshape(try Nn.embedding(m.types, try Tensor.reshape(type_ids, flat)), [batch, seq, width])
   h = try Nn.layer_norm(m.norm, try Nn.positional(m.positions, try Tensor.add(words, kinds)))
   h = try Nn.encoder_stack(m.stack, h, some(try padding_bias(mask)))
+  return ok([h]) if not pool
   case m.pooler
     some(p) ->
       first = try Tensor.reshape(try Tensor.slice(h, [0, 0, 0], [batch, 1, width]), [batch, width])
@@ -293,22 +351,3 @@ def mean_pooled(hidden: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Tensor.Ten
   count = try Tensor.sum(mask, some([1]), true)
   Tensor.div(total, try Tensor.broadcast_to(count, [shape[0], shape[2]]))
 end
-
-def traced_block(b: Nn.EncoderBlock) -> Nn.EncoderBlock
-  a = b.attention
-  b.with(
-    norm1: traced_norm(b.norm1),
-    norm2: traced_norm(b.norm2),
-    attention: a.with(
-      query: traced_dense(a.query),
-      key: traced_dense(a.key),
-      value: traced_dense(a.value),
-      output: traced_dense(a.output),
-    ),
-    mlp: b.mlp.with(up: traced_dense(b.mlp.up), down: traced_dense(b.mlp.down)),
-  )
-end
-
-def traced_dense(p: Nn.Dense) -> Nn.Dense = Nn.Dense(w: Trace.constant(p.w), b: p.b.map { |b| Trace.constant(b) })
-
-def traced_norm(p: Nn.LayerNorm) -> Nn.LayerNorm = p.with(gamma: Trace.constant(p.gamma), beta: Trace.constant(p.beta))

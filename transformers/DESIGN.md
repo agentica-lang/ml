@@ -24,7 +24,18 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
   so a padded batch gives each sentence what it gives alone.
 - On ggml (which computes only graphs) the forward is one compiled graph of the
   model with its weights as trace constants, as in `asr/`.
-- Other `model_type`s, `position_embedding_type`s and activations are errors.
+- Other `model_type`s, `position_embedding_type`s and activations are errors;
+  so is an encoding with no token. Only `model.safetensors` is read (no
+  sharded checkpoint yet).
+- Memory (as `asr/`): `run` closes its input tensors, `embed` closes its
+  hidden state and mask and skips the pooler, `Bert.close(out)` and
+  `Bert.close_model(m)` free the rest, and off ggml the forward runs in
+  `Native.arena`. Reference and ggml are tested, libtorch is not.
+- `lift.agc` holds what a model needs on ggml (the lifted weights, `staged`,
+  `close`, the weight lists), shared by the models of this folder.
+- The pins in `agentica.toml` are those of `asr/`: outside this repository
+  `transformers` gets the `hub` without the `gamma`/`beta` fallback until the
+  next release moves them (the workspace reads the folders).
 
 ## Tokenizers
 

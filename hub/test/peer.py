@@ -178,6 +178,13 @@ def layer(out):
         # The older spelling of a layer norm (BERT's checkpoints).
         "enc.old.gamma": tensor("F32", [3], [2.0, 1.0, 0.5]),
         "enc.old.beta": tensor("F32", [3], [1.0, 0.0, -1.0]),
+        # A file with both spellings: the weight and bias win.
+        "enc.both.weight": tensor("F32", [3], [1.0, 1.0, 1.0]),
+        "enc.both.bias": tensor("F32", [3], [0.0, 0.0, 0.0]),
+        "enc.both.gamma": tensor("F32", [3], [5.0, 5.0, 5.0]),
+        "enc.both.beta": tensor("F32", [3], [6.0, 6.0, 6.0]),
+        "enc.half.gamma": tensor("F32", [3], [1.0, 1.0, 1.0]),
+        "enc.half.beta": tensor("F32", [2], [1.0, 1.0]),
     })
     b = [f32(v) for v in b]
     y = []

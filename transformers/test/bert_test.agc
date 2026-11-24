@@ -5,6 +5,7 @@
 ## reference and on ggml. Run from `transformers/`.
 
 import Bert from "../bert"
+import Lift from "../lift"
 import S from "support"
 import Tensor from "pkg/tensor/tensor"
 import WordPiece from "../tokenizer/wordpiece"
@@ -72,7 +73,31 @@ def test_bad_inputs_are_errors() -> Result[Void]
     long = WordPiece.Encoding(ids: List.repeat(1, 9), type_ids: List.repeat(0, 9))
     try Test.error?(Bert.run(m, [long]))
     try Test.error?(Bert.run(m, [WordPiece.Encoding(ids: [1, 2], type_ids: [0])]))
-    Test.error?(Bert.run(m, [WordPiece.Encoding(ids: [], type_ids: [])]))
+    try Test.error?(Bert.run(m, [WordPiece.Encoding(ids: [], type_ids: [])]))
+    # An empty encoding among others would make a mean of nothing.
+    full = WordPiece.Encoding(ids: [1, 2, 3], type_ids: [0, 0, 0])
+    try Test.error?(Bert.run(m, [full, WordPiece.Encoding(ids: [], type_ids: [])]))
+    Test.error?(Bert.embed(m, [full, WordPiece.Encoding(ids: [], type_ids: [])]))
+  end
+end
+
+## `close` and `close_model` free what ggml holds; a model that was closed is
+## an error, not a read of freed memory.
+def test_a_closed_model_is_an_error_on_ggml() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.ggml_backends()
+      m = try Bert.open("#{dir}/tiny", backend)
+      batch = try encodings(dir)
+      out = try Bert.run(m, batch)
+      try Test.eq(Tensor.shape(out.hidden), [2, 5, 8])
+      Bert.close(out)
+      mean = try Bert.embed(m, batch)
+      Lift.close([mean])
+      Bert.close_model(m)
+      try Test.error?(Bert.run(m, batch))
+    end
+
+    ok()
   end
 end
 
