@@ -397,6 +397,8 @@ def gguf_write(out):
             {"out": "e.f16", "src": "e", "format": "F16"}, {"out": "f.bf16", "src": "f", "format": "BF16"},
             {"out": "g.f16", "src": "g", "format": "F16"}, {"out": "h.bf16", "src": "h", "format": "BF16"},
             {"out": "i.f32", "src": "i", "format": "F32"}, {"out": "i.bf16", "src": "i", "format": "BF16"},
+            # the last tensor is 28 bytes: the file ends 4 bytes of padding later
+            {"out": "c.f32", "src": "c", "format": "F32"},
         ],
         # `i` holds 3.4e38, which F16 does not: the F16 range check refuses it
         "refused": {"out": "i.f16", "src": "i", "format": "F16"},

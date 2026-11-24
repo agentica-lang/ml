@@ -53,11 +53,14 @@ end
 
 private
 
-## The header with its padding, the byte where the data buffer starts, and where each tensor goes in it.
+## The header with its padding, the byte where the data buffer starts, where each tensor goes in it, and the size of
+## the whole file: the data ends padded to the alignment after the last tensor too, as ggml and gguf-py write it and
+## ggml reads it.
 struct Layout
   header: Bytes
   base: Int
   offsets: List[Int]
+  size: Int
 end
 
 def fill(part: String, header: Layout, tensors: List[Out]) -> Result[Void]
@@ -80,6 +83,14 @@ def fill(part: String, header: Layout, tensors: List[Out]) -> Result[Void]
       "tensor #{t.name}",
       Tensor.convert_file(src.path, src.offset, src.format, count, part, header.base + header.offsets[i], t.format),
     )
+  end
+
+  info = try File.stat(part)
+  if info.size_bytes < header.size
+    try File.open(part, "append") do |f|
+      try File.write_bytes(f, try Bytes.from_list(List.repeat(0, header.size - info.size_bytes)))
+      ok()
+    end
   end
 
   ok()
@@ -134,7 +145,7 @@ def header_of(fields: List[Field], tensors: List[Out]) -> Result[Layout]
 
   base = align(size)
   parts = parts.push(Bytes.from_list(List.repeat(0, base - size)).unwrap!)
-  ok(Layout(header: Bytes.concat(parts), base: base, offsets: offsets))
+  ok(Layout(header: Bytes.concat(parts), base: base, offsets: offsets, size: base + align(at)))
 end
 
 ## The type number of ggml of a float format.

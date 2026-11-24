@@ -5,9 +5,10 @@ Usage: python3 -I test/gguf_verify.py DIR  (DIR holds `out.gguf`, `src.safetenso
 number of tensors, or exits 1 with the first difference.
 
 It checks the header (magic, version 3, counts), every key-value, the names, the dimensions (the reverse of the
-shape), the types, that every offset is a multiple of 32 and the tensors do not overlap, that the data buffer starts
-at a multiple of 32 and the file ends where the last tensor does, and that the bytes of every tensor are the source
-values rounded to the target format (to nearest even), computed here with `struct` ("e" is binary16).
+shape), the types, that every tensor starts where the one before it ends rounded up to 32 (no gap, no overlap), that
+the data buffer starts at a multiple of 32 and the file ends at the end of the last tensor rounded up to 32 as well
+(ggml reads the padded size), and that the bytes of every tensor are the source values rounded to the target format
+(to nearest even), computed here with `struct` ("e" is binary16).
 """
 
 import json
@@ -42,6 +43,10 @@ class Reader:
             item, count = self.take("I"), self.take("Q")
             return [self.value(item) for _ in range(count)]
         return self.take(SCALARS[kind])
+
+
+def align(n):
+    return -(-n // 32) * 32
 
 
 def fail(message):
@@ -121,16 +126,18 @@ def main():
         want = encode(source_values(raw, dtype), t["format"])
         if dtype == t["format"] and want != raw:
             fail("%s: a copy of the same format changed bytes" % name)
-        if offset % 32 or offset < end:
-            fail("%s at %d is not aligned or overlaps" % (name, offset))
+        if offset != align(end):
+            fail("%s at %d, expected %d (aligned, no gap, no overlap)" % (name, offset, align(end)))
         got = data[base + offset:base + offset + len(want)]
         if got != want:
             fail("%s: the bytes differ from the source rounded to %s" % (name, t["format"]))
         if any(data[base + end:base + offset]):
             fail("the padding before %s is not zero" % name)
         end = offset + len(want)
-    if len(data) != base + end:
-        fail("the file has %d bytes, expected %d" % (len(data), base + end))
+    if len(data) != base + align(end):
+        fail("the file has %d bytes, expected %d (the last tensor is padded too)" % (len(data), base + align(end)))
+    if any(data[base + end:]):
+        fail("the padding after the last tensor is not zero")
     print("ok", len(infos))
 
 
