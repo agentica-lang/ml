@@ -84,6 +84,7 @@ enum {
   OP_RMS_NORM,    /* an rms norm over the last axis; ints: eps as the bits of an F32 */
   OP_SET_ROWS,    /* args: a cache leaf, the rows, their positions; written in place, its result is an output that is the leaf */
   OP_TOP_K,       /* the indices of the k largest of a vector, as F32; ints: k */
+  OP_CAST,        /* ints: 1 for F16, 0 for F32; a node that already has the type is passed through */
   OP_COUNT
 };
 
@@ -91,7 +92,7 @@ static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
   "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
-  "norm", "rms_norm", "set_rows", "top_k",
+  "norm", "rms_norm", "set_rows", "top_k", "cast",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -695,6 +696,12 @@ static an_term bad_list(an_env *env, int r, const char *text) { return r == -1 ?
 static const char *packed_misuse(int64_t op, int i, const struct gnode *x) {
   if (!ggml_is_quantized(x->t->type) && x->t->type != GGML_TYPE_F16) return NULL;
   if (op == OP_MATMUL && i == 1) return NULL;
+  if (x->t->type == GGML_TYPE_F16) {
+    /* an F16 cache: written in place by set_rows, read by attention, widened by a cast */
+    if (op == OP_SET_ROWS && i == 0 && x->op == OP_LEAF) return NULL;
+    if (op == OP_ATTENTION && (i == 1 || i == 2)) return NULL;
+    if (op == OP_CAST && x->op == OP_LEAF) return NULL;
+  }
   if (x->op == OP_LEAF && (op == OP_TRANSPOSE || (op == OP_GATHER && i == 0))) return NULL;
   return "a quantized or F16 weight goes only into the weight of a matmul, a transpose of the weight itself or the table of a gather";
 }
@@ -948,11 +955,26 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         for (k = 0; k < p->leaf_count; k++) {
           if (p->leaves[k].t == a->t) leaf = &p->leaves[k];
         }
-        if (leaf == NULL || a->t->type != GGML_TYPE_F32) return tg_error(env, "set_rows writes an F32 input in place");
+        if (leaf == NULL || (a->t->type != GGML_TYPE_F32 && a->t->type != GGML_TYPE_F16)) {
+          return tg_error(env, "set_rows writes an F32 or F16 input in place");
+        }
         if (leaf->donated) return tg_error(env, "set_rows writes a leaf in place twice");
         leaf->donated = true;
         n->in_place = 1;
         t = ggml_set_rows(p->ctx, a->t, dense(p, b), row_ids(p, c, a->ne[1], &n->guard));
+      }
+      break;
+    }
+    case OP_CAST: {
+      enum ggml_type want = nints == 1 && ints[0] == 1 ? GGML_TYPE_F16 : GGML_TYPE_F32;
+
+      if (nints != 1 || (ints[0] != 0 && ints[0] != 1)) return tg_error(env, "cast takes 1 for F16 or 0 for F32");
+      if (a->t->type == want) {
+        t = a->t;
+        n->lazy = a->lazy;
+        n->zero = a->zero;
+      } else {
+        t = ggml_cast(p->ctx, dense(p, a), want);
       }
       break;
     }
@@ -1100,7 +1122,8 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     struct ggml_tensor *value;
     struct ggml_tensor *check;
 
-    p->outs[i].t = ggml_new_tensor_4d(p->port_ctx, GGML_TYPE_F32, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
+    p->outs[i].t = ggml_new_tensor_4d(p->port_ctx, n->t->type == GGML_TYPE_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32,
+                                      n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
     if (n->in_place) {
       /* the output is the leaf itself: nothing to copy or to check, the node only has to run */
       p->outs[i].donated = true;
@@ -1112,7 +1135,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, value, p->outs[i].t));
     /* 0 * x is NaN for an inf or a NaN; sum_rows first, since one ggml_sum
        of a large tensor is a single slow workgroup on Vulkan */
-    check = ggml_sum(p->ctx, ggml_sum_rows(p->ctx, ggml_scale(p->ctx, value, 0.0f)));
+    check = ggml_sum(p->ctx, ggml_sum_rows(p->ctx, ggml_scale(p->ctx, value->type == GGML_TYPE_F32 ? value : ggml_cast(p->ctx, value, GGML_TYPE_F32), 0.0f)));
     ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
   }
   p->output_count = nouts;
@@ -1216,7 +1239,7 @@ an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output,
 
   if (p == NULL || !p->compiled) return tg_error(env, "an output of a compiled graph");
   if (output < 0 || output >= p->output_count) return tg_error(env, "no such output");
-  if (!tg_new_tensor(env, p->device, p->outs[output].t->ne, int32 ? GGML_TYPE_I32 : GGML_TYPE_F32, state, &failure)) {
+  if (!tg_new_tensor(env, p->device, p->outs[output].t->ne, int32 ? GGML_TYPE_I32 : p->outs[output].t->type, state, &failure)) {
     return failure;
   }
   tg_lock_device();

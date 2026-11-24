@@ -15,8 +15,10 @@ import Tensor from "pkg/tensor/tensor"
 ABS = 0.000000001
 REL = 0.000000001
 
-F32_ABS = 0.0001
-F32_REL = 0.0001
+# The cache on ggml is F16: its keys and values are rounded to 11 bits, so the logits of the tiny model drift by up to
+# 3e-4 (the real Qwen3-0.6B by 7e-3 on logits of 10 to 30).
+HALF_ABS = 0.0006
+HALF_REL = 0.03
 
 ## Prompts of 5 (padded to 8), exactly 8 and 9 (padded to 16).
 def test_each_step_matches_the_forward_over_the_whole_row() -> Result[Void]
@@ -24,7 +26,7 @@ def test_each_step_matches_the_forward_over_the_whole_row() -> Result[Void]
     for prompt in [5, 8, 9]
       try stepping(dir, S.REF, prompt, ABS, REL)
       for backend in try S.ggml_backends()
-        try stepping(dir, backend, prompt, F32_ABS, F32_REL)
+        try stepping(dir, backend, prompt, HALF_ABS, HALF_REL)
       end
     end
 
@@ -41,6 +43,7 @@ def test_a_step_writes_the_cache_in_place_until_the_capacity_grows() -> Result[V
       row = try ints(try JSON.get(try expected(dir), "long"))
       cache = (try Generate.step_logits(g, Generate.start(), row.take(5))).cache
       prompt = cache.keys[0]
+      try Test.eq(Tensor.dtype(prompt), Tensor.Dtype.F16)
       for t in [5, 6, 7]
         cache = (try Generate.step_logits(g, cache, [row[t]])).cache
         try Test.assert(!try closed?(prompt), "step #{t} closed the cache it was given")

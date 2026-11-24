@@ -865,7 +865,7 @@ def set_rows(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) 
   rank = cache.shape.size
   return error("set_rows needs a cache of rank 2 to 4, got #{cache.shape}") if rank < 2 or rank > 4
   _ = try float_only(cache, "set_rows")
-  if fresh.dtype != cache.dtype
+  if fresh.dtype != cache.dtype and !f16_cache?(cache, fresh)
     return error("set_rows needs rows of #{Types.dtype_name(cache.dtype)}, got #{Types.dtype_name(fresh.dtype)}")
   end
 
@@ -1184,8 +1184,11 @@ def attention(
 ) -> Result[Types.Tensor]
   _ = try same_backend(q, k, "attention")
   _ = try same_backend(q, v, "attention")
-  _ = try same_dtype(q, k, "attention")
-  _ = try same_dtype(q, v, "attention")
+  _ = try same_dtype(k, v, "attention")
+  if k.dtype != q.dtype and !(k.dtype == Types.Dtype.F16 and q.dtype == Types.Dtype.F32 and compiled?(q))
+    return error("attention needs #{Types.dtype_name(q.dtype)} keys and values, got #{Types.dtype_name(k.dtype)}")
+  end
+
   _ = try float_only(q, "attention")
   if q.shape.size != 4 or k.shape.size != 4 or v.shape.size != 4
     return error("attention needs rank-4 tensors, got #{q.shape}, #{k.shape} and #{v.shape}")
@@ -1557,6 +1560,21 @@ def not_quantized(dtype: Types.Dtype, op: String) -> Result[Bool]
   end
 
   ok(true)
+end
+
+## An `F16` cache `set_rows` writes `F32` rows into, which only a graph (a trace or `Ggml`) does.
+def f16_cache?(cache: Types.Tensor, fresh: Types.Tensor) -> Bool
+  return false if cache.dtype != Types.Dtype.F16 or fresh.dtype != Types.Dtype.F32
+  compiled?(cache)
+end
+
+## `t` belongs to a trace or to `Ggml`, where an `F16` key, value or cache is read without a widened copy.
+def compiled?(t: Types.Tensor) -> Bool
+  case t.backend
+    Types.Backend.Trace -> true
+    Types.Backend.Ggml(_) -> true
+    _ -> false
+  end
 end
 
 ## `t` computes: float dtypes only.

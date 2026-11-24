@@ -60,6 +60,7 @@ NORM = 35
 RMS_NORM = 36
 SET_ROWS = 37
 TOP_K = 38
+CAST = 39
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -321,6 +322,11 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
       Types.Op.SetRows -> ints = [flag(!donate)]
       Types.Op.TopK(k) -> ints = [k]
+      Types.Op.ToDtype ->
+        if op == CAST
+          ints = [flag(t.dtype == Types.Dtype.F16)]
+        end
+
       Types.Op.RmsNorm(eps) -> ints = [Float.to_bits32(eps)]
       _ -> nil
     end
@@ -334,9 +340,11 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   for i in 0...outs.size
     if Types.is_packed_dtype(outs[i].dtype)
       n = try Graph.node_of(outs[i])
-      return error(
-        "output #{i} (node #{n.id}, #{Types.op_name(n.op)}) is #{Types.dtype_name(outs[i].dtype)}: ggml returns F32 only, so widen it with to_dtype first",
-      )
+      if !try cache_output(outs[i], n)
+        return error(
+          "output #{i} (node #{n.id}, #{Types.op_name(n.op)}) is #{Types.dtype_name(outs[i].dtype)}: ggml returns F32, except an F16 cache made by to_dtype or written by set_rows, so widen it with to_dtype first",
+        )
+      end
     end
   end
 
@@ -542,9 +550,11 @@ def half_node(t: Types.Tensor, n: Types.Node) -> Result[Bool]
     Types.Op.Constant(_) -> ok(true)
     Types.Op.Transpose -> ok(true)
     Types.Op.Gather -> ok(true)
+    Types.Op.SetRows -> ok(t.dtype == Types.Dtype.F16)
+    Types.Op.ToDtype -> ok(t.dtype == Types.Dtype.F16)
     _ ->
       error(
-        "node #{n.id} (#{Types.op_name(n.op)}) is #{Types.dtype_name(t.dtype)}, which ggml holds only for a packed weight read by matmul, linear, gather and embedding: " +
+        "node #{n.id} (#{Types.op_name(n.op)}) is #{Types.dtype_name(t.dtype)}, which ggml holds only for a packed weight read by matmul, linear, gather and embedding, or an F16 cache that set_rows writes, to_dtype makes and attention reads: " +
         "a packed weight is read-only, so no gradient is taken for it",
       )
   end
@@ -552,7 +562,8 @@ end
 
 ## The `F16` and `Q8_0` operands of a node: the weight of a `matmul` (second operand) and
 ## the table of a `gather` (first), the argument of a transpose, or the rows of a
-## `gather` that `to_dtype` widens. Anywhere else the packed weight would need an
+## `gather` that `to_dtype` widens, an `F16` input that `to_dtype` widens, the cache of a `set_rows` and the key and
+## value of an attention (F16 only). Anywhere else the packed weight would need an
 ## op that ggml does not run on it. A `Q8_0` weight goes into a `matmul` only as the
 ## transpose that `linear(..., out_in: true)` makes, which is read in place.
 def half_operands(n: Types.Node) -> Result[Bool]
@@ -562,7 +573,9 @@ def half_operands(n: Types.Node) -> Result[Bool]
         Types.Op.Matmul -> i == 1 and (n.args[i].dtype != Types.Dtype.Q8_0 or try transposed(n.args[i]))
         Types.Op.Gather -> i == 0 and (n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i]))
         Types.Op.Transpose -> n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i])
-        Types.Op.ToDtype -> try gathered(n.args[0])
+        Types.Op.ToDtype -> try gathered(n.args[0]) or (n.args[i].dtype == Types.Dtype.F16 and try leaf(n.args[0]))
+        Types.Op.SetRows -> i == 0 and n.args[i].dtype == Types.Dtype.F16
+        Types.Op.Attention(_) -> (i == 1 or i == 2) and n.args[i].dtype == Types.Dtype.F16
         _ -> false
       end
 
@@ -575,6 +588,16 @@ def half_operands(n: Types.Node) -> Result[Bool]
   end
 
   ok(true)
+end
+
+## The `F16` tensor `t` is an F16 cache: the result of `to_dtype` (from F32) or of `set_rows`.
+def cache_output(t: Types.Tensor, n: Types.Node) -> Result[Bool]
+  return ok(false) if t.dtype != Types.Dtype.F16
+  case n.op
+    Types.Op.ToDtype -> ok(true)
+    Types.Op.SetRows -> ok(true)
+    _ -> ok(false)
+  end
 end
 
 ## The tensor `t` is an input or a constant: a quantized weight is read only where it is made, never a view of it.
@@ -643,7 +666,10 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     # is not.
     Types.Op.ToDtype ->
       from = n.args[0].dtype
-      return ok(IDENTITY) if t.dtype == from or t.dtype == Types.Dtype.F32
+      return ok(IDENTITY) if t.dtype == from
+      return ok(CAST) if t.dtype == Types.Dtype.F32 and Types.is_packed_dtype(from)
+      return ok(CAST) if t.dtype == Types.Dtype.F16 and from == Types.Dtype.F32
+      return ok(IDENTITY) if t.dtype == Types.Dtype.F32
       return ok(IDENTITY) if from == Types.Dtype.Bool and Types.is_int_dtype(t.dtype)
       error(
         "node #{n.id}: to_dtype from #{Types.dtype_name(from)} to #{Types.dtype_name(t.dtype)} is not lowered to ggml",
