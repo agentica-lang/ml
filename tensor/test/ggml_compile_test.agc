@@ -16,8 +16,19 @@ VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
 REF = Tensor.Backend.Reference
 ## The largest gap allowed, relative to the largest reference value of a tensor.
 TOL = 0.000001
+## Vulkan multiplies in fp16 by default: its gap to the reference is within this, and within `TOL` with the opt-out
+## (`ggml_vulkan_mlp_test.agc`).
+VULKAN_TOL = 0.01
 
 private
+
+## The largest gap allowed on `backend`.
+def bound(backend: Tensor.Backend) -> Float
+  case backend
+    Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> VULKAN_TOL
+    _ -> TOL
+  end
+end
 
 ## True when `backend` is there; with `TENSOR_REQUIRE_GGML` set, a missing
 ## ggml CPU backend is an error, never a pass.
@@ -165,7 +176,7 @@ def parity(
   wants = [want.value] + want.grads
   for i in 0...outs.size
     g = try gap(outs[i], wants[i])
-    return error("output #{i}: gap #{g} is above #{TOL}") if g > TOL
+    return error("output #{i}: gap #{g} is above #{bound(backend)}") if g > bound(backend)
   end
 
   ok()
@@ -305,7 +316,7 @@ def forward_parity(
   want = try Trace.eval_many(want_args, f)
   for i in 0...want.size
     g = try gap(got[i], want[i])
-    return error("output #{i}: gap #{g} is above #{TOL}") if g > TOL
+    return error("output #{i}: gap #{g} is above #{bound(backend)}") if g > bound(backend)
   end
 
   ok()
@@ -574,9 +585,9 @@ def test_vulkan_matches_the_reference_or_says_why_not() -> Result[Void]
 
   try mlp_parity(VULKAN)
   try ce_parity(VULKAN)
-  try Test.eq(try System.env("GGML_VK_DISABLE_F16"), "1")
-  case Tensor.vulkan_fp16(true)
-    ok(_) -> error("fp16 was chosen after a Vulkan device opened with F32")
-    error(e) -> Test.assert(e.message.include?("chose F32 mul_mat"), "the error said \"#{e.message}\"")
+  try Test.assert(!System.env("GGML_VK_DISABLE_F16").ok?, "GGML_VK_DISABLE_F16 is set: fp16 is the default")
+  case Tensor.vulkan_fp16(false)
+    ok(_) -> error("F32 was chosen after a Vulkan device opened with fp16")
+    error(e) -> Test.assert(e.message.include?("chose fp16 mul_mat"), "the error said \"#{e.message}\"")
   end
 end

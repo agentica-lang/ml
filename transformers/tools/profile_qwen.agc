@@ -5,7 +5,9 @@
 ## `GGML_VK_PERF_LOGGER=1 GGML_VK_PERF_LOGGER_FREQUENCY=1` ggml-vulkan prints the GPU time of each kernel of each
 ## graph to stderr; the `MARK` lines on stderr tell where the timed steps start. Manual. From `transformers/`:
 ##
-##   agentica tools/profile_qwen.agc MODEL_DIR PREFILLS DECODES [cpu|vulkan|vulkan16]
+##   agentica tools/profile_qwen.agc MODEL_DIR PREFILLS DECODES [cpu|vulkan|vulkan32]
+##
+## `vulkan` multiplies in fp16 (the default), `vulkan32` in exact `float32`.
 
 import Generate from "../generate"
 import Qwen3 from "../qwen3"
@@ -16,7 +18,7 @@ PROMPT = 128
 def main() -> Void
   args = System.args
   if args.size < 3
-    puts("usage: profile_qwen.agc MODEL_DIR PREFILLS DECODES [cpu|vulkan|vulkan16]")
+    puts("usage: profile_qwen.agc MODEL_DIR PREFILLS DECODES [cpu|vulkan|vulkan32]")
     System.exit(2)
   end
 
@@ -25,8 +27,8 @@ def main() -> Void
     device = Tensor.Device.Cpu
   end
 
-  if args.size > 3 and args[3] == "vulkan16"
-    _ = Tensor.vulkan_fp16(true)
+  if args.size > 3 and args[3] == "vulkan32"
+    _ = Tensor.vulkan_fp16(false)
   end
 
   case run(args[0], args[1].to_i.unwrap!, args[2].to_i.unwrap!, Tensor.Backend.Ggml(device))

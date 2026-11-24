@@ -9,9 +9,10 @@
 # builds are llama.cpp's out-of-tree builds of llama-bench (CPU, and -DGGML_VULKAN=ON). `agentica` must be on
 # the PATH (each row builds or finds its ggml engine with `transformers/tools/build-engine.sh`, and the Vulkan one
 # needs the SDK on the PATH when it is not cached) and `/usr/bin/time` is GNU time. ROUNDS defaults to 5. Prints the
-# raw lines, then the medians. The rows `ours-*-f16` load the big matrices as half weights (`WEIGHTS=f16`) and
-# `ours-vulkan-f16-fp16` also lets Vulkan multiply in fp16 (`VULKAN_FP16=1`), which does not keep token-exactness
-# against Hugging Face; every other row pins both off, whatever the caller exports.
+# raw lines, then the medians. The rows `ours-*-f16` load the big matrices as half weights (`WEIGHTS=f16`); Vulkan
+# multiplies in fp16 (`VULKAN_FP16=1`, the library default), except in `ours-vulkan-exact`, which pins it off
+# (`VULKAN_FP16=0`: exact `float32`, as the checks against Hugging Face run). Every row pins both variables,
+# whatever the caller exports.
 set -eu
 
 model=$1
@@ -26,14 +27,14 @@ out=$work/rows.txt
 : > "$out"
 cat /sys/class/drm/card*/device/mem_info_vram_used 2>/dev/null | sed 's/^/VRAM used before the run (bytes): /' >&2
 
-ours() { # name device [VAR=value...]: WEIGHTS=f32 and VULKAN_FP16=0 unless the row says otherwise
+ours() { # name device [VAR=value...]: WEIGHTS=f32 and VULKAN_FP16=1 unless the row says otherwise
   name=$1
   device=$2
   shift 2
   exports=$(cd "$here/../transformers" && sh tools/build-engine.sh "$device") || { echo "bench_qwen.sh: no engine for $device" >&2; exit 1; }
   (cd "$here/../transformers" &&
     eval "$(printf '%s\n' "$exports" | grep '^export ')" &&
-    env WEIGHTS=f32 VULKAN_FP16=0 "$@" /usr/bin/time -f "RSS %M" -o "$work/time" agentica --max-steps 100000000000 tools/bench_qwen.agc "$model" "$device" 2> "$work/err" |
+    env WEIGHTS=f32 VULKAN_FP16=1 "$@" /usr/bin/time -f "RSS %M" -o "$work/time" agentica --max-steps 100000000000 tools/bench_qwen.agc "$model" "$device" 2> "$work/err" |
     sed -n "s/^RESULT /$name /p") > "$work/line" || { cat "$work/err" >&2; exit 1; }
   [ -s "$work/line" ] || { echo "bench_qwen.sh: row $name printed no RESULT" >&2; cat "$work/err" >&2; exit 1; }
   echo "$(cat "$work/line") $(sed -n 's/^RSS //p' "$work/time")" >> "$out"
@@ -65,8 +66,8 @@ while [ "$round" -lt "$rounds" ]; do
   llama llama-cpu-f32 "$cpu" "$ggufs/qwen3-0.6b-f32.gguf"
   llama llama-cpu-f16 "$cpu" "$ggufs/qwen3-0.6b-f16.gguf"
   ours "ours-vulkan" vulkan WEIGHTS=f32
+  ours "ours-vulkan-exact" vulkan VULKAN_FP16=0
   ours "ours-vulkan-f16" vulkan WEIGHTS=f16
-  ours "ours-vulkan-f16-fp16" vulkan WEIGHTS=f16 VULKAN_FP16=1
   llama llama-vulkan-f32 "$vulkan" "$ggufs/qwen3-0.6b-f32.gguf" -ngl 99
   llama llama-vulkan-f16 "$vulkan" "$ggufs/qwen3-0.6b-f16.gguf" -ngl 99
   echo "round $round done, load average $(cut -d' ' -f1 /proc/loadavg)" >&2

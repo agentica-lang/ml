@@ -7,6 +7,7 @@
 ##   agentica tools/bert_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
 
 import Bert from "../bert"
+import Load from "pkg/hub/load"
 import Source from "../tokenizer/source"
 import Tensor from "pkg/tensor/tensor"
 import WordPiece from "../tokenizer/wordpiece"
@@ -53,6 +54,7 @@ private
 
 def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Float]
   want = try JSON.decode(try Source.read_text(golden), Golden)
+  try Load.vulkan_fp16_from_env()
   m = try Bert.open(dir, backend)
   worst = 0.0
   batch: List[WordPiece.Encoding] = []

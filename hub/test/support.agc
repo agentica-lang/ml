@@ -16,6 +16,7 @@ def native() -> List[Tensor.Backend] = [TORCH, GGML, VULKAN].select { |b: Tensor
 ## The ggml backends of this machine: none when ggml is not built, an error when it is required
 ## (`TENSOR_REQUIRE_GGML`) and not built.
 def ggml_backends() -> Result[List[Tensor.Backend]]
+  try Tensor.vulkan_fp16(false)
   if not Tensor.available(GGML)
     flag = System.env("TENSOR_REQUIRE_GGML")
     return error("ggml required but not built (TENSOR_REQUIRE_GGML is set)") if flag.ok? and try flag != ""

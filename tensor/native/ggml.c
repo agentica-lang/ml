@@ -113,10 +113,10 @@ static void ggml_TensorHandle_free(void *state) {
    fp16, unless GGML_VK_DISABLE_F16 is set when ggml first enumerates its
    devices (any registry call does), and no per-op switch exists
    (spike/ggml-graph/README.md). So the precision belongs to the process:
-   `ggml_vulkan_fp16` records the choice in `want_fp16`, and the first
-   registry call of this file sets the variable from it and fixes it. Call
-   under the device lock. */
-static bool want_fp16 = false;
+   `ggml_vulkan_fp16` records the choice in `want_fp16` (fp16 unless asked
+   otherwise), and the first registry call of this file sets the variable
+   from it (set only for F32) and fixes it. Call under the device lock. */
+static bool want_fp16 = true;
 static bool precision_fixed = false;
 
 static void fix_precision(void) {

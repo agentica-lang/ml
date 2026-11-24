@@ -38,6 +38,7 @@ def run(args: List[String]) -> Result[Void]
   backend = try TranscribeCheck.backend_of(args[2])
   return error("#{args[2]} is not available") if not Tensor.available(backend)
   started = Time.monotonic_ms()
+  try Load.vulkan_fp16_from_env(true)
   m = try Asr.open("#{args[0]}/model.safetensors", backend, try Load.weights_from_env())
   tok = try Tokenizer.open("#{args[0]}/tokenizer.json")
   puts("load\t#{Time.monotonic_ms() - started}")

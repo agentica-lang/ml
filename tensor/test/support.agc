@@ -5,9 +5,14 @@ import Tensor from "../tensor"
 ## Two floats count as equal below this absolute gap.
 TOL = 0.000000001
 
+## The tests check Vulkan against the other backends in exact `float32`, so they choose it before their first ggml call
+## (`Tensor.vulkan_fp16` is on by default, and the choice belongs to the process); it does nothing on the CPU.
+def exact() -> Result[Void] = Tensor.vulkan_fp16(false)
+
 ## True when the ggml CPU backend is there; with `TENSOR_REQUIRE_GGML` set, a missing one is an error, never a pass
 ## (as in `ggml_compile_test.agc`).
 def ggml_present() -> Result[Bool]
+  try exact()
   return ok(true) if Tensor.available(Tensor.Backend.Ggml(Tensor.Device.Cpu))
   flag = System.env("TENSOR_REQUIRE_GGML")
   return ok(false) if !flag.ok?
