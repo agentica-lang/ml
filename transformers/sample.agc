@@ -67,7 +67,7 @@ def window(s: Sampling, vocab: Int) -> Int
 end
 
 ## `pick` over the largest logits only: `ids` and their `logits`, largest first (what `Generate.step_top` gives).
-## What `window` did not keep is never drawn.
+## What `window` did not keep is never drawn, and neither is an id more than `SPAN` below the largest scaled logit.
 def pick_top(ids: List[Int], logits: List[Float], s: Sampling, state: Int) -> Result[Drawn]
   try check(s)
   if ids.empty? or ids.size != logits.size
@@ -80,10 +80,13 @@ def pick_top(ids: List[Int], logits: List[Float], s: Sampling, state: Int) -> Re
     found = found.push(Candidate(id: ids[i], score: logits[i]))
   end
 
+  top = logits[first_largest(logits)]
   return ok(Drawn(id: ids[first_largest(logits)], state: state)) if s.temperature == 0.0
+  return error("the logits are not finite") if top - top != 0.0
 
+  near = found.select { |c| c.score >= top - SPAN * s.temperature }
   next_state = (state * 48271) % MODULUS
-  kept = try shaped(found, s)
+  kept = try shaped(near, s)
   ok(Drawn(id: draw(kept, next_state.to_f / MODULUS.to_f), state: next_state))
 end
 

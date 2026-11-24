@@ -48,13 +48,14 @@ def test_the_probabilities_are_those_of_the_warpers() -> Result[Void]
 end
 
 ## The ids drawn, state after state, are those of the stdlib peer in `sample_golden.py` (Park-Miller and a cumulative
-## scan), with `pick` over every logit and `pick_top` over the window.
+## scan), with `pick` over every logit and with `pick_top` over all of them, largest first.
 def test_the_draws_are_those_of_the_peer() -> Result[Void]
   golden = try JSON.decode(try File.read_text("test/fixtures/sample_golden.json"), Golden)
   try Test.eq(golden.draws.size, 18)
   for d in golden.draws
     s = Sample.Sampling(temperature: d.temperature, top_k: d.top_k, top_p: d.top_p, seed: d.seed)
     try Test.eq(try draws(d.logits, s, d.ids.size), d.ids)
+    try Test.eq(try draws_top(d.logits, s, d.ids.size), d.ids)
   end
 
   ok()
@@ -184,6 +185,20 @@ def draws(logits: List[Float], s: Sample.Sampling, count: Int) -> Result[List[In
   out: List[Int] = []
   for _ in 0...count
     d = try Sample.pick(logits, s, state)
+    out = out.push(d.id)
+    state = d.state
+  end
+
+  ok(out)
+end
+
+def draws_top(logits: List[Float], s: Sample.Sampling, count: Int) -> Result[List[Int]]
+  order = (0...logits.size).to_a.sort_by { |i| 0.0 - logits[i] }
+  largest = order.map { |i| logits[i] }
+  state = Sample.start(s)
+  out: List[Int] = []
+  for _ in 0...count
+    d = try Sample.pick_top(order, largest, s, state)
     out = out.push(d.id)
     state = d.state
   end
