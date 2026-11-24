@@ -393,8 +393,9 @@ end
 
 ## The graph of one step as a compiled function of its inputs on `Ggml`; `in_place` writes the new row into the cache's own
 ## tensors, which come back as the keys and values of the new one. Its attention reads the first `reach` rows of the
-## cache. Each reach is a graph of its own, and a sequence only moves to larger ones: the graph of a reach ends the
-## graphs of the smaller reaches of the same capacity, so a long sequence keeps one graph per capacity.
+## cache. Each reach is a graph of its own, and a capacity keeps one: a step takes the graph of a larger reach when
+## there is one (its mask hides the rows after the length), and compiling the graph of a reach ends the graphs of the
+## smaller ones.
 def compiled_step(
   g: Generator,
   cache: Cache,
@@ -419,9 +420,17 @@ def compiled_step(
     near = Padded.reach(near + 1, room)
   end
 
+  ahead: List[String] = []
+  far = reach
+  while far < room
+    far = Padded.reach(far + 1, room)
+    ahead = ahead.push(plan_key(width, rows, room, far, mode))
+  end
+
   plan = try planned(
     g,
     plan_key(width, rows, room, reach, mode),
+    ahead,
     behind,
     args.map { |t| Trace.spec_of(t) },
     ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, reach, mode, in_place, true) },
@@ -443,11 +452,12 @@ def plan_key(width: Int, rows: Int, room: Int, reach: Int, mode: Head) -> String
   "#{width} #{rows} #{room} #{reach} #{head_key(mode)}"
 end
 
-## The compiled function `key` of `g` for `specs`, compiled with `f` on a miss and
-## kept at once. A miss ends the functions `behind`, which `g` has no more use for.
+## The compiled function `key` of `g` for `specs`, or the first of `ahead` that `g` has, which do the same. With none
+## of them it is compiled with `f` and kept at once, and the functions `behind` end: `g` has no more use for them.
 def planned(
   g: Generator,
   key: String,
+  ahead: List[String],
   behind: List[String],
   specs: List[Trace.Spec],
   f: Fn[List[Tensor.Tensor], Result[List[Tensor.Tensor]]],
@@ -455,7 +465,10 @@ def planned(
   case take_plans(g)
     some(p) ->
       _ = g.plans.send(p, 0)
-      return ok(p.graphs[key]) if p.graphs.has_key?(key)
+      for same in [key] + ahead
+        return ok(p.graphs[same]) if p.graphs.has_key?(same)
+      end
+
     none -> nil
   end
 

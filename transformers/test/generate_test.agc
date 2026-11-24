@@ -89,7 +89,8 @@ end
 ## On ggml a one-token step reads the rows of the cache in use, rounded up to a reach, and each reach is a compiled
 ## step of its own. Three sequences each cross one: 768 rows inside a capacity of 1024, 1024 rows where the capacity
 ## grows to 2048 (reach 1280), and 1280 rows inside it. Every step gives the logits of a step that reads the whole
-## capacity, and the step of a reach ends the step of the reach before it.
+## capacity, the step of a reach ends the step of the reach before it, and a later sequence at a smaller reach
+## takes the step that is there, so a capacity keeps one step.
 def test_a_step_reads_the_rows_in_use_and_gives_the_logits_of_the_whole_cache() -> Result[Void]
   with_peer do |dir|
     for backend in try S.ggml_backends()
@@ -109,10 +110,10 @@ def test_a_step_reads_the_rows_in_use_and_gives_the_logits_of_the_whole_cache() 
       try reading(g, whole, 1278, 4)
       try Test.eq(Generate.compiles(g), 7)
       try Test.eq(try held(g), 5)
-      # a second sequence at the reach that ended compiles it again, and the larger one stays
+      # a second sequence at the reach that ended takes the step of the larger one
       try reading(g, whole, 1278, 1)
-      try Test.eq(Generate.compiles(g), 8)
-      try Test.eq(try held(g), 6)
+      try Test.eq(Generate.compiles(g), 7)
+      try Test.eq(try held(g), 5)
       Generate.close(g)
       Generate.close(whole)
       Qwen3.close_model(m)

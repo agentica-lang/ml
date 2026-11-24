@@ -29,7 +29,8 @@ end
 ## of them are in use: `needed` rounded up to a step of 256 rows, or of an eighth
 ## of the capacity when that is more, and at most the capacity. The rest is
 ## padding, which costs as much to read as a row in use. A step that reads other
-## rows is another graph, so the step is no smaller than that.
+## rows is another graph, so the step is no smaller than that. With nothing in
+## use (`needed` 0) it is 0.
 def reach(needed: Int, capacity: Int) -> Int
   step = [256, capacity / 8].max.unwrap!
   [capacity, ((needed + step - 1) / step) * step].min.unwrap!
@@ -37,7 +38,8 @@ end
 
 ## The first `rows` rows of a cache tensor `t` (`[1, heads, capacity, width]`):
 ## what an attention reads of it, with a mask of `rows` keys (`padded_mask` of
-## slots whose capacity is `rows`).
+## slots whose capacity is `rows`). `rows` is at most the capacity; more is the
+## error of `Tensor.slice`.
 def reached(t: Tensor.Tensor, rows: Int) -> Result[Tensor.Tensor]
   shape = Tensor.shape(t)
   return error("reached takes a cache [1, heads, rows, width], got #{shape}") if shape.size != 4

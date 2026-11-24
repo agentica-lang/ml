@@ -30,6 +30,7 @@ end
 ## The rows an attention reads: every row of a small cache, steps of 256 rows up to a capacity of 2048 and of an
 ## eighth of the capacity above, never fewer than the rows in use.
 def test_the_reach_is_the_rows_in_use_rounded_up_to_a_step() -> Result[Void]
+  try Test.eq(Padded.reach(0, 256), 0)
   try Test.eq(Padded.reach(1, 8), 8)
   try Test.eq(Padded.reach(200, 256), 256)
   try Test.eq(Padded.reach(257, 512), 512)
