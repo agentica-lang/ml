@@ -16,7 +16,7 @@ from pathlib import Path
 CLIP_SECONDS = {"jfk": 176000 / 16000, "es-hola": 42353 / 16000}
 ROWS = [
     ("agentica-ggml-cpu", "ours, ggml CPU"),
-    ("agentica-ggml-vulkan", "ours, ggml Vulkan"),
+    ("agentica-ggml-vulkan", "ours, ggml Vulkan (fp16)"),
     ("agentica-ggml-vulkan-exact", "ours, ggml Vulkan, exact F32 (fp16 off)"),
     ("agentica-ggml-cpu-f16", "ours, ggml CPU, F16 weights"),
     ("agentica-ggml-vulkan-f16", "ours, ggml Vulkan, F16 weights"),

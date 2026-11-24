@@ -426,12 +426,13 @@ end
 - Vulkan computes `mul_mat` in fp16 by default (the owner's decision, ml#148):
   ggml reads `GGML_VK_DISABLE_F16` once per process, when it first enumerates
   its devices, and the C layer sets it (only when exact `F32` was asked for)
-  before its first registry call (any ggml call, a CPU one or
-  `Tensor.available` included). `Tensor.vulkan_fp16(false)` before that opts
-  out to exact `F32` `mul_mat`, process-wide (it is ggml's choice per process,
-  not per tensor, the one exception to §4's "never a global"); a different
-  choice after it is an error, and on a build without Vulkan or without the
-  module it changes nothing. fp16 is 1.7× faster for the products of Qwen3 on
+  before its first registry call (any ggml call, a CPU one, or
+  `Tensor.available` of a Vulkan device, included; a `GGML_VK_DISABLE_F16` the
+  user exported and no `vulkan_fp16` call keep F32). `Tensor.vulkan_fp16(false)`
+  before that opts out to exact `F32` `mul_mat`, process-wide (it is ggml's
+  choice per process, not per tensor, the one exception to §4's "never a
+  global"); a different choice after it is an error, and on a build without
+  Vulkan or without the module it changes nothing. fp16 is 1.7× faster for the products of Qwen3 on
   the Vega iGPU (1.55 ms against 2.7 ms for `m=3072 n=128 k=1024`), 1.1–1.5×
   from batch 256 to 4096 in the spike, and changes gradients by up to about
   10 % at MLP sizes (the spike's run B, `spike/ggml-graph/README.md`). It does

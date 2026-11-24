@@ -158,7 +158,7 @@ On `Ggml`, `Trace.eval`, `eval_many`, `grad` and `value_and_grad` compile the wh
 - `Dtype` has `F32` (the dtype that ops compute in), `F16`, `F64`, `I8`, `I16`, `I32`, `I64`, `U8` and `Bool`.
 - `Reference` computes `F16` and `F64` exactly, in doubles (64-bit floats).
 - ggml holds `F32` and `I32` as they are. `Bool`, `I8`, `I16` and `U8` are held as `F32`, which is exact for them. `F64` and `I64` are refused on ggml, and `F16` is held only as a half weight from `from_file`.
-- Vulkan products run in fp16 (16-bit floats) by default, which is about 1.7 times faster for the products of a model. They are not exact against Hugging Face: the greedy ids of a model can differ. `Tensor.vulkan_fp16(false)` makes them run in exact `F32` for the whole process. Call it before any other ggml call, `available` included. A later change is an error. Gradients change by up to about 10 % at MLP sizes with fp16.
+- Vulkan products run in fp16 (16-bit floats) by default, which is about 1.7 times faster for the products of a model. They are not exact against Hugging Face: the greedy ids of a model can differ. `Tensor.vulkan_fp16(false)` makes them run in exact `F32` for the whole process. Call it before any other ggml call (`available` of a Vulkan device included). A later change is an error. A `GGML_VK_DISABLE_F16` exported by the user, with no call, keeps `F32`. Gradients change by up to about 10 % at MLP sizes with fp16.
 
 ## Limits
 

@@ -221,8 +221,8 @@ of an MLP and softmax cross-entropy with their gradients, plus `slice`,
 other op, a dtype `F32` does not hold exactly and an output that is not
 finite are errors. Vulkan multiplies in fp16 by default, which is about 1.7 times
 faster for the products of a model and changes gradients by up to about 10 % at
-MLP sizes; `Tensor.vulkan_fp16(false)`, before any other ggml call (a CPU one or
-`Tensor.available` included), switches the whole process to exact `F32`
+MLP sizes; `Tensor.vulkan_fp16(false)`, before any other ggml call (a CPU one, or
+`Tensor.available` of a Vulkan device, included), switches the whole process to exact `F32`
 `mul_mat` (on a build without Vulkan it changes nothing), and the checks against
 Hugging Face and whisper.cpp do. ggml
 holds `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are held as `F32`, which is

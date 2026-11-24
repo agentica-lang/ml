@@ -118,9 +118,9 @@ end
 
 ## Chooses fp16 (`true`, the default) or F32 (`false`) `mul_mat` for every
 ## Vulkan device of the ggml backend in this process. ggml fixes the choice
-## at the process's first ggml call (a CPU one or `available` included), so
-## a different choice after that is an error: `vulkan_fp16(false)` goes first
-## in a check that must be exact. On a build without Vulkan or without the
+## at the process's first ggml call (a CPU one, or `available` of a Vulkan
+## device, included), so a different choice after that is an error:
+## `vulkan_fp16(false)` goes first in a check that must be exact. On a build without Vulkan or without the
 ## ggml module it changes nothing. fp16 is about 1.7 times faster for the products of a model and
 ## changes gradients by up to about 10 % at MLP sizes (`tensor/README.md`,
 ## "The ggml backend"), and it does not keep the ids of Hugging Face's
