@@ -72,7 +72,7 @@ end
 
 ## Where a leaf of the graph gets its tensor on every run: the input at
 ## position `input` of the run's inputs (`-1` for none), or `fixed`, a
-## constant of the trace that every run binds again.
+## constant of the trace.
 struct Leaf
   input: Int
   fixed: Optional[Types.Tensor]

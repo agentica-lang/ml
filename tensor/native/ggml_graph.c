@@ -17,11 +17,11 @@
    port`). The allocator keeps the largest buffer any graph needed for the
    rest of the process.
 
-   Three locks, in this order: the device lock (1), `cache_lock` (2) and the
-   deferred list's lock (3). `cache_lock` (the slots, who holds a graph, the
-   pins, the counters) is held briefly and is all a lease's or a pin's free
-   hook takes; the device lock is held through builds and runs. A graph the
-   hook must drop is destroyed under the device lock later (`tg_defer`).
+   Two locks, in this order: the device lock (1) and `cache_lock` (2).
+   `cache_lock` (the slots, who holds a graph, the pins, the kept leaves of an
+   idle graph, the counters) is held briefly and is all a free hook takes; the
+   device lock is held through builds and runs. A graph the hook must drop is
+   destroyed under the device lock later (`tg_defer`, which takes no lock).
 
    Layout: a row-major shape [d0, ..., dk] is a ggml tensor with ne[0] = dk,
    ne[1] = dk-1, ..., so trailing-axis broadcasting is ggml's own repeat.
@@ -193,9 +193,9 @@ struct device_state {
   struct entry *planned;
 };
 
-/* Lock order: the device lock (1), then cache_lock (2), then the deferred list's lock (3). Pins and the pin count of an
-   entry are under cache_lock alone; the memory of a tensor that the last holder lets go of is queued (level 3) and freed at
-   the next hold of the device lock. */
+/* Lock order: the device lock (1), then cache_lock (2). Pins and the pin count of an entry are under cache_lock alone;
+   the memory of a tensor that the last holder lets go of is queued (`tg_defer`, no lock) and freed at the next hold of
+   the device lock. */
 CC_LOCK_LEVEL(2) CC_NO_SYSCALL_UNDER() static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct entry *cache[MAX_ENTRIES];
 static int64_t compile_count = 0, tick = 0, pin_count = 0;
@@ -375,21 +375,24 @@ static int free_slot(struct entry **victim) {
 }
 
 /* The compiled graph cached under `key` on `device` that no one holds, marked
-   held, or NULL. */
+   held, or NULL. A pinned one goes first: it is the copy that keeps the
+   constants of its program bound. */
 static struct entry *cached(int64_t device, ng_str key) {
   struct entry *e = NULL;
   int i;
 
   pthread_mutex_lock(&cache_lock);
-  for (i = 0; i < MAX_ENTRIES && e == NULL; i++) {
+  for (i = 0; i < MAX_ENTRIES && (e == NULL || e->pins == 0); i++) {
     struct entry *c = cache[i];
 
-    if (c != NULL && c->compiled && !c->in_use && c->device == device && strlen(c->key) == key.len &&
-        memcmp(c->key, key.data, key.len) == 0) {
+    if (c != NULL && c->compiled && !c->in_use && c->device == device && (e == NULL || c->pins > 0) &&
+        strlen(c->key) == key.len && memcmp(c->key, key.data, key.len) == 0) {
       e = c;
-      e->in_use = true;
-      e->used = ++tick;
     }
+  }
+  if (e != NULL) {
+    e->in_use = true;
+    e->used = ++tick;
   }
   pthread_mutex_unlock(&cache_lock);
   return e;

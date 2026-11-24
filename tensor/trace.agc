@@ -206,10 +206,11 @@ def spec_of(t: Types.Tensor) -> Spec = Spec(shape: t.shape, dtype: t.dtype, back
 ## run.
 ##
 ## What `f` reads from outside the inputs enters through `constant`, and is
-## fixed: the same tensors, bound again on every run. A run holds their memory
-## from the bind to its end, so a constant that its owner closes meanwhile is
-## still there for that run; a run that starts after the close is an `error`
-## naming the leaf. Whatever changes between runs (the weights of a training
+## fixed: the same tensors on every run. On ggml they stay bound to the pinned
+## graph between runs, so a run binds only its inputs, until the pin ends or
+## one of them is closed. A run holds their memory from the bind to its end, so
+## a constant that its owner closes meanwhile is still there for that run; a
+## run that starts after the close is an `error` naming the leaf. Whatever changes between runs (the weights of a training
 ## step, a KV cache) must be an input. `f` may build any graph, a gradient
 ## (`gradients`) and an update of the parameters included, and answers every
 ## tensor `run` gives back.
