@@ -106,7 +106,7 @@ def evaluate(
   keep: Bool = true,
 ) -> Result[List[Types.Tensor]]
   ids = env.keys
-  program = try System.Profile.measure("ml.plan") do lower(outs, ids, device, keep) end
+  program = try System.Profile.measure("ml.plan") do lower(outs, ids, device, keep, false) end
   inputs: List[Types.Tensor] = []
   for id in ids
     inputs = inputs.push(try bound(env[id], Types.Backend.Ggml(device), "an input"))
@@ -118,7 +118,7 @@ end
 ## The program of the traced tensors `outs` over the input nodes `inputs`
 ## (traced `Input` tensors, in the order a run takes its tensors).
 def program(outs: List[Types.Tensor], inputs: List[Types.Tensor], device: Types.Device) -> Result[Program]
-  System.Profile.measure("ml.plan") do lower(outs, inputs.map { |t| Graph.id_of(t) }, device, true) end
+  System.Profile.measure("ml.plan") do lower(outs, inputs.map { |t| Graph.id_of(t) }, device, true, true) end
 end
 
 ## The graph of `p` in the structural cache, built if it is not there, kept
@@ -257,7 +257,7 @@ end
 private
 
 ## The program of the graph `outs` reach; the input nodes are `ids`, in run order.
-def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: Bool) -> Result[Program]
+def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: Bool, donate: Bool) -> Result[Program]
   positions: Map[Ref, Int] = {}
   for i in 0...ids.size
     positions = positions.put(ids[i], i)
@@ -318,6 +318,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Attention(scale) -> ints = [try bits(scale, n)]
       Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
       Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
+      Types.Op.SetRows -> ints = [flag(!donate)]
       Types.Op.RmsNorm(eps) -> ints = [Float.to_bits32(eps)]
       _ -> nil
     end
@@ -338,7 +339,11 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   end
 
   outputs = outs.map { |o| pos[Graph.id_of(o)] }
-  donates = try donations(outs, positions, walked)
+  donates = outs.map { |_| -1 }
+  if donate
+    donates = try donations(outs, positions, walked)
+  end
+
   key = parts.join(";") + " -> #{outputs}"
   ok(
     Program(
@@ -361,7 +366,6 @@ end
 ## itself, so it is not given twice), and an input is not also an output.
 def donations(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[Types.Tensor]) -> Result[List[Int]]
   output_ids = outs.map { |o| Graph.id_of(o) }
-  donated: List[Ref] = []
   written: Map[Ref, Int] = {}
   for t in walked
     n = try Graph.node_of(t)
@@ -384,17 +388,25 @@ def donations(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[T
           return error("node #{n.id} (set_rows): its cache, node #{dst.id}, is also an output")
         end
 
-        return error("node #{n.id} (set_rows) writes node #{dst.id} in place twice") if donated.include?(dst.id)
+        if (output_ids.select { |id| id == n.id }.size > 1)
+          return error("node #{n.id} (set_rows) is listed twice as an output, and its result is the input itself")
+        end
+
         for u in walked
           m = try Graph.node_of(u)
-          if (m.id != n.id and m.args.any? { |a| Graph.id_of(a) == dst.id })
+          # the rows and the positions of the set_rows itself are read too, the cache (its first argument) is written
+          reads = m.args
+          if m.id == n.id
+            reads = m.args.drop(1)
+          end
+
+          if (reads.any? { |a| Graph.id_of(a) == dst.id })
             return error(
               "node #{m.id} (#{Types.op_name(m.op)}) reads node #{dst.id}, which node #{n.id} (set_rows) writes in place",
             )
           end
         end
 
-        donated = donated.push(dst.id)
         written = written.put(n.id, positions[dst.id])
       _ -> nil
     end
