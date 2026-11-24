@@ -6,6 +6,8 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### tensor
 
+- `Trace.stablehlo(specs, f)` writes a traced function as a StableHLO module, for XLA and IREE (the ops of an MLP forward and of a training step); its goldens come from IREE (`make iree-goldens`, local only).
+- `gelu_erf` has a gradient, so a model with the exact GELU (BERT, DistilBERT) can be trained.
 - ggml: a decode step runs fewer kernels (the positions converted and checked once for every cache, a long-row `max` in pieces, SwiGLU as one kernel): Qwen3-0.6B decode on Vulkan is 7 to 11% faster.
 - ggml: a `Trace.compile` function keeps its constants bound to its graph between runs and binds only its inputs; the graph that ran last keeps its allocation.
 - ggml: an `attention` reads a `slice` of an `F16` cache that starts at its first element where it is, with no copy.
@@ -15,13 +17,14 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 - `Padded.reach` and `Padded.reached`: the rows of a padded cache that an attention reads, the rows in use rounded up to 256 or to an eighth of the capacity.
 
+### train
+
+- `Train.stablehlo` writes the step of `fit` as one StableHLO program for every step: Adam's bias corrections are inputs (`Optim.step_scalars`).
+- `Params.split`, `join`, `named` and `update` train part of a model: the weights selected by name train, and the frozen rest has no gradient and no optimizer state.
+
 ### hub
 
 - `SafetensorsWrite.write` writes `F32` tensors by name to a safetensors file, and `Hub.tensors` reads every tensor of a checkpoint.
-
-### train
-
-- `Params.split`, `join`, `named` and `update` train part of a model: the weights selected by name train, and the frozen rest has no gradient and no optimizer state.
 
 ### transformers
 

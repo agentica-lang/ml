@@ -1,10 +1,12 @@
-.PHONY: help site site-serve site-tools cchecker cchecker-update-baseline
+.PHONY: help site site-serve site-tools cchecker cchecker-update-baseline iree-venv iree-goldens
 
 help:
 	@echo "site       build the documentation site into site/public"
 	@echo "site-serve serve the site on localhost for a preview"
 	@echo "cchecker   check the native C (locks, ownership, gcc -fanalyzer, clang-tidy) against cchecker-baseline.json"
 	@echo "cchecker-update-baseline   accept today's findings of cchecker"
+	@echo "iree-venv  make the venv with the pinned IREE compiler and runtime (.venv-iree/, local only)"
+	@echo "iree-goldens   regenerate the StableHLO snapshots and their IREE goldens of train/ (local only)"
 
 # The documentation site (Hugo): the look, the layouts and the highlighter come from the docs theme, the submodule
 # site/themes/docs-theme; the pages are the README.md and DESIGN.md files of the packages (mounted in site/hugo.toml),
@@ -44,3 +46,25 @@ cchecker:
 
 cchecker-update-baseline:
 	sh tools/cchecker.sh --update-baseline $(CCHECKER_FLAGS)
+
+# The StableHLO goldens (tensor/DESIGN.md, section 12). IREE is local tooling, never a CI dependency: CI checks the
+# committed snapshots and that the reference backend matches the committed goldens. The two packages are the official
+# PyPI wheels of a release more than two weeks old, in a venv that git ignores.
+IREE_VERSION := 3.13.0
+IREE_VENV := .venv-iree
+IREE_STAMP := $(IREE_VENV)/.installed-$(IREE_VERSION)
+STABLEHLO_FIXTURES := train/test/fixtures/stablehlo
+STABLEHLO_PLANS := build/iree
+
+iree-venv: $(IREE_STAMP)
+
+$(IREE_STAMP):
+	rm -rf $(IREE_VENV)
+	python3 -m venv $(IREE_VENV)
+	$(IREE_VENV)/bin/pip install --only-binary :all: iree-base-compiler==$(IREE_VERSION) iree-base-runtime==$(IREE_VERSION)
+	touch $@
+
+# Writes the snapshots, then runs them on IREE and writes the goldens beside them.
+iree-goldens: $(IREE_STAMP)
+	cd train && agentica tools/stablehlo_emit.agc ../$(STABLEHLO_FIXTURES) ../$(STABLEHLO_PLANS)
+	PATH="$(CURDIR)/$(IREE_VENV)/bin:$$PATH" $(IREE_VENV)/bin/python tools/iree_goldens.py $(STABLEHLO_PLANS) $(STABLEHLO_FIXTURES)

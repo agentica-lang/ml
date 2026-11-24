@@ -46,6 +46,23 @@ def test_a_gradient_per_parameter_is_required() -> Result[Void]
   Test.assert(!Optim.step(state, [p], []).ok?, "a missing gradient is an error")
 end
 
+## `scalars` carry what a step would hold as constants, so the step is the same; a wrong number or rank is an error, and
+## SGD takes none.
+def test_the_scalars_of_a_step_are_inputs_that_change_nothing() -> Result[Void]
+  p = try S.tensor([1.0, -1.0], [2])
+  g = try S.tensor([0.5, -1.0], [2])
+  state = try Optim.init(Optim.Optimizer.Adam(Optim.Adam(lr: 0.1, eps: 0.5)), [p])
+  held = Optim.step_scalars(state)
+  given = try Optim.step(state, [p], [g], [try S.tensor([held[0]], []), try S.tensor([held[1]], [])])
+  baked = try Optim.step(state, [p], [g])
+  try S.expect_close(try S.floats_of(given.params[0]), try S.floats_of(baked.params[0]), TOL, 0.0, "adam")
+  vectors = [try S.tensor([held[0]], [1]), try S.tensor([held[1]], [1])]
+  try Test.assert(!Optim.step(state, [p], [g], vectors).ok?, "an Adam scalar is rank 0")
+  try Test.assert(!Optim.step(state, [p], [g], vectors.take(1)).ok?, "an Adam step takes two scalars")
+  sgd = try Optim.init(Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.1)), [p])
+  Test.assert(!Optim.step(sgd, [p], [g], vectors).ok?, "an SGD step takes no scalars")
+end
+
 ## The parameter `[1, -1]` after one step per gradient in `grads`.
 def run(optimizer: Optim.Optimizer, grads: List[List[Float]]) -> Result[List[Float]]
   params = [try S.tensor([1.0, -1.0], [2])]

@@ -141,7 +141,7 @@ that are the layer's own (rank of `positional`, table length, heads).
   Layers themselves take any float dtype (the gradient test uses `F64`).
   The gradient tests need `agentica test --max-steps 10000000`: a bare
   `agentica test` runs out of its 1M steps (per file, times its tests + 1).
-- **Two GELUs**: `Gelu` is the tanh approximation (`Tensor.gelu`), which
-  `Trace` differentiates; `GeluErf` is the exact `erf` form Whisper uses
-  (`Tensor.gelu_erf`), for inference only. The libtorch comparisons use
-  `relu` and `silu`.
+- **Two GELUs**: `Gelu` is the tanh approximation (`Tensor.gelu`);
+  `GeluErf` is the exact `erf` form Whisper and BERT use
+  (`Tensor.gelu_erf`). `Trace` differentiates both. The libtorch comparisons
+  use `relu` and `silu`.

@@ -28,6 +28,8 @@ answers whether this machine has it, and the dispatch arm answers
   `compile` and `run` trace and lower a function once, for inputs of fixed
   shapes, and run it many times.
   `src/graph.agc` is the recording side the `Trace` arms call.
+- `src/stablehlo.agc` — `Trace.stablehlo`: the traced graph as StableHLO text for XLA and IREE; the goldens are
+  in `train/test/fixtures/stablehlo/` (`DESIGN.md` §12).
 - `src/reference.agc` — the reference backend, pure Agentica over
   `List[Float]`; the oracle every other backend is checked against.
 - `src/torch.agc` — the libtorch backend: the §3.1 primitives libtorch

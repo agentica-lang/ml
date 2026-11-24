@@ -12,12 +12,17 @@
 import GgmlRaw from "src/ggml_native"
 import Graph from "src/graph"
 import Lower from "src/lower"
+import Stablehlo from "src/stablehlo"
 import Tensor from "tensor"
 import Types from "src/types"
+
+export Stablehlo.Module
 
 ## The constants of `gelu_tanh_approx` (`src/reference.agc`).
 SQRT2_OVER_PI = 0.7978845608028654
 GELU_CUBIC = 0.044715
+## `1 / sqrt(2 pi)`, the peak of the normal density.
+INV_SQRT_2PI = 0.3989422804014327
 
 ## How many nodes `Diff.worst` lists.
 WORST = 5
@@ -241,6 +246,15 @@ def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tenso
       )
     _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none, pin: none))
   end
+end
+
+## Traces `f` once over inputs of `specs` (the backend of a spec is not read) and writes the traced outputs as one
+## StableHLO program (`src/stablehlo.agc`). Its arguments are the inputs, then what `f` reads through `constant`: the
+## tensors of those constants are in the module's `constants`, in argument order.
+def stablehlo(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]]) -> Result[Stablehlo.Module]
+  return error("a StableHLO program needs at least one input") if specs.empty?
+  inputs = specs.map { |s| Graph.record(Types.Op.Input, [], s.shape, s.dtype) }
+  Stablehlo.emit(inputs, try f.call(inputs))
 end
 
 ## One run of `compiled` over `args`, which must match its specs (shape,
@@ -558,7 +572,7 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.Sigmoid -> part(Tensor.mul(ct, try Tensor.mul(t, try one_minus(t))))
     Types.Op.Tanh -> part(Tensor.mul(ct, try one_minus(try Tensor.mul(t, t))))
     Types.Op.Gelu -> part(Tensor.mul(ct, try gelu_slope(x)))
-    Types.Op.GeluErf -> no_rule("gelu_erf")
+    Types.Op.GeluErf -> part(Tensor.mul(ct, try gelu_erf_slope(t, x)))
     Types.Op.LayerNorm(eps) -> part(layer_norm_rule(t, x, ct, eps))
     Types.Op.RmsNorm(eps) -> part(rms_norm_rule(t, x, ct, eps))
     Types.Op.Clamp(_, _) -> no_rule("clamp")
@@ -665,6 +679,19 @@ def gelu_slope(x: Types.Tensor) -> Result[Types.Tensor]
   )
 
   Tensor.add(outer, try Tensor.mul(try Tensor.mul(half, x), try Tensor.mul(try one_minus(try Tensor.mul(th, th)), du)))
+end
+
+## The derivative of `gelu_erf`, `Phi(x) + x phi(x)`, with `t` its value: `Phi(x) = t / x`, and `0.5` where `x` is `0`;
+## `phi(x) = exp(-x^2 / 2) / sqrt(2 pi)`.
+def gelu_erf_slope(t: Types.Tensor, x: Types.Tensor) -> Result[Types.Tensor]
+  zero = try Tensor.to_dtype(try Tensor.eq(x, try const(x, 0.0)), x.dtype)
+  cdf = try Tensor.div(try Tensor.add(t, try Tensor.mul(try const(x, 0.5), zero)), try Tensor.add(x, zero))
+  density = try Tensor.mul(
+    try const(x, INV_SQRT_2PI),
+    try Tensor.exp(try Tensor.mul(try const(x, -0.5), try Tensor.mul(x, x))),
+  )
+
+  Tensor.add(cdf, try Tensor.mul(x, density))
 end
 
 ## The cotangent of each block goes to the positions that hold its maximum,
