@@ -4,7 +4,7 @@
 #
 #   benchmarks/bench_qwen.sh MODEL_DIR GGUF_DIR LLAMA_CPU_BUILD LLAMA_VULKAN_BUILD [ROUNDS]
 #
-# MODEL_DIR is the Hugging Face checkout of Qwen/Qwen3-0.6B; GGUF_DIR holds qwen3-0.6b-f32.gguf and
+# `ROWS=vulkan` runs only the rows whose name matches. MODEL_DIR is the Hugging Face checkout of Qwen/Qwen3-0.6B; GGUF_DIR holds qwen3-0.6b-f32.gguf and
 # qwen3-0.6b-f16.gguf (made with llama.cpp's convert_hf_to_gguf.py --outtype f32|f16, run as python3 -I); the two
 # builds are llama.cpp's out-of-tree builds of llama-bench (CPU, and -DGGML_VULKAN=ON). `agentica` must be on
 # the PATH (each row builds or finds its ggml engine with `transformers/tools/build-engine.sh`, and the Vulkan one
@@ -41,6 +41,7 @@ ours() { # name device [VAR=value...]: WEIGHTS=f32 and VULKAN_FP16=0 unless the 
 
 llama() { # name build gguf extra...
   name=$1
+  want "$name" || return 0
   build=$2
   gguf=$3
   shift 3
