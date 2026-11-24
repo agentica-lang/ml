@@ -215,6 +215,21 @@ def test_the_gradient_of_a_layer_norm_on_ggml_matches_the_reference() -> Result[
   ok()
 end
 
+## The backward of `gelu_erf` is lowered on ggml, the point `0.0` included.
+def test_the_gradient_of_gelu_erf_on_ggml_matches_python_math() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  x = try Tensor.from_list(Support.GELU_ERF_POINTS.map { |v| Tensor.Values.Float(v) }, [8], Tensor.Dtype.F32, CPU)
+  grads = try Trace.grad([x]) do |xs| Tensor.sum(try Tensor.gelu_erf(xs[0])) end
+  got = try Support.floats_of(grads[0])
+  for j in 0...got.size
+    want = Support.GELU_ERF_SLOPES[j]
+    return error("slope #{j}: #{got[j]} against #{want}") if (got[j] - want).abs > 0.000001
+  end
+
+  ok()
+end
+
 ## The gradient of `sum(layer_norm(x) * w)` (`rms_norm` with `rms`) at a fixed `x` on `backend`.
 def normed_grad(backend: Tensor.Backend, rms: Bool) -> Result[Tensor.Tensor]
   data = [0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.9, 0.1, -0.4, 1.7, -1.3, 0.6]

@@ -5,6 +5,19 @@ import Tensor from "../tensor"
 ## Two floats count as equal below this absolute gap.
 TOL = 0.000000001
 
+## Points of `gelu_erf` and its slopes there, from Python's `math`.
+GELU_ERF_POINTS = [0.5, -1.0, 2.0, 0.0, 1.2, -0.7, -6.0, 4.0]
+GELU_ERF_SLOPES = [
+  0.8674951246561629,
+  -0.08331547058768629,
+  1.085231801078197,
+  0.5,
+  1.1179535957581472,
+  0.023385898866340127,
+  -3.546870945402639e-08,
+  1.0005036496612265,
+]
+
 ## True when the ggml CPU backend is there; with `TENSOR_REQUIRE_GGML` set, a missing one is an error, never a pass
 ## (as in `ggml_compile_test.agc`).
 def ggml_present() -> Result[Bool]
