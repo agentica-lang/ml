@@ -242,7 +242,9 @@ end
 ## (half the memory and the bandwidth), converted at load, and an
 ## `F32`, `F16` or `BF16` file value beyond 65504 is an `error`. Only the ggml
 ## backend holds one, and a trace may use it only as the weight of `matmul` or
-## `linear` and as the table of `gather` or `embedding` (`tensor/DESIGN.md`).
+## `linear` and as the table of `gather` or `embedding` (`tensor/DESIGN.md` §7).
+## It is for inference, with `linear(..., out_in: true)` for a checkpoint's
+## `[out, in]` weight.
 def from_file(
   path: String,
   offset: Int,

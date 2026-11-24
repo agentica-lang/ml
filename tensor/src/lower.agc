@@ -312,9 +312,12 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
     parts = parts.push("#{l.op} #{l.args} #{l.shape} #{l.ints} #{Types.dtype_name(t.dtype)}")
   end
 
-  for o in outs
-    if o.dtype == Types.Dtype.F16
-      return error("an output of a graph is F16: half weights only go into matmul, linear, gather and embedding")
+  for i in 0...outs.size
+    if outs[i].dtype == Types.Dtype.F16
+      n = try Graph.node_of(outs[i])
+      return error(
+        "output #{i} (node #{n.id}, #{Types.op_name(n.op)}) is F16: ggml returns F32 only, so widen it with to_dtype first",
+      )
     end
   end
 
@@ -401,24 +404,30 @@ def exact(dtype: Types.Dtype) -> Bool
   end
 end
 
-## An `F16` node ggml holds: a half weight (an input or a constant), or its
-## transpose, which a `matmul` reads in place. Any other `F16` node is an error.
+## An `F16` node ggml holds: a half weight (an input or a constant), its
+## transpose, which a `matmul` reads in place, or the rows a `gather` reads from
+## one, which ggml has widened to F32 already and only `to_dtype` may take.
+## Any other `F16` node is an error: a half weight is read-only, so a gradient
+## taken for one (its fill of zeros included) ends here.
 def half_node(t: Types.Tensor, n: Types.Node) -> Result[Bool]
   return ok(false) if t.dtype != Types.Dtype.F16
   case n.op
     Types.Op.Input -> ok(true)
     Types.Op.Constant(_) -> ok(true)
     Types.Op.Transpose -> ok(true)
+    Types.Op.Gather -> ok(true)
     _ ->
       error(
-        "node #{n.id} (#{Types.op_name(n.op)}) is F16: only a half weight may be, and only an operand of matmul, linear, gather and embedding",
+        "node #{n.id} (#{Types.op_name(n.op)}) is F16, which ggml holds only for a half weight read by matmul, linear, gather and embedding: " +
+        "a half weight is read-only, so no gradient is taken for it",
       )
   end
 end
 
 ## The `F16` operands of a node: the weight of a `matmul` (second operand) and
-## the table of a `gather` (first), or the argument of a transpose. Anywhere
-## else the half weight would need an op that ggml does not run on it.
+## the table of a `gather` (first), the argument of a transpose, or the rows of a
+## `gather` that `to_dtype` widens. Anywhere else the half weight would need an
+## op that ggml does not run on it.
 def half_operands(n: Types.Node) -> Result[Bool]
   for i in 0...n.args.size
     if n.args[i].dtype == Types.Dtype.F16
@@ -426,6 +435,7 @@ def half_operands(n: Types.Node) -> Result[Bool]
         Types.Op.Matmul -> i == 1
         Types.Op.Gather -> i == 0
         Types.Op.Transpose -> true
+        Types.Op.ToDtype -> try gathered(n.args[0])
         _ -> false
       end
 
@@ -438,6 +448,15 @@ def half_operands(n: Types.Node) -> Result[Bool]
   end
 
   ok(true)
+end
+
+## The F16 tensor `t` is the rows of a `gather`.
+def gathered(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Gather -> ok(true)
+    _ -> ok(false)
+  end
 end
 
 ## The ggml op code of a node, or an error naming the op this lowering does

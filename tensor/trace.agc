@@ -98,7 +98,11 @@ def gradients(out: Types.Tensor, wrt: List[Types.Tensor]) -> Result[List[Types.T
   end
 
   for w in wrt
-    _ = try Graph.node_of(w)
+    n = try Graph.node_of(w)
+    case n.op
+      Types.Op.Constant(c) -> _ = try not_half_weight(c, "a constant of wrt")
+      _ -> nil
+    end
   end
 
   wanted = Set.new(wrt.map { |w| Graph.id_of(w) })
@@ -293,6 +297,10 @@ end
 ## and one evaluation runs both, sharing the forward values.
 def value_and_grad(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor]]) -> Result[ValueAndGrad]
   inputs = try inputs_for(args)
+  for i in 0...args.size
+    _ = try not_half_weight(args[i], "argument #{i}")
+  end
+
   out = try f.call(inputs)
   grads = try gradients(out, inputs)
   values = try evaluate([out] + grads, bind(inputs, args), args[0].backend)
@@ -370,6 +378,23 @@ def diff(
 end
 
 private
+
+## A half weight (`F16` on ggml, `Tensor.from_file` with `dtype: F16`) is read-only:
+## no gradient is taken for it, which an `F16` tensor of the other backends keeps.
+def not_half_weight(t: Types.Tensor, what: String) -> Result[Bool]
+  case t.backend
+    Types.Backend.Ggml(_) ->
+      if t.dtype == Types.Dtype.F16
+        return error(
+          "#{what} is a half weight (F16 on ggml): no gradient is taken for it, weights loaded as F16 are for inference",
+        )
+      end
+
+    _ -> nil
+  end
+
+  ok(true)
+end
 
 ## An error unless `args` are the tensors `specs` describe.
 def matches(specs: List[Spec], args: List[Types.Tensor]) -> Result[Void]

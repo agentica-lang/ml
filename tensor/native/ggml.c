@@ -382,59 +382,26 @@ struct load_source {
   size_t len;
 };
 
-/* The values a half tensor is converted from, read this many at a time. */
-#define HALF_CHUNK ((int64_t)1 << 20)
-/* The smallest finite float that rounds to infinity in F16: 65504 is the largest value F16 holds. */
-#define HALF_OVERFLOW 65520.0f
+/* The F16 value of every float of a chunk, into the tensor's memory: the largest F16 is 65504, and a value beyond it
+   is an error naming its element (a value that rounds to it, or an infinity, is not one). */
+#define HALF_MAX 65504.0f
 
-/* `count` floats of the source from value `from` on, in `chunk`. */
-static bool read_floats(const struct load_source *src, int64_t from, int64_t count, int64_t format, float *chunk,
-                        char *why, size_t why_len) {
-  size_t width = ff_width(format);
+struct half_sink {
+  ggml_fp16_t *half;
+};
 
-  if (src->data != NULL) {
-    return ff_from_bytes(src->data + (size_t)from * width, (size_t)count * width, count, format, chunk, why, why_len);
-  }
-  return ff_read(src->path, src->path_len, src->offset + from * (int64_t)width, count, format, chunk, why, why_len);
-}
+static bool half_chunk(void *ctx, const float *values, int64_t first, int64_t n, char *why, size_t why_len) {
+  struct half_sink *sink = (struct half_sink *)ctx;
+  int64_t i;
 
-/* The half tensor `t` filled from the source: converted a chunk at a time into `half`, `ggml_nelements(t)` values of
-   F16. A value beyond what F16 holds is an error, never a clipped number; a value too small for it rounds to zero or
-   to a subnormal. */
-static bool read_half(const struct load_source *src, int64_t count, int64_t format, ggml_fp16_t *half, char *why,
-                      size_t why_len) {
-  int64_t done = 0, n, i;
-  float *chunk;
-
-  if (src->data != NULL && src->len != (size_t)count * ff_width(format)) {
-    snprintf(why, why_len, "%zu bytes are not %lld values of %zu bytes", src->len, (long long)count, ff_width(format));
-    return false;
-  }
-  chunk = (float *)malloc((size_t)(count < HALF_CHUNK ? count : HALF_CHUNK) * sizeof(float) + 1);
-  if (chunk == NULL) {
-    snprintf(why, why_len, "out of memory");
-    return false;
-  }
-  while (done < count) {
-    n = count - done < HALF_CHUNK ? count - done : HALF_CHUNK;
-    if (!read_floats(src, done, n, format, chunk, why, why_len)) {
-      free(chunk);
+  for (i = 0; i < n; i++) {
+    if (isfinite(values[i]) && fabsf(values[i]) > HALF_MAX) {
+      snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)values[i],
+               (long long)first + (long long)i);
       return false;
     }
-    for (i = 0; i < n; i++) {
-      float v = chunk[i];
-
-      if (isfinite(v) && fabsf(v) >= HALF_OVERFLOW) {
-        snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)v,
-                 (long long)done + (long long)i);
-        free(chunk);
-        return false;
-      }
-      half[done + i] = ggml_fp32_to_fp16(v);
-    }
-    done += n;
   }
-  free(chunk);
+  ggml_fp32_to_fp16_row(values, sink->half + first, n);
   return true;
 }
 
@@ -453,7 +420,14 @@ static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const
   host = in_place ? state->t->data : host_bytes(state->t);
   if (host == NULL) return tg_error(env, "out of memory");
   if (half) {
-    read = read_half(src, ggml_nelements(state->t), format, (ggml_fp16_t *)host, why, sizeof why);
+    struct half_sink sink = {(ggml_fp16_t *)host};
+
+    if (src->data != NULL) {
+      read = ff_each_bytes(src->data, src->len, ggml_nelements(state->t), format, half_chunk, &sink, why, sizeof why);
+    } else {
+      read = ff_each(src->path, src->path_len, src->offset, ggml_nelements(state->t), format, half_chunk, &sink, why,
+                     sizeof why);
+    }
   } else if (src->data != NULL) {
     read = ff_from_bytes(src->data, src->len, ggml_nelements(state->t), format, (float *)host, why, sizeof why);
   } else {
