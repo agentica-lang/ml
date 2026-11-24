@@ -253,8 +253,16 @@ def test_f16_weights_keep_the_big_matrices_half_on_ggml() -> Result[Void]
       try Test.eq(Tensor.dtype(f64.w), Tensor.Dtype.F32)
       try Test.eq(try row_sums(f64.w, backend), sums)
       # the threshold: HALF_MIN_ELEMENTS elements are half, one fewer is not
-      try Test.eq(Tensor.dtype((try Load.embedding(c, "edge.weight", backend, Tensor.Dtype.F16)).table), Tensor.Dtype.F16)
-      try Test.eq(Tensor.dtype((try Load.embedding(c, "under.weight", backend, Tensor.Dtype.F16)).table), Tensor.Dtype.F32)
+      try Test.eq(
+        Tensor.dtype((try Load.embedding(c, "edge.weight", backend, Tensor.Dtype.F16)).table),
+        Tensor.Dtype.F16,
+      )
+
+      try Test.eq(
+        Tensor.dtype((try Load.embedding(c, "under.weight", backend, Tensor.Dtype.F16)).table),
+        Tensor.Dtype.F32,
+      )
+
       # a table that is big enough, and a matrix under HALF_MIN_ELEMENTS or a vector, which stay F32
       try Test.eq(
         Tensor.dtype((try Load.embedding(c, "tok.weight", backend, Tensor.Dtype.F16)).table),

@@ -186,6 +186,7 @@ def decoder_block(
 end
 
 private
+
 ## The weight `name` of `rank`: `F32`, or `F16` when `weights` asks for it, it is a float file of rank 2 and it has
 ## `HALF_MIN_ELEMENTS` or more (an F64 file stays `F32`).
 def matrix(
