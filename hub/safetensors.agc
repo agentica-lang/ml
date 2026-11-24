@@ -57,17 +57,30 @@ end
 
 def open(path: String) -> Result[Shard] = within(path, read(path))
 
-## The tensor `name` of `shard`: F32, F16 and BF16 as `F32`, any other dtype as the file has it.
-def tensor(shard: Shard, name: String, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+## The shape of the tensor `name` of `shard`, read from the header.
+def shape(shard: Shard, name: String) -> Result[List[Int]]
+  e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
+  ok(e.shape)
+end
+
+## The tensor `name` of `shard`: F32, F16 and BF16 as `F32` (as `F16` with `dtype: F16`, a half weight of the ggml
+## backend, `Tensor.from_file`), any other dtype as the file has it.
+def tensor(
+  shard: Shard,
+  name: String,
+  backend: Tensor.Backend,
+  dtype: Tensor.Dtype = Tensor.Dtype.F32,
+) -> Result[Tensor.Tensor]
   e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
   at = shard.base + e.start
   if FORMATS.key?(e.dtype)
     return within(
       "#{shard.path}: tensor #{name}",
-      Tensor.from_file(shard.path, at, e.shape, FORMATS[e.dtype], backend),
+      Tensor.from_file(shard.path, at, e.shape, FORMATS[e.dtype], backend, dtype),
     )
   end
 
+  return error("#{shard.path}: tensor #{name}: a #{e.dtype} tensor has no half form") if dtype != Tensor.Dtype.F32
   return error("#{shard.path}: tensor #{name}: dtype #{e.dtype} has no tensor/ dtype") if not DTYPES.key?(e.dtype)
   b = try within("#{shard.path}: tensor #{name}", read_range(shard.path, at, e.stop - e.start))
   values = try within("#{shard.path}: tensor #{name}", decode(b, e))

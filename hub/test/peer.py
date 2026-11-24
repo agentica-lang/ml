@@ -2,7 +2,7 @@
 standard library alone (struct + json) and the values a reader must find.
 
 Usage: python3 peer.py SET, with SET one of values, malformed, sharded, layer,
-block or decoder. Writes that set into a new temporary folder and prints its path.
+block, decoder or half. Writes that set into a new temporary folder and prints its path.
 """
 
 import json
@@ -310,8 +310,34 @@ def decoder(out):
     (out / "decoder.json").write_text(json.dumps(expected))
 
 
+def half(out):
+    """Matrices over and under the 100000 elements that `weights: F16` keeps in 16 bits: one value pattern, in F32,
+    F16 and BF16 (every value is a multiple of 1/16, which all three hold exactly), one with a value beyond F16."""
+    def pattern(n):
+        return [((i * 7) % 17 - 8) / 16.0 for i in range(n)]
+
+    def bf16(values):
+        return [struct.unpack("<I", struct.pack("<f", v))[0] >> 16 for v in values]
+
+    big = pattern(320 * 320)
+    huge = list(big)
+    huge[5] = 70000.0
+    write(out / "half.safetensors", {
+        "big.weight": tensor("F32", [320, 320], big),
+        "big.bias": tensor("F32", [320], [0.0] * 320),
+        "f16.weight": tensor("F16", [320, 320], big),
+        "bf16.weight": tensor("BF16", [320, 320], bf16(big)),
+        "huge.weight": tensor("F32", [320, 320], huge),
+        "tok.weight": tensor("F32", [400, 300], pattern(400 * 300)),
+        "small.weight": tensor("F32", [4, 3], pattern(12)),
+        "norm.weight": tensor("F32", [320], [1.0] * 320),
+    })
+    # `linear(ones, big, out_in)`: the sum of each row of `big`, exact in F32
+    (out / "half.json").write_text(json.dumps({"sums": [sum(big[j * 320:(j + 1) * 320]) for j in range(320)]}))
+
+
 SETS = {"values": values_file, "malformed": malformed, "sharded": sharded,
-        "layer": layer, "block": block, "decoder": decoder}
+        "layer": layer, "block": block, "decoder": decoder, "half": half}
 
 
 def main():

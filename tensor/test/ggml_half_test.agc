@@ -214,8 +214,7 @@ def test_a_compiled_graph_reads_a_half_weight_as_the_f32_weight() -> Result[Void
         end
 
         # linear: the activations may round to F16, so each product is good to 2^-11; ggml's CPU backend keeps
-        # them F32,
-        # so there only the order of the sums differs
+        # them F32, so there only the order of the sums differs
         step = STEP
         if device == CPU
           step = 0.0

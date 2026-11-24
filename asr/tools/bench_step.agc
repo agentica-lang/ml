@@ -15,6 +15,7 @@
 ## id and a log-probability come back, where the default `Asr.step` reads the logits.
 
 import Asr from "../asr"
+import Load from "pkg/hub/load"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "../tokenizer"
 import TranscribeCheck from "transcribe_check"
@@ -48,7 +49,7 @@ def run(args: List[String]) -> Result[Void]
 
   backend = try TranscribeCheck.backend_of(args[2])
   return error("#{args[2]} is not available") if not Tensor.available(backend)
-  m = try Asr.open("#{args[0]}/model.safetensors", backend)
+  m = try Asr.open("#{args[0]}/model.safetensors", backend, try Load.weights_from_env())
   tok = try Tokenizer.open("#{args[0]}/tokenizer.json")
   pcm = try TranscribeCheck.pcm16(try TranscribeCheck.read_bytes(args[1]))
   frames = 2 * m.config.max_source_positions

@@ -4,10 +4,21 @@
 ## `[out, in]`, kept as it is (`Nn.Dense.out_in`) and an optional
 ## `{prefix}.bias`; a layer norm is `{prefix}.weight` and `{prefix}.bias`.
 ## Float weights become `F32`, the compute dtype (`tensor/DESIGN.md` §6).
+##
+## With `weights: F16` the big matrices of a model (`dense` and the `embedding`
+## of tokens, the weights of `matmul`/`linear` and `gather`) are kept in 16
+## bits on the ggml backend: half the memory and the bandwidth, one rounding
+## per value at load (`Tensor.from_file`, `tensor/DESIGN.md` §7). Everything
+## else stays `F32`, and so does a matrix under `HALF_MIN_ELEMENTS`, where
+## halving gains nothing. Any backend but ggml answers an error naming the
+## option.
 
 import Hub from "hub"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
+
+## A rank-2 weight with fewer elements than this stays `F32` under `weights: F16`.
+HALF_MIN_ELEMENTS = 100000
 
 ## The prefix of every layer of one encoder block.
 struct BlockNames
@@ -40,11 +51,42 @@ struct DecoderBlockNames
   down: String
 end
 
+## The `weights` option the tools take from the environment: `WEIGHTS=f32` (the default) or `WEIGHTS=f16`.
+def weights_from_env() -> Result[Tensor.Dtype]
+  name = System.env("WEIGHTS").unwrap_or("f32")
+  case name
+    "f32" -> ok(Tensor.Dtype.F32)
+    "f16" -> ok(Tensor.Dtype.F16)
+    _ -> error("WEIGHTS is f32 or f16, got #{name}")
+  end
+end
+
 ## The float tensor `name` as `F32`, of `rank`.
 def weight(c: Hub.Checkpoint, name: String, rank: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  t = try Hub.tensor(c, name, backend)
+  matrix(c, name, rank, backend, Tensor.Dtype.F32)
+end
+
+## The rank-2 weight `name`: `F32`, or `F16` when `weights` asks for it and it has `HALF_MIN_ELEMENTS` or more.
+def matrix(
+  c: Hub.Checkpoint,
+  name: String,
+  rank: Int,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype,
+) -> Result[Tensor.Tensor]
+  _ = try checked(weights, backend)
+  dtype = Tensor.Dtype.F32
+  if weights == Tensor.Dtype.F16 and rank == 2
+    shape = try Hub.shape(c, name)
+    if shape.size == 2 and shape[0] * shape[1] >= HALF_MIN_ELEMENTS
+      dtype = Tensor.Dtype.F16
+    end
+  end
+
+  t = try Hub.tensor(c, name, backend, dtype)
   shape = Tensor.shape(t)
   return error("#{name}: needs rank #{rank}, got #{shape}") if shape.size != rank
+  return ok(t) if dtype == Tensor.Dtype.F16
   case Tensor.dtype(t)
     Tensor.Dtype.F32 -> ok(t)
     Tensor.Dtype.F16 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
@@ -53,8 +95,14 @@ def weight(c: Hub.Checkpoint, name: String, rank: Int, backend: Tensor.Backend) 
   end
 end
 
-def dense(c: Hub.Checkpoint, prefix: String, backend: Tensor.Backend) -> Result[Nn.Dense]
-  w = try weight(c, "#{prefix}.weight", 2, backend)
+## A dense layer: `{prefix}.weight` `[out, in]` (`F16` under `weights: F16` when big enough) and an optional bias.
+def dense(
+  c: Hub.Checkpoint,
+  prefix: String,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+) -> Result[Nn.Dense]
+  w = try matrix(c, "#{prefix}.weight", 2, backend, weights)
   b = try bias(c, prefix, Tensor.shape(w)[0], backend)
   ok(Nn.Dense(w: w, b: b, out_in: true))
 end
@@ -92,8 +140,15 @@ def layer_norm(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Ba
   ok(Nn.LayerNorm(gamma: gamma, beta: beta, eps: eps))
 end
 
-def embedding(c: Hub.Checkpoint, name: String, backend: Tensor.Backend) -> Result[Nn.Embedding]
-  ok(Nn.Embedding(table: try weight(c, name, 2, backend)))
+## An embedding table, `F16` under `weights: F16` when big enough: the tokens of a model with its tied head, not a
+## positional table, which `Nn.positions` slices.
+def embedding(
+  c: Hub.Checkpoint,
+  name: String,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+) -> Result[Nn.Embedding]
+  ok(Nn.Embedding(table: try matrix(c, name, 2, backend, weights)))
 end
 
 def encoder_block(
@@ -103,15 +158,16 @@ def encoder_block(
   activation: Nn.Activation,
   eps: Float,
   backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
 ) -> Result[Nn.EncoderBlock]
   ok(
     Nn.EncoderBlock(
       norm1: try layer_norm(c, names.norm1, eps, backend),
-      attention: try attention(c, names.query, names.key, names.value, names.output, heads, backend),
+      attention: try attention(c, names.query, names.key, names.value, names.output, heads, backend, weights),
       norm2: try layer_norm(c, names.norm2, eps, backend),
       mlp: Nn.Mlp(
-        up: try dense(c, names.up, backend),
-        down: try dense(c, names.down, backend),
+        up: try dense(c, names.up, backend, weights),
+        down: try dense(c, names.down, backend, weights),
         activation: activation,
       ),
     ),
@@ -125,11 +181,12 @@ def decoder_block(
   activation: Nn.Activation,
   eps: Float,
   backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
 ) -> Result[Nn.DecoderBlock]
   ok(
     Nn.DecoderBlock(
       norm1: try layer_norm(c, names.norm1, eps, backend),
-      self_attention: try attention(c, names.query, names.key, names.value, names.output, heads, backend),
+      self_attention: try attention(c, names.query, names.key, names.value, names.output, heads, backend, weights),
       norm2: try layer_norm(c, names.norm2, eps, backend),
       cross_attention: try attention(
         c,
@@ -139,11 +196,12 @@ def decoder_block(
         names.cross_output,
         heads,
         backend,
+        weights,
       ),
       norm3: try layer_norm(c, names.norm3, eps, backend),
       mlp: Nn.Mlp(
-        up: try dense(c, names.up, backend),
-        down: try dense(c, names.down, backend),
+        up: try dense(c, names.up, backend, weights),
+        down: try dense(c, names.down, backend, weights),
         activation: activation,
       ),
     ),
@@ -170,6 +228,20 @@ def bias(c: Hub.Checkpoint, prefix: String, rows: Int, backend: Tensor.Backend) 
   ok(some(b))
 end
 
+## `weights` is an `F32` or `F16` request that this backend can keep.
+def checked(weights: Tensor.Dtype, backend: Tensor.Backend) -> Result[Bool]
+  case weights
+    Tensor.Dtype.F32 -> ok(true)
+    Tensor.Dtype.F16 ->
+      case backend
+        Tensor.Backend.Ggml(_) -> ok(true)
+        _ -> error("weights: F16 needs the ggml backend (half weights are only held by ggml)")
+      end
+
+    _ -> error("weights is F32 or F16")
+  end
+end
+
 ## The four projections of one attention, by prefix.
 def attention(
   c: Hub.Checkpoint,
@@ -179,13 +251,14 @@ def attention(
   output: String,
   heads: Int,
   backend: Tensor.Backend,
+  weights: Tensor.Dtype,
 ) -> Result[Nn.Attention]
   ok(
     Nn.Attention(
-      query: try dense(c, query, backend),
-      key: try dense(c, key, backend),
-      value: try dense(c, value, backend),
-      output: try dense(c, output, backend),
+      query: try dense(c, query, backend, weights),
+      key: try dense(c, key, backend, weights),
+      value: try dense(c, value, backend, weights),
+      output: try dense(c, output, backend, weights),
       heads: heads,
     ),
   )

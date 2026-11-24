@@ -43,7 +43,7 @@ end
 
 ## Qwen3
 
-`Qwen3.open(dir, backend)` loads `config.json` and `model.safetensors` from a folder (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token.
+`Qwen3.open(dir, backend, weights)` loads `config.json` and `model.safetensors` from a folder (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token. With `weights: Dtype.F16` the big matrices (the projections, the token table and the output head) are kept as half weights on ggml; `F32` is the default and the exact path.
 
 ```agentica
 import Bpe from "pkg/transformers/tokenizer/bpe"

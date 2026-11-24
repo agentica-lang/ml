@@ -47,6 +47,25 @@ def test_the_last_position_alone_is_the_last_row_of_the_logits() -> Result[Void]
   end
 end
 
+## `weights: F16` is an error off ggml, and on ggml a model whose matrices are all under `Load.HALF_MIN_ELEMENTS` is the
+## same model (a tiny one: the half path itself is `hub/test/load_test.agc` and the checkpoints of `tools/`).
+def test_f16_weights_need_ggml_and_leave_a_tiny_model_alone() -> Result[Void]
+  with_peer do |dir|
+    refused = Qwen3.open("#{dir}/tiny", S.REF, Tensor.Dtype.F16)
+    try Test.error?(refused)
+    for backend in try S.ggml_backends()
+      half = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F16)
+      whole = try Qwen3.open("#{dir}/tiny", backend)
+      try Test.eq(
+        try S.floats_of(try Qwen3.run(half, try ids(dir))),
+        try S.floats_of(try Qwen3.run(whole, try ids(dir))),
+      )
+    end
+
+    ok()
+  end
+end
+
 ## `close_model` frees what ggml holds; a model that was closed is an error.
 def test_a_closed_model_is_an_error_on_ggml() -> Result[Void]
   with_peer do |dir|

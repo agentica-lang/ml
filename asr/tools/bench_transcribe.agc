@@ -14,6 +14,7 @@
 ## MODEL_DIR holds `model.safetensors`, `config.json` and `tokenizer.json`; BACKEND is `torch`, `ggml` or `vulkan`.
 
 import Asr from "../asr"
+import Load from "pkg/hub/load"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "../tokenizer"
 import TranscribeCheck from "transcribe_check"
@@ -37,7 +38,7 @@ def run(args: List[String]) -> Result[Void]
   backend = try TranscribeCheck.backend_of(args[2])
   return error("#{args[2]} is not available") if not Tensor.available(backend)
   started = Time.monotonic_ms()
-  m = try Asr.open("#{args[0]}/model.safetensors", backend)
+  m = try Asr.open("#{args[0]}/model.safetensors", backend, try Load.weights_from_env())
   tok = try Tokenizer.open("#{args[0]}/tokenizer.json")
   puts("load\t#{Time.monotonic_ms() - started}")
   return ok() if runs < 0

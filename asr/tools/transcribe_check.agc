@@ -17,6 +17,7 @@
 ## runs only that case's index.
 
 import Asr from "../asr"
+import Load from "pkg/hub/load"
 import Lower from "pkg/tensor/src/lower"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "../tokenizer"
@@ -74,7 +75,7 @@ def run(args: List[String]) -> Result[Bool]
   backend = try backend_of(name)
   return error("#{backend} is not available") if not Tensor.available(backend)
   started = Time.monotonic_ms()
-  m = try Asr.open("#{args[0]}/model.safetensors", backend)
+  m = try Asr.open("#{args[0]}/model.safetensors", backend, try Load.weights_from_env())
   tok = try Tokenizer.open("#{args[0]}/tokenizer.json")
   puts("loaded in #{Time.monotonic_ms() - started} ms")
   es = try pcm16(try read_bytes(args[1]))

@@ -6,6 +6,7 @@
 
 import Generate from "../generate"
 import Qwen3 from "../qwen3"
+import Load from "pkg/hub/load"
 import Tensor from "pkg/tensor/tensor"
 
 PROMPT = 128
@@ -35,7 +36,7 @@ private
 
 def run(dir: String, backend: Tensor.Backend) -> Result[String]
   started = Time.monotonic_ms
-  m = try Qwen3.open(dir, backend)
+  m = try Qwen3.open(dir, backend, try Load.weights_from_env())
   load = Time.monotonic_ms - started
   g = try Generate.open(m)
   prompt = (0...PROMPT).map { |i| 1000 + (i * 7) % 5000 }

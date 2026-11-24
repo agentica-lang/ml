@@ -59,10 +59,21 @@ def names(c: Checkpoint) -> List[String] = c.weight_map.keys.sort
 
 def has?(c: Checkpoint, name: String) -> Bool = c.weight_map.key?(name)
 
-## The tensor `name` with the file's dtype, on `backend`.
-def tensor(c: Checkpoint, name: String, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+## The tensor `name` on `backend`: a float one as `F32`, or as `F16` with `dtype: F16` (a half weight, ggml only).
+def tensor(
+  c: Checkpoint,
+  name: String,
+  backend: Tensor.Backend,
+  dtype: Tensor.Dtype = Tensor.Dtype.F32,
+) -> Result[Tensor.Tensor]
   file = try c.weight_map.get(name).to_result("no tensor #{name} in the checkpoint")
-  Safetensors.tensor(c.shards[file], name, backend)
+  Safetensors.tensor(c.shards[file], name, backend, dtype)
+end
+
+## The shape of the tensor `name`, from the header: nothing is read.
+def shape(c: Checkpoint, name: String) -> Result[List[Int]]
+  file = try c.weight_map.get(name).to_result("no tensor #{name} in the checkpoint")
+  Safetensors.shape(c.shards[file], name)
 end
 
 ## The `__metadata__` of every shard, by file name.

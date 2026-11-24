@@ -9,13 +9,14 @@ from them by tensor name. Local files only. Depends on `tensor/` and `nn/`.
 Hub.open(path) -> Result[Checkpoint]        a .safetensors file, or a sharded .index.json
 Hub.names(c) -> List[String]                sorted
 Hub.has?(c, name) -> Bool
-Hub.tensor(c, name, backend) -> Result[Tensor]   F32/F16/BF16 as F32, else the file's dtype
+Hub.tensor(c, name, backend, dtype = F32) -> Result[Tensor]   F32/F16/BF16 as F32 (F16 with dtype F16: ggml half weight), else the file's dtype
+Hub.shape(c, name) -> Result[List[Int]]     from the header
 Hub.metadata(c) -> Map[file, Map[String, String]]   each shard's __metadata__
 
-Load.dense(c, prefix, backend)          {prefix}.weight [out, in] kept as stored (Dense.out_in); {prefix}.bias if present
+Load.dense(c, prefix, backend, weights = F32)   {prefix}.weight [out, in] kept as stored (Dense.out_in); {prefix}.bias if present
 Load.conv1d(c, prefix, stride, padding, backend)   {prefix}.weight [out, in, kernel] as stored; bias if present
 Load.layer_norm(c, prefix, eps, backend)   {prefix}.weight, {prefix}.bias; or {prefix}.gamma, {prefix}.beta when there is no .weight (BERT)
-Load.embedding(c, name, backend)        [rows, width]
+Load.embedding(c, name, backend, weights = F32)   [rows, width]
 Load.encoder_block(c, BlockNames { norm1, query, key, value, output, norm2, up, down },
                    heads, activation, eps, backend)
 Load.decoder_block(c, DecoderBlockNames { norm1, query, key, value, output,
@@ -72,6 +73,15 @@ The test fixtures drop the `model.` part of the prefix
   copy and copies `[in, out]` on every run; a missing bias is `none`
   (Whisper's `k_proj`). Names are the caller's: Whisper's
   or BERT's live with the model code.
+- **`weights: F16` is opt-in.** `Load.dense`, `Load.embedding` and the blocks
+  take it (`Asr.open` and `Qwen3.open` pass it on): a rank-2 weight with at
+  least `HALF_MIN_ELEMENTS` (100000) values is read as a half weight
+  (`tensor/DESIGN.md` §7), everything else stays `F32`; a smaller matrix gains
+  nothing by halving. Only the tokens of a model are loaded this way, not its
+  positional tables, which `Nn.positions` slices. `Nn.embedding` widens the
+  rows of a half table with `to_dtype`. Another backend than ggml, or a dtype
+  other than `F32` or `F16`, is an error. `WEIGHTS=f16` (`Load.weights_from_env`)
+  sets it for the tools.
 
 ## Cost
 

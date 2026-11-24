@@ -44,6 +44,21 @@ def test_the_compiled_steps_are_shared_by_every_decoding_of_a_model() -> Result[
   end
 end
 
+## `weights: F16` is an error off ggml, and on ggml a model whose matrices are all under `Load.HALF_MIN_ELEMENTS` loads
+## as `F32` (the half path itself is `hub/test/load_test.agc` and the checkpoints of `tools/`).
+def test_f16_weights_need_ggml_and_leave_a_tiny_model_alone() -> Result[Void]
+  with_fixtures do |dir|
+    try Test.error?(Asr.open("#{dir}/speech/model.safetensors", REF, Tensor.Dtype.F16))
+    for backend in try ggml_backends()
+      half = try Asr.open("#{dir}/speech/model.safetensors", backend, Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype(half.tokens.table), Tensor.Dtype.F32)
+      try Test.eq(Tensor.dtype(half.logits.w), Tensor.Dtype.F32)
+    end
+
+    ok()
+  end
+end
+
 ## The compiled steps are named by the shapes of their inputs: audio of another length on the same model gets steps of
 ## its own, and the first audio still gets its own. One test per backend, each with its own 30 s of the runner.
 def test_the_compiled_steps_follow_the_audio_length_on_ggml_cpu() -> Result[Void] = steps_follow_the_audio_length(0)

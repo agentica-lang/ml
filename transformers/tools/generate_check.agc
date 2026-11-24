@@ -9,6 +9,7 @@
 
 import Generate from "../generate"
 import Qwen3 from "../qwen3"
+import Load from "pkg/hub/load"
 import Source from "../tokenizer/source"
 import Tensor from "pkg/tensor/tensor"
 
@@ -49,7 +50,7 @@ private
 
 def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Void]
   want = try JSON.decode(try Source.read_text(golden), Golden)
-  m = try Qwen3.open(dir, backend)
+  m = try Qwen3.open(dir, backend, try Load.weights_from_env())
   g = try Generate.open(m)
   done = checked(g, want)
   Generate.close(g)

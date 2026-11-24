@@ -355,9 +355,9 @@ end
   backend keeps its gradient). Other paths are not guarded: a gradient graph
   that needs an `F16` fill, the zeros of a weight the output does not reach,
   ends in the lowering error, and `gradients` of an `Input` half weight that
-  only feeds `linear` or `matmul` returns an `F32` gradient. Use `linear(..., out_in: true)` with a checkpoint's
-  `[out, in]` weight: without it the lowering transposes (copies) the half
-  weight on every run.
+  only feeds `linear` or `matmul` returns an `F32` gradient. Use
+  `linear(..., out_in: true)` with a checkpoint's `[out, in]` weight: without
+  it the lowering transposes (copies) the half weight on every run.
 - **What a half weight costs.** The weight rounds once, at load. The
   activations of the product stay `F32` on ggml's CPU backend and on Vulkan at
   the default (measured against a double-precision sum of the same weights:
