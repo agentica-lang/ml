@@ -228,7 +228,16 @@ def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tenso
       # The program is all `run` needs: it keeps no trace.
       p = try Lower.program(outs, inputs, device)
       held = try Lower.pin(p)
-      ok(Compiled(specs: specs, inputs: [], outs: [], backend: backend, program: some(p), pin: some(held)))
+      ok(
+        Compiled(
+          specs: specs,
+          inputs: [],
+          outs: [],
+          backend: backend,
+          program: some(Lower.pinned(p, held)),
+          pin: some(held),
+        ),
+      )
     _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none, pin: none))
   end
 end

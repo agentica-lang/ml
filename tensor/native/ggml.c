@@ -102,7 +102,11 @@ void tg_storage_release(struct tg_storage *s) {
 static void ggml_TensorHandle_free(void *state) {
   struct ggml_TensorHandle_state *self = (struct ggml_TensorHandle_state *)state;
 
-  if (self->store != NULL) tg_storage_release(self->store);
+  if (self->store != NULL) {
+    __atomic_store_n(&self->store->closed, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&self->store->kept, __ATOMIC_SEQ_CST) > 0) tg_closed();
+    tg_storage_release(self->store);
+  }
   memset(self, 0, sizeof *self);
 }
 #define GGML_TensorHandle_FREE ggml_TensorHandle_free

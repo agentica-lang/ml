@@ -106,6 +106,23 @@ extern module "ggml"
   ## a compiled graph that has a slot of the cache.
   resource Pin
   compute def pin(lease: Lease) -> Result[Pin]
+  ## The number that names `pin` among the pins of the process, for `resume`
+  ## and `keep`: 0 for a pin that holds nothing.
+  def pin_id(pin: Pin) -> Int
+  ## True when the leased graph still has the constants of the program of the
+  ## pin `pin` (its `pin_id`) bound, kept by `keep` after an earlier run: the
+  ## caller then binds only what every run binds (the inputs, and a constant
+  ## that is converted). Otherwise the graph lets go of what it kept, for
+  ## whatever program, and the caller binds every leaf. A kept tensor whose
+  ## handle is closed, another program that ran on the graph, a pin that ended
+  ## and a pin of another graph all answer false.
+  def resume(lease: Lease, pin: Int) -> Bool
+  ## Keeps the leaves bound so far that read their tensor in place bound after
+  ## the run, as the constants of the program of the pin `pin`, until that pin
+  ## ends, one of the tensors is closed or another program runs on the graph.
+  ## The graph holds their memory meanwhile. Nothing is kept unless `pin` is a
+  ## live pin of the leased graph.
+  def keep(lease: Lease, pin: Int) -> Void
   ## Sets the fills (one value each, in the order they were sent) and runs
   ## the graph into the tensors `output` made; every leaf and output must be
   ## set since the last run. An error when an output is not finite.

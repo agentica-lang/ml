@@ -23,6 +23,8 @@ struct deferred {
    leaves the run its data. */
 struct tg_storage {
   int refs; /* atomic */
+  int kept; /* atomic: the leaves of cached graphs that stay bound to it between runs (`ggml_graph.c`) */
+  int closed; /* atomic: its handle is closed */
   struct ggml_context *ctx;
   ggml_backend_buffer_t buffer;
   struct deferred link;
@@ -40,6 +42,9 @@ struct ggml_TensorHandle_state {
 CC_SHORT void tg_storage_retain(struct tg_storage *s);
 /* One holder less: the last one queues the free of the memory. Never waits (a free hook calls it). */
 CC_SHORT void tg_storage_release(struct tg_storage *s);
+/* The handle of a tensor that graphs keep bound is closed (`closed` is set): the idle graphs let go of it
+   (`ggml_graph.c`). Never waits (a free hook calls it). */
+CC_SHORT void tg_closed(void);
 
 /* The device lock: the device table, the registry, every graph build and
    run and every Vulkan buffer operation. Taking it first does the frees that
@@ -80,9 +85,11 @@ struct ggml_Lease_state {
 
 void ggml_Lease_free(void *state);
 
-/* A pin on a graph of the cache (`ggml_pin`). */
+/* A pin on a graph of the cache (`ggml_pin`). `id` names it among every pin of the process (0 for a pin that holds
+   nothing): the graph keeps the constants of one pin bound. */
 struct ggml_Pin_state {
   struct entry *e;
+  int64_t id;
 };
 
 void ggml_Pin_free(void *state);
