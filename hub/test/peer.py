@@ -175,6 +175,9 @@ def layer(out):
         "enc.ln.weight": tensor("F16", [3], gamma),
         "enc.ln.bias": tensor("F64", [3], beta),
         "enc.ids": tensor("I64", [3], [1, 2, 3]),
+        # The older spelling of a layer norm (BERT's checkpoints).
+        "enc.old.gamma": tensor("F32", [3], [2.0, 1.0, 0.5]),
+        "enc.old.beta": tensor("F32", [3], [1.0, 0.0, -1.0]),
     })
     b = [f32(v) for v in b]
     y = []

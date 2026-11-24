@@ -1,8 +1,30 @@
 # transformers — design
 
 BERT and Qwen3 for inference, from Hugging Face checkpoints, over `tensor/`,
-`nn/` and `hub/`. This folder has only the tokenizers so far; the models come
-in later PRs of ml#78.
+`nn/` and `hub/`. BERT and the tokenizers are here; Qwen3 comes in later PRs of
+ml#78.
+
+## BERT
+
+`bert.agc`: `Bert.open(dir, backend)` reads `model.safetensors` and
+`config.json` of a folder (`bert-base-uncased`, `bert.`-prefixed or not,
+`gamma`/`beta` or `weight`/`bias` norms; the `cls.*` heads are ignored).
+
+```text
+Bert.run(m, encodings)   [WordPiece.Encoding] padded to the longest -> Output(hidden, pooled)
+Bert.embed(m, encodings) mean of each sentence's token vectors (padding left out), [batch, hidden]
+Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 token, 0.0 padding)
+```
+
+- Post-norm blocks (`norm_first: false`, set with `.with` on what `Load`
+  builds), the exact GELU (`hidden_act: gelu` is `GeluErf`; `gelu_new` is the
+  tanh form), `layer_norm_eps` from the config (1e-12), the positions
+  `0...seq`, and a pooler of `tanh(dense(first token))` when the file has one.
+- Padding is an additive bias on the keys (`Nn.MASKED`), as Hugging Face does,
+  so a padded batch gives each sentence what it gives alone.
+- On ggml (which computes only graphs) the forward is one compiled graph of the
+  model with its weights as trace constants, as in `asr/`.
+- Other `model_type`s, `position_embedding_type`s and activations are errors.
 
 ## Tokenizers
 
@@ -50,14 +72,22 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
 
 ## Tests
 
+- `test/bert_test.agc` against `test/bert_peer.py` (standard library, doubles):
+  a tiny random BERT in both namings, a padded batch, the hidden state, the
+  pooler and the mean embedding, on the reference and on ggml (CPU, and Vulkan
+  where there is one); and the refusals.
+- `tools/bert_check.agc` against Hugging Face's `BertModel`
+  (`test/bert_golden.py`, manual): six sentences and pairs alone and one padded
+  batch, in `float32` on ggml CPU and Vulkan; the largest gap is 5.0e-5 (CPU)
+  and 2.8e-5 (Vulkan) on `bert-base-uncased`.
 - `test/unicode_test.agc` against Python's `unicodedata` (`unicode_peer.py`,
   live), on sample strings.
 - `test/wordpiece_test.agc` and `test/bpe_test.agc` against ids recorded from
   `tokenizers` for tiny hand-made tokenizers (`test/fixtures/`), made by
   `test/tokenizer_golden.py fixtures` (manual: it needs `tokenizers`).
-- `test/long_input_test.agc`: 200k characters and 50k CJK through the Unicode
+- `long/long_input_test.agc`: 200k characters and 50k CJK through the Unicode
   functions and both tokenizers, and a 20k-letter BPE piece, each under 10 s
-  (about a second); CI runs the package with `--max-steps 400000000` for it.
+  (about a second); `long/` runs in its own CI step with `--max-steps 400000000` (the heaviest test spends about 580 M steps, the file 1.33 G).
 - `tools/tokenizer_check.agc` against the real `bert-base-uncased` and
   `Qwen3-0.6B` files, from a golden of `test/tokenizer_golden.py golden`, with
   `N` random strings (seeded). It matched on 48312 cases (BERT) and 39139

@@ -50,6 +50,17 @@ def test_dense_and_layer_norm_match_the_peer_on_libtorch() -> Result[Void]
   end
 end
 
+def test_a_layer_norm_with_gamma_and_beta_names_loads() -> Result[Void]
+  S.with_fixtures("layer") do |dir|
+    c = try Hub.open("#{dir}/layer.safetensors")
+    norm = try Load.layer_norm(c, "enc.old", 0.00001, S.REF)
+    try Test.eq(try S.floats_of(norm.gamma), [2.0, 1.0, 0.5])
+    try Test.eq(try S.floats_of(norm.beta), [1.0, 0.0, -1.0])
+    try Test.eq(try S.floats_of((try Load.layer_norm(c, "enc.ln", 0.00001, S.REF)).gamma), [1.0, 0.5, 2.0])
+    Test.error?(Load.layer_norm(c, "enc.none", 0.00001, S.REF))
+  end
+end
+
 def test_a_weight_of_the_wrong_kind_is_refused() -> Result[Void]
   S.with_fixtures("layer") do |dir|
     c = try Hub.open("#{dir}/layer.safetensors")
