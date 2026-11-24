@@ -9,6 +9,8 @@ path, and leaves:
   embeddings, with an `lm_head.weight` of other values that the model must
   ignore (`Qwen3-0.6B`'s file has one too);
 - `untied/`: `float32` weights and its own `lm_head.weight`;
+- `qwen2/`: `float32` weights of the Qwen2 layout (`Qwen2.5-0.5B`): no query and key norms, a bias on the query, key and
+  value projections, no `head_dim` in the config (it is `hidden_size / num_attention_heads`);
 - `missing/`: `tiny` without one weight;
 - `expected.json`: for the batch `IDS`, the logits of every position of every
   row, of `tiny` and of `untied`, and of `tiny` on the longer row `LONG`.
@@ -34,6 +36,9 @@ CONFIG = {
     "attention_bias": False, "use_sliding_window": False, "rope_scaling": None,
     "sliding_window": None,
 }
+# Two query heads and one key head of 4 = hidden_size / num_attention_heads.
+QWEN2 = {k: v for k, v in CONFIG.items() if k not in ("head_dim", "attention_bias")}
+QWEN2.update(model_type="qwen2", num_attention_heads=2, num_key_value_heads=1)
 IDS = [[1, 5, 2, 7, 3, 12], [4, 4, 9, 0, 6, 11]]
 # A row that outgrows a cache of 8 and of 16 rows.
 LONG = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3, 8, 4]
@@ -52,8 +57,9 @@ def f32(x):
 class Model:
     """Weights by HF name (flat, row-major) already rounded to `dtype`."""
 
-    def __init__(self, seed, dtype, head):
+    def __init__(self, seed, dtype, head, cfg=CONFIG):
         self.head = head
+        self.cfg = cfg
         self.rng = random.Random(seed)
         self.round = bf16 if dtype == "BF16" else f32
         self.dtype = dtype
@@ -87,37 +93,42 @@ class Model:
         return [v[i:i + cols] for i in range(0, len(v), cols)]
 
     def linear(self, name, x):
-        return [[sum(a * b for a, b in zip(r, w)) for w in self.rows(name)] for r in x]
+        bias = self.values.get(name[:-len("weight")] + "bias")
+        return [[sum(a * b for a, b in zip(r, w)) + (bias[i] if bias else 0.0) for i, w in enumerate(self.rows(name))]
+                for r in x]
 
     def rms(self, name, x):
         g = self.values[name]
-        return [[v / math.sqrt(sum(t * t for t in r) / len(r) + CONFIG["rms_norm_eps"]) * gi for v, gi in zip(r, g)]
+        return [[v / math.sqrt(sum(t * t for t in r) / len(r) + self.cfg["rms_norm_eps"]) * gi for v, gi in zip(r, g)]
                 for r in x]
 
     def heads(self, x, count):
-        hd = CONFIG["head_dim"]
+        hd = self.cfg["head_dim"]
         return [[r[h * hd:(h + 1) * hd] for h in range(count)] for r in x]
 
     def rope(self, vec, pos):
-        hd = CONFIG["head_dim"]
+        hd = self.cfg["head_dim"]
         half = hd // 2
         out = list(vec)
         for i in range(half):
-            angle = pos * CONFIG["rope_theta"] ** (-2.0 * i / hd)
+            angle = pos * self.cfg["rope_theta"] ** (-2.0 * i / hd)
             c, s = math.cos(angle), math.sin(angle)
             out[i] = vec[i] * c - vec[i + half] * s
             out[i + half] = vec[i + half] * c + vec[i] * s
         return out
 
     def attention(self, p, x):
-        n_heads, n_kv = CONFIG["num_attention_heads"], CONFIG["num_key_value_heads"]
-        hd = CONFIG["head_dim"]
+        n_heads, n_kv = self.cfg["num_attention_heads"], self.cfg["num_key_value_heads"]
+        hd = self.cfg["head_dim"]
         q = self.heads(self.linear(p + "q_proj.weight", x), n_heads)
         k = self.heads(self.linear(p + "k_proj.weight", x), n_kv)
         v = self.heads(self.linear(p + "v_proj.weight", x), n_kv)
         for t in range(len(x)):
-            q[t] = [self.rope(self.rms(p + "q_norm.weight", [h])[0], t) for h in q[t]]
-            k[t] = [self.rope(self.rms(p + "k_norm.weight", [h])[0], t) for h in k[t]]
+            if p + "q_norm.weight" in self.values:
+                q[t] = [self.rms(p + "q_norm.weight", [h])[0] for h in q[t]]
+                k[t] = [self.rms(p + "k_norm.weight", [h])[0] for h in k[t]]
+            q[t] = [self.rope(h, t) for h in q[t]]
+            k[t] = [self.rope(h, t) for h in k[t]]
         ctx = []
         for t in range(len(x)):
             row = []
@@ -137,7 +148,7 @@ class Model:
     def logits(self, ids):
         table = self.rows("model.embed_tokens.weight")
         h = [table[t] for t in ids]
-        for i in range(CONFIG["num_hidden_layers"]):
+        for i in range(self.cfg["num_hidden_layers"]):
             p = "model.layers.%d." % i
             h = plus(h, self.attention(p + "self_attn.", self.rms(p + "input_layernorm.weight", h)))
             h = plus(h, self.mlp(p + "mlp.", self.rms(p + "post_attention_layernorm.weight", h)))
@@ -148,9 +159,9 @@ def plus(a, b):
     return [[x + y for x, y in zip(ra, rb)] for ra, rb in zip(a, b)]
 
 
-def qwen(dtype, untied):
-    c = CONFIG
-    m = Model(2026 if untied else 2025, dtype, "lm_head.weight" if untied else "model.embed_tokens.weight")
+def qwen(dtype, untied, qwen2=False):
+    c = dict(QWEN2, head_dim=4) if qwen2 else CONFIG
+    m = Model(2026 if untied else 2025, dtype, "lm_head.weight" if untied else "model.embed_tokens.weight", c)
     d, hd = c["hidden_size"], c["head_dim"]
     m.add("model.embed_tokens.weight", [c["vocab_size"], d])
     for i in range(c["num_hidden_layers"]):
@@ -160,8 +171,13 @@ def qwen(dtype, untied):
         m.add(p + "self_attn.k_proj.weight", [c["num_key_value_heads"] * hd, d])
         m.add(p + "self_attn.v_proj.weight", [c["num_key_value_heads"] * hd, d])
         m.add(p + "self_attn.o_proj.weight", [d, c["num_attention_heads"] * hd])
-        m.add(p + "self_attn.q_norm.weight", [hd], 1.0, 0.25)
-        m.add(p + "self_attn.k_norm.weight", [hd], 1.0, 0.25)
+        if qwen2:
+            m.add(p + "self_attn.q_proj.bias", [c["num_attention_heads"] * hd])
+            m.add(p + "self_attn.k_proj.bias", [c["num_key_value_heads"] * hd])
+            m.add(p + "self_attn.v_proj.bias", [c["num_key_value_heads"] * hd])
+        else:
+            m.add(p + "self_attn.q_norm.weight", [hd], 1.0, 0.25)
+            m.add(p + "self_attn.k_norm.weight", [hd], 1.0, 0.25)
         m.add(p + "post_attention_layernorm.weight", [d], 1.0, 0.25)
         m.add(p + "mlp.gate_proj.weight", [c["intermediate_size"], d])
         m.add(p + "mlp.up_proj.weight", [c["intermediate_size"], d])
@@ -173,11 +189,12 @@ def qwen(dtype, untied):
 
 
 def write(out):
-    tied, untied = qwen("BF16", False), qwen("F32", True)
+    tied, untied, two = qwen("BF16", False), qwen("F32", True), qwen("F32", False, True)
     expected = {"ids": IDS, "tiny": [tied.logits(r) for r in IDS], "untied": [untied.logits(r) for r in IDS],
+                "qwen2": [two.logits(r) for r in IDS],
                 "long": LONG, "tiny_long": tied.logits(LONG)}
     for folder, model, config, skip in [("tiny", tied, CONFIG, ()), ("untied", untied, dict(CONFIG, tie_word_embeddings=False), ()),
-                                        ("missing", tied, CONFIG, MISSING)]:
+                                        ("qwen2", two, QWEN2, ()), ("missing", tied, CONFIG, MISSING)]:
         (out / folder).mkdir()
         model.save(out / folder / "model.safetensors", skip)
         (out / folder / "config.json").write_text(json.dumps(config))

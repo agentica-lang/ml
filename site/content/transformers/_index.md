@@ -1,10 +1,10 @@
 ---
 title: transformers
-description: BERT and Qwen3 in Agentica from Hugging Face checkpoints, and the tokenizers of both that give Hugging Face's ids.
+description: BERT, Qwen3 and Qwen2.5 in Agentica from Hugging Face checkpoints, and the tokenizers that give Hugging Face's ids.
 weight: 7
 ---
 
-`transformers` is BERT and Qwen3 in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 (the forward and greedy generation with a KV cache), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
+`transformers` is BERT, Qwen3 and Qwen2.5 in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
 
 ## BERT
 
@@ -43,7 +43,7 @@ end
 
 ## Qwen3
 
-`Qwen3.open(dir, backend)` loads `config.json` and `model.safetensors` from a folder (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token.
+`Qwen3.open(dir, backend)` loads `config.json` and `model.safetensors` from a folder (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). The same loader reads Qwen2.5 (`Qwen/Qwen2.5-0.5B-Instruct`): its `config.json` says `model_type` `qwen2`, which has no query and key norms and has a bias on the query, key and value projections, and `head_dim` is `hidden_size / num_attention_heads` when the config has none. `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token.
 
 ```agentica
 import Bpe from "pkg/transformers/tokenizer/bpe"
@@ -105,6 +105,28 @@ For one-step control, `Generate.start()`, then `Generate.step(g, cache, ids)` (a
 - On the reference backend attention needs `q * k` of at most 1,048,576, which the padded prompt counts: a prompt of 600 tokens is padded to 1024. libtorch is not tested. The prompt and the new ids must fit `max_position_embeddings` (40960).
 - Speed on this machine (Ryzen 5 3550H, Radeon Vega iGPU), in `float32`, after a prompt of 128 tokens: 5.6 tokens per second on the CPU and 7.1 on Vulkan, and 56 and 208 tokens per second for the prompt itself (medians of 5 interleaved rounds). llama.cpp on the same weights in F32 is 1.9 to 2.3 times faster, and its F16 weights make the CPU decode 1.7 times faster again: the table and the method are in [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md). Memory: 2.8 GB on the CPU and 0.85 GB on Vulkan, whole process.
 - A batch of one, the prompt in one step (no chunks).
+
+## Chat template
+
+`Chat.apply(model_type, messages, add_generation_prompt, enable_thinking)` makes the prompt text of a conversation for the instruct models of the Qwen family, as Hugging Face's `apply_chat_template` does without tools. `model_type` is the one of the model's `config.json` (`qwen2` or `qwen3`), `messages` is a list of `Chat.Message(role, content)` with the roles `system`, `user` and `assistant`, and the answer is text for the tokenizer (`<|im_start|>` and `<|im_end|>` are special tokens it knows). With `add_generation_prompt: true` (the default) it ends with the opening of the assistant's turn; `qwen2` adds the system turn "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." when the first message is not a system one, and `enable_thinking: false` (Qwen3 only) opens the assistant's turn with an empty think block, so the model answers without thinking. A `tool` role, an assistant message with a think block, an unknown role and no messages are errors. The text equals Hugging Face's on 15 conversations for the two templates (`test/chat_golden.py`).
+
+```agentica
+import Chat from "pkg/transformers/chat"
+
+def main() -> Void
+  messages = [Chat.Message(role: "user", content: "Why is the sky blue?")]
+  puts(Chat.apply("qwen2", messages).unwrap!)
+end
+```
+
+```output
+<|im_start|>system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Why is the sky blue?<|im_end|>
+<|im_start|>assistant
+
+```
 
 ## Tokenizer example
 

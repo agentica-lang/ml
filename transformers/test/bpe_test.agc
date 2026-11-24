@@ -15,6 +15,12 @@ def test_encode_and_decode_agree_with_tokenizers() -> Result[Void]
   Test.assert(checked > 100, "only #{checked} cases ran")
 end
 
+## Qwen2.5's `tokenizer.json` writes a merge as "a b", Qwen3's as ["a", "b"]: both give the ids of `tokenizers`.
+def test_merges_written_as_lines_are_read_too() -> Result[Void]
+  checked = try Golden.bpe("test/fixtures/bpe_lines.json", "test/fixtures/bpe_golden.json")
+  Test.assert(checked > 100, "only #{checked} cases ran")
+end
+
 def test_the_split_follows_the_pattern() -> Result[Void]
   try Test.eq(pieces("Hello, world!"), ["Hello", ",", " world", "!"])
   try Test.eq(pieces("it's DON'T"), ["it", "'s", " DON", "'T"])

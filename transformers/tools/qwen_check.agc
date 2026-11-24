@@ -1,4 +1,4 @@
-## Checks Qwen3 on a real checkpoint against Hugging Face's `Qwen3ForCausalLM`
+## Checks Qwen3 or Qwen2.5 on a real checkpoint against Hugging Face's `Qwen3ForCausalLM` or `Qwen2ForCausalLM`
 ## (`test/qwen_golden.py`): for each prompt the logits of the last position over
 ## the whole vocabulary, and the five largest logits of every position, in
 ## `float32` on ggml. Manual (it needs the checkpoint); run from `transformers/`:
@@ -38,9 +38,9 @@ def main() -> Void
   end
 
   case run(args[0], args[1], Tensor.Backend.Ggml(device))
-    ok(gap) -> puts("qwen3: matches Hugging Face, largest gap of a logit #{gap}")
+    ok(gap) -> puts("matches Hugging Face, largest gap of a logit #{gap}")
     error(e) ->
-      puts("qwen3: #{e.message}")
+      puts("qwen_check: #{e.message}")
       System.exit(1)
   end
 end
