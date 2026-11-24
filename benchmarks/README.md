@@ -181,6 +181,19 @@ whisper-medium (the Hugging Face `openai/whisper-medium` checkpoint, 3.06 GB of 
 
 The Vulkan weights sit in the device's own buffers, which on this iGPU are system memory outside the process's resident set, so its row shows the process only. The encoder takes 22 s on the CPU and 5 s on Vulkan, and a decoder step about 2.0 s on the CPU and 0.34 s on Vulkan (one run, jfk), which is the per-step cost of #64 on a bigger model. The Vulkan load is slower than the CPU's (24 s against 7.7 s); where that time goes was not profiled.
 
+## Training loop on Vulkan, ours only
+
+`train/tools/bench_fit.agc` runs `Train.fit` (a relu MLP with 256 inputs, two hidden layers and 10 classes, Adam, cross-entropy) on ggml Vulkan and times the loader alone. It answers one question: does the device wait for the data. Same machine as above (the iGPU is shared with whatever else runs on it, so the runs are noisy: compare only alternating runs). The CPU runs varied from 23 to 54 ms per step on one configuration, so no CPU figure is given.
+
+| Model, batch | ms per step | Loader alone | Time `fit` waits on the loader |
+|---|---|---|---|
+| 256-512-512-10, 128 rows | 19 to 20 | 4 to 6 ms per batch | 0.08 ms per step |
+| 256-128-128-10, 64 rows | 18 | 4 to 5 ms per batch | under 1 ms per step |
+
+- The loader already prefetches: `Data.Loader.prefetch` (2 by default) is a `Task` that builds the next batches on the device into a bounded channel. A batch is one `gather` of the dataset, which sits on the device, so no Agentica list of data is involved. `fit` waits 0.08 ms per step for a batch, so the device does not wait on the loader. Without the task (`prefetch 0`) the step is 3 ms (15%) longer.
+- Where a step goes (a profile run, which slows the VM): the device run (`ml.run`, the graph dispatch plus compute) is about 74% of a step of 24 ms and about 70% of one of 19 ms; the host's trace, lowering and binding is the rest.
+- Tracing and lowering the step on every batch (about 3 ms of VM time per step) can be removed by compiling it once per batch shape, with the optimizer's per-step numbers as inputs. Measured on Vulkan over 6 alternating runs, the wall time went down by 6% (19.8 to 18.6 ms) on the first model and by 3% (18.4 to 17.9 ms) on the second, with the device share unchanged: the rest of the host time is not the trace. That change is not in `main`.
+
 ## Run it
 
 You need the Hugging Face checkout of `openai/whisper-tiny`, openai/whisper's `whisper/assets/mel_filters.npz`, a whisper.cpp checkout (never modified), `cmake`, a C++ compiler, `/usr/bin/time` (GNU time), `agentica` 0.36.0 on `PATH`, libtorch, and the Vulkan headers and `glslc` for the Vulkan rows. Python needs only the system numpy: the scripts run with `python3 -I`, which ignores virtual environments and `PYTHONPATH`.
