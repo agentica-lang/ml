@@ -6,9 +6,9 @@
 #
 # MODEL_DIR is the Hugging Face checkout of Qwen/Qwen3-0.6B; GGUF_DIR holds qwen3-0.6b-f32.gguf and
 # qwen3-0.6b-f16.gguf (made with llama.cpp's convert_hf_to_gguf.py --outtype f32|f16, run as python3 -I); the two
-# builds are llama.cpp's out-of-tree builds of llama-bench (CPU, and -DGGML_VULKAN=ON). `agentica` and the engines
-# of `transformers/` must be set up as for `transformers/tools/bench_qwen.agc` (tensor/tools/build-engine.sh), and
-# `/usr/bin/time` is GNU time. ROUNDS defaults to 5. Prints the raw lines, then the medians. The rows `ours-*-f16` load
+# builds are llama.cpp's out-of-tree builds of llama-bench (CPU, and -DGGML_VULKAN=ON). `agentica` must be on the PATH (each
+# row builds or finds its ggml engine with `transformers/tools/build-engine.sh`, the Vulkan one needs the SDK on the
+# PATH when it is not cached) and `/usr/bin/time` is GNU time. ROUNDS defaults to 5. Prints the raw lines, then the medians. The rows `ours-*-f16` load
 # the big matrices as half weights (`WEIGHTS=f16`); `ours-vulkan-f16-fp16` also lets Vulkan multiply in fp16
 # (`VULKAN_FP16=1`), which does not keep token-exactness against Hugging Face.
 set -eu
@@ -29,6 +29,7 @@ ours() { # name device [VAR=value...]
   device=$2
   shift 2
   (cd "$here/../transformers" &&
+    eval "$(sh tools/build-engine.sh "$device" | grep '^export ')" &&
     env "$@" /usr/bin/time -f "RSS %M" -o "$work/time" agentica --max-steps 100000000000 tools/bench_qwen.agc "$model" "$device" 2> "$work/err" |
     sed -n "s/^RESULT /$name /p") > "$work/line" || { cat "$work/err" >&2; exit 1; }
   echo "$(cat "$work/line") $(sed -n 's/^RSS //p' "$work/time")" >> "$out"
