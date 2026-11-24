@@ -312,8 +312,8 @@ def decoder(out):
 
 def half(out):
     """Matrices over and under the 100000 elements that `weights: F16` keeps in 16 bits: one value pattern, in F32,
-    F16 and BF16 (every value is a multiple of 1/16, which all three hold exactly), one with a value beyond F16, an F64 one that stays F32,
-    and the two sides of the threshold (100000 and 99999 elements)."""
+    F16 and BF16 (every value is a multiple of 1/16, which all three hold exactly), one with a value beyond F16,
+    an F64 one that stays F32, and the two sides of the threshold (100000 and 99999 elements)."""
     def pattern(n):
         return [((i * 7) % 17 - 8) / 16.0 for i in range(n)]
 

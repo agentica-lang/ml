@@ -64,8 +64,9 @@ def shape(shard: Shard, name: String) -> Result[List[Int]]
 end
 
 ## The tensor `name` of `shard`: F32, F16 and BF16 as `F32` (as `F16` with `dtype: F16`, a half weight of the ggml
-## backend, `Tensor.from_file`), any other dtype as the file has it, whatever `dtype` says (only a float file has a half form), except an F64
-## tensor on ggml, which holds no F64: it comes as `F32`.
+## backend, `Tensor.from_file`), any other dtype as the file has it, whatever `dtype` says (only a float file has a
+## half form), except an F64 tensor on ggml, which holds no F64: it comes as `F32`, silently (a value beyond F32 is
+## an infinity).
 def tensor(
   shard: Shard,
   name: String,

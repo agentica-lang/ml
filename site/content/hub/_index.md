@@ -36,7 +36,7 @@ The layer's weight is stored as `[out, in]` and comes back as it is, with `out_i
 
 - `Hub.open(path)` takes one `.safetensors` file, or the `.index.json` of a sharded checkpoint. A sharded checkpoint is one model split over several files. The index says which file holds each tensor. The shards must be file names in the index's folder.
 - `Hub.names(c)` gives every tensor name, sorted. `Hub.has?(c, name)` tells whether one exists.
-- `Hub.tensor(c, name, backend, dtype)` reads one tensor on `backend`; `Hub.shape(c, name)` gives its shape from the header without reading it. `F32`, `F16` and `BF16` come as `F32`, read by the backend from the file (`Tensor.from_file`); every other dtype keeps the dtype of the file. With `dtype: Dtype.F16` a float tensor is kept in 16 bits on the ggml backend (a half weight, see the tensor page).
+- `Hub.tensor(c, name, backend, dtype)` reads one tensor on `backend`; `Hub.shape(c, name)` gives its shape from the header without reading it. `F32`, `F16` and `BF16` come as `F32`, read by the backend from the file (`Tensor.from_file`); every other dtype keeps the dtype of the file, except `F64` on the ggml backend, which holds no `F64`: it comes as `F32`, silently (`-1e300` becomes `-inf`). With `dtype: Dtype.F16` a float tensor is kept in 16 bits on the ggml backend (a half weight, see the tensor page).
 - `Hub.metadata(c)` gives the `__metadata__` of each shard.
 
 ## Loading layers

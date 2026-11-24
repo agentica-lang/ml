@@ -9,7 +9,7 @@ from them by tensor name. Local files only. Depends on `tensor/` and `nn/`.
 Hub.open(path) -> Result[Checkpoint]        a .safetensors file, or a sharded .index.json
 Hub.names(c) -> List[String]                sorted
 Hub.has?(c, name) -> Bool
-Hub.tensor(c, name, backend, dtype = F32) -> Result[Tensor]   F32/F16/BF16 as F32 (F16 with dtype F16: ggml half weight), else the file's dtype
+Hub.tensor(c, name, backend, dtype = F32) -> Result[Tensor]   F32/F16/BF16 as F32 (F16 with dtype F16: ggml half weight), else the file's dtype (F64 on ggml: F32)
 Hub.shape(c, name) -> Result[List[Int]]     from the header
 Hub.metadata(c) -> Map[file, Map[String, String]]   each shard's __metadata__
 

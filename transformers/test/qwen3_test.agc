@@ -16,9 +16,9 @@ REL = 0.000000001
 F32_ABS = 0.0001
 F32_REL = 0.0001
 
-## The logits (about 1 in size) of the half model are within a few 1e-3 of the F32 model's: every weight rounds once, by 2^-11.
+## The logits (about 5 at most) of the half model are within a few 1e-3 of the F32 model's: every weight rounds once, by 2^-11.
 HALF_ABS = 0.01
-HALF_REL = 0.01
+HALF_REL = 0.002
 
 def test_every_position_matches_the_peer_on_the_reference() -> Result[Void]
   with_peer do |dir|
