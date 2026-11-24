@@ -335,20 +335,39 @@ end
   run holds it, binds the leaves (an input by its position, a constant to the
   tensor it was traced with) and runs. `Trace.evaluate` is the same two steps
   for one call.
+- **Kept constants.** A run of a compiled function leaves its constants bound
+  to its pinned graph (`ggml_keep`), so the next run binds only its inputs
+  (`ggml_resume`). The graph holds a count on the memory of every tensor it
+  points at, so no run reads freed memory. Only a constant that is read in
+  place is kept: an input, the cache a `set_rows` writes and an `I32` constant
+  (a converted copy) are bound by every run. The kept leaves of a graph are
+  one set, the constants of the program of one pin: for any other program
+  `ggml_resume` ends the set and that program binds every leaf, so two
+  functions that share a graph never read each other's weights. The set ends
+  when its pin ends, when one of its tensors is closed (the memory then goes
+  as before, and the next run is the error that names the leaf), when a kept
+  leaf is bound again and when the graph is destroyed; a graph without a pin
+  keeps nothing. The comment of `struct port` in `native/ggml_graph.c` has
+  the rules and the locks.
 - **No copies in or out.** For one run only, an `F32` leaf points at the
   caller's tensor and an `F32` output at a fresh tensor the run writes (or at
   one that exists, `Trace.run`'s `into`); after the run the graph points at
-  nothing again, so the cache keeps no caller tensor alive. Only an `I32` leaf
-  or output is copied, converted through a buffer of the graph's own. A cached
-  graph owns its fills and its finiteness checks; the intermediates live in
-  one allocator per device that every graph shares, re-planned when another
-  graph ran last. That allocator keeps the largest buffer any graph needed
-  until the process ends.
+  nothing again but its kept constants, so the cache keeps no other caller
+  tensor alive. Only an `I32` leaf or output is copied, converted through a
+  buffer of the graph's own when the run starts (`bind` touches no device); a
+  small `I32` tensor made by `from_list` keeps its values on the host for that,
+  until a run writes it. A cached graph owns its fills and its finiteness
+  checks; the intermediates live in one allocator per device that every graph
+  shares, planned again only when another graph ran last: the graph that ran
+  last keeps its allocation, and only the views of its leaves and outputs
+  follow what the run bound. That allocator keeps the largest buffer any
+  graph needed until the process ends.
 - **Tensor memory.** It is a refcounted `tg_storage`: the handle holds one
   count, and a bind takes another. The graph lets go of its counts when the
   run ends, or at the end of the lease if the run never happens (a failed
-  bind, say). So closing a handle in the middle of a run frees the memory
-  after the run, never under it. An `I32` output in `into` keeps the tensor it
+  bind, say); the count of a kept constant goes when its set ends. So closing
+  a handle in the middle of a run frees the memory after the run, never under
+  it. An `I32` output in `into` keeps the tensor it
   copies back to by the same count. `output_into` refuses a tensor that is
   another port of the same run (an input, a constant or another output).
 - **Pins.** `Trace.compile` pins its graph (`ggml_pin`, a `Pin` resource):

@@ -206,13 +206,14 @@ def spec_of(t: Types.Tensor) -> Spec = Spec(shape: t.shape, dtype: t.dtype, back
 ## run.
 ##
 ## What `f` reads from outside the inputs enters through `constant`, and is
-## fixed: the same tensors, bound again on every run. A run holds their memory
-## from the bind to its end, so a constant that its owner closes meanwhile is
-## still there for that run; a run that starts after the close is an `error`
-## naming the leaf. Whatever changes between runs (the weights of a training
-## step, a KV cache) must be an input. `f` may build any graph, a gradient
-## (`gradients`) and an update of the parameters included, and answers every
-## tensor `run` gives back.
+## fixed: the same tensors on every run. On ggml they stay bound to the pinned
+## graph between runs, so a run binds only its inputs, until the pin ends or
+## one of them is closed. A run holds their memory from the bind to its end, so
+## a constant that its owner closes meanwhile is still there for that run; a
+## run that starts after the close is an `error` naming the leaf. Whatever
+## changes between runs (the weights of a training step, a KV cache) must be an
+## input. `f` may build any graph, a gradient (`gradients`) and an update of the
+## parameters included, and answers every tensor `run` gives back.
 def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]]) -> Result[Compiled]
   return error("a compiled function needs at least one input") if specs.empty?
   backend = specs[0].backend
@@ -228,7 +229,16 @@ def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tenso
       # The program is all `run` needs: it keeps no trace.
       p = try Lower.program(outs, inputs, device)
       held = try Lower.pin(p)
-      ok(Compiled(specs: specs, inputs: [], outs: [], backend: backend, program: some(p), pin: some(held)))
+      ok(
+        Compiled(
+          specs: specs,
+          inputs: [],
+          outs: [],
+          backend: backend,
+          program: some(Lower.pinned(p, held)),
+          pin: some(held),
+        ),
+      )
     _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none, pin: none))
   end
 end

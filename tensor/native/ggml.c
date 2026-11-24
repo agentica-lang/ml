@@ -39,25 +39,22 @@ pthread_mutex_t tg_device_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Frees that wait for the device lock. A free hook runs on the scheduler, so
    it must never wait for a graph to finish: it queues its work here, and the
-   next holder of the device lock does it. */
-CC_LOCK_LEVEL(3) CC_NO_SYSCALL_UNDER() static pthread_mutex_t deferred_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct deferred *deferred_head = NULL;
+   next holder of the device lock does it. The list has no lock, so a hook may
+   queue while it holds the cache's lock: a push is one compare-and-swap, and
+   the holder of the device lock takes the whole list at once. */
+static struct deferred *deferred_head = NULL; /* atomic */
 
 void tg_defer(struct deferred *d) {
-  pthread_mutex_lock(&deferred_lock);
-  d->next = deferred_head;
-  deferred_head = d;
-  pthread_mutex_unlock(&deferred_lock);
+  d->next = __atomic_load_n(&deferred_head, __ATOMIC_RELAXED);
+  while (!__atomic_compare_exchange_n(&deferred_head, &d->next, d, true, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+  }
 }
 
 void tg_lock_device(void) {
   struct deferred *d, *next;
 
   pthread_mutex_lock(&tg_device_lock);
-  pthread_mutex_lock(&deferred_lock);
-  d = deferred_head;
-  deferred_head = NULL;
-  pthread_mutex_unlock(&deferred_lock);
+  d = __atomic_exchange_n(&deferred_head, NULL, __ATOMIC_ACQUIRE);
   for (; d != NULL; d = next) {
     next = d->next; /* `fn` may free the node itself */
     d->fn(d->arg);
@@ -84,6 +81,7 @@ static void free_storage(void *arg) {
 
   if (s->buffer != NULL) ggml_backend_buffer_free(s->buffer);
   if (s->ctx != NULL) ggml_free(s->ctx);
+  free(s->mirror);
   free(s);
 }
 
@@ -102,7 +100,11 @@ void tg_storage_release(struct tg_storage *s) {
 static void ggml_TensorHandle_free(void *state) {
   struct ggml_TensorHandle_state *self = (struct ggml_TensorHandle_state *)state;
 
-  if (self->store != NULL) tg_storage_release(self->store);
+  if (self->store != NULL) {
+    __atomic_store_n(&self->store->closed, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&self->store->kept, __ATOMIC_SEQ_CST) > 0) tg_closed();
+    tg_storage_release(self->store);
+  }
   memset(self, 0, sizeof *self);
 }
 #define GGML_TensorHandle_FREE ggml_TensorHandle_free
@@ -313,7 +315,7 @@ static bool make_tensor(an_env *env, int64_t device, ggml_list_Int *shape, enum 
 /* 2^24: the integers F32 holds exactly. */
 #define EXACT 16777216.0f
 
-const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst) {
+const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst, const int32_t *mirror) {
   int64_t n = ggml_nelements(src), i;
   void *bytes;
   const char *why = NULL;
@@ -329,7 +331,8 @@ const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst) {
   }
   bytes = malloc(ggml_nbytes(src) > 0 ? ggml_nbytes(src) : 1);
   if (bytes == NULL) return "out of memory";
-  ggml_backend_tensor_get(src, bytes, 0, ggml_nbytes(src));
+  if (mirror != NULL && src->type == GGML_TYPE_I32) memcpy(bytes, mirror, ggml_nbytes(src));
+  else ggml_backend_tensor_get(src, bytes, 0, ggml_nbytes(src));
   for (i = 0; i < n && why == NULL; i++) {
     if (src->type == GGML_TYPE_I32) {
       int32_t v = ((int32_t *)bytes)[i];
@@ -359,6 +362,16 @@ static void put(void *bytes, int64_t i, enum ggml_type type, double v) {
   else ((float *)bytes)[i] = (float)v;
 }
 
+/* An I32 tensor of up to this many bytes keeps its values on the host too (`mirror`): the ids and positions a graph
+   takes as F32 are then converted without a read from the device. */
+#define MIRROR_MAX 65536
+
+/* Keeps the `n` bytes of a small I32 tensor on the host; without memory for them the tensor is read from its device. */
+static void mirror(struct tg_storage *s, const void *bytes, size_t n) {
+  s->mirror = (int32_t *)malloc(n > 0 ? n : 1);
+  if (s->mirror != NULL) memcpy(s->mirror, bytes, n);
+}
+
 /* Copies `bytes` into the tensor and answers it. */
 static an_term store(an_env *env, struct ggml_TensorHandle_state *state, void *bytes, an_term term) {
   bool held;
@@ -366,6 +379,9 @@ static an_term store(an_env *env, struct ggml_TensorHandle_state *state, void *b
   lock_for(state->vulkan, &held);
   ggml_backend_tensor_set(state->t, bytes, 0, ggml_nbytes(state->t));
   unlock_for(held);
+  if (state->t->type == GGML_TYPE_I32 && ggml_nbytes(state->t) <= MIRROR_MAX) {
+    mirror(state->store, bytes, ggml_nbytes(state->t));
+  }
   free(bytes);
   return ggml_result_TensorHandle_ok(env, term);
 }

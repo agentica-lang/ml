@@ -78,7 +78,7 @@ extern module "ggml"
   ## dropped when its lease is freed.
   compute def acquire(device: Int, key: String, capacity: Int, keep: Bool) -> Result[Lease]
   ## True when the leased graph is compiled: a cache hit.
-  compute def ready(lease: Lease) -> Bool
+  def ready(lease: Lease) -> Bool
   ## Appends one node and answers its index: `op` is a code of
   ## `native/ggml_graph.c`, `args` earlier indices, `shape` the row-major
   ## shape the trace recorded, `ints` the op's integer parameters.
@@ -87,11 +87,11 @@ extern module "ggml"
   ## node against the backend. A failed compile leaves the graph unusable.
   compute def compile(lease: Lease, outputs: List[Int]) -> Result[Void]
   ## Makes `t` the leaf `slot` for the next run (leaves count in the order
-  ## they were sent): an F32 tensor is read in place, another one is
-  ## converted into the leaf's own memory now. The graph holds `t`'s memory
-  ## until the lease ends, so a `t` that is closed meanwhile does not leave
-  ## the run without its data.
-  compute def bind(lease: Lease, slot: Int, t: TensorHandle) -> Result[Void]
+  ## they were sent): an F32 tensor is read in place, an I32 one is converted
+  ## into the leaf's own memory when the run starts. The graph holds `t`'s
+  ## memory until the lease ends, so a `t` that is closed meanwhile does not
+  ## leave the run without its data. It touches no device and never waits.
+  def bind(lease: Lease, slot: Int, t: TensorHandle) -> Result[Void]
   ## A fresh tensor that the next run writes output `output` into, stored as
   ## I32 when `int32` says so.
   compute def output(lease: Lease, output: Int, int32: Bool) -> Result[TensorHandle]
@@ -106,6 +106,26 @@ extern module "ggml"
   ## a compiled graph that has a slot of the cache.
   resource Pin
   compute def pin(lease: Lease) -> Result[Pin]
+  ## The number that names `pin` among the pins of the process, for `resume`
+  ## and `keep`: 0 for a pin that holds nothing.
+  def pin_id(pin: Pin) -> Int
+  ## True when the leased graph still has the constants of the program of the
+  ## pin `pin` (its `pin_id`) bound, kept by `keep` after an earlier run: the
+  ## caller then binds only what every run binds (the inputs, and a constant
+  ## that is converted). Otherwise the graph lets go of what it kept, for
+  ## whatever program, and the caller binds every leaf. A kept tensor whose
+  ## handle is closed, another program that ran on the graph, a pin that ended
+  ## and a pin of another graph all answer false.
+  def resume(lease: Lease, pin: Int) -> Bool
+  ## Keeps the leaves `slots` bound after the run, as the constants of the
+  ## program of the pin `pin`, until that pin ends, one of the tensors is closed
+  ## or another program runs on the graph. The graph holds their memory
+  ## meanwhile. It keeps every leaf of `slots` or none: nothing is kept when
+  ## one of them is not bound, is converted (an `I32` tensor) or is written in
+  ## place, or unless `pin` is a live pin of the leased graph.
+  def keep(lease: Lease, pin: Int, slots: List[Int]) -> Void
+  ## How many leaves the leased graph keeps bound, for a test to read.
+  def kept(lease: Lease) -> Int
   ## Sets the fills (one value each, in the order they were sent) and runs
   ## the graph into the tensors `output` made; every leaf and output must be
   ## set since the last run. An error when an output is not finite.

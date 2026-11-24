@@ -72,7 +72,7 @@ end
 
 ## Where a leaf of the graph gets its tensor on every run: the input at
 ## position `input` of the run's inputs (`-1` for none), or `fixed`, a
-## constant of the trace that every run binds again.
+## constant of the trace.
 struct Leaf
   input: Int
   fixed: Optional[Types.Tensor]
@@ -84,12 +84,19 @@ end
 ## from, the fill values and the outputs, in the C layer's order. `donates`
 ## names, per output, the input it is: a `set_rows` writes its input in place,
 ## and the run gives that very tensor back (`-1` for an output that is new).
+## `kept` are the leaves that stay bound between the runs of a pinned program
+## (the constants the graph reads in place) and `fed` the leaves every run
+## binds (the inputs, and an `I32` constant, which is converted); `pin` is the
+## id of the pin that keeps them (`pinned`), 0 for none.
 ## A program never changes, so any number of tasks may run it.
 struct Program
   device: Types.Device
   nodes: List[Lowered]
   key: String
   leaves: List[Leaf]
+  kept: List[Int]
+  fed: List[Int]
+  pin: Int
   fills: List[Float]
   outputs: List[Int]
   donates: List[Int]
@@ -123,6 +130,11 @@ def program(outs: List[Types.Tensor], inputs: List[Types.Tensor], device: Types.
   System.Profile.measure("ml.plan") do lower(outs, inputs.map { |t| Graph.id_of(t) }, device, true, true) end
 end
 
+## `p` as the program of the pin `held`: its runs leave its constants bound to
+## the pinned graph, so a run binds only its inputs, for as long as the pin
+## lives, the constants stay open and no other program runs on that graph.
+def pinned(p: Program, held: GgmlRaw.Pin) -> Program = p.with(pin: GgmlRaw.pin_id(held))
+
 ## The graph of `p` in the structural cache, built if it is not there, kept
 ## out of the cache's eviction for as long as the `Pin` lives (`ggml_native.agc`).
 ## The pin is owned by the task that makes it, and ends with it or with
@@ -152,7 +164,8 @@ end
 ## no input of the run may be). `op` names the call in an error. A tensor that is closed, an input
 ## or a constant of the trace, is an error naming the leaf; the constants must
 ## stay open while any task may run the program (nothing holds them between
-## the bind and the run).
+## the bind and the run). A program of a pin (`pinned`) leaves its constants
+## bound to the pinned graph, and its next run binds only `fed`.
 def execute(
   p: Program,
   inputs: List[Types.Tensor],
@@ -175,35 +188,12 @@ def execute(
     end
 
     bound: Result[Void] = System.Profile.measure("ml.bind") do
-      for i in 0...p.leaves.size
-        leaf = p.leaves[i]
-        t = case leaf.fixed
-          some(c) -> c
-          none -> inputs[leaf.input]
-        end
-
-        if Types.held_code(t.dtype) != leaf.held
-          return error(
-            "#{op}: leaf #{i} was lowered as #{leaf_name(leaf.held)} and the tensor given is #{Types.dtype_name(t.dtype)}",
-          )
-        end
-
-        h = try Ggml.handle_of(t)
-        if Native.closed?(h)
-          what = "an input"
-          if leaf.input < 0
-            what = "a constant"
-          end
-
-          return error(
-            "#{op}: #{what} of the graph (leaf #{i}) is closed; constants must stay open while the graph can run",
-          )
-        end
-
-        try GgmlRaw.bind(lease, i, h)
+      if !GgmlRaw.resume(lease, p.pin)
+        try bind(p, p.kept, lease, inputs, op)
+        GgmlRaw.keep(lease, p.pin, p.kept)
       end
 
-      ok()
+      bind(p, p.fed, lease, inputs, op)
     end
 
     try bound
@@ -257,6 +247,40 @@ def compiles() -> Result[Int]
 end
 
 private
+
+## Binds the leaves `slots` of `p` for the next run of `lease`: an input to its tensor of `inputs`, a constant to
+## the tensor it was traced with.
+def bind(p: Program, slots: List[Int], lease: GgmlRaw.Lease, inputs: List[Types.Tensor], op: String) -> Result[Void]
+  for i in slots
+    leaf = p.leaves[i]
+    t = case leaf.fixed
+      some(c) -> c
+      none -> inputs[leaf.input]
+    end
+
+    if Types.held_code(t.dtype) != leaf.held
+      return error(
+        "#{op}: leaf #{i} was lowered as #{leaf_name(leaf.held)} and the tensor given is #{Types.dtype_name(t.dtype)}",
+      )
+    end
+
+    h = try Ggml.handle_of(t)
+    if Native.closed?(h)
+      what = "an input"
+      if leaf.input < 0
+        what = "a constant"
+      end
+
+      return error(
+        "#{op}: #{what} of the graph (leaf #{i}) is closed; constants must stay open while the graph can run",
+      )
+    end
+
+    try GgmlRaw.bind(lease, i, h)
+  end
+
+  ok()
+end
 
 ## The program of the graph `outs` reach; the input nodes are `ids`, in run order.
 def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: Bool, donate: Bool) -> Result[Program]
@@ -354,6 +378,22 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
     donates = try donations(outs, positions, walked)
   end
 
+  # ggml holds an I32 tensor as I32 and a leaf as F32: that one is converted at every bind.
+  kept: List[Int] = []
+  fed: List[Int] = []
+  for i in 0...leaves.size
+    case leaves[i].fixed
+      some(c) ->
+        if c.dtype == Types.Dtype.I32
+          fed = fed.push(i)
+        else
+          kept = kept.push(i)
+        end
+
+      none -> fed = fed.push(i)
+    end
+  end
+
   key = parts.join(";") + " -> #{outputs}"
   ok(
     Program(
@@ -361,6 +401,9 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       nodes: nodes,
       key: key,
       leaves: leaves,
+      kept: kept,
+      fed: fed,
+      pin: 0,
       fills: fills,
       outputs: outputs,
       donates: donates,

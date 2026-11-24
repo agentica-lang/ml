@@ -13,14 +13,15 @@
    that device. So a graph waiting in the cache costs its tensors' metadata
    only. Every run, under the device lock, re-plans the shared allocator when
    another graph ran last, computes, and points the leaves and outputs back at
-   nothing. The allocator keeps the largest buffer any graph needed for the
+   nothing, except the constants a pinned program keeps bound (see `struct
+   port`). The allocator keeps the largest buffer any graph needed for the
    rest of the process.
 
-   Three locks, in this order: the device lock (1), `cache_lock` (2) and the
-   deferred list's lock (3). `cache_lock` (the slots, who holds a graph, the
-   pins, the counters) is held briefly and is all a lease's or a pin's free
-   hook takes; the device lock is held through builds and runs. A graph the
-   hook must drop is destroyed under the device lock later (`tg_defer`).
+   Two locks, in this order: the device lock (1) and `cache_lock` (2).
+   `cache_lock` (the slots, who holds a graph, the pins, the kept leaves of an
+   idle graph, the counters) is held briefly and is all a free hook takes; the
+   device lock is held through builds and runs. A graph the hook must drop is
+   destroyed under the device lock later (`tg_defer`, which takes no lock).
 
    Layout: a row-major shape [d0, ..., dk] is a ggml tensor with ne[0] = dk,
    ne[1] = dk-1, ..., so trailing-axis broadcasting is ggml's own repeat.
@@ -97,13 +98,35 @@ static const char *op_names[OP_COUNT] = {
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
    first call that needs it) and, for this call, the tensor it converts to or
-   from. */
+   from.
+
+   Kept leaves. A run of a pinned program (`Trace.compile`) leaves its constants bound, so the next run binds only its
+   inputs (`ggml_resume`, `ggml_keep`). What keeps a stale binding from ever being read:
+
+   1. A bound port holds a count on the memory it points at (`held`), kept or not, so that memory is never freed under
+      it. Whatever else goes wrong, no run reads freed memory.
+   2. Only a leaf that reads its tensor in place is kept, and never a donated one: an input a `set_rows` writes and a
+      converted copy (an I32 tensor), which would not follow its tensor, are bound by every run. The caller names the
+      leaves of the set (`ggml_keep`), and the set is those leaves or none: a list with a leaf that cannot be kept
+      keeps nothing, so what the caller leaves out of its next bind is what the graph holds.
+   3. The kept leaves of an entry are one set, the constants of the program of one pin, `kept_for`. `ggml_resume`
+      answers true to that pin alone; for any other program, or once a kept tensor is closed, it ends the set and the
+      caller binds every leaf. So two programs that share a graph take turns and never read each other's weights. A
+      kept leaf that is bound again ends the set too (at the end of the lease), and so does a run of a lease that did
+      not ask (`resumed`): that run has the kept leaves unbound.
+   4. The set ends, and its counts go, when its pin ends, when the handle of one of its tensors is closed
+      (`tg_closed`), and when the entry is destroyed (an evicted graph has no pin, so it keeps nothing). An entry in
+      use is left to its holder: the end of its lease ends the set if the pin is gone or a kept tensor is closed.
+   5. The ports and `kept_leaves` of an entry in use belong to the holder of its lease; those of an idle entry are
+      touched under `cache_lock` alone. `kept_for` and `in_use` are under `cache_lock`. */
 struct port {
   struct ggml_tensor *t;
   ggml_backend_buffer_t own;
   struct ggml_tensor *conv; /* the bound tensor, converted to or from `own`; else NULL. Its memory is `held` */
   bool set;                               /* bound or prepared for the next run */
   bool donated;                           /* a leaf a `set_rows` writes in place, or the output that is that leaf: no copy in or out */
+  bool kept;                              /* a leaf that stays bound after the run; `held->kept` counts it */
+  bool wanted;                            /* inside `ggml_keep`: a leaf of the list it was given */
   struct tg_storage *held;                /* the memory of the bound tensor, kept until the run is over */
 };
 
@@ -130,6 +153,12 @@ struct gnode {
 #define MAX_ARGS 256
 #define MAX_ENTRIES 32
 
+/* A live pin of an entry, by its id: the state of a `Pin` is the VM's, and no pointer to it is kept. */
+struct pin_id {
+  int64_t id;
+  struct pin_id *next;
+};
+
 /* One graph of the cache. */
 struct entry {
   struct deferred link; /* to destroy it from a free hook */
@@ -150,10 +179,15 @@ struct entry {
   struct port outs[MAX_OUTPUTS];
   struct ggml_tensor *checks; /* the sum of 0 * output per output (NaN unless finite), then the guards */
   int64_t output_count, guard_count;
-  struct ggml_tensor **inner; /* what the shared allocator places, every run */
+  struct ggml_tensor **inner; /* what the shared allocator places: valid while the device's plan is this graph's */
   int64_t inner_count;
+  struct ggml_tensor **views; /* the views of leaves and outputs: pointed at them for a run, at nothing after it */
+  int64_t view_count;
   bool compiled, in_use;
   int pins;     /* pins on it: never evicted while above 0 (under cache_lock) */
+  struct pin_id *pinned; /* the ids of those pins (under cache_lock) */
+  int64_t kept_for;    /* the pin whose constants the kept leaves are; 0 for none */
+  int64_t kept_leaves; /* how many leaves are kept */
   int64_t used; /* the tick of its last lease, for eviction */
 };
 
@@ -163,21 +197,86 @@ struct device_state {
   struct entry *planned;
 };
 
-/* Lock order: the device lock (1), then cache_lock (2), then the deferred list's lock (3). Pins and the pin count of an
-   entry are under cache_lock alone; the memory of a tensor that the last holder lets go of is queued (level 3) and freed at
-   the next hold of the device lock. */
+/* Lock order: the device lock (1), then cache_lock (2). Pins and the pin count of an entry are under cache_lock alone;
+   the memory of a tensor that the last holder lets go of is queued (`tg_defer`, no lock) and freed at the next hold of
+   the device lock. */
 CC_LOCK_LEVEL(2) CC_NO_SYSCALL_UNDER() static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct entry *cache[MAX_ENTRIES];
-static int64_t compile_count = 0, tick = 0;
+static int64_t compile_count = 0, tick = 0, pin_count = 0;
 static struct device_state devices[9]; /* under the device lock */
 
-/* Call under the device lock. */
+/* Points a leaf or an output at nothing and lets go of its memory, so no call's tensor stays reachable from it. */
+static void unbind(struct entry *e, struct port *port) {
+  port->t->data = NULL;
+  port->t->buffer = NULL;
+  port->conv = NULL;
+  port->set = false;
+  if (port->kept) {
+    __atomic_fetch_sub(&port->held->kept, 1, __ATOMIC_SEQ_CST);
+    e->kept_leaves--;
+    port->kept = false;
+  }
+  if (port->held != NULL) tg_storage_release(port->held);
+  port->held = NULL;
+}
+
+/* Ends the kept set of `e`: for the holder of its lease, or under cache_lock when `e` is idle. The caller clears
+   `kept_for` under cache_lock. */
+static void drop_kept(struct entry *e) {
+  int64_t i;
+
+  for (i = 0; e->kept_leaves > 0 && i < e->leaf_count; i++) {
+    if (e->leaves[i].kept) unbind(e, &e->leaves[i]);
+  }
+}
+
+/* True when the handle of a tensor that `e` keeps bound is closed. */
+static bool kept_closed(const struct entry *e) {
+  int64_t i;
+
+  for (i = 0; e->kept_leaves > 0 && i < e->leaf_count; i++) {
+    if (e->leaves[i].kept && __atomic_load_n(&e->leaves[i].held->closed, __ATOMIC_SEQ_CST) != 0) return true;
+  }
+  return false;
+}
+
+/* What the end of a run or of a lease lets go of: every output and every leaf that is not kept. */
+static void release(struct entry *e) {
+  int64_t i;
+
+  for (i = 0; e->leaves != NULL && i < e->leaf_count; i++) {
+    if (!e->leaves[i].kept) unbind(e, &e->leaves[i]);
+  }
+  for (i = 0; i < e->output_count; i++) unbind(e, &e->outs[i]);
+}
+
+/* A handle closes a tensor that graphs keep bound: every idle graph that keeps a closed tensor ends its set, so the
+   memory goes as it did before leaves were kept (an entry in use does it at the end of its lease). The hook set
+   `closed` before this, and `ggml_Lease_free` reads it under the same lock after it clears `in_use`: one of the two
+   sees the other. */
+CC_SHORT void tg_closed(void) {
+  int i;
+
+  pthread_mutex_lock(&cache_lock);
+  for (i = 0; i < MAX_ENTRIES; i++) {
+    struct entry *e = cache[i];
+
+    if (e != NULL && !e->in_use && kept_closed(e)) {
+      e->kept_for = 0;
+      drop_kept(e);
+    }
+  }
+  pthread_mutex_unlock(&cache_lock);
+}
+
+/* Call under the device lock, on an entry nothing else reaches. */
 static void destroy(struct entry *e) {
   int64_t d = e->device + 1;
 
   int64_t i;
 
   if (d >= 0 && d < 9 && devices[d].planned == e) devices[d].planned = NULL;
+  drop_kept(e);
   for (i = 0; e->leaves != NULL && i < e->leaf_count; i++) {
     if (e->leaves[i].own != NULL) ggml_backend_buffer_free(e->leaves[i].own);
   }
@@ -188,29 +287,18 @@ static void destroy(struct entry *e) {
   if (e->fill_ctx != NULL) ggml_free(e->fill_ctx);
   if (e->port_ctx != NULL) ggml_free(e->port_ctx);
   if (e->ctx != NULL) ggml_free(e->ctx);
+  while (e->pinned != NULL) {
+    struct pin_id *live = e->pinned;
+
+    e->pinned = live->next;
+    free(live);
+  }
   free(e->nodes);
   free(e->leaves);
   free(e->inner);
+  free(e->views);
   free(e->key);
   free(e);
-}
-
-/* Points every leaf and output at nothing and lets go of their memory, so no
-   call's tensor stays reachable from the cache. */
-static void unbind(struct port *port) {
-  port->t->data = NULL;
-  port->t->buffer = NULL;
-  port->conv = NULL;
-  port->set = false;
-  if (port->held != NULL) tg_storage_release(port->held);
-  port->held = NULL;
-}
-
-static void release(struct entry *e) {
-  int64_t i;
-
-  for (i = 0; e->leaves != NULL && i < e->leaf_count; i++) unbind(&e->leaves[i]);
-  for (i = 0; i < e->output_count; i++) unbind(&e->outs[i]);
 }
 
 static void destroy_later(void *e) { destroy((struct entry *)e); }
@@ -226,6 +314,10 @@ CC_SHORT void ggml_Lease_free(void *state) {
   release(self->e); /* the lease's graph: no one else touches its ports */
   pthread_mutex_lock(&cache_lock);
   self->e->in_use = false;
+  if (self->e->kept_leaves > 0 && (self->e->kept_for == 0 || kept_closed(self->e))) {
+    self->e->kept_for = 0;
+    drop_kept(self->e);
+  }
   for (i = 0; i < MAX_ENTRIES; i++) {
     if (cache[i] == self->e) slot = i;
   }
@@ -287,21 +379,26 @@ static int free_slot(struct entry **victim) {
 }
 
 /* The compiled graph cached under `key` on `device` that no one holds, marked
-   held, or NULL. */
+   held, or NULL. A pinned one goes first: it is the copy that keeps the
+   constants of its program bound. A program without a pin (`Trace.eval`) with
+   the same key gets that copy too and ends its set, which costs the pinned
+   program one whole bind and nothing else. */
 static struct entry *cached(int64_t device, ng_str key) {
   struct entry *e = NULL;
   int i;
 
   pthread_mutex_lock(&cache_lock);
-  for (i = 0; i < MAX_ENTRIES && e == NULL; i++) {
+  for (i = 0; i < MAX_ENTRIES && (e == NULL || e->pins == 0); i++) {
     struct entry *c = cache[i];
 
-    if (c != NULL && c->compiled && !c->in_use && c->device == device && strlen(c->key) == key.len &&
-        memcmp(c->key, key.data, key.len) == 0) {
+    if (c != NULL && c->compiled && !c->in_use && c->device == device && (e == NULL || c->pins > 0) &&
+        strlen(c->key) == key.len && memcmp(c->key, key.data, key.len) == 0) {
       e = c;
-      e->in_use = true;
-      e->used = ++tick;
     }
+  }
+  if (e != NULL) {
+    e->in_use = true;
+    e->used = ++tick;
   }
   pthread_mutex_unlock(&cache_lock);
   return e;
@@ -1246,18 +1343,24 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     }
   }
 
-  /* Every node and source that is neither a port nor in the fill buffer:
-     what the shared allocator places, and forgets after each run. */
+  /* Every node and source that is neither a port nor in the fill buffer: a view of a port follows its port, which
+     every run binds (`views`); the rest is what the shared allocator places (`inner`). */
   p->inner = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * (GGML_MAX_SRC + 1), sizeof(struct ggml_tensor *));
-  if (p->inner == NULL) return tg_error(env, "out of memory");
+  p->views = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * (GGML_MAX_SRC + 1), sizeof(struct ggml_tensor *));
+  if (p->inner == NULL || p->views == NULL) return tg_error(env, "out of memory");
   for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
     struct ggml_tensor *node = ggml_graph_node(p->graph, i);
 
     for (j = -1; j < GGML_MAX_SRC; j++) {
       struct ggml_tensor *t = j < 0 ? node : node->src[j];
 
-      if (t != NULL && !(t->flags & (GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT)) && !in(t, p->fill_store) &&
-          !in(t, p->checks)) {
+      if (t == NULL || (t->flags & (GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT)) || in(t, p->fill_store) ||
+          in(t, p->checks)) {
+        continue;
+      }
+      if (t->view_src != NULL && (t->view_src->flags & (GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT))) {
+        p->views[p->view_count++] = t;
+      } else {
         p->inner[p->inner_count++] = t;
       }
     }
@@ -1277,34 +1380,42 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   return ggml_result_Void_ok(env, an_void(env));
 }
 
-/* Points `port` at the memory of `h` when it has the port's type, or at its own memory
-   (made once) for a converting copy, and holds `h`'s memory until `release`. Call
-   under the device lock. */
-static bool attach(struct entry *p, struct port *port, struct ggml_TensorHandle_state *h) {
-  if (port->held != NULL) tg_storage_release(port->held);
+/* Points `port` at the memory of `h` when it has the port's type, or notes `h` for a converting copy through the
+   port's own memory (`own_memory`), and holds `h`'s memory until `release`. It touches no device, so the holder of the
+   lease calls it without the device lock. */
+static void attach(struct entry *p, struct port *port, struct ggml_TensorHandle_state *h) {
+  if (port->kept) {
+    /* what is kept is no longer the whole set of its pin: it ends with this lease */
+    pthread_mutex_lock(&cache_lock);
+    p->kept_for = 0;
+    pthread_mutex_unlock(&cache_lock);
+  }
+  if (h->store != NULL) tg_storage_retain(h->store);
+  unbind(p, port);
   port->held = h->store;
-  if (port->held != NULL) tg_storage_retain(port->held);
   if (h->t->type == port->t->type) {
     port->t->data = h->t->data;
     port->t->buffer = h->t->buffer;
-    port->conv = NULL;
   } else {
-    if (port->own == NULL) {
-      port->own = ggml_backend_buft_alloc_buffer(ggml_backend_get_default_buffer_type(p->backend), ggml_nbytes(port->t));
-      if (port->own == NULL) return false;
-    }
-    port->t->data = ggml_backend_buffer_get_base(port->own);
-    port->t->buffer = port->own;
     port->conv = h->t;
   }
   port->set = true;
+}
+
+/* Points a port that converts at its own memory, made once. Call under the device lock. */
+static bool own_memory(struct entry *p, struct port *port) {
+  if (port->own == NULL) {
+    port->own = ggml_backend_buft_alloc_buffer(ggml_backend_get_default_buffer_type(p->backend), ggml_nbytes(port->t));
+    if (port->own == NULL) return false;
+  }
+  port->t->data = ggml_backend_buffer_get_base(port->own);
+  port->t->buffer = port->own;
   return true;
 }
 
 an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, struct ggml_TensorHandle_state *t) {
   struct entry *p = lease->e;
   struct port *leaf;
-  const char *why = NULL;
 
   if (p == NULL || !p->compiled) return tg_error(env, "bind a compiled graph");
   if (slot < 0 || slot >= p->leaf_count) return tg_error(env, "no such leaf");
@@ -1314,11 +1425,10 @@ an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, str
   if (!ggml_backend_supports_buft(p->backend, ggml_backend_buffer_get_type(t->buffer))) {
     return tg_error(env, "a bound tensor lives on another device than its graph");
   }
-  tg_lock_device();
-  if (!attach(p, leaf, t)) why = "out of memory";
-  else if (leaf->conv != NULL) why = tg_copy(t->t, leaf->t);
-  tg_unlock_device();
-  if (why != NULL) return tg_error(env, why);
+  if (leaf->t->type != t->t->type && (leaf->t->type != GGML_TYPE_F32 || t->t->type != GGML_TYPE_I32)) {
+    return tg_error(env, "an F16 or quantized tensor is not converted to or from another type");
+  }
+  attach(p, leaf, t);
   return ggml_result_Void_ok(env, an_void(env));
 }
 
@@ -1334,7 +1444,8 @@ an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output,
     return failure;
   }
   tg_lock_device();
-  attached = attach(p, &p->outs[output], state);
+  attach(p, &p->outs[output], state);
+  attached = p->outs[output].conv == NULL || own_memory(p, &p->outs[output]);
   tg_unlock_device();
   if (!attached) return tg_error(env, "out of memory");
   return ggml_result_TensorHandle_ok(env, term);
@@ -1362,7 +1473,15 @@ an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t ou
   for (i = 0; i < p->output_count; i++) {
     if (i != output && p->outs[i].held == t->store) alias = true;
   }
-  if (!alias) attached = attach(p, &p->outs[output], t);
+  if (!alias) {
+    /* the run writes `t`: what `upload` kept of it on the host is not its value any more */
+    if (t->store != NULL) {
+      free(t->store->mirror);
+      t->store->mirror = NULL;
+    }
+    attach(p, &p->outs[output], t);
+    attached = p->outs[output].conv == NULL || own_memory(p, &p->outs[output]);
+  }
   tg_unlock_device();
   if (alias) {
     snprintf(why, sizeof why, "output %" PRId64 ": the tensor given is an input of the run or another output", output);
@@ -1376,19 +1495,85 @@ an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease) {
   struct entry *p = lease->e;
   an_term term;
   struct ggml_Pin_state *pin;
+  struct pin_id *live;
   bool cached = false;
   int i;
 
   if (p == NULL || !p->compiled) return tg_error(env, "pin a compiled graph");
+  live = (struct pin_id *)calloc(1, sizeof *live);
+  if (live == NULL) return tg_error(env, "out of memory");
   pin = ggml_Pin_new(env, &term);
   pthread_mutex_lock(&cache_lock);
   for (i = 0; i < MAX_ENTRIES; i++) {
     if (cache[i] == p) cached = true;
   }
-  if (cached) p->pins++;
+  if (cached) {
+    p->pins++;
+    pin->id = live->id = ++pin_count;
+    live->next = p->pinned;
+    p->pinned = live;
+  }
   pthread_mutex_unlock(&cache_lock);
+  if (!cached) free(live);
   pin->e = cached ? p : NULL;
   return ggml_result_Pin_ok(env, term);
+}
+
+/* A pin that holds nothing has id 0, which keeps nothing. */
+an_term ggml_pin_id(an_env *env, struct ggml_Pin_state *pin) { return an_int(env, pin->id); }
+
+an_term ggml_resume(an_env *env, struct ggml_Lease_state *lease, int64_t pin) {
+  struct entry *p = lease->e;
+  bool kept;
+
+  if (p == NULL || !p->compiled) return an_bool(env, false);
+  pthread_mutex_lock(&cache_lock);
+  kept = pin != 0 && p->kept_leaves > 0 && p->kept_for == pin && !kept_closed(p);
+  if (!kept) p->kept_for = 0;
+  pthread_mutex_unlock(&cache_lock);
+  if (!kept) drop_kept(p); /* the lease's graph: its ports are the holder's */
+  lease->resumed = kept;
+  return an_bool(env, kept);
+}
+
+an_term ggml_keep(an_env *env, struct ggml_Lease_state *lease, int64_t pin, ggml_list_Int slots) {
+  struct entry *p = lease->e;
+  const struct pin_id *live;
+  int64_t i, slot;
+  bool whole = true, fresh;
+  int next;
+
+  if (p == NULL || !p->compiled) return an_void(env);
+  while ((next = ggml_list_Int_next(env, &slots, &slot)) == 1) {
+    struct port *leaf = slot >= 0 && slot < p->leaf_count ? &p->leaves[slot] : NULL;
+
+    if (leaf == NULL || !leaf->set || leaf->donated || leaf->conv != NULL || leaf->held == NULL) whole = false;
+    else leaf->wanted = true;
+  }
+  pthread_mutex_lock(&cache_lock);
+  for (live = p->pinned; live != NULL && live->id != pin; live = live->next) {
+  }
+  whole = whole && next == 0 && live != NULL;
+  if (!whole || p->kept_for != pin) drop_kept(p); /* another program's, or a set that would not be the list */
+  p->kept_for = whole ? pin : 0;
+  fresh = whole && p->kept_leaves == 0; /* a set this pin has already stays as it is */
+  for (i = 0; i < p->leaf_count; i++) {
+    struct port *leaf = &p->leaves[i];
+
+    if (fresh && leaf->wanted) {
+      leaf->kept = true;
+      __atomic_fetch_add(&leaf->held->kept, 1, __ATOMIC_SEQ_CST);
+      p->kept_leaves++;
+    }
+    leaf->wanted = false;
+  }
+  pthread_mutex_unlock(&cache_lock);
+  if (whole) lease->resumed = true;
+  return an_void(env);
+}
+
+an_term ggml_kept(an_env *env, struct ggml_Lease_state *lease) {
+  return an_int(env, lease->e != NULL ? lease->e->kept_leaves : 0);
 }
 
 /* A pin holds its graph in the cache; a graph that has no slot (every one is in use or pinned) gets a pin that holds
@@ -1397,11 +1582,35 @@ an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease) {
 CC_SHORT void ggml_Pin_free(void *state) {
   struct ggml_Pin_state *self = (struct ggml_Pin_state *)state;
 
+  struct pin_id **link, *live = NULL;
+
   if (self->e == NULL) return;
   pthread_mutex_lock(&cache_lock);
   self->e->pins--;
+  for (link = &self->e->pinned; *link != NULL; link = &(*link)->next) {
+    if ((*link)->id == self->id) {
+      live = *link;
+      *link = live->next;
+      break;
+    }
+  }
+  if (self->e->kept_for == self->id) {
+    self->e->kept_for = 0;
+    if (!self->e->in_use) drop_kept(self->e); /* else its holder does, at the end of the lease */
+  }
   pthread_mutex_unlock(&cache_lock);
+  free(live);
   self->e = NULL;
+}
+
+/* The intermediates of `e` point at nothing: the allocator's plan is not this graph's any more, or is made again. */
+static void forget(struct entry *e) {
+  int64_t i;
+
+  for (i = 0; i < e->inner_count; i++) {
+    e->inner[i]->data = NULL;
+    e->inner[i]->buffer = NULL;
+  }
 }
 
 an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fills) {
@@ -1415,6 +1624,12 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   char text[160];
 
   if (p == NULL || !p->compiled) return tg_error(env, "run a compiled graph");
+  if (p->kept_leaves > 0 && !lease->resumed) {
+    pthread_mutex_lock(&cache_lock);
+    p->kept_for = 0;
+    pthread_mutex_unlock(&cache_lock);
+    drop_kept(p);
+  }
   for (i = 0; i < p->leaf_count; i++) {
     if (!p->leaves[i].set) return tg_error(env, "run with every leaf bound");
   }
@@ -1448,23 +1663,34 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
 
   tg_lock_device();
   if (p->fill_count > 0) ggml_backend_tensor_set(p->fill_store, values, 0, (size_t)p->fill_count * sizeof(float));
+  for (i = 0; why == NULL && i < p->leaf_count; i++) {
+    if (p->leaves[i].conv == NULL) continue;
+    if (!own_memory(p, &p->leaves[i])) why = "out of memory";
+    else why = tg_copy(p->leaves[i].conv, p->leaves[i].t, p->leaves[i].held != NULL ? p->leaves[i].held->mirror : NULL);
+  }
   d = &devices[p->device + 1];
   if (d->galloc == NULL) d->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(p->backend));
   if (d->galloc == NULL) why = "making the graph allocator failed";
-  if (why == NULL) {
-    for (i = 0; i < p->inner_count; i++) {
-      p->inner[i]->data = NULL;
-      p->inner[i]->buffer = NULL;
+  if (why == NULL && d->planned != p) {
+    /* The allocator is planned for one graph at a time, and a new plan may move its buffer: the graph that had the
+       plan forgets where its intermediates were, and this one is placed again. */
+    if (d->planned != NULL) forget(d->planned);
+    d->planned = NULL;
+    forget(p);
+    if (!ggml_gallocr_reserve(d->galloc, p->graph) || !ggml_gallocr_alloc_graph(d->galloc, p->graph)) {
+      why = "allocating the graph failed";
+    } else {
+      d->planned = p;
     }
-    if (d->planned != p) {
-      d->planned = NULL;
-      if (!ggml_gallocr_reserve(d->galloc, p->graph)) why = "allocating the graph failed";
+  } else if (why == NULL) {
+    /* The same graph ran last and nothing planned the allocator since: its intermediates are where that run left
+       them. Only the views of the leaves and outputs follow what this run bound. */
+    for (i = 0; i < p->view_count; i++) {
+      if (p->views[i]->buffer == NULL) ggml_backend_view_init(p->views[i]);
     }
   }
-  if (why == NULL && !ggml_gallocr_alloc_graph(d->galloc, p->graph)) why = "allocating the graph failed";
-  if (why == NULL) {
-    d->planned = p;
-    if (ggml_backend_graph_compute(p->backend, p->graph) != GGML_STATUS_SUCCESS) why = "ggml_backend_graph_compute failed";
+  if (why == NULL && ggml_backend_graph_compute(p->backend, p->graph) != GGML_STATUS_SUCCESS) {
+    why = "ggml_backend_graph_compute failed";
   }
   if (why == NULL) {
     ggml_backend_tensor_get(p->checks, checks, 0, (size_t)(p->output_count + p->guard_count) * sizeof(float));
@@ -1480,8 +1706,12 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
       snprintf(text, sizeof text, "output %" PRId64 " of the graph holds a value that is not finite", i);
       why = text;
     } else if (p->outs[i].conv != NULL) {
-      why = tg_copy(p->outs[i].t, p->outs[i].conv);
+      why = tg_copy(p->outs[i].t, p->outs[i].conv, NULL);
     }
+  }
+  for (i = 0; i < p->view_count; i++) {
+    p->views[i]->data = NULL;
+    p->views[i]->buffer = NULL;
   }
   release(p);
   tg_unlock_device();

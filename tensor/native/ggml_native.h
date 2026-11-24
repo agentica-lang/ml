@@ -191,10 +191,10 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs);
 
 /* Makes `t` the leaf `slot` for the next run (leaves count in the order
-   they were sent): an F32 tensor is read in place, another one is
-   converted into the leaf's own memory now. The graph holds `t`'s memory
-   until the lease ends, so a `t` that is closed meanwhile does not leave
-   the run without its data. */
+   they were sent): an F32 tensor is read in place, an I32 one is converted
+   into the leaf's own memory when the run starts. The graph holds `t`'s
+   memory until the lease ends, so a `t` that is closed meanwhile does not
+   leave the run without its data. It touches no device and never waits. */
 an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, struct ggml_TensorHandle_state *t);
 
 /* A fresh tensor that the next run writes output `output` into, stored as
@@ -207,6 +207,30 @@ an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output,
 an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t output, struct ggml_TensorHandle_state *t);
 
 an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease);
+
+/* The number that names `pin` among the pins of the process, for `resume`
+   and `keep`: 0 for a pin that holds nothing. */
+an_term ggml_pin_id(an_env *env, struct ggml_Pin_state *pin);
+
+/* True when the leased graph still has the constants of the program of the
+   pin `pin` (its `pin_id`) bound, kept by `keep` after an earlier run: the
+   caller then binds only what every run binds (the inputs, and a constant
+   that is converted). Otherwise the graph lets go of what it kept, for
+   whatever program, and the caller binds every leaf. A kept tensor whose
+   handle is closed, another program that ran on the graph, a pin that ended
+   and a pin of another graph all answer false. */
+an_term ggml_resume(an_env *env, struct ggml_Lease_state *lease, int64_t pin);
+
+/* Keeps the leaves `slots` bound after the run, as the constants of the
+   program of the pin `pin`, until that pin ends, one of the tensors is closed
+   or another program runs on the graph. The graph holds their memory
+   meanwhile. It keeps every leaf of `slots` or none: nothing is kept when
+   one of them is not bound, is converted (an `I32` tensor) or is written in
+   place, or unless `pin` is a live pin of the leased graph. */
+an_term ggml_keep(an_env *env, struct ggml_Lease_state *lease, int64_t pin, ggml_list_Int slots);
+
+/* How many leaves the leased graph keeps bound, for a test to read. */
+an_term ggml_kept(an_env *env, struct ggml_Lease_state *lease);
 
 /* Sets the fills (one value each, in the order they were sent) and runs
    the graph into the tensors `output` made; every leaf and output must be
@@ -619,6 +643,43 @@ static an_term ggml_native_pin(an_env *env, int argc, const an_term *argv) {
   return ggml_pin(env, a0);
 }
 
+static an_term ggml_native_pin_id(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_Pin_state *a0 = ggml_Pin_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  return ggml_pin_id(env, a0);
+}
+
+static an_term ggml_native_resume(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  return ggml_resume(env, a0, a1);
+}
+
+static an_term ggml_native_keep(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  ggml_list_Int a2;
+  if (!ggml_native_open_list_Int(env, argv[2], &a2, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 2);
+  a2.argument = 3;
+  return ggml_keep(env, a0, a1, a2);
+}
+
+static an_term ggml_native_kept(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_Lease_state *a0 = ggml_Lease_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  return ggml_kept(env, a0);
+}
+
 static an_term ggml_native_run(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   ng_fail fail;
@@ -672,13 +733,17 @@ static const an_function ggml_native_functions[] = {
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
   {"transfer", "(TensorHandle, Int) -> Result[TensorHandle]", ggml_native_transfer, AN_DIRTY},
   {"acquire", "(Int, String, Int, Bool) -> Result[Lease]", ggml_native_acquire, AN_DIRTY},
-  {"ready", "(Lease) -> Bool", ggml_native_ready, AN_DIRTY},
+  {"ready", "(Lease) -> Bool", ggml_native_ready, AN_SHORT},
   {"node", "(Lease, Int, List[Int], List[Int], List[Int]) -> Result[Int]", ggml_native_node, AN_DIRTY},
   {"compile", "(Lease, List[Int]) -> Result[Void]", ggml_native_compile, AN_DIRTY},
-  {"bind", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_bind, AN_DIRTY},
+  {"bind", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_bind, AN_SHORT},
   {"output", "(Lease, Int, Bool) -> Result[TensorHandle]", ggml_native_output, AN_DIRTY},
   {"output_into", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_output_into, AN_DIRTY},
   {"pin", "(Lease) -> Result[Pin]", ggml_native_pin, AN_DIRTY},
+  {"pin_id", "(Pin) -> Int", ggml_native_pin_id, AN_SHORT},
+  {"resume", "(Lease, Int) -> Bool", ggml_native_resume, AN_SHORT},
+  {"keep", "(Lease, Int, List[Int]) -> Void", ggml_native_keep, AN_SHORT},
+  {"kept", "(Lease) -> Int", ggml_native_kept, AN_SHORT},
   {"run", "(Lease, List[Float]) -> Result[Void]", ggml_native_run, AN_DIRTY},
   {"convert_file", "(String, Int, Int, Int, String, Int, Int) -> Result[Void]", ggml_native_convert_file, AN_DIRTY},
   {"compiles", "() -> Int", ggml_native_compiles, AN_DIRTY},
@@ -693,5 +758,5 @@ static const an_function ggml_native_functions[] = {
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
     {"Pin", sizeof(struct ggml_Pin_state), GGML_Pin_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 19, NULL, 0, ggml_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 23, NULL, 0, ggml_native_resources, 3, LOAD)
 #endif

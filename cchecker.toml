@@ -1,7 +1,7 @@
 # Settings of cchecker for the native C (`make cchecker`, the README); docs/settings.md of the release that
 # tools/cchecker.sh pins describes every key. The lock helpers are marked in tensor/native/ggml_shared.h and ggml.c
-# (CC_ACQUIRES, CC_RELEASES, CC_ACQUIRES_IF, CC_RELEASES_IF), the lock order (device lock, then cache_lock, then the
-# deferred list's lock) as CC_LOCK_LEVEL, and ggml_Lease_free, a free hook that never waits for the device lock, is CC_SHORT.
+# (CC_ACQUIRES, CC_RELEASES, CC_ACQUIRES_IF, CC_RELEASES_IF), the lock order (device lock, then cache_lock) as
+# CC_LOCK_LEVEL, and ggml_Lease_free, a free hook that never waits for the device lock, is CC_SHORT.
 #
 # Accepted in cchecker-baseline.json:
 # - CC-TIDY-CLANG-ANALYZER-CORE-NULLDEREFERENCE in tensor/native/ggml_graph.c (ggml_compile): a false positive. The loop
