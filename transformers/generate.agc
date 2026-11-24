@@ -99,8 +99,10 @@ end
 def start() -> Cache = Cache(keys: [], values: [], length: 0, spare: [])
 
 ## Feeds `ids` after the tokens of `cache`: a prompt of any length when the
-## cache is empty, one id after that. The cache that `step` takes is closed, even
-## when the step fails: use the one it gives.
+## cache is empty, one id after that. The cache that `step` takes is dead, even
+## when the step fails: on ggml its tensors become the spare of the cache it gives
+## (a later step overwrites them), elsewhere they are closed. Use the one it gives;
+## never step a cache twice or read one after it was stepped.
 def step(g: Generator, cache: Cache, ids: List[Int]) -> Result[Picked]
   s = try advance(g, cache, ids, true)
   found = chosen(s.head, g.model.config.vocab_size)
@@ -242,22 +244,26 @@ def advance(g: Generator, cache: Cache, ids: List[Int], picking: Bool) -> Result
 
   fed = made.unwrap!
   held = cache.keys + cache.values
-  on_ggml = false
-  outs = case Tensor.backend(m.tokens.table)
-    Tensor.Backend.Ggml(_) ->
-      on_ggml = true
-      compiled_step(g, cache, fed, room, picking)
+  outs = case backend
+    Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, room, picking)
     _ -> eager_step(m, cache, fed, room, picking)
   end
 
   Lift.close(fed)
   # A compiled step keeps the old keys and values as the spare of the new cache, and closes the spare of the old one.
-  if not on_ggml or not outs.ok?
+  if not compiled?(backend) or not outs.ok?
     Lift.close(held)
   end
 
   s = try outs
   ok(Advanced(head: s.head, cache: s.cache.with(length: cache.length + n)))
+end
+
+def compiled?(backend: Tensor.Backend) -> Bool
+  case backend
+    Tensor.Backend.Ggml(_) -> true
+    _ -> false
+  end
 end
 
 ## The graph of one step as a compiled function of its inputs on `Ggml`.
@@ -289,7 +295,12 @@ def compiled_step(g: Generator, cache: Cache, fed: List[Tensor.Tensor], room: In
 
   ran: Result[List[Tensor.Tensor]] = error("no step ran")
   case planned_step
-    ok(plan) -> ran = Trace.run(plan, args, into)
+    ok(plan) ->
+      ran = Trace.run(plan, args, into)
+      if not ran.ok?
+        Trace.close(plan)
+      end
+
     error(e) -> ran = error(e.message)
   end
 

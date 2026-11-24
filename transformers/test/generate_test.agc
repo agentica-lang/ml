@@ -5,6 +5,7 @@
 ## `transformers/`.
 
 import Generate from "../generate"
+import Ggml from "pkg/tensor/src/ggml"
 import Lift from "../lift"
 import Qwen3 from "../qwen3"
 import S from "support"
@@ -29,6 +30,47 @@ def test_each_step_matches_the_forward_over_the_whole_row() -> Result[Void]
     ok()
   end
 end
+
+## On ggml a step writes into the tensors of the cache before the last one when the capacity is the same (they stay
+## open, as the keys of the new cache), and closes them when it is not: the step that grows the capacity and the one
+## after it close the old ones, and the second step after the growth reuses again.
+def test_a_step_reuses_the_cache_before_when_the_capacity_is_settled() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.ggml_backends()
+      g = try Generate.open(try Qwen3.open("#{dir}/tiny", backend))
+      row = try ints(try JSON.get(try expected(dir), "long"))
+      cache = (try Generate.step_logits(g, Generate.start(), row.take(5))).cache
+      before = cache.keys[0]
+      cache = (try Generate.step_logits(g, cache, [row[5]])).cache
+      try Test.assert(!try closed?(before), "the first decode step has no spare to take")
+      older = cache.spare[0]
+      cache = (try Generate.step_logits(g, cache, [row[6]])).cache
+      try Test.assert(!try closed?(older), "a spare of the same capacity was closed")
+      try Test.eq(cache.length, 7)
+
+      # Rows 8 to 17 take the capacity from 8 to 16: the step that fills the eighth row still fits 8.
+      shrunk = cache.keys[0]
+      cache = (try Generate.step_logits(g, cache, [row[7]])).cache
+      cache = (try Generate.step_logits(g, cache, [row[8]])).cache
+      try Test.eq(Tensor.shape(cache.keys[0])[2], 16)
+      try Test.assert(try closed?(shrunk), "the spare of the old capacity stayed open")
+      grown = cache.keys[0]
+      old = cache.spare[0]
+      cache = (try Generate.step_logits(g, cache, [row[9]])).cache
+      try Test.assert(try closed?(old), "a spare of the old capacity stayed open after the growth")
+      try Test.assert(!try closed?(grown), "the grown cache was closed")
+      reused = cache.spare[0]
+      cache = (try Generate.step_logits(g, cache, [row[10]])).cache
+      try Test.assert(!try closed?(reused), "the second step after the growth did not reuse")
+      Generate.finish(cache)
+      Generate.close(g)
+    end
+
+    ok()
+  end
+end
+
+def closed?(t: Tensor.Tensor) -> Result[Bool] = ok(Native.closed?(try Ggml.handle_of(t)))
 
 def test_generate_is_the_greedy_choice_of_the_forward_on_the_reference() -> Result[Void]
   with_peer do |dir| generating(dir, S.REF) end
