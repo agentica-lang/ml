@@ -151,6 +151,12 @@ def stepping(dir: String, backend: Tensor.Backend, first: Int, abs: Float, rel: 
   end
 
   try Test.eq(cache.length, row.size)
+  # On ggml a step keeps the cache before it to be overwritten by the next one; elsewhere there is none.
+  case backend
+    Tensor.Backend.Ggml(_) -> try Test.eq(cache.spare.size, 2 * g.model.config.num_hidden_layers)
+    _ -> try Test.eq(cache.spare.size, 0)
+  end
+
   Generate.finish(cache)
   Generate.close(g)
   ok()
