@@ -1,7 +1,9 @@
 ## Transcribes the clips of `test/fixtures/transcribe_golden.json` with a real
 ## whisper-tiny and compares them with what Hugging Face answered: the token
-## ids exactly, the text and the segments, the language and its probability
-## within 1e-5. It prints the real-time factor of each case and, on ggml, the
+## ids exactly, the text and the segments (times exactly; within 1e-9 in the
+## long cases), the language and its probability within 1e-5. The two long cases (over 30 s, windows that
+## seek) are built from the two clips as `test/transcribe_golden.py` builds
+## them. It prints the real-time factor of each case and, on ggml, the
 ## graphs it compiled. Manual, not run by the tests (the checkpoint is not in
 ## git). From `asr/`:
 ##
@@ -22,6 +24,8 @@ import Tokenizer from "../tokenizer"
 GOLDEN = "test/fixtures/transcribe_golden.json"
 ## The gap allowed on the language probability.
 CLOSE = 0.00001
+## The gap allowed on a segment's time in the long cases, where it is a sum of an offset and a step.
+TIME = 0.000000001
 
 struct Golden
   cases: List[Case]
@@ -73,7 +77,9 @@ def run(args: List[String]) -> Result[Bool]
   m = try Asr.open("#{args[0]}/model.safetensors", backend)
   tok = try Tokenizer.open("#{args[0]}/tokenizer.json")
   puts("loaded in #{Time.monotonic_ms() - started} ms")
-  clips = {"es-hola": try pcm16(try read_bytes(args[1])), "jfk": try pcm16(try read_bytes(args[2]))}
+  es = try pcm16(try read_bytes(args[1]))
+  jfk = try pcm16(try read_bytes(args[2]))
+  clips = {"es-hola": es, "jfk": jfk, "jfk-long": jfk_long(jfk), "es-long": es_long(es)}
   golden = try JSON.decode(try File.read_text(GOLDEN), Golden)
   all = true
   for i in 0...golden.cases.size
@@ -94,7 +100,12 @@ def run(args: List[String]) -> Result[Bool]
 
     spans = got.segments.map { |s| Span(start: s.start, stop: s.stop, text: s.text) }
     same = got.tokens == c.tokens and got.text == c.text and got.language == c.detected and gap <= CLOSE
-    same = same and spans == c.segments
+    tolerance = 0.0
+    if c.clip.end_with?("-long")
+      tolerance = TIME
+    end
+
+    same = same and spans_match(spans, c.segments, tolerance)
     puts("case #{i} #{c.clip} #{c.language.unwrap_or("auto")} #{c.task} timestamps=#{c.timestamps}: #{verdict(same)}")
     puts("  #{ms} ms, real-time factor #{rtf}, #{compiled} graphs compiled")
     puts("  language #{got.language} p=#{got.language_probability} (Hugging Face #{c.detected} p=#{c.probability})")
@@ -110,6 +121,39 @@ def run(args: List[String]) -> Result[Bool]
   end
 
   ok(all)
+end
+
+## `jfk` six times, with silence between, and 37 samples of silence more: 73.5 s, not a multiple of 160 samples.
+def jfk_long(jfk: List[Float]) -> List[Float]
+  out = jfk
+  for gap in [1.0, 3.0, 0.5, 2.0, 1.0]
+    out = out + silence(gap) + jfk
+  end
+
+  out + List.repeat(0.0, 37)
+end
+
+## `es` 24 times, with half a second of silence after each: 75.5 s.
+def es_long(es: List[Float]) -> List[Float]
+  out: List[Float] = []
+  for _ in 0...24
+    out = out + es + silence(0.5)
+  end
+
+  out
+end
+
+def silence(seconds: Float) -> List[Float] = List.repeat(0.0, (seconds * 16000.0).to_i!)
+
+def spans_match(got: List[Span], want: List[Span], tolerance: Float) -> Bool
+  return false if got.size != want.size
+  for i in 0...got.size
+    a = got[i]
+    b = want[i]
+    return false if a.text != b.text or (a.start - b.start).abs > tolerance or (a.stop - b.stop).abs > tolerance
+  end
+
+  true
 end
 
 def backend_of(name: String) -> Result[Tensor.Backend]

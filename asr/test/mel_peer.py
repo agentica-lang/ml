@@ -43,9 +43,12 @@ def filters(mels):
 
 def log_mel(samples, mels, frames):
     size = frames * HOP
-    x = (samples + [0.0] * size)[:size]
+    # Hugging Face's feature extractor pads the whole signal by reflection and
+    # reads frame `i` at `i * HOP`: samples past `size` stay in the signal, the
+    # last frame reads 40 of them, and shorter samples are padded with zeros.
+    x = samples if len(samples) >= size else samples + [0.0] * (size - len(samples))
     half = N_FFT // 2
-    padded = x[1:half + 1][::-1] + x + x[size - half - 1:size - 1][::-1]
+    padded = x[1:half + 1][::-1] + x + x[len(x) - half - 1:len(x) - 1][::-1]
     window = [0.5 - 0.5 * math.cos(2.0 * math.pi * i / N_FFT) for i in range(N_FFT)]
     cos = [math.cos(2.0 * math.pi * j / N_FFT) for j in range(N_FFT)]
     sin = [math.sin(2.0 * math.pi * j / N_FFT) for j in range(N_FFT)]
@@ -77,7 +80,9 @@ def signal(n, seed):
 
 def main():
     cases = []
-    for mels, frames, n, seed in [(80, 21, 2500, 1), (128, 10, 2000, 2)]:
+    # The last two: 5 frames and 37 or 159 samples over, as every clip that is not a
+    # multiple of 160 samples is (the last frame reads the samples past `frames * HOP`).
+    for mels, frames, n, seed in [(80, 21, 2500, 1), (128, 10, 2000, 2), (80, 5, 5 * HOP + 37, 3), (80, 5, 5 * HOP + 159, 4)]:
         samples = signal(n, seed)
         cases.append({"mels": mels, "frames": frames, "samples": samples, "mel": log_mel(samples, mels, frames)})
     print(json.dumps(cases))

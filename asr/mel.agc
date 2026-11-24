@@ -14,7 +14,9 @@ FRAMES = 3000
 
 ## The log-mel spectrogram of `samples` (16 kHz, mono, about -1..1), row-major
 ## `[mels, frames]`: the samples are padded with zeros or trimmed to
-## `frames * 160`, then a reflect-padded STFT (Hann window of 400, hop 160)
+## `frames * 160` (the samples after those, up to 200, are still read as the
+## end of the signal, for the last frame), then a reflect-padded STFT (Hann
+## window of 400, hop 160)
 ## gives `frames` power spectra, the Slaney mel filterbank, `log10`, a floor of
 ## the maximum minus 8 and `(x + 4) / 4`, as Whisper and Hugging Face do.
 ## 3000 frames are Hugging Face's input features; fewer are the spectrogram of
@@ -25,25 +27,25 @@ def log_mel(samples: List[Float], mels: Int, frames: Int = FRAMES) -> Result[Lis
   size = frames * HOP
   x = samples.take(size)
   heard = 0
-  for i in 0...x.size
+  for i in 0...samples.size
     # NaN fails `x - x == 0`; a bound far above the -1..1 range keeps the
     # power spectrum from overflowing to Inf and then NaN.
-    if x[i] - x[i] != 0.0 or x[i].abs > LIMIT
-      return error("log_mel needs finite samples of about -1..1, got #{x[i]} at #{i}")
+    if samples[i] - samples[i] != 0.0 or samples[i].abs > LIMIT
+      return error("log_mel needs finite samples of about -1..1, got #{samples[i]} at #{i}")
     end
 
-    if x[i] != 0.0
+    if samples[i] != 0.0 and i < size
       heard = i + 1
     end
   end
 
   x = x + List.repeat(0.0, size - x.size)
   half = N_FFT / 2
-  padded = x.drop(1).take(half).reverse + x + x.drop(size - half - 1).take(half).reverse
+  padded = x.drop(1).take(half).reverse + x + right_context(samples, x, half)
   # `padded` is zero from `half + heard` on, unless the end reflection holds a
   # sample: then every frame that starts there or later is silent.
   silent = frames
-  if heard <= size - half - 1
+  if heard <= size - half - 1 and samples.size <= size
     silent = (heard + half + HOP - 1) / HOP
   end
 
@@ -196,6 +198,15 @@ struct Filter
   weights: List[Float]
 end
 
+## The `half` values after `x`, the samples as `log_mel` reads them: the
+## samples that `x` cut off when there are some, then the reflection of the end
+## of `samples`; the reflection of the end of `x` when nothing was cut off.
+def right_context(samples: List[Float], x: List[Float], half: Int) -> List[Float]
+  return x.drop(x.size - half - 1).take(half).reverse if samples.size <= x.size
+
+  (samples.drop(x.size) + samples.drop(samples.size - half - 1).take(half).reverse).take(half)
+end
+
 ## The `mels` triangular filters over the `N_FFT / 2 + 1` bins, on the Slaney
 ## mel scale with Slaney's area norm (librosa's `filters.mel`, which Whisper's
 ## `mel_filters.npz` and Hugging Face's feature extractor use), from 0 Hz to
@@ -292,7 +303,7 @@ def signal(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend
   x = samples.take(size)
   x = x + List.repeat(0.0, size - x.size)
   left = x.drop(1).take(half).reverse
-  right = x.drop(size - half - 1).take(half).reverse
+  right = right_context(samples, x, half)
   ok([
     try Tensor.floats(left, [half], backend),
     try Tensor.floats(x, [size], backend),

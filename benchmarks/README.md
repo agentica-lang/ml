@@ -41,6 +41,20 @@ Before that, the two ggml `ours` rows had been measured again on ml `0e0bb8b` pl
 
 Whisper's window is 30 s whatever the clip, so a short clip costs the same encoder time as a long one: that is why es-hola has the larger factor.
 
+Long audio (ml#35, with timestamps, language detected, tokens the same as Hugging Face's long-form `generate`): `jfk` six times with silence between (73.5 s, three windows, 152 ids) and es-hola 24 times (75.5 s, three windows, 353 ids), run after the five short cases in one process, on ml `84030b5` plus the seek. The log-mel of the whole clip takes about 0.15 s and cutting a window 0.01 to 0.05 s.
+
+| Row | RTF jfk x6 | RTF es-hola x24 |
+|---|---|---|
+| ours, ggml CPU | 0.122 | 0.230 |
+| ours, ggml Vulkan | 0.162 | 0.332 |
+
+A 300 s clip (`jfk` six times with silence, four times, then 6 s of silence; 611 ids, at least 10 windows) with timestamps and a named language (`asr/tools/bench_transcribe.agc`, the model loaded once, a warm-up run before the timed one, `/usr/bin/time -v` for the peak resident memory of the whole process). Both backends give the same ids and text. The whole-clip log-mel (30,000 frames) ran on Vulkan too, with no failure. The CPU row is the quiet-machine run: with other jobs on the machine the same run took 75 s and then 120 s.
+
+| Row | Time | RTF | Peak memory |
+|---|---|---|---|
+| ours, ggml CPU | 34.6 s | 0.116 | 0.67 GB |
+| ours, ggml Vulkan | 46.6 s | 0.155 | 0.38 GB |
+
 whisper.cpp turns flash attention on by default; ours has none, so the "no flash attention" row is the like-for-like one on the CPU. On Vulkan it makes no difference. F16 is slower than F32 on this CPU (probably because it has no half-precision arithmetic) and faster on the iGPU only by a little.
 
 ### The tokens

@@ -14,7 +14,7 @@ struct Config   the fields of HF config.json: d_model, encoder_layers, decoder_l
                 vocab_size, max_source_positions, max_target_positions
 Asr.config(path) -> Result[Config]
 Asr.open(path, backend) -> Result[Model]     a .safetensors or .index.json, config.json beside it
-Asr.close_model(m)                          frees the weights; later use is an error
+Asr.close_model(m)                          frees the weights and the log-mel plan; later use is an error
 Asr.load(checkpoint, config, backend) -> Result[Model]
 Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_model]
 Asr.decode(m, tokens [batch, t] integer, audio) -> logits [batch, t, vocab_size]
@@ -90,7 +90,8 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
 ## The log-mel frontend (`mel.agc`)
 
 16 kHz mono samples, padded with zeros or trimmed to `frames * 160` (30 s for
-3000 frames), as Hugging Face's feature extractor does → a reflect-padded STFT
+3000 frames; the up to 200 samples after those still end the signal, for its
+last frame), as Hugging Face's feature extractor does → a reflect-padded STFT
 (Hann window of 400, hop 160, the last frame dropped) → the power spectrum →
 the Slaney mel filterbank → `log10(max(x, 1e-10))` → a floor at the maximum
 minus 8 → `(x + 4) / 4`. Fewer than 3000 frames are the spectrogram of that
@@ -227,14 +228,50 @@ against the peer's full forward.
 
 ## Transcription (`transcribe`)
 
-One window of 16 kHz samples (at most `2 * max_source_positions` frames: 30 s
-for Whisper; no samples or more are an error) → `Asr.features` of the whole
-window, padded with zeros to 30 s as Hugging Face's feature extractor does
-(not OpenAI's, which pads the log-mel) → `encode` → `listen` → greedy
-decoding with `step` and `Greedy`. This is what Hugging Face's `generate`
-does with `num_beams=1` and no sampling, and OpenAI's `transcribe` at
-temperature 0 inside one window. A named language and the job are checked
-against the tokenizer before the audio costs anything.
+One window of 16 kHz samples (up to `2 * max_source_positions` frames: 30 s
+for Whisper; no samples are an error) → `Asr.features` of the whole window,
+padded with zeros to 30 s as Hugging Face's feature extractor does (not
+OpenAI's, which pads the log-mel) → `encode` → `listen` → greedy decoding with
+`step` and `Greedy`. This is what Hugging Face's `generate` does with
+`num_beams=1` and no sampling, and OpenAI's `transcribe` at temperature 0
+inside one window. A named language and the job are checked against the
+tokenizer before the audio costs anything.
+
+- **Long audio (`sought`).** More than one window (3001 frames or more) is read
+  as Hugging Face's long-form `generate` and OpenAI's `transcribe` read it,
+  with their defaults: 30 s windows, greedy, no previous text in the prompt
+  (`condition_on_prev_tokens` is false in Hugging Face, and no fallback or
+  `no_speech_threshold` is set), the language detected once in the first
+  window and kept. The log-mel of the whole clip is one graph (`Mel.features`
+  with the clip's frames: the maximum that floors it is the clip's, and a
+  window has the real samples around it, as Hugging Face's features have),
+  and a window is a cut of it (`cut`: a graph of its own, not kept, since it
+  differs for every `seek`), padded with zeros in the features, not in the
+  audio, when fewer than 3000 frames remain, as Hugging Face's `generate`
+  does. `Greedy.window` ports `_retrieve_segment`: two timestamps in a row end
+  a segment; when the window's ids end with a lone timestamp it is done,
+  otherwise the ids after the last pair are dropped and the next window starts
+  at the first timestamp of that pair (a seek in 10 ms frames, twice the
+  timestamp step); with no pair the ids are one segment up to the last
+  timestamp. Segment times are the window's plus its start. `tokens` are the
+  ids of the segments of all the windows, each with its own window's
+  timestamps; `avg_logprob` is over all the windows' decoded ids and
+  `no_speech_prob` and `language_probability` are the first window's. It needs
+  timestamps, as Hugging Face's does (the seek reads them). The audio is a
+  `List[Float]` and the whole log-mel one tensor (80 * 100 floats a second).
+  The Hugging Face call matched is the feature extractor with
+  `truncation=False, padding="longest"` (OpenAI's `log_mel_spectrogram` over
+  the unpadded audio), not the default `processor(audio)`, which pads or cuts
+  the audio to 30 s: so a clip is long when `samples / 160 > 3000` (480160
+  samples), and 480000 to 480159 samples are one window, the samples past 30 s
+  read as the end of the signal for its last frame. `Greedy.window` drops a
+  segment with no text, and a seek of zero (a pair of timestamps at the start)
+  finishes the window instead, so each window advances. The budget is
+  `Options.max_windows`, by default `2 * ceil(frames / window) + 2`: when it
+  runs out the transcript holds what was decoded and `truncated` is true,
+  which a model that never advances reaches and normal audio does not. Only
+  the first window reads the step after `<|startoftranscript|>` alone (the
+  language and `no_speech_prob`).
 
 - **Greedy decoding on the device.** On ggml, `decide` calls `step_pick` with
   `Greedy.mask` (0 or `FORBIDDEN` per id: the begin-suppressed ids for the
@@ -271,7 +308,8 @@ against the tokenizer before the audio costs anything.
   rules, `eot` included, summed and divided by `tokens.size + 1`. Each segment
   carries it, and its ids with the timestamps around them, as OpenAI's do.
 - **Out, on purpose**: beam search, temperature fallback (and the compression
-  ratio it needs), initial prompts and word timestamps. Greedy at temperature
+  ratio it needs), conditioning a window on the text before it, initial
+  prompts and word timestamps. Greedy at temperature
   0 is what the speech server asks for; each can come when something needs
   it.
 - **Memory on libtorch**: a `Native.arena` frees what a block makes when it
@@ -289,12 +327,14 @@ against the tokenizer before the audio costs anything.
   an arena kept everything its result came from, so each block handed its
   output out as a list and built the tensor again outside: 1.5-2 s a call.
 
-Checked against Hugging Face's `generate` (transformers 4.46.3, greedy) on
-whisper-tiny: `tools/transcribe_check.agc` runs the five cases of
-`test/fixtures/transcribe_golden.json` (`whisper/live/fixtures/es-hola.wav`
-and whisper.cpp's `samples/jfk.wav`: detected and named language, transcribe
-and translate, with and without timestamps). The token ids match exactly,
-and so do the text and the segments. The language probability is within
+Checked against Hugging Face's `generate` (transformers 4.57.6, greedy) on
+whisper-tiny: `tools/transcribe_check.agc` runs the seven cases of
+`test/fixtures/transcribe_golden.json` (`whisper/live/fixtures/es-hola.wav` and
+whisper.cpp's `samples/jfk.wav`: detected and named language, transcribe and
+translate, with and without timestamps; and two clips of 73.5 s and 75.5 s
+made of them, jfk six times with gaps of silence and es-hola 24 times, read in
+three windows each). The token ids match exactly, and so do the text and the
+segments (their times within 1e-9). The language probability is within
 1.3e-6 (es) and 1e-7 (en); with the tanh GELU it was 4.1e-4 and 1.2e-4.
 `test/transcribe_golden.py` wrote the golden once, by hand (it needs `torch`
 and `transformers`). The tests run neither: the checkpoint is not in git.

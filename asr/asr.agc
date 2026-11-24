@@ -4,9 +4,10 @@
 ## `encode` turns a log-mel batch into the encoder output; `decode` turns
 ## token ids and that output into logits; `listen` and `step` decode one token
 ## at a time with a KV cache; `transcribe` runs the log-mel frontend
-## (`mel.agc`), the encoder and greedy decoding (`greedy.agc`) on up to 30 s of
-## audio. Inference only. On `Ggml` each stage and each step is one compiled
-## graph of the model's tensors as trace constants.
+## (`mel.agc`), the encoder and greedy decoding (`greedy.agc`) on audio of any
+## length, in windows of 30 s that seek. Inference only. On `Ggml` each stage
+## and each step is one compiled graph of the model's tensors as trace
+## constants.
 
 import Greedy from "greedy"
 import Hub from "pkg/hub/hub"
@@ -162,6 +163,11 @@ struct Options
   ## `max_target_positions`, as Hugging Face's `max_length` (448 for
   ## Whisper) does. OpenAI's `sample_len` is 224.
   max_tokens: Optional[Int] = none
+  ## Audio over one window only: at most this many windows, at least 1; none is
+  ## `2 * ceil(frames / window) + 2`, which a transcription that seeks normally
+  ## never reaches (a window that advances less than half of itself on average
+  ## does), so it stops a model that hallucinates (`Transcript.truncated`).
+  max_windows: Optional[Int] = none
 end
 
 struct Transcript
@@ -170,15 +176,22 @@ struct Transcript
   ## The softmax of `language` over the language tokens, one decoder step
   ## after `<|startoftranscript|>`; 1.0 when `Options.language` named it.
   language_probability: Float
-  ## The ids emitted after the prompt, without `<|endoftext|>`.
+  ## The ids emitted after the prompt, without `<|endoftext|>`. Over 30 s, the
+  ## ids of the segments of every window, each window with its own timestamps.
   tokens: List[Int]
+  ## Over 30 s, the times are from the start of the audio.
   segments: List[Greedy.Segment]
   ## OpenAI's `avg_logprob`: the log-probabilities of the emitted tokens and
-  ## `<|endoftext|>` under the rules, summed, over `tokens.size + 1`.
+  ## `<|endoftext|>` under the rules, summed, over `tokens.size + 1`. Over 30 s,
+  ## summed over the windows, each one decoded to its end.
   avg_logprob: Float
   ## OpenAI's `no_speech_prob`: the softmax of the logits after
-  ## `<|startoftranscript|>` at `<|nospeech|>` (0.0 without that token).
+  ## `<|startoftranscript|>` at `<|nospeech|>` (0.0 without that token); over
+  ## 30 s, that of the first window.
   no_speech_prob: Float
+  ## Audio over one window only: true when `Options.max_windows` ran out before
+  ## the end of the audio, so the transcript stops short of it.
+  truncated: Bool = false
 end
 
 ## Hugging Face's `config.json` at `path`.
@@ -325,10 +338,29 @@ def decode(m: Model, tokens: Tensor.Tensor, audio: Tensor.Tensor) -> Result[Tens
   Nn.dense(m.logits, try Nn.layer_norm(m.decoder_norm, h))
 end
 
-## Frees the weights of `m` now, not at the end of the task that made them, as a server does when it replaces a model.
-## Nothing may use `m` afterwards, nor a cache made from it: a call that does is an error, never a read of freed memory.
-## The compiled functions `m` shares are not closed (their pins belong to the tasks that compiled them).
+## Frees the weights of `m` now, not at the end of the task that made them, as a server does when it replaces a model,
+## and the log-mel plan with its constants. Nothing may use `m` afterwards, nor a cache made from it: a call that does
+## is an error, never a read of freed memory. The other compiled functions `m` shares are not closed (their pins belong
+## to the tasks that compiled them).
 def close_model(m: Model) -> Void
+  case m.mel
+    some(plan) ->
+      Trace.close(plan)
+      case plan.program
+        some(program) ->
+          for leaf in program.leaves
+            case leaf.fixed
+              some(t) -> close([t])
+              none -> nil
+            end
+          end
+
+        none -> nil
+      end
+
+    none -> nil
+  end
+
   close(weights(m))
 end
 
@@ -466,11 +498,18 @@ def step_pick(
   )
 end
 
-## The text of `pcm` (16 kHz mono samples, about -1..1, at most one window:
-## 30 s for Whisper): the log-mel, the encoder and greedy decoding at
-## temperature 0 with OpenAI's rules (`Greedy`). Without a language in
-## `options`, one decoder step after `<|startoftranscript|>` picks the likeliest
-## language token.
+## The text of `pcm` (16 kHz mono samples, about -1..1): the log-mel, the
+## encoder and greedy decoding at temperature 0 with OpenAI's rules (`Greedy`).
+## Without a language in `options`, one decoder step after
+## `<|startoftranscript|>` picks the likeliest language token.
+##
+## Audio over one window (30 s for Whisper) is read as OpenAI's `transcribe`
+## and Hugging Face's long-form `generate` do: the log-mel of the whole clip is
+## computed once, the first window is its first 30 s, and each next window
+## starts where the last timestamp of the one before said the segments end (at
+## the end of the window when it ends with a lone timestamp). Every window is
+## decoded alone, with no previous text in its prompt, and the language is the
+## one of the first window. It needs `options.timestamps`.
 def transcribe(
   m: Model,
   tok: Tokenizer.Tokenizer,
@@ -480,8 +519,11 @@ def transcribe(
   frames = 2 * m.config.max_source_positions
   window = frames * HOP
   return error("transcribe needs samples, got none") if pcm.empty?
-  if pcm.size > window
-    return error("transcribe takes at most #{window} samples (#{window / SAMPLE_RATE} s), got #{pcm.size}")
+  longer = pcm.size >= window + HOP
+  if longer and not options.timestamps
+    return error(
+      "transcribe needs timestamps for more than #{window / SAMPLE_RATE} s, got #{pcm.size / SAMPLE_RATE} s",
+    )
   end
 
   if tok.vocab_size != m.config.vocab_size
@@ -493,11 +535,22 @@ def transcribe(
     none -> nil
   end
 
+  case options.max_windows
+    some(n) -> return error("transcribe needs max_windows >= 1, got #{n}") if n < 1
+    none -> nil
+  end
+
   # A named language and the job are checked before the audio costs anything.
   _ = try Tokenizer.prompt(tok, options.language, job(options), options.timestamps)
   # On libtorch the call runs in a task of its own: when it ends, the task
   # closes what it opened, the encoder output and the cache included.
-  call = Task.spawn do decoded(m, tok, pcm, options, frames) end
+  call = Task.spawn do
+    case longer
+      true -> sought(m, tok, pcm, options, frames)
+      _ -> decoded(m, tok, pcm, options, frames)
+    end
+  end
+
   Task.await(call)
 end
 
@@ -603,6 +656,15 @@ struct Decided
   logprob: Float
 end
 
+## What one window of audio gave: the language, the probability of the language token, `no_speech_prob`, and what
+## greedy decoding chose.
+struct Spoken
+  language: String
+  probability: Float
+  no_speech: Float
+  decided: Decided
+end
+
 ## On `Ggml`, the log-mel graph compiled for the model's window. It runs in the task that opens the model, which is why
 ## it is made here: a transcription's task closes what it opens, and the DFT basis and the mel filters are constants of
 ## the graph. The plan keeps its pin, so the graph stays in ggml's cache and is not built again from its program on
@@ -622,20 +684,133 @@ def compile_mel(config: Config, backend: Tensor.Backend) -> Result[Optional[Trac
   )
 end
 
-## `transcribe` once its arguments are checked. Each step's self-attention
-## keys and values are closed once the next step replaced them, so a call
-## holds one cache at a time.
+## `transcribe` of up to one window, once its arguments are checked. Each step's self-attention keys and values are
+## closed once the next step replaced them, so a call holds one cache at a time.
 def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Options, frames: Int) -> Result[Transcript]
   mel = try features(m, pcm, frames)
   audio = try encode(m, mel)
   close([mel])
+  spoken = try speak(m, tok, audio, options, options.language, true)
+  emitted = spoken.decided.tokens
+  average = spoken.decided.logprob / (emitted.size + 1).to_f
+  duration = pcm.size.to_f / SAMPLE_RATE.to_f
+  ok(
+    Transcript(
+      text: try Tokenizer.decode(tok, emitted),
+      language: spoken.language,
+      language_probability: spoken.probability,
+      tokens: emitted,
+      segments: try Greedy.segments(tok, emitted, duration, average),
+      avg_logprob: average,
+      no_speech_prob: spoken.no_speech,
+    ),
+  )
+end
+
+## `transcribe` of more than one window: the log-mel of the whole of `pcm`, then a window at a time from `seek`, in
+## frames: the next 30 s of it, padded with zeros when fewer remain (Hugging Face pads the features, not the audio),
+## decoded as `decoded` does, and `seek` moves on as `Greedy.window` says, for at most the budget of windows. The language
+## is detected in the first window and kept; the segments' times are the window's plus its start.
+def sought(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Options, frames: Int) -> Result[Transcript]
+  total = pcm.size / HOP
+  everything = try Mel.features(pcm, m.config.num_mel_bins, total, Tensor.backend(m.tokens.table), none)
+  known = options.language
+  budget = options.max_windows.unwrap_or(2 * ((total + frames - 1) / frames) + 2)
+  windows = 0
+  first: Optional[Spoken] = none
+  tokens: List[Int] = []
+  segments: List[Greedy.Segment] = []
+  logprob = 0.0
+  count = 0
+  seek = 0
+  while seek < total and windows < budget
+    windows += 1
+    size = [frames, total - seek].min.unwrap!
+    mel = try cut(everything, seek, size, frames)
+    audio = try encode(m, mel)
+    close([mel])
+    spoken = try speak(m, tok, audio, options, known, first.none?)
+    emitted = spoken.decided.tokens
+    average = spoken.decided.logprob / (emitted.size + 1).to_f
+    found = try Greedy.window(tok, emitted, size, average)
+    start = (seek.to_f * Greedy.STEP) / 2.0
+    for s in found.segments
+      segments = segments.push(s.with(start: start + s.start, stop: start + s.stop))
+    end
+
+    tokens = tokens + found.kept
+    logprob += spoken.decided.logprob
+    count += emitted.size + 1
+    seek += found.advance
+    known = some(spoken.language)
+    if first.none?
+      first = some(spoken)
+    end
+  end
+
+  close([everything])
+  head = first.unwrap!
+  ok(
+    Transcript(
+      text: try Tokenizer.decode(tok, tokens),
+      language: head.language,
+      language_probability: head.probability,
+      tokens: tokens,
+      segments: segments,
+      avg_logprob: logprob / count.to_f,
+      no_speech_prob: head.no_speech,
+      truncated: seek < total,
+    ),
+  )
+end
+
+## The window `[1, mels, frames]` of the log-mel `everything` `[1, mels, total]` from frame `seek`, `size` frames of it,
+## then zeros up to `frames`. On `Ggml` a graph of its own, which is not kept: it differs for every `seek`.
+def cut(everything: Tensor.Tensor, seek: Int, size: Int, frames: Int) -> Result[Tensor.Tensor]
+  return Native.arena do windowed(everything, seek, size, frames) end if not compiled(Tensor.backend(everything))
+
+  out = try Trace.eval_many(
+    [everything],
+    ->(xs: List[Tensor.Tensor]) { ok([try windowed(xs[0], seek, size, frames)]) },
+    false,
+  )
+
+  ok(out[0])
+end
+
+def windowed(everything: Tensor.Tensor, seek: Int, size: Int, frames: Int) -> Result[Tensor.Tensor]
+  mels = Tensor.shape(everything)[1]
+  part = try Tensor.slice(everything, [0, 0, seek], [1, mels, seek + size])
+  return ok(part) if size == frames
+  zeros = try Tensor.full(
+    [1, mels, frames - size],
+    Tensor.Values.Float(0.0),
+    Tensor.dtype(everything),
+    Tensor.backend(everything),
+  )
+
+  Tensor.concat([part, zeros], 2)
+end
+
+## The language, the no-speech probability and the greedy decoding of one window of `audio` (the output of `encode`,
+## which it closes). `known` is the language, none to detect it. `read` is whether to read the step after `sot` alone
+## (the language and `no_speech_prob`): only the first window of a clip does.
+def speak(
+  m: Model,
+  tok: Tokenizer.Tokenizer,
+  audio: Tensor.Tensor,
+  options: Options,
+  known: Optional[String],
+  read: Bool,
+) -> Result[Spoken]
   cache = try listen(m, audio)
-  language = options.language.unwrap_or("en")
+  close([audio])
+  language = known.unwrap_or("en")
   probability = 1.0
   no_speech = 0.0
-  detect = options.language == none and tok.multilingual
+  detect = known == none and tok.multilingual
   # One step after `sot` alone, only when something reads its logits.
-  if detect or tok.no_speech != none
+  if detect or (read and tok.no_speech != none)
     first = try step(m, cache, [tok.sot])
     close(kept(first.cache))
     case tok.no_speech
@@ -656,21 +831,8 @@ def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Optio
   limit = m.config.max_target_positions - prompt.size
   limit = [limit, options.max_tokens.unwrap_or(limit)].min.unwrap!
   decided = try decide(m, tok, rules, cache, prompt, limit)
-  emitted = decided.tokens
-  logprob = decided.logprob
-  average = logprob / (emitted.size + 1).to_f
-  duration = pcm.size.to_f / SAMPLE_RATE.to_f
-  ok(
-    Transcript(
-      text: try Tokenizer.decode(tok, emitted),
-      language: language,
-      language_probability: probability,
-      tokens: emitted,
-      segments: try Greedy.segments(tok, emitted, duration, average),
-      avg_logprob: average,
-      no_speech_prob: no_speech,
-    ),
-  )
+  close(cache.cross.flat_map { |h| [h.key, h.value] })
+  ok(Spoken(language: language, probability: probability, no_speech: no_speech, decided: decided))
 end
 
 ## Greedy decoding of up to `limit` ids after `prompt`, with the rules `rules`. On `Ggml` the choice, timestamp rules
