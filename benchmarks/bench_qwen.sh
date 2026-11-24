@@ -24,6 +24,7 @@ work=${TMPDIR:-/tmp}/bench_qwen.$$
 mkdir -p "$work"
 out=$work/rows.txt
 : > "$out"
+cat /sys/class/drm/card*/device/mem_info_vram_used 2>/dev/null | sed 's/^/VRAM used before the run (bytes): /' >&2
 
 ours() { # name device [VAR=value...]: WEIGHTS=f32 and VULKAN_FP16=0 unless the row says otherwise
   name=$1
