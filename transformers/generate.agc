@@ -20,6 +20,7 @@
 ## at a time. A `Generator` belongs to one task at a time, and `close` ends it
 ## before `Qwen3.close_model` frees the weights its graphs read.
 
+import Padded from "pkg/nn/kv"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
@@ -189,13 +190,6 @@ struct Advanced
   cache: Cache
 end
 
-## Where a step writes into a padded cache: `positions` (`I32`, `[n]`) are the
-## new tokens' rows, `capacity` the rows after the step.
-struct Slots
-  positions: Tensor.Tensor
-  capacity: Int
-end
-
 struct Kv
   key: Tensor.Tensor
   value: Tensor.Tensor
@@ -205,17 +199,6 @@ struct Layer
   hidden: Tensor.Tensor
   key: Tensor.Tensor
   value: Tensor.Tensor
-end
-
-## The rows a padded cache has for `needed` tokens: 8, 16, 32 and so on, at
-## most `limit`.
-def capacity(needed: Int, limit: Int) -> Int
-  rows = 8
-  while rows < needed
-    rows *= 2
-  end
-
-  [rows, limit].min.unwrap!
 end
 
 def advance(g: Generator, cache: Cache, ids: List[Int], picking: Bool) -> Result[Advanced]
@@ -228,7 +211,7 @@ def advance(g: Generator, cache: Cache, ids: List[Int], picking: Bool) -> Result
 
   n = ids.size
   limit = m.config.max_position_embeddings
-  room = capacity(cache.length + n, limit)
+  room = Padded.capacity(cache.length + n, limit)
   # A prompt is padded to the capacity, a later step is one token.
   width = 1
   if cache.length == 0
@@ -369,12 +352,12 @@ def stepped(
   layers = m.config.num_hidden_layers
   width = Tensor.shape(xs[0])[0]
   d = m.config.hidden_size
-  slots = Slots(positions: xs[1], capacity: room)
+  slots = Padded.Slots(positions: xs[1], capacity: room)
   h = try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d])
-  mask = try padded_mask(slots, Tensor.dtype(h))
+  mask = try Padded.padded_mask(slots, Tensor.dtype(h))
   spread: Optional[Tensor.Tensor] = none
   if not in_place
-    spread = some(try spread_of(slots, Tensor.dtype(h)))
+    spread = some(try Padded.spread_of(slots, Tensor.dtype(h)))
   end
 
   keys: List[Tensor.Tensor] = []
@@ -425,76 +408,14 @@ def layer(
     key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
     value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
   else
-    key = try written(old.map { |kv| kv.key }, heads.key, spread.unwrap!)
-    value = try written(old.map { |kv| kv.value }, heads.value, spread.unwrap!)
+    key = try Padded.written(old.map { |kv| kv.key }, heads.key, spread.unwrap!, 2)
+    value = try Padded.written(old.map { |kv| kv.value }, heads.value, spread.unwrap!, 2)
   end
 
   seen = try Nn.attend(b.attention, heads.query, key, value, some(mask))
   mid = try Tensor.add(h, seen)
   out = try Tensor.add(mid, try Nn.mlp(b.mlp, try Nn.layer_norm(b.norm2, mid)))
   ok(Layer(hidden: out, key: key, value: value))
-end
-
-## `[n, capacity]`: `MASKED` where the key's row is after the query's position
-## (later tokens and the padding), 0 elsewhere.
-def padded_mask(s: Slots, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
-  n = Tensor.shape(s.positions)[0]
-  backend = Tensor.backend(s.positions)
-  grid = [n, s.capacity]
-  queries = try Tensor.broadcast_to(try Tensor.reshape(s.positions, [n, 1]), grid)
-  keys = try Tensor.broadcast_to(
-    try Tensor.reshape(try Tensor.arange(0, s.capacity, 1, Tensor.Dtype.I32, backend), [1, s.capacity]),
-    grid,
-  )
-
-  blocked = try Tensor.full(grid, Tensor.Values.Float(Nn.MASKED), dtype, backend)
-  Tensor.where(try Tensor.lt(queries, keys), blocked, try Tensor.zeros(grid, dtype, backend))
-end
-
-## `[capacity, n]`: 1 at row `positions[j]` of column `j`, 0 elsewhere. A
-## position of `capacity` (the padding of a prompt) names no row.
-def spread_of(s: Slots, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
-  n = Tensor.shape(s.positions)[0]
-  grid = [s.capacity, n]
-  rows = try Tensor.broadcast_to(
-    try Tensor.reshape(
-      try Tensor.arange(0, s.capacity, 1, Tensor.Dtype.I32, Tensor.backend(s.positions)),
-      [s.capacity, 1],
-    ),
-    grid,
-  )
-
-  at = try Tensor.broadcast_to(try Tensor.reshape(s.positions, [1, n]), grid)
-  Tensor.to_dtype(try Tensor.eq(rows, at), dtype)
-end
-
-## `fresh` (`[1, kv_heads, n, head_dim]`) written into `old` (`[1, kv_heads, rows, head_dim]`,
-## zero past the cache's length; none when empty) at the rows `spread`
-## (`[capacity, n]`) names, padded with zeros to `capacity` rows. A product with a 0/1 matrix
-## and a sum with zeros, so exact in F32.
-def written(old: Optional[Tensor.Tensor], fresh: Tensor.Tensor, spread: Tensor.Tensor) -> Result[Tensor.Tensor]
-  shape = Tensor.shape(fresh)
-  heads = shape[1]
-  n = shape[2]
-  width = shape[3]
-  room = Tensor.shape(spread)[0]
-  flat = try Tensor.reshape(try Tensor.permute(fresh, [0, 2, 1, 3]), [n, heads * width])
-  placed = try Tensor.permute(
-    try Tensor.reshape(try Tensor.matmul(spread, flat), [1, room, heads, width]),
-    [0, 2, 1, 3],
-  )
-
-  case old
-    none -> ok(placed)
-    some(o) ->
-      rows = Tensor.shape(o)[2]
-      if rows < room
-        gap = try Tensor.zeros([1, heads, room - rows, width], Tensor.dtype(o), Tensor.backend(o))
-        o = try Tensor.concat([o, gap], 2)
-      end
-
-      Tensor.add(o, placed)
-  end
 end
 
 ## The ids padded to `width`, the positions (the rows of the new tokens, `room` for the padding), and the
