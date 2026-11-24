@@ -37,7 +37,7 @@ The shapes are the ones the layers take. `dense` takes any rank. Attention needs
 | `Embedding` | `table` as `[rows, width]` | `embedding(p, ids)`; `positional(p, x)` adds the first rows of the table |
 | `Conv1d` | `weight` as `[out, in, kernel]`, `bias`, `stride`, `padding` | `conv1d(p, x)` |
 | `Attention` | four `Dense` projections, `heads`, and optional `kv_heads`, `rope`, `query_norm`, `key_norm` | `attention(p, queries, memory, mask?, causal?, positions?, memory_positions?)`, `self_attention(p, x, mask?, causal?)`; `project` and `attend`, the two halves of `attention` |
-| `Heads` | `query`, `key`, `value`: the heads that `project` returns, `[batch, heads, q, head]` (the keys and values with `kv_heads`) | `attend(p, query, key, value, mask?, causal?)` takes them |
+| `Heads` | `query`, `key`, `value`: the heads that `project` returns; `query` is `[batch, heads, q, head]`, and `key` and `value` are `[batch, kv_heads, k, head]` (`kv_heads` is `heads` when none) | the input of `attend` |
 | `Mlp` | `up`, `down`, `activation`, optional `gate` | `mlp(p, x)`: `dense`, activation, `dense`; with a `gate`, `down(activation(gate(x)) * up(x))` |
 | `EncoderBlock` | two norms, attention, MLP, `norm_first` | `encoder_block(p, x, mask?, causal?)` |
 | `DecoderBlock` | three norms, self and cross attention, MLP, `norm_first` | `decoder_block(p, x, memory)`, causal self attention, then cross attention |

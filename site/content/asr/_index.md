@@ -45,7 +45,7 @@ end
 - `Tokenizer.open(path)` reads a `tokenizer.json`. The tokenizer decodes ids to text; it does not encode text.
   - `Tokenizer.decode(tok, ids)` gives the text of the ids. Special and timestamp tokens give no text, and a character split across tokens joins back.
   - `Tokenizer.prompt(tok, language, job, timestamps)` gives the ids that start the decoder. `language` is `none` or a code, and `job` is `Tokenizer.Job.Transcribe` or `Tokenizer.Job.Translate`.
-  - `Tokenizer.language_id(tok, code)` gives the id of a language, and `Tokenizer.seconds(tok, id)` the time of a timestamp token in seconds.
+  - `Tokenizer.language_id(tok, code)` gives the id of a language, and `Tokenizer.seconds(tok, id)` the time of a timestamp token in seconds, or none for another id.
   - `Tokenizer.parse(text)` reads the text of a `tokenizer.json` instead of a path.
 - `Asr.encode(model, mel)` and `Asr.decode(model, tokens, audio)` are the model's forward passes (one run of the network), for callers who want the parts.
 - `Asr.listen`, `Asr.step`, `Asr.step_pick` and the `Cache` they use decode one token at a time. The cache is a KV cache: it keeps the past keys and values, so earlier tokens are not computed again, and its `length` counts the tokens so far. `Asr.step` gives a `Stepped`, with the logits of the last token and the new cache; `Asr.step_pick(model, cache, ids, mask)` adds `mask` to them (0 for an id that may be emitted, a very negative number for one that may not) and gives the first largest id and its log-probability as a `Picked`; with `stamps`, an `Asr.Stamps(rules, state)`, it applies Whisper's timestamp rules in the graph too: `rules` are the `Greedy.Rules`, and `state` is `Greedy.state(rules, emitted)` as an F32 tensor of 4 on the model's backend, made for each step and closed by the caller.
@@ -72,7 +72,7 @@ end
 `pkg/asr/greedy` has the rules of greedy decoding over plain lists. Use it for a loop of your own over `step_pick`:
 
 - `Greedy.rules(tok, suppress, begin_suppress, timestamps)` makes the `Rules` for a tokenizer. `suppress` and `begin_suppress` are the config's lists, or `none` for the defaults. `timestamps: false` turns the timestamp rules off.
-- `Greedy.mask(rules, size, first)` gives the scores of a `step_pick` mask: 0 for an id that may come, `Greedy.FORBIDDEN` for one that may not. `Greedy.state(rules, emitted)` gives the four numbers that `Asr.Stamps` takes.
+- `Greedy.mask(rules, size, first)` gives a `List[Float]` of the scores of a `step_pick` mask: 0 for an id that may come, `Greedy.FORBIDDEN` for one that may not. Turn it into the F32 `[vocab_size]` tensor that `Asr.step_pick` takes, with `Tensor.from_list`. `Greedy.state(rules, emitted)` gives the four numbers that `Asr.Stamps` takes.
 - `Greedy.allowed(rules, logits, emitted)` applies the rules to a list of logits, and `Greedy.pick(logits)` gives the first largest id.
 - `Greedy.segments(tok, emitted, duration, avg_logprob)` makes the `Segment`s of emitted ids. `Greedy.window(tok, emitted, frames, avg_logprob)` also gives the ids to keep and how many 10 ms frames the next window advances.
 - `Greedy.probability(logits, i)` and `Greedy.log_probability(logits, i)` score one id of a list of logits.
