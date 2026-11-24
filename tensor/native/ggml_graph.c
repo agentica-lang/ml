@@ -77,7 +77,7 @@ enum {
   OP_CONV1D, /* ints: stride, padding */
   OP_SCATTER_ADD, /* ints: the rows */
   OP_PERMUTE,     /* ints: the axes, row-major */
-  OP_ATTENTION,   /* args: q, k, v, then an optional mask; ints: the bits of the scale, a double */
+  OP_ATTENTION,   /* args: q, k, v, then an optional mask; ints: the bits of the scale, a double, and 1 when flash attention may take it */
   OP_ROPE,        /* args: x, positions; ints: dims, neox, the bits of the base, inverse */
   OP_BATCH_MATMUL,
   OP_NORM,        /* a layer norm over the last axis; ints: eps as the bits of an F32 */
@@ -118,6 +118,7 @@ struct gnode {
   struct ggml_tensor *guard; /* a gather's or scatter_add's count of indices out of range */
   struct ggml_tensor *dense; /* the contiguous copy of a view, made once for every op that needs one */
   struct ggml_tensor *at; /* the node as the I32 positions of a rope, made once */
+  struct ggml_tensor *half; /* the node as the F16 mask of a flash attention, made once */
 };
 
 #define MAX_OUTPUTS 256
@@ -508,18 +509,72 @@ static struct ggml_tensor *scatter_add(struct entry *p, const struct gnode *indi
   return ggml_get_rows_back(p->ctx, flat, row_ids(p, indices, rows, guard), shape);
 }
 
-/* softmax(scale * q kᵀ + mask) v over q [B, H, Sq, D], k [B, Hkv, Sk, D] and
-   v [B, Hkv, Sk, Dv] (ne [D, Sq, H, B] and so on): two mul_mat and one
-   soft_max_ext. mul_mat repeats k and v over the query heads of a group
-   (ne[2] divides), which is grouped-query attention, and soft_max_ext takes
-   the scale and the additive mask (its ne[2] and ne[3] repeat). The caller has
-   checked every extent these asserts of ggml read. */
-static struct ggml_tensor *attention(struct entry *p, const struct gnode *q, const struct gnode *k, const struct gnode *v,
-                                     const struct gnode *mask, float scale) {
-  struct ggml_tensor *scores = ggml_mul_mat(p->ctx, operand(p, k), operand(p, q)); /* [Sk, Sq, H, B] */
-  struct ggml_tensor *weights = ggml_soft_max_ext(p->ctx, scores, mask != NULL ? dense(p, mask) : NULL, scale, 0.0f);
-  struct ggml_tensor *rows = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, v), 1, 0, 2, 3)); /* [Sk, Dv, Hkv, B] */
+/* Whether `t` is the permute (0, 2, 1, 3) of its source: permuting it again gives the source back, so a norm that
+   ran on the source feeds a rope with no view between them, which ggml-vulkan needs to fuse norm, mul and rope. */
+static bool swapped_back(const struct ggml_tensor *t) {
+  const struct ggml_tensor *s = t->src[0];
 
+  return t->op == GGML_OP_PERMUTE && s->ne[1] == t->ne[2] && s->ne[2] == t->ne[1] && s->nb[1] == t->nb[2] &&
+         s->nb[2] == t->nb[1] && s->ne[0] == t->ne[0] && s->ne[3] == t->ne[3];
+}
+
+/* The node as an operand of flash attention: its rows must be dense, its other strides may be a view's. */
+static struct ggml_tensor *rows_of(struct entry *p, const struct gnode *n) {
+  struct ggml_tensor *t = full_of(p, n);
+
+  return t->nb[0] == ggml_type_size(t->type) ? t : ggml_cont(p->ctx, t);
+}
+
+static bool on_vulkan(const struct entry *p) {
+  return ggml_backend_dev_type(ggml_backend_get_device(p->backend)) != GGML_BACKEND_DEVICE_TYPE_CPU;
+}
+
+/* The mask as F16 for flash attention, once for every layer that reads it. The lowering lets flash attention take a
+   mask that holds 0 and large negative fills, so F16 keeps it exactly; the large ones are clamped to F16's lowest,
+   since -1e9 would become -inf and a row with every key hidden would not stay the mean of v. */
+static struct ggml_tensor *half_mask(struct entry *p, const struct gnode *mask) {
+  struct gnode *node = (struct gnode *)mask; /* the nodes are `p->nodes`; the conversion is a cache */
+  struct ggml_tensor *t = dense(p, mask);
+
+  if (node->half == NULL) {
+    if (t->type == GGML_TYPE_F16) node->half = t;
+    else node->half = ggml_cast(p->ctx, ggml_clamp(p->ctx, ggml_cont(p->ctx, t), -65504.0f, 65504.0f), GGML_TYPE_F16);
+  }
+  return node->half;
+}
+
+/* softmax(scale * q kᵀ + mask) v over q [B, H, Sq, D], k [B, Hkv, Sk, D] and v [B, Hkv, Sk, Dv] (ne [D, Sq, H, B]
+   and so on), as one ggml_flash_attn_ext that reads the heads as the views they are: no copy of q, k or v, no
+   scores in memory. It takes the mask in F16 (so a mask value is rounded to 11 bits; the causal mask is 0 and
+   -inf, exact) and answers [Dv, H, Sq, B], which is permuted back to [Dv, Sq, H, B] as a view. NULL when the
+   backend has no kernel for the shapes (Vulkan wants widths that are multiples of 8). */
+static struct ggml_tensor *flash(struct entry *p, const struct gnode *q, const struct gnode *k, const struct gnode *v,
+                                 const struct gnode *mask, float scale) {
+  struct ggml_tensor *bias, *out;
+
+  /* Vulkan multiplies in fp16 by default, and then the two products beat the F32 kernel of flash attention over
+     many queries (3.07 s against 3.12 s for ten prompts of 128 tokens); one query is faster flash. */
+  if (on_vulkan(p) && tg_fp16() && q->ne[1] > 1) return NULL;
+  bias = mask != NULL ? half_mask(p, mask) : NULL;
+  out = ggml_flash_attn_ext(p->ctx, rows_of(p, q), rows_of(p, k), rows_of(p, v), bias, scale, 0.0f, 0.0f);
+
+  ggml_prec_set_acc(out, GGML_PREC_F32);
+  if (!ggml_backend_supports_op(p->backend, out)) return NULL;
+  return ggml_permute(p->ctx, out, 0, 2, 1, 3);
+}
+
+/* The same as two mul_mat and one soft_max_ext, for what `flash` cannot take. mul_mat repeats k and v over the query
+   heads of a group (ne[2] divides), which is grouped-query attention, and soft_max_ext takes the scale and the
+   additive mask (its ne[2] and ne[3] repeat). The caller has checked every extent these asserts of ggml read. */
+static struct ggml_tensor *attention(struct entry *p, const struct gnode *q, const struct gnode *k, const struct gnode *v,
+                                     const struct gnode *mask, float scale, bool may_flash) {
+  struct ggml_tensor *fused = may_flash ? flash(p, q, k, v, mask, scale) : NULL;
+  struct ggml_tensor *scores, *weights, *rows;
+
+  if (fused != NULL) return fused;
+  scores = ggml_mul_mat(p->ctx, operand(p, k), operand(p, q)); /* [Sk, Sq, H, B] */
+  weights = ggml_soft_max_ext(p->ctx, scores, mask != NULL ? dense(p, mask) : NULL, scale, 0.0f);
+  rows = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, v), 1, 0, 2, 3)); /* [Sk, Dv, Hkv, B] */
   return ggml_mul_mat(p->ctx, rows, weights); /* [Dv, Sq, H, B] */
 }
 
@@ -539,15 +594,6 @@ static bool attends(const struct gnode *q, const struct gnode *k, const struct g
   if (mask == NULL) return true;
   return (mask->rank == 2 || mask->rank == 4) && mask->ne[0] == k->ne[1] && mask->ne[1] == q->ne[1] &&
          (mask->ne[2] == 1 || mask->ne[2] == q->ne[2]) && (mask->ne[3] == 1 || mask->ne[3] == q->ne[3]);
-}
-
-/* Whether `t` is the permute (0, 2, 1, 3) of its source: permuting it again gives the source back, so a norm that
-   ran on the source feeds a rope with no view between them, which ggml-vulkan needs to fuse norm, mul and rope. */
-static bool swapped_back(const struct ggml_tensor *t) {
-  const struct ggml_tensor *s = t->src[0];
-
-  return t->op == GGML_OP_PERMUTE && s->ne[1] == t->ne[2] && s->ne[2] == t->ne[1] && s->nb[1] == t->nb[2] &&
-         s->nb[2] == t->nb[1] && s->ne[0] == t->ne[0] && s->ne[3] == t->ne[3];
 }
 
 /* Rotary embedding of x [..., S, D]. ggml wants the rows along ne[2] ([D, heads, S, batch]), so the
@@ -961,20 +1007,25 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       }
       /* Axis 0 kept (the width of a head, say): a view, and whoever needs it contiguous (`dense`) copies it, or
          permutes it back and finds the source again. Any other permute is a copy now. */
-      if (order[0] == 0) t = ggml_permute(p->ctx, full_of(p, a), order[0], order[1], order[2], order[3]);
-      else t = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, a), order[0], order[1], order[2], order[3]));
+      if (order[0] == 0 && order[1] == 2 && order[2] == 1 && order[3] == 3 && swapped_back(full_of(p, a))) {
+        t = full_of(p, a)->src[0]; /* the permute of a permute: the tensor it came from */
+      } else if (order[0] == 0) {
+        t = ggml_permute(p->ctx, full_of(p, a), order[0], order[1], order[2], order[3]);
+      } else {
+        t = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, a), order[0], order[1], order[2], order[3]));
+      }
       break;
     }
     case OP_ATTENTION: {
       const struct gnode *mask = nargs == 4 ? &p->nodes[args[3]] : NULL;
 
-      if (nints != 1 || !isfinite(from_bits(ints[0])) || fabs(from_bits(ints[0])) > FLT_MAX) {
+      if (nints != 2 || !isfinite(from_bits(ints[0])) || fabs(from_bits(ints[0])) > FLT_MAX) {
         return tg_error(env, "attention takes a finite scale that a float holds");
       }
       if (!attends(a, b, c, mask)) {
         return tg_error(env, "attention takes q [B, H, Sq, D], k, v [B, Hkv, Sk, D | Dv] with Hkv dividing H, and a mask [Sq, Sk] or [B|1, H|1, Sq, Sk]");
       }
-      t = attention(p, a, b, c, mask, (float)from_bits(ints[0]));
+      t = attention(p, a, b, c, mask, (float)from_bits(ints[0]), ints[1] != 0);
       break;
     }
     case OP_ROPE:

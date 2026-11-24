@@ -316,7 +316,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Stack(axis) -> ints = [axis, 1]
       Types.Op.Conv1d(stride, padding) -> ints = [stride, padding]
       Types.Op.Permute(axes) -> ints = axes
-      Types.Op.Attention(scale) -> ints = [try bits(scale, n)]
+      Types.Op.Attention(scale) -> ints = [try bits(scale, n), flag(try flash_mask(n.args))]
       Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
       Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
       Types.Op.SetRows -> ints = [flag(!donate)]
@@ -434,6 +434,42 @@ def bits(x: Float, n: Types.Node) -> Result[Int]
   end
 
   ok(Float.to_bits(x))
+end
+
+## Whether flash attention may take the mask of an attention node: it reads the mask in F16, so the mask must be absent
+## or hold only the fills 0 and a value from F32's lowest to `-65504` (what `where` of two `full`s, or a comparison times
+## a `full`, gives: the padded mask of a decoder and the causal mask). A fill below F32's lowest is `-inf` in the fill
+## store, and its product with 0 is NaN.
+def flash_mask(args: List[Types.Tensor]) -> Result[Bool]
+  return ok(true) if args.size == 3
+  fills_only(args[3])
+end
+
+def fills_only(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Full(v) ->
+      x = try Types.value_to_float(v, t.dtype)
+      ok(x == 0.0 or (x >= -3.4028234663852886e38 and x <= -65504.0))
+    Types.Op.Where -> ok(try fills_only(n.args[1]) and try fills_only(n.args[2]))
+    Types.Op.Mul -> ok(try indicator(n.args[0]) and try fills_only(n.args[1]))
+    Types.Op.Reshape -> fills_only(n.args[0])
+    Types.Op.BroadcastTo -> fills_only(n.args[0])
+    _ -> ok(false)
+  end
+end
+
+## A comparison, as the dtype of the mask: 0 and 1, so its product with a fill is 0 or the fill.
+def indicator(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Lt -> ok(true)
+    Types.Op.Eq -> ok(true)
+    Types.Op.ToDtype -> indicator(n.args[0])
+    Types.Op.Reshape -> indicator(n.args[0])
+    Types.Op.BroadcastTo -> indicator(n.args[0])
+    _ -> ok(false)
+  end
 end
 
 ## `true` as `1`, `false` as `0`.
