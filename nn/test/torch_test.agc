@@ -27,6 +27,24 @@ def test_an_mlp_agrees_with_the_reference() -> Result[Void]
   ok()
 end
 
+def test_a_dense_with_out_in_agrees_with_the_reference() -> Result[Void]
+  return absent() if !Tensor.available(S.TORCH)
+  x = Init.uniform_values(12, 1.0, 84)
+  w = Init.uniform_values(15, 1.0, 85)
+  b = Init.uniform_values(5, 1.0, 86)
+  want = try Nn.dense(
+    Nn.Dense(w: try S.f32(w, [5, 3]), b: some(try S.f32(b, [5])), out_in: true),
+    try S.f32(x, [4, 3]),
+  )
+
+  got = try Nn.dense(
+    Nn.Dense(w: try S.f32(w, [5, 3], S.TORCH), b: some(try S.f32(b, [5], S.TORCH)), out_in: true),
+    try S.f32(x, [4, 3], S.TORCH),
+  )
+
+  S.expect_close(try S.floats_of(got), try S.floats_of(want), ABS, REL, "out_in")
+end
+
 def test_an_encoder_block_agrees_with_the_reference() -> Result[Void]
   return absent() if !Tensor.available(S.TORCH)
   data = Init.uniform_values(24, 1.0, 22)

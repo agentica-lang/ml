@@ -27,10 +27,10 @@ end
 
 ```output
 ["fc.bias", "fc.weight"]
-[3, 2]
+[2, 3]
 ```
 
-The layer's weight is stored as `[out, in]` and comes back as `[in, out]`, the layout of `nn`.
+The layer's weight is stored as `[out, in]` and comes back as it is, with `out_in` set on the `Nn.Dense`: `Nn.dense` multiplies by its transpose.
 
 ## Opening
 
@@ -43,7 +43,7 @@ The layer's weight is stored as `[out, in]` and comes back as `[in, out]`, the l
 
 Each `Load` function reads a layer by the prefix of its tensor names. It gives a `Result` of the `nn` struct.
 
-- `Load.dense(c, prefix, backend)` reads `{prefix}.weight` as `[out, in]` and transposes it. It reads `{prefix}.bias` when the file has one.
+- `Load.dense(c, prefix, backend)` reads `{prefix}.weight` as `[out, in]` and keeps it so: the `Nn.Dense` has `out_in` set. It reads `{prefix}.bias` when the file has one.
 - `Load.layer_norm(c, prefix, eps, backend)` reads `{prefix}.weight` and `{prefix}.bias`, or `{prefix}.gamma` and `{prefix}.beta` when the checkpoint has no `{prefix}.weight` (the names `bert-base-uncased` keeps).
 - `Load.embedding(c, name, backend)` reads one table by its full name.
 - `Load.conv1d(c, prefix, stride, padding, backend)` reads a `[out, in, kernel]` weight and an optional bias.

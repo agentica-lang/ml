@@ -491,6 +491,25 @@ an_term torch_matmul(an_env *env, struct torch_TensorHandle_state *a, struct tor
   }
 }
 
+an_term torch_linear(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b) {
+  const torch::Tensor &left = *a->value;
+  const torch::Tensor &right = *b->value;
+
+  if (left.dim() != 2 || right.dim() != 2) {
+    return error_text(env, "linear takes rank-2 tensors, got " + shape_text(left) + " and " + shape_text(right));
+  }
+  if (left.size(1) != right.size(1)) {
+    return error_text(env, "linear needs " + std::to_string(left.size(1)) + " in the inner dimension, got " +
+                             std::to_string(right.size(1)));
+  }
+
+  try {
+    return ok_tensor(env, torch::linear(left, right));
+  } catch (...) {
+    return failed(env, "linear");
+  }
+}
+
 an_term torch_relu(an_env *env, struct torch_TensorHandle_state *a) {
   try {
     return ok_tensor(env, a->value->relu());

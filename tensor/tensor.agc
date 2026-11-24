@@ -946,20 +946,35 @@ def dot(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   reshape(c, [])
 end
 
-## Derived: `x . w (+ b)`, with the bias widened by `broadcast_to`.
-def linear(x: Types.Tensor, w: Types.Tensor, b: Optional[Types.Tensor] = none) -> Result[Types.Tensor]
+## Derived: `x . w (+ b)`, with the bias widened by `broadcast_to`. With
+## `out_in`, `w` is `[out, in]` as a checkpoint stores it and the product is
+## `x . wᵀ`: libtorch reads `w` as it is, ggml too once the graph is lowered,
+## and the reference and a trace take its transpose.
+def linear(
+  x: Types.Tensor,
+  w: Types.Tensor,
+  b: Optional[Types.Tensor] = none,
+  out_in: Bool = false,
+) -> Result[Types.Tensor]
   _ = try same_backend(x, w, "linear")
   _ = try same_dtype(x, w, "linear")
   _ = try float_only(x, "linear")
   return error("linear needs a rank-2 input, got #{x.shape}") if x.shape.size != 2
   return error("linear needs a rank-2 weight, got #{w.shape}") if w.shape.size != 2
-  return error("linear needs #{x.shape[1]} in the inner dimension, got #{w.shape[0]}") if x.shape[1] != w.shape[0]
-  y = try matmul(x, w)
+  inner = w.shape[0]
+  outer = w.shape[1]
+  if out_in
+    inner = w.shape[1]
+    outer = w.shape[0]
+  end
+
+  return error("linear needs #{x.shape[1]} in the inner dimension, got #{inner}") if x.shape[1] != inner
+  y = try product(x, w, out_in)
   case b
     some(bias) ->
       _ = try same_backend(x, bias, "linear")
       _ = try same_dtype(x, bias, "linear")
-      return error("linear needs a bias of shape [#{w.shape[1]}], got #{bias.shape}") if bias.shape != [w.shape[1]]
+      return error("linear needs a bias of shape [#{outer}], got #{bias.shape}") if bias.shape != [outer]
       add(y, try broadcast_to(bias, y.shape))
     none -> ok(y)
   end
@@ -1267,6 +1282,15 @@ def beam_search(logits: Types.Tensor, width: Int) -> Result[Types.Tensor]
 end
 
 private
+
+## `x . w`, or `x . wᵀ` when `w` is `[out, in]`.
+def product(x: Types.Tensor, w: Types.Tensor, out_in: Bool) -> Result[Types.Tensor]
+  return matmul(x, w) if !out_in
+  case x.backend
+    Types.Backend.Torch(device) -> Torch.linear(device, x, w)
+    _ -> matmul(x, try transpose(w))
+  end
+end
 
 ## The ops `layer_norm` stands for, from §3.1 only: the value on every backend that computes, and the graph a backward
 ## rule differentiates.

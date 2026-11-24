@@ -60,7 +60,7 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
 - **What the model assumes**: the tensor names start with `model.` and
   `scale_embedding` is false (true of the released Whisper checkpoints;
   `config.json` is not checked for it). The tied
-  output projection is a second, transposed copy of the vocab table.
+  output projection is the vocab table itself (`Dense.out_in`).
 - **Reference, libtorch and ggml**: the model runs on all three. The tiny
   test model matches the peer within 1e-5 on libtorch and on ggml, which
   compute in F32. On `Ggml` (the CPU or Vulkan) each encoder stage, each

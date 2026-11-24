@@ -12,7 +12,7 @@ Hub.has?(c, name) -> Bool
 Hub.tensor(c, name, backend) -> Result[Tensor]   F32/F16/BF16 as F32, else the file's dtype
 Hub.metadata(c) -> Map[file, Map[String, String]]   each shard's __metadata__
 
-Load.dense(c, prefix, backend)          {prefix}.weight [out, in] -> w [in, out]; {prefix}.bias if present
+Load.dense(c, prefix, backend)          {prefix}.weight [out, in] kept as stored (Dense.out_in); {prefix}.bias if present
 Load.conv1d(c, prefix, stride, padding, backend)   {prefix}.weight [out, in, kernel] as stored; bias if present
 Load.layer_norm(c, prefix, eps, backend)   {prefix}.weight, {prefix}.bias; or {prefix}.gamma, {prefix}.beta when there is no .weight (BERT)
 Load.embedding(c, name, backend)        [rows, width]
@@ -66,10 +66,11 @@ The test fixtures drop the `model.` part of the prefix
   that tensor is refused. Infinities and NaN decode, but a NaN payload is not
   kept bit for bit. The reference backend holds doubles, so an `I64` past
   2^53 loses precision there.
-- **The loader converts and transposes, nothing else.** Float weights become
-  `F32` (`tensor/DESIGN.md` §6); a dense weight stored `[out, in]` becomes
-  `nn/`'s `[in, out]`, transposed through a trace so that `Ggml` loads it too; a
-  missing bias is `none` (Whisper's `k_proj`). Names are the caller's: Whisper's
+- **The loader converts, nothing else.** Float weights become `F32`
+  (`tensor/DESIGN.md` §6); a dense weight stays `[out, in]` as stored, and its
+  `Nn.Dense` says so (`out_in`), because ggml multiplies by that layout with no
+  copy and copies `[in, out]` on every run; a missing bias is `none`
+  (Whisper's `k_proj`). Names are the caller's: Whisper's
   or BERT's live with the model code.
 
 ## Cost
