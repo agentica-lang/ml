@@ -36,11 +36,12 @@ It also needs a ggml model file. `tools/fetch-model.sh` downloads one.
 
 - `load_model(path)` loads a ggml or gguf model (the model file formats of whisper.cpp) into a `Model`. The path is at most 4096 bytes.
 - `Whisper.load(path)` reads a WAV file as a list of 16 kHz mono floats. Only PCM, mono, 16 kHz and 16-bit files are read.
+- `Whisper.decode(data)` reads WAV bytes that are already in memory, by the same rules.
 - `transcribe(model, pcm)` gives the text of one decode with the default options. A decode is one run of the model over the audio.
 - `transcribe_with(model, pcm, options)` gives the timed `Segment`s of one decode, in time order. A `Segment` has `start_ms`, `end_ms` and `text`.
 - `transcribe_detailed(model, pcm, options)` gives a `Transcript`: the language, the segments with their tokens, and the detected language when asked for.
 - `join_text(segments)` joins the texts of segments with single spaces.
-- `language_name(code)` gives the English name of a language code, such as `"spanish"`.
+- `language_name(code)` gives the English name of a language code, such as `"spanish"`, or none for a code the engine does not know.
 
 `Whisper.Options` has these fields:
 
@@ -50,6 +51,28 @@ It also needs a ggml model file. `tools/fetch-model.sh` downloads one.
 - `token_timestamps`, default `false`: times each token.
 - `max_len`, default `0`: with `token_timestamps`, cuts the segments to at most this many characters.
 - `language_probabilities`, default `false`: fills the detection with the probability of every language.
+
+`Whisper.Transcript` has `language` (the code decoded), `segments` (a list of `SegmentDetail`) and `detection`, which is `some(Detection)` when `language_probabilities` asked for it on a multilingual model, and `none` otherwise.
+
+- `SegmentDetail` has `start_ms`, `end_ms`, `text` (not trimmed), `tokens` (a list of `Token`), `avg_logprob` (the sum of the tokens' log probabilities over their number, special tokens included) and `no_speech_probability`.
+- `Token` has `ids`, `text`, `probability` (of its first token), `log_probability` (the sum over its tokens), and `start_ms` and `end_ms`, which are -10 unless `token_timestamps` is on.
+- `Detection` has `language`, its `probability`, and `probabilities`, a map from every code to its probability.
+
+## Long audio and the microphone
+
+The `stream` module (`pkg/whisper/stream`) transcribes audio of any length, in windows:
+
+- `Stream.transcribe_stream(model, source, options)` reads a `Mic.Source`, checks the walk, decodes each window with speech and merges the segments onto one timeline. Its times count from the first sample. Audio with no speech gives no segments, and no samples at all is an error.
+- `Stream.default_options()` gives a `StreamOptions` with `window_s` 30, `overlap_s` 5, the default `vad` and the default `Whisper.Options`. `window_s` is from 1 to 300 seconds, and `overlap_s` is less than `window_s`. `Stream.check_options(options)` checks these without audio or a model.
+- `VadOptions` has `frame_ms` (30) and `threshold` (0.02). A window is kept when one frame's RMS reaches the threshold. `threshold: 0.0` keeps every window.
+- `windows`, `offset_segments`, `merge_segments`, `has_speech` and `frame_rms` are the pure steps of the walk. Tests run them without a model.
+
+The `mic` module (`pkg/whisper/mic`) captures audio:
+
+- `Mic.Source` is `Samples(list)`, for PCM that is already there, or `Command(capture)`, for a live capture.
+- `Mic.Capture` has `command` (`"arecord"`), `args`, `timeout_ms` (30 000) and `max_samples` (160 000, ten seconds). `Mic.default_capture()` gives the `arecord` capture of 16 kHz mono 16-bit PCM.
+- `Mic.capture(spec)` runs the command and gives its samples as floats. It is an error when the command cannot start, a read times out, the command dies mid-capture, or no audio comes.
+- `Mic.read(source)` gives the samples of a `Mic.Source`, and `Mic.decode_s16le(data)` decodes raw 16-bit PCM bytes.
 
 ## Limits
 
