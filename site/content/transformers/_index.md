@@ -1,10 +1,10 @@
 ---
 title: transformers
-description: BERT in Agentica from a Hugging Face checkpoint, and the tokenizers of BERT and Qwen that give Hugging Face's ids.
+description: BERT and Qwen3 in Agentica from Hugging Face checkpoints, and the tokenizers of both that give Hugging Face's ids.
 weight: 7
 ---
 
-`transformers` is BERT and, to come, Qwen3 in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
+`transformers` is BERT and Qwen3 in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 (the forward over a whole sequence; generation with a cache comes next), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
 
 ## BERT
 
@@ -40,6 +40,37 @@ end
 - The sequence length may not pass `max_position_embeddings` (512), and every encoding needs a token.
 - Reference and ggml are tested; libtorch is not. A sharded checkpoint (`model.safetensors.index.json`) is not supported yet.
 - Installed from outside this repository, `transformers` pins the `hub` of an earlier commit, which does not read `bert-base-uncased`'s `gamma` and `beta` layer norms: it needs the next ml release, which moves the pins.
+
+## Qwen3
+
+`Qwen3.open(dir, backend)` loads `config.json` and `model.safetensors` from a folder (`Qwen/Qwen3-0.6B`, whose weights are `bfloat16` on disk and `F32` in memory). `Qwen3.run(m, rows)` takes rows of token ids of one length and gives the logits `[batch, seq, vocab_size]`: each position reads itself and the ones before it. With `last: true` it gives only the last position's, `[batch, 1, vocab_size]`, the row that picks the next token.
+
+```agentica
+import Bpe from "pkg/transformers/tokenizer/bpe"
+import Qwen3 from "pkg/transformers/qwen3"
+import Tensor from "pkg/tensor/tensor"
+
+def main() -> Void
+  backend = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+  tok = Bpe.open("Qwen3-0.6B/tokenizer.json").unwrap!
+  m = Qwen3.open("Qwen3-0.6B", backend).unwrap!
+  ids = Bpe.encode(tok, "The capital of France is").unwrap!
+  puts(ids)
+  puts(Tensor.shape(Qwen3.run(m, [ids], true).unwrap!))
+end
+```
+
+```output
+[785, 6722, 315, 9625, 374]
+[1, 1, 151936]
+```
+
+- The model matches `Qwen3ForCausalLM` in `float32` on ggml CPU and Vulkan: over five prompts of 5 to 50 tokens the largest gap of a logit is 4.9e-5 on the CPU and 8.6e-5 on Vulkan, and the five largest logits name the same ids at every position.
+- The layers are grouped-query attention with a normalized query and key per head, rotary positions with `rope_theta`, a SwiGLU MLP, RMS norms, and an output head tied to the embedding table when the config says so (the file's `lm_head.weight` is then ignored).
+- On ggml the forward is one graph with the weights as constants. There is no cache yet: every call reads the whole sequence, and it traces and plans a graph (5 to 20 seconds on the CPU, 0.5 to 1 second on Vulkan for these prompts).
+- `Qwen3.close_model(m)` frees the weights; the logits belong to the caller (`Lift.close`). Qwen3-0.6B takes about 5 GB on ggml CPU and 1.4 GB on Vulkan, where the weights live in device memory.
+- A `model_type` other than `qwen3`, an activation other than `silu`, attention bias, `rope_scaling`, `use_sliding_window: true` (a `sliding_window` size with it `false` is ignored, as Hugging Face does), a head count that the key heads do not divide, and a tensor of another shape are errors. Qwen2.5 and others come later. Reference and ggml are tested; libtorch is not, and a sharded checkpoint is not tested. On the reference backend attention needs `q * k` of at most 1,048,576, about 1024 tokens with the causal mask; ggml has no such limit.
+- The pins of `transformers` in `agentica.toml` are those of `asr`, as for BERT.
 
 ## Tokenizer example
 
