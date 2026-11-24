@@ -103,7 +103,7 @@ For one-step control, `Generate.start()`, then `Generate.step(g, cache, ids)` (a
 - The ids match Hugging Face's greedy `generate` for `Qwen3-0.6B` in `float32` on ggml CPU and Vulkan: 24 new ids for each of five prompts (English, code, a chat template, accents and CJK, a long repeat).
 - The cache is padded to 8, 16, 32 and so on rows, and the prompt too, to a power of 2 (a prompt of 9 tokens runs as 16). On ggml each (tokens, rows, capacity) is one compiled graph, so a generation compiles a handful and a second call none. The choice of the id runs on the device.
 - On the reference backend attention needs `q * k` of at most 1,048,576, which the padded prompt counts: a prompt of 600 tokens is padded to 1024. libtorch is not tested. The prompt and the new ids must fit `max_position_embeddings` (40960).
-- Speed on this machine (Ryzen 5 3550H, Radeon Vega iGPU, shared with other jobs), in `float32`, after the prompt: 8.7 to 9.7 tokens per second on Vulkan and 5 to 9.6 on the CPU (the CPU rows vary with the load). Memory: 0.89 GB peak on Vulkan, 2.7 GB on the CPU.
+- Speed on this machine (Ryzen 5 3550H, Radeon Vega iGPU), in `float32`, after a prompt of 128 tokens: 5.6 tokens per second on the CPU and 7.1 on Vulkan, and 56 and 208 tokens per second for the prompt itself (medians of 5 interleaved rounds). llama.cpp on the same weights in F32 is 1.9 to 2.3 times faster, and its F16 weights make the CPU decode 1.7 times faster again: the table and the method are in [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md). Memory: 2.8 GB on the CPU and 0.85 GB on Vulkan, whole process.
 - A batch of one, the prompt in one step (no chunks), no sampling yet.
 
 ## Tokenizer example

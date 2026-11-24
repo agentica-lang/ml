@@ -220,6 +220,23 @@ The Vulkan weights sit in the device's own buffers, which on this iGPU are syste
 
 llama.cpp is about 2.3 times faster than ours on the CPU for one sentence; the gap was not profiled. Two things that could account for part of it, untested: ours traces and plans the whole graph at every call, and its attention is the unfused one. The Vulkan row has no llama.cpp counterpart on this machine. The numbers are the same weights in F32 everywhere; `float16` weights would halve the memory and are not read yet (ml#35). Correctness: the last hidden state and the pooler output match `BertModel` to 5.0e-5 on CPU and 2.8e-5 on Vulkan (`transformers/tools/bert_check.agc`).
 
+## Qwen3-0.6B (ml#78), ours against llama.cpp
+
+`Qwen/Qwen3-0.6B`, greedy generation, one sequence. Ours is `transformers/tools/bench_qwen.agc` on ml `9e94aa8` (`Generate`, with the weight layout of ml#123): the load, one warm-up pass that compiles the steps, then a timed pass: a prompt of 128 token ids in one step, then 64 one-token steps after it (the cache grows from 128 to 192 tokens). llama.cpp (`e348f05cf`, built out of tree from a `git archive` of its HEAD, once with the CPU only and once with `-DGGML_VULKAN=ON`, `llama-bench` only) runs the GGUFs that its own `convert_hf_to_gguf.py` makes from the same weights, run as `python3 -I`, with `llama-bench -p 128 -n 64 -t 8 -r 1` (`-ngl 99` on Vulkan): `pp128` is the prompt and `tg64` the 64 tokens, starting from an empty cache. Ours always computes in `float32` (the `bfloat16` file is read as `F32`), so the like-for-like row is llama.cpp's F32; its F16 row reads half the memory per token and is what a user would run next. The default quantized GGUFs of llama.cpp (Q4_K_M and the like) are not comparable to anything here and are not measured.
+
+[`benchmarks/bench_qwen.sh`](bench_qwen.sh) runs the six rows interleaved, one process per row and round (5 rounds, so a change of load hits all rows), under `flock /tmp/claude-1000/bench.lock` with nothing else timing, and prints the medians. Same machine as above. The load average was 3.7 to 5.5 at the end of the rounds, which is the benchmark's own 8 threads. Peak memory is `/usr/bin/time`'s maximum resident set of the whole process: llama.cpp maps the GGUF, so on Vulkan its weights are not in the process, ours are loaded.
+
+| Row | Prompt, 128 tokens | 64 tokens after it | Load | Peak memory |
+|---|---|---|---|---|
+| ours, ggml CPU, F32 | 56 tokens/s | 5.6 tokens/s | 1.2 s | 2.76 GB |
+| llama.cpp CPU, F32 | 129 | 10.5 | | 2.89 GB |
+| llama.cpp CPU, F16 | 82 | 18.1 | | 1.49 GB |
+| ours, ggml Vulkan, F32 | 208 | 7.1 | 1.6 s | 0.85 GB |
+| llama.cpp Vulkan, F32 | 403 | 13.5 | | 0.13 GB |
+| llama.cpp Vulkan, F16 | 545 | 25.0 | | 0.13 GB |
+
+On the same F32 weights llama.cpp is 2.3 times faster on the CPU prompt, 1.9 times on its tokens, and 1.9 times on both on Vulkan. The gap was not profiled. Candidates, untested: a step of ours writes the new rows into the cache with a product by a 0/1 matrix and gives back a whole new padded cache (28 layers of keys and values) every step, where llama.cpp updates its cache in place; the attention is the unfused `Tensor.attention`; the norms, the SwiGLU and the rest are separate ops (ml#101 maps ops to ggml's fused kernels). On the CPU llama.cpp's F16 decode is 1.7 times its F32 one, so a token there is bound by what it reads, and ours (3 GB at 5.6 tokens/s is 17 GB/s, against 32 GB/s for llama.cpp's F32) has room in both directions; reading `float16` weights is ml#35. Correctness: the ids match Hugging Face's greedy `generate` on five prompts on both backends (`transformers/tools/generate_check.agc`).
+
 ## Run it
 
 You need the Hugging Face checkout of `openai/whisper-tiny`, openai/whisper's `whisper/assets/mel_filters.npz`, a whisper.cpp checkout (never modified), `cmake`, a C++ compiler, `/usr/bin/time` (GNU time), `agentica` 0.36.0 on `PATH`, libtorch, and the Vulkan headers and `glslc` for the Vulkan rows. Python needs only the system numpy: the scripts run with `python3 -I`, which ignores virtual environments and `PYTHONPATH`.
@@ -229,6 +246,12 @@ git submodule update --init third_party/ggml
 benchmarks/bench_whisper.sh build  WHISPER_TINY_DIR MEL_FILTERS_NPZ WHISPER_CPP_SRC WORK_DIR
 benchmarks/bench_whisper.sh run    WHISPER_TINY_DIR MEL_FILTERS_NPZ WHISPER_CPP_SRC WORK_DIR
 benchmarks/bench_whisper.sh report WORK_DIR
+```
+
+The Qwen3 rows need `qwen3-0.6b-f32.gguf` and `qwen3-0.6b-f16.gguf` (`python3 -I convert_hf_to_gguf.py MODEL_DIR --outtype f32|f16 --outfile ...` from llama.cpp's checkout), the two out-of-tree builds of its `llama-bench`, and the engines of `transformers/` (`sh tensor/tools/build-engine.sh vulkan`, its exports in the shell):
+
+```sh
+benchmarks/bench_qwen.sh QWEN3_DIR GGUF_DIR LLAMA_CPU_BUILD LLAMA_VULKAN_BUILD [ROUNDS]
 ```
 
 `build` converts the weights to `ggml-tiny-f32.bin` and `ggml-tiny-f16.bin`, builds whisper.cpp for the CPU and Vulkan in `WORK_DIR`, compiles [`whisper_cpp_bench.cpp`](whisper_cpp_bench.cpp) against each, and builds the engines of `asr/`. `run` times every row on both clips, and runs one more pass per row (jfk only) that stops after the load: its `.load.time` file in the raw results holds the memory of the load alone (the tables show the peak of the whole process). `report` prints the tables above (`summarize.py`). `ONLY=wcpp` runs the rows whose name matches. `THREADS` (default: every core) must equal the cores ours uses, which is every online core. Both engines are timed the same way: the harness of whisper.cpp (`whisper_cpp_bench`) and `asr/tools/bench_transcribe.agc` load once, transcribe once to warm up, then time 5 runs.
