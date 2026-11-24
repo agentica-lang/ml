@@ -104,7 +104,7 @@ try SafetensorsWrite.write("last_block.safetensors", try Params.named(split, fit
 
 - Every step retraces the loss, so the trace cost is paid on each step. On the reference backend, one epoch of the 2-8-1 MLP of the XOR test, with four rows, costs about 75 000 VM steps.
 - The loss must return a float scalar. An op with no backward rule, listed on the [tensor page](../tensor/_index.md), makes `fit` fail.
-- On `Ggml`, the step is one compiled graph with at most 256 outputs: the loss, the new parameters and the optimizer's moments. That allows about 85 parameters with Adam, 127 with momentum SGD and 255 with plain SGD.
+- On `Ggml`, the step is one compiled graph with at most 512 outputs: the loss, the new parameters and the optimizer's moments. That allows 170 parameters with Adam, 255 with momentum SGD and 511 with plain SGD.
 - The losses and the optimizers use only ops that ggml supports, so a batch and its step run on `Ggml` when the dataset is on `Ggml`.
 
 ## How it works

@@ -70,9 +70,9 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   state, and runs them with one `Trace.eval_many`: on `Ggml` one compiled
   graph, which the structural cache compiles once per batch shape (a last
   partial batch is a second graph). The step count stays on the host, so
-  Adam's bias correction is a fill, set per run. A ggml graph has at most 256
-  outputs, the loss and the new tensors, so a step on `Ggml` takes at most 85
-  parameters with Adam, 127 with momentum SGD and 255 with plain SGD.
+  Adam's bias correction is a fill, set per run. A ggml graph has at most 512
+  outputs, the loss and the new tensors, so a step on `Ggml` takes at most 170
+  parameters with Adam, 255 with momentum SGD and 511 with plain SGD.
 - **Binary cross-entropy is built from ops that have backward rules.** It is
   `relu(z) + log(1 + exp(-|z|)) - t z`, stable for any `z`, with
   `|z| = 2 relu(z) - z`: `relu`'s derivative at `0` is `0`, and with this form

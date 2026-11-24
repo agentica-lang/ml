@@ -584,3 +584,31 @@ def test_vulkan_matches_the_reference_or_says_why_not() -> Result[Void]
     error(e) -> Test.assert(e.message.include?("chose F32 mul_mat"), "the error said \"#{e.message}\"")
   end
 end
+
+## `x + i` for `i` below `count`: one output each.
+def shifted(count: Int) -> Fn[List[Tensor.Tensor], Result[List[Tensor.Tensor]]]
+  ->(a: List[Tensor.Tensor]) {
+    outs: List[Tensor.Tensor] = []
+    for i in 0...count
+      step = try Tensor.full([2], Tensor.Values.Float(i.to_f), Tensor.Dtype.F32, Tensor.Backend.Trace)
+      outs = outs.push(try Tensor.add(a[0], step))
+    end
+
+    ok(outs)
+  }
+end
+
+## The cap of one graph: `MAX_OUTPUTS` of `ggml_graph.c`.
+def test_a_graph_returns_512_outputs_and_refuses_one_more() -> Result[Void]
+  for backend in [CPU, VULKAN]
+    next if !try present(backend)
+    x = try floats([1.0, -2.0], [2], backend)
+    outs = try Trace.eval_many([x], shifted(512))
+    try Test.eq(outs.size, 512)
+    try Test.eq(try Tensor.to_list(outs[511]), [Tensor.Values.Float(512.0), Tensor.Values.Float(509.0)])
+    try Test.eq(try Tensor.to_list(outs[300]), [Tensor.Values.Float(301.0), Tensor.Values.Float(298.0)])
+    try Test.error?(Trace.eval_many([x], shifted(513)))
+  end
+
+  ok()
+end

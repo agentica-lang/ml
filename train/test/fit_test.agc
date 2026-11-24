@@ -76,6 +76,62 @@ def test_the_xor_run_on_ggml_follows_the_reference() -> Result[Void]
   ok()
 end
 
+## A hundred parameters with Adam are 301 outputs of one ggml graph (the loss, the parameters and two moments
+## each): the step runs there and follows the reference.
+def test_a_step_of_a_hundred_parameters_runs_on_ggml() -> Result[Void]
+  want = try many(S.REF)
+  for backend in try S.ggml_backends()
+    got = try many(backend)
+    try S.expect_close(got.history, want.history, 0.000001, 0.00001, "loss history on #{backend}")
+    for i in [0, 57, 99]
+      close = S.expect_close(
+        try S.floats_of(got.params[i]),
+        try S.floats_of(want.params[i]),
+        0.000001,
+        0.0001,
+        "p#{i}",
+      )
+
+      try close
+    end
+  end
+
+  Test.eq(want.params.size, 100)
+end
+
+## Two full-batch Adam epochs on `sum_i mean((x p_i - y)^2)` over a hundred `[2]` parameters.
+def many(backend: Tensor.Backend) -> Result[Train.Fit]
+  params: List[Tensor.Tensor] = []
+  for i in 0...100
+    params = params.push(try S.tensor([0.01 * i.to_f, 1.0 - 0.02 * i.to_f], [2], Tensor.Dtype.F32, backend))
+  end
+
+  rows = try Data.dataset(
+    try S.tensor([1.0, 2.0, -1.0, 0.5], [2, 2], Tensor.Dtype.F32, backend),
+    try S.tensor([0.5, -1.0, 2.0, 1.0], [2, 2], Tensor.Dtype.F32, backend),
+  )
+
+  Train.fit(
+    &many_loss,
+    params,
+    Data.Loader(dataset: rows, batch_size: 2, shuffle: false),
+    Optim.Optimizer.Adam(Optim.Adam(lr: 0.05)),
+    2,
+  )
+end
+
+def many_loss(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
+  total = try Loss.mse(try Tensor.mul(b.inputs, try Tensor.broadcast_to(ps[0], [2, 2])), b.targets)
+  for p in ps.drop(1)
+    total = try Tensor.add(
+      total,
+      try Loss.mse(try Tensor.mul(b.inputs, try Tensor.broadcast_to(p, [2, 2])), b.targets),
+    )
+  end
+
+  ok(total)
+end
+
 ## The trained model, traced so that it runs on ggml too, gives the XOR of
 ## each row.
 def classifies(fit: Train.Fit, backend: Tensor.Backend) -> Result[Void]
