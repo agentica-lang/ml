@@ -171,3 +171,37 @@ def test_a_product_takes_a_view_of_one_head_over_a_batch() -> Result[Void]
 
   ok()
 end
+
+## Flash attention takes the heads as views and a mask of fills (0 and -1e9, as the padded mask of a decoder is):
+## grouped heads, a batch, a width of 8 (ggml-vulkan has a kernel from there), a causal mask and an explicit one.
+def test_attention_reads_the_heads_as_views_and_a_mask_of_fills() -> Result[Void]
+  q = try f32(20, [2, 4, 5, 8])
+  k = try f32(21, [2, 2, 9, 8])
+  v = try f32(22, [2, 2, 9, 8])
+  positions = try Tensor.from_list([4, 5, 6, 7, 8].map { |i| Tensor.Values.Int(i) }, [5], Tensor.Dtype.I32, REF)
+  for backend in try engines()
+    try agree_end("causal attention", backend, [q, k, v]) do |x|
+      Tensor.attention(x[0], x[1], x[2], none, none, true)
+    end
+
+    try agree_end("attention with a padded mask", backend, [q, k, v, positions]) do |x|
+      Tensor.attention(x[0], x[1], x[2], some(try fills_mask(x[3])), none, false)
+    end
+  end
+
+  ok()
+end
+
+## `[n, 9]`: -1e9 where the key is after the query's position, 0 elsewhere.
+def fills_mask(positions: Tensor.Tensor) -> Result[Tensor.Tensor]
+  backend = Tensor.backend(positions)
+  grid = [5, 9]
+  queries = try Tensor.broadcast_to(try Tensor.reshape(positions, [5, 1]), grid)
+  keys = try Tensor.broadcast_to(
+    try Tensor.reshape(try Tensor.arange(0, 9, 1, Tensor.Dtype.I32, backend), [1, 9]),
+    grid,
+  )
+
+  blocked = try Tensor.full(grid, Tensor.Values.Float(-1000000000.0), Tensor.Dtype.F32, backend)
+  Tensor.where(try Tensor.lt(queries, keys), blocked, try Tensor.zeros(grid, Tensor.Dtype.F32, backend))
+end

@@ -419,11 +419,15 @@ end
   `permute` (a `ggml_permute` and a copy), `batch_matmul` (`mul_mat` over the
   batch axes) and `rope` (`ggml_rope_ext`, with the sequence axis swapped to
   ggml's third; its positions are `I32`, as every integer here, and a rank above 4
-  is an error), `attention` (two `mul_mat` and one `soft_max_ext`: `mul_mat`
-  repeats the kv heads over a group of query heads, and `soft_max_ext` takes the
-  scale and the mask; not `flash_attn_ext`, which wants an `F16` mask padded to
-  a multiple of 64 rows and, on Vulkan, an `F16` cache: a node of the same
-  signature can use it later). A scale and a base cross as the bits of a
+  is an error), `attention` (one `flash_attn_ext` that reads q, k and v as the views they are, with the scale
+  and an `F16` mask, in `F32` accumulation: the pinned ggml takes an unpadded mask and `F32` k and
+  v on CPU and Vulkan. The lowering sends it a node when the mask is absent or is built from
+  `full`s of 0 and of a finite value of -65504 or below (the causal and the padded masks), which
+  `F16` holds exactly, the large ones clamped to -65504; a mask of any other values, a width that
+  Vulkan has no kernel for (not a multiple of 8) and a backend without the op use two `mul_mat` and
+  one `soft_max_ext` as before: `mul_mat` repeats the kv heads over a group of query heads, and
+  `soft_max_ext` takes the scale and the mask. A query with every key hidden by those fills gives the
+  softmax of its scores on the flash path, not their mean). A scale and a base cross as the bits of a
   double and must fit an `F32`. `eq`, `lt` and `where`
   emulated in `F32` arithmetic (`eq` as `1 - step(|a - b|)`, exact for integers
   below 2^24 and true when an operand is NaN; `where` as `c·x + (1 - c)·y`,

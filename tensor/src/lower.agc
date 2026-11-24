@@ -316,7 +316,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Stack(axis) -> ints = [axis, 1]
       Types.Op.Conv1d(stride, padding) -> ints = [stride, padding]
       Types.Op.Permute(axes) -> ints = axes
-      Types.Op.Attention(scale) -> ints = [try bits(scale, n)]
+      Types.Op.Attention(scale) -> ints = [try bits(scale, n), flag(try flash_mask(n.args))]
       Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
       Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
       Types.Op.SetRows -> ints = [flag(!donate)]
@@ -437,6 +437,27 @@ def bits(x: Float, n: Types.Node) -> Result[Int]
 end
 
 ## `true` as `1`, `false` as `0`.
+## Whether flash attention may take the mask of an attention node: it reads the mask in F16, so the mask must be absent
+## or hold only the fills 0 and a finite value of `-65504` or below (what `where` of two `full`s gives, as the causal
+## and the padded masks of the models do).
+def flash_mask(args: List[Types.Tensor]) -> Result[Bool]
+  return ok(true) if args.size == 3
+  fills_only(args[3])
+end
+
+def fills_only(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Full(v) ->
+      x = try Types.value_to_float(v, t.dtype)
+      ok(x == 0.0 or (Types.is_finite(x) and x <= -65504.0))
+    Types.Op.Where -> ok(try fills_only(n.args[1]) and try fills_only(n.args[2]))
+    Types.Op.Reshape -> fills_only(n.args[0])
+    Types.Op.BroadcastTo -> fills_only(n.args[0])
+    _ -> ok(false)
+  end
+end
+
 def flag(b: Bool) -> Int
   return 1 if b
   0
