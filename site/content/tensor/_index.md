@@ -156,6 +156,15 @@ A backward rule tells how to get the gradient of an op. These ops have no backwa
 
 On `Ggml`, `Trace.eval`, `eval_many`, `grad` and `value_and_grad` compile the whole graph, forward and backward, into one ggml graph. See [How it works](#how-it-works).
 
+## StableHLO
+
+`Trace.stablehlo(specs, f)` traces `f` once, over inputs of the shapes and dtypes of `specs`, and gives a `Module`: `text` is a StableHLO program that XLA (through PJRT) and IREE read, and `constants` are the tensors that `f` brought in with `Trace.constant`.
+
+- The program is one `@main` that takes the inputs, then the constants, and returns the tensors `f` answered. Shapes are static.
+- It covers the ops of an MLP forward and of a training step: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `sqrt`, `tanh`, `relu`, `gelu_tanh_approx`, `matmul`, `transpose`, `reshape`, `broadcast_to`, `sum`, `mean`, `max`, `eq`, `lt`, `where`, `arange`, `full` and `stop_grad`. Another op is an `error` that names it.
+- `Train.stablehlo(loss, params, batch, optimizer)` gives the step of `fit` as one program: the arguments are the parameters, the optimizer's moments, Adam's two scalars of the step (`Optim.step_scalars(state)`), then the batch; the results are the loss, the new parameters and the new moments. Feed the results back in, with the scalars of the next step, to train.
+- The repository checks the text against snapshots, and the reference backend against the outputs IREE gave for the same text (`make iree-goldens` makes them; IREE is not needed to run the tests).
+
 ## Dtypes and fp16
 
 - `Dtype` has `F32` (the dtype that ops compute in), `F16`, `F64`, `I8`, `I16`, `I32`, `I64`, `U8`, `Bool` and `Q8_0` (a quantized weight of ggml, from `from_file` only).

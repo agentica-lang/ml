@@ -246,6 +246,30 @@ def compiles() -> Result[Int]
   ok(GgmlRaw.compiles())
 end
 
+## Every traced tensor `roots` reach, each node once, in id order. The walk
+## does not enter a node of `env`; an input that is not there belongs to
+## another trace.
+def walk(roots: List[Types.Tensor], env: Map[Ref, Int]) -> Result[List[Types.Tensor]]
+  seen: Set[Ref] = Set.new([])
+  found: List[Types.Tensor] = []
+  stack = roots
+  while !stack.empty?
+    t = stack.last
+    stack = stack.take(stack.size - 1)
+    n = try Graph.node_of(t)
+    if !seen.include?(n.id)
+      seen = seen.add(n.id)
+      found = found.push(t)
+      case n.op
+        Types.Op.Input -> return error("node #{n.id} is an input of another trace") if !env.has_key?(n.id)
+        _ -> stack = stack + n.args
+      end
+    end
+  end
+
+  ok(found.sort_by { |t| Graph.id_of(t) })
+end
+
 private
 
 ## Binds the leaves `slots` of `p` for the next run of `lease`: an input to its tensor of `inputs`, a constant to
@@ -542,30 +566,6 @@ def bound(t: Types.Tensor, backend: Types.Backend, what: String) -> Result[Types
   end
 
   ok(t)
-end
-
-## Every traced tensor `roots` reach, each node once, in id order. The walk
-## does not enter a node of `env`; an input that is not there belongs to
-## another trace.
-def walk(roots: List[Types.Tensor], env: Map[Ref, Int]) -> Result[List[Types.Tensor]]
-  seen: Set[Ref] = Set.new([])
-  found: List[Types.Tensor] = []
-  stack = roots
-  while !stack.empty?
-    t = stack.last
-    stack = stack.take(stack.size - 1)
-    n = try Graph.node_of(t)
-    if !seen.include?(n.id)
-      seen = seen.add(n.id)
-      found = found.push(t)
-      case n.op
-        Types.Op.Input -> return error("node #{n.id} is an input of another trace") if !env.has_key?(n.id)
-        _ -> stack = stack + n.args
-      end
-    end
-  end
-
-  ok(found.sort_by { |t| Graph.id_of(t) })
 end
 
 ## A dtype whose values F32 holds exactly here: F32 itself, `Bool` as 0/1,

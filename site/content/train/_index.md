@@ -60,7 +60,9 @@ Each loss takes a prediction and a target. It gives a rank-0 tensor (a single nu
 
 `Optim.Optimizer` is `Sgd(Optim.Sgd(lr:, momentum: 0.0))` or `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))`. Adam's defaults are `lr` 0.001, `beta1` 0.9, `beta2` 0.999 and `eps` 1e-8.
 
-The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, params)` makes the state, and `Optim.step(state, params, grads)` returns a new state and new parameters. `fit` does this for you.
+The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, params)` makes the state, and `Optim.step(state, params, grads, scalars = [])` returns a new state and new parameters. `fit` does this for you.
+
+`Optim.step_scalars(state)` gives the two numbers that Adam's next step depends on (its bias corrections, `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)`), and none for SGD. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those two numbers as inputs after the moments (`Trace.stablehlo` in the tensor page).
 
 `Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 

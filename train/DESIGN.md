@@ -14,7 +14,8 @@ Loss.cross_entropy(logits, labels)             mean of -log softmax(z)[label]
 
 Optim.Optimizer = Sgd(Sgd { lr, momentum = 0 }) | Adam(Adam { lr = 1e-3, beta1 = 0.9, beta2 = 0.999, eps = 1e-8 })
 Optim.init(optimizer, params) -> Result[State]
-Optim.step(state, params, grads) -> Result[Step { state, params }]
+Optim.step(state, params, grads, scalars = []) -> Result[Step { state, params }]
+Optim.step_scalars(state) -> List[Float]        Adam's two numbers of the next step; none for SGD
 
 Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
 Data.load(path, inputs, targets, backend) -> Result[Dataset]  two named tensors of a safetensors file
@@ -27,6 +28,7 @@ Data.Batch { inputs, targets, index? }
 Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Result[Fit { params, history }]
   loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
   on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
+Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Module]
 ```
 
 ## Decisions
@@ -64,6 +66,13 @@ Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Resu
   the graph (`arange`, `eq`, `where`). A label outside `0...classes` is an
   error in an eager call. Traced labels, those `fit` lifts with
   `Trace.constant` included, are not checked, and such a label adds `0`.
+- **A step is one program of every step.** `Train.stablehlo` traces the same
+  step as `fit` (`traced_step`) and writes it as StableHLO
+  (`tensor/DESIGN.md` §12). Adam's bias corrections depend on the step count, so
+  there they are two rank-0 inputs after the moments (`Optim.step_scalars`,
+  passed as the `scalars` of `Optim.step`) and not constants of one step; `fit`
+  keeps them as fills, set per run. The goldens in `test/fixtures/stablehlo/`
+  are three chained runs on IREE, which `fit` reproduces at steps 1 and 3.
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on
   libtorch and only the new state, parameters and loss leave it

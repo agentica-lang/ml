@@ -11,3 +11,6 @@ site/public/
 site/resources/
 .hugo_build.lock
 /build/
+
+# The IREE venv of `make iree-venv`.
+/.venv-iree/
