@@ -29,14 +29,50 @@ def test_a_pair_has_two_segments() -> Result[Void]
   Test.eq(try WordPiece.decode(tok, e.ids, false), "[CLS] hello [SEP] world [SEP]")
 end
 
+## The `truncation` of a `tokenizer.json`, as `tokenizers` writes it.
+def truncation(max_length: Int, strategy: String, direction: String, stride: Int) -> String
+  fields = [
+    "\"direction\": \"#{direction}\"",
+    "\"max_length\": #{max_length}",
+    "\"strategy\": \"#{strategy}\"",
+    "\"stride\": #{stride}",
+  ]
+
+  "\"truncation\": {#{fields.join(", ")}}"
+end
+
+## A file that truncates and pads to the longest of a batch (sentence-transformers' checkpoints): an encoding of one
+## text has `max_length` ids at most, the special tokens counted, and the padding changes nothing.
+def test_the_truncation_of_the_file_cuts_one_text() -> Result[Void]
+  text = try File.read_text("test/fixtures/wordpiece.json")
+  limited = try S.replaced(text, "\"truncation\": null", truncation(6, "LongestFirst", "Right", 0))
+  padding = "\"padding\": {\"strategy\": \"BatchLongest\", \"direction\": \"Right\", \"pad_id\": 0}"
+  tok = try WordPiece.parse(try S.replaced(limited, "\"padding\": null", padding))
+  try Test.eq(tok.max_length, some(6))
+  long = "hello world hello world hello"
+  try Test.eq((try WordPiece.encode(tok, long)).ids, [tok.cls, 13, 14, 13, 14, tok.sep])
+  try Test.eq((try WordPiece.encode(tok, "hello world")).ids, [tok.cls, 13, 14, tok.sep])
+  try Test.eq((try WordPiece.encode(tok, long, none, false)).ids, [13, 14, 13, 14, 13])
+  try Test.eq((try WordPiece.encode(tok, long, none, true, some(3))).ids, [tok.cls, 13, tok.sep])
+  try Test.eq((try WordPiece.encode(tok, "hello", some("world"))).ids.size, 5)
+  try Test.error?(WordPiece.encode(tok, "hello world", some("hello world")))
+  try Test.error?(WordPiece.encode(tok, long, none, true, some(2)))
+  plain = try WordPiece.parse(text)
+  try Test.eq(plain.max_length, none)
+  try Test.eq((try WordPiece.encode(plain, long)).ids.size, 7)
+  Test.eq((try WordPiece.encode(plain, long, none, true, some(4))).ids, [tok.cls, 13, 14, tok.sep])
+end
+
 def test_other_pipelines_are_errors() -> Result[Void]
   text = try File.read_text("test/fixtures/wordpiece.json")
   try Test.ok?(WordPiece.parse(text))
   edits = [
     try S.replaced(text, "\"BertNormalizer\"", "\"Lowercase\""),
     try S.replaced(text, "\"BertPreTokenizer\"", "\"Whitespace\""),
-    try S.replaced(text, "\"truncation\": null", "\"truncation\": {\"max_length\": 8}"),
-    try S.replaced(text, "\"padding\": null", "\"padding\": {\"strategy\": \"BatchLongest\"}"),
+    try S.replaced(text, "\"truncation\": null", truncation(8, "OnlyFirst", "Right", 0)),
+    try S.replaced(text, "\"truncation\": null", truncation(8, "LongestFirst", "Left", 0)),
+    try S.replaced(text, "\"truncation\": null", truncation(8, "LongestFirst", "Right", 2)),
+    try S.replaced(text, "\"padding\": null", "\"padding\": {\"strategy\": {\"Fixed\": 8}, \"pad_id\": 0}"),
     # The second "WordPiece" is the model's, after the decoder's.
     try S.edited(text, "\"WordPiece\"", "\"Unigram\"", 1),
     try S.replaced(text, "\"prefix\": \"##\"", "\"prefix\": \"@@\""),

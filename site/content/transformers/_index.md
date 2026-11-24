@@ -197,7 +197,8 @@ Hello, world!<|im_end|>
 `WordPiece.open(path)` reads a BERT tokenizer: the BERT normalizer (control characters dropped, spaces around CJK ideographs, accents stripped, lowercase), the BERT pre-tokenizer (white space and punctuation) and a WordPiece model with the `[CLS] A [SEP]` template.
 
 - `WordPiece.parse(text)` reads the tokenizer from the text of a `tokenizer.json`, and `WordPiece.open(path)` from its file.
-- `WordPiece.encode(tok, text, pair, add_special)` gives `Encoding(ids, type_ids)`. `pair` is `none` or `some(text)`, and `add_special` (default `true`) adds `[CLS]` and `[SEP]`. Added tokens in the text (`[MASK]`) are one id each.
+- `WordPiece.encode(tok, text, pair, add_special, max_length)` gives `Encoding(ids, type_ids)`. `pair` is `none` or `some(text)`, and `add_special` (default `true`) adds `[CLS]` and `[SEP]`. Added tokens in the text (`[MASK]`) are one id each.
+- With `max_length: some(n)`, or else the `truncation` of the file (`tok.max_length`), an encoding of one text has `n` ids at most, `[CLS]` and `[SEP]` counted: the tokens past it are dropped, as `tokenizers` does. A pair over the limit is an error. Only the plain truncation is read (cut at the right, `LongestFirst`, no stride). A file that pads to the longest of a batch is accepted and one text is never padded (`Bert.run` pads a batch); a fixed-length padding is an error.
 - `WordPiece.decode(tok, ids, skip_special)` joins the pieces back, with the spaces before punctuation cleaned as `tokenizers` does. `skip_special` is `true` by default.
 - A word longer than the file's `max_input_chars_per_word`, or one the vocabulary cannot cover, is `[UNK]`.
 

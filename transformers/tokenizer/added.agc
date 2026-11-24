@@ -24,10 +24,12 @@ struct Added
   chars: List[Int]
 end
 
-## What `truncation` or `padding` holds when the file sets one: any object.
+## What `truncation` or `padding` holds when the file sets one.
 struct Setting
   strategy: Optional[String]
   max_length: Optional[Int]
+  direction: Optional[String]
+  stride: Optional[Int]
 end
 
 enum Part
@@ -41,6 +43,31 @@ def refuse_limits(truncation: Optional[Setting], padding: Optional[Setting]) -> 
   return error("the file sets truncation, which is not supported") if truncation.some?
   return error("the file sets padding, which is not supported") if padding.some?
   ok()
+end
+
+## The most tokens an encoding has when the file truncates (`max_length`, the special tokens counted), none when it
+## does not. Only the plain form is read: cut at the right, `LongestFirst`, no stride. `padding` to the longest of a
+## batch is accepted and changes nothing, since one text is its own batch; any other padding is an error.
+def limit(truncation: Optional[Setting], padding: Optional[Setting]) -> Result[Optional[Int]]
+  case padding
+    some(p) ->
+      return error("the file pads to a fixed length, which is not supported") if p.strategy != some("BatchLongest")
+
+    none -> nil
+  end
+
+  case truncation
+    some(t) ->
+      if t.strategy.unwrap_or("LongestFirst") != "LongestFirst"
+        return error("the truncation strategy #{t.strategy.unwrap_or("")} is not supported, only LongestFirst")
+      end
+
+      return error("truncation at the left is not supported") if t.direction.unwrap_or("Right") != "Right"
+      return error("truncation with a stride is not supported") if t.stride.unwrap_or(0) != 0
+      max = try t.max_length.to_result("the truncation has no max_length")
+      ok(some(max))
+    none -> ok(none)
+  end
 end
 
 ## The added token `content` of `id`.

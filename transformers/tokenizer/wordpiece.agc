@@ -27,6 +27,8 @@ struct WordPiece
   cleanup: Bool
   cls: Int
   sep: Int
+  ## The `max_length` of the file's `truncation`, none when it has none.
+  max_length: Optional[Int] = none
 end
 
 struct Encoding
@@ -43,7 +45,7 @@ end
 ## The tokenizer of the text of a `tokenizer.json`.
 def parse(text: String) -> Result[WordPiece]
   file = try JSON.decode(text, Json)
-  try Added.refuse_limits(file.truncation, file.padding)
+  max_length = try Added.limit(file.truncation, file.padding)
   kind = file.model.type.unwrap_or("WordPiece")
   return error("the model is #{kind}, not WordPiece") if kind != "WordPiece"
   if file.normalizer.type != "BertNormalizer"
@@ -101,15 +103,44 @@ def parse(text: String) -> Result[WordPiece]
       cleanup: file.decoder.cleanup,
       cls: cls,
       sep: sep,
+      max_length: max_length,
     ),
   )
 end
 
 ## The ids of `text` (and of `pair`, after a `[SEP]`), with `[CLS]` and
 ## `[SEP]` around them when `add_special` is true, as `tokenizer.encode` gives them.
-## Added tokens in the text (`[MASK]`) are one id each.
-def encode(tok: WordPiece, text: String, pair: Optional[String] = none, add_special: Bool = true) -> Result[Encoding]
+## Added tokens in the text (`[MASK]`) are one id each. With `max_length`, or else the `truncation` of the file, an
+## encoding of one text has that many ids at most, `[CLS]` and `[SEP]` counted: the tokens past it are dropped. A pair
+## longer than the limit is an error (cutting a pair is not supported).
+def encode(
+  tok: WordPiece,
+  text: String,
+  pair: Optional[String] = none,
+  add_special: Bool = true,
+  max_length: Optional[Int] = none,
+) -> Result[Encoding]
   first = tokens(tok, text)
+  limit = tok.max_length
+  if max_length.some?
+    limit = max_length
+  end
+
+  case limit
+    some(most) ->
+      room = most
+      if add_special
+        room = most - 2
+      end
+
+      return error("max_length #{most} leaves no room for a token") if room < 1
+      if pair.none?
+        first = first.take(room)
+      end
+
+    none -> nil
+  end
+
   ids = first
   types = List.repeat(0, first.size)
   if add_special
@@ -128,6 +159,15 @@ def encode(tok: WordPiece, text: String, pair: Optional[String] = none, add_spec
       end
 
     none -> 0
+  end
+
+  case limit
+    some(most) ->
+      if ids.size > most
+        return error("the pair has #{ids.size} ids, over max_length #{most}: cutting a pair is not supported")
+      end
+
+    none -> nil
   end
 
   ok(Encoding(ids: ids, type_ids: types))
