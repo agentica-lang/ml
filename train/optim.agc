@@ -52,14 +52,33 @@ def init(optimizer: Optimizer, params: List[Tensor.Tensor]) -> Result[State]
   end
 end
 
-def step(state: State, params: List[Tensor.Tensor], grads: List[Tensor.Tensor]) -> Result[Step]
+## `scalars` are the numbers of `step_scalars` as rank-0 tensors, for a step that is one compiled program of every
+## step count (`Train.stablehlo`): the step then reads them, where it otherwise holds them as constants.
+def step(
+  state: State,
+  params: List[Tensor.Tensor],
+  grads: List[Tensor.Tensor],
+  scalars: List[Tensor.Tensor] = [],
+) -> Result[Step]
   if grads.size != params.size
     return error("step needs one gradient per parameter, got #{grads.size} for #{params.size}")
   end
 
   case state.optimizer
     Optimizer.Sgd(o) -> sgd(o, state, params, grads)
-    Optimizer.Adam(o) -> adam(o, state, params, grads)
+    Optimizer.Adam(o) ->
+      return error("an Adam step takes two scalars, got #{scalars.size}") if !scalars.empty? and scalars.size != 2
+
+      adam(o, state, params, grads, scalars)
+  end
+end
+
+## The numbers the next step of `state` depends on, as `step` reads them from its `scalars`: Adam's
+## `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` for the step count `t` (bias correction); none for SGD.
+def step_scalars(state: State) -> List[Float]
+  case state.optimizer
+    Optimizer.Sgd(_) -> []
+    Optimizer.Adam(o) -> adam_scalars(o, state.steps + 1)
   end
 end
 
@@ -90,10 +109,21 @@ def sgd(o: Sgd, state: State, params: List[Tensor.Tensor], grads: List[Tensor.Te
   ok(Step(state: state.with(steps: state.steps + 1, first: first), params: out))
 end
 
-def adam(o: Adam, state: State, params: List[Tensor.Tensor], grads: List[Tensor.Tensor]) -> Result[Step]
-  t = state.steps + 1
+def adam_scalars(o: Adam, t: Int) -> List[Float]
   correct1 = 1.0 / (1.0 - power(o.beta1, t))
   correct2 = 1.0 / (1.0 - power(o.beta2, t))
+  [o.lr * correct1, correct2]
+end
+
+def adam(
+  o: Adam,
+  state: State,
+  params: List[Tensor.Tensor],
+  grads: List[Tensor.Tensor],
+  scalars: List[Tensor.Tensor],
+) -> Result[Step]
+  t = state.steps + 1
+  held = adam_scalars(o, t)
   first: List[Tensor.Tensor] = []
   second: List[Tensor.Tensor] = []
   out: List[Tensor.Tensor] = []
@@ -101,14 +131,20 @@ def adam(o: Adam, state: State, params: List[Tensor.Tensor], grads: List[Tensor.
     g = grads[i]
     m = try Tensor.add(try scale(state.first[i], o.beta1), try scale(g, 1.0 - o.beta1))
     v = try Tensor.add(try scale(state.second[i], o.beta2), try scale(try Tensor.mul(g, g), 1.0 - o.beta2))
-    denom = try shift(try Tensor.sqrt(try scale(v, correct2)), o.eps)
-    delta = try Tensor.div(try scale(m, o.lr * correct1), denom)
+    denom = try shift(try Tensor.sqrt(try Tensor.mul(v, try factor(v, held, scalars, 1))), o.eps)
+    delta = try Tensor.div(try Tensor.mul(m, try factor(m, held, scalars, 0)), denom)
     first = first.push(m)
     second = second.push(v)
     out = out.push(try Tensor.sub(params[i], delta))
   end
 
   ok(Step(state: state.with(steps: t, first: first, second: second), params: out))
+end
+
+# The scalar `i` of `held` as a tensor of `like`'s shape: a constant, or the input `scalars[i]` widened.
+def factor(like: Tensor.Tensor, held: List[Float], scalars: List[Tensor.Tensor], i: Int) -> Result[Tensor.Tensor]
+  return constant(like, held[i]) if scalars.empty?
+  Tensor.broadcast_to(scalars[i], Tensor.shape(like))
 end
 
 def scale(t: Tensor.Tensor, c: Float) -> Result[Tensor.Tensor] = Tensor.mul(t, try constant(t, c))

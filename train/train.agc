@@ -46,6 +46,26 @@ def fit(
   result
 end
 
+## The training step of `fit` as one StableHLO program (`Trace.stablehlo`): its arguments are the parameters, the
+## optimizer's first and second moments, then the two `Optim.step_scalars` of Adam as rank-0 tensors, so one program is
+## every step. The batch is lifted as constants, which are the module's `constants`. It answers the loss, then the new
+## parameters, first moments and second moments, as a step of `fit` does.
+def stablehlo(
+  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  params: List[Tensor.Tensor],
+  batch: Data.Batch,
+  optimizer: Optim.Optimizer,
+) -> Result[Trace.Module]
+  return error("a step needs at least one parameter") if params.empty?
+  state = try Optim.init(optimizer, params)
+  n = params.size
+  k = state.first.size
+  scalar = Trace.Spec(shape: [], dtype: Tensor.dtype(params[0]), backend: Tensor.backend(params[0]))
+  scalars = Optim.step_scalars(state).map { |_| scalar }
+  specs = (params + state.first + state.second).map { |t| Trace.spec_of(t) } + scalars
+  Trace.stablehlo(specs, ->(xs: List[Tensor.Tensor]) { traced_step(loss, state, batch, n, k, xs) })
+end
+
 private
 
 struct Run
@@ -123,8 +143,9 @@ def step(
 end
 
 ## The traced step over `xs`, the `n` parameters then the optimizer's `k`
-## first and its second moments: the loss, then the new parameters, first
-## and second moments.
+## first and its second moments, then the scalars of its step when they are
+## inputs (`stablehlo`): the loss, then the new parameters, first and second
+## moments.
 def traced_step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   state: Optim.State,
@@ -136,7 +157,9 @@ def traced_step(
   ps = xs.take(n)
   value = try loss.call(ps, Data.Batch(inputs: Trace.constant(batch.inputs), targets: Trace.constant(batch.targets)))
   grads = try Trace.gradients(value, ps)
-  stepped = try Optim.step(state.with(first: xs.drop(n).take(k), second: xs.drop(n + k)), ps, grads)
+  moments = n + k + state.second.size
+  held = state.with(first: xs.drop(n).take(k), second: xs.drop(n + k).take(state.second.size))
+  stepped = try Optim.step(held, ps, grads, xs.drop(moments))
   ok([value] + stepped.params + stepped.state.first + stepped.state.second)
 end
 

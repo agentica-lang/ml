@@ -12,8 +12,11 @@
 import GgmlRaw from "src/ggml_native"
 import Graph from "src/graph"
 import Lower from "src/lower"
+import Stablehlo from "src/stablehlo"
 import Tensor from "tensor"
 import Types from "src/types"
+
+export Stablehlo.Module
 
 ## The constants of `gelu_tanh_approx` (`src/reference.agc`).
 SQRT2_OVER_PI = 0.7978845608028654
@@ -241,6 +244,15 @@ def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tenso
       )
     _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none, pin: none))
   end
+end
+
+## Traces `f` once over inputs of `specs` (the backend of a spec is not read) and writes the traced outputs as one
+## StableHLO program (`src/stablehlo.agc`). Its arguments are the inputs, then what `f` reads through `constant`: the
+## tensors of those constants are in the module's `constants`, in argument order.
+def stablehlo(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]]) -> Result[Stablehlo.Module]
+  return error("a StableHLO program needs at least one input") if specs.empty?
+  inputs = specs.map { |s| Graph.record(Types.Op.Input, [], s.shape, s.dtype) }
+  Stablehlo.emit(inputs, try f.call(inputs))
 end
 
 ## One run of `compiled` over `args`, which must match its specs (shape,

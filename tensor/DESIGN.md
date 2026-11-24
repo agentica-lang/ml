@@ -726,3 +726,46 @@ The price:
   values, shapes, dtypes, and error paths.
 - Every backend is checked against `reference` through that one suite, so a
   backend is correct by construction or not at all.
+
+## 12. StableHLO
+
+- `Trace.stablehlo(specs, f)` traces `f` once, as `Trace.compile` does, and
+  writes the traced outputs as one StableHLO module (`src/stablehlo.agc`), a
+  second lowering of the graph beside the ggml one (§7). The text knows no
+  backend and no runtime, so XLA through PJRT and IREE can read it; a later
+  backend for either reuses it.
+- The module is one `func.func public @main`. Its arguments are the inputs, in
+  the order of `specs`, then the tensors lifted with `Trace.constant`, in the
+  order of their nodes; `Module.constants` holds those tensors, so a run gives
+  them as arguments like any other. It returns the outputs `f` answered. A
+  constant is an argument, not a literal, so a batch is not in the text.
+- Shapes are static. The `Tensor.*` wrappers take exact shapes, so an
+  elementwise op needs no implicit broadcast: `broadcast_to` is
+  `stablehlo.broadcast_in_dim`, whose operand axes align with the trailing axes
+  of the result, and an op that has a scalar (`gelu`, the mean's count) holds
+  it as a splat constant of the shape.
+- The ops covered are the ones of an MLP forward and of the `fit` step: `add`,
+  `sub`, `mul`, `div`, `neg`, `exp`, `log`, `sqrt`, `tanh`, `relu`,
+  `gelu_tanh_approx`, `matmul` (`dot_general`, contracting `[1]` with `[0]`),
+  `transpose`, `reshape`, `broadcast_to`, `sum`, `mean`, `max` (a `reduce` from
+  `0` or `-inf`, then a `reshape` for `keep_dims`), `eq`, `lt`, `where`
+  (`select`), `arange` (`iota`), `full` and `stop_grad`. Any other op is an
+  error naming it. `Q8_0` has no MLIR element type; `Bool` is `i1`, `U8` is
+  `ui8`.
+- `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
+  `fit` traces it: the arguments are the parameters, the optimizer's moments,
+  then Adam's two step-dependent scalars (`Optim.step_scalars`: `lr / (1 -
+  beta1^t)` and `1 / (1 - beta2^t)`) as rank-0 tensors, then the batch. One
+  program is every step: the host computes the two scalars from the step
+  count, as `fit` sets its fills on ggml, and feeds the outputs (the loss, the
+  new parameters and moments) back in.
+- **Goldens.** `train/test/fixtures/stablehlo/NAME.mlir` is the emitted text of
+  each case (`train/tools/stablehlo_cases.agc`): CI compares it, which finds a
+  change and says nothing of correctness. `NAME.golden.json` holds the
+  arguments and the outputs IREE (CPU) gave for that text, three chained runs
+  for the fit step; CI checks that the reference backend, and `fit` itself,
+  reach the same values within `F32` drift. IREE is local tooling only:
+  `make iree-venv` installs the pinned official wheels in `.venv-iree/`, and
+  `make iree-goldens` rewrites the snapshots and the goldens. `iree-compile`
+  also rejects a text that is not valid StableHLO, which is a failure of the
+  emitter.
