@@ -80,8 +80,10 @@ The test fixtures drop the `model.` part of the prefix
   nothing by halving. Only the tokens of a model are loaded this way, not its
   positional tables, which `Nn.positions` slices. `Nn.embedding` widens the
   rows of a half table with `to_dtype`. Another backend than ggml, or a dtype
-  other than `F32` or `F16`, is an error. `WEIGHTS=f16` (`Load.weights_from_env`)
-  sets it for the tools.
+  other than `F32` or `F16`, is an error. A file that is not `F32`, `F16` or
+  `BF16` (an `F64` one) has no half form and stays `F32`. A `BF16` value under
+  about 6e-8 (F16's smallest) becomes zero, and under 6e-5 it loses digits.
+  `WEIGHTS=f16` (`Load.weights_from_env`) sets it for the tools.
 
 ## Cost
 

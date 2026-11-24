@@ -160,7 +160,7 @@ def spans_match(got: List[Span], want: List[Span], tolerance: Float) -> Bool
 end
 
 def backend_of(name: String) -> Result[Tensor.Backend]
-  _ = Load.vulkan_fp16_from_env()
+  try Load.vulkan_fp16_from_env()
   case name
     "torch" -> ok(Tensor.Backend.Torch(Tensor.Device.Cpu))
     "reference" -> ok(Tensor.Backend.Reference)

@@ -22,7 +22,6 @@ def main() -> Void
     System.exit(2)
   end
 
-  _ = Load.vulkan_fp16_from_env()
   device = Tensor.Device.Cpu
   if args.size > 1 and args[1] == "vulkan"
     device = Tensor.Device.Vulkan(0)
@@ -40,6 +39,7 @@ private
 
 def run(dir: String, backend: Tensor.Backend) -> Result[String]
   started = Time.monotonic_ms
+  try Load.vulkan_fp16_from_env()
   m = try Qwen3.open(dir, backend, try Load.weights_from_env())
   load = Time.monotonic_ms - started
   g = try Generate.open(m)

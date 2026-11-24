@@ -72,35 +72,6 @@ def weight(c: Hub.Checkpoint, name: String, rank: Int, backend: Tensor.Backend) 
   matrix(c, name, rank, backend, Tensor.Dtype.F32)
 end
 
-## The rank-2 weight `name`: `F32`, or `F16` when `weights` asks for it and it has `HALF_MIN_ELEMENTS` or more.
-def matrix(
-  c: Hub.Checkpoint,
-  name: String,
-  rank: Int,
-  backend: Tensor.Backend,
-  weights: Tensor.Dtype,
-) -> Result[Tensor.Tensor]
-  _ = try checked(weights, backend)
-  dtype = Tensor.Dtype.F32
-  if weights == Tensor.Dtype.F16 and rank == 2
-    shape = try Hub.shape(c, name)
-    if shape.size == 2 and shape[0] * shape[1] >= HALF_MIN_ELEMENTS
-      dtype = Tensor.Dtype.F16
-    end
-  end
-
-  t = try Hub.tensor(c, name, backend, dtype)
-  shape = Tensor.shape(t)
-  return error("#{name}: needs rank #{rank}, got #{shape}") if shape.size != rank
-  return ok(t) if dtype == Tensor.Dtype.F16
-  case Tensor.dtype(t)
-    Tensor.Dtype.F32 -> ok(t)
-    Tensor.Dtype.F16 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
-    Tensor.Dtype.F64 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
-    _ -> error("#{name}: needs a float dtype, got #{Tensor.dtype(t)}")
-  end
-end
-
 ## A dense layer: `{prefix}.weight` `[out, in]` (`F16` under `weights: F16` when big enough) and an optional bias.
 def dense(
   c: Hub.Checkpoint,
@@ -215,6 +186,35 @@ def decoder_block(
 end
 
 private
+## The weight `name` of `rank`: `F32`, or `F16` when `weights` asks for it, it is a float file of rank 2 and it has
+## `HALF_MIN_ELEMENTS` or more (an F64 file stays `F32`).
+def matrix(
+  c: Hub.Checkpoint,
+  name: String,
+  rank: Int,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype,
+) -> Result[Tensor.Tensor]
+  _ = try checked(weights, backend)
+  dtype = Tensor.Dtype.F32
+  if weights == Tensor.Dtype.F16 and rank == 2
+    shape = try Hub.shape(c, name)
+    if shape.size == 2 and shape[0] * shape[1] >= HALF_MIN_ELEMENTS
+      dtype = Tensor.Dtype.F16
+    end
+  end
+
+  t = try Hub.tensor(c, name, backend, dtype)
+  shape = Tensor.shape(t)
+  return error("#{name}: needs rank #{rank}, got #{shape}") if shape.size != rank
+  return ok(t) if Tensor.dtype(t) == Tensor.Dtype.F16
+  case Tensor.dtype(t)
+    Tensor.Dtype.F32 -> ok(t)
+    Tensor.Dtype.F16 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
+    Tensor.Dtype.F64 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
+    _ -> error("#{name}: needs a float dtype, got #{Tensor.dtype(t)}")
+  end
+end
 
 ## Frees `t` now on the backends whose tensors hold native memory, so a load
 ## does not hold a weight twice.

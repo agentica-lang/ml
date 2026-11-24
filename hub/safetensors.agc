@@ -64,7 +64,8 @@ def shape(shard: Shard, name: String) -> Result[List[Int]]
 end
 
 ## The tensor `name` of `shard`: F32, F16 and BF16 as `F32` (as `F16` with `dtype: F16`, a half weight of the ggml
-## backend, `Tensor.from_file`), any other dtype as the file has it.
+## backend, `Tensor.from_file`), any other dtype (F64, integers) as the file has it, whatever `dtype` says: only a float
+## file has a half form.
 def tensor(
   shard: Shard,
   name: String,
@@ -80,7 +81,6 @@ def tensor(
     )
   end
 
-  return error("#{shard.path}: tensor #{name}: a #{e.dtype} tensor has no half form") if dtype != Tensor.Dtype.F32
   return error("#{shard.path}: tensor #{name}: dtype #{e.dtype} has no tensor/ dtype") if not DTYPES.key?(e.dtype)
   b = try within("#{shard.path}: tensor #{name}", read_range(shard.path, at, e.stop - e.start))
   values = try within("#{shard.path}: tensor #{name}", decode(b, e))

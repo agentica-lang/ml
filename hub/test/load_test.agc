@@ -239,7 +239,7 @@ def test_f16_weights_keep_the_big_matrices_half_on_ggml() -> Result[Void]
   S.with_fixtures("half") do |dir|
     c = try Hub.open("#{dir}/half.safetensors")
     sums = try S.floats(try JSON.get(try S.json(dir, "half.json"), "sums"))
-    for backend in (S.native().select { |b: Tensor.Backend| b != S.TORCH })
+    for backend in try S.ggml_backends()
       dense = try Load.dense(c, "big", backend, Tensor.Dtype.F16)
       try Test.eq(Tensor.dtype(dense.w), Tensor.Dtype.F16)
       try Test.eq(Tensor.shape(dense.w), [320, 320])
@@ -248,6 +248,13 @@ def test_f16_weights_keep_the_big_matrices_half_on_ggml() -> Result[Void]
       # the same values from an F16 file and from a BF16 one
       try Test.eq(try row_sums((try Load.dense(c, "f16", backend, Tensor.Dtype.F16)).w, backend), sums)
       try Test.eq(try row_sums((try Load.dense(c, "bf16", backend, Tensor.Dtype.F16)).w, backend), sums)
+      # an F64 file has no half form: it stays F32
+      f64 = try Load.dense(c, "f64", backend, Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype(f64.w), Tensor.Dtype.F32)
+      try Test.eq(try row_sums(f64.w, backend), sums)
+      # the threshold: HALF_MIN_ELEMENTS elements are half, one fewer is not
+      try Test.eq(Tensor.dtype((try Load.embedding(c, "edge.weight", backend, Tensor.Dtype.F16)).table), Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype((try Load.embedding(c, "under.weight", backend, Tensor.Dtype.F16)).table), Tensor.Dtype.F32)
       # a table that is big enough, and a matrix under HALF_MIN_ELEMENTS or a vector, which stay F32
       try Test.eq(
         Tensor.dtype((try Load.embedding(c, "tok.weight", backend, Tensor.Dtype.F16)).table),

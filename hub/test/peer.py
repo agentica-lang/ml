@@ -312,7 +312,8 @@ def decoder(out):
 
 def half(out):
     """Matrices over and under the 100000 elements that `weights: F16` keeps in 16 bits: one value pattern, in F32,
-    F16 and BF16 (every value is a multiple of 1/16, which all three hold exactly), one with a value beyond F16."""
+    F16 and BF16 (every value is a multiple of 1/16, which all three hold exactly), one with a value beyond F16, an F64 one that stays F32,
+    and the two sides of the threshold (100000 and 99999 elements)."""
     def pattern(n):
         return [((i * 7) % 17 - 8) / 16.0 for i in range(n)]
 
@@ -328,7 +329,10 @@ def half(out):
         "f16.weight": tensor("F16", [320, 320], big),
         "bf16.weight": tensor("BF16", [320, 320], bf16(big)),
         "huge.weight": tensor("F32", [320, 320], huge),
+        "f64.weight": tensor("F64", [320, 320], big),
         "tok.weight": tensor("F32", [400, 300], pattern(400 * 300)),
+        "edge.weight": tensor("F32", [100, 1000], pattern(100 * 1000)),
+        "under.weight": tensor("F32", [3, 33333], pattern(3 * 33333)),
         "small.weight": tensor("F32", [4, 3], pattern(12)),
         "norm.weight": tensor("F32", [320], [1.0] * 320),
     })

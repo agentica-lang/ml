@@ -16,6 +16,10 @@ REL = 0.000000001
 F32_ABS = 0.0001
 F32_REL = 0.0001
 
+## The logits (about 1 in size) of the half model are within a few 1e-3 of the F32 model's: every weight rounds once, by 2^-11.
+HALF_ABS = 0.01
+HALF_REL = 0.01
+
 def test_every_position_matches_the_peer_on_the_reference() -> Result[Void]
   with_peer do |dir|
     try matches(dir, "tiny", S.REF, ABS, REL)
@@ -60,6 +64,32 @@ def test_f16_weights_need_ggml_and_leave_a_tiny_model_alone() -> Result[Void]
         try S.floats_of(try Qwen3.run(half, try ids(dir))),
         try S.floats_of(try Qwen3.run(whole, try ids(dir))),
       )
+    end
+
+    ok()
+  end
+end
+
+## The half path through a model: with `weights: F16` the table (which is also the tied head) and the big MLP
+## matrices are half, the small ones stay `F32`, and the logits stay within the half-weight bound of the `F32` model's.
+def test_f16_weights_keep_the_big_matrices_half_and_the_logits_close() -> Result[Void]
+  with_peer do |dir|
+    rows = [[1, 5, 2, 7, 3, 12], [399, 200, 9, 0, 6, 11]]
+    for backend in try S.ggml_backends()
+      half = try Qwen3.open("#{dir}/half", backend, Tensor.Dtype.F16)
+      whole = try Qwen3.open("#{dir}/half", backend)
+      block = half.stack.blocks[0]
+      try Test.eq(Tensor.dtype(half.tokens.table), Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype(half.head.w), Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype(block.mlp.up.w), Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype(block.attention.query.w), Tensor.Dtype.F32)
+      try Test.eq(Tensor.dtype(whole.tokens.table), Tensor.Dtype.F32)
+      out = try Qwen3.run(half, rows)
+      try Test.eq(Tensor.shape(out), [2, 6, 400])
+      got = try S.floats_of(out)
+      want = try S.floats_of(try Qwen3.run(whole, rows))
+      try Test.assert(got != want, "the half model computed the F32 model's logits exactly")
+      try S.expect_close(got, want, HALF_ABS, HALF_REL, "half against F32")
     end
 
     ok()
