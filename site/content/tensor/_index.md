@@ -154,8 +154,6 @@ end
 
 A backward rule tells how to get the gradient of an op. These ops have no backward rule, so the gradient is an error that names the op: `pow`, `clamp`, `to_dtype`, `batch_matmul`, `conv1d`, `avg_pool1d`, and a `to_device` across devices.
 
-`gelu_erf` is refused by `Trace`. Use `gelu_tanh_approx` when you train.
-
 On `Ggml`, `Trace.eval`, `eval_many`, `grad` and `value_and_grad` compile the whole graph, forward and backward, into one ggml graph. See [How it works](#how-it-works).
 
 ## Dtypes and fp16
