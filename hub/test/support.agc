@@ -11,7 +11,10 @@ GGML = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
 
 ## The backends of this machine that read a float range from the file in C.
-def native() -> List[Tensor.Backend] = [TORCH, GGML, VULKAN].select { |b: Tensor.Backend| Tensor.available(b) }
+def native() -> List[Tensor.Backend]
+  _ = Tensor.vulkan_fp16(false)
+  [TORCH, GGML, VULKAN].select { |b: Tensor.Backend| Tensor.available(b) }
+end
 
 ## The ggml backends of this machine: none when ggml is not built, an error when it is required
 ## (`TENSOR_REQUIRE_GGML`) and not built.
