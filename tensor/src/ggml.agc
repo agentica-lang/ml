@@ -64,6 +64,12 @@ def arange(device: Types.Device, start: Int, stop: Int, step: Int, dtype: Types.
   upload(device, [values.size], dtype, values, "arange")
 end
 
+## Creation: row-major `F32` `values` of `shape`, without the `Values` tags
+## `from_list` takes; the wrapper checked the count.
+def floats(device: Types.Device, values: List[Float], shape: List[Int]) -> Result[Types.Tensor]
+  upload(device, shape, Types.Dtype.F32, values, "from_list")
+end
+
 ## Creation: row-major `data` of `shape`; the wrapper checked the count.
 def from_list(
   device: Types.Device,

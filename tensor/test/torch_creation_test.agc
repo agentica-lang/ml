@@ -21,6 +21,15 @@ def test_ones_agrees_with_the_reference() -> Result[Void]
   Conform.agrees(try Tensor.ones([3], Tensor.Dtype.F32, Conform.TORCH), theirs, "ones")
 end
 
+def test_floats_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [1.5, -2.0, 3.0, 0.25]
+  theirs = try Tensor.floats(data, [2, 2], Conform.REF)
+  try Test.error?(Tensor.floats(data, [3], Conform.TORCH))
+  Conform.agrees(try Tensor.floats(data, [2, 2], Conform.TORCH), theirs, "floats")
+end
+
 def test_empty_is_deterministic_zeros() -> Result[Void]
   return Conform.absent() if !Conform.available()
 

@@ -67,7 +67,7 @@ end
 
 ## How it works
 
-`asr` loads a Hugging Face checkpoint. Then it runs the log-mel frontend (it turns audio into log-mel features, the model's input), the encoder and greedy decoding. It depends on `tensor`, `nn` and `hub`.
+`asr` loads a Hugging Face checkpoint. Then it runs the log-mel frontend (it turns audio into log-mel features, the model's input; on ggml and libtorch it is one graph of tensor ops), the encoder and greedy decoding. It depends on `tensor`, `nn` and `hub`.
 
 `asr` runs on the reference backend, on libtorch and on ggml (CPU and Vulkan). See the [tensor page](../tensor/_index.md) for the backends.
 
@@ -77,4 +77,4 @@ A window is 2 * `max_source_positions` frames of 160 samples. For Whisper's chec
 
 ## Speed
 
-The [benchmarks folder](https://github.com/agentica-lang/ml/tree/main/benchmarks) times whisper-tiny against whisper.cpp on one machine, with the same weights, clips and threads. On the CPU the encoder is on par. The gap is in the decoder step, the log-mel and the load.
+The [benchmarks folder](https://github.com/agentica-lang/ml/tree/main/benchmarks) times whisper-tiny against whisper.cpp on one machine, with the same weights, clips and threads. On the CPU the encoder is on par. The gap is in the decoder step and the load.

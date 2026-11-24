@@ -28,10 +28,11 @@ Works today.
 Works, but not yet fast.
 
 - `asr/` on ggml: the tokens match, but the decoder step costs about 68 ms on
-  CPU (whisper.cpp: 7 ms), and the log-mel runs in Agentica code. Speed against
+  CPU (whisper.cpp: 7 ms). Speed against
   whisper.cpp and libtorch is in [`benchmarks/README.md`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md).
   The work is [ml#64](https://github.com/agentica-lang/ml/issues/64): an
-  explicit `Trace.compile`, KV caches on the device, native log-mel.
+  explicit `Trace.compile` and KV caches on the device. The log-mel is one graph
+  of tensor ops now (35 ms on the CPU, from 0.6 s).
 
 ## Not yet
 

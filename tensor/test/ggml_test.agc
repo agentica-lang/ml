@@ -89,6 +89,13 @@ def round_trips(backend: Tensor.Backend) -> Result[Void]
   Test.eq(try Tensor.to_list(empty), [])
 end
 
+def test_floats_uploads_on_the_cpu_backend_and_checks_the_count() -> Result[Void]
+  return ok() if !try present()
+  data = [1.5, -2.0, 3.0, 0.25]
+  try Test.eq(try Tensor.to_list(try Tensor.floats(data, [2, 2], CPU)), floats(data))
+  Test.error?(Tensor.floats(data, [3], CPU))
+end
+
 def test_the_cpu_module_state_is_the_one_the_dispatch_answers() -> Result[Void]
   if !try present()
     IO.warn(

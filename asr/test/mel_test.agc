@@ -2,6 +2,8 @@
 ## spectrogram in doubles with a direct DFT. Run from `asr/`.
 
 import Mel from "../mel"
+import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
 
 ## Hugging Face's values for the first second of this file
 ## (`test/hf_golden.py`).
@@ -13,6 +15,16 @@ HF_CLOSE = 0.000001
 ## Both sides compute in doubles; the FFT and the direct DFT round
 ## differently (the gap is about 1e-13).
 CLOSE = 0.000000001
+
+## The graph computes in `F32`; its gap to the doubles is about 1e-5.
+GRAPH_CLOSE = 0.0001
+## The golden values are in the first second: 100 frames.
+FIRST = 100
+
+REF = Tensor.Backend.Reference
+TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
+GGML = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
 
 private
 
@@ -31,6 +43,104 @@ def test_the_log_mel_matches_the_peer() -> Result[Void]
       gap = (got[i] - want[i]).abs
       return error("#{mels} mels: value #{i} is #{got[i]}, expected #{want[i]}") if gap > CLOSE
     end
+  end
+
+  ok()
+end
+
+## `spectrogram`, the graph that every backend but `Reference` runs, against
+## the FFT of `log_mel` (which the peer checks) on a signal longer than its 2
+## frames (trimmed; the padded one is the backend test below). The
+## sizes are small: `Reference` runs the matmuls in the interpreter.
+def test_the_graph_matches_the_fft() -> Result[Void]
+  samples = (0...1000).map { |i| (0.5 * ((i * 7919) % 1000).to_f) / 1000.0 - 0.25 }
+  out = try Mel.spectrogram(samples, 3, 2, REF)
+  try Test.eq(Tensor.shape(out), [1, 3, 2])
+  expect_close(try tensor_floats(out), try Mel.log_mel(samples, 3, 2), "1000 samples")
+end
+
+def test_the_graph_refuses_a_bad_size() -> Result[Void]
+  try Test.error?(Mel.spectrogram([0.5], 0, 4, REF))
+  Test.error?(Mel.spectrogram([0.5], 3, 1, REF))
+end
+
+## `features` on the backends this machine has (ggml, Vulkan, libtorch)
+## against Hugging Face, over the 30 s of 3000 frames.
+def test_the_features_on_every_backend_match_hugging_face() -> Result[Void]
+  golden = try JSON.parse(try String.from_bytes(try read_bytes(GOLDEN)))
+  samples = (try pcm16(try read_bytes(WAV))).take(try JSON.int(try JSON.get(golden, "samples")))
+  nan = 1.0e308 * 10.0 - 1.0e308 * 10.0
+  all = try backends()
+  for at in 0...all.size
+    backend = all[at]
+    try Test.error?(Mel.features([0.5, nan], 4, 8, backend))
+    # 128 mels (large-v3) on the first backend only: the graph is the same.
+    sizes = [80]
+    if at == 0
+      sizes = [80, 128]
+    end
+
+    for mels in sizes
+      features = try Mel.features(samples, mels, Mel.FRAMES, backend)
+      try Test.eq(Tensor.shape(features), [1, mels, Mel.FRAMES])
+      got = try tensor_floats(try Trace.eval([features], ->(xs: List[Tensor.Tensor]) { first_frames(xs[0], mels) }))
+      for entry in try JSON.list(try JSON.get(golden, "#{mels}"))
+        m = try JSON.int(try JSON.at(entry, 0))
+        f = try JSON.int(try JSON.at(entry, 1))
+        v = try JSON.float(try JSON.at(entry, 2))
+        value = got[m * FIRST + f]
+        if (value - v).abs > GRAPH_CLOSE
+          return error("#{backend}, #{mels} mels: [#{m}, #{f}] is #{value}, Hugging Face has #{v}")
+        end
+      end
+    end
+  end
+
+  ok()
+end
+
+def backends() -> Result[List[Tensor.Backend]]
+  out: List[Tensor.Backend] = []
+  if Tensor.available(TORCH)
+    out = out.push(TORCH)
+  end
+
+  if !Tensor.available(GGML)
+    flag = System.env("TENSOR_REQUIRE_GGML")
+    return error("ggml required but not built (TENSOR_REQUIRE_GGML is set)") if flag.ok? and try flag != ""
+    return ok(out)
+  end
+
+  out = out.push(GGML)
+  if Tensor.available(VULKAN)
+    out = out.push(VULKAN)
+  end
+
+  ok(out)
+end
+
+## The first `FIRST` frames of `[1, mels, frames]` features: reading all of
+## them back would cost the test most of its steps.
+def first_frames(features: Tensor.Tensor, mels: Int) -> Result[Tensor.Tensor]
+  Tensor.slice(features, [0, 0, 0], [1, mels, FIRST])
+end
+
+def tensor_floats(t: Tensor.Tensor) -> Result[List[Float]]
+  out: List[Float] = []
+  for v in try Tensor.to_list(t)
+    case v
+      Tensor.Values.Float(x) -> out = out.push(x)
+      _ -> return error("a log-mel tensor holds floats")
+    end
+  end
+
+  ok(out)
+end
+
+def expect_close(got: List[Float], want: List[Float], what: String) -> Result[Void]
+  try Test.eq(got.size, want.size)
+  for i in 0...want.size
+    return error("#{what}: value #{i} is #{got[i]}, expected #{want[i]}") if (got[i] - want[i]).abs > GRAPH_CLOSE
   end
 
   ok()

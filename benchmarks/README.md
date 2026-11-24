@@ -44,8 +44,7 @@ One extra pass over the stages of `Asr.transcribe` (`asr/tools/bench_transcribe.
 
 | Stage | ours ggml CPU | VM steps | ours ggml Vulkan | whisper.cpp CPU F32, no flash | whisper.cpp Vulkan F32 |
 |---|---|---|---|---|---|
-| log-mel | 508 | 118 M | 663 | 14 | 19 |
-| upload of the mel | 62 | 5.5 M | 63 | | |
+| log-mel (one graph, upload included) | 35 | 3.3 M | 95 | 14 | 19 |
 | encoder | 994 | 0.27 M | 396 | 1054 | 158 |
 | cross-attention cache | 66 | 0.07 M | 37 | | |
 | decoder, 24 steps | 1630 | 34.7 M | 3010 | 182 | 261 |
@@ -66,7 +65,7 @@ Reading it:
 
 - **The encoder is on par on the CPU** (994 ms against 1054 ms without flash attention, 662 ms with it). Similar ggml CPU kernels (different ggml versions: v1.0.0 against 0.24.0). On Vulkan ours is 2.5 times slower (396 ms against 158 ms).
 - **The decoder is the gap.** A step takes about 68 ms on ggml CPU and 125 ms on Vulkan, against 7 and 11 ms for whisper.cpp. A step is one graph, but it costs 1.45 M VM steps, which is tracing and lowering a graph that does not change (about 6 to 12 ms of the 68, at the 120 to 230 M steps a second the VM runs here). The rest is not split: it is probably native time to feed the graph (the padded self-attention cache and the cross-attention cache go in as inputs every step) and to read the logits back as a list. This is what [#64](https://github.com/agentica-lang/ml/issues/64) is about, and it is 41 percent of a transcription on the CPU and 63 percent on Vulkan.
-- **The log-mel costs 0.5 s** in `mel.agc`, which is Agentica code (a radix FFT over lists): 118 M VM steps, against 14 to 19 ms in whisper.cpp. It runs on the CPU and is the same on every backend; on Vulkan it costs more than the encoder.
+- **The log-mel costs 35 ms on the CPU and 95 ms on Vulkan.** It was 0.5 s of Agentica code (a radix FFT over lists, 118 M VM steps) plus 62 to 74 ms to upload the result, the same on every backend. It is one graph of tensor ops now (the windowed DFT as a matmul, the mel filters as a second one) that `load` compiled, and its output stays on the device. On the same machine and session, jfk went from 605 + 71 ms to 35 ms on the CPU and from 540 + 74 ms to 95 ms on Vulkan; the median transcription of jfk (11 s) from 3008 to 1949 ms on the CPU (real-time factor 0.273 to 0.177) and from 2675 to 1981 ms on Vulkan (0.243 to 0.180). es-hola (2.6 s) went from 1850 to 1509 ms on the CPU (0.699 to 0.570) and from 1651 to 1414 ms on Vulkan (0.624 to 0.534). The graph computes every one of the 3000 frames, so its cost does not depend on the clip; Vulkan is slower than the CPU here because the matmul alone takes about 20 ms on this iGPU.
 - **The load was 23 s and 3 GB, and is 0.3 to 0.45 s, and the load alone peaks under 0.5 GB** (ml#63). 99 percent of it had been `hub/safetensors.agc` decoding the 37.8 M floats one by one (2.7 G VM steps), and the lists they went through held the memory. Now C reads each tensor's byte range into the backend's buffer (`Tensor.from_file`), so no float is an Agentica value. whisper.cpp reads the file in 0.1 s.
 - On Vulkan, the encoder gains 2.5 times over the CPU, but the decoder loses: a graph costs about 2 ms to dispatch (`note.md`), and a step has many small ones.
 - libtorch runs the encoder op by op: 3.2 s, and 117.7 M VM steps.

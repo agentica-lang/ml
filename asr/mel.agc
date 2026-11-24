@@ -1,6 +1,9 @@
 ## Whisper's log-mel frontend: 16 kHz mono samples to the `[mels, frames]`
 ## log-mel spectrogram the encoder takes (`asr/DESIGN.md`).
 
+import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
+
 ## Samples per second.
 SAMPLE_RATE = 16000
 ## The STFT window and its hop, in samples.
@@ -91,6 +94,117 @@ def log_mel(samples: List[Float], mels: Int, frames: Int = FRAMES) -> Result[Lis
   ok(out)
 end
 
+## The features the encoder takes, `[1, mels, frames]` `F32` on `backend`. On
+## `Reference` they are `log_mel` (the exact FFT in doubles); on every other
+## backend `spectrogram`, one graph that stays on the device.
+def features(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  case backend
+    Tensor.Backend.Reference -> Tensor.floats(try log_mel(samples, mels, frames), [1, mels, frames], backend)
+    Tensor.Backend.Ggml(_) -> spectrogram(samples, mels, frames, backend)
+    _ -> Native.arena do spectrogram(samples, mels, frames, backend) end
+  end
+end
+
+## The same spectrogram as `log_mel`, as one traced graph on `backend`: the
+## signal padded by reflection, read as blocks of one hop, the windowed DFT as
+## a matmul with a `[N_FFT, 2 * bins]` cosine and sine basis, the power, the
+## mel filters as a second matmul, then the log, the floor and the scale. It
+## computes in the backend's `F32` (the gap to `log_mel` is about 1e-5), and
+## an `Inf` or `NaN` sample, or one so large that the power overflows, is an
+## error.
+def spectrogram(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  inputs = try signal(samples, mels, frames, backend)
+  out = try Trace.eval_many(inputs, ->(xs: List[Tensor.Tensor]) { graph(xs, mels, frames, backend) })
+  checked(out)
+end
+
+## The three inputs of `graph`, `F32` on `backend`: the reflection of the first
+## samples, the `frames * HOP` samples (padded with zeros or trimmed), and the
+## reflection of the last ones.
+def signal(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  return error("log_mel needs mels >= 1, got #{mels}") if mels < 1
+  return error("log_mel needs frames >= 2, got #{frames}") if frames < 2
+  size = frames * HOP
+  half = N_FFT / 2
+  x = samples.take(size)
+  x = x + List.repeat(0.0, size - x.size)
+  left = x.drop(1).take(half).reverse
+  right = x.drop(size - half - 1).take(half).reverse
+  ok([
+    try Tensor.floats(left, [half], backend),
+    try Tensor.floats(x, [size], backend),
+    try Tensor.floats(right, [half], backend),
+  ])
+end
+
+## The specs of the three tensors of `signal`, for `Trace.compile`.
+def specs(frames: Int, backend: Tensor.Backend) -> List[Trace.Spec]
+  half = N_FFT / 2
+  [
+    Trace.Spec(shape: [half], dtype: Tensor.Dtype.F32, backend: backend),
+    Trace.Spec(shape: [frames * HOP], dtype: Tensor.Dtype.F32, backend: backend),
+    Trace.Spec(shape: [half], dtype: Tensor.Dtype.F32, backend: backend),
+  ]
+end
+
+## The graph of `spectrogram` over the tensors of `signal`: the features, and
+## the sum of the features and of the samples, which is not finite when a
+## sample was not (`relu` hides a `NaN` inside the features). A caller that runs
+## it often compiles it once (`Trace.compile`), which keeps the constants for as
+## long as the task that built them lives.
+def graph(xs: List[Tensor.Tensor], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  bins = N_FFT / 2 + 1
+  basis = Trace.constant(try Tensor.floats(dft_basis(), [N_FFT, 2 * bins], backend))
+  bank = Trace.constant(try Tensor.floats(filter_matrix(mels), [bins, mels], backend))
+  signal = try Tensor.concat(xs, 0)
+  # Frame `i` is the blocks `i`, `i + 1` and the first 80 samples of `i + 2`.
+  blocks = try Tensor.reshape(try Tensor.slice(signal, [0], [(frames + 2) * HOP]), [frames + 2, HOP])
+  head = try Tensor.slice(blocks, [0, 0], [frames, HOP])
+  middle = try Tensor.slice(blocks, [1, 0], [frames + 1, HOP])
+  tail = try Tensor.slice(blocks, [2, 0], [frames + 2, N_FFT - 2 * HOP])
+  spectrum = try Tensor.matmul(try Tensor.concat([head, middle, tail], 1), basis)
+  re = try Tensor.slice(spectrum, [0, 0], [frames, bins])
+  im = try Tensor.slice(spectrum, [0, bins], [frames, 2 * bins])
+  power = try Tensor.add(try Tensor.mul(re, re), try Tensor.mul(im, im))
+  energy = try at_least(try Tensor.matmul(power, bank), FLOOR)
+  logs = try Tensor.mul(try Tensor.log(energy), try filled(LOG10_E, energy))
+  top = try Tensor.max(logs, none, true)
+  low = try Tensor.broadcast_to(try Tensor.sub(top, try filled(8.0, top)), Tensor.shape(logs))
+  floored = try Tensor.add(low, try Tensor.relu(try Tensor.sub(logs, low)))
+  scaled = try Tensor.div(try Tensor.add(floored, try filled(4.0, floored)), try filled(4.0, floored))
+  mel = try Tensor.reshape(try Tensor.transpose(scaled), [1, mels, frames])
+  ok([mel, try Tensor.add(try Tensor.sum(mel), try Tensor.sum(signal))])
+end
+
+## The features of the answer of `graph`, once their sum is finite.
+def checked(out: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  seen = try Tensor.to_list(out[1])
+  case seen[0]
+    Tensor.Values.Float(total) -> return error("log_mel needs finite samples of about -1..1") if total - total != 0.0
+    _ -> return error("the log-mel check is not a float")
+  end
+
+  ok(out[0])
+end
+
+## The mel filters as a row-major `[N_FFT / 2 + 1, mels]` matrix: bin `k`, filter `m`.
+def filter_matrix(mels: Int) -> List[Float]
+  bank = filters(mels)
+  out: List[Float] = []
+  for k in 0...(N_FFT / 2 + 1)
+    for f in bank
+      at = k - f.start
+      if at >= 0 and at < f.weights.size
+        out = out.push(f.weights[at])
+      else
+        out = out.push(0.0)
+      end
+    end
+  end
+
+  out
+end
+
 private
 
 PI = 3.141592653589793
@@ -103,6 +217,8 @@ S2 = 0.5877852522924731
 LIMIT = 1.0e150
 ## The power floor before `log10`.
 FLOOR = 0.0000000001
+## `log10(e)`: `log10(x) = ln(x) * LOG10_E`.
+LOG10_E = 0.4342944819032518
 
 ## A complex sequence as two lists.
 struct Spectrum
@@ -180,6 +296,37 @@ def fft(z: Spectrum, order: List[Int], table: Spectrum) -> Spectrum
   end
 
   cur
+end
+
+## `max(x, floor)` from the primitives the backends lower.
+def at_least(x: Tensor.Tensor, floor: Float) -> Result[Tensor.Tensor]
+  f = try filled(floor, x)
+  Tensor.add(f, try Tensor.relu(try Tensor.sub(x, f)))
+end
+
+def filled(v: Float, like: Tensor.Tensor) -> Result[Tensor.Tensor]
+  Tensor.full(Tensor.shape(like), Tensor.Values.Float(v), Tensor.dtype(like), Tensor.backend(like))
+end
+
+## The Hann window times the DFT, row-major `[N_FFT, 2 * bins]`: row `n` holds
+## `window[n] * cos(2π n k / N_FFT)` for the bins `k`, then the same with
+## `sin` (the sign of the imaginary part does not change the power).
+def dft_basis() -> List[Float]
+  table = cos_sin(N_FFT)
+  bins = N_FFT / 2 + 1
+  out: List[Float] = []
+  for n in 0...N_FFT
+    window = 0.5 - 0.5 * table.re[n]
+    for k in 0...bins
+      out = out.push(window * table.re[(n * k) % N_FFT])
+    end
+
+    for k in 0...bins
+      out = out.push(window * table.im[(n * k) % N_FFT])
+    end
+  end
+
+  out
 end
 
 ## Frame `i` of the padded signal, windowed.
