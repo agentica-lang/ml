@@ -1,9 +1,10 @@
 ## A permute that keeps the last axis (a head's width) is a view on ggml, not a copy: every class of op that takes
 ## such a view gives what the reference gives, node by node with `Trace.diff`, on ggml CPU (and Vulkan when it is
 ## there). The classes: a binary op (the view first or second, and as the source of a broadcast), a reduction over a
-## trailing and a leading block, a product, a gather, `concat`, `rms_norm`, `rope` (which permutes the view back),
-## `where` (a mask that is a view) and `attention`, also with one key head over a batch (a view whose head axis is 1
-## and whose batch stride is not packed: ggml-vulkan copies such a product operand through F16).
+## trailing and a leading block, a product, a gather, `concat`, `rms_norm`, `rope` (which permutes the view back, also
+## after a norm that ggml-vulkan fuses with it), `where` (a mask that is a view) and `attention`, also with one key head
+## over a batch (a view whose head axis is 1 and whose batch stride is not packed: ggml-vulkan copies such a product
+## operand through F16).
 
 import Support from "support"
 import Tensor from "../tensor"
@@ -32,6 +33,30 @@ def agree(
     some(n) -> error("#{what} on #{backend}: node #{n.node} (#{n.op} #{n.shape}) differs by #{n.max_abs}")
     none -> Test.assert(d.nodes >= 2, "#{what}: only #{d.nodes} nodes compared")
   end
+end
+
+## The result alone, as one compiled graph (`diff` makes every node an output, which ggml-vulkan does not fuse).
+def agree_end(
+  what: String,
+  backend: Tensor.Backend,
+  args: List[Tensor.Tensor],
+  f: Fn[List[Tensor.Tensor], Result[Tensor.Tensor]],
+) -> Result[Void]
+  moved: List[Tensor.Tensor] = []
+  for t in args
+    moved = moved.push(try Tensor.from_list(try Tensor.to_list(t), t.shape, t.dtype, backend))
+  end
+
+  want = try Support.floats_of(try Trace.eval(args, f))
+  got = try Support.floats_of(try Trace.eval(moved, f))
+  try Test.eq(got.size, want.size)
+  for i in 0...want.size
+    if (got[i] - want[i]).abs > 0.00001 + 0.0001 * want[i].abs
+      return error("#{what} on #{backend}: value #{i} is #{got[i]}, expected #{want[i]}")
+    end
+  end
+
+  ok()
 end
 
 def f32(seed: Int, shape: List[Int]) -> Result[Tensor.Tensor]
@@ -100,6 +125,8 @@ def test_concat_norm_rope_and_attention_take_a_view() -> Result[Void]
   a = try f32(7, [1, 3, 2, 4])
   b = try f32(8, [1, 3, 2, 4])
   k = try f32(9, [1, 5, 1, 4])
+  wide = try f32(13, [2, 3, 2, 4])
+  scale = try f32(14, [4])
   at = try Tensor.from_list([0, 1, 2].map { |i| Tensor.Values.Int(i) }, [3], Tensor.Dtype.I32, REF)
   for backend in try engines()
     try agree("concat of two views", backend, [a, b]) do |x| Tensor.concat([try heads(x[0]), try heads(x[1])], 2) end
@@ -107,6 +134,11 @@ def test_concat_norm_rope_and_attention_take_a_view() -> Result[Void]
     try agree("an rms norm of a view", backend, [a]) do |x| Tensor.rms_norm(try heads(x[0]), 0.000001) end
 
     try agree("rope of a view", backend, [a, at]) do |x| Tensor.rope(try heads(x[0]), x[1], dims: some(4)) end
+
+    try agree_end("a norm, its weight and a rope (ggml-vulkan fuses the three)", backend, [wide, scale, at]) do |x|
+      normed = try Tensor.mul(try Tensor.rms_norm(x[0], 0.000001), try Tensor.broadcast_to(x[1], [2, 3, 2, 4]))
+      Tensor.rope(try heads(normed), x[2], dims: some(4))
+    end
 
     try agree("rope of a view, inverse", backend, [a, at]) do |x|
       Tensor.rope(try heads(x[0]), x[1], dims: some(4), inverse: true)

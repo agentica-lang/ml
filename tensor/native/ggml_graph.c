@@ -540,12 +540,22 @@ static bool attends(const struct gnode *q, const struct gnode *k, const struct g
          (mask->ne[2] == 1 || mask->ne[2] == q->ne[2]) && (mask->ne[3] == 1 || mask->ne[3] == q->ne[3]);
 }
 
+/* Whether `t` is the permute (0, 2, 1, 3) of its source: permuting it again gives the source back, so a norm that
+   ran on the source feeds a rope with no view between them, which ggml-vulkan needs to fuse norm, mul and rope. */
+static bool swapped_back(const struct ggml_tensor *t) {
+  const struct ggml_tensor *s = t->src[0];
+
+  return t->op == GGML_OP_PERMUTE && s->ne[1] == t->ne[2] && s->ne[2] == t->ne[1] && s->nb[1] == t->nb[2] &&
+         s->nb[2] == t->nb[1] && s->ne[0] == t->ne[0] && s->ne[3] == t->ne[3];
+}
+
 /* Rotary embedding of x [..., S, D]. ggml wants the rows along ne[2] ([D, heads, S, batch]), so the
    sequence axis is swapped with the one before it, rotated by ggml_rope_ext, and swapped back. The positions are F32
    here and ggml takes I32; `inverse` negates them, which turns every pair the other way. */
 static struct ggml_tensor *rope(struct entry *p, const struct gnode *x, const struct gnode *positions, int dims,
                                 bool neox, float base, bool inverse) {
-  struct ggml_tensor *rows = contiguous(p, ggml_permute(p->ctx, full_of(p, x), 0, 2, 1, 3));
+  struct ggml_tensor *seen = full_of(p, x);
+  struct ggml_tensor *rows = contiguous(p, swapped_back(seen) ? seen->src[0] : ggml_permute(p->ctx, seen, 0, 2, 1, 3));
   struct gnode *source = (struct gnode *)positions; /* the nodes are `p->nodes`; the cast is a cache */
   struct ggml_tensor *at = source->at;
   struct ggml_tensor *turned;
@@ -1004,6 +1014,10 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   if (!room(p, (size_t)(nouts * 8 + p->guard_count + 1))) return tg_error(env, "the graph ran out of room for its outputs");
   p->graph = ggml_new_graph_custom(p->ctx, graph_size(p->capacity), false);
   p->checks = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, nouts + p->guard_count);
+  /* the positions of the ropes go first: a cast between a rope's norm and the rope keeps ggml-vulkan from fusing them */
+  for (i = 0; i < p->count; i++) {
+    if (p->nodes[i].at != NULL) ggml_build_forward_expand(p->graph, p->nodes[i].at);
+  }
   for (i = 0; i < nouts; i++) {
     struct gnode *n = &p->nodes[outs[i]];
     struct ggml_tensor *value;
