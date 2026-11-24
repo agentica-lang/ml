@@ -72,6 +72,7 @@ end
 struct Leaf
   input: Int
   fixed: Optional[Types.Tensor]
+  half: Bool
 end
 
 ## A traced graph lowered once: what a run sends to the C layer (the nodes,
@@ -174,6 +175,12 @@ def execute(
           none -> inputs[leaf.input]
         end
 
+        if (t.dtype == Types.Dtype.F16) != leaf.half
+          return error(
+            "#{op}: leaf #{i} was lowered as #{leaf_name(leaf.half)} and the tensor given is #{Types.dtype_name(t.dtype)}",
+          )
+        end
+
         h = try Ggml.handle_of(t)
         if Native.closed?(h)
           what = "an input"
@@ -250,19 +257,25 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   fills: List[Float] = []
   for t in try walk(outs, positions)
     n = try Graph.node_of(t)
-    if !exact(t.dtype)
+    half_ok = try half_node(t, n)
+    if !exact(t.dtype) and !half_ok
       return error(
         "node #{n.id} (#{Types.op_name(n.op)}) has dtype #{Types.dtype_name(t.dtype)}, which F32 does not hold exactly",
       )
     end
 
+    _ = try half_operands(n)
     op = try code(t, n)
     ints: List[Int] = []
+    half = t.dtype == Types.Dtype.F16
     case n.op
       Types.Op.Input ->
-        leaves = leaves.push(Leaf(input: positions[n.id], fixed: none))
+        leaves = leaves.push(Leaf(input: positions[n.id], fixed: none, half: half))
+        ints = [flag(half)]
         op = LEAF
-      Types.Op.Constant(c) -> leaves = leaves.push(Leaf(input: -1, fixed: some(try bound(c, backend, "a constant"))))
+      Types.Op.Constant(c) ->
+        leaves = leaves.push(Leaf(input: -1, fixed: some(try bound(c, backend, "a constant")), half: half))
+        ints = [flag(half)]
       Types.Op.Full(v) ->
         x = try Types.value_to_float(v, t.dtype)
         if Types.is_int_dtype(t.dtype) and x.abs > 16777216.0
@@ -299,6 +312,12 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
     parts = parts.push("#{l.op} #{l.args} #{l.shape} #{l.ints} #{Types.dtype_name(t.dtype)}")
   end
 
+  for o in outs
+    if o.dtype == Types.Dtype.F16
+      return error("an output of a graph is F16: half weights only go into matmul, linear, gather and embedding")
+    end
+  end
+
   outputs = outs.map { |o| pos[Graph.id_of(o)] }
   key = parts.join(";") + " -> #{outputs}"
   ok(
@@ -330,6 +349,11 @@ end
 def flag(b: Bool) -> Int
   return 1 if b
   0
+end
+
+def leaf_name(half: Bool) -> String
+  return "F16" if half
+  "not F16"
 end
 
 ## A leaf's tensor, which must live on the backend the graph runs on.
@@ -375,6 +399,45 @@ def exact(dtype: Types.Dtype) -> Bool
     Types.Dtype.I64 -> false
     _ -> true
   end
+end
+
+## An `F16` node ggml holds: a half weight (an input or a constant), or its
+## transpose, which a `matmul` reads in place. Any other `F16` node is an error.
+def half_node(t: Types.Tensor, n: Types.Node) -> Result[Bool]
+  return ok(false) if t.dtype != Types.Dtype.F16
+  case n.op
+    Types.Op.Input -> ok(true)
+    Types.Op.Constant(_) -> ok(true)
+    Types.Op.Transpose -> ok(true)
+    _ ->
+      error(
+        "node #{n.id} (#{Types.op_name(n.op)}) is F16: only a half weight may be, and only an operand of matmul, linear, gather and embedding",
+      )
+  end
+end
+
+## The `F16` operands of a node: the weight of a `matmul` (second operand) and
+## the table of a `gather` (first), or the argument of a transpose. Anywhere
+## else the half weight would need an op that ggml does not run on it.
+def half_operands(n: Types.Node) -> Result[Bool]
+  for i in 0...n.args.size
+    if n.args[i].dtype == Types.Dtype.F16
+      fits = case n.op
+        Types.Op.Matmul -> i == 1
+        Types.Op.Gather -> i == 0
+        Types.Op.Transpose -> true
+        _ -> false
+      end
+
+      if !fits
+        return error(
+          "node #{n.id} (#{Types.op_name(n.op)}) takes an F16 operand: a half weight goes only into the weight of matmul and linear and the table of gather and embedding",
+        )
+      end
+    end
+  end
+
+  ok(true)
 end
 
 ## The ggml op code of a node, or an error naming the op this lowering does

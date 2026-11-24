@@ -654,7 +654,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
 
   switch (op) {
     case OP_LEAF:
-      t = ggml_new_tensor_4d(p->port_ctx, GGML_TYPE_F32, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
+      t = ggml_new_tensor_4d(p->port_ctx, nints > 0 && ints[0] != 0 ? GGML_TYPE_F16 : GGML_TYPE_F32, n->ne[0], n->ne[1],
+                             n->ne[2], n->ne[3]);
       ggml_set_input(t);
       p->leaves[p->leaf_count++].t = t;
       break;
@@ -976,14 +977,14 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   return ggml_result_Void_ok(env, an_void(env));
 }
 
-/* Points `port` at the memory of `h` when it is F32, or at its own memory
+/* Points `port` at the memory of `h` when it has the port's type, or at its own memory
    (made once) for a converting copy, and holds `h`'s memory until `release`. Call
    under the device lock. */
 static bool attach(struct entry *p, struct port *port, struct ggml_TensorHandle_state *h) {
   if (port->held != NULL) tg_storage_release(port->held);
   port->held = h->store;
   if (port->held != NULL) tg_storage_retain(port->held);
-  if (h->t->type == GGML_TYPE_F32) {
+  if (h->t->type == port->t->type) {
     port->t->data = h->t->data;
     port->t->buffer = h->t->buffer;
     port->conv = NULL;

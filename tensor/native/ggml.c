@@ -16,6 +16,8 @@
 #endif
 #define GGML_NATIVE_IMPLEMENTATION
 #include "ggml_shared.h"
+#include <math.h>
+
 #include "float_file.h"
 
 #include "ggml-alloc.h"
@@ -302,6 +304,7 @@ const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst) {
     ggml_backend_tensor_copy(src, dst);
     return NULL;
   }
+  if (src->type == GGML_TYPE_F16 || dst->type == GGML_TYPE_F16) return "an F16 tensor is not converted to or from another type";
   bytes = malloc(ggml_nbytes(src) > 0 ? ggml_nbytes(src) : 1);
   if (bytes == NULL) return "out of memory";
   ggml_backend_tensor_get(src, bytes, 0, ggml_nbytes(src));
@@ -379,24 +382,83 @@ struct load_source {
   size_t len;
 };
 
+/* The values a half tensor is converted from, read this many at a time. */
+#define HALF_CHUNK ((int64_t)1 << 20)
+/* The smallest finite float that rounds to infinity in F16: 65504 is the largest value F16 holds. */
+#define HALF_OVERFLOW 65520.0f
+
+/* `count` floats of the source from value `from` on, in `chunk`. */
+static bool read_floats(const struct load_source *src, int64_t from, int64_t count, int64_t format, float *chunk,
+                        char *why, size_t why_len) {
+  size_t width = ff_width(format);
+
+  if (src->data != NULL) {
+    return ff_from_bytes(src->data + (size_t)from * width, (size_t)count * width, count, format, chunk, why, why_len);
+  }
+  return ff_read(src->path, src->path_len, src->offset + from * (int64_t)width, count, format, chunk, why, why_len);
+}
+
+/* The half tensor `t` filled from the source: converted a chunk at a time into `half`, `ggml_nelements(t)` values of
+   F16. A value beyond what F16 holds is an error, never a clipped number; a value too small for it rounds to zero or
+   to a subnormal. */
+static bool read_half(const struct load_source *src, int64_t count, int64_t format, ggml_fp16_t *half, char *why,
+                      size_t why_len) {
+  int64_t done = 0, n, i;
+  float *chunk;
+
+  if (src->data != NULL && src->len != (size_t)count * ff_width(format)) {
+    snprintf(why, why_len, "%zu bytes are not %lld values of %zu bytes", src->len, (long long)count, ff_width(format));
+    return false;
+  }
+  chunk = (float *)malloc((size_t)(count < HALF_CHUNK ? count : HALF_CHUNK) * sizeof(float) + 1);
+  if (chunk == NULL) {
+    snprintf(why, why_len, "out of memory");
+    return false;
+  }
+  while (done < count) {
+    n = count - done < HALF_CHUNK ? count - done : HALF_CHUNK;
+    if (!read_floats(src, done, n, format, chunk, why, why_len)) {
+      free(chunk);
+      return false;
+    }
+    for (i = 0; i < n; i++) {
+      float v = chunk[i];
+
+      if (isfinite(v) && fabsf(v) >= HALF_OVERFLOW) {
+        snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)v,
+                 (long long)(done + i));
+        free(chunk);
+        return false;
+      }
+      half[done + i] = ggml_fp32_to_fp16(v);
+    }
+    done += n;
+  }
+  free(chunk);
+  return true;
+}
+
 /* The tensor is filled where the source is read: in place on a host buffer (the CPU), through a host copy for
-   a device that has its own memory (Vulkan). */
+   a device that has its own memory (Vulkan). With `half` it is an F16 tensor, converted from the source's floats. */
 static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const struct load_source *src,
-                         int64_t format) {
+                         int64_t format, bool half) {
   an_term term, failure;
   struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
   char why[FF_PATH_MAX + 160];
   bool in_place, held, read;
-  float *host;
+  void *host;
 
-  if (!make_tensor(env, device, &shape, GGML_TYPE_F32, state, &failure)) return failure;
+  if (!make_tensor(env, device, &shape, half ? GGML_TYPE_F16 : GGML_TYPE_F32, state, &failure)) return failure;
   in_place = !state->vulkan && ggml_backend_buffer_is_host(state->buffer);
-  host = in_place ? (float *)state->t->data : (float *)host_bytes(state->t);
+  host = in_place ? state->t->data : host_bytes(state->t);
   if (host == NULL) return tg_error(env, "out of memory");
-  if (src->data != NULL) {
-    read = ff_from_bytes(src->data, src->len, ggml_nelements(state->t), format, host, why, sizeof why);
+  if (half) {
+    read = read_half(src, ggml_nelements(state->t), format, (ggml_fp16_t *)host, why, sizeof why);
+  } else if (src->data != NULL) {
+    read = ff_from_bytes(src->data, src->len, ggml_nelements(state->t), format, (float *)host, why, sizeof why);
   } else {
-    read = ff_read(src->path, src->path_len, src->offset, ggml_nelements(state->t), format, host, why, sizeof why);
+    read = ff_read(src->path, src->path_len, src->offset, ggml_nelements(state->t), format, (float *)host, why,
+                   sizeof why);
   }
   if (!read) {
     if (!in_place) free(host);
@@ -411,16 +473,17 @@ static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const
   return ggml_result_TensorHandle_ok(env, term);
 }
 
-an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml_list_Int shape, int64_t format) {
+an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml_list_Int shape, int64_t format,
+                  bool half) {
   struct load_source src = {path.data, path.len, offset, NULL, 0};
 
-  return load_from(env, device, shape, &src, format);
+  return load_from(env, device, shape, &src, format, half);
 }
 
-an_term ggml_from_bytes(an_env *env, int64_t device, ng_buf data, ggml_list_Int shape, int64_t format) {
+an_term ggml_from_bytes(an_env *env, int64_t device, ng_buf data, ggml_list_Int shape, int64_t format, bool half) {
   struct load_source src = {NULL, 0, 0, data.data, data.len};
 
-  return load_from(env, device, shape, &src, format);
+  return load_from(env, device, shape, &src, format, half);
 }
 
 an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double value, bool int32) {
@@ -469,6 +532,7 @@ an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t) {
   ggml_list_Float_begin(env, &out, (size_t)count);
   for (i = 0; i < count; i++) {
     if (t->t->type == GGML_TYPE_I32) ggml_list_Float_push(env, &out, (double)((int32_t *)bytes)[i]);
+    else if (t->t->type == GGML_TYPE_F16) ggml_list_Float_push(env, &out, (double)ggml_fp16_to_fp32(((ggml_fp16_t *)bytes)[i]));
     else ggml_list_Float_push(env, &out, (double)((float *)bytes)[i]);
   }
   free(bytes);

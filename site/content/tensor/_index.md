@@ -36,7 +36,8 @@ A tensor has a shape, a dtype (its number type, such as `F32`, a 32-bit float) a
 - `zeros`, `ones`, `empty`, `full`, `like`, `arange` (integer dtypes only), `scalar_to_tensor`.
 - `floats(values, shape, backend)` makes an `F32` tensor from a `List[Float]`.
 - `from_list(values, shape, dtype, backend)` takes a `List[Values]` with one value per element of `shape`. `Values` is `Float`, `Int` or `Bool`.
-- `from_file(path, offset, shape, format, backend)` makes an `F32` tensor from the little-endian floats that start at byte `offset` of a file. `format` is `FloatFormat.F32` (the default), `F16` or `BF16`. libtorch and ggml read the file themselves, so the weights never become a list. `Reference` reads it in Agentica, which is slow on a large file. With the environment variable `TENSOR_LOAD=agentica` (an environment variable) libtorch and ggml take the bytes from an Agentica read instead (`File.seek` and `File.read_bytes`), which is slower and uses more memory, for small models. A short file, a bad offset or a missing file gives an `error`.
+- `from_file(path, offset, shape, format, backend, dtype)` makes an `F32` tensor from the little-endian floats that start at byte `offset` of a file. `format` is `FloatFormat.F32` (the default), `F16` or `BF16`. libtorch and ggml read the file themselves, so the weights never become a list. `Reference` reads it in Agentica, which is slow on a large file. With the environment variable `TENSOR_LOAD=agentica` (an environment variable) libtorch and ggml take the bytes from an Agentica read instead (`File.seek` and `File.read_bytes`), which is slower and uses more memory, for small models. A short file, a bad offset or a missing file gives an `error`.
+- `from_file(..., dtype: Dtype.F16)` makes a half weight: the ggml backend keeps the values in 16 bits, converted at load from `F32`, `F16` or `BF16`, which halves the memory and the bandwidth of a weight and speeds up the decoding that streams it. A value beyond 65504 is an `error`; a smaller one rounds, as F16 does. Only ggml holds one (any other backend gives an `error` naming the option), and a trace may use it only as the weight of `matmul` and `linear` and as the table of `gather` and `embedding`, which answer `F32`; any other use, or an output that is `F16`, is an `error` naming the op. It is for inference: no gradient flows to a half weight. `F32` stays the default and the exact path.
 - `dtype` defaults to `F32` and `backend` to `Reference` in `zeros`, `ones`, `full` and `from_list`.
 - `to_list(t)` reads a tensor back as a `List[Values]`.
 - `shape`, `dtype` and `backend` read the fields of a tensor, with no call to a backend.
@@ -155,7 +156,7 @@ On `Ggml`, `Trace.eval`, `eval_many`, `grad` and `value_and_grad` compile the wh
 
 - `Dtype` has `F32` (the dtype that ops compute in), `F16`, `F64`, `I8`, `I16`, `I32`, `I64`, `U8` and `Bool`.
 - `Reference` computes `F16` and `F64` exactly, in doubles (64-bit floats).
-- ggml holds `F32` and `I32` as they are. `Bool`, `I8`, `I16` and `U8` are held as `F32`, which is exact for them. `F16`, `F64` and `I64` are refused on ggml.
+- ggml holds `F32` and `I32` as they are. `Bool`, `I8`, `I16` and `U8` are held as `F32`, which is exact for them. `F64` and `I64` are refused on ggml, and `F16` is held only as a half weight from `from_file`.
 - fp16 (16-bit floats) is opt-in. `Tensor.vulkan_fp16(true)` makes Vulkan products run in fp16 for the whole process. Call it before any other ggml call, `available` included. A later change is an error. Gradients change by up to about 10 % at MLP sizes.
 
 ## Limits

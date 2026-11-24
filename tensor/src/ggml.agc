@@ -85,28 +85,34 @@ def from_list(
   upload(device, shape, dtype, values, "from_list")
 end
 
-## Creation: an `F32` tensor of `shape` from the floats of `format` at byte
-## `offset` of the file `path`, read by C; on Vulkan through one host copy. With
-## `TENSOR_LOAD=agentica` Agentica reads the range and C widens the bytes.
+## Creation: a tensor of `shape` from the floats of `format` at byte `offset`
+## of the file `path`, read by C; on Vulkan through one host copy. It is `F32`,
+## or `F16` with `dtype: F16` (half the memory and the bandwidth of a weight;
+## a value beyond 65504 is an error). With `TENSOR_LOAD=agentica` Agentica
+## reads the range and C widens the bytes.
 def from_file(
   device: Types.Device,
   path: String,
   offset: Int,
   shape: List[Int],
   format: Types.FloatFormat,
+  dtype: Types.Dtype,
 ) -> Result[Types.Tensor]
   code = try ready(device, shape, Types.Dtype.F32, "from_file")
+  half = dtype == Types.Dtype.F16
+  if dtype != Types.Dtype.F32 and !half
+    return error("from_file: a ggml tensor read from a file is F32 or F16, got #{Types.dtype_name(dtype)}")
+  end
+
   if FileRange.agentica_read?()
     n = try Types.volume(shape)
     bytes = try FileRange.read_range(path, offset, n * Types.file_width(format))
-    return made("from_file", device, shape, Types.Dtype.F32) do
-      GgmlRaw.from_bytes(code, bytes, shape, Types.file_code(format))
+    return made("from_file", device, shape, dtype) do
+      GgmlRaw.from_bytes(code, bytes, shape, Types.file_code(format), half)
     end
   end
 
-  made("from_file", device, shape, Types.Dtype.F32) do
-    GgmlRaw.load(code, path, offset, shape, Types.file_code(format))
-  end
+  made("from_file", device, shape, dtype) do GgmlRaw.load(code, path, offset, shape, Types.file_code(format), half) end
 end
 
 ## Host readback: the row-major values tagged with `t`'s dtype.

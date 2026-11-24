@@ -147,16 +147,18 @@ an_term ggml_vulkan_devices(an_env *env);
    `data`, one value per element. */
 an_term ggml_upload(an_env *env, int64_t device, ggml_list_Int shape, ggml_list_Float data, bool int32);
 
-/* An F32 tensor of the row-major `shape` on `device` from the little-endian
-   floats of `format` (a code of `Types.file_code`) that start at byte `offset`
-   of the file `path`. C reads the file itself, so no value crosses as a
-   list; a range past the end of the file is an error. */
-an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml_list_Int shape, int64_t format);
+/* An F32 tensor (F16 when `half`) of the row-major `shape` on `device` from
+   the little-endian floats of `format` (a code of `Types.file_code`) that
+   start at byte `offset` of the file `path`. C reads the file itself, so no
+   value crosses as a list; a range past the end of the file is an error. A
+   half tensor converts the values a chunk at a time and refuses one that F16
+   does not hold (beyond 65504). */
+an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml_list_Int shape, int64_t format, bool half);
 
 /* The same from `data`, the bytes of the range that Agentica read
    (`TENSOR_LOAD=agentica`): the call reads them in place and widens them into
    the buffer. `data` must be exactly the range, or the call is an error. */
-an_term ggml_from_bytes(an_env *env, int64_t device, ng_buf data, ggml_list_Int shape, int64_t format);
+an_term ggml_from_bytes(an_env *env, int64_t device, ng_buf data, ggml_list_Int shape, int64_t format, bool half);
 
 /* A tensor of `shape` on `device` with every element `value`, filled in C,
    so a large fill never crosses as a list. */
@@ -461,7 +463,9 @@ static an_term ggml_native_load(an_env *env, int argc, const an_term *argv) {
   a3.argument = 4;
   int64_t a4;
   if (!an_get_int(env, argv[4], &a4)) return an_badarg(env, 4);
-  return ggml_load(env, a0, a1, a2, a3, a4);
+  bool a5;
+  if (!an_get_bool(env, argv[5], &a5)) return an_badarg(env, 5);
+  return ggml_load(env, a0, a1, a2, a3, a4, a5);
 }
 
 static an_term ggml_native_from_bytes(an_env *env, int argc, const an_term *argv) {
@@ -477,7 +481,9 @@ static an_term ggml_native_from_bytes(an_env *env, int argc, const an_term *argv
   a2.argument = 3;
   int64_t a3;
   if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
-  return ggml_from_bytes(env, a0, a1, a2, a3);
+  bool a4;
+  if (!an_get_bool(env, argv[4], &a4)) return an_badarg(env, 4);
+  return ggml_from_bytes(env, a0, a1, a2, a3, a4);
 }
 
 static an_term ggml_native_filled(an_env *env, int argc, const an_term *argv) {
@@ -634,8 +640,8 @@ static an_term ggml_native_vulkan_fp16(an_env *env, int argc, const an_term *arg
 static const an_function ggml_native_functions[] = {
   {"vulkan_devices", "() -> Int", ggml_native_vulkan_devices, AN_DIRTY},
   {"upload", "(Int, List[Int], List[Float], Bool) -> Result[TensorHandle]", ggml_native_upload, AN_DIRTY},
-  {"load", "(Int, String, Int, List[Int], Int) -> Result[TensorHandle]", ggml_native_load, AN_DIRTY},
-  {"from_bytes", "(Int, Bytes, List[Int], Int) -> Result[TensorHandle]", ggml_native_from_bytes, AN_DIRTY},
+  {"load", "(Int, String, Int, List[Int], Int, Bool) -> Result[TensorHandle]", ggml_native_load, AN_DIRTY},
+  {"from_bytes", "(Int, Bytes, List[Int], Int, Bool) -> Result[TensorHandle]", ggml_native_from_bytes, AN_DIRTY},
   {"filled", "(Int, List[Int], Float, Bool) -> Result[TensorHandle]", ggml_native_filled, AN_DIRTY},
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
   {"transfer", "(TensorHandle, Int) -> Result[TensorHandle]", ggml_native_transfer, AN_DIRTY},

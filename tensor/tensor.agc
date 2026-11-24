@@ -237,14 +237,35 @@ end
 ## the file itself, so no value crosses as an Agentica list. `F16` and `BF16`
 ## widen to `F32`. A short file, a bad offset or a missing file is an `error`.
 ## The reference reads the bytes in Agentica and is slow on a large file.
+##
+## With `dtype: F16` the tensor is a half weight: it keeps 16 bits per value
+## (half the memory and the bandwidth), converted at load, and an
+## `F32`, `F16` or `BF16` file value beyond 65504 is an `error`. Only the ggml
+## backend holds one, and a trace may use it only as the weight of `matmul` or
+## `linear` and as the table of `gather` or `embedding` (`tensor/DESIGN.md`).
 def from_file(
   path: String,
   offset: Int,
   shape: List[Int],
   format: Types.FloatFormat = Types.FloatFormat.F32,
   backend: Types.Backend = Types.Backend.Reference,
+  dtype: Types.Dtype = Types.Dtype.F32,
 ) -> Result[Types.Tensor]
   n = try Types.volume(shape)
+  if dtype != Types.Dtype.F32 and dtype != Types.Dtype.F16
+    return error("from_file reads F32 or F16, got #{Types.dtype_name(dtype)}")
+  end
+
+  if dtype == Types.Dtype.F16
+    case backend
+      Types.Backend.Ggml(_) -> nil
+      _ ->
+        return error(
+          "from_file with dtype F16 (half weights) needs the ggml backend, got #{Types.backend_name(backend)}",
+        )
+    end
+  end
+
   return error("from_file needs an offset of 0 or more, got #{offset}") if offset < 0
   if n > (9223372036854775807 - offset) / Types.file_width(format)
     return error("from_file: #{n} values at offset #{offset} reach past what an Int counts")
@@ -254,7 +275,7 @@ def from_file(
     Types.Backend.Reference -> Reference.from_file(path, offset, shape, format)
     Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format)
     Types.Backend.Trace -> error("from_file makes no traced tensor: lift one with Trace.constant")
-    Types.Backend.Ggml(device) -> Ggml.from_file(device, path, offset, shape, format)
+    Types.Backend.Ggml(device) -> Ggml.from_file(device, path, offset, shape, format, dtype)
   end
 end
 
@@ -571,7 +592,7 @@ end
 ## The rank-2 product `[rows, inner] . [inner, cols]`, float only.
 def matmul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try same_backend(a, b, "matmul")
-  _ = try same_dtype(a, b, "matmul")
+  _ = try weight_dtype(a, b, "matmul")
   _ = try float_only(a, "matmul")
   return error("matmul needs rank-2 tensors, got #{a.shape} and #{b.shape}") if a.shape.size != 2 or b.shape.size != 2
   return error("matmul needs #{a.shape[1]} in the inner dimension, got #{b.shape[0]}") if a.shape[1] != b.shape[0]
@@ -957,7 +978,7 @@ def linear(
   out_in: Bool = false,
 ) -> Result[Types.Tensor]
   _ = try same_backend(x, w, "linear")
-  _ = try same_dtype(x, w, "linear")
+  _ = try weight_dtype(x, w, "linear")
   _ = try float_only(x, "linear")
   return error("linear needs a rank-2 input, got #{x.shape}") if x.shape.size != 2
   return error("linear needs a rank-2 weight, got #{w.shape}") if w.shape.size != 2
@@ -1328,6 +1349,18 @@ def same_dtype(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
   end
 
   ok(true)
+end
+
+## `x` and the weight `w` of a product share their dtype, or `w` is a half
+## weight (`F16`, from `from_file` with `dtype: F16`) of an `F32` `x` in a
+## trace: ggml reads the half weight and answers `F32`.
+def weight_dtype(x: Types.Tensor, w: Types.Tensor, op: String) -> Result[Bool]
+  case x.backend
+    Types.Backend.Trace -> return ok(true) if x.dtype == Types.Dtype.F32 and w.dtype == Types.Dtype.F16
+    _ -> nil
+  end
+
+  same_dtype(x, w, op)
 end
 
 ## Two tensors share their rank.
