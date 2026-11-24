@@ -118,6 +118,43 @@ def test_timestamps_give_segments() -> Result[Void]
   Test.eq(try Greedy.segments(tok, [], 1.5, 0.0), [])
 end
 
+## A window of 100 frames: ids after the last pair of timestamps are dropped and the next window starts at the first of
+## the pair; a lone timestamp at the end finishes the window; with no pair the ids are one segment from the start of the
+## window to the last timestamp. `<|0.02|>` is 33, `<|0.06|>` 35.
+def test_a_window_seeks_to_the_last_pair_of_timestamps() -> Result[Void]
+  tok = try Tokenizer.open(FIXTURE)
+  cut = try Greedy.window(tok, [32, 4, 33, 33, 6, 35, 35, 6], 100, -0.5)
+  try Test.eq(cut.kept, [32, 4, 33, 33, 6, 35, 35])
+  try Test.eq(cut.advance, 6)
+  try Test.eq(
+    cut.segments,
+    [
+      Greedy.Segment(start: 0.0, stop: 0.02, text: "Hola", tokens: [32, 4, 33], avg_logprob: -0.5),
+      Greedy.Segment(start: 0.02, stop: 0.06, text: " mundo", tokens: [33, 6, 35, 35], avg_logprob: -0.5),
+    ],
+  )
+
+  whole = try Greedy.window(tok, [32, 4, 33, 33, 6, 35], 100, -0.5)
+  try Test.eq(whole.kept, [32, 4, 33, 33, 6, 35])
+  try Test.eq(whole.advance, 100)
+  try Test.eq(whole.segments.map { |s| s.text }, ["Hola", " mundo"])
+  try Test.eq(whole.segments.map { |s| [s.start, s.stop] }, [[0.0, 0.02], [0.02, 0.06]])
+
+  one = try Greedy.window(tok, [34, 4, 6, 35], 100, 0.0)
+  try Test.eq(one.advance, 100)
+  try Test.eq(one.segments.map { |s| [s.start, s.stop] }, [[0.0, 0.06]])
+  try Test.eq((try Greedy.window(tok, [4, 6], 100, 0.0)).segments.map { |s| s.stop }, [1.0])
+  empty = try Greedy.window(tok, [], 100, 0.0)
+  try Test.eq([empty.segments.size, empty.kept.size, empty.advance], [0, 0, 100])
+  # A pair at the very start would seek by zero: the window is finished instead.
+  stuck = try Greedy.window(tok, [32, 4, 32, 32, 6], 100, 0.0)
+  try Test.eq(stuck.advance, 100)
+  try Test.eq(stuck.kept, [32, 4, 32, 32])
+  # The next window never starts past the end of this one.
+  far = try Greedy.window(tok, [32, 4, 35, 35, 6], 4, 0.0)
+  Test.eq(far.advance, 4)
+end
+
 ## The start and stop of the one segment of `ids` with the text `Hola`, if
 ## that is what they give.
 def segment(tok: Tokenizer.Tokenizer, ids: List[Int]) -> Optional[List[Float]]

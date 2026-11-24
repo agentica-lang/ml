@@ -9,6 +9,9 @@ import Tokenizer from "tokenizer"
 ## and far below any logit.
 FORBIDDEN = -1.0e30
 
+## OpenAI's `time_precision`: the seconds of one timestamp step.
+STEP = 0.02
+
 ## What the rules need to know of the vocabulary and the request.
 struct Rules
   ## Never emitted (the config's `suppress_tokens`, or the special tokens).
@@ -33,6 +36,17 @@ struct Segment
   tokens: List[Int]
   ## OpenAI's `avg_logprob` of the window the segment is in.
   avg_logprob: Float
+end
+
+## What one window of a long clip gave.
+struct Window
+  ## The segments, in seconds from the start of the window.
+  segments: List[Segment]
+  ## The ids of the segments, timestamps included: the emitted ids up to where
+  ## the next window starts.
+  kept: List[Int]
+  ## The 10 ms frames after which the next window starts.
+  advance: Int
 end
 
 ## The rules for `tok`, with the token ids `suppress` and `begin_suppress`
@@ -145,6 +159,72 @@ def segments(
   end
 
   ok(try close(tok, out, opened, text, [], duration, avg_logprob))
+end
+
+## The segments of the emitted tokens of a window of `frames` frames, and
+## where the next window starts, as OpenAI's `transcribe` and Hugging Face's
+## long-form `generate` seek. Two timestamps in a row end a segment and open
+## the next. When the ids end with one timestamp after text, the window is
+## done (`advance` is all of it); otherwise the ids after the last pair of
+## timestamps are dropped and the next window starts at the first of the pair.
+## With no pair the ids are one segment from the start of the window to the
+## last timestamp (to the end of the window when there is none), and the
+## window is done. A segment with no text is left out.
+def window(tok: Tokenizer.Tokenizer, emitted: List[Int], frames: Int, avg_logprob: Float) -> Result[Window]
+  n = emitted.size
+  begin = tok.timestamp_begin
+  single = n >= 2 and emitted[n - 2] < begin and emitted[n - 1] >= begin
+  pairs: List[Int] = []
+  for i in 1...n
+    if emitted[i - 1] >= begin and emitted[i] >= begin
+      pairs = pairs.push(i)
+    end
+  end
+
+  if pairs.empty?
+    stop = frames / 2
+    for id in emitted
+      if id >= begin
+        stop = id - begin
+      end
+    end
+
+    # A last timestamp at 0 is no end: the length of the window stands.
+    if stop == 0
+      stop = frames / 2
+    end
+
+    made = try piece(tok, [], emitted, 0, stop, avg_logprob)
+    return ok(Window(segments: made, kept: emitted, advance: frames))
+  end
+
+  cuts = pairs + [n]
+  if not single
+    cuts = pairs.take(pairs.size - 1) + [pairs[pairs.size - 1] + 1]
+  end
+
+  out: List[Segment] = []
+  last = 0
+  for j in 0...cuts.size
+    sliced = emitted.drop(last).take(cuts[j] - last)
+    closing = sliced.size - 1
+    if j == cuts.size - 1 and not single
+      closing = sliced.size - 2
+    end
+
+    out = try piece(tok, out, sliced, step_of(tok, sliced[0]), step_of(tok, sliced[closing]), avg_logprob)
+    last = cuts[j]
+  end
+
+  advance = frames
+  if not single
+    advance = [step_of(tok, emitted[last - 2]) * 2, frames].min.unwrap!
+    if advance <= 0
+      advance = frames
+    end
+  end
+
+  ok(Window(segments: out, kept: emitted.take(last), advance: advance))
 end
 
 ## The softmax of `logits` at `i`, in doubles.
@@ -267,4 +347,29 @@ def close(
   )
 
   ok(out.push(segment))
+end
+
+## `ids` as a segment of the timestamp steps `from` to `to`, added to `out`
+## unless it has no text.
+def piece(
+  tok: Tokenizer.Tokenizer,
+  out: List[Segment],
+  ids: List[Int],
+  from: Int,
+  to: Int,
+  avg_logprob: Float,
+) -> Result[List[Segment]]
+  text = try Tokenizer.decode(tok, ids)
+  return ok(out) if text.empty?
+  ok(
+    out.push(
+      Segment(start: from.to_f * STEP, stop: to.to_f * STEP, text: text, tokens: ids, avg_logprob: avg_logprob),
+    ),
+  )
+end
+
+## The steps of the timestamp `id`; 0 for another token.
+def step_of(tok: Tokenizer.Tokenizer, id: Int) -> Int
+  return 0 if id < tok.timestamp_begin
+  id - tok.timestamp_begin
 end

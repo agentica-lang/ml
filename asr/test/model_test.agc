@@ -120,7 +120,8 @@ RULES = Greedy.Rules(
   max_initial: 2,
 )
 
-## A closed model frees its weights: using it afterwards is an error, and a model opened again over the same file works.
+## A closed model frees its weights and the log-mel plan with its constants: using it afterwards is an error, and a
+## model opened again over the same file works.
 def test_a_closed_model_is_an_error_to_use() -> Result[Void]
   with_fixtures do |dir|
     for backend in try ggml_backends()
@@ -128,8 +129,11 @@ def test_a_closed_model_is_an_error_to_use() -> Result[Void]
       m = try Asr.open(path, backend)
       mel = try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend)
       before = try floats_of(try Asr.encode(m, mel))
+      pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+      try Test.eq(Tensor.shape(try Asr.features(m, pcm, 6)), [1, 3, 6])
       Asr.close_model(m)
       try Test.error?(Asr.encode(m, mel))
+      try Test.error?(Asr.features(m, pcm, 6))
       again = try Asr.open(path, backend)
       try Test.eq(try floats_of(try Asr.encode(again, mel)), before)
       Asr.close_model(again)
@@ -696,9 +700,38 @@ def test_transcribe_takes_options_and_refuses_bad_input() -> Result[Void]
     try Test.eq((try Asr.transcribe(m, tok, pcm, Asr.Options(max_tokens: some(2)))).tokens.size, 2)
     try Test.error?(Asr.transcribe(m, tok, pcm, Asr.Options(max_tokens: some(0))))
     try Test.error?(Asr.transcribe(m, tok, pcm, Asr.Options(language: some("fr"))))
-    try Test.error?(Asr.transcribe(m, tok, pcm + [0.0]))
+    try Test.error?(Asr.transcribe(m, tok, pcm + pcm, Asr.Options(timestamps: false)))
     try Test.error?(Asr.transcribe(m, tok, []))
     Test.error?(Asr.transcribe(try Asr.open("#{dir}/tiny/model.safetensors", REF), tok, pcm))
+  end
+end
+
+## Audio over one window (here 6 frames, 960 samples) is read a window at a time, each one starting where the last
+## timestamp of the one before said, on every backend alike, with the times of the segments counted from the start of
+## the audio. The language is the first window's.
+def test_long_audio_is_read_in_windows_that_seek() -> Result[Void]
+  with_fixtures do |dir|
+    tok = try Tokenizer.open("test/fixtures/tokenizer.json")
+    pcm = (0...3000).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    want = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", REF), tok, pcm)
+    try Test.eq(want.text, try Tokenizer.decode(tok, want.tokens))
+    try Test.assert(not want.segments.empty?, "no segments")
+    try Test.assert(want.segments[want.segments.size - 1].stop > 0.06, "no segment after the first window")
+    first = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", REF), tok, pcm.take(960))
+    try Test.eq(want.language, first.language)
+    backends = try ggml_backends()
+    if Tensor.available(TORCH)
+      backends = backends.push(TORCH)
+    end
+
+    for backend in backends
+      got = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", backend), tok, pcm)
+      try Test.eq(got.tokens, want.tokens)
+      try Test.eq(got.segments.map { |s| [s.start, s.stop] }, want.segments.map { |s| [s.start, s.stop] })
+      try Test.eq(got.language, want.language)
+    end
+
+    ok()
   end
 end
 

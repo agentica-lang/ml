@@ -1,10 +1,10 @@
 ---
 title: asr
-description: Whisper in Agentica over tensor, nn and hub, from a Hugging Face checkpoint to a transcript of up to 30 s.
+description: Whisper in Agentica over tensor, nn and hub, from a Hugging Face checkpoint to a transcript of audio of any length.
 weight: 5
 ---
 
-`asr` is Whisper, OpenAI's speech-to-text model, written in Agentica for inference. It turns up to 30 seconds of audio into text, with timed segments.
+`asr` is Whisper, OpenAI's speech-to-text model, written in Agentica for inference. It turns audio into text, with timed segments. Audio over 30 seconds is read in windows of 30 seconds.
 
 ## Example
 
@@ -61,7 +61,7 @@ end
 
 ## Limits
 
-- Up to one window of audio: 30 s of 16 kHz audio for Whisper's checkpoints. A window is the chunk the model takes in one pass. Longer audio must be cut by the caller. The `whisper` package does that with its own engine.
+- Audio over one window (30 s of 16 kHz audio for Whisper's checkpoints; a window is the chunk the model takes in one pass) needs `timestamps: true`, the default. It is read as OpenAI's `transcribe` and Hugging Face's long-form `generate` do: each window starts where the last timestamp of the one before said its segments end, with no previous text in the prompt, and the language is the first window's. The segments' times count from the start of the audio, `tokens` are the ids of the segments of every window (each window with its own timestamps), and `no_speech_prob` is the first window's.
 - Decoding is greedy: at each step it takes the most likely token (temperature 0). It follows OpenAI's rules for suppressed tokens and timestamps. There is no beam search (a search that keeps several candidate outputs).
 - The samples must be mono 16 kHz floats. The frontend, the part that turns audio into the model's input, does not resample (change the sample rate).
 - `Tokenizer.vocab_size` must equal the model's `vocab_size`, or `transcribe` is an error.
