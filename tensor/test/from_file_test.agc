@@ -66,6 +66,32 @@ def test_every_format_reads_the_same_on_each_backend() -> Result[Void]
   end
 end
 
+## `Tensor.append_file` writes what `from_file` read: after the bytes the file had, the same bytes as the range, on
+## each backend, and only an `F32` tensor into a file that exists.
+def test_append_file_writes_back_the_bytes_of_a_range() -> Result[Void]
+  with_file do |path|
+    all = backends()
+    for i in 0...all.size
+      b = all[i]
+      out = "#{path}.#{i}"
+      try File.open(out, "write", 5000) do |f|
+        try File.write_bytes(f, try Bytes.from_list([7, 7]), 5000)
+        ok()
+      end
+
+      t = try Tensor.from_file(path, 3, [3, 1], Tensor.FloatFormat.F32, b)
+      try Tensor.append_file(t, out)
+      try Tensor.append_file(try Tensor.from_file(path, 31, [0, 4], Tensor.FloatFormat.F32, b), out)
+      try Test.eq((try FileRange.read_range(out, 0, 14)).to_a, [7, 7] + BYTES.drop(3).take(12))
+      try Test.eq((try File.stat(out)).size_bytes, 14)
+      try Test.error?(Tensor.append_file(t, "#{path}.missing"))
+      try Test.error?(Tensor.append_file(try Tensor.arange(0, 3, 1, Tensor.Dtype.I32, b), out))
+    end
+
+    Test.error?(Tensor.append_file(Trace.constant(try Tensor.zeros([1], Tensor.Dtype.F32, Conform.REF)), path))
+  end
+end
+
 ## `TENSOR_LOAD` is what turns the Agentica read on, so a misspelled name in CI
 ## fails here instead of testing the native path twice.
 def test_the_agentica_read_follows_tensor_load() -> Result[Void]

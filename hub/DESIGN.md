@@ -146,6 +146,15 @@ not by its magic. It is the same design as safetensors:
 
 ### Writing
 
+`safetensors_write.agc` writes one safetensors file from tensors in memory:
+`write(path, tensors, metadata)` takes `F32` tensors by name, sorts the names,
+builds the header in Agentica (padded with spaces to a multiple of 8, as the
+`safetensors` library does) and appends each tensor from its backend
+(`Tensor.append_file`), so the same tensors give the same bytes and no value
+goes through a list. It is for the trained part of a model (`train/`
+`Params`), which is in memory and not in a source file; `Hub.tensors` reads a
+file back as a map by name.
+
 `gguf_write.agc` writes version 3 files: `write(path, fields, tensors)` takes
 the key-values (`U32`, `F32`, `Bool`, `Text`, `Texts`, `Ints`) and the
 tensors, each as the place of its values in a file (`Hub.source`) and the

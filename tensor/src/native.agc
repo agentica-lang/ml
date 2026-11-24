@@ -240,4 +240,7 @@ extern module "torch"
   ## Host readback: the row-major values as storage doubles, which the caller
   ## tags with the tensor's dtype. `I64` values past 2^53 lose precision.
   compute def readback(a: TensorHandle) -> Result[List[Float]]
+  ## Appends the values of the `F32` tensor `a`, row-major and little-endian, to the existing file `path`: C writes
+  ## them, so no value crosses as a list.
+  compute def append_file(a: TensorHandle, path: String) -> Result[Void]
 end

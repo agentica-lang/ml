@@ -11,6 +11,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 - ggml: a decode step runs fewer kernels (the positions converted and checked once for every cache, a long-row `max` in pieces, SwiGLU as one kernel): Qwen3-0.6B decode on Vulkan is 7 to 11% faster.
 - ggml: a `Trace.compile` function keeps its constants bound to its graph between runs and binds only its inputs; the graph that ran last keeps its allocation.
 - ggml: an `attention` reads a `slice` of an `F16` cache that starts at its first element where it is, with no copy.
+- `Tensor.append_file` appends the values of an `F32` tensor to a file, written by C on libtorch and ggml.
 
 ### nn
 
@@ -19,10 +20,16 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### train
 
 - `Train.stablehlo` writes the step of `fit` as one StableHLO program for every step: Adam's bias corrections are inputs (`Optim.step_scalars`).
+- `Params.split`, `join`, `named` and `update` train part of a model: the weights selected by name train, and the frozen rest has no gradient and no optimizer state.
+
+### hub
+
+- `SafetensorsWrite.write` writes `F32` tensors by name to a safetensors file, and `Hub.tensors` reads every tensor of a checkpoint.
 
 ### transformers
 
 - ggml: a decode step reads the rows of the cache in use, not its whole capacity: Qwen3-0.6B decode on Vulkan at 2048 rows is 5% faster.
+- `Qwen3.weights` and `Qwen3.with_weights`: the weights of a model by their Hugging Face names, for training part of it.
 
 ## [0.2.0] - 2026-11-24
 

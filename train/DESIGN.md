@@ -3,7 +3,7 @@
 Losses, optimizers, a data loader and a minimal training loop over
 `tensor/`'s tracing (`tensor/DESIGN.md` §10). Depends on
 `tensor/` and `hub/` (a dataset from a safetensors file); `nn/` is a test
-dependency (`group = "test"`), used by the XOR test.
+dependency (`group = "test"`), used by the XOR test, and so is `prop`.
 
 ## API
 
@@ -29,6 +29,11 @@ Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Resu
   loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
   on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
 Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Module]
+
+Params.split(weights: Map[String, Tensor], trainable: Fn[String, Bool]) -> Result[Split { names, trainable, frozen }]
+Params.join(split, params) -> Result[Map[String, Tensor]]     every weight; the frozen ones as trace constants in a loss
+Params.named(split, params) -> Result[Map[String, Tensor]]    the trainable ones alone
+Params.update(weights, changed) -> Result[Map[String, Tensor]]
 ```
 
 ## Decisions
@@ -38,6 +43,19 @@ Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Modu
   structs from the list (`Nn.Dense(w: ps[0], b: some(ps[1]))`), which costs a
   struct per step and no copy. Flattening any struct of layers on its own
   (JAX's pytrees) waits for a model with enough layers to need it.
+- **Freezing is a split outside `fit`.** `fit` already gives a gradient and
+  optimizer state only to the tensors of `params`, so training part of a model
+  needs no second `fit`: `Params.split` picks the trainable weights of a
+  `Map[String, Tensor]` by a predicate on the name and hands `fit` their list,
+  and `Params.join` inside the loss gives the model every weight back, the
+  frozen ones as `Trace.constant`. The frozen tensors are then leaves the
+  graph only reads: no gradient is built for them and the step has no inputs,
+  moments or outputs for them. A model says its names itself
+  (`Qwen3.weights`, `Qwen3.with_weights` in `transformers/`). The trainable
+  part is saved as a safetensors file by `hub/`
+  (`SafetensorsWrite.write(path, Params.named(split, fit.params))`) and put
+  back with `Params.update`, which refuses a name the model lacks and another
+  shape.
 - **The batch enters the trace as constants.** `fit` wraps `inputs` and
   `targets` in `Trace.constant`, so the loss function sees traced tensors
   everywhere and is written once, as it would be eagerly.
