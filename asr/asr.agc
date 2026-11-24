@@ -323,8 +323,12 @@ def listen(m: Model, audio: Tensor.Tensor) -> Result[Cache]
 
   cross: List[Heard] = []
   for i in 0...m.decoder.size
-    kv = try run(m, [audio], ->(model: Model, xs: List[Tensor.Tensor]) { split_heads(model.decoder[i], xs[0]) })
-    cross = cross.push(Heard(key: kv[0], value: kv[1]))
+    case run(m, [audio], ->(model: Model, xs: List[Tensor.Tensor]) { split_heads(model.decoder[i], xs[0]) })
+      ok(kv) -> cross = cross.push(Heard(key: kv[0], value: kv[1]))
+      error(e) ->
+        close(cross.flat_map { |h| [h.key, h.value] })
+        return error(e)
+    end
   end
 
   ok(Cache(cross: cross, own: [], length: 0, graphs: {}))
@@ -541,6 +545,28 @@ def picked(scores: Tensor.Tensor) -> Result[Tensor.Tensor]
   id = try Tensor.sub(try Tensor.full([1], Tensor.Values.Float(v.to_f), dtype, backend), best)
   total = try Tensor.sum(try Tensor.exp(try Tensor.sub(scores, top)), some([0]), true)
   Tensor.concat([id, try Tensor.neg(try Tensor.log(total))], 0)
+end
+
+## The tensors of `c` a compiled step takes after the ids and the positions:
+## per decoder block the cross-attention key then value, then the
+## self-attention keys and values.
+def step_inputs(c: Cache) -> List[Tensor.Tensor] = c.cross.flat_map { |h| [h.key, h.value] } + kept(c)
+
+## `c` with its tensors replaced, in the order of `step_inputs`, by `xs`.
+def cache_over(c: Cache, xs: List[Tensor.Tensor]) -> Cache
+  at = 0
+  cross: List[Heard] = []
+  for _ in c.cross
+    cross = cross.push(Heard(key: xs[at], value: xs[at + 1]))
+    at += 2
+  end
+
+  own: List[Kv] = []
+  for i in 0...c.own.size
+    own = own.push(Kv(key: xs[at + 2 * i], value: xs[at + 2 * i + 1]))
+  end
+
+  c.with(cross: cross, own: own)
 end
 
 private
@@ -1230,28 +1256,6 @@ end
 ## Number `k` of `state`, repeated `v` times.
 def state_at(state: Tensor.Tensor, k: Int, v: Int) -> Result[Tensor.Tensor]
   Tensor.broadcast_to(try Tensor.slice(state, [k], [k + 1]), [v])
-end
-
-## The tensors of `c` a compiled step takes after the ids and the positions:
-## per decoder block the cross-attention key then value, then the
-## self-attention keys and values.
-def step_inputs(c: Cache) -> List[Tensor.Tensor] = c.cross.flat_map { |h| [h.key, h.value] } + kept(c)
-
-## `c` with its tensors replaced, in the order of `step_inputs`, by `xs`.
-def cache_over(c: Cache, xs: List[Tensor.Tensor]) -> Cache
-  at = 0
-  cross: List[Heard] = []
-  for _ in c.cross
-    cross = cross.push(Heard(key: xs[at], value: xs[at + 1]))
-    at += 2
-  end
-
-  own: List[Kv] = []
-  for i in 0...c.own.size
-    own = own.push(Kv(key: xs[at + 2 * i], value: xs[at + 2 * i + 1]))
-  end
-
-  c.with(cross: cross, own: own)
 end
 
 ## The weights of an encoder block, in the order `encoder_over` reads them.

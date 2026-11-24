@@ -185,9 +185,10 @@ and the KV cache that feeds them one token at a time.
   (`end` is a reserved word in Agentica).
 - **The KV cache** lives in `asr/`, over `nn/`'s layers: `listen` projects the
   encoder output to every block's cross-attention keys and values once, as
-  `[1, heads, frames, head_width]` for `Tensor.attention`; `step` keeps each block's self-attention keys and
-  values and feeds one token at a time (a prompt at once, under the causal
-  mask), and returns only the last token's logits.
+  `[1, heads, frames, head_width]` for `Tensor.attention`; `step` keeps each
+  block's self-attention keys and values and feeds one token at a time (a
+  prompt at once, under the causal mask), and returns only the last token's
+  logits.
 
 `test/greedy_test.agc` checks the rules on hand-made logits and the segments
 over `test/fixtures/tokenizer.json`; `test/model_test.agc` checks the steps

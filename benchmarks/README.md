@@ -28,7 +28,16 @@ The real-time factor is the run time over the clip length, so lower is better. T
 | whisper.cpp Vulkan, F32, no flash attention | 0.041 | 0.107 | 0.17 s | 0.16 GB | one more token on jfk |
 | whisper.cpp Vulkan, F16 (its default) | 0.038 | 0.106 | 0.13 s | 0.12 GB | one more token on jfk |
 
-The two ggml `ours` rows were measured again on ml#107 plus the cross-attention of `asr/` through `Tensor.attention` (this change), runs with `Options.timestamps` false, the median of 5 runs (2 for the medium table below), the same machine; the medium rows were measured the same way. They were 0.276 and 0.268 on jfk and 8.17 and 2.42 for medium on jfk before it. Before that, the two ggml `ours` rows had been measured again on ml `0e0bb8b` plus the device pick (ml#81), with the same session's runs of `0e0bb8b` alone: 0.299 and 0.393 on jfk, and the medium table below 2.50 and 6.91. They are runs with `Options.timestamps` false. The libtorch row, the whisper.cpp rows and the load and memory columns are from the runs named below, not repeated. The three `ours` rows were measured again after ml#63 (the load and the memory changed, the rest is the same code and the same machine, so the real-time factors moved only by noise). Before it the load was 23.6 s, 23.3 s and 23.6 s, and a pass that stops after the load peaked at 3.05 GB, 2.84 GB and 3.26 GB. The Peak memory column is the whole run, transcriptions included; the load alone now peaks at 0.46 GB, 0.36 GB and 0.49 GB.
+The two ggml `ours` rows and the medium rows were measured again on ml#107 plus the cross-attention of `asr/` through `Tensor.attention` (ml#109), the same machine, with `Options.timestamps` false, as above (the PR's own table has timestamps on, hence other numbers). Tiny is the median of 5 runs, medium of 2 runs. Real-time factors before (ml#81, `0e0bb8b`) and now:
+
+| Row | jfk before | jfk now | es-hola before | es-hola now |
+|---|---|---|---|---|
+| tiny, ggml CPU | 0.276 | 0.235 | 0.80 | 0.634 |
+| tiny, ggml Vulkan | 0.268 | 0.213 | 0.713 | 0.543 |
+| medium, ggml CPU | 8.17 | 7.04 | 22.4 | 18.2 |
+| medium, ggml Vulkan | 2.42 | 1.38 | 6.83 | 4.03 |
+
+Before that, the two ggml `ours` rows had been measured again on ml `0e0bb8b` plus the device pick (ml#81), with the same session's runs of `0e0bb8b` alone: 0.299 and 0.393 on jfk, and the medium table below 2.50 and 6.91. They are runs with `Options.timestamps` false. The libtorch row, the whisper.cpp rows and the load and memory columns are from the runs named below, not repeated. The three `ours` rows were measured again after ml#63 (the load and the memory changed, the rest is the same code and the same machine, so the real-time factors moved only by noise). Before it the load was 23.6 s, 23.3 s and 23.6 s, and a pass that stops after the load peaked at 3.05 GB, 2.84 GB and 3.26 GB. The Peak memory column is the whole run, transcriptions included; the load alone now peaks at 0.46 GB, 0.36 GB and 0.49 GB.
 
 Whisper's window is 30 s whatever the clip, so a short clip costs the same encoder time as a long one: that is why es-hola has the larger factor.
 
@@ -164,14 +173,14 @@ The machine was slower in that session than in the ones above, so compare the tw
 
 ## Whisper-medium, ours only
 
-whisper-medium (the Hugging Face `openai/whisper-medium` checkpoint, 3.06 GB of F32, `model.safetensors` sha256 `62f73550fa6db24b0c6f6c5962bd0dae80fa644e93cde9cd9c3792971b47fd28`) could not load before ml#63. Same machine and clips, under a 6 GB memory cap, the median of 2 timed runs after the warm-up. No whisper.cpp row: only the tiny model was converted.
+whisper-medium (the Hugging Face `openai/whisper-medium` checkpoint, 3.06 GB of F32, `model.safetensors` sha256 `62f73550fa6db24b0c6f6c5962bd0dae80fa644e93cde9cd9c3792971b47fd28`) could not load before ml#63. Same machine and clips, under a 6 GB memory cap, 2 timed runs after the warm-up (the median). No whisper.cpp row: only the tiny model was converted.
 
 | Row | RTF jfk | RTF es-hola | Load | Peak memory of the load | Tokens |
 |---|---|---|---|---|---|
 | ours, ggml CPU | 7.04 | 18.2 | 7.7 s | 4.0 GB | same as the medium output of whisper.cpp's server (`whisper/live/fixtures/server-*-medium.json`) |
 | ours, ggml Vulkan | 1.38 | 4.03 | 24 s | 0.49 GB | same |
 
-The Vulkan weights sit in the device's own buffers, which on this iGPU are system memory outside the process's resident set, so its row shows the process only. The encoder takes 26 s on the CPU and 5 s on Vulkan, and a decoder step about 2 s on the CPU and 0.4 s on Vulkan, which is the per-step cost of #64 on a bigger model. The Vulkan load is slower than the CPU's (24 s against 7.7 s); where that time goes was not profiled.
+The Vulkan weights sit in the device's own buffers, which on this iGPU are system memory outside the process's resident set, so its row shows the process only. The encoder takes 22 s on the CPU and 5 s on Vulkan, and a decoder step about 2.0 s on the CPU and 0.34 s on Vulkan (one run, jfk), which is the per-step cost of #64 on a bigger model. The Vulkan load is slower than the CPU's (24 s against 7.7 s); where that time goes was not profiled.
 
 ## Run it
 
