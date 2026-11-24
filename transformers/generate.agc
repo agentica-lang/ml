@@ -251,7 +251,8 @@ def advance(g: Generator, cache: Cache, ids: List[Int], picking: Bool) -> Result
   end
 
   Lift.close(fed)
-  # A step in place keeps the tensors of `cache` as the ones of the new cache; any other step is done with them.
+  # A step in place keeps the tensors of `cache` as the ones of the new cache; any other step is done with them (a
+  # tensor closed twice is fine, as when the step failed after it closed its outputs).
   if not in_place or not outs.ok?
     Lift.close(held)
   end
@@ -371,7 +372,11 @@ def stepped(
   slots = Slots(positions: xs[1], capacity: room)
   h = try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d])
   mask = try padded_mask(slots, Tensor.dtype(h))
-  spread = try spread_of(slots, Tensor.dtype(h))
+  spread: Optional[Tensor.Tensor] = none
+  if not in_place
+    spread = some(try spread_of(slots, Tensor.dtype(h)))
+  end
+
   keys: List[Tensor.Tensor] = []
   values: List[Tensor.Tensor] = []
   for i in 0...layers
@@ -408,17 +413,20 @@ def layer(
   h: Tensor.Tensor,
   positions: Tensor.Tensor,
   mask: Tensor.Tensor,
-  spread: Tensor.Tensor,
+  spread: Optional[Tensor.Tensor],
   old: Optional[Kv],
   in_place: Bool,
 ) -> Result[Layer]
   x = try Nn.layer_norm(b.norm1, h)
   heads = try Nn.project(b.attention, x, x, some(positions))
-  key = try written(old.map { |kv| kv.key }, heads.key, spread)
-  value = try written(old.map { |kv| kv.value }, heads.value, spread)
+  key = heads.key
+  value = heads.value
   if in_place
     key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
     value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
+  else
+    key = try written(old.map { |kv| kv.key }, heads.key, spread.unwrap!)
+    value = try written(old.map { |kv| kv.value }, heads.value, spread.unwrap!)
   end
 
   seen = try Nn.attend(b.attention, heads.query, key, value, some(mask))

@@ -799,7 +799,8 @@ end
 ## An index outside `[0, rows)` is an error. On every backend but `Ggml` the answer is a new tensor. In a trace that
 ## runs on `Ggml` it is the cache written in place (`Trace.run`): `cache` must be an input of the function, read by no
 ## other node, and the result must be an output, which is the very tensor given; `cache` is consumed (see
-## `Trace.run`). No gradient.
+## `Trace.run`), even when the run fails, and the cache must be `F32`; the written cache is not checked for finite
+## values. `Trace.eval` writes a copy. No gradient.
 def set_rows(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) -> Result[Types.Tensor]
   _ = try same_backend(cache, fresh, "set_rows")
   _ = try same_backend(cache, positions, "set_rows")
@@ -821,6 +822,7 @@ def set_rows(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) 
 
   case cache.backend
     Types.Backend.Trace -> Graph.same(Types.Op.SetRows, [cache, fresh, positions], cache)
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("set_rows")
     _ -> set_rows_composed(cache, fresh, positions)
   end
 end

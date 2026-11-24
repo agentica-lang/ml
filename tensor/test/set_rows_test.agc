@@ -216,7 +216,7 @@ def test_a_function_that_cannot_write_in_place_is_refused() -> Result[Void]
       specs,
       ->(xs: List[Tensor.Tensor]) { ok([try Tensor.set_rows(xs[0], xs[1], xs[2]), try Tensor.add(xs[0], xs[0])]) },
     ),
-    "writes in place",
+    "reads node",
   )
 
   # the cache is not an input
@@ -251,15 +251,34 @@ def test_a_function_that_cannot_write_in_place_is_refused() -> Result[Void]
     "also an output",
   )
 
-  # the cache is written twice
-  dead(
+  # the cache is written twice: the second set_rows reads it
+  try dead(
     Trace.compile(
       specs,
       ->(xs: List[Tensor.Tensor]) {
         ok([try Tensor.set_rows(xs[0], xs[1], xs[2]), try Tensor.set_rows(xs[0], xs[1], xs[2])])
       },
     ),
-    "in place",
+    "reads node",
+  )
+
+  # the rows are the cache itself: the kernel would read what it writes
+  full = [args[0], args[1], try at([0, 1, 2, 3], CPU)]
+  try dead(
+    Trace.compile(specs_of(full), ->(xs: List[Tensor.Tensor]) { ok([try Tensor.set_rows(xs[0], xs[0], xs[2])]) }),
+    "reads node",
+  )
+
+  # one result listed twice
+  dead(
+    Trace.compile(
+      specs,
+      ->(xs: List[Tensor.Tensor]) {
+        y = try Tensor.set_rows(xs[0], xs[1], xs[2])
+        ok([y, y])
+      },
+    ),
+    "listed twice",
   )
 end
 
@@ -280,4 +299,52 @@ def test_the_run_refuses_a_cache_that_is_given_twice_or_an_into_for_it() -> Resu
   )
 
   failed(Trace.run(other, [args[0], args[0], args[1], args[2]]), "another input")
+end
+
+## `Trace.eval` is functional: it writes a copy, and the cache given is left as it was.
+def test_eval_leaves_the_cache_alone() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  cache = counting(24)
+  fresh = (0...6).map { |i| 10.0 + i.to_f }
+  on_ggml = [try floats(cache, [2, 4, 3], CPU), try floats(fresh, [2, 1, 3], CPU), try at([2], CPU)]
+  got = try Trace.eval(on_ggml) do |xs| Tensor.set_rows(xs[0], xs[1], xs[2]) end
+
+  want = try Tensor.set_rows(try floats(cache, [2, 4, 3], REF), try floats(fresh, [2, 1, 3], REF), try at([2], REF))
+  try Test.eq(try Support.floats_of(got), try Support.floats_of(want))
+  try Test.eq(try Support.floats_of(on_ggml[0]), cache)
+  Native.close(try Ggml.handle_of(got))
+  Test.assert(!Native.closed?(try Ggml.handle_of(on_ggml[0])), "eval gave the cache back")
+end
+
+## One plan runs on a second cache: each is written by its own run and the first is not touched by the second.
+def test_a_plan_runs_on_a_second_cache() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  first = try trio(CPU)
+  compiled = try Trace.compile(
+    specs_of(first),
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.set_rows(xs[0], xs[1], xs[2])]) },
+  )
+
+  _ = try Trace.run(compiled, first)
+  written = try Support.floats_of(first[0])
+  second = [try floats(counting(24).map { |x| -x }, [2, 4, 3], CPU), first[1], try at([1], CPU)]
+  _ = try Trace.run(compiled, second)
+  try Test.eq(try Support.floats_of(first[0]), written)
+  Test.assert(try Support.floats_of(second[0]) != written, "the second cache was not written")
+end
+
+## The cache is consumed by a run that fails: the guard of the positions comes after the write.
+def test_a_failed_run_still_consumes_the_cache() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  args = try trio(CPU)
+  compiled = try Trace.compile(
+    specs_of(args),
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.set_rows(xs[0], xs[1], xs[2])]) },
+  )
+
+  try failed(Trace.run(compiled, [args[0], args[1], try at([7], CPU)]), "outside the rows")
+  Test.assert(try Support.floats_of(args[0]) != counting(24), "the cache was left alone by a failed run")
 end

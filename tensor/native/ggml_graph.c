@@ -112,6 +112,7 @@ struct gnode {
   int lazy; /* t has fewer elements than ne and repeats to it */
   int zero; /* a fill of 0.0, possibly broadcast or reshaped */
   int arg;  /* a transpose's argument, for matmul's layout */
+  int in_place; /* a set_rows that writes its leaf: its result is that leaf, an output with no copy and no check */
   int rank; /* of the recorded shape */
   struct ggml_tensor *guard; /* a gather's or scatter_add's count of indices out of range */
 };
@@ -814,20 +815,36 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       break;
     case OP_GELU_ERF: t = ggml_gelu_erf(p->ctx, dense(p, a)); break;
     case OP_SET_ROWS: {
-      struct port *leaf = NULL;
-      int64_t k;
+      struct ggml_tensor *rows;
+      int copy;
 
-      if (a->op != OP_LEAF) return tg_error(env, "set_rows writes a leaf, an input of the graph, in place");
-      for (k = 0; k < p->leaf_count; k++) {
-        if (p->leaves[k].t == a->t) leaf = &p->leaves[k];
+      if (nints != 1 || (ints[0] != 0 && ints[0] != 1)) return tg_error(env, "set_rows takes a flag, 1 to write a copy of its cache");
+      copy = (int)ints[0];
+      if (a->ne[1] > 16777216) {
+        return tg_error(env, "set_rows into more than 2^24 rows is not lowered to ggml: F32 row ids are exact below that");
       }
-      if (leaf == NULL || a->t->type != GGML_TYPE_F32) return tg_error(env, "set_rows writes an F32 input in place");
-      if (leaf->donated) return tg_error(env, "set_rows writes a leaf in place twice");
       if (a->ne[0] != b->ne[0] || a->ne[2] != b->ne[2] || a->ne[3] != b->ne[3] || volume(c->ne) != b->ne[1]) {
         return tg_error(env, "set_rows takes rows of the cache's width, one for each position");
       }
-      leaf->donated = true;
-      t = ggml_set_rows(p->ctx, a->t, dense(p, b), row_ids(p, c, a->ne[1], &n->guard));
+      if (copy) {
+        if (a->t->type != GGML_TYPE_F32) return tg_error(env, "set_rows writes an F32 cache");
+        rows = row_ids(p, c, a->ne[1], &n->guard);
+        t = ggml_set_rows(p->ctx, ggml_dup(p->ctx, dense(p, a)), dense(p, b), rows);
+      } else {
+        struct port *leaf = NULL;
+        int64_t k;
+
+        if (a->op != OP_LEAF) return tg_error(env, "set_rows writes a leaf, an input of the graph, in place");
+        if (b == a || c == a) return tg_error(env, "set_rows reads the cache it writes in place");
+        for (k = 0; k < p->leaf_count; k++) {
+          if (p->leaves[k].t == a->t) leaf = &p->leaves[k];
+        }
+        if (leaf == NULL || a->t->type != GGML_TYPE_F32) return tg_error(env, "set_rows writes an F32 input in place");
+        if (leaf->donated) return tg_error(env, "set_rows writes a leaf in place twice");
+        leaf->donated = true;
+        n->in_place = 1;
+        t = ggml_set_rows(p->ctx, a->t, dense(p, b), row_ids(p, c, a->ne[1], &n->guard));
+      }
       break;
     }
     case OP_NORM: {
@@ -953,7 +970,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     struct ggml_tensor *check;
 
     p->outs[i].t = ggml_new_tensor_4d(p->port_ctx, GGML_TYPE_F32, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
-    if (n->op == OP_SET_ROWS) {
+    if (n->in_place) {
       /* the output is the leaf itself: nothing to copy or to check, the node only has to run */
       p->outs[i].donated = true;
       ggml_build_forward_expand(p->graph, n->t);

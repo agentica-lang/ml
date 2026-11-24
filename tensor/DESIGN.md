@@ -116,7 +116,10 @@ derived).
 with its rows at the (distinct) `positions` replaced, on every backend but
 ggml. In a function run on ggml (`Trace.run`) it writes the cache where it
 lies, which makes the cache an input that no other node reads, the result an
-output, and the output the very tensor given: the tensor is consumed. The
+output, and the output the very tensor given: the tensor is consumed, even by
+a run that fails (a position out of range is found after the write, and is
+clamped into the cache), and it is not checked for finite values. The cache
+must be `F32`. `Trace.eval` writes a copy and leaves the cache alone. The
 check is at lowering, naming the nodes, so a KV cache is not copied at every
 step of a generation. It has no gradient.
 Normalization support: `rsqrt, mean_var` are **not** primitives. `layer_norm`
