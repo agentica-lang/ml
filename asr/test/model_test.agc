@@ -854,6 +854,7 @@ end
 ## built, and Vulkan device 0 when ggml sees one. With `TENSOR_REQUIRE_GGML`
 ## set to anything but "" (CI sets it) a missing module is an error.
 def ggml_backends() -> Result[List[Tensor.Backend]]
+  try Tensor.vulkan_fp16(false)
   if !Tensor.available(GGML)
     flag = System.env("TENSOR_REQUIRE_GGML")
     return error("ggml required but not built (TENSOR_REQUIRE_GGML is set)") if flag.ok? and try flag != ""

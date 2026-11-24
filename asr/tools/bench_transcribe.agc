@@ -35,6 +35,7 @@ def run(args: List[String]) -> Result[Void]
     runs = try args[4].to_i
   end
 
+  try Load.vulkan_fp16_from_env(true)
   backend = try TranscribeCheck.backend_of(args[2])
   return error("#{args[2]} is not available") if not Tensor.available(backend)
   started = Time.monotonic_ms()

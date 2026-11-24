@@ -1,8 +1,8 @@
 ## Transcribes the clips of `test/fixtures/transcribe_golden.json` with a real
 ## whisper-tiny and compares them with what Hugging Face answered: the token
 ## ids exactly, the text and the segments (times exactly; within 1e-9 in the
-## long cases), the language and its probability within 1e-5. The two long cases (over 30 s, windows that
-## seek) are built from the two clips as `test/transcribe_golden.py` builds
+## long cases), the language and its probability within 1e-5. The two long
+## cases (over 30 s, windows that seek) are built from the two clips as `test/transcribe_golden.py` builds
 ## them. It prints the real-time factor of each case and, on ggml, the
 ## graphs it compiled. Manual, not run by the tests (the checkpoint is not in
 ## git). From `asr/`:
@@ -12,8 +12,8 @@
 ## ```
 ##
 ## MODEL_DIR holds `model.safetensors`, `config.json` and `tokenizer.json`.
-## `WEIGHTS=f16` loads the big matrices as half weights (ggml only) and `VULKAN_FP16=1` makes Vulkan multiply in
-## fp16 (`Tensor.vulkan_fp16`); both are off by default.
+## `WEIGHTS=f16` loads the big matrices as half weights (ggml only) and `VULKAN_FP16=1` lets Vulkan multiply in
+## fp16 (`Tensor.vulkan_fp16`); a check against whisper.cpp leaves both off, which is exact `float32`.
 ## BACKEND is `torch` (libtorch, the default), `reference` (the pure one,
 ## slow), `ggml` (ggml on the CPU) or `vulkan` (ggml on Vulkan device 0); CASE
 ## runs only that case's index.
@@ -74,6 +74,7 @@ def run(args: List[String]) -> Result[Bool]
     name = args[3]
   end
 
+  try Load.vulkan_fp16_from_env()
   backend = try backend_of(name)
   return error("#{backend} is not available") if not Tensor.available(backend)
   started = Time.monotonic_ms()
@@ -160,7 +161,6 @@ def spans_match(got: List[Span], want: List[Span], tolerance: Float) -> Bool
 end
 
 def backend_of(name: String) -> Result[Tensor.Backend]
-  try Load.vulkan_fp16_from_env()
   case name
     "torch" -> ok(Tensor.Backend.Torch(Tensor.Device.Cpu))
     "reference" -> ok(Tensor.Backend.Reference)

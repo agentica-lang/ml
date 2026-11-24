@@ -1,6 +1,6 @@
-## The benchmark's model (`vulkan_mlp.agc`) compiled on Vulkan device 0 with
-## F32 `mul_mat` against ggml's CPU backend: the loss and every gradient
-## within `TOL` of the largest value of their tensor.
+## The benchmark's model (`vulkan_mlp.agc`) compiled on Vulkan device 0 with exact F32 `mul_mat` (the test chooses it
+## with `Tensor.vulkan_fp16(false)` as the first call of this file, as fp16 is the default) against ggml's CPU backend:
+## the loss and every gradient within `TOL` of the largest value of their tensor.
 ##
 ## `TOL` is 1.5e-6, set on the Vega iGPU of this repository's maintainer
 ## (AMD Raven, RADV), about twice the 6e-7 the spike measured there
@@ -27,6 +27,7 @@ def tolerance() -> Result[Float]
 end
 
 def test_the_benchmark_model_agrees_between_cpu_and_vulkan() -> Result[Void]
+  try Tensor.vulkan_fp16(false)
   if !Tensor.available(Tensor.Backend.Ggml(VULKAN))
     IO.warn("SKIP: no Vulkan device 0; the 784-512-512-10 parity runs where there is one")
     return ok()

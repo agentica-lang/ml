@@ -98,7 +98,7 @@ timed() {  # OUT COMMAND...: the command's stdout in OUT.tsv, `time -v` in OUT.t
 }
 
 # Each row runs the timed pass on both clips, then a pass that stops after the load (jfk only), for the memory of the load.
-ours() {  # ROW BACKEND [VAR=value...]: the variables go to the tool (WEIGHTS=f16, VULKAN_FP16=1)
+ours() {  # ROW BACKEND [VAR=value...]: the variables go to the tool (WEIGHTS=f16, VULKAN_FP16=0)
   wanted "$1" || return 0
   rm -f "$work/results/$1".*
   engine=$([ "$2" = vulkan ] && echo vulkan || echo cpu)
@@ -120,7 +120,7 @@ ours() {  # ROW BACKEND [VAR=value...]: the variables go to the tool (WEIGHTS=f1
         torch_exports=$(cd "$root/tensor" && sh tools/build-torch.sh)
         eval "$torch_exports"
       fi
-      timed "$work/results/$1.$clip$suffix" env WEIGHTS=f32 VULKAN_FP16=0 "${@:3}" agentica tools/bench_transcribe.agc "$model_dir" "$(clip_wav "$clip")" "$2" "$(clip_lang "$clip")" "$n"
+      timed "$work/results/$1.$clip$suffix" env WEIGHTS=f32 VULKAN_FP16=1 "${@:3}" agentica tools/bench_transcribe.agc "$model_dir" "$(clip_wav "$clip")" "$2" "$(clip_lang "$clip")" "$n"
     )
   done
 }
@@ -146,8 +146,8 @@ cpp() {  # ROW DEVICE MODEL FLASH_ATTN
 ours agentica-ggml-cpu ggml
 ours agentica-ggml-vulkan vulkan
 ours agentica-ggml-cpu-f16 ggml WEIGHTS=f16
+ours agentica-ggml-vulkan-exact vulkan VULKAN_FP16=0
 ours agentica-ggml-vulkan-f16 vulkan WEIGHTS=f16
-ours agentica-ggml-vulkan-f16-fp16 vulkan WEIGHTS=f16 VULKAN_FP16=1
 ours agentica-libtorch torch
 cpp wcpp-cpu-f32 cpu f32 1
 cpp wcpp-cpu-f32-nofa cpu f32 0
