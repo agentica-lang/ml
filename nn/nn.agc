@@ -149,6 +149,15 @@ struct BlockOptions
   eps: Float = LAYER_NORM_EPS
 end
 
+## The heads of an attention before `Tensor.attention` reads them: `query`
+## `[batch, heads, q, head]`, `key` and `value` `[batch, kv_heads, k, head]`,
+## with the query and key norms and the rotation applied.
+struct Heads
+  query: Tensor.Tensor
+  key: Tensor.Tensor
+  value: Tensor.Tensor
+end
+
 ## `x w + b` on the last axis of an input of any rank >= 1: the leading axes
 ## are folded into rows for `Tensor.linear` and unfolded after.
 def dense(p: Dense, x: Tensor.Tensor) -> Result[Tensor.Tensor]
@@ -207,33 +216,75 @@ def activate(a: Activation, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   end
 end
 
-## Attention of `queries` (`[batch, q, width]`) over `memory`
-## (`[batch, k, width]`), through `Tensor.attention`. `mask` is its additive
-## bias (`[q, k]`, or `[batch|1, heads|1, q, k]`); `causal` keeps each query
-## off the keys after it, aligned at the end: with `q < k` the last query sees
-## every key (the queries are the last positions of the keys, as in decoding
-## with a cache), and `q > k` is an error. On `Reference` it needs `q * k` of
-## at most 1,048,576.
-def attention(
+## The heads of `queries` (`[batch, q, width]`) and of `memory`
+## (`[batch, k, width]`): the projections split by head, the query and key
+## norms, then the rotation if `p` has one. Rope reads the integer vector
+## `positions` `[q]` for the queries and `memory_positions` `[k]` for the keys,
+## `0...q` and `0...k` when none; with only `positions` given the keys use it
+## too, which is self-attention (`q` is `k`). A decoder that keeps the keys and
+## values of earlier tokens projects the new token alone, at its own position
+## (`positions` of `[n]` for a token at position `n`, the keys cached already
+## rotated), and gives `attend` the cache.
+def project(
   p: Attention,
   queries: Tensor.Tensor,
   memory: Tensor.Tensor,
-  mask: Optional[Tensor.Tensor] = none,
-  causal: Bool = false,
-) -> Result[Tensor.Tensor]
+  positions: Optional[Tensor.Tensor] = none,
+  memory_positions: Optional[Tensor.Tensor] = none,
+) -> Result[Heads]
   kv_heads = p.kv_heads.unwrap_or(p.heads)
   q = try normalized(p.query_norm, try split_heads(try dense(p.query, queries), p.heads))
   k = try normalized(p.key_norm, try split_heads(try dense(p.key, memory), kv_heads))
   v = try split_heads(try dense(p.value, memory), kv_heads)
   case p.rope
     some(r) ->
-      q = try rotate(r, q)
-      k = try rotate(r, k)
+      q = try rotate(r, q, positions)
+      keyed = memory_positions
+      if keyed.none?
+        keyed = positions
+      end
+
+      k = try rotate(r, k, keyed)
     none -> nil
   end
 
-  context = try Tensor.attention(q, k, v, mask: mask, causal: causal)
+  ok(Heads(query: q, key: k, value: v))
+end
+
+## `Tensor.attention` of `query` over `key` and `value` (the tensors of a
+## `Heads`, or a cache of them), the heads merged and `p.output` applied:
+## `[batch, q, width]`. `mask` and `causal` are as for `attention`.
+def attend(
+  p: Attention,
+  query: Tensor.Tensor,
+  key: Tensor.Tensor,
+  value: Tensor.Tensor,
+  mask: Optional[Tensor.Tensor] = none,
+  causal: Bool = false,
+) -> Result[Tensor.Tensor]
+  context = try Tensor.attention(query, key, value, mask: mask, causal: causal)
   dense(p.output, try merge_heads(context))
+end
+
+## Attention of `queries` (`[batch, q, width]`) over `memory`
+## (`[batch, k, width]`): `project` then `attend`, through `Tensor.attention`.
+## `mask` is its additive bias (`[q, k]`, or `[batch|1, heads|1, q, k]`);
+## `causal` keeps each query off the keys after it, aligned at the end: with
+## `q < k` the last query sees every key (the queries are the last positions of
+## the keys, as in decoding with a cache), and `q > k` is an error. On
+## `Reference` it needs `q * k` of at most 1,048,576. `positions` and
+## `memory_positions` are those of `project`; rope starts at 0 without them.
+def attention(
+  p: Attention,
+  queries: Tensor.Tensor,
+  memory: Tensor.Tensor,
+  mask: Optional[Tensor.Tensor] = none,
+  causal: Bool = false,
+  positions: Optional[Tensor.Tensor] = none,
+  memory_positions: Optional[Tensor.Tensor] = none,
+) -> Result[Tensor.Tensor]
+  h = try project(p, queries, memory, positions, memory_positions)
+  attend(p, h.query, h.key, h.value, mask, causal)
 end
 
 def self_attention(
@@ -520,10 +571,14 @@ def merge_heads(x: Tensor.Tensor) -> Result[Tensor.Tensor]
 end
 
 ## `x` (`[batch, heads, seq, width]`) with the positions `0...seq`.
-def rotate(r: Rope, x: Tensor.Tensor) -> Result[Tensor.Tensor]
+def rotate(r: Rope, x: Tensor.Tensor, positions: Optional[Tensor.Tensor]) -> Result[Tensor.Tensor]
   seq = Tensor.shape(x)[2]
-  positions = try Tensor.arange(0, seq, 1, Tensor.Dtype.I32, Tensor.backend(x))
-  Tensor.rope(x, positions, base: r.base, dims: r.dims, neox: r.neox)
+  case positions
+    some(at) -> Tensor.rope(x, at, base: r.base, dims: r.dims, neox: r.neox)
+    none ->
+      at = try Tensor.arange(0, seq, 1, Tensor.Dtype.I32, Tensor.backend(x))
+      Tensor.rope(x, at, base: r.base, dims: r.dims, neox: r.neox)
+  end
 end
 
 def normalized(norm: Optional[LayerNorm], x: Tensor.Tensor) -> Result[Tensor.Tensor]

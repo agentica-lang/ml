@@ -32,7 +32,11 @@ Nn.embedding(p, ids)               ids rank-1 integer -> [ids, width]
 Nn.conv1d(p, x)                    x [in, L] or [batch, in, L] -> Tensor.conv1d + bias per channel
 Nn.positional(p, x)                x [seq, width] or [batch, seq, width] + table rows 0...seq
 Nn.activate(a, x)
-Nn.attention(p, queries, memory, mask?, causal?)   [batch, q, width] over [batch, k, width]
+Nn.attention(p, queries, memory, mask?, causal?, positions?, memory_positions?)
+                                   [batch, q, width] over [batch, k, width]: project, then attend
+Nn.project(p, queries, memory, positions?, memory_positions?) -> Heads { query, key, value }
+                                   split by head, q/k norms, rope at `positions` (default 0...seq)
+Nn.attend(p, query, key, value, mask?, causal?)   Tensor.attention over heads or a cache, merged, output dense
 Nn.self_attention(p, x, mask?, causal?)
 Nn.mlp(p, x)                       down(act(up x)), or down(act(gate x) * up x) with a gate
 Nn.encoder_block(p, x, mask?, causal?)
@@ -83,6 +87,12 @@ that are the layer's own (rank of `positional`, table length, heads).
   options added later. The head width is the width of `query` over `heads`,
   so loaded weights may have a head width other than `width / heads`
   (Qwen3); `init_attention` makes only `width / heads`.
+- **`project` and `attend` split attention for a cache.** `nn/` has no KV cache,
+  but a decoder that keeps one must rotate the new token's key at its own
+  position and read the cached keys as they are: `project` takes the integer
+  `positions` (queries) and `memory_positions` (keys; the queries' when only
+  those are given), and `attend` takes the heads or a cache of them.
+  `attention` is their composition, with the same results as before.
 - **Attention is `Tensor.attention`.** `attention` splits the projections into
   heads with `reshape` and `permute`, applies the query and key norms, then
   `rope` (positions `0...seq` of each input, so a cross-attention gets rope

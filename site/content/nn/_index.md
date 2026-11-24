@@ -36,7 +36,7 @@ The shapes are the ones the layers take. `dense` takes any rank. Attention needs
 | `LayerNorm` | `gamma`, `beta`, `eps`, `rms` | `layer_norm(p, x)`; with `rms` it is an RMS norm and `beta` is ignored |
 | `Embedding` | `table` as `[rows, width]` | `embedding(p, ids)`; `positional(p, x)` adds the first rows of the table |
 | `Conv1d` | `weight` as `[out, in, kernel]`, `bias`, `stride`, `padding` | `conv1d(p, x)` |
-| `Attention` | four `Dense` projections, `heads`, and optional `kv_heads`, `rope`, `query_norm`, `key_norm` | `attention(p, queries, memory, mask?, causal?)`, `self_attention(p, x, mask?, causal?)` |
+| `Attention` | four `Dense` projections, `heads`, and optional `kv_heads`, `rope`, `query_norm`, `key_norm` | `attention(p, queries, memory, mask?, causal?, positions?, memory_positions?)`, `self_attention(p, x, mask?, causal?)`; `project` and `attend`, the two halves of `attention` |
 | `Mlp` | `up`, `down`, `activation`, optional `gate` | `mlp(p, x)`: `dense`, activation, `dense`; with a `gate`, `down(activation(gate(x)) * up(x))` |
 | `EncoderBlock` | two norms, attention, MLP, `norm_first` | `encoder_block(p, x, mask?, causal?)` |
 | `DecoderBlock` | three norms, self and cross attention, MLP, `norm_first` | `decoder_block(p, x, memory)`, causal self attention, then cross attention |
@@ -76,7 +76,7 @@ A model changes a detail of the block, so each detail is an option. The default 
 
 - `norm_first: false` makes the block post-norm, as BERT: `norm(x + attention(x))` in place of `x + attention(norm(x))`. A pre-norm stack ends in a final norm and a post-norm one does not.
 - `kv_heads` fewer than `heads` is grouped-query attention: each key and value head serves several query heads. It must divide `heads`.
-- `rope` rotates the queries and keys by the position `0...seq` of each input. `Rope` has `base`, `neox` (the pairing of the columns) and `dims`.
+- `rope` rotates the queries and keys by the position `0...seq` of each input, or by the integer vector `positions` (queries) and `memory_positions` (keys) when `attention` or `project` gets them. `Rope` has `base`, `neox` (the pairing of the columns) and `dims`.
 - `query_norm` and `key_norm` normalize each head over its width before `rope` (Qwen3).
 - `LayerNorm` with `rms: true` is an RMS norm. An `Mlp` with a `gate` is a gated one (SwiGLU with `Silu`).
 - `encoder_block` with `causal: true` is a decoder-only block, as Qwen's. There is no separate decoder-only function.
@@ -133,7 +133,7 @@ Each layer has an `init_*` function. It takes a seed (a number that makes the ra
 - A layer runs eagerly on `Reference` and libtorch. On ggml it runs traced only: call it on `Trace` tensors and evaluate or compile the graph.
 - `causal` with fewer queries than keys ends on the last key (the end-aligned mask of a decode step), and with more queries than keys it is an error. On `Reference`, `q * k` of the causal mask stops at 1,048,576.
 - `init_attention` makes heads of `width / heads`; weights loaded from a checkpoint may have another head width (Qwen3), and the layers run them.
-- Rotary positions of a layer start at 0 for each input. There is no offset, since there is no KV cache.
+- Rotary positions of a layer start at 0 for each input unless `positions` says otherwise. There is no KV cache in `nn`: a decoder that has one calls `project` on the new token alone with its position (`positions` of `[n]` for position `n`), appends the key, already rotated, to its cache, and gives `attend` the cache. One position vector serves every batch row and head.
 - `decoder_block` has no KV cache (a store of past keys and values): each call recomputes every position. `asr` has its own cache.
 - `causal` and `causal_mask` use `-1e9` for a masked position, which assumes an `F32` or `F64` compute dtype. `causal` needs no more queries than keys.
 - `init_attention` needs a width that is divisible by the head count, and `kv_heads` that divides it. `positional` refuses more positions than its table has.
