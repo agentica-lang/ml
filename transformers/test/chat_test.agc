@@ -22,7 +22,7 @@ end
 
 def test_the_text_is_that_of_the_templates() -> Result[Void]
   golden = try JSON.decode(try File.read_text("test/fixtures/chat_golden.json"), Golden)
-  try Test.eq(golden.cases.size, 15)
+  try Test.eq(golden.cases.size, 27)
   for c in golden.cases
     messages = c.messages.map { |t| Chat.Message(role: t.role, content: t.content) }
     thinking = c.enable_thinking.unwrap_or(true)
@@ -38,6 +38,5 @@ def test_what_the_templates_do_not_cover_is_an_error() -> Result[Void]
   try Test.error?(Chat.apply("llama", hi))
   try Test.error?(Chat.apply("qwen2", hi, true, false))
   try Test.error?(Chat.apply("qwen3", hi + [Chat.Message(role: "tool", content: "42")]))
-  try Test.error?(Chat.apply("qwen3", hi + [Chat.Message(role: "narrator", content: "42")]))
-  Test.error?(Chat.apply("qwen3", hi + [Chat.Message(role: "assistant", content: "<think>x</think>y")]))
+  Test.error?(Chat.apply("qwen3", hi + [Chat.Message(role: "narrator", content: "42")]))
 end

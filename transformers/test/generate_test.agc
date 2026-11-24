@@ -68,13 +68,25 @@ end
 def closed?(t: Tensor.Tensor) -> Result[Bool] = ok(Native.closed?(try Ggml.handle_of(t)))
 
 def test_generate_is_the_greedy_choice_of_the_forward_on_the_reference() -> Result[Void]
-  with_peer do |dir| generating(dir, S.REF) end
+  with_peer do |dir| generating(dir, "tiny", S.REF) end
 end
 
 def test_generate_is_the_greedy_choice_of_the_forward_on_ggml() -> Result[Void]
   with_peer do |dir|
     for backend in try S.ggml_backends()
-      try generating(dir, backend)
+      try generating(dir, "tiny", backend)
+    end
+
+    ok()
+  end
+end
+
+## The Qwen2 layout (no query and key norms, a bias on the query, key and value) through the cache.
+def test_generate_is_the_greedy_choice_of_the_forward_for_the_qwen2_layout() -> Result[Void]
+  with_peer do |dir|
+    try generating(dir, "qwen2", S.REF)
+    for backend in try S.ggml_backends()
+      try generating(dir, "qwen2", backend)
     end
 
     ok()
@@ -169,9 +181,9 @@ end
 
 ## Seven ids after a prompt of three: the cache goes from 8 to 16 rows. The ids are those of the forward without a cache.
 ## A second call finds the steps of the first: it compiles none.
-def generating(dir: String, backend: Tensor.Backend) -> Result[Void]
+def generating(dir: String, folder: String, backend: Tensor.Backend) -> Result[Void]
   prompt = [1, 5, 2]
-  m = try Qwen3.open("#{dir}/tiny", backend)
+  m = try Qwen3.open("#{dir}/#{folder}", backend)
   g = try Generate.open(m)
   want = try greedy(m, prompt, 7)
   try Test.eq(try Generate.generate(g, prompt, 7), want)

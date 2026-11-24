@@ -8,16 +8,24 @@ struct Message
   content: String
 end
 
+## An assistant message of qwen3 cut at its last `</think>`.
+struct Reply
+  reasoning: String
+  content: String
+end
+
 ## The prompt of `messages` for the model family of `model_type` (`qwen2` or `qwen3`, the `model_type` of its
 ## `config.json`). With `add_generation_prompt` it ends with the opening of the assistant's turn. `enable_thinking: false`
 ## (Qwen3 only) opens it with an empty think block, so the model answers without thinking.
 ##
 ## `qwen2` puts "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." as the system turn when the first
-## message is not one. `qwen3` puts none, and writes an empty think block before an assistant message that ends the
-## conversation.
+## message is not one, and writes every message as it is (a `<think>` in one is text). `qwen3` puts none, and reads an
+## assistant message as the template does: the text before a `</think>` is its reasoning and the text after it, without
+## its leading newlines, its content. After the last user message the reasoning stays, in a think block (empty for the
+## message that ends the conversation); before it the reasoning is dropped.
 ##
-## Errors: no messages, a role other than the three, a `tool` role (tools are not supported), a think block inside an
-## assistant message, `enable_thinking: false` for `qwen2`.
+## Errors: no messages, a role other than the three, a `tool` role (tools are not supported), `enable_thinking: false`
+## for `qwen2`.
 def apply(
   model_type: String,
   messages: List[Message],
@@ -37,10 +45,6 @@ def apply(
     if m.role != "system" and m.role != "user" and m.role != "assistant"
       return error("a message role is system, user or assistant, got #{m.role}")
     end
-
-    if m.role == "assistant" and (m.content.include?("<think>") or m.content.include?("</think>"))
-      return error("an assistant message with a think block is not supported")
-    end
   end
 
   last_user = last_user_index(messages)
@@ -54,8 +58,14 @@ def apply(
   for i in 0...messages.size
     next if i == 0 and messages[0].role == "system"
     m = messages[i]
-    if m.role == "assistant" and model_type == "qwen3" and i > last_user and i == messages.size - 1
-      text = text + "<|im_start|>assistant\n<think>\n\n</think>\n\n#{m.content}<|im_end|>\n"
+    if m.role == "assistant" and model_type == "qwen3"
+      reply = split_reply(m.content)
+      if i > last_user and (i == messages.size - 1 or not reply.reasoning.empty?)
+        thought = "<think>\n#{strip_newlines(reply.reasoning)}\n</think>\n\n"
+        text = text + "<|im_start|>assistant\n#{thought}#{trim_start(reply.content)}<|im_end|>\n"
+      else
+        text = text + turn("assistant", reply.content)
+      end
     else
       text = text + turn(m.role, m.content)
     end
@@ -75,11 +85,51 @@ private
 
 def turn(role: String, content: String) -> String = "<|im_start|>#{role}\n#{content}<|im_end|>\n"
 
-## The index of the last `user` message, or the last message when there is none (as the template does).
+## An assistant message of qwen3 as its template splits it at the last `</think>`.
+def split_reply(text: String) -> Reply
+  return Reply(reasoning: "", content: text) if not text.include?("</think>")
+
+  parts = text.split("</think>")
+  opened = trim_end(parts[0]).split("<think>")
+  reasoning = ""
+  if not opened.empty?
+    reasoning = trim_start(opened[opened.size - 1])
+  end
+
+  Reply(reasoning: reasoning, content: trim_start(parts[parts.size - 1]))
+end
+
+def trim_start(text: String) -> String
+  start = 0
+  while start < text.size and text.slice(start, 1) == "\n"
+    start += 1
+  end
+
+  text.slice(start, text.size - start)
+end
+
+def trim_end(text: String) -> String
+  stop = text.size
+  while stop > 0 and text.slice(stop - 1, 1) == "\n"
+    stop -= 1
+  end
+
+  text.slice(0, stop)
+end
+
+def strip_newlines(text: String) -> String = trim_end(trim_start(text))
+
+## A user message that carries a tool's answer, which the template does not count as the user's turn.
+def tool_answer?(m: Message) -> Bool
+  m.content.start_with?("<tool_response>") and m.content.end_with?("</tool_response>")
+end
+
+## The index of the last `user` message that is not a tool answer, or the last message when there is none (as the
+## template does).
 def last_user_index(messages: List[Message]) -> Int
   found = messages.size - 1
   for i in 0...messages.size
-    if messages[i].role == "user"
+    if messages[i].role == "user" and not tool_answer?(messages[i])
       found = i
     end
   end

@@ -27,6 +27,29 @@ CONVERSATIONS = [
     ([m("user", "Hi"), m("assistant", "Hello!"), m("user", "Tell me more"), m("assistant", "There is")], False, None),
     ([m("system", "Be brief."), m("user", "Naïve café: 東京\n\nline two"), m("assistant", "ok"), m("user", "next")], True, True),
     ([m("user", "a"), m("system", "Now be formal."), m("user", "b")], True, None),
+    (
+        [
+            m("user", "Hi"),
+            m("assistant", "<think>\nI should greet.\n</think>\n\nHello!"),
+            m("user", "Again"),
+        ],
+        True,
+        None,
+    ),
+    ([m("user", "Hi"), m("assistant", "<think>\nI should greet.\n</think>\n\nHello!")], False, None),
+    ([m("user", "Hi"), m("assistant", "<think>\nstep\n</think>\n\nfirst"), m("assistant", "second")], False, None),
+    ([m("user", "Hi"), m("assistant", "\n\nanswer")], False, None),
+    ([m("user", "Hi"), m("assistant", "plan\n\n</think>\n\n\nanswer")], False, None),
+    (
+        [
+            m("user", "q"),
+            m("assistant", "a"),
+            m("user", "<tool_response>\n42\n</tool_response>"),
+            m("assistant", "done"),
+        ],
+        False,
+        None,
+    ),
 ]
 
 cases = []

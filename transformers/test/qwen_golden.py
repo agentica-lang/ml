@@ -30,7 +30,6 @@ PROMPTS = [
     "Transformers read a whole sequence at once. " * 6,
 ]
 NEW = 24
-# Qwen2.5-Instruct's generation_config.json sets repetition_penalty 1.1, which `generate` applies even when greedy.
 
 
 def main():
@@ -43,6 +42,8 @@ def main():
         with torch.no_grad():
             logits = model(ids).logits[0]
         with torch.no_grad():
+            # Qwen2.5-Instruct's generation_config.json sets repetition_penalty 1.1, which `generate` applies even
+            # when greedy; 1.0 is plain greedy, as ours is.
             made = model.generate(ids, do_sample=False, repetition_penalty=1.0, max_new_tokens=NEW, output_scores=True,
                                   return_dict_in_generate=True, pad_token_id=tok.pad_token_id)
         top2 = [step[0].topk(2).values for step in made.scores]

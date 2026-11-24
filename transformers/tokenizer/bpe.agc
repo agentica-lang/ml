@@ -249,7 +249,15 @@ def decoded(text: String) -> Result[Json[ModelJson]]
   first = JSON.decode(text, Json[ModelJson])
   return first if first.ok?
   second = JSON.decode(text, Json[ModelLinesJson])
-  return first if not second.ok?
+  if not second.ok?
+    case second
+      error(e) -> return error(e.message) if lines_shape?(text)
+      ok(_) -> nil
+    end
+
+    return first
+  end
+
   f = second.unwrap!
   m = f.model
   ok(
@@ -273,6 +281,17 @@ def decoded(text: String) -> Result[Json[ModelJson]]
       ),
     ),
   )
+end
+
+## Whether the file writes its merges as "a b" lines, so that is the shape whose error to report.
+def lines_shape?(text: String) -> Bool
+  parsed = JSON.parse(text)
+  return false if not parsed.ok?
+  merges = JSON.get(JSON.get(parsed.unwrap!, "model").unwrap_or(JSON.null()), "merges")
+  return false if not merges.ok?
+  items: List[JSON.Value] = JSON.list(merges.unwrap!).unwrap_or([])
+  return false if items.empty?
+  JSON.string(items[0]).ok?
 end
 
 ## The pre-tokenizer must be the Qwen split (isolated, as written in

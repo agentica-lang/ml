@@ -71,7 +71,7 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 enable_thinking)` is the ChatML text of `apply_chat_template` for the two
 families, with the system turn of Qwen2.5 by default, the empty think block of
 Qwen3 (`enable_thinking: false`, and before an assistant message that ends the
-conversation) and no tools (a `tool` role is an error). The golden is
+conversation, with the reasoning of an assistant message cut at `</think>` as the template does, for qwen3 only) and no tools (a `tool` role is an error). The golden is
 Hugging Face's own output (`test/chat_golden.py`). The `tokenizer.json` of
 Qwen2.5 writes a merge as `"a b"`, where Qwen3's writes `["a", "b"]`;
 `tokenizer/bpe.agc` reads both.

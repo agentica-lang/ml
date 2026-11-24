@@ -21,6 +21,15 @@ def test_merges_written_as_lines_are_read_too() -> Result[Void]
   Test.assert(checked > 100, "only #{checked} cases ran")
 end
 
+## A broken file in the "a b" lines form is reported against that form.
+def test_a_broken_lines_file_reports_the_lines_form() -> Result[Void]
+  text = try File.read_text("test/fixtures/bpe_lines.json")
+  case Bpe.parse(try S.replaced(text, "\"merges\": [\"h e\", ", "\"merges\": [\"h e\", 7, "))
+    ok(_) -> error("a merge that is a number was accepted")
+    error(e) -> Test.assert(e.message.include?("model.merges[1]: expected String"), e.message)
+  end
+end
+
 def test_the_split_follows_the_pattern() -> Result[Void]
   try Test.eq(pieces("Hello, world!"), ["Hello", ",", " world", "!"])
   try Test.eq(pieces("it's DON'T"), ["it", "'s", " DON", "'T"])
