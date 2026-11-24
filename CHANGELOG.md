@@ -20,6 +20,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### train
 
 - `Train.stablehlo` writes the step of `fit` as one StableHLO program for every step: Adam's bias corrections are inputs (`Optim.step_scalars`).
+- `Loss.cosine_similarity` and `Loss.cosine_similarity_loss`: the cosine of pairs of rows and its mean squared error against scores.
 - `Params.split`, `join`, `named` and `update` train part of a model: the weights selected by name train, and the frozen rest has no gradient and no optimizer state.
 
 ### hub

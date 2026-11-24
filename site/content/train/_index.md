@@ -54,6 +54,8 @@ Each loss takes a prediction and a target. It gives a rank-0 tensor (a single nu
 
 - `Loss.mse(prediction, target)` is the mean squared error: the mean of `(prediction - target)^2`.
 - `Loss.binary_cross_entropy(logits, targets)` takes logits (raw scores) and targets in `0...1`. It is stable for any logit.
+- `Loss.cosine_similarity(a, b)` gives the cosine of each pair of rows of two `[batch, width]` tensors, as `[batch]`. A row of zeros has a cosine of 0.
+- `Loss.cosine_similarity_loss(a, b, scores)` is the mean of `(cosine - score)^2` for `[batch]` scores: the loss of a sentence-embedding model trained on scored pairs (sentence-transformers' `CosineSimilarityLoss`).
 - `Loss.cross_entropy(logits, labels)` takes `[batch, classes]` logits and `[batch]` integer labels. A label outside `0...classes` is an error in an eager call (a direct call, outside a trace).
 
 ## Optimizers
