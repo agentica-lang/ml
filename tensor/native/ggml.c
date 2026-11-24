@@ -118,7 +118,7 @@ static void ggml_TensorHandle_free(void *state) {
    from it (set only for F32) and fixes it. Without a `ggml_vulkan_fp16` call, a
    GGML_VK_DISABLE_F16 the user exported wins: the process is F32. Call under
    the device lock. */
-static bool want_fp16 = true;
+static bool want_fp16 = true; /* written under the device lock, read by `tg_fp16` without it: atomically */
 static bool chosen = false;
 static bool precision_fixed = false;
 
@@ -126,7 +126,7 @@ static void fix_precision(void) {
   if (precision_fixed) return;
   /* This runs on a compute-pool thread, under the device lock, before ggml
      reads the variable; nothing else of this module reads the environment. */
-  if (!chosen && getenv("GGML_VK_DISABLE_F16") != NULL) want_fp16 = false;
+  if (!chosen && getenv("GGML_VK_DISABLE_F16") != NULL) __atomic_store_n(&want_fp16, false, __ATOMIC_RELAXED);
   if (want_fp16) unsetenv("GGML_VK_DISABLE_F16");
   else setenv("GGML_VK_DISABLE_F16", "1", 1);
   precision_fixed = true;
@@ -213,7 +213,7 @@ ggml_backend_t tg_backend(int64_t device, char *why, size_t len) {
 }
 
 /* Read once a device is open, when the choice is fixed: it never changes after the first registry call. */
-bool tg_fp16(void) { return want_fp16; }
+bool tg_fp16(void) { return __atomic_load_n(&want_fp16, __ATOMIC_RELAXED); }
 
 an_term ggml_vulkan_fp16(an_env *env, bool enabled) {
   bool conflict, fixed;
@@ -222,7 +222,7 @@ an_term ggml_vulkan_fp16(an_env *env, bool enabled) {
   conflict = precision_fixed && want_fp16 != enabled;
   fixed = want_fp16;
   if (!conflict) {
-    want_fp16 = enabled;
+    __atomic_store_n(&want_fp16, enabled, __ATOMIC_RELAXED);
     chosen = true;
   }
   tg_unlock_device();
