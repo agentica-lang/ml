@@ -379,14 +379,19 @@ end
 
 private
 
-## A half weight (`F16` on ggml, `Tensor.from_file` with `dtype: F16`) is read-only:
+## A half or quantized weight (`F16` or `Q8_0` on ggml, `Tensor.from_file` with that `dtype`) is read-only:
 ## no gradient is taken for it, which an `F16` tensor of the other backends keeps.
 def not_half_weight(t: Types.Tensor, what: String) -> Result[Bool]
   case t.backend
     Types.Backend.Ggml(_) ->
-      if t.dtype == Types.Dtype.F16
+      if Types.is_packed_dtype(t.dtype)
+        kind = "half"
+        if t.dtype == Types.Dtype.Q8_0
+          kind = "quantized"
+        end
+
         return error(
-          "#{what} is a half weight (F16 on ggml): no gradient is taken for it, weights loaded as F16 are for inference",
+          "#{what} is a #{kind} weight (#{Types.dtype_name(t.dtype)} on ggml): no gradient is taken for it, weights loaded as F16 or Q8_0 are for inference",
         )
       end
 

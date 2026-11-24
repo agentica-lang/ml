@@ -5,6 +5,13 @@
 ##
 ##   python -I test/qwen_golden.py MODEL_DIR > GOLDEN.json
 ##   agentica tools/qwen_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
+##
+## A quantized GGUF is checked against the golden of llama.cpp for the same file (`tools/llama_golden.c`): with
+## `QUANTIZED=1` the logits pass within `QUANT_ABS` and the top five of each position are not compared. Both programs
+## round every activation of a product to Q8_0 blocks, and that rounding is chaotic: llama.cpp's own logits move by up
+## to 0.65 when its KV cache is `F16` instead of `F32`, so no tighter gap can be asked of another implementation.
+##
+##   WEIGHTS=q8_0 QUANTIZED=1 agentica tools/qwen_check.agc MODEL.gguf GOLDEN.json cpu
 
 import Qwen3 from "../qwen3"
 import Load from "pkg/hub/load"
@@ -15,6 +22,10 @@ import Tensor from "pkg/tensor/tensor"
 ## The gap that passes: `float32` through 28 layers, logits of about 10 to 30.
 ABS = 0.002
 REL = 0.0005
+
+## The gap that passes for a quantized model (logits of up to 30): the noise of Q8_0 activations, 0.4 to 0.7 at most
+## between two implementations.
+QUANT_ABS = 1.0
 
 struct Case
   ids: List[Int]
@@ -72,6 +83,7 @@ def checked(m: Qwen3.Qwen3, want: Golden) -> Result[Float]
     last = values.drop((c.ids.size - 1) * vocab)
     worst = [worst, try compare("prompt #{i} last position", last, c.last)].max.unwrap!
     for at in 0...c.ids.size
+      next if quantized?()
       mine = top5(values.drop(at * vocab).take(vocab))
       if mine.sort != c.top5[at].sort
         return error("prompt #{i} position #{at}: top five #{mine}, expected #{c.top5[at]}")
@@ -83,6 +95,9 @@ def checked(m: Qwen3.Qwen3, want: Golden) -> Result[Float]
 
   ok(worst)
 end
+
+## `QUANTIZED=1`: the model is quantized (see the top of this file).
+def quantized?() -> Bool = System.env("QUANTIZED").unwrap_or("") == "1"
 
 ## The ids of the five largest of `values`.
 def top5(values: List[Float]) -> List[Int]
@@ -117,9 +132,16 @@ end
 def compare(what: String, got: List[Float], want: List[Float]) -> Result[Float]
   return error("#{what}: #{got.size} values, expected #{want.size}") if got.size != want.size
   worst = 0.0
+  allowed = ABS
+  rel = REL
+  if quantized?()
+    allowed = QUANT_ABS
+    rel = 0.0
+  end
+
   for i in 0...want.size
     gap = (got[i] - want[i]).abs
-    return error("#{what}: logit #{i} is #{got[i]}, expected #{want[i]}") if gap > ABS + REL * want[i].abs
+    return error("#{what}: logit #{i} is #{got[i]}, expected #{want[i]}") if gap > allowed + rel * want[i].abs
     worst = [worst, gap].max.unwrap!
   end
 

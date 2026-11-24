@@ -297,6 +297,6 @@ def test_f16_weights_need_ggml() -> Result[Void]
 
     refused = Load.dense(c, "big", S.REF, Tensor.Dtype.I32)
     try Test.error?(refused)
-    Test.assert(error_text(refused).include?("F32 or F16"), "the error says: #{error_text(refused)}")
+    Test.assert(error_text(refused).include?("F32, F16 or Q8_0"), "the error says: #{error_text(refused)}")
   end
 end

@@ -154,6 +154,8 @@ def test_a_value_beyond_f16_a_bad_shape_or_a_name_twice_is_refused() -> Result[V
     try S.expect_error(GgufWrite.write(path, [key, key], [a]), "appears twice")
     try S.expect_error(GgufWrite.write(path, [], [reshaped(a, [1, 1, 1, 1, 6])]), "5 dimensions")
     try S.expect_error(GgufWrite.write(path, [], [reshaped(a, [0, 6])]), "dimension of 0")
+    quantized = GgufWrite.Out(name: a.name, source: a.source, format: Tensor.FloatFormat.Q8_0)
+    try S.expect_error(GgufWrite.write(path, [], [quantized]), "not Q8_0")
     try S.expect_error(Hub.source(c, "n"), "not F32, F16 or BF16")
     S.expect_error(Hub.source(c, "missing"), "no tensor missing")
   end

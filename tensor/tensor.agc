@@ -243,11 +243,15 @@ end
 ##
 ## With `dtype: F16` the tensor is a half weight: it keeps 16 bits per value
 ## (half the memory and the bandwidth), converted at load, and an
-## `F32`, `F16` or `BF16` file value beyond 65504 is an `error`. Only the ggml
-## backend holds one, and a trace may use it only as the weight of `matmul` or
-## `linear` and as the table of `gather` or `embedding` (`tensor/DESIGN.md` §7).
-## It is for inference, with `linear(..., out_in: true)` for a checkpoint's
-## `[out, in]` weight.
+## `F32`, `F16` or `BF16` file value beyond 65504 is an `error`. With
+## `format: Q8_0` the file holds ggml's blocks of 32 values, and the tensor is
+## `F32` (dequantized at load, on every backend) or, with `dtype: Q8_0`, a
+## quantized weight that keeps the blocks (about a quarter of the memory of
+## `F32`; a rank-2 weight of rows of whole blocks). Only the ggml backend holds
+## an `F16` or a `Q8_0` weight, and a trace may use it only as the weight of
+## `matmul` or `linear` and as the table of `gather` or `embedding`
+## (`tensor/DESIGN.md` §7). It is for inference, with `linear(..., out_in:
+## true)` for a checkpoint's `[out, in]` weight.
 def from_file(
   path: String,
   offset: Int,
@@ -257,22 +261,39 @@ def from_file(
   dtype: Types.Dtype = Types.Dtype.F32,
 ) -> Result[Types.Tensor]
   n = try Types.volume(shape)
-  if dtype != Types.Dtype.F32 and dtype != Types.Dtype.F16
-    return error("from_file reads F32 or F16, got #{Types.dtype_name(dtype)}")
+  if !Types.is_packed_dtype(dtype) and dtype != Types.Dtype.F32
+    return error("from_file reads F32, F16 or Q8_0, got #{Types.dtype_name(dtype)}")
   end
 
-  if dtype == Types.Dtype.F16
+  if Types.is_packed_dtype(dtype)
     case backend
       Types.Backend.Ggml(_) -> nil
       _ ->
         return error(
-          "from_file with dtype F16 (half weights) needs the ggml backend, got #{Types.backend_name(backend)}",
+          "from_file with dtype #{Types.dtype_name(dtype)} (packed weights) needs the ggml backend, got #{Types.backend_name(backend)}",
         )
     end
   end
 
+  if dtype == Types.Dtype.Q8_0
+    if format != Types.FloatFormat.Q8_0
+      return error("from_file with dtype Q8_0 keeps the blocks of a Q8_0 file, got a file of another format")
+    end
+
+    if shape.size != 2 or shape[1] % 32 != 0
+      return error(
+        "from_file with dtype Q8_0 reads a rank-2 weight whose rows hold whole blocks of 32 values, got #{shape}",
+      )
+    end
+  end
+
+  if dtype == Types.Dtype.F16 and format == Types.FloatFormat.Q8_0
+    return error("from_file reads a Q8_0 file as F32 or keeps it as Q8_0, not as F16")
+  end
+
   return error("from_file needs an offset of 0 or more, got #{offset}") if offset < 0
-  if n > (9223372036854775807 - offset) / Types.file_width(format)
+  bytes = try Types.file_bytes(format, n)
+  if bytes > 9223372036854775807 - offset
     return error("from_file: #{n} values at offset #{offset} reach past what an Int counts")
   end
 
@@ -305,6 +326,10 @@ def convert_file(
   end
 
   return error("convert_file needs a count of 0 or more, got #{count}") if count < 0
+  if src_format == Types.FloatFormat.Q8_0 or dst_format == Types.FloatFormat.Q8_0
+    return error("convert_file converts F32, F16 and BF16 ranges, not Q8_0")
+  end
+
   Ggml.convert_file(src, src_offset, src_format, count, dst, dst_offset, dst_format)
 end
 
@@ -1111,7 +1136,10 @@ end
 def embedding(ids: Types.Tensor, table: Types.Tensor) -> Result[Types.Tensor]
   _ = try same_backend(ids, table, "embedding")
   return error("embedding needs integer ids, got #{Types.dtype_name(ids.dtype)}") if !Types.is_int_dtype(ids.dtype)
-  _ = try float_only(table, "embedding")
+  if table.dtype != Types.Dtype.Q8_0
+    _ = try float_only(table, "embedding")
+  end
+
   return error("embedding needs rank-1 ids, got #{ids.shape}") if ids.shape.size != 1
   return error("embedding needs a rank-2 table, got #{table.shape}") if table.shape.size != 2
   gather(table, ids)
@@ -1466,12 +1494,12 @@ def same_dtype(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
   ok(true)
 end
 
-## `x` and the weight `w` of a product share their dtype, or `w` is a half
-## weight (`F16`, from `from_file` with `dtype: F16`) of an `F32` `x` in a
-## trace: ggml reads the half weight and answers `F32`.
+## `x` and the weight `w` of a product share their dtype, or `w` is a half or
+## quantized weight (`F16` or `Q8_0`, from `from_file` with that `dtype`) of an
+## `F32` `x` in a trace: ggml reads the weight and answers `F32`.
 def weight_dtype(x: Types.Tensor, w: Types.Tensor, op: String) -> Result[Bool]
   case x.backend
-    Types.Backend.Trace -> return ok(true) if x.dtype == Types.Dtype.F32 and w.dtype == Types.Dtype.F16
+    Types.Backend.Trace -> return ok(true) if x.dtype == Types.Dtype.F32 and Types.is_packed_dtype(w.dtype)
     _ -> nil
   end
 

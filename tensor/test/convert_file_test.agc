@@ -148,6 +148,8 @@ def test_a_bad_range_or_value_is_an_error() -> Result[Void]
     try Test.error?(Tensor.convert_file(src, 3, F32, -1, dst, 5, F32))
     try Test.error?(Tensor.convert_file("#{src}.missing", 0, F32, 1, dst, 5, F32))
     try Test.error?(Tensor.convert_file(src, 3, F32, 1, "#{dst}.missing", 5, F32))
+    try Test.error?(Tensor.convert_file(src, 3, Tensor.FloatFormat.Q8_0, 32, dst, 5, F32))
+    try Test.error?(Tensor.convert_file(src, 3, F32, 1, dst, 5, Tensor.FloatFormat.Q8_0))
     ok()
   end
 

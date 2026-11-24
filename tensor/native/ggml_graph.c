@@ -613,6 +613,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   struct gnode *n;
   const struct gnode *a = NULL, *b = NULL, *c = NULL;
   struct ggml_tensor *t = NULL;
+  enum ggml_type type;
   char text[256];
 
   if (p == NULL || p->compiled || p->graph != NULL) return tg_error(env, "the graph is compiled already, or its compile failed");
@@ -659,8 +660,13 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
 
   switch (op) {
     case OP_LEAF:
-      t = ggml_new_tensor_4d(p->port_ctx, nints > 0 && ints[0] != 0 ? GGML_TYPE_F16 : GGML_TYPE_F32, n->ne[0], n->ne[1],
-                             n->ne[2], n->ne[3]);
+      /* ints[0]: the type the leaf is bound to, as `Types.held_code`: 0 F32, 1 F16, 2 Q8_0 */
+      if (nints > 0 && (ints[0] < 0 || ints[0] > 2)) return tg_error(env, "a leaf is F32, F16 or Q8_0");
+      type = nints > 0 && ints[0] == 2 ? GGML_TYPE_Q8_0 : (nints > 0 && ints[0] == 1 ? GGML_TYPE_F16 : GGML_TYPE_F32);
+      if (type == GGML_TYPE_Q8_0 && (rank != 2 || n->ne[0] % ggml_blck_size(type) != 0)) {
+        return tg_error(env, "a Q8_0 leaf is a rank-2 weight whose rows hold whole blocks of 32 values");
+      }
+      t = ggml_new_tensor_4d(p->port_ctx, type, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
       ggml_set_input(t);
       p->leaves[p->leaf_count++].t = t;
       break;
@@ -688,6 +694,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
          is its argument and no copy is made. */
       if (b->op == OP_TRANSPOSE) {
         t = ggml_mul_mat(p->ctx, dense(p, &p->nodes[b->arg]), dense(p, a));
+      } else if (ggml_is_quantized(b->t->type)) {
+        return tg_error(env, "a quantized weight is read as [out, in]: use linear with out_in, not a matmul by the weight");
       } else {
         t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b))), dense(p, a));
       }
@@ -698,7 +706,10 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         snprintf(text, sizeof text, "transpose of a rank-%d tensor is not lowered to ggml", rank);
         return tg_error(env, text);
       }
-      t = ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, a)));
+      /* a quantized weight is only read in place, by the matmul that takes its transpose: the copy would need
+         rows of whole blocks along the other axis */
+      if (ggml_is_quantized(a->t->type) && a->op != OP_LEAF) return tg_error(env, "only the weight itself is transposed in place");
+      t = ggml_is_quantized(a->t->type) ? ggml_transpose(p->ctx, a->t) : ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, a)));
       n->arg = (int)args[0];
       break;
     case OP_RESHAPE:

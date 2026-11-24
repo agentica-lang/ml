@@ -57,6 +57,12 @@ def source(shard: Shard, name: String) -> Result[Source]
   ok(Source(path: shard.path, offset: shard.base + e.start, format: FORMATS[e.dtype], shape: e.shape))
 end
 
+## The dtype of the tensor `name` of `shard` as the file names it (`F32`, `Q8_0`...), read from the header.
+def dtype(shard: Shard, name: String) -> Result[String]
+  e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
+  ok(e.dtype)
+end
+
 ## The shape of the tensor `name` of `shard`, read from the header.
 def shape(shard: Shard, name: String) -> Result[List[Int]]
   e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
@@ -64,9 +70,10 @@ def shape(shard: Shard, name: String) -> Result[List[Int]]
 end
 
 ## The tensor `name` of `shard`: F32, F16 and BF16 as `F32` (as `F16` with `dtype: F16`, a half weight of the ggml
-## backend, `Tensor.from_file`), any other dtype as the file has it, whatever `dtype` says (only a float file has a
-## half form), except an F64 tensor on ggml, which holds no F64: it comes as `F32`, silently (a value beyond F32 is
-## an infinity).
+## backend, `Tensor.from_file`), a Q8_0 one dequantized to `F32` (as `Q8_0` with `dtype: Q8_0`, a quantized weight of the
+## ggml backend that keeps the blocks; no other file dtype has that form), any other dtype as the file has it, whatever
+## `dtype` says (only a float file has a half form), except an F64 tensor on ggml, which holds no F64: it comes as `F32`,
+## silently (a value beyond F32 is an infinity).
 def tensor(
   shard: Shard,
   name: String,
@@ -75,6 +82,22 @@ def tensor(
 ) -> Result[Tensor.Tensor]
   e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
   at = shard.base + e.start
+  if dtype == Tensor.Dtype.Q8_0 and e.dtype != "Q8_0"
+    return error("#{shard.path}: tensor #{name} is #{e.dtype}: only a Q8_0 tensor is kept as Q8_0")
+  end
+
+  if e.dtype == "Q8_0"
+    kept = Tensor.Dtype.F32
+    if dtype == Tensor.Dtype.Q8_0
+      kept = Tensor.Dtype.Q8_0
+    end
+
+    return within(
+      "#{shard.path}: tensor #{name}",
+      Tensor.from_file(shard.path, at, e.shape, Tensor.FloatFormat.Q8_0, backend, kept),
+    )
+  end
+
   if FORMATS.key?(e.dtype)
     return within(
       "#{shard.path}: tensor #{name}",

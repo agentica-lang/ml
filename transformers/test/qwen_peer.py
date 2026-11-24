@@ -14,6 +14,8 @@ path, and leaves:
 - `missing/`: `tiny` without one weight;
 - `tiny.gguf`, `tied.gguf` (no `output.weight`), `untied.gguf`, `half.gguf` (and `llama.gguf`, `scaled.gguf`, which the loader must refuse): the same models as GGUF version 3 with llama.cpp's names, `output.weight`
   written for the tied one too (a copy of the table, as its converter does), and `half.gguf` in `float16`;
+- `q8.gguf`: a model of width 32 whose matrices are Q8_0 blocks (the table twice, as `output.weight` too), its logits
+  in doubles from what the blocks dequantize to (`q8`, for the rows `ids_q8`);
 - `half/`: `float32`, tied, one layer of width 256, so that the table and the
   MLP matrices reach the half-weight threshold (no expected logits: the test
   compares it with itself loaded as `F32`);
@@ -197,9 +199,9 @@ HALF_CONFIG = dict(CONFIG, hidden_size=256, num_hidden_layers=1, head_dim=64, in
                    vocab_size=400)
 
 
-def half():
-    c = HALF_CONFIG
-    m = Model(2027, "F32", "model.embed_tokens.weight")
+def plain(c, seed):
+    """A `float32`, tied model of the config `c`."""
+    m = Model(seed, "F32", "model.embed_tokens.weight", c)
     d, hd = c["hidden_size"], c["head_dim"]
     m.add("model.embed_tokens.weight", [c["vocab_size"], d])
     p = "model.layers.0."
@@ -215,6 +217,42 @@ def half():
     m.add(p + "mlp.up_proj.weight", [c["intermediate_size"], d])
     m.add(p + "mlp.down_proj.weight", [d, c["intermediate_size"]])
     m.add("model.norm.weight", [d], 1.0, 0.25)
+    return m
+
+
+def half():
+    return plain(HALF_CONFIG, 2027)
+
+
+# Every matrix has rows of whole Q8_0 blocks (a multiple of 32 columns).
+Q8_CONFIG = dict(CONFIG, hidden_size=32, num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=1,
+                 head_dim=16, intermediate_size=64, vocab_size=20)
+IDS_Q8 = [[1, 5, 2, 7, 3, 19], [4, 4, 9, 0, 6, 11]]
+
+
+def q8_0(values):
+    """ggml's Q8_0 of `values` (a multiple of 32 of them): per block of 32 a half scale `amax / 127` and the values over
+    the scale in single precision, rounded half away from zero. Returns the bytes and the values they dequantize to."""
+    raw, back = b"", []
+    for i in range(0, len(values), 32):
+        block = values[i:i + 32]
+        d = max(abs(v) for v in block) / 127
+        inv = 1 / d if d else 0.0
+        qs = [int(math.floor(abs(v * inv) + 0.5)) * (-1 if v < 0 else 1) for v in block]
+        scale = struct.unpack("<e", struct.pack("<e", d))[0]
+        raw += struct.pack("<e", d) + struct.pack("<32b", *qs)
+        back += [scale * q for q in qs]
+    return raw, back
+
+
+def q8():
+    """The model of `Q8_CONFIG` with its matrices as Q8_0 holds them: `values` are what they dequantize to and `blocks`
+    the bytes (vectors stay `float32`)."""
+    m = plain(Q8_CONFIG, 2028)
+    m.blocks = {}
+    for name in m.values:
+        if len(m.shapes[name]) > 1:
+            m.blocks[name], m.values[name] = q8_0(m.values[name])
     return m
 
 
@@ -243,7 +281,7 @@ def g_string(s):
 def write_gguf(path, model, config, dtype, head, arch="qwen3", extra=()):
     """GGUF version 3, written from the format's description. `head`: "copy" writes `output.weight` as a copy of the
     table (llama.cpp does for a tied model), "none" writes no head (the table is it), "own" the model's `lm_head`.
-    The tensor values are `dtype` ("F32" or "F16")."""
+    The tensor values are `dtype` ("F32" or "F16"), or the `blocks` of a model made by `q8` ("Q8_0")."""
     c = config
     kvs = [("general.architecture", 8, arch), ("qwen3.block_count", 4, c["num_hidden_layers"]),
            ("qwen3.context_length", 4, c["max_position_embeddings"]), ("qwen3.embedding_length", 4, c["hidden_size"]),
@@ -255,24 +293,27 @@ def write_gguf(path, model, config, dtype, head, arch="qwen3", extra=()):
            ("qwen3.rope.freq_base", 6, float(c["rope_theta"]))] + list(extra)
     buf = b"GGUF"
     tensors = []
+    blocks = getattr(model, "blocks", {}) if dtype == "Q8_0" else {}
     for name in sorted(model.values):
         if name == "lm_head.weight" and head != "own":
             continue
-        tensors.append((gguf_name(name), model.shapes[name], model.values[name]))
+        tensors.append((gguf_name(name), model.shapes[name], model.values[name], blocks.get(name)))
     if head == "copy":
         tensors.append(("output.weight", model.shapes["model.embed_tokens.weight"],
-                        model.values["model.embed_tokens.weight"]))
+                        model.values["model.embed_tokens.weight"], blocks.get("model.embed_tokens.weight")))
     buf += struct.pack("<IQQ", 3, len(tensors), len(kvs))
     for key, kind, v in kvs:
         body = g_string(v) if kind == 8 else struct.pack("<I" if kind == 4 else "<f", v)
         buf += g_string(key) + struct.pack("<I", kind) + body
     data, infos = b"", b""
-    code, fmt = (0, "f") if dtype == "F32" else (1, "e")
-    for name, shape, values in tensors:
+    code, fmt = (1, "e") if dtype == "F16" else (0, "f")
+    for name, shape, values, q8_raw in tensors:
         # norms stay F32 in llama.cpp's files, even in an F16 one
         norm = len(shape) == 1
         kind, f = (0, "f") if norm else (code, fmt)
-        raw = struct.pack("<%d%s" % (len(values), f), *values)
+        raw = struct.pack("<%d%s" % (len(values), f), *values) if q8_raw is None else q8_raw
+        if q8_raw is not None:
+            kind = 8
         data += b"\0" * (-len(data) % 32)
         infos += g_string(name) + struct.pack("<I", len(shape)) + b"".join(struct.pack("<Q", d) for d in reversed(shape))
         infos += struct.pack("<IQ", kind, len(data))
@@ -333,6 +374,10 @@ def write(out):
     write_gguf(out / "tied.gguf", tied, CONFIG, "F32", "none")
     write_gguf(out / "untied.gguf", untied, dict(CONFIG, tie_word_embeddings=False), "F32", "own")
     write_gguf(out / "half.gguf", half(), HALF_CONFIG, "F16", "copy")
+    quantized = q8()
+    write_gguf(out / "q8.gguf", quantized, Q8_CONFIG, "Q8_0", "copy")
+    expected["q8"] = [quantized.logits(r) for r in IDS_Q8]
+    expected["ids_q8"] = IDS_Q8
     write_gguf(out / "llama.gguf", tied, CONFIG, "F32", "copy", arch="llama")
     write_gguf(out / "scaled.gguf", tied, CONFIG, "F32", "copy", extra=[("qwen3.rope.scaling.type", 8, "yarn")])
     (out / "expected.json").write_text(json.dumps(expected))
