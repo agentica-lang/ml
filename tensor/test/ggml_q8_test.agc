@@ -4,7 +4,8 @@
 ## other use of one, and a gradient for one, is an error.
 ##
 ## ggml's `mul_mat` rounds the activations to Q8_0 blocks (and Vulkan to F16 as well), so the product of a quantized weight
-## is checked at the half step of that rounding, `amax / 254` per activation of a block, against the dequantized `F32`
+## is checked at the half step of that rounding plus the rounding of its scale to F16, `amax * (1 / 254 + 2^-11)` per
+## activation of a block, against the dequantized `F32`
 ## weight, whose rows are exact. Without the ggml module the ggml checks pass by asserting nothing, unless
 ## `TENSOR_REQUIRE_GGML` is set (CI sets it).
 
@@ -18,6 +19,9 @@ ROWS = 4
 COLS = 64
 ## One F16 mantissa step: the relative error of a Vulkan product that rounds to F16.
 STEP = 0.00048828125
+## The block scale `d = amax / 127` of an activation is stored as F16: a value of up to 127 steps is off by 127 * d * 2^-11
+## = amax * 2^-11, on top of the half step.
+SCALE_STEP = 0.00048828125
 
 ## The binary16 bits of each block's scale, all exact: 0.5, 0.25, 1.0, -0.75, 0.0625, 0.125, 2^-8, 0.03125.
 SCALES = [0x3800, 0x3400, 0x3C00, 0xBA00, 0x2C00, 0x3000, 0x1C00, 0x2800]
@@ -173,7 +177,8 @@ def test_a_q8_0_weight_keeps_its_blocks_and_serves_linear_and_embedding() -> Res
               amax = [amax, xs[r * COLS + (k / 32) * 32 + i].abs].max.unwrap!
             end
 
-            bound += ((w[j * COLS + k].abs * amax) / 254.0) * 1.01 + step * (xs[r * COLS + k] * w[j * COLS + k]).abs
+            bound += w[j * COLS + k].abs * amax * (1.0 / 254.0 + SCALE_STEP)
+            bound += step * (xs[r * COLS + k] * w[j * COLS + k]).abs
           end
 
           try Test.assert(
@@ -219,6 +224,9 @@ def test_a_q8_0_weight_anywhere_else_is_an_error() -> Result[Void]
 
       try refused(Trace.eval([w, w]) do |a| Tensor.add(a[0], a[1]) end, "add")
       try refused(Trace.eval([w]) do |a| Tensor.transpose(a[0]) end, "output 0")
+      ids = try Tensor.from_list([1, 3].map { |v: Int| Tensor.Values.Int(v) }, [2], Tensor.Dtype.I32, backend)
+      try refused(Trace.eval([ids, w]) do |a| Tensor.embedding(a[0], try Tensor.transpose(a[1])) end, "Q8_0 operand")
+      try refused(Trace.eval([w]) do |a| Tensor.transpose(try Tensor.transpose(a[0])) end, "Q8_0 operand")
       narrow = try Tensor.from_list(
         (0...ROWS).map { |i: Int| Tensor.Values.Float(i.to_f) },
         [1, ROWS],
@@ -232,6 +240,40 @@ def test_a_q8_0_weight_anywhere_else_is_an_error() -> Result[Void]
         ok(_) -> return error("a gradient was taken for a Q8_0 weight")
         error(e) -> try Test.assert(e.message.include?("quantized weight"), "the error said \"#{e.message}\"")
       end
+    end
+
+    ok()
+  end
+
+  ok()
+end
+
+## A `Q8_0` tensor comes only from `from_file`: no creation or `to_dtype` makes one, on any backend.
+def test_only_from_file_makes_a_q8_0_tensor() -> Result[Void]
+  q8 = Tensor.Dtype.Q8_0
+  backends = [Tensor.Backend.Reference]
+  if Tensor.available(Tensor.Backend.Torch(CPU))
+    backends = backends.push(Tensor.Backend.Torch(CPU))
+  end
+
+  for device in try devices()
+    backends = backends.push(Tensor.Backend.Ggml(device))
+  end
+
+  for backend in backends
+    try refused(Tensor.zeros([32], q8, backend), "from_file")
+    try refused(Tensor.ones([32], q8, backend), "from_file")
+    try refused(Tensor.empty([32], q8, backend), "from_file")
+    try refused(Tensor.full([32], Tensor.Values.Float(1.0), q8, backend), "from_file")
+    try refused(Tensor.from_list([Tensor.Values.Float(1.0)], [1], q8, backend), "from_file")
+    ones = try Tensor.floats([1.0], [1], backend)
+    try refused(Tensor.to_dtype(ones, q8), "from_file")
+  end
+
+  try with_file(try file_bytes()) do |path|
+    for device in try devices()
+      kept = try Tensor.from_file(path, 3, [ROWS, COLS], Q8_0, Tensor.Backend.Ggml(device), q8)
+      try refused(Tensor.like(kept), "from_file")
     end
 
     ok()

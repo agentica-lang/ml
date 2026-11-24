@@ -399,8 +399,8 @@ end
   the op). ggml reads the weight with `F32` activations and answers `F32`;
   its CPU kernels round the activations of the product to Q8_0 blocks (the
   same rounding llama.cpp does) and Vulkan's to Q8_1 or F16, so the result is
-  good to the half step of that rounding, `amax / 254` of a block of 32
-  activations per product, not to `F32`'s 1e-7. `gather` of the table is
+  good to the half step of that rounding and of its scale's rounding to F16,
+  `amax * (1 / 254 + 2^-11)` of a block of 32 activations per product, not to `F32`'s 1e-7. `gather` of the table is
   exact (ggml widens the rows). `to_list` of a quantized weight dequantizes it.
   A Q8_0 file of another backend or of `weights: F32` is read as `F32`, which is
   exact (a binary16 scale times a byte has 19 significant bits).

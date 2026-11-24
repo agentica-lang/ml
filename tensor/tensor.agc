@@ -134,6 +134,7 @@ def zeros(
   backend: Types.Backend = Types.Backend.Reference,
 ) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
+  _ = try not_quantized(dtype, "zeros")
   case backend
     Types.Backend.Reference -> Reference.zeros(shape, dtype)
     Types.Backend.Torch(device) -> Torch.zeros(device, shape, dtype)
@@ -149,6 +150,7 @@ def ones(
   backend: Types.Backend = Types.Backend.Reference,
 ) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
+  _ = try not_quantized(dtype, "ones")
   case backend
     Types.Backend.Reference -> Reference.ones(shape, dtype)
     Types.Backend.Torch(device) -> Torch.ones(device, shape, dtype)
@@ -161,6 +163,7 @@ end
 ## (there is no uninitialized memory to expose; see `src/reference.agc`).
 def empty(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
+  _ = try not_quantized(dtype, "empty")
   case backend
     Types.Backend.Reference -> Reference.empty(shape, dtype)
     Types.Backend.Torch(device) -> Torch.empty(device, shape, dtype)
@@ -177,6 +180,7 @@ def full(
   backend: Types.Backend = Types.Backend.Reference,
 ) -> Result[Types.Tensor]
   _ = try Types.volume(shape)
+  _ = try not_quantized(dtype, "full")
   case backend
     Types.Backend.Reference -> Reference.full(shape, value, dtype)
     Types.Backend.Torch(device) -> Torch.full(device, shape, value, dtype)
@@ -187,6 +191,7 @@ end
 
 ## Creation: zeros of the shape, dtype and backend of `t` (metadata only).
 def like(t: Types.Tensor) -> Result[Types.Tensor]
+  _ = try not_quantized(t.dtype, "like")
   case t.backend
     Types.Backend.Reference -> Reference.like(t)
     Types.Backend.Torch(device) -> Torch.like(device, t)
@@ -227,6 +232,7 @@ def from_list(
 ) -> Result[Types.Tensor]
   n = try Types.volume(shape)
   return error("from_list needs #{n} values for #{shape}, got #{data.size}") if data.size != n
+  _ = try not_quantized(dtype, "from_list")
   case backend
     Types.Backend.Reference -> Reference.from_list(data, shape, dtype)
     Types.Backend.Torch(device) -> Torch.from_list(device, data, shape, dtype)
@@ -919,6 +925,7 @@ end
 
 ## Moves `t` to `dtype` (float to int truncates, anything nonzero is `true`).
 def to_dtype(t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
+  _ = try not_quantized(dtype, "to_dtype")
   case t.backend
     Types.Backend.Reference -> Reference.to_dtype(t, dtype)
     Types.Backend.Torch(device) -> Torch.to_dtype(device, t, dtype)
@@ -1538,6 +1545,15 @@ def check_window_fits(length: Int, kernel: Int, padding: Int, op: String) -> Res
   return error("#{op} needs a nonempty input, got #{length} positions") if length < 1
   if length + 2 * padding < kernel
     return error("#{op} needs a window of #{kernel} positions in #{length} padded to #{length + 2 * padding}")
+  end
+
+  ok(true)
+end
+
+## `Q8_0` is a dtype of weights read by `from_file`: no other op makes a tensor of it.
+def not_quantized(dtype: Types.Dtype, op: String) -> Result[Bool]
+  if dtype == Types.Dtype.Q8_0
+    return error("#{op} makes no Q8_0 tensor: only from_file reads one (tensor/DESIGN.md §7)")
   end
 
   ok(true)

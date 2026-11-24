@@ -524,8 +524,8 @@ def half_operands(n: Types.Node) -> Result[Bool]
     if Types.is_packed_dtype(n.args[i].dtype)
       fits = case n.op
         Types.Op.Matmul -> i == 1 and (n.args[i].dtype != Types.Dtype.Q8_0 or try transposed(n.args[i]))
-        Types.Op.Gather -> i == 0
-        Types.Op.Transpose -> true
+        Types.Op.Gather -> i == 0 and (n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i]))
+        Types.Op.Transpose -> n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i])
         Types.Op.ToDtype -> try gathered(n.args[0])
         _ -> false
       end
@@ -539,6 +539,16 @@ def half_operands(n: Types.Node) -> Result[Bool]
   end
 
   ok(true)
+end
+
+## The tensor `t` is an input or a constant: a quantized weight is read only where it is made, never a view of it.
+def leaf(t: Types.Tensor) -> Result[Bool]
+  n = try Graph.node_of(t)
+  case n.op
+    Types.Op.Input -> ok(true)
+    Types.Op.Constant(_) -> ok(true)
+    _ -> ok(false)
+  end
 end
 
 ## The tensor `t` is the transpose of another.

@@ -21,8 +21,8 @@ F32_ABS = 0.0001
 F32_REL = 0.0001
 
 ## The Q8_0 weights keep the blocks, and ggml rounds every activation to Q8_0 blocks (to F16 too on Vulkan): the logits
-## (up to 5) are within this of the dequantized model's (the CPU's largest gap on this model is 0.08; a weight read in
-## the wrong layout is off by whole units).
+## (up to 5) are within this of the dequantized model's. It is a measured margin, not a derived bound: the largest gap
+## on this model is 0.08 on the CPU, and a weight read in the wrong layout is off by whole units.
 Q8_ABS = 0.1
 Q8_REL = 0.0
 
