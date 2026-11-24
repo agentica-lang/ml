@@ -119,6 +119,7 @@ enum Op
   Gelu
   GeluErf
   LayerNorm(Float)
+  RmsNorm(Float)
   Eq
   Clamp(Float, Float)
   Max(List[Int], Bool)
@@ -360,6 +361,7 @@ def op_name(op: Op) -> String
     Op.Gelu -> "gelu_tanh_approx"
     Op.GeluErf -> "gelu_erf"
     Op.LayerNorm(_) -> "layer_norm"
+    Op.RmsNorm(_) -> "rms_norm"
     Op.Eq -> "eq"
     Op.Clamp(_, _) -> "clamp"
     Op.Max(_, _) -> "max"
