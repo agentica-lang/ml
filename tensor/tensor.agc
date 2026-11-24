@@ -871,18 +871,17 @@ def softmax(x: Types.Tensor, axis: Int) -> Result[Types.Tensor]
   div(e, try broadcast_to(s, x.shape))
 end
 
-## Derived: `layer_norm` over the last axis, from §3.1 only (no affine).
+## `layer_norm` over the last axis, no affine: `(x - mean) / sqrt(variance + eps)`. A primitive of a trace, so that a
+## backend can run it as one node (ggml's norm); everywhere else, and in the trace of a gradient, it is the derived
+## composition of §3.1's ops (`layer_norm_composed`), so the values are those of the composition.
 def layer_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   return error("layer_norm needs eps > 0, got #{eps}") if eps <= 0.0
-  rank = x.shape.size
-  return error("layer_norm needs rank >= 1, got #{x.shape}") if rank < 1
-  last = rank - 1
-  mu = try mean(x, some([last]), true)
-  centered = try sub(x, try broadcast_to(mu, x.shape))
-  var = try mean(try mul(centered, centered), some([last]), true)
-  eps_full = try full(x.shape, Types.Values.Float(eps), x.dtype, x.backend)
-  denom = try sqrt(try add(try broadcast_to(var, x.shape), eps_full))
-  div(centered, denom)
+  return error("layer_norm needs rank >= 1, got #{x.shape}") if x.shape.size < 1
+  _ = try float_only(x, "layer_norm")
+  case x.backend
+    Types.Backend.Trace -> Graph.same(Types.Op.LayerNorm(eps), [x], x)
+    _ -> layer_norm_composed(x, eps)
+  end
 end
 
 ## Derived: `rms_norm` over the last axis, from §3.1 only (no affine).
@@ -1135,6 +1134,18 @@ def beam_search(logits: Types.Tensor, width: Int) -> Result[Types.Tensor]
 end
 
 private
+
+## The ops `layer_norm` stands for, from §3.1 only: the value on every backend that computes, and the graph a backward
+## rule differentiates.
+def layer_norm_composed(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
+  last = x.shape.size - 1
+  mu = try mean(x, some([last]), true)
+  centered = try sub(x, try broadcast_to(mu, x.shape))
+  var = try mean(try mul(centered, centered), some([last]), true)
+  eps_full = try full(x.shape, Types.Values.Float(eps), x.dtype, x.backend)
+  denom = try sqrt(try add(try broadcast_to(var, x.shape), eps_full))
+  div(centered, denom)
+end
 
 ## Two tensors share their backend.
 def same_backend(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]

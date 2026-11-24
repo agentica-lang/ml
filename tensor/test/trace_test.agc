@@ -46,6 +46,17 @@ def test_div_matches_a_central_difference() -> Result[Void]
   check_grad(args) do |xs| weigh(try Tensor.div(xs[0], xs[1])) end
 end
 
+## `layer_norm` is a primitive of a trace with a rule of its own, not the gradient of its composition: over the last axis
+## of a rank 2 and a rank 3 input.
+def test_layer_norm_matches_a_central_difference() -> Result[Void]
+  try check_grad([try f64([0.5, -1.0, 2.0, 0.3, 1.2, -0.7], [2, 3])]) do |xs|
+    weigh(try Tensor.layer_norm(xs[0], 0.00001))
+  end
+
+  data = [0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.9, 0.1, -0.4, 1.7, -1.3, 0.6]
+  check_grad([try f64(data, [2, 2, 3])]) do |xs| weigh(try Tensor.layer_norm(xs[0], 0.001)) end
+end
+
 def test_neg_matches_a_central_difference() -> Result[Void]
   check_grad([try f64([0.5, -1.0, 2.0, 0.3], [4])]) do |xs| weigh(try Tensor.neg(xs[0])) end
 end

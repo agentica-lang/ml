@@ -231,63 +231,6 @@ end
 
 private
 
-## A layer norm found in the trace: `x` over its last axis, `eps` inside the square root.
-struct Normed
-  x: Types.Tensor
-  eps: Float
-end
-
-## `Tensor.layer_norm`'s own nodes, `centered / sqrt(broadcast(mean(centered * centered)) + eps)` with
-## `centered = x - broadcast(mean(x))`, both means over the last axis with the axis kept, are one ggml norm of `x`. A
-## trace that has these nodes any other way fuses too, since the values are the same. The nodes inside stay in the
-## trace and the program, and are left out of the ggml graph when nothing else reads them.
-def normalized(t: Types.Tensor, n: Types.Node) -> Result[Optional[Normed]]
-  nothing: Optional[Normed] = none
-  return ok(nothing) if !is_op(n.op, "div") or t.dtype != Types.Dtype.F32
-  denom = try Graph.node_of(n.args[1])
-  return ok(nothing) if !is_op(denom.op, "sqrt")
-  shifted = try Graph.node_of(denom.args[0])
-  return ok(nothing) if !is_op(shifted.op, "add")
-  spread = try Graph.node_of(shifted.args[0])
-  fill = try Graph.node_of(shifted.args[1])
-  eps = 0.0
-  case fill.op
-    Types.Op.Full(v) -> eps = try Types.value_to_float(v, t.dtype)
-    _ -> return ok(nothing)
-  end
-
-  return ok(nothing) if eps <= 0.0 or !is_op(spread.op, "broadcast_to")
-  centered = try Graph.node_of(n.args[0])
-  return ok(nothing) if !is_op(centered.op, "sub")
-  x = centered.args[0]
-  last = x.shape.size - 1
-  variance = try Graph.node_of(spread.args[0])
-  return ok(nothing) if last < 0 or !last_axis(variance.op, last)
-  squares = try Graph.node_of(variance.args[0])
-  return ok(nothing) if !is_op(squares.op, "mul")
-  same = (
-    Graph.id_of(squares.args[0]) == Graph.id_of(n.args[0]) and
-    Graph.id_of(squares.args[1]) == Graph.id_of(n.args[0])
-  )
-
-  spread_mean = try Graph.node_of(centered.args[1])
-  return ok(nothing) if !same or !is_op(spread_mean.op, "broadcast_to")
-  mean = try Graph.node_of(spread_mean.args[0])
-  return ok(nothing) if !last_axis(mean.op, last) or Graph.id_of(mean.args[0]) != Graph.id_of(x)
-  ok(some(Normed(x: x, eps: eps)))
-end
-
-## Whether `op` is the one named `name` (`Types.op_name`).
-def is_op(op: Types.Op, name: String) -> Bool = Types.op_name(op) == name
-
-## Whether `op` is a mean over the axis `last` alone, which it keeps.
-def last_axis(op: Types.Op, last: Int) -> Bool
-  case op
-    Types.Op.Mean(axes, keep) -> axes == [last] and keep
-    _ -> false
-  end
-end
-
 ## The program of the graph `outs` reach; the input nodes are `ids`, in run order.
 def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: Bool) -> Result[Program]
   positions: Map[Ref, Int] = {}
@@ -311,15 +254,6 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
 
     op = try code(t, n)
     ints: List[Int] = []
-    inputs = n.args
-    case try normalized(t, n)
-      some(f) ->
-        op = NORM
-        inputs = [f.x]
-        ints = [Float.to_bits32(f.eps)]
-      none -> nil
-    end
-
     case n.op
       Types.Op.Input ->
         leaves = leaves.push(Leaf(input: positions[n.id], fixed: none))
@@ -348,10 +282,11 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Concat(axis) -> ints = [axis, 0]
       Types.Op.Stack(axis) -> ints = [axis, 1]
       Types.Op.Conv1d(stride, padding) -> ints = [stride, padding]
+      Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
       _ -> nil
     end
 
-    l = Lowered(op: op, args: inputs.map { |a| pos[Graph.id_of(a)] }, shape: t.shape, ints: ints)
+    l = Lowered(op: op, args: n.args.map { |a| pos[Graph.id_of(a)] }, shape: t.shape, ints: ints)
     pos = pos.put(n.id, nodes.size)
     nodes = nodes.push(l)
     parts = parts.push("#{l.op} #{l.args} #{l.shape} #{l.ints} #{Types.dtype_name(t.dtype)}")
@@ -470,6 +405,7 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Gather -> ok(GATHER)
     Types.Op.ScatterAdd(_) -> ok(SCATTER_ADD)
     Types.Op.GeluErf -> ok(GELU_ERF)
+    Types.Op.LayerNorm(_) -> ok(NORM)
     Types.Op.Concat(_) -> ok(CONCAT)
     Types.Op.Stack(_) -> ok(CONCAT)
     Types.Op.Conv1d(_, _) -> ok(CONV1D)

@@ -62,6 +62,20 @@ def test_diff_with_an_exact_tolerance_names_the_first_inexact_node_on_ggml() -> 
   end
 end
 
+## `layer_norm` is one node of a trace: ggml's norm and the reference's composition agree on it within the default
+## tolerance.
+def test_diff_of_a_layer_norm_on_ggml_finds_nothing() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  args = [try Support.f32([0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.9, 0.1, -0.4, 1.7, -1.3, 0.6], [2, 6])]
+  d = try Trace.diff(args, REF, CPU) do |xs| Tensor.layer_norm(xs[0], 0.00001) end
+  try Test.eq(d.nodes, 1)
+  case d.first
+    some(node) -> Test.assert(false, "the norm differs from the reference at #{node.op}: #{node.max_abs}")
+    none -> ok()
+  end
+end
+
 def test_diff_runs_a_big_graph_in_slices() -> Result[Void]
   return ok() if !try Support.ggml_present()
 
