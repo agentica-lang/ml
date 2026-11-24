@@ -237,7 +237,7 @@ def write_gguf(path, model, config, dtype, head, arch="qwen3", extra=()):
            ("qwen3.attention.key_length", 4, c["head_dim"]), ("qwen3.attention.value_length", 4, c["head_dim"]),
            ("qwen3.attention.layer_norm_rms_epsilon", 6, c["rms_norm_eps"]),
            ("qwen3.rope.freq_base", 6, float(c["rope_theta"]))] + list(extra)
-    head = b"GGUF"
+    buf = b"GGUF"
     tensors = []
     for name in sorted(model.values):
         if name == "lm_head.weight" and head != "own":
@@ -246,10 +246,10 @@ def write_gguf(path, model, config, dtype, head, arch="qwen3", extra=()):
     if head == "copy":
         tensors.append(("output.weight", model.shapes["model.embed_tokens.weight"],
                         model.values["model.embed_tokens.weight"]))
-    head += struct.pack("<IQQ", 3, len(tensors), len(kvs))
+    buf += struct.pack("<IQQ", 3, len(tensors), len(kvs))
     for key, kind, v in kvs:
         body = g_string(v) if kind == 8 else struct.pack("<I" if kind == 4 else "<f", v)
-        head += g_string(key) + struct.pack("<I", kind) + body
+        buf += g_string(key) + struct.pack("<I", kind) + body
     data, infos = b"", b""
     code, fmt = (0, "f") if dtype == "F32" else (1, "e")
     for name, shape, values in tensors:
@@ -261,9 +261,9 @@ def write_gguf(path, model, config, dtype, head, arch="qwen3", extra=()):
         infos += g_string(name) + struct.pack("<I", len(shape)) + b"".join(struct.pack("<Q", d) for d in reversed(shape))
         infos += struct.pack("<IQ", kind, len(data))
         data += raw
-    head += infos
-    head += b"\0" * (-len(head) % 32)
-    path.write_bytes(head + data)
+    buf += infos
+    buf += b"\0" * (-len(buf) % 32)
+    path.write_bytes(buf + data)
 
 
 def write(out):

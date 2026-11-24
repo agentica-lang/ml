@@ -468,7 +468,7 @@ def gguf_bad(out):
     case("nested_array", "array of arrays", [arch, ("a", 9, (9, []))], [row("token_embd.weight")])
     case("other_arch", "llama", [("general.architecture", 8, "llama")], [row("token_embd.weight")])
     case("alignment0", "power of two", [arch, ("general.alignment", 4, 0)], [row("token_embd.weight")])
-    case("too_many_values", "too many values", [arch], [row("token_embd.weight", dims=[2**62, 4])])
+    case("too_many_values", "past the", [arch], [row("token_embd.weight", dims=[2**62, 4])])
     case("overlap", "overlaps", [arch], [row("token_embd.weight"), row("output.weight")], offsets=[0, 0])
     case("unaligned", "multiple of 32", [arch], [row("token_embd.weight")], offsets=[8])
     case("block_row", "multiple of 32", [arch], [row("token_embd.weight", dims=[31, 1], ggml=8, raw=b"\0" * 34)])
@@ -509,7 +509,7 @@ def gguf_bad(out):
     raw = (out / "utf8.gguf").read_bytes()
     (out / "utf8.gguf").write_bytes(raw.replace(b"abcd", b"\xff\xfe\xfd\xfc"))
     cases["utf8.gguf"] = "UTF-8"
-    gguf(out / "data_start.gguf", [arch], [], alignment=4096)
+    gguf(out / "data_start.gguf", [arch, ("general.alignment", 4, 4096)], [], alignment=4096)
     raw = (out / "data_start.gguf").read_bytes()
     (out / "data_start.gguf").write_bytes(raw[:-100])
     cases["data_start.gguf"] = "past the end of the file"

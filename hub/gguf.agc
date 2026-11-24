@@ -266,11 +266,11 @@ def check_tensors(infos: List[Shards.Entry], kinds: List[Int], alignment: Int, r
     blocks = last / block[0]
     fits = room / block[1]
     for d in e.shape.take(e.shape.size - 1)
-      return error("tensor #{e.name}: #{e.shape} has too many values") if blocks > fits / d
+      return error("tensor #{e.name}: #{e.shape} is past the #{room} bytes of data") if blocks > fits / d
       blocks = blocks * d
     end
 
-    return error("tensor #{e.name}: #{e.shape} has too many values") if blocks > fits
+    return error("tensor #{e.name}: #{e.shape} is past the #{room} bytes of data") if blocks > fits
     need = blocks * block[1]
     start = e.start
     return error("tensor #{e.name}: offset #{start} is not a multiple of #{alignment}") if start % alignment != 0
