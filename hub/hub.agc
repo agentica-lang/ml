@@ -88,6 +88,16 @@ def tensor(
   Shards.tensor(c.shards[file], name, backend, dtype)
 end
 
+## Every tensor of the checkpoint on `backend`, by name, read as `tensor` reads one.
+def tensors(c: Checkpoint, backend: Tensor.Backend) -> Result[Map[String, Tensor.Tensor]]
+  out: Map[String, Tensor.Tensor] = {}
+  for name in names(c)
+    out = out.put(name, try tensor(c, name, backend))
+  end
+
+  ok(out)
+end
+
 ## Where the float tensor `name` is in its file (`Shards.source`), nothing read.
 def source(c: Checkpoint, name: String) -> Result[Shards.Source]
   file = try c.weight_map.get(name).to_result("no tensor #{name} in the checkpoint")

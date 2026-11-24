@@ -63,6 +63,10 @@ A `.gguf` file opens like a safetensors one: `Hub.names`, `Hub.shape` and `Hub.t
 
 `GgufWrite.write(path, fields, tensors)` writes a version 3 file. `fields` are `Field(key, value)` values; each `value` is a `Meta` (`Meta.U32`, `F32`, `Bool`, `Text`, `Texts` for an array of strings, `Ints` for an array of 32-bit integers). Each of `tensors` is `Out(name, source, format)`: `source` comes from `Hub.source(checkpoint, name)` (the file and the byte where an `F32`, `F16` or `BF16` tensor starts) and `format` is the `Tensor.FloatFormat` to write it in. The weights are converted by the ggml module straight from the source file into the new one, so a model of several GB is never in memory, and the data is aligned to 32 bytes. A value beyond 65504 is an error for `F16`. The file is written as `path.part` and renamed when whole, so a failure leaves no half file. It needs the ggml module. `transformers/tools/to_gguf.agc` writes a Qwen3 folder this way.
 
+## Writing safetensors
+
+`SafetensorsWrite.write(path, tensors, metadata)` (`import SafetensorsWrite from "pkg/hub/safetensors_write"`) writes a `Map[String, Tensor.Tensor]` of `F32` tensors to one safetensors file, sorted by name. `metadata` is the optional `__metadata__` map of the header. Each tensor is written from its backend straight into the file (`Tensor.append_file`), so no value goes through a list, and the same tensors give the same bytes. The file is written as `path.part` and renamed when whole. A tensor that is not `F32` is an error that names it. `Hub.tensors(c, backend)` reads every tensor of a checkpoint back as a map by name.
+
 ## Limits
 
 - Local files only. Nothing is downloaded.

@@ -178,6 +178,7 @@ Tensor.from_list(data: List[Values], shape, dtype, backend)
 Tensor.from_file(path, offset, shape, format, backend, dtype)
                                                   -> Result[Tensor]   # F32/F16/BF16/Q8_0 bytes of a file, read in C
 Tensor.to_list(t) -> Result[List[Values]]         # host readback, tests + decode loop
+Tensor.append_file(t, path) -> Result[Void]       # the F32 values appended to a file, written in C
 Tensor.shape(t) -> Shape                          # no native call
 Tensor.dtype(t) -> Dtype                          # no native call
 Tensor.backend(t) -> Backend                      # no native call
@@ -191,6 +192,11 @@ Tensor.backend(t) -> Backend                      # no native call
   keeps its payload). It lives in the ggml module (`native/ggml.c`), the one
   that compiles `float_file.h` for conversion; F16 refuses a value beyond
   65504 as the half load does.
+- `append_file` is how a tensor in memory is written (`hub/` writes
+  safetensors with it): the backend copies the `F32` values to host bytes and
+  appends them to a file that exists (`ff_append`), so no value crosses as a
+  list. Appending needs no offset, and it is the one positional write the
+  reference can do in Agentica (`File.open(path, "append")`).
 - `from_file` is how weights load: the backend reads the byte range
   itself (`native/float_file.h`: `pread` into the tensor's own memory, F16
   and BF16 widened in chunks) and no value crosses as a list. The tensor is

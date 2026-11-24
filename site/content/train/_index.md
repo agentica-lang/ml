@@ -78,6 +78,29 @@ The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, par
 
 Parameters are a plain `List[Tensor.Tensor]`, the list that `Trace` takes. The loss rebuilds the layer structs from that list, for example `Nn.Dense(w: ps[0], b: some(ps[1]))`.
 
+## Training part of a model
+
+`Params` (`import Params from "pkg/train/params"`) trains some weights of a model and keeps the rest frozen. The weights are a `Map[String, Tensor.Tensor]` by name, such as `Qwen3.weights(m)` gives.
+
+```agentica
+weights = Qwen3.weights(m)
+split = try Params.split(weights, ->(name: String) { name.start_with?("model.layers.27.") })
+fit = try Train.fit(
+  ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(try Qwen3.with_weights(m, try Params.join(split, ps)), b) },
+  split.trainable,
+  loader,
+  Optim.Optimizer.Adam(Optim.Adam(lr: 0.0001)),
+  3,
+)
+
+try SafetensorsWrite.write("last_block.safetensors", try Params.named(split, fit.params))
+```
+
+- `Params.split(weights, trainable)` answers a `Split`: `names` (the names `trainable` says yes to, sorted), `trainable` (their tensors, the list `fit` takes) and `frozen` (the other weights by name). A selection that matches no name is an error.
+- `Params.join(split, ps)` gives every weight by name again, with `ps` for the trainable ones. Inside the loss `ps` are traced and the frozen weights enter the trace as constants, so they get no gradient, and the optimizer keeps no state for them.
+- `Params.named(split, ps)` gives the trainable weights alone by name: what to save. `SafetensorsWrite.write` of the hub package writes them.
+- `Params.update(weights, changed)` puts the tensors of `changed` in place of the ones of the same name. To load a saved part: `Params.update(Qwen3.weights(m), try Hub.tensors(try Hub.open(path), backend))`, then `Qwen3.with_weights`. A name the model lacks or another shape is an error.
+
 ## Limits
 
 - Every step retraces the loss, so the trace cost is paid on each step. On the reference backend, one epoch of the 2-8-1 MLP of the XOR test, with four rows, costs about 75 000 VM steps.

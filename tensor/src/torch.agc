@@ -167,6 +167,12 @@ def from_file(
   one(device, Types.Dtype.F32, shape) do Raw.load(path, offset, shape, Types.file_code(format)) end
 end
 
+## Appends the `F32` values of `t` to the file `path`, written by C.
+def append_file(t: Types.Tensor, path: String) -> Result[Void]
+  _ = try usable("append_file")
+  Raw.append_file(try handle_of(t), path)
+end
+
 ## Host readback: the row-major values tagged with `t`'s dtype. This is the
 ## reference's `to_list` for this backend: the boundary carries doubles, so the
 ## tagging happens here, as the reference tags its own storage.

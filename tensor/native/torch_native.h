@@ -92,6 +92,8 @@ an_term torch_list_Float_end(an_env *env, torch_list_Float_builder *b);
 
 an_term torch_result_list_Float_ok(an_env *env, an_term value);
 
+an_term torch_result_Void_ok(an_env *env, an_term value);
+
 /* A tensor of `shape` from row-major `data` in the dtype `dtype` names
    (`TorchDtypes.code`). The values cross as doubles; an integer dtype must hold
    integral values in range, which the callers of `create` check first. */
@@ -269,6 +271,10 @@ an_term torch_avg_pool1d(an_env *env, struct torch_TensorHandle_state *input, in
 /* Host readback: the row-major values as storage doubles, which the caller
    tags with the tensor's dtype. `I64` values past 2^53 lose precision. */
 an_term torch_readback(an_env *env, struct torch_TensorHandle_state *a);
+
+/* Appends the values of the `F32` tensor `a`, row-major and little-endian, to the existing file `path`: C writes
+   them, so no value crosses as a list. */
+an_term torch_append_file(an_env *env, struct torch_TensorHandle_state *a, ng_str path);
 
 #ifdef __cplusplus
 }
@@ -454,6 +460,10 @@ void torch_list_Float_push(an_env *env, torch_list_Float_builder *b, double valu
 an_term torch_list_Float_end(an_env *env, torch_list_Float_builder *b) { return an_list_end(env, &b->builder); }
 
 an_term torch_result_list_Float_ok(an_env *env, an_term value) {
+  return an_ok(env, value);
+}
+
+an_term torch_result_Void_ok(an_env *env, an_term value) {
   return an_ok(env, value);
 }
 
@@ -951,6 +961,15 @@ static an_term torch_native_readback(an_env *env, int argc, const an_term *argv)
   return torch_readback(env, a0);
 }
 
+static an_term torch_native_append_file(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  ng_str a1;
+  if (!an_get_string(env, argv[1], &a1.data, &a1.len)) return an_badarg(env, 1);
+  return torch_append_file(env, a0, a1);
+}
+
 static const an_function torch_native_functions[] = {
   {"create", "(List[Int], List[Float], Int) -> Result[TensorHandle]", torch_native_create, AN_DIRTY | AN_FRESH},
   {"fill", "(List[Int], Float, Int) -> Result[TensorHandle]", torch_native_fill, AN_DIRTY | AN_FRESH},
@@ -999,6 +1018,7 @@ static const an_function torch_native_functions[] = {
   {"conv1d", "(TensorHandle, TensorHandle, Int, Int) -> Result[TensorHandle]", torch_native_conv1d, AN_DIRTY | AN_FRESH},
   {"avg_pool1d", "(TensorHandle, Int, Int, Int) -> Result[TensorHandle]", torch_native_avg_pool1d, AN_DIRTY | AN_FRESH},
   {"readback", "(TensorHandle) -> Result[List[Float]]", torch_native_readback, AN_DIRTY},
+  {"append_file", "(TensorHandle, String) -> Result[Void]", torch_native_append_file, AN_DIRTY},
 };
 
 /* Ends the module's one .c file: the tables and agentica_native_init. LOAD is NULL or a const char *(*)(void)
@@ -1007,5 +1027,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 47, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 48, NULL, 0, torch_native_resources, 1, LOAD)
 #endif
