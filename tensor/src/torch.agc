@@ -122,6 +122,13 @@ def scalar_to_tensor(device: Types.Device, value: Types.Values, dtype: Types.Dty
   from_values("scalar_to_tensor", device, [], dtype, [x])
 end
 
+## Creation: row-major `F32` `values` of `shape`, without the `Values` tags
+## `from_list` takes; the wrapper checked the count.
+def floats(device: Types.Device, values: List[Float], shape: List[Int]) -> Result[Types.Tensor]
+  _ = try ready(device, "from_list")
+  from_values("from_list", device, shape, Types.Dtype.F32, values)
+end
+
 ## Creation: row-major `data` of `shape`; the count must match.
 def from_list(
   device: Types.Device,

@@ -24,7 +24,9 @@ Asr.step_pick(m, cache, ids, mask) -> Result[Picked]   the id and log-probabilit
 Asr.transcribe(m, tok, pcm, options = Options()) -> Result[Transcript]
 struct Options      language (none: detect), translate, timestamps, max_tokens
 struct Transcript   text, language, language_probability, tokens, segments (start, stop, text)
-Mel.log_mel(samples, mels, frames = 3000) -> Result[List[Float]]   row-major [mels, frames]
+Mel.features(samples, mels, frames, backend) -> Result[Tensor]     [1, mels, frames] on the backend
+Mel.log_mel(samples, mels, frames = 3000) -> Result[List[Float]]   row-major [mels, frames], in doubles
+Asr.features(model, samples, frames) -> Result[Tensor]             Mel.features with the model's plan
 Tokenizer.open(path) -> Result[Tokenizer]       a tokenizer.json
 Tokenizer.decode(tok, ids) -> Result[String]    text tokens only
 Tokenizer.prompt(tok, language, job, timestamps) -> Result[List[Int]]
@@ -93,35 +95,63 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
 the Slaney mel filterbank → `log10(max(x, 1e-10))` → a floor at the maximum
 minus 8 → `(x + 4) / 4`. Fewer than 3000 frames are the spectrogram of that
 shorter segment (its own end reflection and maximum), not a prefix of the 30 s
-one. Samples are about -1..1: a non-finite one, or one past 1e150, is an error.
+one. Samples are about -1..1: a non-finite one is an error, and so is one past
+1e150 for `log_mel` (doubles) or past about 1.8e19 for the graph (`F32`, whose
+power overflows there).
 
-- **Agentica lists**, not tensor ops: the work is an FFT per frame, which the
-  tensor API has no op for.
-- **The FFT is mixed radix** (decimation in time): radix 2 while the length
-  is even, then radix 5, since 400 = 2^4 · 5^2. whisper.cpp splits 400 the
-  same way down to 25 and then runs a direct DFT; padding to 512 would change
-  the bins. Two real frames go through one complex FFT, as the real and the
-  imaginary part.
+- **One graph of tensor ops** on every backend but `Reference`
+  (`Mel.spectrogram`): the signal (padded by reflection) is read as blocks of
+  one hop, a frame is two blocks and the first 80 samples of a third, and the
+  windowed DFT is a matmul with a `[400, 402]` basis (the Hann window times the
+  cosines, then the sines, of the 201 bins); the power, a second matmul with
+  the mel filters, the log, the floor and the scale follow. It stays on the
+  device and feeds `encode` with no list in between. It computes in `F32`: the
+  gap to the exact value is about 1e-5 (the tokens and the language
+  probabilities of the golden clips do not move). That holds for an `F32`
+  matmul; with `Ggml.vulkan_fp16(true)` the DFT would run in fp16, which is
+  not measured here and is not excepted. A sample that is not finite (or so
+  large that the power overflows) makes the sum the graph also answers not
+  finite, and that is an error (`relu` would hide a `NaN` in the features).
+- **On `Ggml` the graph is compiled by `load`** into `Model.mel`
+  (`Asr.features`), so the DFT basis (about 35 ms of Agentica to build, plus
+  its upload and the filters', paid by `load`) is made once. A transcription
+  runs in a task that closes what it opens, so constants made there would not
+  last; the plan is a field and not an entry of `Model.plans`, which a timed
+  out reader empties, because no transcription can build it again. Without the
+  plan, the graph is traced and run once, uncached (`keep: false`, so it does
+  not evict the graphs of the decoder). `Asr.features` closes its inputs and
+  its check; the features are the caller's to close.
+- **On `Reference`, the FFT in Agentica lists** (`Mel.log_mel`): the matmuls of
+  the graph would run in the interpreter. It is also the exact model the graph
+  is tested against, so it stays. The FFT is mixed radix (decimation in time):
+  radix 2 while the length is even, then radix 5, since 400 = 2^4 · 5^2.
+  whisper.cpp splits 400 the same way down to 25 and then runs a direct DFT;
+  padding to 512 would change the bins. Two real frames go through one complex
+  FFT, as the real and the imaginary part.
 - **The mel filters are computed**, with librosa's formula (Slaney scale,
   Slaney area norm), which Whisper's `mel_filters.npz` and Hugging Face's
   extractor both use. That needs no file beside the checkpoint and gives 80 or
   128 bins.
 - **`exp`, `log`, `log10`, `sin` and `cos` come from Agentica's `Math`**
   (0.37.0). `test/math_test.agc` checks them against Python's `math`.
-- **Silent frames are skipped**: a frame that starts after the last non-zero
-  sample is `log10(1e-10)` (unless the end reflection reaches a sample), so a
-  short clip costs only its own frames.
-- 30 s of audio takes about 1–2 s.
+- **`log_mel` skips silent frames**: a frame that starts after the last
+  non-zero sample is `log10(1e-10)` (unless the end reflection reaches a
+  sample), so a short clip costs only its own frames. The graph computes all
+  3000 and takes about 35 ms on the ggml CPU backend for any clip.
 
-`test/mel_test.agc` checks the output against `test/mel_peer.py`, the same
+`test/mel_test.agc` checks `log_mel` against `test/mel_peer.py`, the same
 steps in Python doubles with a direct DFT (standard library only); the gap is
-about 1e-13. It also checks 200 values of Hugging Face's
-`WhisperFeatureExtractor` (its numpy path) for the first second of
-`whisper/live/fixtures/es-hola.wav`, at 80 and 128 mels, within 1e-6:
-`test/hf_golden.py` wrote `test/fixtures/hf_mel.json` once, by hand (it needs
-`transformers`, so the tests do not run it). whisper.cpp keeps its mel
-internal (its `debug_mode` dump is not wired), so it was not compared
-directly; it runs the same steps in floats.
+about 1e-13. It checks the graph against `log_mel` on `Reference` (small
+sizes, 5e-5), and `Mel.features` on every backend the machine has (libtorch,
+ggml, Vulkan) against 200 values of Hugging Face's `WhisperFeatureExtractor`
+(its numpy path), within 5e-5. Those values are the first second of
+`whisper/live/fixtures/es-hola.wav`, at 80 and 128 mels; `log_mel` is checked
+against them within 1e-6. `test/hf_golden.py` wrote `test/fixtures/hf_mel.json`
+once, by hand (it needs `transformers`, so the tests do not run it). An `Inf`,
+a `NaN` and a 1e30 sample are errors on each backend. `test/model_test.agc`
+checks that a ggml model's compiled plan and the traced graph give the same
+features. whisper.cpp keeps its mel internal (its `debug_mode` dump is not
+wired), so it was not compared directly; it runs the same steps in floats.
 
 ## The tokenizer (`tokenizer.agc`)
 
@@ -198,7 +228,7 @@ against the peer's full forward.
 ## Transcription (`transcribe`)
 
 One window of 16 kHz samples (at most `2 * max_source_positions` frames: 30 s
-for Whisper; no samples or more are an error) → `Mel.log_mel` of the whole
+for Whisper; no samples or more are an error) → `Asr.features` of the whole
 window, padded with zeros to 30 s as Hugging Face's feature extractor does
 (not OpenAI's, which pads the log-mel) → `encode` → `listen` → greedy
 decoding with `step` and `Greedy`. This is what Hugging Face's `generate`

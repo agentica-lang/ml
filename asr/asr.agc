@@ -61,6 +61,10 @@ struct Model
   ## The compiled functions of this model that its transcriptions share (`planned`): a channel of one value, the map,
   ## which a task takes to read or change it and puts back at once.
   plans: Channel[Map[String, Trace.Compiled]]
+  ## On `Ggml`, the compiled log-mel graph (`compile_mel`), made once by `load`: its constants and its pin belong to the
+  ## task that opened the model. A plain field and not an entry of `plans`, because a lost map would lose a plan that
+  ## no transcription's task can build again.
+  mel: Optional[Trace.Compiled] = none
 end
 
 ## One attention's keys and values, `[1, keys, d_model]` each: `keys` is the
@@ -218,23 +222,31 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[M
     decoder = decoder.push(try Load.decoder_block(c, names, config.decoder_attention_heads, activation, EPS, backend))
   end
 
-  ok(
-    Model(
-      config: config,
-      activation: activation,
-      conv1: conv1,
-      conv2: conv2,
-      encoder_positions: encoder_positions,
-      encoder: encoder,
-      encoder_norm: try Load.layer_norm(c, "#{e}layer_norm", EPS, backend),
-      tokens: tokens,
-      decoder_positions: decoder_positions,
-      decoder: decoder,
-      decoder_norm: try Load.layer_norm(c, "#{d}layer_norm", EPS, backend),
-      logits: Nn.Dense(w: try Load.transposed(tokens.table), b: none),
-      plans: try shared_plans(),
-    ),
+  m = Model(
+    config: config,
+    activation: activation,
+    conv1: conv1,
+    conv2: conv2,
+    encoder_positions: encoder_positions,
+    encoder: encoder,
+    encoder_norm: try Load.layer_norm(c, "#{e}layer_norm", EPS, backend),
+    tokens: tokens,
+    decoder_positions: decoder_positions,
+    decoder: decoder,
+    decoder_norm: try Load.layer_norm(c, "#{d}layer_norm", EPS, backend),
+    logits: Nn.Dense(w: try Load.transposed(tokens.table), b: none),
+    plans: try shared_plans(),
+    mel: try compile_mel(config, backend),
   )
+
+  ok(m)
+end
+
+## The log-mel features of `pcm` as `[1, num_mel_bins, frames]` on the model's backend (`Mel.features`), which the
+## caller closes. On `Ggml` they run the graph that `load` compiled; elsewhere `Mel.log_mel` on `Reference` and the same
+## graph, traced each time, on libtorch.
+def features(m: Model, pcm: List[Float], frames: Int) -> Result[Tensor.Tensor]
+  Mel.features(pcm, m.config.num_mel_bins, frames, Tensor.backend(m.tokens.table), m.mel)
 end
 
 ## The encoder output `[batch, ceil(frames / 2), d_model]` of a log-mel batch
@@ -591,20 +603,33 @@ struct Decided
   logprob: Float
 end
 
+## On `Ggml`, the log-mel graph compiled for the model's window. It runs in the task that opens the model, which is why
+## it is made here: a transcription's task closes what it opens, and the DFT basis and the mel filters are constants of
+## the graph. The plan keeps its pin, so the graph stays in ggml's cache and is not built again from its program on
+## every transcription; the pin belongs to this task and lives as long as the model does. `load` pays about 35 ms of
+## Agentica to make the basis, plus the upload of the constants.
+def compile_mel(config: Config, backend: Tensor.Backend) -> Result[Optional[Trace.Compiled]]
+  return ok(none) if !compiled(backend)
+  mels = config.num_mel_bins
+  frames = 2 * config.max_source_positions
+  ok(
+    some(
+      try Trace.compile(
+        Mel.specs(frames, backend),
+        ->(xs: List[Tensor.Tensor]) { Mel.graph(xs, mels, frames, backend) },
+      ),
+    ),
+  )
+end
+
 ## `transcribe` once its arguments are checked. Each step's self-attention
 ## keys and values are closed once the next step replaced them, so a call
 ## holds one cache at a time.
 def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Options, frames: Int) -> Result[Transcript]
-  features = try Mel.log_mel(pcm, m.config.num_mel_bins, frames)
-  values = features.map { |x| Tensor.Values.Float(x) }
-  mel = try Tensor.from_list(
-    values,
-    [1, m.config.num_mel_bins, frames],
-    Tensor.Dtype.F32,
-    Tensor.backend(m.tokens.table),
-  )
-
-  cache = try listen(m, try encode(m, mel))
+  mel = try features(m, pcm, frames)
+  audio = try encode(m, mel)
+  close([mel])
+  cache = try listen(m, audio)
   language = options.language.unwrap_or("en")
   probability = 1.0
   no_speech = 0.0

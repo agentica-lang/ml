@@ -15,7 +15,6 @@
 ## id and a log-probability come back, where the default `Asr.step` reads the logits.
 
 import Asr from "../asr"
-import Mel from "../mel"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "../tokenizer"
 import TranscribeCheck from "transcribe_check"
@@ -53,14 +52,7 @@ def run(args: List[String]) -> Result[Void]
   tok = try Tokenizer.open("#{args[0]}/tokenizer.json")
   pcm = try TranscribeCheck.pcm16(try TranscribeCheck.read_bytes(args[1]))
   frames = 2 * m.config.max_source_positions
-  features = try Mel.log_mel(pcm, m.config.num_mel_bins, frames)
-  mel = try Tensor.from_list(
-    features.map { |x| Tensor.Values.Float(x) },
-    [1, m.config.num_mel_bins, frames],
-    Tensor.Dtype.F32,
-    Tensor.backend(m.tokens.table),
-  )
-
+  mel = try Asr.features(m, pcm, frames)
   cache = try Asr.listen(m, try Asr.encode(m, mel))
   prompt = try Tokenizer.prompt(tok, some(args[3]), Tokenizer.Job.Transcribe, false)
   mask = try Tensor.from_list(

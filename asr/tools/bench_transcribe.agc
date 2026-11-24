@@ -14,7 +14,6 @@
 ## MODEL_DIR holds `model.safetensors`, `config.json` and `tokenizer.json`; BACKEND is `torch`, `ggml` or `vulkan`.
 
 import Asr from "../asr"
-import Mel from "../mel"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "../tokenizer"
 import TranscribeCheck from "transcribe_check"
@@ -68,18 +67,8 @@ def phases(
 ) -> Result[Void]
   frames = 2 * m.config.max_source_positions
   started = mark()
-  features = try Mel.log_mel(pcm, m.config.num_mel_bins, frames)
+  mel = try Asr.features(m, pcm, frames)
   lap("log_mel", started)
-  started = mark()
-  values = features.map { |x| Tensor.Values.Float(x) }
-  mel = try Tensor.from_list(
-    values,
-    [1, m.config.num_mel_bins, frames],
-    Tensor.Dtype.F32,
-    Tensor.backend(m.tokens.table),
-  )
-
-  lap("mel_upload", started)
   started = mark()
   audio = try Asr.encode(m, mel)
   lap("encoder", started)

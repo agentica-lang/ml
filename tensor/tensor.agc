@@ -265,7 +265,13 @@ def floats(
   shape: List[Int],
   backend: Types.Backend = Types.Backend.Reference,
 ) -> Result[Types.Tensor]
-  from_list(values.map { |x: Float| Types.Values.Float(x) }, shape, Types.Dtype.F32, backend)
+  n = try Types.volume(shape)
+  return error("floats needs #{n} values for #{shape}, got #{values.size}") if values.size != n
+  case backend
+    Types.Backend.Torch(device) -> Torch.floats(device, values, shape)
+    Types.Backend.Ggml(device) -> Ggml.floats(device, values, shape)
+    _ -> from_list(values.map { |x: Float| Types.Values.Float(x) }, shape, Types.Dtype.F32, backend)
+  end
 end
 
 ## Host readback: the values tagged with the tensor's dtype.
