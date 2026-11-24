@@ -1068,16 +1068,16 @@ static an_term attend(an_env *env, const torch::Tensor &q, const torch::Tensor &
                 mask->size(3) == k.size(2);
     if (!plain && !wide) return error_text(env, "attention takes a mask [Sq, Sk] or [B|1, H|1, Sq, Sk], got " + shape_text(*mask));
   }
-  if (mask != NULL && mask->numel() > 0) {
-    if (mask->isnan().any().item<bool>() || mask->isposinf().any().item<bool>()) {
-      return error_text(env, "attention takes a mask of finite values or -inf, got a NaN or +inf");
-    }
-    if ((mask->isneginf().all(-1)).any().item<bool>()) {
-      return error_text(env, "attention: a row of the mask hides every key");
-    }
-  }
-
   try {
+    if (mask != NULL && mask->numel() > 0) {
+      if (mask->isnan().any().item<bool>() || mask->isposinf().any().item<bool>()) {
+        return error_text(env, "attention takes a mask of finite values or -inf, got a NaN or +inf");
+      }
+      if ((mask->isneginf().all(-1)).any().item<bool>()) {
+        return error_text(env, "attention: a row of the mask hides every key");
+      }
+    }
+
     int64_t group = q.size(1) / k.size(1);
     torch::Tensor keys = group == 1 ? k : k.repeat_interleave(group, 1);
     torch::Tensor values = group == 1 ? v : v.repeat_interleave(group, 1);

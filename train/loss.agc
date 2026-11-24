@@ -29,7 +29,8 @@ end
 ## log-softmax subtracts the row maximum as a `stop_grad` constant, so it is
 ## stable and its gradient is `(softmax(z) - onehot) / batch`. A label outside
 ## `0...classes` is an error in an eager call; traced labels (`Trace.constant`
-## included) are not checked, and such a label adds `0`.
+## included) are not checked, and such a label adds `0`. A logit of `-inf` on
+## the label's class gives a loss of `+inf`, not an error.
 def cross_entropy(logits: Tensor.Tensor, labels: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(logits)
   return error("cross_entropy needs [batch, classes] logits, got #{shape}") if shape.size != 2
