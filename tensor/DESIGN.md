@@ -491,7 +491,7 @@ end
   exact only when both branches are finite): enough for an MLP and softmax
   cross-entropy with their gradients, for a training step and its batch, and for
   Whisper's forward (`asr/`). An output that holds an infinity or a NaN is an
-  error. A graph has at most 256 outputs.
+  error. A graph has at most 512 outputs.
 - Vulkan computes `mul_mat` in fp16 by default (the owner's decision, ml#148):
   ggml reads `GGML_VK_DISABLE_F16` once per process, when it first enumerates
   its devices, and the C layer sets it (only when exact `F32` was asked for)
