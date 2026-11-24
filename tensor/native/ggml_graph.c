@@ -81,6 +81,7 @@ enum {
   OP_ROPE,        /* args: x, positions; ints: dims, neox, the bits of the base, inverse */
   OP_BATCH_MATMUL,
   OP_NORM,        /* a layer norm over the last axis; ints: eps as the bits of an F32 */
+  OP_RMS_NORM,    /* an rms norm over the last axis; ints: eps as the bits of an F32 */
   OP_COUNT
 };
 
@@ -88,7 +89,7 @@ static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
   "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
-  "norm",
+  "norm", "rms_norm",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -819,6 +820,17 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       memcpy(&eps, &bits, sizeof eps);
       if (!(eps > 0.0f)) return tg_error(env, "a norm takes an eps above 0");
       t = ggml_norm(p->ctx, dense(p, a), eps);
+      break;
+    }
+    case OP_RMS_NORM: {
+      uint32_t bits;
+      float eps;
+
+      if (nints != 1 || ints[0] < 0 || ints[0] > UINT32_MAX) return tg_error(env, "an rms norm takes eps as the bits of an F32");
+      bits = (uint32_t)ints[0];
+      memcpy(&eps, &bits, sizeof eps);
+      if (!(eps > 0.0f)) return tg_error(env, "an rms norm takes an eps above 0");
+      t = ggml_rms_norm(p->ctx, dense(p, a), eps);
       break;
     }
     case OP_CONCAT:

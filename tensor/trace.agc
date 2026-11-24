@@ -545,6 +545,7 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.Gelu -> part(Tensor.mul(ct, try gelu_slope(x)))
     Types.Op.GeluErf -> no_rule("gelu_erf")
     Types.Op.LayerNorm(eps) -> part(layer_norm_rule(t, x, ct, eps))
+    Types.Op.RmsNorm(eps) -> part(rms_norm_rule(t, x, ct, eps))
     Types.Op.Clamp(_, _) -> no_rule("clamp")
     Types.Op.Max(axes, keep_dims) -> part(max_rule(t, x, ct, axes, keep_dims))
     Types.Op.BatchMatmul -> no_rule("batch_matmul")
@@ -677,6 +678,17 @@ def layer_norm_rule(t: Types.Tensor, x: Types.Tensor, ct: Types.Tensor, eps: Flo
   along = try Tensor.broadcast_to(try Tensor.mean(ct, some([last]), true), x.shape)
   with_y = try Tensor.broadcast_to(try Tensor.mean(try Tensor.mul(ct, t), some([last]), true), x.shape)
   Tensor.div(try Tensor.sub(try Tensor.sub(ct, along), try Tensor.mul(t, with_y)), sigma)
+end
+
+## The backward of `rms_norm`, with `y = t` its value, `rms = sqrt(mean(x * x) + eps)` and the means over the last axis:
+## `(ct - y * mean(ct * y)) / rms`.
+def rms_norm_rule(t: Types.Tensor, x: Types.Tensor, ct: Types.Tensor, eps: Float) -> Result[Types.Tensor]
+  last = x.shape.size - 1
+  ms = try Tensor.mean(try Tensor.mul(x, x), some([last]), true)
+  floor = try Tensor.full(ms.shape, Types.Values.Float(eps), x.dtype, x.backend)
+  rms = try Tensor.broadcast_to(try Tensor.sqrt(try Tensor.add(ms, floor)), x.shape)
+  with_y = try Tensor.broadcast_to(try Tensor.mean(try Tensor.mul(ct, t), some([last]), true), x.shape)
+  Tensor.div(try Tensor.sub(ct, try Tensor.mul(t, with_y)), rms)
 end
 
 ## The backward of `slice`: `ct` padded with zeros back to `shape`, one axis
@@ -868,6 +880,7 @@ def compute(
     Types.Op.Gelu -> Tensor.gelu_tanh_approx(args[0])
     Types.Op.GeluErf -> Tensor.gelu_erf(args[0])
     Types.Op.LayerNorm(eps) -> Tensor.layer_norm(args[0], eps)
+    Types.Op.RmsNorm(eps) -> Tensor.rms_norm(args[0], eps)
     Types.Op.Eq -> Tensor.eq(args[0], args[1])
     Types.Op.Clamp(lo, hi) -> Tensor.clamp(args[0], lo, hi)
     Types.Op.Max(axes, keep_dims) -> Tensor.max(args[0], some(axes), keep_dims)
