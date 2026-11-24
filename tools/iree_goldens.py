@@ -5,13 +5,15 @@
 PLANS holds NAME.plan.json (from train/tools/stablehlo_emit.agc) and FIXTURES holds NAME.mlir. For each plan, the
 program runs once per entry of "sets", on the arguments of the plan: a run sets the arguments its entry names, and
 the "carry" pairs [output, argument] feed the outputs of a run into the next. FIXTURES/NAME.golden.json gets the
-IREE version, the arguments of the first run and the outputs of every run.
+IREE version, the SHA-256 of the NAME.mlir it ran (so a test sees a golden that its text outgrew), the arguments of
+the first run and the outputs of every run.
 
 It needs iree-compile and iree-run-module on PATH: `make iree-goldens` runs it from the venv `make iree-venv` makes.
 Standard library only.
 """
 
 import ast
+import hashlib
 import json
 import pathlib
 import struct
@@ -36,7 +38,8 @@ def write_npy(path, arg):
 
 def read_npy(path):
     raw = path.read_bytes()
-    assert raw[:6] == NPY_MAGIC and raw[6:8] == b"\x01\x00", "unexpected .npy version"
+    if raw[:6] != NPY_MAGIC or raw[6:8] != b"\x01\x00":
+        sys.exit("%s is not a version 1 .npy file" % path)
     (size,) = struct.unpack("<H", raw[8:10])
     header = ast.literal_eval(raw[10 : 10 + size].decode())
     dtype = next(name for name, (descr, _) in DTYPES.items() if descr == header["descr"])
@@ -94,7 +97,8 @@ def golden(name, plans, fixtures, work):
             args[arg]["data"] = outputs[out]["data"]
 
     version = json.dumps(metadata.version("iree-base-compiler"))
-    lines = ["{", ' "iree": %s,' % version, ' "args": [', ",\n".join("  " + json.dumps(a) for a in first), " ],"]
+    digest = hashlib.sha256((fixtures / (name + ".mlir")).read_bytes()).hexdigest()
+    lines = ["{", ' "iree": %s,' % version, ' "mlir_sha256": "%s",' % digest, ' "args": [', ",\n".join("  " + json.dumps(a) for a in first), " ],"]
     lines += [' "runs": [', ",\n".join("  " + json.dumps(r) for r in runs), " ]", "}"]
     (fixtures / (name + ".golden.json")).write_text("\n".join(lines) + "\n")
 
@@ -106,4 +110,5 @@ def main():
             golden(plan.name[: -len(".plan.json")], plans, fixtures, pathlib.Path(tmp))
 
 
-main()
+if __name__ == "__main__":
+    main()

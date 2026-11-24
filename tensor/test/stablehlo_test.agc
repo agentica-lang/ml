@@ -47,6 +47,33 @@ def test_the_reductions_and_the_comparisons_take_their_neutral_elements_and_type
   )
 end
 
+## An `arange` that starts at 1 in steps of 2, a `mean` that keeps its axis, and a fill whose float has an exponent.
+def test_an_arange_a_kept_mean_and_a_small_fill() -> Result[Void]
+  m = try Trace.stablehlo([spec([2, 3], Tensor.Dtype.F32)], ->(xs: List[Tensor.Tensor]) { counted(xs[0]) })
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<2x3xf32>) -> (tensor<3xi32>, tensor<2x1xf32>) {
+          %0 = stablehlo.constant dense<1.0e-8> : tensor<2x1xf32>
+          %1 = stablehlo.iota dim = 0 : tensor<3xi32>
+          %2 = stablehlo.constant dense<2> : tensor<3xi32>
+          %3 = stablehlo.multiply %1, %2 : tensor<3xi32>
+          %4 = stablehlo.constant dense<1> : tensor<3xi32>
+          %5 = stablehlo.add %3, %4 : tensor<3xi32>
+          %6 = stablehlo.constant dense<0.0> : tensor<f32>
+          %7 = stablehlo.reduce(%arg0 init: %6) applies stablehlo.add across dimensions = [1] : (tensor<2x3xf32>, tensor<f32>) -> tensor<2xf32>
+          %8 = stablehlo.constant dense<3.0> : tensor<2xf32>
+          %9 = stablehlo.divide %7, %8 : tensor<2xf32>
+          %10 = stablehlo.reshape %9 : (tensor<2xf32>) -> tensor<2x1xf32>
+          %11 = stablehlo.add %10, %0 : tensor<2x1xf32>
+          func.return %5, %11 : tensor<3xi32>, tensor<2x1xf32>
+        }
+      }
+    MLIR
+  )
+end
+
 def test_an_op_without_an_emitter_is_an_error_naming_it() -> Result[Void]
   r = Trace.stablehlo(
     [spec([2, 2], Tensor.Dtype.F32)],
@@ -56,6 +83,19 @@ def test_an_op_without_an_emitter_is_an_error_naming_it() -> Result[Void]
   case r
     ok(_) -> error("permute was emitted")
     error(e) -> Test.eq(e.message, "StableHLO has no emitter for permute yet")
+  end
+end
+
+## A product of an `F32` input by an `F16` weight would be a mixed-type `dot_general`, which StableHLO refuses.
+def test_a_mixed_dtype_matmul_is_an_error_naming_it() -> Result[Void]
+  r = Trace.stablehlo(
+    [spec([2, 2], Tensor.Dtype.F32), spec([2, 2], Tensor.Dtype.F16)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.matmul(xs[0], xs[1])]) },
+  )
+
+  case r
+    ok(_) -> error("a mixed matmul was emitted")
+    error(e) -> Test.eq(e.message, "StableHLO has no emitter for matmul of F32 by F16 yet")
   end
 end
 
@@ -72,4 +112,12 @@ end
 def reduced(x: Tensor.Tensor, labels: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
   classes = try Tensor.arange(0, 3, 1, Tensor.Dtype.I32, Tensor.Backend.Trace)
   ok([try Tensor.max(x, some([1]), true), try Tensor.eq(labels, classes)])
+end
+
+def counted(x: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
+  tiny = try Tensor.full([2, 1], Tensor.Values.Float(0.00000001), Tensor.Dtype.F32, Tensor.Backend.Trace)
+  ok([
+    try Tensor.arange(1, 7, 2, Tensor.Dtype.I32, Tensor.Backend.Trace),
+    try Tensor.add(try Tensor.mean(x, some([1]), true), tiny),
+  ])
 end

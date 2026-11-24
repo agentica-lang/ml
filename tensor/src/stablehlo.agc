@@ -8,6 +8,7 @@
 
 import Graph from "graph"
 import Lower from "lower"
+import Reference from "reference"
 import Types from "types"
 
 ## The program: its text, and the tensors of its constants in the order of the arguments that follow the inputs.
@@ -89,7 +90,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Relu -> ok([try fill(0.0, t), "stablehlo.maximum #{a[0]}, %#{first} : #{out}"])
     Types.Op.Gelu -> gelu(t, a[0], first)
     Types.Op.StopGrad -> ok([])
-    Types.Op.Matmul -> ok(["stablehlo.dot_general #{a[0]}, #{a[1]}, contracting_dims = [1] x [0] : #{sig}"])
+    Types.Op.Matmul -> matmul(n.args, a, sig)
     Types.Op.Transpose -> ok(["stablehlo.transpose #{a[0]}, dims = #{ints((0...t.shape.size).to_a.reverse)} : #{sig}"])
     Types.Op.Reshape -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
     Types.Op.BroadcastTo -> broadcast(t, n.args[0], a[0])
@@ -104,16 +105,25 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
   end
 end
 
+def matmul(args: List[Types.Tensor], a: List[String], sig: String) -> Result[List[String]]
+  if args[0].dtype != args[1].dtype
+    kinds = "#{Types.dtype_name(args[0].dtype)} by #{Types.dtype_name(args[1].dtype)}"
+    return error("StableHLO has no emitter for matmul of #{kinds} yet")
+  end
+
+  ok(["stablehlo.dot_general #{a[0]}, #{a[1]}, contracting_dims = [1] x [0] : #{sig}"])
+end
+
 # `0.5 x (1 + tanh(c (x + k x^3)))`, the form `Reference` computes.
 def gelu(t: Types.Tensor, x: String, first: Int) -> Result[List[String]]
   out = try type_of(t)
   ok([
     "stablehlo.multiply #{x}, #{x} : #{out}",
     "stablehlo.multiply %#{first}, #{x} : #{out}",
-    try fill(0.044715, t),
+    try fill(Reference.GELU_C, t),
     "stablehlo.multiply %#{first + 2}, %#{first + 1} : #{out}",
     "stablehlo.add #{x}, %#{first + 3} : #{out}",
-    try fill(0.7978845608028654, t),
+    try fill(Reference.SQRT2_OVER_PI, t),
     "stablehlo.multiply %#{first + 5}, %#{first + 4} : #{out}",
     "stablehlo.tanh %#{first + 6} : #{out}",
     try fill(1.0, t),
@@ -197,11 +207,11 @@ def splat(v: Types.Values, shape: List[Int], dtype: Types.Dtype) -> Result[Strin
   ok("stablehlo.constant dense<#{try literal(v, dtype)}> : #{try tensor_type(shape, dtype)}")
 end
 
-# A float literal always has its decimal point in MLIR, and an infinity is its bit pattern.
+# A float literal always has its decimal point in MLIR, and a NaN or an infinity is its bit pattern.
 def literal(v: Types.Values, dtype: Types.Dtype) -> Result[String]
   case v
     Types.Values.Float(x) ->
-      return error("StableHLO has no literal for NaN") if x != x
+      return nan(dtype) if x != x
       return ok(try infinity(dtype, x < 0.0)) if !Types.is_finite(x)
       ok(decimal(x))
     Types.Values.Int(i) -> ok(i.to_s)
@@ -215,6 +225,15 @@ def decimal(x: Float) -> String
   return text if parts[0].include?(".")
   return "#{text}.0" if parts.size == 1
   "#{parts[0]}.0e#{parts[1]}"
+end
+
+def nan(dtype: Types.Dtype) -> Result[String]
+  case dtype
+    Types.Dtype.F32 -> ok("0x7FC00000")
+    Types.Dtype.F16 -> ok("0x7E00")
+    Types.Dtype.F64 -> ok("0x7FF8000000000000")
+    _ -> error("#{Types.dtype_name(dtype)} has no NaN")
+  end
 end
 
 def infinity(dtype: Types.Dtype, negative: Bool) -> Result[String]

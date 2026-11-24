@@ -14,7 +14,7 @@ Loss.cross_entropy(logits, labels)             mean of -log softmax(z)[label]
 
 Optim.Optimizer = Sgd(Sgd { lr, momentum = 0 }) | Adam(Adam { lr = 1e-3, beta1 = 0.9, beta2 = 0.999, eps = 1e-8 })
 Optim.init(optimizer, params) -> Result[State]
-Optim.step(state, params, grads) -> Result[Step { state, params }]
+Optim.step(state, params, grads, scalars = []) -> Result[Step { state, params }]
 Optim.step_scalars(state) -> List[Float]        Adam's two numbers of the next step; none for SGD
 
 Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
@@ -29,7 +29,6 @@ Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Resu
   loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
   on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
 Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Module]
-
 ```
 
 ## Decisions

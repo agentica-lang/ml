@@ -22,6 +22,7 @@ end
 
 struct Golden
   iree: String
+  mlir_sha256: String
   args: List[Cases.Arg]
   runs: List[Run]
 end
@@ -58,7 +59,16 @@ def test_the_fit_step_matches_iree_at_steps_one_and_three() -> Result[Void]
   ok()
 end
 
-def golden(name: String) -> Result[Golden] = JSON.decode(try File.read_text("#{FIXTURES}/#{name}.golden.json"), Golden)
+# The golden of `name`, if it is the one IREE made for the text committed as `name.mlir`.
+def golden(name: String) -> Result[Golden]
+  g = try JSON.decode(try File.read_text("#{FIXTURES}/#{name}.golden.json"), Golden)
+  text = try File.read_text("#{FIXTURES}/#{name}.mlir")
+  if OpenSSL.Digest.sha256_hexdigest(text.bytes) != g.mlir_sha256
+    return error("#{name}.golden.json is not IREE's output for #{name}.mlir: run make iree-goldens")
+  end
+
+  ok(g)
+end
 
 def tensors(args: List[Cases.Arg]) -> Result[List[Tensor.Tensor]]
   out: List[Tensor.Tensor] = []

@@ -49,7 +49,8 @@ end
 ## The training step of `fit` as one StableHLO program (`Trace.stablehlo`): its arguments are the parameters, the
 ## optimizer's first and second moments, then the two `Optim.step_scalars` of Adam as rank-0 tensors, so one program is
 ## every step. The batch is lifted as constants, which are the module's `constants`. It answers the loss, then the new
-## parameters, first moments and second moments, as a step of `fit` does.
+## parameters, first moments and second moments, as a step of `fit` does. The parameters share one dtype, which the
+## scalars take.
 def stablehlo(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],

@@ -65,10 +65,11 @@ def step(
   end
 
   case state.optimizer
-    Optimizer.Sgd(o) -> sgd(o, state, params, grads)
+    Optimizer.Sgd(o) ->
+      return error("an SGD step takes no scalars, got #{scalars.size}") if !scalars.empty?
+      sgd(o, state, params, grads)
     Optimizer.Adam(o) ->
-      return error("an Adam step takes two scalars, got #{scalars.size}") if !scalars.empty? and scalars.size != 2
-
+      try check_scalars(scalars)
       adam(o, state, params, grads, scalars)
   end
 end
@@ -139,6 +140,17 @@ def adam(
   end
 
   ok(Step(state: state.with(steps: t, first: first, second: second), params: out))
+end
+
+# An Adam step reads none, or two rank-0 tensors.
+def check_scalars(scalars: List[Tensor.Tensor]) -> Result[Void]
+  return ok() if scalars.empty?
+  return error("an Adam step takes two scalars, got #{scalars.size}") if scalars.size != 2
+  for s in scalars
+    return error("an Adam scalar is a rank-0 tensor, got shape #{Tensor.shape(s)}") if !Tensor.shape(s).empty?
+  end
+
+  ok()
 end
 
 # The scalar `i` of `held` as a tensor of `like`'s shape: a constant, or the input `scalars[i]` widened.
