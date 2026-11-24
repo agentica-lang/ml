@@ -1,6 +1,7 @@
-## Every pair of ops (`prop_packed_support.agc`), from the input and from the weight itself, with ggml holding the weight as
-## F32: each answers within the derived bound of the reference or is refused, and the number ggml runs is pinned. A
-## file of its own: `agentica test` gives each file its step budget.
+## Every pair of ops (`prop_packed_support.agc`), from the input and from the weight itself, with ggml holding the
+## weight as F32: each answers within the derived bound of the reference or is refused with a message that fails
+## closed, and what it refuses is pinned (nothing with F32). A file of its own: `agentica test` gives each file its
+## step budget.
 
 import Packed from "prop_packed_support"
 
