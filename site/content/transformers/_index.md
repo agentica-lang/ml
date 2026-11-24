@@ -4,7 +4,7 @@ description: BERT and Qwen3 in Agentica from Hugging Face checkpoints, and the t
 weight: 7
 ---
 
-`transformers` is BERT and Qwen3 in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 (the forward over a whole sequence; generation with a cache comes next), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
+`transformers` is BERT and Qwen3 in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 (the forward and greedy generation with a KV cache), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
 
 ## BERT
 
@@ -67,10 +67,41 @@ end
 
 - The model matches `Qwen3ForCausalLM` in `float32` on ggml CPU and Vulkan: over five prompts of 5 to 50 tokens the largest gap of a logit is 4.9e-5 on the CPU and 8.6e-5 on Vulkan, and the five largest logits name the same ids at every position.
 - The layers are grouped-query attention with a normalized query and key per head, rotary positions with `rope_theta`, a SwiGLU MLP, RMS norms, and an output head tied to the embedding table when the config says so (the file's `lm_head.weight` is then ignored).
-- On ggml the forward is one graph with the weights as constants. There is no cache yet: every call reads the whole sequence, and it traces and plans a graph (5 to 20 seconds on the CPU, 0.5 to 1 second on Vulkan for these prompts).
+- `Qwen3.run` is the forward over a whole sequence, with no cache: on ggml every call traces and plans a graph (5 to 20 seconds on the CPU, 0.5 to 1 second on Vulkan for these prompts). To generate, use `Generate`.
 - `Qwen3.close_model(m)` frees the weights; the logits belong to the caller (`Lift.close`). Qwen3-0.6B takes about 5 GB on ggml CPU and 1.4 GB on Vulkan, where the weights live in device memory.
 - A `model_type` other than `qwen3`, an activation other than `silu`, attention bias, `rope_scaling`, `use_sliding_window: true` (a `sliding_window` size with it `false` is ignored, as Hugging Face does), a head count that the key heads do not divide, and a tensor of another shape are errors. Qwen2.5 and others come later. Reference and ggml are tested; libtorch is not, and a sharded checkpoint is not tested. On the reference backend attention needs `q * k` of at most 1,048,576, about 1024 tokens with the causal mask; ggml has no such limit.
 - The pins of `transformers` in `agentica.toml` are those of `asr`, as for BERT.
+
+## Generation
+
+`Generate.generate(m, ids, max_new, stop)` adds at most `max_new` ids to the prompt `ids`, always the one with the largest logit (greedy), and stops before an id of `stop`. It keeps the keys and values of the tokens so far (a KV cache), so a new token costs one step, not a pass over the whole sequence. The result is `Generated(ids, graphs)`: the new ids, and the compiled steps, which the next call takes as `graphs:` so that it does not trace them again.
+
+```agentica
+import Bpe from "pkg/transformers/tokenizer/bpe"
+import Generate from "pkg/transformers/generate"
+import Qwen3 from "pkg/transformers/qwen3"
+import Tensor from "pkg/tensor/tensor"
+
+def main() -> Void
+  backend = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+  tok = Bpe.open("Qwen3-0.6B/tokenizer.json").unwrap!
+  m = Qwen3.open("Qwen3-0.6B", backend).unwrap!
+  prompt = Bpe.encode(tok, "The capital of France is").unwrap!
+  made = Generate.generate(m, prompt, 8, [151645, 151643]).unwrap!
+  puts(Bpe.decode(tok, made.ids).unwrap!)
+end
+```
+
+```output
+ Paris. The capital of Italy is Rome
+```
+
+For one-step control, `Generate.start()`, then `Generate.step(m, cache, ids)` (a prompt of any length first, then one id) gives `Picked(id, cache)`, `Generate.step_logits` gives the logits `[vocab_size]`, and `Generate.finish(cache)` closes the cache. `step` closes the cache it is given: use the one it returns.
+
+- The ids match Hugging Face's greedy `generate` for `Qwen3-0.6B` in `float32` on ggml CPU and Vulkan: 24 new ids for each of five prompts (English, code, a chat template, accents and CJK, a long repeat).
+- The cache is padded to 8, 16, 32 and so on rows, and on ggml each (tokens, rows, capacity) is one compiled graph, so a generation compiles a handful and a second call with `graphs:` none. The choice of the id runs on the device.
+- Speed on this machine (Ryzen 5 3550H, Radeon Vega iGPU, shared with other jobs), in `float32`: about 2.9 tokens per second on Vulkan and about 0.5 on the CPU. Memory: 0.94 GB peak on Vulkan, 4.2 GB on the CPU. On the CPU a one-token step takes about as long as the 8-token prompt (1.8 s), so the cost is per weight and not per token: it looks like the copy that ggml makes of each dense weight at every run (`CONT`, ml#101).
+- A batch of one, the prompt in one step (no chunks), no sampling yet.
 
 ## Tokenizer example
 
