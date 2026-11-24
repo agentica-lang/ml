@@ -62,7 +62,7 @@ Each loss takes a prediction and a target. It gives a rank-0 tensor (a single nu
 
 The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, params)` makes the state, and `Optim.step(state, params, grads)` returns a new state and new parameters. `fit` does this for you.
 
-`Optim.step` answers an `Optim.Step`, with the new `state` and `params`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
+`Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 
 ## Train.fit
 

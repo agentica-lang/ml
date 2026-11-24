@@ -35,7 +35,7 @@ The layer's weight is stored as `[out, in]` and comes back as it is, with `out_i
 ## Opening
 
 - `Hub.open(path)` takes one `.safetensors` file, one `.gguf` file (llama.cpp's format, see below), or the `.index.json` of a sharded checkpoint. A sharded checkpoint is one model split over several files. The index says which file holds each tensor. The shards must be file names in the index's folder.
-- `Hub.open_gguf(path)` and `Hub.open_index(path)` open a `.gguf` file or an `.index.json` as they are named, whatever the extension; `open` picks one of them, or a safetensors file, by the extension.
+- `Hub.open_gguf(path)` and `Hub.open_index(path)` open a `.gguf` file or an `.index.json` as they are named, whatever the extension; `open` picks by the extension: `.json` goes to the index, `.gguf` to GGUF, and any other path is read as safetensors.
 - `Hub.names(c)` gives every tensor name, sorted. `Hub.has?(c, name)` tells whether one exists.
 - `Hub.tensor(c, name, backend, dtype)` reads one tensor on `backend`; `Hub.shape(c, name)` gives its shape from the header without reading it. `F32`, `F16` and `BF16` come as `F32`, read by the backend from the file (`Tensor.from_file`); every other dtype keeps the dtype of the file, except `F64` on the ggml backend, which holds no `F64`: it comes as `F32`, silently (`-1e300` becomes `-inf`). With `dtype: Dtype.F16` a float tensor is kept in 16 bits on the ggml backend (a half weight, see the tensor page).
 - `Hub.source(c, name)` gives the file and the byte where an `F32`, `F16` or `BF16` tensor starts, with its shape, for [writing GGUF](#writing-gguf).
@@ -61,7 +61,7 @@ A `.gguf` file opens like a safetensors one: `Hub.names`, `Hub.shape` and `Hub.t
 
 ## Writing GGUF
 
-`GgufWrite.write(path, fields, tensors)` writes a version 3 file. `fields` are `Field(key, value)` values, and each `value` is a `Meta` (`Meta.U32`, `F32`, `Bool`, `Text`, `Texts` for an array of strings, `Ints` for an array of 32-bit integers) and each of `tensors` is `Out(name, source, format)`: `source` comes from `Hub.source(checkpoint, name)` (the file and the byte where an `F32`, `F16` or `BF16` tensor starts) and `format` is the `Tensor.FloatFormat` to write it in. The weights are converted by the ggml module straight from the source file into the new one, so a model of several GB is never in memory, and the data is aligned to 32 bytes. A value beyond 65504 is an error for `F16`. The file is written as `path.part` and renamed when whole, so a failure leaves no half file. It needs the ggml module. `transformers/tools/to_gguf.agc` writes a Qwen3 folder this way.
+`GgufWrite.write(path, fields, tensors)` writes a version 3 file. `fields` are `Field(key, value)` values; each `value` is a `Meta` (`Meta.U32`, `F32`, `Bool`, `Text`, `Texts` for an array of strings, `Ints` for an array of 32-bit integers). Each of `tensors` is `Out(name, source, format)`: `source` comes from `Hub.source(checkpoint, name)` (the file and the byte where an `F32`, `F16` or `BF16` tensor starts) and `format` is the `Tensor.FloatFormat` to write it in. The weights are converted by the ggml module straight from the source file into the new one, so a model of several GB is never in memory, and the data is aligned to 32 bytes. A value beyond 65504 is an error for `F16`. The file is written as `path.part` and renamed when whole, so a failure leaves no half file. It needs the ggml module. `transformers/tools/to_gguf.agc` writes a Qwen3 folder this way.
 
 ## Limits
 

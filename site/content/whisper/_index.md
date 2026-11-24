@@ -62,8 +62,8 @@ It also needs a ggml model file. `tools/fetch-model.sh` downloads one.
 
 The `stream` module (`pkg/whisper/stream`) transcribes audio of any length, in windows:
 
-- `Stream.transcribe_stream(model, source, options)` reads a `Mic.Source`, checks the walk, decodes each window with speech and merges the segments onto one timeline. Its times count from the first sample. Audio with no speech gives no segments, and no samples at all is an error.
-- `Stream.default_options()` gives a `StreamOptions` with `window_s` 30, `overlap_s` 5, the default `vad` and the default `Whisper.Options`. `window_s` is from 1 to 300 seconds, and `overlap_s` is less than `window_s`. `Stream.check_options(options)` checks these without audio or a model.
+- `Stream.transcribe_stream(model, source, options)` reads a `Mic.Source`, checks the walk, decodes each window with speech and merges the segments onto one timeline, and gives a `List[Whisper.Segment]`. Its times count from the first sample. Audio with no speech gives no segments, and no samples at all is an error.
+- `Stream.default_options()` gives a `StreamOptions` with `window_s` 30, `overlap_s` 5, the default `vad` and the default `Whisper.Options`. `window_s` is from 1 to 300 seconds, and `overlap_s` is from 0 to `window_s` minus 1. `Stream.check_options(options)` checks these, `frame_ms` (1..1000) and `threshold` (0.0..1.0), without audio or a model.
 - `VadOptions` has `frame_ms` (30) and `threshold` (0.02). A window is kept when one frame's RMS reaches the threshold. `threshold: 0.0` keeps every window.
 - `windows`, `offset_segments`, `merge_segments`, `has_speech` and `frame_rms` are the pure steps of the walk. Tests run them without a model.
 
@@ -82,10 +82,8 @@ The `mic` module (`pkg/whisper/mic`) captures audio:
 - A model runs one decode at a time. A mutex makes other calls wait.
 - There are no partial results. Each decode returns its segments when it ends.
 - The package reads WAV files only at the rate and format above. It does not resample (change the sample rate).
-- Microphone capture needs `arecord`, the Linux recording tool, and a device. Nothing else in the package does.
+- Microphone capture needs `arecord`, the Linux recording tool, and a device. It reads 16 kHz mono audio. Nothing else in the package does.
 
 ## How it works
 
 The decode runs in the compute pool, a set of background threads. It uses the GPU when the engine was built with Vulkan, and the CPU otherwise.
-
-Long audio and the microphone are in two more modules. `stream.agc` cuts a PCM stream into 30 s windows with overlap, skips the silent ones with an energy gate, and merges the segments onto one timeline. `mic.agc` captures 16 kHz mono audio from a command, `arecord` by default.
