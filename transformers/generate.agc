@@ -26,6 +26,7 @@ import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 import Lift from "lift"
 import Qwen3 from "qwen3"
+import Sample from "sample"
 
 ## A model and the compiled steps it has run (on `Ggml`), which every sequence
 ## of the model shares: the channel holds one `Plans`, which a call takes to read
@@ -56,6 +57,13 @@ end
 struct Picked
   id: Int
   cache: Cache
+end
+
+## `generate`'s choice: the id, the cache after it and the state of the draws.
+struct Drawn
+  id: Int
+  cache: Cache
+  state: Int
 end
 
 ## `step_logits`: the logits after the last token fed, and the cache.
@@ -135,10 +143,17 @@ def finish(cache: Cache) -> Void
   Lift.close(cache.keys + cache.values)
 end
 
-## Greedy decoding from the prompt `ids`: at most `max_new` ids, stopping before
-## a stop id (`stop`, such as `<|im_end|>`). The prompt and the new ids must fit
+## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`).
+## Greedy (the choice runs in the graph) unless `sampling` says how to draw: then each step reads the logits and
+## `Sample.pick` draws from them, the same ids for the same seed. The prompt and the new ids must fit
 ## `max_position_embeddings`.
-def generate(g: Generator, ids: List[Int], max_new: Int, stop: List[Int] = []) -> Result[List[Int]]
+def generate(
+  g: Generator,
+  ids: List[Int],
+  max_new: Int,
+  stop: List[Int] = [],
+  sampling: Optional[Sample.Sampling] = none,
+) -> Result[List[Int]]
   return error("generate needs max_new of 0 or more, got #{max_new}") if max_new < 0
   limit = g.model.config.max_position_embeddings
   if max_new > 0 and ids.size + max_new - 1 > limit
@@ -148,12 +163,19 @@ def generate(g: Generator, ids: List[Int], max_new: Int, stop: List[Int] = []) -
   cache = start()
   out: List[Int] = []
   feed = ids
+  state = 0
+  case sampling
+    some(s) -> state = Sample.start(s)
+    none -> nil
+  end
+
   while out.size < max_new
-    s = step(g, cache, feed)
+    s = chosen_next(g, cache, feed, sampling, state)
     return error(s.message) if not s.ok?
 
     picked = s.unwrap!
     cache = picked.cache
+    state = picked.state
     break if stop.include?(picked.id)
     out = out.push(picked.id)
     feed = [picked.id]
@@ -161,6 +183,32 @@ def generate(g: Generator, ids: List[Int], max_new: Int, stop: List[Int] = []) -
 
   finish(cache)
   ok(out)
+end
+
+## The id after `feed` and the cache, by the greedy step or, with `sampling`, by a draw from the logits (`state` is the
+## generator of the draws, which the answer carries on).
+def chosen_next(
+  g: Generator,
+  cache: Cache,
+  feed: List[Int],
+  sampling: Optional[Sample.Sampling],
+  state: Int,
+) -> Result[Drawn]
+  case sampling
+    none ->
+      p = try step(g, cache, feed)
+      ok(Drawn(id: p.id, cache: p.cache, state: state))
+    some(s) ->
+      scored = try step_logits(g, cache, feed)
+      drawn = Sample.pick(scored.logits, s, state)
+      if not drawn.ok?
+        finish(scored.cache)
+        return error(drawn.message)
+      end
+
+      d = drawn.unwrap!
+      ok(Drawn(id: d.id, cache: scored.cache, state: d.state))
+  end
 end
 
 ## The first id of the maximum of `scores` (`[n]`) as `[1]` floats (exact in F32 below 2^24): `v` minus the

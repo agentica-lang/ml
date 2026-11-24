@@ -9,7 +9,7 @@ tokenizers are here; sampling and more models come in later PRs of ml#78.
 `generate.agc`, the design of `asr/`'s decoder copied and adapted (ml#117 tracks
 sharing it): `Generate.open(m)` is the generator of a model, which holds its
 compiled steps in a one-slot channel (as `Asr.Model.plans`), and
-`Generate.generate(g, ids, max_new, stop)` decodes greedily; `start`, then `step`
+`Generate.generate(g, ids, max_new, stop, sampling)` decodes greedily, or by `sample.agc` (below); `start`, then `step`
 (the id with the largest logit) or `step_logits` per call, then `finish`, are
 the same by hand. `Generate.close(g)` ends the compiled steps, before
 `Qwen3.close_model`. Batch of one, one task at a time.
@@ -186,3 +186,19 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
   `N` random strings (seeded). It matched on 48312 cases (BERT) and 39139
   (Qwen) with `N = 8000`, and has to match on a new run before a change to the
   tokenizers merges.
+
+## Sampling
+
+`sample.agc`: `Sample.Sampling(temperature, top_k, top_p, seed)` and
+`Sample.pick(logits, s, state)`, which `Generate.generate` calls with the logits
+of `step_logits` when it is given a `Sampling` (the greedy pick stays in the
+graph). The order is Hugging Face's warpers: the logits over the temperature,
+the `top_k` largest (a tie at the edge keeps both), then the ids whose mass
+before them is under `top_p`, a softmax over what is left and a draw by inverse
+CDF. Temperature 0 is the first largest id and draws nothing. The generator is
+Park-Miller's minimal standard (as `nn/init.agc`), started from the seed, so a
+seed gives the same ids on every backend. Only ids within 30 of the largest
+scaled logit are candidates (a mass under 1e-13), which keeps the sort small; a
+`-inf` logit is a masked id and a NaN is an error. The probabilities after the
+three steps equal Hugging Face's on fixed logits (`test/sample_golden.py`,
+`fixtures/sample_golden.json`, 1e-9 in `float64`).
