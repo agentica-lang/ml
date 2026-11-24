@@ -66,6 +66,18 @@ struct Drawn
   state: Int
 end
 
+## `step_top`: the ids of the largest logits and the logits, largest first, and the cache.
+struct Candidates
+  ids: List[Int]
+  logits: List[Float]
+  cache: Cache
+end
+
+struct Candidate
+  id: Int
+  logit: Float
+end
+
 ## `step_logits`: the logits after the last token fed, and the cache.
 struct Scored
   logits: List[Float]
@@ -113,7 +125,7 @@ def start() -> Cache = Cache(keys: [], values: [], length: 0)
 ## elsewhere they are closed. Use the one it gives; never step a cache twice or
 ## read one after it was stepped.
 def step(g: Generator, cache: Cache, ids: List[Int]) -> Result[Picked]
-  s = try advance(g, cache, ids, true)
+  s = try advance(g, cache, ids, Head.Pick)
   found = chosen(s.head, g.model.config.vocab_size)
   if not found.ok?
     finish(s.cache)
@@ -124,7 +136,7 @@ end
 
 ## `step` with the logits of the last token fed, `[vocab_size]`, in place of the choice.
 def step_logits(g: Generator, cache: Cache, ids: List[Int]) -> Result[Scored]
-  s = try advance(g, cache, ids, false)
+  s = try advance(g, cache, ids, Head.Logits)
   logits: List[Float] = []
   for v in s.head
     case v
@@ -136,6 +148,39 @@ def step_logits(g: Generator, cache: Cache, ids: List[Int]) -> Result[Scored]
   end
 
   ok(Scored(logits: logits, cache: s.cache))
+end
+
+## `step_logits` for the `k` largest logits only: their ids and values, largest first, and the cache. The cut is in the
+## graph (`Tensor.top_ids`), so `k` values and ids cross to the host and not `vocab_size` logits. Ids with equal logits
+## at the edge of the `k` are not specified.
+def step_top(g: Generator, cache: Cache, ids: List[Int], k: Int) -> Result[Candidates]
+  vocab = g.model.config.vocab_size
+  if k < 1 or k > vocab
+    finish(cache)
+    return error("step_top needs k from 1 to #{vocab}, got #{k}")
+  end
+
+  s = try advance(g, cache, ids, Head.Top(k))
+  found: List[Candidate] = []
+  for i in 0...k
+    case s.head[i]
+      Tensor.Values.Float(logit) ->
+        case s.head[k + i]
+          Tensor.Values.Float(id) -> found = found.push(Candidate(id: id.to_i.unwrap_or(-1), logit: logit))
+          _ -> nil
+        end
+
+      _ -> nil
+    end
+  end
+
+  if (found.size != k or found.any? { |c| c.id < 0 or c.id >= vocab })
+    finish(s.cache)
+    return error("step_top: the graph gave no ids, or ids outside the vocabulary")
+  end
+
+  ordered = found.sort_by { |c| 0.0 - c.logit }
+  ok(Candidates(ids: ordered.map { |c| c.id }, logits: ordered.map { |c| c.logit }, cache: s.cache))
 end
 
 ## Ends a sequence: closes the tensors of `cache`.
@@ -185,8 +230,8 @@ def generate(
   ok(out)
 end
 
-## The id after `feed` and the cache, by the greedy step or, with `sampling`, by a draw from the logits (`state` is the
-## generator of the draws, which the answer carries on).
+## The id after `feed` and the cache, by the greedy step or, with `sampling`, by a draw among the largest logits (`state` is
+## the generator of the draws, which the answer carries on).
 def chosen_next(
   g: Generator,
   cache: Cache,
@@ -195,20 +240,24 @@ def chosen_next(
   state: Int,
 ) -> Result[Drawn]
   case sampling
-    none ->
-      p = try step(g, cache, feed)
-      ok(Drawn(id: p.id, cache: p.cache, state: state))
     some(s) ->
-      scored = try step_logits(g, cache, feed)
-      drawn = Sample.pick(scored.logits, s, state)
-      if not drawn.ok?
-        finish(scored.cache)
-        return error(drawn.message)
+      if s.temperature > 0.0
+        top = try step_top(g, cache, feed, Sample.window(s, g.model.config.vocab_size))
+        drawn = Sample.pick_top(top.ids, top.logits, s, state)
+        if not drawn.ok?
+          finish(top.cache)
+          return error(drawn.message)
+        end
+
+        d = drawn.unwrap!
+        return ok(Drawn(id: d.id, cache: top.cache, state: d.state))
       end
 
-      d = drawn.unwrap!
-      ok(Drawn(id: d.id, cache: scored.cache, state: d.state))
+    none -> nil
   end
+
+  p = try step(g, cache, feed)
+  ok(Drawn(id: p.id, cache: p.cache, state: state))
 end
 
 ## The first id of the maximum of `scores` (`[n]`) as `[1]` floats (exact in F32 below 2^24): `v` minus the
@@ -231,8 +280,16 @@ private
 ## How long a call waits for the plans, which are held for a few VM steps.
 PLANS_WAIT_MS = 50
 
-## What one step gives: the last row of the head (the logits, or the pick as one
-## float) and the cache after it.
+## What the graph of a step answers about the next token: the logits `[vocab_size]`, the greedy pick as one float, or
+## the `k` largest logits and their ids (`2k` floats: the logits, then the ids).
+enum Head
+  Logits
+  Pick
+  Top(Int)
+end
+
+## What one step gives: the last row of the head (the logits, the pick as one float, or the candidates) and the cache
+## after it.
 struct Advanced
   head: List[Tensor.Values]
   cache: Cache
@@ -249,7 +306,14 @@ struct Layer
   value: Tensor.Tensor
 end
 
-def advance(g: Generator, cache: Cache, ids: List[Int], picking: Bool) -> Result[Advanced]
+## The `k` largest of `logits` as `[2k]` floats: their values, then their ids (exact in F32 below 2^24).
+def top_candidates(logits: Tensor.Tensor, k: Int) -> Result[Tensor.Tensor]
+  ids = try Tensor.top_ids(logits, k)
+  values = try Tensor.gather(logits, ids)
+  Tensor.concat([values, try Tensor.to_dtype(ids, Tensor.dtype(logits))], 0)
+end
+
+def advance(g: Generator, cache: Cache, ids: List[Int], mode: Head) -> Result[Advanced]
   m = g.model
   bad = checked(m, cache, ids)
   if not bad.ok?
@@ -277,8 +341,8 @@ def advance(g: Generator, cache: Cache, ids: List[Int], picking: Bool) -> Result
   held = cache.keys + cache.values
   in_place = written_in_place?(backend, cache, width, room)
   outs = case backend
-    Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, room, picking, in_place)
-    _ -> eager_step(m, cache, fed, room, picking)
+    Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, room, mode, in_place)
+    _ -> eager_step(m, cache, fed, room, mode)
   end
 
   Lift.close(fed)
@@ -308,7 +372,7 @@ def compiled_step(
   cache: Cache,
   fed: List[Tensor.Tensor],
   room: Int,
-  picking: Bool,
+  mode: Head,
   in_place: Bool,
 ) -> Result[Advanced]
   m = g.model
@@ -318,12 +382,12 @@ def compiled_step(
     rows = Tensor.shape(cache.keys[0])[2]
   end
 
-  key = "#{Tensor.shape(fed[0])[0]} #{rows} #{room} #{picking}"
+  key = "#{Tensor.shape(fed[0])[0]} #{rows} #{room} #{head_key(mode)}"
   plan = try planned(
     g,
     key,
     args.map { |t| Trace.spec_of(t) },
-    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, picking, in_place) },
+    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, mode, in_place) },
   )
 
   outs = try Trace.run(plan, args)
@@ -372,10 +436,10 @@ def take_plans(g: Generator) -> Optional[Plans]
 end
 
 ## The same graph, run now and in an arena that keeps the new cache alone.
-def eager_step(m: Qwen3.Qwen3, cache: Cache, fed: List[Tensor.Tensor], room: Int, picking: Bool) -> Result[Advanced]
+def eager_step(m: Qwen3.Qwen3, cache: Cache, fed: List[Tensor.Tensor], room: Int, mode: Head) -> Result[Advanced]
   layers = m.config.num_hidden_layers
   ran: Result[Advanced] = Native.arena do
-    outs = try stepped(m, fed + cache.keys + cache.values, room, picking)
+    outs = try stepped(m, fed + cache.keys + cache.values, room, mode)
     ok(
       Advanced(
         head: try Tensor.to_list(outs[0]),
@@ -394,7 +458,7 @@ def stepped(
   m: Qwen3.Qwen3,
   xs: List[Tensor.Tensor],
   room: Int,
-  picking: Bool,
+  mode: Head,
   in_place: Bool = false,
 ) -> Result[List[Tensor.Tensor]]
   layers = m.config.num_hidden_layers
@@ -430,8 +494,10 @@ def stepped(
 
   logits = try Tensor.reshape(try Nn.dense(m.head, last), [m.config.vocab_size])
   head = logits
-  if picking
-    head = try picked(logits)
+  case mode
+    Head.Pick -> head = try picked(logits)
+    Head.Top(k) -> head = try top_candidates(logits, k)
+    Head.Logits -> nil
   end
 
   ok([head] + keys + values)
@@ -521,6 +587,14 @@ def checked(m: Qwen3.Qwen3, cache: Cache, ids: List[Int]) -> Result[Void]
 end
 
 ## The id the pick found, an error for none (a NaN in the logits: no score equals the maximum).
+def head_key(mode: Head) -> String
+  case mode
+    Head.Logits -> "logits"
+    Head.Pick -> "pick"
+    Head.Top(k) -> "top #{k}"
+  end
+end
+
 def chosen(head: List[Tensor.Values], vocab: Int) -> Result[Int]
   case head[0]
     Tensor.Values.Float(f) ->

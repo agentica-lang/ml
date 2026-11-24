@@ -83,6 +83,7 @@ enum {
   OP_NORM,        /* a layer norm over the last axis; ints: eps as the bits of an F32 */
   OP_RMS_NORM,    /* an rms norm over the last axis; ints: eps as the bits of an F32 */
   OP_SET_ROWS,    /* args: a cache leaf, the rows, their positions; written in place, its result is an output that is the leaf */
+  OP_TOP_K,       /* the indices of the k largest of a vector, as F32; ints: k */
   OP_COUNT
 };
 
@@ -90,7 +91,7 @@ static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
   "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
-  "norm", "rms_norm", "set_rows",
+  "norm", "rms_norm", "set_rows", "top_k",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -847,6 +848,16 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       }
       break;
     }
+    case OP_TOP_K:
+      if (a->rank != 1 || nints != 1 || ints[0] < 1 || ints[0] > a->ne[0]) {
+        return tg_error(env, "top_k takes a vector and a k from 1 to its length");
+      }
+      if (a->ne[0] > 16777216) {
+        return tg_error(env, "top_k of more than 2^24 values is not lowered to ggml: F32 ids are exact below that");
+      }
+      /* the indices are I32 in ggml and F32 in this layer, as every integer tensor */
+      t = ggml_cast(p->ctx, ggml_top_k(p->ctx, dense(p, a), (int)ints[0]), GGML_TYPE_F32);
+      break;
     case OP_NORM: {
       uint32_t bits;
       float eps;

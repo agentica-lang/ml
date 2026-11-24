@@ -189,16 +189,22 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
 
 ## Sampling
 
-`sample.agc`: `Sample.Sampling(temperature, top_k, top_p, seed)` and
-`Sample.pick(logits, s, state)`, which `Generate.generate` calls with the logits
-of `step_logits` when it is given a `Sampling` (the greedy pick stays in the
-graph). The order is Hugging Face's warpers: the logits over the temperature,
-the `top_k` largest (a tie at the edge keeps both), then the ids whose mass
-before them is under `top_p`, a softmax over what is left and a draw by inverse
-CDF. Temperature 0 is the first largest id and draws nothing. The generator is
-Park-Miller's minimal standard (as `nn/init.agc`), started from the seed, so a
-seed gives the same ids on every backend. Only ids within 30 of the largest
-scaled logit are candidates (a mass under 1e-13), which keeps the sort small; a
-`-inf` logit is a masked id and a NaN is an error. The probabilities after the
-three steps equal Hugging Face's on fixed logits (`test/sample_golden.py`,
+`sample.agc`: `Sample.Sampling(temperature, top_k, top_p, seed)`, `Sample.pick`
+over all the logits and `Sample.pick_top` over the largest ones.
+`Generate.generate` given a `Sampling` (the greedy pick stays in the graph;
+temperature 0 is greedy) runs `Generate.step_top`: the graph cuts the largest K
+logits with `Tensor.top_ids` (`ggml_top_k`, in no order), gathers their values
+and returns the K values and K ids as one vector of 2K floats, so K numbers
+cross to the host and not 152k logits; K is `top_k` when set, else
+`MAX_CANDIDATES` (256), and `pick_top` sorts them. Ids below the K are never
+drawn: with `top_k` unset the draw is from the top 256, whose mass after a real
+temperature is negligible, and a tie across the edge of the K keeps one id where
+Hugging Face keeps all of them. The order is Hugging Face's warpers: the logits
+over the temperature, the `top_k` largest, then the ids whose mass before them
+is under `top_p`, a softmax over what is left and a draw by inverse CDF. The
+generator is Park-Miller's minimal standard (as `nn/init.agc`), started from the
+seed, so a seed gives the same ids on every backend. Only ids within 30 of the
+largest scaled logit are candidates (a mass under 1e-13); a `-inf` logit is a
+masked id and a NaN is an error. The probabilities after the three steps equal
+Hugging Face's on fixed logits (`test/sample_golden.py`,
 `fixtures/sample_golden.json`, 1e-9 in `float64`).

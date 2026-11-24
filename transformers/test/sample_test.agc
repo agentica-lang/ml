@@ -37,6 +37,33 @@ def test_the_probabilities_are_those_of_the_warpers() -> Result[Void]
   ok()
 end
 
+## `pick_top` over the largest logits draws what `pick` draws over all of them, when the window holds what can be drawn:
+## the whole vocabulary here (40 ids), or the `top_k` largest.
+def test_picking_among_the_largest_logits_is_picking_among_all() -> Result[Void]
+  golden = try JSON.decode(try File.read_text("test/fixtures/sample_golden.json"), Golden)
+  for c in golden.cases
+    s = Sample.Sampling(temperature: c.temperature, top_k: c.top_k, top_p: c.top_p, seed: 3)
+    k = Sample.window(s, c.logits.size)
+    order = (0...c.logits.size).to_a.sort_by { |i| 0.0 - c.logits[i] }
+    ids = order.take(k)
+    # a tie across the edge of the window keeps both ids on the full logits and one in the window (documented)
+    next if k < order.size and c.logits[order[k - 1]] == c.logits[order[k]]
+    state = Sample.start(s)
+    for _ in 0...4
+      full = try Sample.pick(c.logits, s, state)
+      top = try Sample.pick_top(ids, ids.map { |i| c.logits[i] }, s, state)
+      try Test.eq(top.id, full.id)
+      try Test.eq(top.state, full.state)
+      state = full.state
+    end
+  end
+
+  try Test.eq(Sample.window(Sample.Sampling(), 152000), 256)
+  try Test.eq(Sample.window(Sample.Sampling(top_k: 40), 152000), 40)
+  try Test.eq(Sample.window(Sample.Sampling(top_k: 400), 152000), 400)
+  Test.eq(Sample.window(Sample.Sampling(), 100), 100)
+end
+
 def test_temperature_zero_is_the_first_largest_and_draws_nothing() -> Result[Void]
   logits = [0.5, 2.0, 2.0, -1.0]
   greedy = Sample.Sampling(temperature: 0.0, seed: 3)

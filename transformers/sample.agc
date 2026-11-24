@@ -5,6 +5,10 @@
 ## Logits more than this below the largest carry less than e^-30 (1e-13) of the mass: they are not candidates.
 SPAN = 30.0
 
+## The ids `window` keeps when `top_k` is not set: the largest 256 logits. The mass of the others, after the temperature
+## of a real use, is negligible; they are never drawn.
+MAX_CANDIDATES = 256
+
 MODULUS = 2147483647
 
 ## How to sample. `temperature` 0 is greedy (the first id of the largest logit); `top_k` 0 and `top_p` 1.0 keep all
@@ -35,6 +39,38 @@ def pick(logits: List[Float], s: Sampling, state: Int) -> Result[Drawn]
   u = next_state.to_f / MODULUS.to_f
   kept = try candidates(logits, s)
   ok(Drawn(id: draw(kept, u), state: next_state))
+end
+
+## How many of the largest logits a step reads back for `s` (`Generate.step_top`): its `top_k` when set, else
+## `MAX_CANDIDATES`, and at most `vocab`.
+def window(s: Sampling, vocab: Int) -> Int
+  want = MAX_CANDIDATES
+  if s.top_k > 0
+    want = s.top_k
+  end
+
+  [want, vocab].min.unwrap!
+end
+
+## `pick` over the largest logits only: `ids` and their `logits`, largest first (what `Generate.step_top` gives).
+## What `window` did not keep is never drawn.
+def pick_top(ids: List[Int], logits: List[Float], s: Sampling, state: Int) -> Result[Drawn]
+  try check(s)
+  if ids.empty? or ids.size != logits.size
+    return error("pick_top needs ids and as many logits, got #{ids.size} and #{logits.size}")
+  end
+
+  return ok(Drawn(id: ids[0], state: state)) if s.temperature == 0.0
+
+  found: List[Candidate] = []
+  for i in 0...ids.size
+    return error("logit #{i} is NaN") if logits[i] != logits[i]
+    found = found.push(Candidate(id: ids[i], score: logits[i]))
+  end
+
+  next_state = (state * 48271) % MODULUS
+  kept = try shaped(found, s)
+  ok(Drawn(id: draw(kept, next_state.to_f / MODULUS.to_f), state: next_state))
 end
 
 ## The probability of every id (`logits.size` of them) once the temperature, `top_k` and `top_p` are applied: 0 for an
@@ -90,21 +126,36 @@ def candidates(logits: List[Float], s: Sampling) -> Result[List[Candidate]]
   for i in 0...logits.size
     return error("logit #{i} is NaN") if logits[i] != logits[i]
     if logits[i] >= floor
-      found = found.push(Candidate(id: i, score: logits[i] / s.temperature))
+      found = found.push(Candidate(id: i, score: logits[i]))
     end
   end
 
-  ordered = found.sort_by { |c| -c.score }
-  if s.top_k > 0 and ordered.size > s.top_k
-    edge = ordered[s.top_k - 1].score
-    ordered = ordered.select { |c| c.score >= edge }
+  shaped(found.sort_by { |c| 0.0 - c.score }, s)
+end
+
+## `ordered` (raw logits, largest first) as the ids that can be drawn: those within `SPAN` of the largest, their scores
+## over the temperature, the `top_k` largest (a tie at the last kept stays) and the smallest set whose mass reaches
+## `top_p`.
+def shaped(ordered: List[Candidate], s: Sampling) -> Result[List[Candidate]]
+  top = ordered[0].score
+  return error("the logits are not finite") if top - top != 0.0
+  scaled: List[Candidate] = []
+  for c in ordered
+    if c.score >= top - SPAN * s.temperature
+      scaled = scaled.push(Candidate(id: c.id, score: c.score / s.temperature))
+    end
+  end
+
+  if s.top_k > 0 and scaled.size > s.top_k
+    edge = scaled[s.top_k - 1].score
+    scaled = scaled.select { |c| c.score >= edge }
   end
 
   if s.top_p < 1.0
-    ordered = within_mass(ordered, s.top_p)
+    scaled = within_mass(scaled, s.top_p)
   end
 
-  ok(ordered)
+  ok(scaled)
 end
 
 ## The largest candidates whose mass before each one is under `top_p` (so at least the first).

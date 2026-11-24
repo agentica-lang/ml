@@ -122,6 +122,10 @@ clamped into the cache), and it is not checked for finite values. The cache
 must be `F32`. `Trace.eval` writes a copy and leaves the cache alone. The
 check is at lowering, naming the nodes, so a KV cache is not copied at every
 step of a generation. It has no gradient.
+`top_ids(x, k)` (the ids of the k largest of a float vector, I32 `[k]`) is a
+node `ggml_top_k` runs on the device, so a decoder can read back k logits and
+their ids and not the whole vocabulary; the ids are in no order on ggml, and
+the derived `top_k` stays on the host. It has no gradient.
 Normalization support: `rsqrt, mean_var` are **not** primitives. `layer_norm`
 and `rms_norm` are derived (§3.2) on every backend that computes, but a trace
 records each as one node, `layer_norm` or `rms_norm`, so that ggml can run it
