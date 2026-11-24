@@ -58,8 +58,8 @@ struct Kind
   block: Float
   ## The pairs of ops from the input that ggml refuses (`first,second`, `;` between them); with F32 there are none.
   refused: String
-  ## How many pairs of ops from the weight ggml runs, and of the sampled traces.
-  from_weight: Int
+  ## The pairs of ops from the weight that ggml runs, and how many of the sampled traces it runs.
+  from_weight: String
   sampled: Int
   ## The least number of outputs checked with a real bound: in the sweep from the input, from the weight, and in the
   ## sample.
@@ -100,7 +100,7 @@ def kinds() -> List[Kind]
       rounding: 0.0,
       block: 0.0,
       refused: "",
-      from_weight: 0,
+      from_weight: "",
       sampled: 0,
       tight: [5060, 10686, 2525],
     ),
@@ -112,9 +112,12 @@ def kinds() -> List[Kind]
       rounding: HALF_STEP,
       block: 0.0,
       refused: "transpose,w_matmul",
-      from_weight: 2,
-      sampled: 27,
-      tight: [5054, 192, 743],
+      from_weight: (
+        "widen,transpose;widen,flatten;widen,rows;widen,cols;widen,norm;widen,widen;widen,embedding;" +
+        "widen,linear_out_in;widen,matmul_wt;embedding,widen;embedding,embedding"
+      ),
+      sampled: 31,
+      tight: [5054, 946, 968],
     ),
     Kind(
       name: "Q8_0",
@@ -127,7 +130,7 @@ def kinds() -> List[Kind]
         "transpose,w_matmul;linear_out_in,matmul_w;linear_out_in,linear_in_out;" +
         "matmul_wt,matmul_w;matmul_wt,linear_in_out"
       ),
-      from_weight: 1,
+      from_weight: "embedding,widen",
       sampled: 25,
       tight: [4774, 96, 603],
     ),
@@ -172,6 +175,7 @@ def pairs_for(kind: Kind, start: Int) -> Result[Void]
       tight = 0
       loose = 0
       refused: List[String] = []
+      ran_pairs: List[String] = []
       for first in 0...options(first_shape).size
         one = Step(op: first, arg: 0)
         second_shape = Tensor.shape(try apply(one, try start_of(start, ref_env), ref_env))
@@ -193,6 +197,9 @@ def pairs_for(kind: Kind, start: Int) -> Result[Void]
               loose += outcome.loose
               if outcome.ran
                 ran += 1
+                if !ran_pairs.include?(pair)
+                  ran_pairs = ran_pairs.push(pair)
+                end
               elsif !refused.include?(pair)
                 refused = refused.push(pair)
               end
@@ -201,7 +208,7 @@ def pairs_for(kind: Kind, start: Int) -> Result[Void]
         end
       end
 
-      try pins(kind, start, ran, total, tight, loose, refused)
+      try pins(kind, start, ran, total, tight, loose, refused.join(";"), ran_pairs.join(";"))
     end
 
     ok()
@@ -643,8 +650,17 @@ def matches(
   ok(Outcome(ran: true, tight: want.size, loose: 0))
 end
 
-## What a sweep must have found for `kind` (see `pairs_for`).
-def pins(kind: Kind, start: Int, ran: Int, total: Int, tight: Int, loose: Int, refused: List[String]) -> Result[Void]
+## What a sweep must have found for `kind` (see `pairs_for`): the pairs refused, and the pairs run (`ran_pairs`).
+def pins(
+  kind: Kind,
+  start: Int,
+  ran: Int,
+  total: Int,
+  tight: Int,
+  loose: Int,
+  refused: String,
+  ran_pairs: String,
+) -> Result[Void]
   what = "#{kind.name} weight, pairs from #{start}"
   least = kind.tight[start]
   try Test.assert(
@@ -653,13 +669,7 @@ def pins(kind: Kind, start: Int, ran: Int, total: Int, tight: Int, loose: Int, r
   )
 
   return Test.assert(ran == total, "ggml ran #{ran} of #{total}: #{what}") if kind.name == "F32"
+  return Test.assert(refused == kind.refused, "ggml refused #{refused}, not #{kind.refused}: #{what}") if start == 0
 
-  if start == 0
-    return Test.assert(
-      refused.join(";") == kind.refused,
-      "ggml refused #{refused.join(";")}, not #{kind.refused}: #{what}",
-    )
-  end
-
-  Test.assert(ran == kind.from_weight, "ggml ran #{ran} of #{total}, not #{kind.from_weight}: #{what}")
+  Test.assert(ran_pairs == kind.from_weight, "ggml ran #{ran_pairs}, not #{kind.from_weight}: #{what}")
 end
