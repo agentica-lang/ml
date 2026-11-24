@@ -148,7 +148,7 @@ end
 
 - `d.first` is the first node, in graph order, whose output is outside the tolerance while its inputs are within, or `none`. It is a `NodeDiff`: the `node` id, `op`, `shape`, `dtype`, the shapes of its arguments (`inputs`), `max_abs` and `max_rel` (the largest absolute and relative gap over its elements) and `within`. `d.nodes` counts the nodes compared, and `d.worst` lists the five with the largest `max_abs`.
 - A float element agrees when `|a - b| <= atol + rtol * max(|a|, |b|)`; the defaults are `rtol: 0.0001` and `atol: 0.000001`, and `Trace.diff(args, a, b, rtol: 0.001) do ... end` changes them. Integers and `Bool`s must be equal. A non-finite value that the other side does not have is an infinite gap.
-- On `Ggml` the nodes run 200 at a time, to stay under the 256 outputs of one graph, and each slice runs its ancestors again from the inputs. `Reference` and `Torch` run all the nodes at once.
+- On `Ggml` the nodes run 400 at a time, to stay under the 512 outputs of one graph, and each slice runs its ancestors again from the inputs. `Reference` and `Torch` run all the nodes at once.
 - The comparison runs on the host, so it is slow on big activations.
 - An op that overflows to infinity on `Reference` or `Torch` makes the next node an `error`, and `diff` returns it.
 - Everything `f` needs from outside must be an argument. A `Trace.constant` lives on one backend, and running it on the other is an `error`.
@@ -176,7 +176,7 @@ On `Ggml`, `Trace.eval`, `eval_many`, `grad` and `value_and_grad` compile the wh
 ## Limits
 
 - Exact integers: `F32` holds integers exactly up to 2^24 (16 777 216). On ggml, an `I32` value beyond that, or an `arange` or fill beyond it, is an error, not a wrong number.
-- Output cap: one ggml graph returns at most 256 outputs. `value_and_grad` returns the value and one gradient per argument, so ggml takes at most 255 arguments.
+- Output cap: one ggml graph returns at most 512 outputs. `value_and_grad` returns the value and one gradient per argument, so ggml takes at most 511 arguments.
 - Rank: ggml holds tensors of rank 4 at most.
 - Positions: on ggml, the `positions` of `rope` are any integer dtype but `I64`, which is refused. ggml turns by an angle it makes in `F32`, so at positions in the thousands it is a few 1e-4 off the reference.
 - Gather: on ggml, the source of a `gather`, the answer of a `scatter_add` and the cache of a `set_rows` and the vector of a `top_ids` hold at most 2^24 rows, because its integer indices are exact in `F32` only below that.

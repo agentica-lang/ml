@@ -150,7 +150,7 @@ struct gnode {
   struct ggml_tensor *window; /* a slice from the first element as the view it is: what flash attention reads */
 };
 
-#define MAX_OUTPUTS 256
+#define MAX_OUTPUTS 512
 #define MAX_ARGS 256
 #define MAX_ENTRIES 32
 
@@ -1300,7 +1300,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   char text[256];
 
   if (p == NULL || p->compiled || p->graph != NULL) return tg_error(env, "the graph is compiled already, or its compile failed");
-  if ((r = read_ints(env, &outputs, outs, MAX_OUTPUTS, &nouts)) != 0) return bad_list(env, r, "at most 256 outputs");
+  if ((r = read_ints(env, &outputs, outs, MAX_OUTPUTS, &nouts)) != 0) return bad_list(env, r, "at most 512 outputs");
   if (nouts < 1) return tg_error(env, "a graph has at least one output");
   for (i = 0; i < nouts; i++) {
     if (outs[i] < 0 || outs[i] >= p->count) return tg_error(env, "an output is not a node");

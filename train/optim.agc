@@ -74,6 +74,14 @@ def step(
   end
 end
 
+## The learning rate of the optimizer of `state`.
+def learning_rate(state: State) -> Float
+  case state.optimizer
+    Optimizer.Sgd(o) -> o.lr
+    Optimizer.Adam(o) -> o.lr
+  end
+end
+
 ## The numbers the next step of `state` depends on, as `step` reads them from its `scalars`: Adam's
 ## `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` for the step count `t` (bias correction); none for SGD.
 def step_scalars(state: State) -> List[Float]
