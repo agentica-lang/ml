@@ -84,9 +84,17 @@ def written(
     width *= k
   end
 
-  flat = try Tensor.reshape(try Tensor.permute(fresh, order), [n, width])
-  moved = try Tensor.reshape(try Tensor.matmul(spread, flat), [room] + kept)
-  placed = try Tensor.permute(moved, inverse)
+  # With only 1s before the rows axis the rows are already first: no permute, as the cache of asr (`[1, rows, d]`).
+  placed = fresh
+  if ((0...axis).all? { |i| shape[i] == 1 })
+    here = (0...shape.size).map { |i| axis_rows(shape, i, axis, room) }
+    placed = try Tensor.reshape(try Tensor.matmul(spread, try Tensor.reshape(fresh, [n, width])), here)
+  else
+    flat = try Tensor.reshape(try Tensor.permute(fresh, order), [n, width])
+    moved = try Tensor.reshape(try Tensor.matmul(spread, flat), [room] + kept)
+    placed = try Tensor.permute(moved, inverse)
+  end
+
   case old
     none -> ok(placed)
     some(o) ->
