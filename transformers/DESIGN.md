@@ -34,7 +34,14 @@ compiled steps in a one-slot channel (as `Asr.Model.plans`), and
   padded prompt counts. libtorch is not tested.
 - `step` closes the cache it is given, and the new keys and values are fresh
   tensors every step (`asr/` can write into those of a cache it is done with;
-  not done here). A cache of 1024 tokens is 0.23 GB in `F32`.
+  not done here). A cache of 1024 tokens is 0.23 GB in `F32` and 0.12 GB in `F16`, which is what
+  it is on ggml (`stepped` casts the keys and values it returns; the step that
+  grows the capacity widens the old ones first, and the one-token step reads
+  the `F16` cache in flash attention and `set_rows` rounds its new row into
+  it). The logits of Qwen3-0.6B drift from the forward by 5e-3 to 7e-3 (2.5e-5
+  with `F32`), no top-1 flip in 24 steps, and decode is 3.6% faster at 1024
+  rows and 6.9% at 2048 on Vulkan. `Q8_0` was measured on llama.cpp (`-ctk q8_0
+  -ctv q8_0`) and is no faster than `F16` on this iGPU, so it is not here.
 - Chunked prefill is not done: a prompt is one step, to the model's
   `max_position_embeddings`.
 
