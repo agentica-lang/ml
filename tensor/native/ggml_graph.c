@@ -1371,10 +1371,10 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   return ggml_result_Void_ok(env, an_void(env));
 }
 
-/* Points `port` at the memory of `h` when it has the port's type, or at its own memory
-   (made once) for a converting copy, and holds `h`'s memory until `release`. Call
-   under the device lock. */
-static bool attach(struct entry *p, struct port *port, struct ggml_TensorHandle_state *h) {
+/* Points `port` at the memory of `h` when it has the port's type, or notes `h` for a converting copy through the
+   port's own memory (`own_memory`), and holds `h`'s memory until `release`. It touches no device, so the holder of the
+   lease calls it without the device lock. */
+static void attach(struct entry *p, struct port *port, struct ggml_TensorHandle_state *h) {
   if (port->kept) {
     /* what is kept is no longer the whole set of its pin: it ends with this lease */
     pthread_mutex_lock(&cache_lock);
@@ -1387,24 +1387,26 @@ static bool attach(struct entry *p, struct port *port, struct ggml_TensorHandle_
   if (h->t->type == port->t->type) {
     port->t->data = h->t->data;
     port->t->buffer = h->t->buffer;
-    port->conv = NULL;
   } else {
-    if (port->own == NULL) {
-      port->own = ggml_backend_buft_alloc_buffer(ggml_backend_get_default_buffer_type(p->backend), ggml_nbytes(port->t));
-      if (port->own == NULL) return false;
-    }
-    port->t->data = ggml_backend_buffer_get_base(port->own);
-    port->t->buffer = port->own;
     port->conv = h->t;
   }
   port->set = true;
+}
+
+/* Points a port that converts at its own memory, made once. Call under the device lock. */
+static bool own_memory(struct entry *p, struct port *port) {
+  if (port->own == NULL) {
+    port->own = ggml_backend_buft_alloc_buffer(ggml_backend_get_default_buffer_type(p->backend), ggml_nbytes(port->t));
+    if (port->own == NULL) return false;
+  }
+  port->t->data = ggml_backend_buffer_get_base(port->own);
+  port->t->buffer = port->own;
   return true;
 }
 
 an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, struct ggml_TensorHandle_state *t) {
   struct entry *p = lease->e;
   struct port *leaf;
-  const char *why = NULL;
 
   if (p == NULL || !p->compiled) return tg_error(env, "bind a compiled graph");
   if (slot < 0 || slot >= p->leaf_count) return tg_error(env, "no such leaf");
@@ -1414,11 +1416,10 @@ an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, str
   if (!ggml_backend_supports_buft(p->backend, ggml_backend_buffer_get_type(t->buffer))) {
     return tg_error(env, "a bound tensor lives on another device than its graph");
   }
-  tg_lock_device();
-  if (!attach(p, leaf, t)) why = "out of memory";
-  else if (leaf->conv != NULL) why = tg_copy(t->t, leaf->t);
-  tg_unlock_device();
-  if (why != NULL) return tg_error(env, why);
+  if (leaf->t->type != t->t->type && (leaf->t->type != GGML_TYPE_F32 || t->t->type != GGML_TYPE_I32)) {
+    return tg_error(env, "an F16 or quantized tensor is not converted to or from another type");
+  }
+  attach(p, leaf, t);
   return ggml_result_Void_ok(env, an_void(env));
 }
 
@@ -1434,7 +1435,8 @@ an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output,
     return failure;
   }
   tg_lock_device();
-  attached = attach(p, &p->outs[output], state);
+  attach(p, &p->outs[output], state);
+  attached = p->outs[output].conv == NULL || own_memory(p, &p->outs[output]);
   tg_unlock_device();
   if (!attached) return tg_error(env, "out of memory");
   return ggml_result_TensorHandle_ok(env, term);
@@ -1462,7 +1464,10 @@ an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t ou
   for (i = 0; i < p->output_count; i++) {
     if (i != output && p->outs[i].held == t->store) alias = true;
   }
-  if (!alias) attached = attach(p, &p->outs[output], t);
+  if (!alias) {
+    attach(p, &p->outs[output], t);
+    attached = p->outs[output].conv == NULL || own_memory(p, &p->outs[output]);
+  }
   tg_unlock_device();
   if (alias) {
     snprintf(why, sizeof why, "output %" PRId64 ": the tensor given is an input of the run or another output", output);
@@ -1622,6 +1627,11 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
 
   tg_lock_device();
   if (p->fill_count > 0) ggml_backend_tensor_set(p->fill_store, values, 0, (size_t)p->fill_count * sizeof(float));
+  for (i = 0; why == NULL && i < p->leaf_count; i++) {
+    if (p->leaves[i].conv == NULL) continue;
+    if (!own_memory(p, &p->leaves[i])) why = "out of memory";
+    else why = tg_copy(p->leaves[i].conv, p->leaves[i].t);
+  }
   d = &devices[p->device + 1];
   if (d->galloc == NULL) d->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(p->backend));
   if (d->galloc == NULL) why = "making the graph allocator failed";

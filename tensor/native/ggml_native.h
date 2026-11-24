@@ -191,10 +191,10 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs);
 
 /* Makes `t` the leaf `slot` for the next run (leaves count in the order
-   they were sent): an F32 tensor is read in place, another one is
-   converted into the leaf's own memory now. The graph holds `t`'s memory
-   until the lease ends, so a `t` that is closed meanwhile does not leave
-   the run without its data. */
+   they were sent): an F32 tensor is read in place, an I32 one is converted
+   into the leaf's own memory when the run starts. The graph holds `t`'s
+   memory until the lease ends, so a `t` that is closed meanwhile does not
+   leave the run without its data. It touches no device and never waits. */
 an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, struct ggml_TensorHandle_state *t);
 
 /* A fresh tensor that the next run writes output `output` into, stored as
@@ -720,7 +720,7 @@ static const an_function ggml_native_functions[] = {
   {"ready", "(Lease) -> Bool", ggml_native_ready, AN_DIRTY},
   {"node", "(Lease, Int, List[Int], List[Int], List[Int]) -> Result[Int]", ggml_native_node, AN_DIRTY},
   {"compile", "(Lease, List[Int]) -> Result[Void]", ggml_native_compile, AN_DIRTY},
-  {"bind", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_bind, AN_DIRTY},
+  {"bind", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_bind, AN_SHORT},
   {"output", "(Lease, Int, Bool) -> Result[TensorHandle]", ggml_native_output, AN_DIRTY},
   {"output_into", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_output_into, AN_DIRTY},
   {"pin", "(Lease) -> Result[Pin]", ggml_native_pin, AN_DIRTY},
