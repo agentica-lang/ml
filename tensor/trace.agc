@@ -210,10 +210,10 @@ def spec_of(t: Types.Tensor) -> Spec = Spec(shape: t.shape, dtype: t.dtype, back
 ## graph between runs, so a run binds only its inputs, until the pin ends or
 ## one of them is closed. A run holds their memory from the bind to its end, so
 ## a constant that its owner closes meanwhile is still there for that run; a
-## run that starts after the close is an `error` naming the leaf. Whatever changes between runs (the weights of a training
-## step, a KV cache) must be an input. `f` may build any graph, a gradient
-## (`gradients`) and an update of the parameters included, and answers every
-## tensor `run` gives back.
+## run that starts after the close is an `error` naming the leaf. Whatever
+## changes between runs (the weights of a training step, a KV cache) must be an
+## input. `f` may build any graph, a gradient (`gradients`) and an update of the
+## parameters included, and answers every tensor `run` gives back.
 def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]]) -> Result[Compiled]
   return error("a compiled function needs at least one input") if specs.empty?
   backend = specs[0].backend

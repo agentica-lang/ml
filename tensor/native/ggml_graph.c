@@ -106,11 +106,14 @@ static const char *op_names[OP_COUNT] = {
    1. A bound port holds a count on the memory it points at (`held`), kept or not, so that memory is never freed under
       it. Whatever else goes wrong, no run reads freed memory.
    2. Only a leaf that reads its tensor in place is kept, and never a donated one: an input a `set_rows` writes and a
-      converted copy (an I32 tensor), which would not follow its tensor, are bound by every run.
+      converted copy (an I32 tensor), which would not follow its tensor, are bound by every run. The caller names the
+      leaves of the set (`ggml_keep`), and the set is those leaves or none: a list with a leaf that cannot be kept
+      keeps nothing, so what the caller leaves out of its next bind is what the graph holds.
    3. The kept leaves of an entry are one set, the constants of the program of one pin, `kept_for`. `ggml_resume`
       answers true to that pin alone; for any other program, or once a kept tensor is closed, it ends the set and the
       caller binds every leaf. So two programs that share a graph take turns and never read each other's weights. A
-      kept leaf that is bound again ends the set too (at the end of the lease).
+      kept leaf that is bound again ends the set too (at the end of the lease), and so does a run of a lease that did
+      not ask (`resumed`): that run has the kept leaves unbound.
    4. The set ends, and its counts go, when its pin ends, when the handle of one of its tensors is closed
       (`tg_closed`), and when the entry is destroyed (an evicted graph has no pin, so it keeps nothing). An entry in
       use is left to its holder: the end of its lease ends the set if the pin is gone or a kept tensor is closed.
@@ -123,6 +126,7 @@ struct port {
   bool set;                               /* bound or prepared for the next run */
   bool donated;                           /* a leaf a `set_rows` writes in place, or the output that is that leaf: no copy in or out */
   bool kept;                              /* a leaf that stays bound after the run; `held->kept` counts it */
+  bool wanted;                            /* inside `ggml_keep`: a leaf of the list it was given */
   struct tg_storage *held;                /* the memory of the bound tensor, kept until the run is over */
 };
 
@@ -376,7 +380,9 @@ static int free_slot(struct entry **victim) {
 
 /* The compiled graph cached under `key` on `device` that no one holds, marked
    held, or NULL. A pinned one goes first: it is the copy that keeps the
-   constants of its program bound. */
+   constants of its program bound. A program without a pin (`Trace.eval`) with
+   the same key gets that copy too and ends its set, which costs the pinned
+   program one whole bind and nothing else. */
 static struct entry *cached(int64_t device, ng_str key) {
   struct entry *e = NULL;
   int i;
@@ -1526,32 +1532,48 @@ an_term ggml_resume(an_env *env, struct ggml_Lease_state *lease, int64_t pin) {
   if (!kept) p->kept_for = 0;
   pthread_mutex_unlock(&cache_lock);
   if (!kept) drop_kept(p); /* the lease's graph: its ports are the holder's */
+  lease->resumed = kept;
   return an_bool(env, kept);
 }
 
-an_term ggml_keep(an_env *env, struct ggml_Lease_state *lease, int64_t pin) {
+an_term ggml_keep(an_env *env, struct ggml_Lease_state *lease, int64_t pin, ggml_list_Int slots) {
   struct entry *p = lease->e;
   const struct pin_id *live;
-  int64_t i;
+  int64_t i, slot;
+  bool whole = true, fresh;
+  int next;
 
   if (p == NULL || !p->compiled) return an_void(env);
+  while ((next = ggml_list_Int_next(env, &slots, &slot)) == 1) {
+    struct port *leaf = slot >= 0 && slot < p->leaf_count ? &p->leaves[slot] : NULL;
+
+    if (leaf == NULL || !leaf->set || leaf->donated || leaf->conv != NULL || leaf->held == NULL) whole = false;
+    else leaf->wanted = true;
+  }
   pthread_mutex_lock(&cache_lock);
   for (live = p->pinned; live != NULL && live->id != pin; live = live->next) {
   }
-  if (live != NULL) {
-    if (p->kept_for != pin) drop_kept(p); /* another program's: not this pin's to keep */
-    p->kept_for = pin;
-    for (i = 0; i < p->leaf_count; i++) {
-      struct port *leaf = &p->leaves[i];
+  whole = whole && next == 0 && live != NULL;
+  if (!whole || p->kept_for != pin) drop_kept(p); /* another program's, or a set that would not be the list */
+  p->kept_for = whole ? pin : 0;
+  fresh = whole && p->kept_leaves == 0; /* a set this pin has already stays as it is */
+  for (i = 0; i < p->leaf_count; i++) {
+    struct port *leaf = &p->leaves[i];
 
-      if (leaf->kept || !leaf->set || leaf->donated || leaf->conv != NULL || leaf->held == NULL) continue;
+    if (fresh && leaf->wanted) {
       leaf->kept = true;
       __atomic_fetch_add(&leaf->held->kept, 1, __ATOMIC_SEQ_CST);
       p->kept_leaves++;
     }
+    leaf->wanted = false;
   }
   pthread_mutex_unlock(&cache_lock);
+  if (whole) lease->resumed = true;
   return an_void(env);
+}
+
+an_term ggml_kept(an_env *env, struct ggml_Lease_state *lease) {
+  return an_int(env, lease->e != NULL ? lease->e->kept_leaves : 0);
 }
 
 /* A pin holds its graph in the cache; a graph that has no slot (every one is in use or pinned) gets a pin that holds
@@ -1602,6 +1624,12 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   char text[160];
 
   if (p == NULL || !p->compiled) return tg_error(env, "run a compiled graph");
+  if (p->kept_leaves > 0 && !lease->resumed) {
+    pthread_mutex_lock(&cache_lock);
+    p->kept_for = 0;
+    pthread_mutex_unlock(&cache_lock);
+    drop_kept(p);
+  }
   for (i = 0; i < p->leaf_count; i++) {
     if (!p->leaves[i].set) return tg_error(env, "run with every leaf bound");
   }

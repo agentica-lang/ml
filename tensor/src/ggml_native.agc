@@ -117,12 +117,15 @@ extern module "ggml"
   ## handle is closed, another program that ran on the graph, a pin that ended
   ## and a pin of another graph all answer false.
   def resume(lease: Lease, pin: Int) -> Bool
-  ## Keeps the leaves bound so far that read their tensor in place bound after
-  ## the run, as the constants of the program of the pin `pin`, until that pin
-  ## ends, one of the tensors is closed or another program runs on the graph.
-  ## The graph holds their memory meanwhile. Nothing is kept unless `pin` is a
-  ## live pin of the leased graph.
-  def keep(lease: Lease, pin: Int) -> Void
+  ## Keeps the leaves `slots` bound after the run, as the constants of the
+  ## program of the pin `pin`, until that pin ends, one of the tensors is closed
+  ## or another program runs on the graph. The graph holds their memory
+  ## meanwhile. It keeps every leaf of `slots` or none: nothing is kept when
+  ## one of them is not bound, is converted (an `I32` tensor) or is written in
+  ## place, or unless `pin` is a live pin of the leased graph.
+  def keep(lease: Lease, pin: Int, slots: List[Int]) -> Void
+  ## How many leaves the leased graph keeps bound, for a test to read.
+  def kept(lease: Lease) -> Int
   ## Sets the fills (one value each, in the order they were sent) and runs
   ## the graph into the tensors `output` made; every leaf and output must be
   ## set since the last run. An error when an output is not finite.

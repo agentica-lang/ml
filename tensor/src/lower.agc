@@ -190,7 +190,7 @@ def execute(
     bound: Result[Void] = System.Profile.measure("ml.bind") do
       if !GgmlRaw.resume(lease, p.pin)
         try bind(p, p.kept, lease, inputs, op)
-        GgmlRaw.keep(lease, p.pin)
+        GgmlRaw.keep(lease, p.pin, p.kept)
       end
 
       bind(p, p.fed, lease, inputs, op)

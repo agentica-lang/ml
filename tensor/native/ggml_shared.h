@@ -85,6 +85,7 @@ const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst, const int3
 struct entry;
 struct ggml_Lease_state {
   struct entry *e;
+  bool resumed; /* this lease asked for the kept leaves of its graph (`ggml_resume`), or kept them itself */
 };
 
 void ggml_Lease_free(void *state);

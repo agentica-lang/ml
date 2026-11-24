@@ -13,6 +13,9 @@ import Trace from "../trace"
 
 CPU = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 
+## How long a task of a test waits for another, at most.
+WAIT_MS = 60000
+
 private
 
 def floats(xs: List[Float], shape: List[Int]) -> Result[Tensor.Tensor]
@@ -59,6 +62,60 @@ def kept?(compiled: Trace.Compiled) -> Result[Bool]
     Native.close(lease)
     ok(kept)
   end
+end
+
+## How many leaves the copies of the graph of `compiled` keep bound: the two that two tasks can have made. Nothing is
+## asked of the graph, so what it keeps is left as it is.
+def kept_count(compiled: Trace.Compiled) -> Result[Int]
+  p = compiled.program.unwrap!
+  code = try Ggml.code_of(p.device, "test")
+  Native.arena do
+    one = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1, p.keep)
+    other = try GgmlRaw.acquire(code, p.key, p.nodes.size + 1, p.keep)
+    count = GgmlRaw.kept(one) + GgmlRaw.kept(other)
+    Native.close(one)
+    Native.close(other)
+    ok(count)
+  end
+end
+
+## One run of `compiled` over `x` that holds the pinned graph meanwhile: it takes the graph, says on `held` whether
+## the constants are still bound there, and binds its input and runs once `go` has a value.
+def held_run(compiled: Trace.Compiled, x: Tensor.Tensor, held: Channel[Bool], go: Channel[Bool]) -> Result[List[Float]]
+  p = compiled.program.unwrap!
+  Native.arena do
+    lease = try GgmlRaw.acquire(try Ggml.code_of(p.device, "test"), p.key, p.nodes.size + 1, p.keep)
+    try held.send(GgmlRaw.resume(lease, p.pin), 0)
+    _ = try go.recv(WAIT_MS)
+    try GgmlRaw.bind(lease, p.fed[0], try Ggml.handle_of(x))
+    out = try GgmlRaw.output(lease, 0, false)
+    try GgmlRaw.run(lease, p.fills)
+    Native.close(lease)
+    Support.floats_of(Ggml.tensor_of(p.device, p.shapes[0], p.dtypes[0], out))
+  end
+end
+
+## `count` runs of `compiled` over `x`: each gives `want`, or is the error of a closed weight.
+def runs_or_closed(compiled: Trace.Compiled, x: Tensor.Tensor, want: List[Float], count: Int) -> Result[Void]
+  for _ in 0...count
+    case run(compiled, x)
+      ok(got) -> try Test.eq(got, want)
+      error(e) -> try Test.assert(e.message.include?("closed"), "the error said \"#{e.message}\"")
+    end
+  end
+
+  ok()
+end
+
+## Ends what the graph of `compiled` keeps: closes its weight `w`, or ends its pin.
+def ended(compiled: Trace.Compiled, w: Tensor.Tensor, by_close: Bool) -> Result[Void]
+  if by_close
+    try close(w)
+  else
+    Trace.close(compiled)
+  end
+
+  ok()
 end
 
 ## 40 graphs of other shapes, which take the slots of every graph that is not pinned.
@@ -280,4 +337,101 @@ def test_an_i32_tensor_a_run_wrote_is_read_from_its_device() -> Result[Void]
   source = try Tensor.from_list(ints.call(7), [46], Tensor.Dtype.I32, CPU)
   _ = try Trace.run(copied, [source], [some(target)])
   Test.eq(try run(halved, target), (0...46).map { |i| (7 + i).to_f * 0.5 })
+end
+
+## The leaves to keep are the caller's list, whole or not at all: a list with a leaf that is not bound, or with one
+## that is converted, keeps nothing. So the caller and the graph never differ on what the next run binds.
+def test_a_list_with_a_leaf_that_cannot_be_kept_keeps_nothing() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  k = 47
+  w = try floats(ramp(k, 2.0), [k])
+  x = try floats(ramp(k, 1.0), [k])
+  ints = try Tensor.from_list((0...k).map { |i| Tensor.Values.Int(i) }, [k], Tensor.Dtype.I32, CPU)
+  compiled = try scaled(k, w)
+  p = compiled.program.unwrap!
+  counts: Result[List[Int]] = Native.arena do
+    lease = try GgmlRaw.acquire(try Ggml.code_of(p.device, "test"), p.key, p.nodes.size + 1, p.keep)
+    try GgmlRaw.bind(lease, p.kept[0], try Ggml.handle_of(w))
+    GgmlRaw.keep(lease, p.pin, p.kept + p.fed)
+    unbound = GgmlRaw.kept(lease)
+    try GgmlRaw.bind(lease, p.fed[0], try Ggml.handle_of(ints))
+    GgmlRaw.keep(lease, p.pin, p.kept + p.fed)
+    converted = GgmlRaw.kept(lease)
+    GgmlRaw.keep(lease, p.pin, p.kept)
+    whole = GgmlRaw.kept(lease)
+    Native.close(lease)
+    ok([unbound, converted, whole])
+  end
+
+  try Test.eq(try counts, [0, 0, 1])
+  try Test.eq(try run(compiled, x), products(ramp(k, 1.0), ramp(k, 2.0)))
+  Trace.close(compiled)
+  ok()
+end
+
+## The kept constants are read only by a run that asked for them: a run that binds its inputs alone without `resume`
+## is an error and ends the set, and the next run of the function binds every leaf.
+def test_a_run_that_did_not_resume_reads_no_kept_constant() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  k = 48
+  x = try floats(ramp(k, 1.0), [k])
+  compiled = try scaled(k, try floats(ramp(k, 2.0), [k]))
+  try Test.eq(try run(compiled, x), products(ramp(k, 1.0), ramp(k, 2.0)))
+  try Test.eq(try kept_count(compiled), 1)
+  p = compiled.program.unwrap!
+  ran: Result[List[Float]] = Native.arena do
+    lease = try GgmlRaw.acquire(try Ggml.code_of(p.device, "test"), p.key, p.nodes.size + 1, p.keep)
+    try GgmlRaw.bind(lease, p.fed[0], try Ggml.handle_of(x))
+    out = try GgmlRaw.output(lease, 0, false)
+    try GgmlRaw.run(lease, p.fills)
+    Native.close(lease)
+    Support.floats_of(Ggml.tensor_of(p.device, p.shapes[0], p.dtypes[0], out))
+  end
+
+  try refused(ran, "every leaf bound")
+  try Test.eq(try kept_count(compiled), 0)
+  try Test.eq(try run(compiled, x), products(ramp(k, 1.0), ramp(k, 2.0)))
+  Trace.close(compiled)
+  ok()
+end
+
+## Two tasks run one function while a third ends what its graph keeps: one holds the pinned graph, with the constants
+## bound, across the end, and the other runs beside it on a copy. The weight is closed in the first round, the pin
+## ends in the second. The run that held the graph still reads the weight it kept, a run that starts after the close
+## is the error of the closed weight, and no copy keeps anything once the holder is done.
+def test_a_set_ends_with_the_run_that_held_its_graph() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  for round in 0...2
+    k = 49 + round
+    w = try floats(ramp(k, 2.0), [k])
+    x = try floats(ramp(k, 1.0), [k])
+    want = products(ramp(k, 1.0), ramp(k, 2.0))
+    compiled = try scaled(k, w)
+    try Test.eq(try run(compiled, x), want)
+    held: Channel[Bool] = Channel.new(1)
+    go: Channel[Bool] = Channel.new(1)
+    holder = Task.spawn do held_run(compiled, x, held, go) end
+    try Test.assert(try held.recv(WAIT_MS), "a run left nothing bound")
+    beside = Task.spawn do runs_or_closed(compiled, x, want, 6) end
+    ender = Task.spawn do ended(compiled, w, round == 0) end
+
+    try Task.await(ender)
+    try Task.await(beside)
+    try go.send(true, 0)
+    try Test.eq(try Task.await(holder), want)
+    try Test.eq(try kept_count(compiled), 0)
+    if round == 0
+      try refused(run(compiled, x), "closed")
+      Trace.close(compiled)
+    else
+      try Test.eq(try run(compiled, x), want)
+      try Test.eq(try kept_count(compiled), 0)
+      try close(w)
+    end
+  end
+
+  ok()
 end
