@@ -64,8 +64,8 @@ def shape(shard: Shard, name: String) -> Result[List[Int]]
 end
 
 ## The tensor `name` of `shard`: F32, F16 and BF16 as `F32` (as `F16` with `dtype: F16`, a half weight of the ggml
-## backend, `Tensor.from_file`), any other dtype (F64, integers) as the file has it, whatever `dtype` says: only a float
-## file has a half form.
+## backend, `Tensor.from_file`), any other dtype as the file has it, whatever `dtype` says (only a float file has a half form), except an F64
+## tensor on ggml, which holds no F64: it comes as `F32`.
 def tensor(
   shard: Shard,
   name: String,
@@ -84,7 +84,7 @@ def tensor(
   return error("#{shard.path}: tensor #{name}: dtype #{e.dtype} has no tensor/ dtype") if not DTYPES.key?(e.dtype)
   b = try within("#{shard.path}: tensor #{name}", read_range(shard.path, at, e.stop - e.start))
   values = try within("#{shard.path}: tensor #{name}", decode(b, e))
-  Tensor.from_list(values, e.shape, DTYPES[e.dtype], backend)
+  Tensor.from_list(values, e.shape, held(e.dtype, backend), backend)
 end
 
 private
@@ -205,6 +205,16 @@ end
 def order(e: Entry) -> Int
   return e.start * 2 if e.stop == e.start
   e.start * 2 + 1
+end
+
+## The dtype a tensor of the file dtype `name` has on `backend`: as the file has it, but `F32` for F64 on ggml.
+def held(name: String, backend: Tensor.Backend) -> Tensor.Dtype
+  case backend
+    Tensor.Backend.Ggml(_) -> return Tensor.Dtype.F32 if name == "F64"
+    _ -> nil
+  end
+
+  DTYPES[name]
 end
 
 ## The values of the bytes `b` of one tensor, for the dtypes the backends do not read from the file.
