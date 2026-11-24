@@ -12,7 +12,9 @@
 ##   `Generator` of the model: the prompt, padded to a power-of-2 capacity
 ##   (8, 16, ...), takes only its last hidden row to the head, and every later
 ##   step is one token. The choice of the next id runs in the graph, so one
-##   number leaves the device, not the logits.
+##   number leaves the device, not the logits. A one-token step reads the rows
+##   of the cache in use, rounded up (`Padded.reach`), not the padding after
+##   them; each reach is a graph, and a capacity keeps the one of its largest.
 ## - Elsewhere the same graph runs eagerly in an arena. On the reference
 ##   backend attention needs `q * k` of at most 1,048,576, which the padded
 ##   prompt counts (a prompt of 600 tokens is padded to 1024). libtorch is not
@@ -36,6 +38,9 @@ import Sample from "sample"
 struct Generator
   model: Qwen3.Qwen3
   plans: Channel[Plans]
+  ## Every step reads the whole capacity of the cache, not only the rows in use: `false` from `open`. The tests set it
+  ## to have the logits of the other way of reading the same cache.
+  whole: Bool
 end
 
 ## The compiled steps by shape, and how many compiles made them.
@@ -90,7 +95,7 @@ end
 def open(m: Qwen3.Qwen3) -> Result[Generator]
   cell: Channel[Plans] = Channel.new(1)
   try cell.send(Plans(graphs: {}, compiles: 0), 1000)
-  ok(Generator(model: m, plans: cell))
+  ok(Generator(model: m, plans: cell, whole: false))
 end
 
 ## How many steps `g` has compiled: a shape it has seen compiles no more.
@@ -356,8 +361,13 @@ def advance(g: Generator, cache: Cache, ids: List[Int], mode: Head) -> Result[Ad
   fed = made.unwrap!
   held = cache.keys + cache.values
   in_place = written_in_place?(backend, cache, width, room)
+  reach = room
+  if in_place and not g.whole
+    reach = Padded.reach(cache.length + n, room)
+  end
+
   outs = case backend
-    Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, room, mode, in_place)
+    Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, room, reach, mode, in_place)
     _ -> eager_step(m, cache, fed, room, mode)
   end
 
@@ -382,12 +392,16 @@ def written_in_place?(backend: Tensor.Backend, cache: Cache, width: Int, room: I
 end
 
 ## The graph of one step as a compiled function of its inputs on `Ggml`; `in_place` writes the new row into the cache's own
-## tensors, which come back as the keys and values of the new one.
+## tensors, which come back as the keys and values of the new one. Its attention reads the first `reach` rows of the
+## cache. Each reach is a graph of its own, and a capacity keeps one: a step takes the graph of a larger reach when
+## there is one (its mask hides the rows after the length), and compiling the graph of a reach ends the graphs of the
+## smaller ones.
 def compiled_step(
   g: Generator,
   cache: Cache,
   fed: List[Tensor.Tensor],
   room: Int,
+  reach: Int,
   mode: Head,
   in_place: Bool,
 ) -> Result[Advanced]
@@ -398,12 +412,28 @@ def compiled_step(
     rows = Tensor.shape(cache.keys[0])[2]
   end
 
-  key = "#{Tensor.shape(fed[0])[0]} #{rows} #{room} #{head_key(mode)}"
+  width = Tensor.shape(fed[0])[0]
+  behind: List[String] = []
+  near = Padded.reach(1, room)
+  while near < reach
+    behind = behind.push(plan_key(width, rows, room, near, mode))
+    near = Padded.reach(near + 1, room)
+  end
+
+  ahead: List[String] = []
+  far = reach
+  while far < room
+    far = Padded.reach(far + 1, room)
+    ahead = ahead.push(plan_key(width, rows, room, far, mode))
+  end
+
   plan = try planned(
     g,
-    key,
+    plan_key(width, rows, room, reach, mode),
+    ahead,
+    behind,
     args.map { |t| Trace.spec_of(t) },
-    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, mode, in_place, true) },
+    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, reach, mode, in_place, true) },
   )
 
   outs = try Trace.run(plan, args)
@@ -417,24 +447,43 @@ def compiled_step(
   ok(Advanced(head: try head, cache: Cache(keys: outs.drop(1).take(layers), values: outs.drop(1 + layers), length: 0)))
 end
 
-## The compiled function `key` of `g` for `specs`, compiled with `f` on a miss and
-## kept at once.
+## The key of the step of `width` tokens over a cache of `rows` rows that leaves `room` and reads `reach` of them.
+def plan_key(width: Int, rows: Int, room: Int, reach: Int, mode: Head) -> String
+  "#{width} #{rows} #{room} #{reach} #{head_key(mode)}"
+end
+
+## The compiled function `key` of `g` for `specs`, or the first of `ahead` that `g` has, which do the same. With none
+## of them it is compiled with `f` and kept at once, and the functions `behind` end: `g` has no more use for them.
 def planned(
   g: Generator,
   key: String,
+  ahead: List[String],
+  behind: List[String],
   specs: List[Trace.Spec],
   f: Fn[List[Tensor.Tensor], Result[List[Tensor.Tensor]]],
 ) -> Result[Trace.Compiled]
   case take_plans(g)
     some(p) ->
       _ = g.plans.send(p, 0)
-      return ok(p.graphs[key]) if p.graphs.has_key?(key)
+      for same in [key] + ahead
+        return ok(p.graphs[same]) if p.graphs.has_key?(same)
+      end
+
     none -> nil
   end
 
   compiled = try Trace.compile(specs, f)
   case take_plans(g)
-    some(p) -> _ = g.plans.send(Plans(graphs: p.graphs.put(key, compiled), compiles: p.compiles + 1), 0)
+    some(p) ->
+      graphs = p.graphs
+      for old in behind
+        if graphs.has_key?(old)
+          Trace.close(graphs[old])
+          graphs = graphs.delete(old)
+        end
+      end
+
+      _ = g.plans.send(Plans(graphs: graphs.put(key, compiled), compiles: p.compiles + 1), 0)
     none -> nil
   end
 
@@ -455,7 +504,7 @@ end
 def eager_step(m: Qwen3.Qwen3, cache: Cache, fed: List[Tensor.Tensor], room: Int, mode: Head) -> Result[Advanced]
   layers = m.config.num_hidden_layers
   ran: Result[Advanced] = Native.arena do
-    outs = try stepped(m, fed + cache.keys + cache.values, room, mode)
+    outs = try stepped(m, fed + cache.keys + cache.values, room, room, mode)
     ok(
       Advanced(
         head: try Tensor.to_list(outs[0]),
@@ -469,11 +518,13 @@ end
 
 ## The step: `xs` are the ids `[width]`, their positions, the one-hot `[1, width]` of the row whose
 ## prediction is wanted, and per layer the keys then the values. The outputs are the head (the logits `[vocab_size]`,
-## or the choice `[1]`), then the keys and the values of every layer.
+## or the choice `[1]`), then the keys and the values of every layer. The cache it leaves has `room` rows, of which
+## the attention reads the first `reach` (every row the new tokens may see is among them).
 def stepped(
   m: Qwen3.Qwen3,
   xs: List[Tensor.Tensor],
   room: Int,
+  reach: Int,
   mode: Head,
   in_place: Bool = false,
   half: Bool = false,
@@ -483,7 +534,7 @@ def stepped(
   d = m.config.hidden_size
   slots = Padded.Slots(positions: xs[1], capacity: room)
   h = try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d])
-  mask = try Padded.padded_mask(slots, Tensor.dtype(h))
+  mask = try Padded.padded_mask(slots.with(capacity: reach), Tensor.dtype(h))
   spread: Optional[Tensor.Tensor] = none
   if not in_place
     spread = some(try Padded.spread_of(slots, Tensor.dtype(h)))
@@ -497,7 +548,7 @@ def stepped(
       old = some(Kv(key: xs[3 + i], value: xs[3 + layers + i]))
     end
 
-    r = try layer(m.stack.blocks[i], h, slots.positions, mask, spread, old, in_place)
+    r = try layer(m.stack.blocks[i], h, slots.positions, mask, spread, old, in_place, reach)
     h = r.hidden
     keys = keys.push(try cached(r.key, half))
     values = values.push(try cached(r.value, half))
@@ -536,6 +587,7 @@ def layer(
   spread: Optional[Tensor.Tensor],
   old: Optional[Kv],
   in_place: Bool,
+  reach: Int,
 ) -> Result[Layer]
   x = try Nn.layer_norm(b.norm1, h)
   heads = try Nn.project(b.attention, x, x, some(positions))
@@ -549,7 +601,14 @@ def layer(
     value = try Padded.written(try widened(old.map { |kv| kv.value }), heads.value, spread.unwrap!, 2)
   end
 
-  seen = try Nn.attend(b.attention, heads.query, key, value, some(mask))
+  seen = try Nn.attend(
+    b.attention,
+    heads.query,
+    try Padded.reached(key, reach),
+    try Padded.reached(value, reach),
+    some(mask),
+  )
+
   mid = try Tensor.add(h, seen)
   out = try Tensor.add(mid, try Nn.mlp(b.mlp, try Nn.layer_norm(b.norm2, mid)))
   ok(Layer(hidden: out, key: key, value: value))

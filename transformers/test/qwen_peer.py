@@ -19,6 +19,8 @@ path, and leaves:
 - `half/`: `float32`, tied, one layer of width 256, so that the table and the
   MLP matrices reach the half-weight threshold (no expected logits: the test
   compares it with itself loaded as `F32`);
+- `roomy/`: `float32`, tied, one layer with heads of 8 and up to 4096 positions, for a cache of more than 256 rows
+  (no expected logits: the test compares two ways of reading its cache);
 - `expected.json`: for the batch `IDS`, the logits of every position of every
   row, of `tiny` and of `untied`, and of `tiny` on the longer row `LONG`.
 
@@ -224,6 +226,11 @@ def half():
     return plain(HALF_CONFIG, 2027)
 
 
+# Heads of 8, which Vulkan's flash attention takes, two of them for the keys, and room for a cache of 4096 rows.
+ROOMY_CONFIG = dict(CONFIG, hidden_size=16, num_hidden_layers=1, head_dim=8, intermediate_size=24,
+                    max_position_embeddings=4096)
+
+
 # Every matrix has rows of whole Q8_0 blocks (a multiple of 32 columns).
 Q8_CONFIG = dict(CONFIG, hidden_size=32, num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=1,
                  head_dim=16, intermediate_size=64, vocab_size=20)
@@ -370,6 +377,9 @@ def write(out):
     (out / "half").mkdir()
     half().save(out / "half" / "model.safetensors")
     (out / "half" / "config.json").write_text(json.dumps(HALF_CONFIG))
+    (out / "roomy").mkdir()
+    plain(ROOMY_CONFIG, 2029).save(out / "roomy" / "model.safetensors")
+    (out / "roomy" / "config.json").write_text(json.dumps(ROOMY_CONFIG))
     write_gguf(out / "tiny.gguf", tied, CONFIG, "F32", "copy")
     write_gguf(out / "tied.gguf", tied, CONFIG, "F32", "none")
     write_gguf(out / "untied.gguf", untied, dict(CONFIG, tie_word_embeddings=False), "F32", "own")

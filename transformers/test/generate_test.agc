@@ -21,6 +21,10 @@ REL = 0.000000001
 HALF_ABS = 0.0006
 HALF_REL = 0.001
 
+# The two generators of `reading` read the same F16 cache: only the order of the sums of an attention may differ.
+SAME_ABS = 0.00001
+SAME_REL = 0.00001
+
 ## Prompts of 5 (padded to 8), exactly 8 and 9 (padded to 16).
 def test_each_step_matches_the_forward_over_the_whole_row() -> Result[Void]
   with_peer do |dir|
@@ -70,6 +74,96 @@ def test_a_step_writes_the_cache_in_place_until_the_capacity_grows() -> Result[V
 end
 
 def closed?(t: Tensor.Tensor) -> Result[Bool] = ok(Native.closed?(try Ggml.handle_of(t)))
+
+## A generator of `m` whose steps read the whole capacity of the cache: its own plans, and the logits that a step
+## over the rows in use must give.
+def reading_all(m: Qwen3.Qwen3) -> Result[Generate.Generator] = ok((try Generate.open(m)).with(whole: true))
+
+## How many compiled steps `g` keeps now.
+def held(g: Generate.Generator) -> Result[Int]
+  plans = try g.plans.recv(1000)
+  try g.plans.send(plans, 0)
+  ok(plans.graphs.size)
+end
+
+## On ggml a one-token step reads the rows of the cache in use, rounded up to a reach, and each reach is a compiled
+## step of its own. Three sequences each cross one: 768 rows inside a capacity of 1024, 1024 rows where the capacity
+## grows to 2048 (reach 1280), and 1280 rows inside it. Every step gives the logits of a step that reads the whole
+## capacity, the step of a reach ends the step of the reach before it, and a later sequence at a smaller reach
+## takes the step that is there, so a capacity keeps one step.
+def test_a_step_reads_the_rows_in_use_and_gives_the_logits_of_the_whole_cache() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.ggml_backends()
+      m = try Qwen3.open("#{dir}/roomy", backend)
+      g = try Generate.open(m)
+      whole = try reading_all(m)
+      # the prompt, a step of each reach: 768 and 1024
+      try reading(g, whole, 765, 5)
+      try Test.eq(Generate.compiles(g), 3)
+      try Test.eq(Generate.compiles(whole), 2)
+      try Test.eq(try held(g), 2)
+      # nothing new up to 1024 rows; then the step that grows the capacity and the step of reach 1280
+      try reading(g, whole, 1022, 4)
+      try Test.eq(Generate.compiles(g), 5)
+      try Test.eq(try held(g), 4)
+      # the prompt of 2048, the reach of 1280 as it is, and the reach of 1536, which ends that one
+      try reading(g, whole, 1278, 4)
+      try Test.eq(Generate.compiles(g), 7)
+      try Test.eq(try held(g), 5)
+      # a second sequence at the reach that ended takes the step of the larger one
+      try reading(g, whole, 1278, 1)
+      try Test.eq(Generate.compiles(g), 7)
+      try Test.eq(try held(g), 5)
+      Generate.close(g)
+      Generate.close(whole)
+      Qwen3.close_model(m)
+    end
+
+    ok()
+  end
+end
+
+## One sequence that grows from 760 to 1290 rows, a token at a time: it crosses the reach of 768 rows, the growth of
+## the capacity from 1024 to 2048 rows and the reach of 1280, with the logits of the whole cache at every step, and
+## it leaves one step per capacity.
+def test_a_sequence_that_crosses_three_reaches_gives_the_logits_of_the_whole_cache() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.ggml_backends()
+      m = try Qwen3.open("#{dir}/roomy", backend)
+      g = try Generate.open(m)
+      whole = try reading_all(m)
+      try reading(g, whole, 760, 530)
+      # the prompt, the reaches of 768 and 1024, the growth, the reaches of 1280 and 1536
+      try Test.eq(Generate.compiles(g), 6)
+      try Test.eq(try held(g), 4)
+      try Test.eq(Generate.compiles(whole), 4)
+      Generate.close(g)
+      Generate.close(whole)
+      Qwen3.close_model(m)
+    end
+
+    ok()
+  end
+end
+
+## A prompt of `first` ids and `steps` more, one at a time, through `g` and through `whole`: the same logits at each.
+def reading(g: Generate.Generator, whole: Generate.Generator, first: Int, steps: Int) -> Result[Void]
+  vocab = g.model.config.vocab_size
+  on = Tensor.backend(g.model.tokens.table)
+  row = (0...(first + steps)).map { |i| (i * 7 + i / 5) % vocab }
+  ours = try Generate.step_logits(g, Generate.start(), row.take(first))
+  theirs = try Generate.step_logits(whole, Generate.start(), row.take(first))
+  try S.expect_close(ours.logits, theirs.logits, SAME_ABS, SAME_REL, "prompt of #{first} on #{on}")
+  for t in first...row.size
+    ours = try Generate.step_logits(g, ours.cache, [row[t]])
+    theirs = try Generate.step_logits(whole, theirs.cache, [row[t]])
+    try S.expect_close(ours.logits, theirs.logits, SAME_ABS, SAME_REL, "row #{t} after a prompt of #{first} on #{on}")
+  end
+
+  Generate.finish(ours.cache)
+  Generate.finish(theirs.cache)
+  ok()
+end
 
 def test_generate_is_the_greedy_choice_of_the_forward_on_the_reference() -> Result[Void]
   with_peer do |dir| generating(dir, "tiny", S.REF) end

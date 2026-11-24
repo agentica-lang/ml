@@ -1,6 +1,7 @@
 ## An F16 cache on ggml, the key-value cache of `transformers/generate.agc`: `to_dtype` makes it, `set_rows` writes F32 rows
 ## into it in place, `attention` reads it as the key and the value (flash attention, and the products when a mask of
-## arbitrary values keeps it off), and `to_dtype` widens it. The F16 rounding of what it holds is bounded.
+## arbitrary values keeps it off, or only its first rows through a slice), and `to_dtype` widens it. The F16 rounding of
+## what it holds is bounded.
 ##
 ## Without the ggml module this passes by asserting nothing, unless `TENSOR_REQUIRE_GGML` is set.
 
@@ -121,6 +122,68 @@ def test_an_f16_cache_is_written_in_place_and_read_by_attention() -> Result[Void
   end
 
   ok()
+end
+
+## An attention reads the first rows of an F16 cache where they are: a slice from the first element, of the cache
+## that a `set_rows` wrote. With no mask it is flash attention, which reads the rows through the view of the cache, and
+## with a mask of arbitrary values the products, which read a copy of them. Both answer what the reference answers
+## over those rows of each head, and a slice goes nowhere but into an attention.
+def test_an_attention_reads_the_first_rows_of_an_f16_cache() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  cache_k = try halved(try floats(odd(64, 5), [1, 2, 4, 8], CPU))
+  cache_v = try halved(try floats(odd(64, 3), [1, 2, 4, 8], CPU))
+  fresh_k = try floats(odd(16, 7), [1, 2, 1, 8], CPU)
+  fresh_v = try floats(odd(16, 11), [1, 2, 1, 8], CPU)
+  row = try Tensor.from_list([Tensor.Values.Int(1)], [1], Tensor.Dtype.I32, CPU)
+  q = try floats(odd(16, 13), [1, 2, 1, 8], CPU)
+  mask = try floats([0.0, -0.5], [1, 2], CPU)
+  args = [cache_k, cache_v, fresh_k, fresh_v, row, q, mask]
+  out = try Trace.run(
+    try Trace.compile(
+      args.map { |t| Trace.spec_of(t) },
+      ->(xs: List[Tensor.Tensor]) {
+        kk = try Tensor.set_rows(xs[0], xs[2], xs[4])
+        vv = try Tensor.set_rows(xs[1], xs[3], xs[4])
+        near_k = try Tensor.slice(kk, [0, 0, 0, 0], [1, 2, 2, 8])
+        near_v = try Tensor.slice(vv, [0, 0, 0, 0], [1, 2, 2, 8])
+        ok([
+          kk,
+          vv,
+          try Tensor.attention(xs[5], near_k, near_v, none, none, false),
+          try Tensor.attention(xs[5], near_k, near_v, some(xs[6]), none, false),
+        ])
+      },
+    ),
+    args,
+  )
+
+  wide_k = try floats(try Support.floats_of(try widened(out[0])), [1, 2, 4, 8], REF)
+  wide_v = try floats(try Support.floats_of(try widened(out[1])), [1, 2, 4, 8], REF)
+  unmasked: Optional[Tensor.Tensor] = none
+  for masked in [unmasked, some(try floats([0.0, -0.5], [1, 2], REF))]
+    want = try Tensor.attention(
+      try floats(odd(16, 13), [1, 2, 1, 8], REF),
+      try Tensor.slice(wide_k, [0, 0, 0, 0], [1, 2, 2, 8]),
+      try Tensor.slice(wide_v, [0, 0, 0, 0], [1, 2, 2, 8]),
+      masked,
+      none,
+      false,
+    )
+
+    got = out[2]
+    if masked.some?
+      got = out[3]
+    end
+
+    try close(try Support.floats_of(got), try Support.floats_of(want), 0.00001, "attention")
+  end
+
+  cache = try halved(try floats(odd(64, 5), [1, 2, 4, 8], CPU))
+  refused([cache], "F16 operand") do |x|
+    near = try Tensor.slice(x[0], [0, 0, 0, 0], [1, 2, 2, 8])
+    Tensor.to_dtype(near, Tensor.Dtype.F32)
+  end
 end
 
 def test_an_f16_cache_goes_nowhere_else() -> Result[Void]

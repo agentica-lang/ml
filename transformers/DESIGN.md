@@ -24,6 +24,21 @@ compiled steps in a one-slot channel (as `Asr.Model.plans`), and
   `capacity` (which no cache row has, so it writes nothing), and a one-hot
   product takes the last real hidden row alone to the final norm and the head.
   Every later step is one token.
+- On ggml a one-token step reads the rows of the cache in use, not the padding
+  after them, which costs as much per row: the first `Padded.reach` rows, the
+  rows in use rounded up to 256, or to an eighth of the capacity when that is
+  more (llama.cpp rounds up to 256). At 2049 rows of a capacity of 4096 that
+  is 2560 rows. Each reach is a compiled graph, and a generator keeps one per
+  capacity: compiling the graph of a reach ends the graphs of the smaller
+  reaches of its capacity, and a later sequence at a smaller reach takes the
+  graph of the larger one that is there (its mask hides the rows after the
+  length), so it reads more rows than it needs and compiles nothing. The 32
+  slots of the graph cache then hold as many capacities as before, whatever
+  the lengths of the prompts. Growing the capacity itself in steps of 256 was
+  measured and dropped: a growth is two new graphs and a copy of the cache,
+  0.4 s at 256 rows and 1.1 s at 2048. The field `whole` of a generator is for
+  the tests only: they set it to read the whole capacity and compare every
+  step with it; `open` gives `false`.
 - On ggml each (tokens, rows, capacity) is one compiled graph (`Trace.compile`,
   kept in the generator at once, so an error path loses none, and a second call
   compiles none: `Generate.compiles(g)` counts them), and the pick

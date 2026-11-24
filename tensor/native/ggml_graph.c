@@ -147,6 +147,7 @@ struct gnode {
   int ids_op;
   struct ggml_tensor *half; /* the node as the F16 mask of a flash attention, made once */
   struct ggml_tensor *packed; /* the node as an operand of mul_mat when `dense` is not packed, made once */
+  struct ggml_tensor *window; /* a slice from the first element as the view it is: what flash attention reads */
 };
 
 #define MAX_OUTPUTS 256
@@ -627,7 +628,7 @@ static struct ggml_tensor *rows_to_reduce(struct entry *p, const struct gnode *x
 }
 
 /* The window of `x` that starts at the row-major `starts` and is `ne` wide
-   (ggml order), made contiguous. */
+   (ggml order), as a view: its strides are those of `x`. */
 static struct ggml_tensor *slice(struct entry *p, const struct gnode *x, const int64_t *starts, int rank,
                                  const int64_t ne[4]) {
   struct ggml_tensor *t = dense(p, x);
@@ -635,7 +636,7 @@ static struct ggml_tensor *slice(struct entry *p, const struct gnode *x, const i
   int i;
 
   for (i = 0; i < rank; i++) offset += (size_t)starts[i] * t->nb[rank - 1 - i];
-  return ggml_cont(p->ctx, ggml_view_4d(p->ctx, t, ne[0], ne[1], ne[2], ne[3], t->nb[1], t->nb[2], t->nb[3], offset));
+  return ggml_view_4d(p->ctx, t, ne[0], ne[1], ne[2], ne[3], t->nb[1], t->nb[2], t->nb[3], offset);
 }
 
 /* The indices as I32 row ids of a table of `rows` rows for an `op`. ggml reads
@@ -704,9 +705,10 @@ static bool swapped_back(const struct ggml_tensor *t) {
          s->nb[3] == t->nb[3];
 }
 
-/* The node as an operand of flash attention: its rows must be dense, its other strides may be a view's. */
+/* The node as an operand of flash attention: its rows must be dense, its other strides may be a view's. The first
+   rows of a cache (a slice from its first element) are read where they are, as llama.cpp reads the rows in use. */
 static struct ggml_tensor *rows_of(struct entry *p, const struct gnode *n) {
-  struct ggml_tensor *t = full_of(p, n);
+  struct ggml_tensor *t = n->window != NULL ? n->window : full_of(p, n);
 
   return t->nb[0] == ggml_type_size(t->type) ? t : ggml_cont(p->ctx, t);
 }
@@ -874,7 +876,8 @@ static an_term bad_list(an_env *env, int r, const char *text) { return r == -1 ?
 /* Where a packed operand (a quantized weight, or an F16 one) may go, as one closed list for every op: the leaf itself
    as the argument of a transpose or the table of a gather, and the second argument of a matmul (the leaf, or the
    transpose of one: a view, read in place). An F16 cache goes only where `transformers` puts it: the cache leaf of a
-   set_rows, the key or value of an attention (a leaf, the result of a set_rows or a cast), and a cast of a leaf to F32.
+   set_rows, the key or value of an attention (a leaf, the result of a set_rows or a cast, or a slice of one of
+   those: the rows in use), and a cast of a leaf to F32.
    Any other use would copy or compute on blocks that ggml's ops do not take
    (`ggml_cont` of a quantized view sizes its copy by rows and writes past its buffer), so it is an error before any
    ggml call. `x` is argument `i` of a node of `op`; NULL when it fits. */
@@ -884,11 +887,15 @@ static const char *packed_misuse(int64_t op, int i, const struct gnode *x) {
   if (x->t->type == GGML_TYPE_F16) {
     /* an F16 cache: written in place by set_rows, read by attention, widened by a cast */
     if (op == OP_SET_ROWS && i == 0 && x->op == OP_LEAF) return NULL;
-    if (op == OP_ATTENTION && (i == 1 || i == 2) && (x->op == OP_LEAF || x->op == OP_SET_ROWS || x->op == OP_CAST)) return NULL;
+    if (op == OP_ATTENTION && (i == 1 || i == 2) &&
+        (x->op == OP_LEAF || x->op == OP_SET_ROWS || x->op == OP_CAST || x->op == OP_SLICE)) {
+      return NULL;
+    }
+    if (op == OP_SLICE && (x->op == OP_LEAF || x->op == OP_SET_ROWS || x->op == OP_CAST)) return NULL;
     if (op == OP_CAST && x->op == OP_LEAF) return NULL;
   }
   if (x->op == OP_LEAF && (op == OP_TRANSPOSE || (op == OP_GATHER && i == 0))) return NULL;
-  return "a quantized or F16 weight goes only into the weight of a matmul, a transpose of the weight itself or the table of a gather; an F16 cache only into a set_rows (a leaf), the key or value of an attention, or a cast (a leaf)";
+  return "a quantized or F16 weight goes only into the weight of a matmul, a transpose of the weight itself or the table of a gather; an F16 cache only into a set_rows (a leaf), the key or value of an attention, a slice that an attention reads, or a cast (a leaf)";
 }
 
 an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_list_Int args_list,
@@ -1093,6 +1100,10 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         if (ints[i] < 0 || ints[i] + n->ne[d] > a->ne[d]) return tg_error(env, "slice: a window outside its source");
       }
       t = slice(p, a, ints, rank, n->ne);
+      for (i = 0; i < rank && ints[i] == 0; i++) {
+      }
+      if (i == rank) n->window = t;
+      t = ggml_cont(p->ctx, t);
       break;
     case OP_GATHER:
       if (nints != 1 || ints[0] != a->rank || ints[0] < 1) return tg_error(env, "gather takes the source's rank");
