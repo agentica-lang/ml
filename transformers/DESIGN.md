@@ -110,6 +110,18 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
   `transformers` gets the `hub` without the `gamma`/`beta` fallback until the
   next release moves them (the workspace reads the folders).
 
+## Qwen3 as a GGUF
+
+`qwen3_gguf.agc` writes a model folder as a GGUF with the writer of `hub/`
+(`hub/DESIGN.md`, "Writing"): the config as llama.cpp's `qwen3.*` keys, the
+tokenizer as `tokenizer.ggml.*` (tokens by id with the types of llama.cpp's
+converter, padding ids up to `vocab_size`, the merges by rank), the eos, bos
+and padding ids, the chat template, and the weights as `F32`, `F16` or
+`BF16` (a norm stays `F32`). A tied model writes no `output.weight`, which
+llama.cpp and `Qwen3.open` read as tied. `tools/to_gguf.agc` runs it:
+Qwen3-0.6B writes in 4 s as `F16` and 22 s as `F32` on the CPU of the
+benchmark machine.
+
 ## Tokenizers
 
 `tokenizer/wordpiece.agc` (BERT) and `tokenizer/bpe.agc` (Qwen) read a

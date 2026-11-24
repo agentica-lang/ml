@@ -276,6 +276,10 @@ static inline bool ff_each_span(int fd, const char *path, size_t path_len, int64
   float *values;
   bool ok = true;
 
+  if (width == 0) {
+    snprintf(why, why_len, "unknown float format code %lld", (long long)format);
+    return false;
+  }
   n = end - begin < (int64_t)FF_VALUES ? end - begin : (int64_t)FF_VALUES;
   raw = (uint8_t *)calloc((size_t)n + 1, width);
   values = (float *)calloc((size_t)n + 1, sizeof(float));

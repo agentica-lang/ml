@@ -212,6 +212,12 @@ an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease);
    set since the last run. An error when an output is not finite. */
 an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fills);
 
+/* Writes the `count` values of `src_format` (a code of `Types.file_code`) that start at byte `src_offset` of the
+   file `src` into the existing file `dst` at byte `dst_offset`, as `dst_format`. The same format is a byte copy;
+   F32 to F16 rounds to nearest even and refuses a value beyond 65504, and to BF16 it rounds to nearest even. C
+   does it in chunks on several threads, so no value crosses as a list. Past the end of `dst` the file grows. */
+an_term ggml_convert_file(an_env *env, ng_str src, int64_t src_offset, int64_t src_format, int64_t count, ng_str dst, int64_t dst_offset, int64_t dst_format);
+
 /* How many graphs this process has compiled: the cache's misses. */
 an_term ggml_compiles(an_env *env);
 
@@ -624,6 +630,25 @@ static an_term ggml_native_run(an_env *env, int argc, const an_term *argv) {
   return ggml_run(env, a0, a1);
 }
 
+static an_term ggml_native_convert_file(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_str a0;
+  if (!an_get_string(env, argv[0], &a0.data, &a0.len)) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  ng_str a4;
+  if (!an_get_string(env, argv[4], &a4.data, &a4.len)) return an_badarg(env, 4);
+  int64_t a5;
+  if (!an_get_int(env, argv[5], &a5)) return an_badarg(env, 5);
+  int64_t a6;
+  if (!an_get_int(env, argv[6], &a6)) return an_badarg(env, 6);
+  return ggml_convert_file(env, a0, a1, a2, a3, a4, a5, a6);
+}
+
 static an_term ggml_native_compiles(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   (void)argv;
@@ -654,6 +679,7 @@ static const an_function ggml_native_functions[] = {
   {"output_into", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_output_into, AN_DIRTY},
   {"pin", "(Lease) -> Result[Pin]", ggml_native_pin, AN_DIRTY},
   {"run", "(Lease, List[Float]) -> Result[Void]", ggml_native_run, AN_DIRTY},
+  {"convert_file", "(String, Int, Int, Int, String, Int, Int) -> Result[Void]", ggml_native_convert_file, AN_DIRTY},
   {"compiles", "() -> Int", ggml_native_compiles, AN_DIRTY},
   {"vulkan_fp16", "(Bool) -> Result[Void]", ggml_native_vulkan_fp16, AN_DIRTY},
 };
@@ -666,5 +692,5 @@ static const an_function ggml_native_functions[] = {
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
     {"Pin", sizeof(struct ggml_Pin_state), GGML_Pin_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 18, NULL, 0, ggml_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 19, NULL, 0, ggml_native_resources, 3, LOAD)
 #endif
