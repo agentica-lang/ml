@@ -426,7 +426,7 @@ static bool read_half(const struct load_source *src, int64_t count, int64_t form
 
       if (isfinite(v) && fabsf(v) >= HALF_OVERFLOW) {
         snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)v,
-                 (long long)(done + i));
+                 (long long)done + (long long)i);
         free(chunk);
         return false;
       }
