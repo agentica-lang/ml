@@ -78,7 +78,7 @@ extern module "ggml"
   ## dropped when its lease is freed.
   compute def acquire(device: Int, key: String, capacity: Int, keep: Bool) -> Result[Lease]
   ## True when the leased graph is compiled: a cache hit.
-  compute def ready(lease: Lease) -> Bool
+  def ready(lease: Lease) -> Bool
   ## Appends one node and answers its index: `op` is a code of
   ## `native/ggml_graph.c`, `args` earlier indices, `shape` the row-major
   ## shape the trace recorded, `ints` the op's integer parameters.

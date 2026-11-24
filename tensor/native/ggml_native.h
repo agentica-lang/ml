@@ -717,7 +717,7 @@ static const an_function ggml_native_functions[] = {
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
   {"transfer", "(TensorHandle, Int) -> Result[TensorHandle]", ggml_native_transfer, AN_DIRTY},
   {"acquire", "(Int, String, Int, Bool) -> Result[Lease]", ggml_native_acquire, AN_DIRTY},
-  {"ready", "(Lease) -> Bool", ggml_native_ready, AN_DIRTY},
+  {"ready", "(Lease) -> Bool", ggml_native_ready, AN_SHORT},
   {"node", "(Lease, Int, List[Int], List[Int], List[Int]) -> Result[Int]", ggml_native_node, AN_DIRTY},
   {"compile", "(Lease, List[Int]) -> Result[Void]", ggml_native_compile, AN_DIRTY},
   {"bind", "(Lease, Int, TensorHandle) -> Result[Void]", ggml_native_bind, AN_SHORT},

@@ -164,7 +164,8 @@ end
 ## no input of the run may be). `op` names the call in an error. A tensor that is closed, an input
 ## or a constant of the trace, is an error naming the leaf; the constants must
 ## stay open while any task may run the program (nothing holds them between
-## the bind and the run).
+## the bind and the run). A program of a pin (`pinned`) leaves its constants
+## bound to the pinned graph, and its next run binds only `fed`.
 def execute(
   p: Program,
   inputs: List[Types.Tensor],
