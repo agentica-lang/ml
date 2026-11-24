@@ -116,6 +116,8 @@ struct gnode {
   int in_place; /* a set_rows that writes its leaf: its result is that leaf, an output with no copy and no check */
   int rank; /* of the recorded shape */
   struct ggml_tensor *guard; /* a gather's or scatter_add's count of indices out of range */
+  struct ggml_tensor *dense; /* the contiguous copy of a view, made once for every op that needs one */
+  struct ggml_tensor *at; /* the node as the I32 positions of a rope, made once */
 };
 
 #define MAX_OUTPUTS 256
@@ -383,7 +385,15 @@ static struct ggml_tensor *contiguous(struct entry *p, struct ggml_tensor *t) {
   return ggml_is_contiguous(t) ? t : ggml_cont(p->ctx, t);
 }
 
-static struct ggml_tensor *dense(struct entry *p, const struct gnode *n) { return contiguous(p, full_of(p, n)); }
+static struct ggml_tensor *dense(struct entry *p, const struct gnode *n) {
+  struct gnode *node = (struct gnode *)n; /* the nodes are `p->nodes`; the copy is a cache */
+
+  if (node->dense == NULL) node->dense = contiguous(p, full_of(p, n));
+  return node->dense;
+}
+
+/* The node's own tensor, copied when it is a view (a permute that kept axis 0): for the ops that take `->t` raw. */
+static struct ggml_tensor *plain(struct entry *p, const struct gnode *n) { return contiguous(p, n->t); }
 
 static struct ggml_tensor *reshape(struct entry *p, struct ggml_tensor *t, const int64_t ne[4]) {
   if (same_ne(t, ne)) return t;
@@ -395,8 +405,8 @@ typedef struct ggml_tensor *(*binary_fn)(struct ggml_context *, struct ggml_tens
 /* `a op b` at `a`'s recorded shape, with `b` broadcast by ggml when lazy. */
 static struct ggml_tensor *binary(struct entry *p, binary_fn fn, int commutes, const struct gnode *a,
                                   const struct gnode *b) {
-  if (a->lazy && !b->lazy && commutes) return fn(p->ctx, b->t, a->t);
-  return fn(p->ctx, full_of(p, a), b->t);
+  if (a->lazy && !b->lazy && commutes) return fn(p->ctx, plain(p, b), a->t);
+  return fn(p->ctx, full_of(p, a), plain(p, b));
 }
 
 /* `1 - m` for a 0/1 mask. */
@@ -522,14 +532,16 @@ static bool attends(const struct gnode *q, const struct gnode *k, const struct g
    here and ggml takes I32; `inverse` negates them, which turns every pair the other way. */
 static struct ggml_tensor *rope(struct entry *p, const struct gnode *x, const struct gnode *positions, int dims,
                                 bool neox, float base, bool inverse) {
-  struct ggml_tensor *rows = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, x), 0, 2, 1, 3));
-  struct ggml_tensor *at = ggml_cont(p->ctx, dense(p, positions));
+  struct ggml_tensor *rows = contiguous(p, ggml_permute(p->ctx, full_of(p, x), 0, 2, 1, 3));
+  struct gnode *source = (struct gnode *)positions; /* the nodes are `p->nodes`; the cast is a cache */
+  struct ggml_tensor *at = source->at;
   struct ggml_tensor *turned;
 
-  if (inverse) at = ggml_neg(p->ctx, at);
-  turned = ggml_rope_ext(p->ctx, rows, ggml_cast(p->ctx, at, GGML_TYPE_I32), NULL, dims,
+  if (inverse) at = ggml_cast(p->ctx, ggml_neg(p->ctx, dense(p, positions)), GGML_TYPE_I32);
+  else if (at == NULL) at = source->at = ggml_cast(p->ctx, dense(p, positions), GGML_TYPE_I32);
+  turned = ggml_rope_ext(p->ctx, rows, at, NULL, dims,
                          neox ? GGML_ROPE_TYPE_NEOX : GGML_ROPE_TYPE_NORMAL, 4096, base, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
-  return ggml_cont(p->ctx, ggml_permute(p->ctx, turned, 0, 2, 1, 3));
+  return ggml_permute(p->ctx, turned, 0, 2, 1, 3); /* a view: the next op copies it only if it must */
 }
 
 /* Whether the args, of the output's rank (one less for a stack), match `ne`
@@ -718,6 +730,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       }
       t = a->t;
       n->lazy = !same_ne(t, n->ne);
+      if (n->lazy) t = plain(p, a);
       n->zero = a->zero;
       break;
     case OP_SUM:
@@ -897,7 +910,10 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         seen[ints[i]] = true;
         order[rank - 1 - (int)ints[i]] = rank - 1 - i; /* source ggml axis -> its place in the answer */
       }
-      t = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, a), order[0], order[1], order[2], order[3]));
+      /* Axis 0 kept (the width of a head, say): a view, and whoever needs it contiguous (`dense`) copies it, or
+         permutes it back and finds the source again. Any other permute is a copy now. */
+      if (order[0] == 0) t = ggml_permute(p->ctx, full_of(p, a), order[0], order[1], order[2], order[3]);
+      else t = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, a), order[0], order[1], order[2], order[3]));
       break;
     }
     case OP_ATTENTION: {
