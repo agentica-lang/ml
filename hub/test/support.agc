@@ -3,6 +3,8 @@
 ## new temporary folder, which each test removes when it ends. Run the tests
 ## from `hub/`.
 
+import Hub from "../hub"
+import Shards from "../shard"
 import Tensor from "pkg/tensor/tensor"
 
 REF = Tensor.Backend.Reference
@@ -90,4 +92,73 @@ def expect_close(got: List[Float], want: List[Float], abs: Float, rel: Float, wh
   end
 
   ok()
+end
+
+def same_as_peer(c: Hub.Checkpoint, expected: JSON.Value) -> Result[Void]
+  fields: Map[String, JSON.Value] = {}
+  case JSON.node(expected)
+    JSON.Node.Object(m) -> fields = m
+    _ -> return error("the expected values are not a JSON object")
+  end
+
+  try Test.eq(Hub.names(c), fields.keys.sort)
+  for name in fields.keys
+    want = fields[name]
+    t = try Hub.tensor(c, name, REF)
+    try Test.eq(Tensor.dtype(t), loaded_dtype(try JSON.string(try JSON.get(want, "dtype"))))
+    try Test.eq(Tensor.shape(t), try JSON.decode(try JSON.get(want, "shape"), List[Int]))
+    try Test.eq(bits(try Tensor.to_list(t)), bits(try values(try JSON.get(want, "values"), Tensor.dtype(t))))
+  end
+
+  ok()
+end
+
+## F32, F16 and BF16 load as `F32`; the other dtypes as the file has them.
+def loaded_dtype(file_dtype: String) -> Tensor.Dtype
+  return Tensor.Dtype.F32 if ["F32", "F16", "BF16"].include?(file_dtype)
+  Shards.DTYPES[file_dtype]
+end
+
+## The peer's values: floats come as text, so `inf` and `nan` fit in JSON.
+def values(json: JSON.Value, dtype: Tensor.Dtype) -> Result[List[Tensor.Values]]
+  out: List[Tensor.Values] = []
+  for v in try JSON.list(json)
+    case dtype
+      Tensor.Dtype.F32 -> out = out.push(Tensor.Values.Float(try float(try JSON.string(v))))
+      Tensor.Dtype.F64 -> out = out.push(Tensor.Values.Float(try float(try JSON.string(v))))
+      Tensor.Dtype.Bool -> out = out.push(Tensor.Values.Bool(try JSON.bool(v)))
+      _ -> out = out.push(Tensor.Values.Int(try JSON.int(v)))
+    end
+  end
+
+  ok(out)
+end
+
+def float(text: String) -> Result[Float]
+  inf = Float.from_bits(0x7FF0000000000000)
+  case text
+    "inf" -> ok(inf)
+    "-inf" -> ok(-inf)
+    "nan" -> ok(inf - inf)
+    _ -> text.to_f
+  end
+end
+
+## Floats as their bits, so `-0.0` differs from `0.0` and NaN equals NaN
+## (`to_bits` gives every NaN one pattern: payloads are not compared).
+def bits(vs: List[Tensor.Values]) -> List[String]
+  vs.map do |v|
+    case v
+      Tensor.Values.Float(f) -> "f#{Float.to_bits(f)}"
+      Tensor.Values.Int(i) -> "i#{i}"
+      Tensor.Values.Bool(b) -> "b#{b}"
+    end
+  end
+end
+
+def expect_error[T](r: Result[T], phrase: String) -> Result[Void]
+  case r
+    ok(_) -> error("expected an error with \"#{phrase}\", got a value")
+    error(e) -> Test.assert(e.message.include?(phrase), "\"#{e.message}\" does not hold \"#{phrase}\"")
+  end
 end

@@ -10,6 +10,8 @@ path, and leaves:
   ignore (`Qwen3-0.6B`'s file has one too);
 - `untied/`: `float32` weights and its own `lm_head.weight`;
 - `missing/`: `tiny` without one weight;
+- `tiny.gguf`, `untied.gguf`, `half.gguf` (and `llama.gguf`, `scaled.gguf`, which the loader must refuse): the same models as GGUF version 3 with llama.cpp's names, `output.weight`
+  written for the tied one too (a copy of the table, as its converter does), and `half.gguf` in `float16`;
 - `half/`: `float32`, tied, one layer of width 256, so that the table and the
   MLP matrices reach the half-weight threshold (no expected logits: the test
   compares it with itself loaded as `F32`);
@@ -200,6 +202,69 @@ def half():
     return m
 
 
+GGUF_TOP = {"model.embed_tokens.weight": "token_embd.weight", "model.norm.weight": "output_norm.weight",
+            "lm_head.weight": "output.weight"}
+GGUF_BLOCK = {"input_layernorm.weight": "attn_norm.weight", "self_attn.q_proj.weight": "attn_q.weight",
+              "self_attn.k_proj.weight": "attn_k.weight", "self_attn.v_proj.weight": "attn_v.weight",
+              "self_attn.o_proj.weight": "attn_output.weight", "self_attn.q_norm.weight": "attn_q_norm.weight",
+              "self_attn.k_norm.weight": "attn_k_norm.weight", "post_attention_layernorm.weight": "ffn_norm.weight",
+              "mlp.gate_proj.weight": "ffn_gate.weight", "mlp.up_proj.weight": "ffn_up.weight",
+              "mlp.down_proj.weight": "ffn_down.weight"}
+
+
+def gguf_name(name):
+    if name in GGUF_TOP:
+        return GGUF_TOP[name]
+    parts = name.split(".")  # model.layers.N.<rest>
+    return "blk.%s.%s" % (parts[2], GGUF_BLOCK[".".join(parts[3:])])
+
+
+def g_string(s):
+    raw = s.encode()
+    return struct.pack("<Q", len(raw)) + raw
+
+
+def write_gguf(path, model, config, dtype, tied_copy, arch="qwen3", extra=()):
+    """GGUF version 3, written from the format's description. `tied_copy`: write `output.weight` as a copy of the
+    table (llama.cpp does for a tied model). The tensor values are `dtype` ("F32" or "F16")."""
+    c = config
+    kvs = [("general.architecture", 8, arch), ("qwen3.block_count", 4, c["num_hidden_layers"]),
+           ("qwen3.context_length", 4, c["max_position_embeddings"]), ("qwen3.embedding_length", 4, c["hidden_size"]),
+           ("qwen3.feed_forward_length", 4, c["intermediate_size"]),
+           ("qwen3.attention.head_count", 4, c["num_attention_heads"]),
+           ("qwen3.attention.head_count_kv", 4, c["num_key_value_heads"]),
+           ("qwen3.attention.key_length", 4, c["head_dim"]), ("qwen3.attention.value_length", 4, c["head_dim"]),
+           ("qwen3.attention.layer_norm_rms_epsilon", 6, c["rms_norm_eps"]),
+           ("qwen3.rope.freq_base", 6, float(c["rope_theta"]))] + list(extra)
+    head = b"GGUF"
+    tensors = []
+    for name in sorted(model.values):
+        if name == "lm_head.weight" and tied_copy:
+            continue
+        tensors.append((gguf_name(name), model.shapes[name], model.values[name]))
+    if tied_copy:
+        tensors.append(("output.weight", model.shapes["model.embed_tokens.weight"],
+                        model.values["model.embed_tokens.weight"]))
+    head += struct.pack("<IQQ", 3, len(tensors), len(kvs))
+    for key, kind, v in kvs:
+        body = g_string(v) if kind == 8 else struct.pack("<I" if kind == 4 else "<f", v)
+        head += g_string(key) + struct.pack("<I", kind) + body
+    data, infos = b"", b""
+    code, fmt = (0, "f") if dtype == "F32" else (1, "e")
+    for name, shape, values in tensors:
+        # norms stay F32 in llama.cpp's files, even in an F16 one
+        norm = len(shape) == 1
+        kind, f = (0, "f") if norm else (code, fmt)
+        raw = struct.pack("<%d%s" % (len(values), f), *values)
+        data += b"\0" * (-len(data) % 32)
+        infos += g_string(name) + struct.pack("<I", len(shape)) + b"".join(struct.pack("<Q", d) for d in reversed(shape))
+        infos += struct.pack("<IQ", kind, len(data))
+        data += raw
+    head += infos
+    head += b"\0" * (-len(head) % 32)
+    path.write_bytes(head + data)
+
+
 def write(out):
     tied, untied = qwen("BF16", False), qwen("F32", True)
     expected = {"ids": IDS, "tiny": [tied.logits(r) for r in IDS], "untied": [untied.logits(r) for r in IDS],
@@ -212,6 +277,11 @@ def write(out):
     (out / "half").mkdir()
     half().save(out / "half" / "model.safetensors")
     (out / "half" / "config.json").write_text(json.dumps(HALF_CONFIG))
+    write_gguf(out / "tiny.gguf", tied, CONFIG, "F32", True)
+    write_gguf(out / "untied.gguf", untied, dict(CONFIG, tie_word_embeddings=False), "F32", False)
+    write_gguf(out / "half.gguf", half(), HALF_CONFIG, "F16", True)
+    write_gguf(out / "llama.gguf", tied, CONFIG, "F32", True, arch="llama")
+    write_gguf(out / "scaled.gguf", tied, CONFIG, "F32", True, extra=[("qwen3.rope.scaling.type", 8, "yarn")])
     (out / "expected.json").write_text(json.dumps(expected))
 
 

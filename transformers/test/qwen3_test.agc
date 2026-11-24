@@ -96,6 +96,51 @@ def test_f16_weights_keep_the_big_matrices_half_and_the_logits_close() -> Result
   end
 end
 
+## The same models as GGUF files (llama.cpp's names, `output.weight` also for the tied one) give the peer's logits, from
+## the key-values alone: no `config.json`.
+def test_a_gguf_gives_the_same_logits_as_the_safetensors() -> Result[Void]
+  with_peer do |dir|
+    try matches_path(dir, "tiny.gguf", "tiny", S.REF, ABS, REL)
+    try matches_path(dir, "untied.gguf", "untied", S.REF, ABS, REL)
+    for backend in try S.ggml_backends()
+      try matches_path(dir, "tiny.gguf", "tiny", backend, F32_ABS, F32_REL)
+    end
+
+    ok()
+  end
+end
+
+## An F16 GGUF read with `weights: F16` keeps its big matrices half, which an F32 read widens; both are the one file.
+def test_an_f16_gguf_keeps_half_weights() -> Result[Void]
+  with_peer do |dir|
+    rows = [[1, 5, 2, 7, 3, 12], [399, 200, 9, 0, 6, 11]]
+    for backend in try S.ggml_backends()
+      half = try Qwen3.open("#{dir}/half.gguf", backend, Tensor.Dtype.F16)
+      whole = try Qwen3.open("#{dir}/half.gguf", backend)
+      try Test.eq(Tensor.dtype(half.tokens.table), Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype(half.stack.blocks[0].mlp.up.w), Tensor.Dtype.F16)
+      try Test.eq(Tensor.dtype(whole.tokens.table), Tensor.Dtype.F32)
+      try S.expect_close(
+        try S.floats_of(try Qwen3.run(half, rows)),
+        try S.floats_of(try Qwen3.run(whole, rows)),
+        F32_ABS,
+        F32_REL,
+        "half against widened",
+      )
+    end
+
+    ok()
+  end
+end
+
+## What a GGUF cannot say is an error naming it.
+def test_a_gguf_of_another_architecture_or_with_rope_scaling_is_refused() -> Result[Void]
+  with_peer do |dir|
+    try S.expect_error(Qwen3.open("#{dir}/llama.gguf", S.REF), "llama")
+    S.expect_error(Qwen3.open("#{dir}/scaled.gguf", S.REF), "rope_scaling")
+  end
+end
+
 ## `close_model` frees what ggml holds; a model that was closed is an error.
 def test_a_closed_model_is_an_error_on_ggml() -> Result[Void]
   with_peer do |dir|
@@ -183,6 +228,21 @@ def ids(dir: String) -> Result[List[List[Int]]]
   end
 
   ok(out)
+end
+
+## The model file `file` on `backend` against the peer's logits of `key`.
+def matches_path(
+  dir: String,
+  file: String,
+  key: String,
+  backend: Tensor.Backend,
+  abs: Float,
+  rel: Float,
+) -> Result[Void]
+  m = try Qwen3.open("#{dir}/#{file}", backend)
+  got = try Qwen3.run(m, try ids(dir))
+  try Test.eq(Tensor.shape(got), [2, 6, 13])
+  S.expect_close(try S.floats_of(got), try S.flat(try JSON.get(try expected(dir), key)), abs, rel, file)
 end
 
 ## The model `folder` on `backend` against the peer's logits of the batch.
