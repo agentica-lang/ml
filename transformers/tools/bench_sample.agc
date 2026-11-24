@@ -1,6 +1,6 @@
-## Times a decode step of Qwen3 on ggml with the greedy pick in the graph against a sampled one (the logits read back
-## and `Sample.pick` on the host), and splits the sampled step into the readback and the pick. Prints
-## `greedy MS`, `sampled MS`, `readback MS` and `pick MS` per step (the means of 32 one-token steps after a prompt of
+## Times a decode step of Qwen3 on ggml with the greedy pick in the graph against a sampled one (the `top_k` cut in the graph,
+## then `Sample.pick_top` on the host), and splits the sampled step into the graph run with its readback and the pick. Prints
+## `greedy MS`, `sampled MS`, `graph MS` and `pick MS` per step (the means of 32 one-token steps after a prompt of
 ## 128 ids). Manual. Run from `transformers/`:
 ##
 ##   agentica tools/bench_sample.agc MODEL_DIR [cpu|vulkan]
@@ -45,7 +45,7 @@ def run(dir: String, backend: Tensor.Backend) -> Result[Void]
   both = try logits(g, prompt)
   puts("greedy #{greedy_ms.to_f / STEPS.to_f}")
   puts("sampled #{both[0].to_f / STEPS.to_f}")
-  puts("readback #{(both[0] - both[1]).to_f / STEPS.to_f}")
+  puts("graph #{(both[0] - both[1]).to_f / STEPS.to_f}")
   puts("pick #{both[1].to_f / STEPS.to_f}")
   Generate.close(g)
   Qwen3.close_model(m)
@@ -69,20 +69,21 @@ def greedy(g: Generate.Generator, prompt: List[Int]) -> Result[Int]
   ok(took)
 end
 
-## The milliseconds of `STEPS` steps that read the logits, and of the picks among them.
+## The milliseconds of `STEPS` sampled steps (the in-graph cut and `Sample.pick_top`), and of the picks among them.
 def logits(g: Generate.Generator, prompt: List[Int]) -> Result[List[Int]]
   sampling = Sample.Sampling(temperature: 0.8, top_k: 40, top_p: 0.95, seed: 7)
+  k = Sample.window(sampling, g.model.config.vocab_size)
   state = Sample.start(sampling)
-  s = try Generate.step_logits(g, Generate.start(), prompt)
+  s = try Generate.step_top(g, Generate.start(), prompt, k)
   cache = s.cache
-  last = try Sample.pick(s.logits, sampling, state)
+  last = try Sample.pick_top(s.ids, s.logits, sampling, state)
   picking = 0
   started = Time.monotonic_ms
   for _ in 0...STEPS
-    s = try Generate.step_logits(g, cache, [last.id])
+    s = try Generate.step_top(g, cache, [last.id], k)
     cache = s.cache
     began = Time.monotonic_ms
-    last = try Sample.pick(s.logits, sampling, last.state)
+    last = try Sample.pick_top(s.ids, s.logits, sampling, last.state)
     picking += Time.monotonic_ms - began
   end
 

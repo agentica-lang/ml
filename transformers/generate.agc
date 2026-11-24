@@ -189,8 +189,8 @@ def finish(cache: Cache) -> Void
 end
 
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`).
-## Greedy (the choice runs in the graph) unless `sampling` says how to draw: then each step reads the logits and
-## `Sample.pick` draws from them, the same ids for the same seed. The prompt and the new ids must fit
+## Greedy (the choice runs in the graph) unless `sampling` says how to draw: then each step reads the largest logits (cut in the graph) and
+## `Sample.pick_top` draws among the largest, the same ids for the same seed. The prompt and the new ids must fit
 ## `max_position_embeddings`.
 def generate(
   g: Generator,
