@@ -11,7 +11,7 @@ path, and leaves:
 - `untied/`: `float32` weights and its own `lm_head.weight`;
 - `missing/`: `tiny` without one weight;
 - `expected.json`: for the batch `IDS`, the logits of every position of every
-  row, of `tiny` and of `untied`.
+  row, of `tiny` and of `untied`, and of `tiny` on the longer row `LONG`.
 
 The forward is Hugging Face's `Qwen3ForCausalLM`: RMS norms, queries and keys
 normalized per head before the rotation (`rotate_half`, `rope_theta`),
@@ -35,6 +35,8 @@ CONFIG = {
     "sliding_window": None,
 }
 IDS = [[1, 5, 2, 7, 3, 12], [4, 4, 9, 0, 6, 11]]
+# A row that outgrows a cache of 8 and of 16 rows.
+LONG = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3, 8, 4]
 MISSING = "model.layers.1.mlp.down_proj.weight"
 
 
@@ -172,7 +174,8 @@ def qwen(dtype, untied):
 
 def write(out):
     tied, untied = qwen("BF16", False), qwen("F32", True)
-    expected = {"ids": IDS, "tiny": [tied.logits(r) for r in IDS], "untied": [untied.logits(r) for r in IDS]}
+    expected = {"ids": IDS, "tiny": [tied.logits(r) for r in IDS], "untied": [untied.logits(r) for r in IDS],
+                "long": LONG, "tiny_long": tied.logits(LONG)}
     for folder, model, config, skip in [("tiny", tied, CONFIG, ()), ("untied", untied, dict(CONFIG, tie_word_embeddings=False), ()),
                                         ("missing", tied, CONFIG, MISSING)]:
         (out / folder).mkdir()

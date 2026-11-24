@@ -141,9 +141,7 @@ def close_model(m: Qwen3) -> Void
   Lift.close(tensors)
 end
 
-private
-
-## The tensors of `m` as `Trace` constants (`Lift`).
+## The tensors of `m` as `Trace` constants (`Lift`). Internal: the graphs of `Generate` use it.
 def traced(m: Qwen3) -> Qwen3
   m.with(
     tokens: Lift.embedding(m.tokens),
@@ -154,6 +152,8 @@ def traced(m: Qwen3) -> Qwen3
     head: Lift.dense(m.head),
   )
 end
+
+private
 
 def check_config(config: Config) -> Result[Void]
   return error("model_type is #{config.model_type}, not qwen3") if config.model_type != "qwen3"
