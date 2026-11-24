@@ -222,37 +222,45 @@ llama.cpp is about 2.3 times faster than ours on the CPU for one sentence; the g
 
 ## Qwen3-0.6B (ml#78), ours against llama.cpp
 
-`Qwen/Qwen3-0.6B`, greedy generation, one sequence. Ours is `transformers/tools/bench_qwen.agc` on ml `9e94aa8` (`Generate`, with the weight layout of ml#123): the load, one warm-up pass that compiles the steps, then a timed pass: a prompt of 128 token ids in one step, then 64 one-token steps after it (the cache grows from 128 to 192 tokens). llama.cpp (`e348f05cf`, built out of tree from a `git archive` of its HEAD, once with the CPU only and once with `-DGGML_VULKAN=ON`, `llama-bench` only) runs the GGUFs that its own `convert_hf_to_gguf.py` makes from the same weights, run as `python3 -I`, with `llama-bench -p 128 -n 64 -t 8 -r 1` (`-ngl 99` on Vulkan): `pp128` is the prompt and `tg64` the 64 tokens, starting from an empty cache. Ours always computes in `float32` (the `bfloat16` file is read as `F32`), so the like-for-like row is llama.cpp's F32; its F16 row reads half the memory per token and is what a user would run next. The default quantized GGUFs of llama.cpp (Q4_K_M and the like) are not comparable to anything here and are not measured.
+`Qwen/Qwen3-0.6B`, greedy generation, one sequence. Ours is `transformers/tools/bench_qwen.agc` on ml `a72f56c` (`Generate` with the cache written in place, ml#133; the weight layout of ml#123): the load, one warm-up pass that compiles the steps, then a timed pass: a prompt of 128 token ids in one step, then 64 one-token steps after it (the cache grows from 128 to 192 tokens). llama.cpp (`e348f05cf`, built out of tree from a `git archive` of its HEAD, once with the CPU only and once with `-DGGML_VULKAN=ON`, `llama-bench` only) runs the GGUFs that its own `convert_hf_to_gguf.py` makes from the same weights, run as `python3 -I`, with `llama-bench -p 128 -n 64 -t 8 -r 1` (`-ngl 99` on Vulkan): `pp128` is the prompt and `tg64` the 64 tokens, starting from an empty cache. Ours always computes in `float32` (the `bfloat16` file is read as `F32`), so the like-for-like row is llama.cpp's F32; its F16 row reads half the memory per token and is what a user would run next. The default quantized GGUFs of llama.cpp (Q4_K_M and the like) are not comparable to anything here and are not measured.
 
-[`benchmarks/bench_qwen.sh`](bench_qwen.sh) runs the six rows interleaved, one process per row and round (5 rounds, so a change of load hits all rows), under `flock /tmp/claude-1000/bench.lock` with nothing else timing, and prints the medians. Same machine as above. The load average was 3.7 to 5.5 at the end of the rounds, which is the benchmark's own 8 threads. Peak memory is `/usr/bin/time`'s maximum resident set of the whole process: llama.cpp maps the GGUF, so on Vulkan its weights are not in the process, ours are loaded.
+[`benchmarks/bench_qwen.sh`](bench_qwen.sh) runs the six rows interleaved, one process per row and round (5 rounds, so a change of load hits all rows), under `flock /tmp/claude-1000/bench.lock` with nothing else timing, and prints the medians. Same machine as above, the other jobs of the machine stopped. The load average was 1.9 at the start, and the benchmark's own 8 threads are most of the rest. Peak memory is `/usr/bin/time`'s maximum resident set of the whole process: llama.cpp maps the GGUF, so on Vulkan its weights are not in the process, ours are loaded.
 
 | Row | Prompt, 128 tokens | 64 tokens after it | Load | Peak memory |
 |---|---|---|---|---|
-| ours, ggml CPU, F32 | 56 tokens/s | 5.6 tokens/s | 1.2 s | 2.76 GB |
-| llama.cpp CPU, F32 | 129 | 10.5 | | 2.89 GB |
-| llama.cpp CPU, F16 | 82 | 18.1 | | 1.49 GB |
-| ours, ggml Vulkan, F32 | 208 | 7.1 | 1.6 s | 0.85 GB |
-| llama.cpp Vulkan, F32 | 403 | 13.5 | | 0.13 GB |
-| llama.cpp Vulkan, F16 | 545 | 25.0 | | 0.13 GB |
+| ours, ggml CPU, F32 | 61.9 tokens/s | 9.17 tokens/s | 2.65 s | 2.68 GB |
+| llama.cpp CPU, F32 | 123.0 | 10.23 | | 2.89 GB |
+| llama.cpp CPU, F16 | 90.0 | 18.09 | | 1.49 GB |
+| ours, ggml Vulkan, F32 | 215.1 | 10.34 | 1.71 s | 0.86 GB |
+| llama.cpp Vulkan, F32 | 412.1 | 13.72 | | 0.13 GB |
+| llama.cpp Vulkan, F16 | 455.9 | 26.33 | | 0.13 GB |
 
-On the same F32 weights llama.cpp is 2.3 times faster on the CPU prompt, 1.9 times on its tokens, and 1.9 times on both on Vulkan. Where the gap comes from is in [Where a Qwen3 step goes](#where-a-qwen3-step-goes). Correctness: the ids match Hugging Face's greedy `generate` on five prompts on both backends (`transformers/tools/generate_check.agc`).
+On the same F32 weights llama.cpp is 2.0 times faster on the CPU prompt and 1.1 times on its tokens, and on Vulkan 1.9 times on the prompt and 1.3 times on the tokens. Before the profile below (ml `9e94aa8`) the rows were 56 and 5.6 tokens/s on the CPU and 208 and 7.1 on Vulkan: the tokens are 1.6 and 1.5 times faster, the prompt is 11 percent and 3 percent faster. Where the gap comes from is in [Where a Qwen3 step goes](#where-a-qwen3-step-goes). Correctness: the ids match Hugging Face's greedy `generate` on five prompts on both backends (`transformers/tools/generate_check.agc`).
 
 ### Where a Qwen3 step goes
 
-`transformers/tools/profile_qwen.agc MODEL_DIR PREFILLS DECODES [cpu|vulkan|vulkan16]` loads the model, compiles the steps with one warm-up pass (a prompt of 128 ids, then 8 one-token steps), and then runs the timed prefills and decode steps. It writes `MARK prefill N`, `MARK decode N` and `MARK end` to stderr, so `python3 -I benchmarks/vk_perf.py STDERR.txt` splits the kernel log of `GGML_VK_PERF_LOGGER=1 GGML_VK_PERF_LOGGER_FREQUENCY=1` into a prefill table and a decode table (calls and GPU time per kernel, averaged per graph). With `AGENTICA_VM_TRACE=profile` and `AGENTICA_VM_TRACE_FILE`, `step_profile.py` subtracts a run with 0 steps from a full one, to get the host side (`ml.*` sections). Same machine as above, the Qwen3-0.6B F32 weights, ml `9e94aa8`, llama.cpp `e348f05cf`, a quiet machine.
+`transformers/tools/profile_qwen.agc MODEL_DIR PREFILLS DECODES [cpu|vulkan|vulkan16]` loads the model, compiles the steps with one warm-up pass (a prompt of 128 ids, then 8 one-token steps), and then runs the timed prefills and decode steps. It writes `MARK prefill N`, `MARK decode N` and `MARK end` to stderr, so `python3 -I benchmarks/vk_perf.py STDERR.txt` splits the kernel log of `GGML_VK_PERF_LOGGER=1 GGML_VK_PERF_LOGGER_FREQUENCY=1` into a prefill table and a decode table (calls and GPU time per kernel, averaged per graph). With `AGENTICA_VM_TRACE=profile` and `AGENTICA_VM_TRACE_FILE`, `step_profile.py` subtracts a run with 0 steps from a full one, to get the host side (`ml.*` sections). Same machine as above, the Qwen3-0.6B F32 weights, llama.cpp `e348f05cf`, a quiet machine. The first numbers were taken on ml `9e94aa8`; the changes that came out of them are listed after the tables (ml#131, #132, #133), with the numbers on ml `a72f56c`.
 
-One decode step on Vulkan, with 128 tokens in the cache:
+One decode step on Vulkan, with 128 tokens in the cache, on ml `9e94aa8` (before) and `a72f56c` (after):
 
-| | ours | llama.cpp |
-|---|---|---|
-| wall time of a step | 140 ms | 74.7 ms |
-| GPU time of the kernels | 132.5 ms | 74.7 ms |
-| the matrix-vector products with a weight | 77.9 ms | 71.0 ms |
-| everything else | about 54 ms | about 4 ms |
+| | ours before | ours after | llama.cpp |
+|---|---|---|---|
+| wall time of a step | 140 ms | 96.7 ms | 74.7 ms |
+| GPU time of the kernels | 132.5 ms | 91.0 ms | 74.7 ms |
+| the matrix-vector products with a weight | 77.9 ms | 74.3 ms | 71.0 ms |
+| everything else | about 54 ms | about 17 ms | about 4 ms |
 
-The 54 ms of "everything else" is the cost of the functional cache and of unfused ops: writing the new rows into the padded cache (a product by a 0/1 matrix, then copies; about 30 ms), the norms and elementwise ops (about 14 ms), the attention (4.2 ms against 1.8 ms) and the pick of the next id (3.0 ms). On the host, turning the 57 new cache tensors into handles takes 8.7 ms a step, the upload 1.6 ms, and about 16 ms of the step is outside the graph run; the steps of the VM are negligible. The weight products are 7 to 12 percent slower than llama.cpp's: same kernel names, so a smaller effect than the rest.
+The 54 ms of "everything else" was the cost of the functional cache and of unfused ops: writing the new rows into the padded cache (a product by a 0/1 matrix, then copies; about 30 ms), the norms and elementwise ops (about 14 ms), the attention (4.2 ms against 1.8 ms) and the pick of the next id (3.0 ms). On the host, turning the 57 new cache tensors into handles took 8.7 ms a step, the upload 1.6 ms, and about 16 ms of the step was outside the graph run; the steps of the VM are negligible. The weight products are 7 to 12 percent slower than llama.cpp's: same kernel names, so a smaller effect than the rest.
 
-A prefill of 128 tokens: 657 ms of kernels against 364 ms for llama.cpp. The weight matmuls (`MUL_MAT f32`, `n=128`) are 477 ms against about 310 ms; everything else is about 180 ms against about 54 ms.
+Three changes took most of it away (ml#131, #132, #133):
+
+- **Reuse of the old cache's tensors** (#131, merged, replaced by the next): a step wrote its new cache into the tensors of the one before, so it made no new handles (-15 ms of the step).
+- **RMS norm as one primitive** (#132): `ggml_rms_norm` in place of the composed norm (-80 ms of the prefill, -5 ms of a decode step).
+- **`set_rows` with the cache donated** (#133): a one-token step writes its row into the cache's own tensors with `ggml_set_rows`, so the 0/1 product and the copies are gone: `SET_ROWS` is 56 calls and 0.6 ms of a step, and the step went from about 124 to about 98 ms in an A/B run (3 alternating rounds, 40 steps). The cache is consumed by the step (`Trace.run`, `tensor/DESIGN.md`).
+
+After them a step has 91.0 ms of kernels: the weight products 74.3 ms, the copies (`CONT`) 4.2 ms, the two attention products 4.0 ms, the pick (`ARGMAX`) 2.4 ms, the rest under 1 ms each. Outside the graph the step takes 5.7 ms. What is left against llama.cpp is 22 ms: 16 ms of kernels (3 of them in the weight products, which are now 5 percent slower) and the 5.7 ms outside the graph.
+
+A prefill of 128 tokens: 573.5 ms of kernels against 364 ms for llama.cpp (it was 657 ms; the RMS norm primitive is most of the 83 ms). The weight matmuls (`MUL_MAT f32`, `n=128`) are 457 ms against about 310 ms; everything else is about 117 ms against about 54 ms (`CONT` 26.7 ms, the attention products 16.5 ms, the output head 22.0 ms). The prompt gap of about 1.9 times is the in-graph matmul slowdown: the same product that takes 1.67 ms alone takes 2.8 ms after another kernel wrote its input, and llama.cpp runs with fp16 on, which `tensor/` has off by default; both are in the **fp16** paragraph below (#130). F16 weights are opt-in and not what this table measures (ml#134, ml#86).
 
 **fp16.** ggml-vulkan runs F32 matmuls on a device with fp16 support in a faster mode, and `tensor/` turns it off unless `Tensor.vulkan_fp16(true)` (`profile_qwen.agc` mode `vulkan16`). llama.cpp has it on: its `pp128` is 404 tokens/s with it and 262 with `GGML_VK_DISABLE_F16=1`, and the kernel `MUL_MAT f32 m=3072 n=128 k=1024` takes 1.84 ms against 2.80 ms. Ours takes 2.79 ms: the same as llama.cpp with fp16 off. ggml's own `test-backend-ops perf` (the ggml of this repository, `m=4096 n=512 k=14336`, F32 activations) gives 124 ms a run (485 GFLOPS) with fp16 on and 220 ms (273 GFLOPS) with it off, and 81.5 ms (738 GFLOPS) with F16 weights, so the pin is fine. Our own graphs reach the fast path too. With fp16 on, 28 products of one input by the real `up_proj` weights run at 1.67 ms a product, steady, and the values of the input do not change it. A chain of 28 blocks where each product reads the output of an earlier kernel (`h = h + mlp(h)`, with or without the norm) runs at 2.84 ms a product, and so does the whole forward of `Qwen3.logits` (2.66 ms) and the prefill of `Generate` (2.9 ms), with fp16 on and off alike. The first runs of any graph are slower still (3.7 to 3.9 ms). The GPU clock does not explain it: the top state and 100 percent busy during the chain. The cause is open: it is in how ggml v1.0.0 runs a product whose input another kernel wrote, and the kernel names do not tell which pipeline it picks. Until it is found, compare F32 and F16 weights inside the model graph, not with an isolated product.
 
