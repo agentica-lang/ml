@@ -57,12 +57,24 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 - The forward is one graph on ggml (`Lift.staged`). Every call traces and
   plans the graph again: under two seconds on the CPU, 0.6 s on Vulkan for a 50 token
   prompt. Generation (below) keeps a cache and compiles its steps.
-- Only `qwen3`, `silu`, no attention bias, no `rope_scaling` and
-  `use_sliding_window: false` are read; the rest is an error. `tie_word_embeddings`
-  defaults to `true`, as in Hugging Face, and then the file's `lm_head.weight`
-  is ignored. On the reference backend attention needs `q * k` of at most
-  1,048,576 (about 1024 tokens, causal). A model of Qwen2.5 (bias, no norms) or GPT-2
+- `model_type` `qwen3` or `qwen2` (Qwen2.5), `silu`, no `attention_bias`, no
+  `rope_scaling` and `use_sliding_window: false` are read; the rest is an
+  error. `qwen2` has no `q_norm` and `k_norm` and a bias on `q_proj`, `k_proj`
+  and `v_proj` (`Load.dense` takes a `.bias` when the file has one), and no
+  `head_dim` in its config (`hidden_size / num_attention_heads`, read once in
+  `load`). `tie_word_embeddings` defaults to `true`, as in Hugging Face, and
+  then the file's `lm_head.weight` is ignored. On the reference backend
+  attention needs `q * k` of at most 1,048,576 (about 1024 tokens, causal). GPT-2
   is a later config.
+
+`chat.agc`: `Chat.apply(model_type, messages, add_generation_prompt,
+enable_thinking)` is the ChatML text of `apply_chat_template` for the two
+families, with the system turn of Qwen2.5 by default, the empty think block of
+Qwen3 (`enable_thinking: false`, and before an assistant message that ends the
+conversation) and no tools (a `tool` role is an error). The golden is
+Hugging Face's own output (`test/chat_golden.py`). The `tokenizer.json` of
+Qwen2.5 writes a merge as `"a b"`, where Qwen3's writes `["a", "b"]`;
+`tokenizer/bpe.agc` reads both.
 
 ## BERT
 
