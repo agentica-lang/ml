@@ -4,7 +4,9 @@
 ## - The cache of a layer is `[1, kv_heads, rows, head_dim]`, the keys already
 ##   normalized and rotated, padded with zero rows to a capacity of 8, 16, 32
 ##   and so on (`capacity`), so a graph changes shape only when the capacity
-##   grows. A step writes the new rows with a product by a 0/1 matrix
+##   grows. On `Ggml` it is `F16`, half the memory and of the bytes a decode
+##   step reads (the logits drift by about 5e-3 on values of 10 to 30); on the
+##   other backends it is `F32`. A step writes the new rows with a product by a 0/1 matrix
 ##   (`written`), and a mask hides the later positions and the padding.
 ## - On `Ggml` each (tokens, rows, capacity) is one compiled graph, kept by the
 ##   `Generator` of the model: the prompt, padded to a power-of-2 capacity
@@ -401,7 +403,7 @@ def compiled_step(
     g,
     key,
     args.map { |t| Trace.spec_of(t) },
-    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, mode, in_place) },
+    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, mode, in_place, true) },
   )
 
   outs = try Trace.run(plan, args)
@@ -474,6 +476,7 @@ def stepped(
   room: Int,
   mode: Head,
   in_place: Bool = false,
+  half: Bool = false,
 ) -> Result[List[Tensor.Tensor]]
   layers = m.config.num_hidden_layers
   width = Tensor.shape(xs[0])[0]
@@ -496,8 +499,8 @@ def stepped(
 
     r = try layer(m.stack.blocks[i], h, slots.positions, mask, spread, old, in_place)
     h = r.hidden
-    keys = keys.push(r.key)
-    values = values.push(r.value)
+    keys = keys.push(try cached(r.key, half))
+    values = values.push(try cached(r.value, half))
   end
 
   last = try Tensor.reshape(try Tensor.matmul(xs[2], try Tensor.reshape(h, [width, d])), [1, 1, d])
@@ -515,6 +518,12 @@ def stepped(
   end
 
   ok([head] + keys + values)
+end
+
+## The cache tensor `t` as it is kept: `F16` on `Ggml` (`half`), when it is not already.
+def cached(t: Tensor.Tensor, half: Bool) -> Result[Tensor.Tensor]
+  return ok(t) if not half or Tensor.dtype(t) == Tensor.Dtype.F16
+  Tensor.to_dtype(t, Tensor.Dtype.F16)
 end
 
 ## One block over the new tokens `h` `[1, width, d]`, as `Nn.encoder_block` with
@@ -536,14 +545,24 @@ def layer(
     key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
     value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
   else
-    key = try Padded.written(old.map { |kv| kv.key }, heads.key, spread.unwrap!, 2)
-    value = try Padded.written(old.map { |kv| kv.value }, heads.value, spread.unwrap!, 2)
+    key = try Padded.written(try widened(old.map { |kv| kv.key }), heads.key, spread.unwrap!, 2)
+    value = try Padded.written(try widened(old.map { |kv| kv.value }), heads.value, spread.unwrap!, 2)
   end
 
   seen = try Nn.attend(b.attention, heads.query, key, value, some(mask))
   mid = try Tensor.add(h, seen)
   out = try Tensor.add(mid, try Nn.mlp(b.mlp, try Nn.layer_norm(b.norm2, mid)))
   ok(Layer(hidden: out, key: key, value: value))
+end
+
+## The old cache tensor `t` in the dtype of the new rows.
+def widened(t: Optional[Tensor.Tensor]) -> Result[Optional[Tensor.Tensor]]
+  case t
+    some(x) ->
+      return ok(t) if Tensor.dtype(x) == Tensor.Dtype.F32
+      ok(some(try Tensor.to_dtype(x, Tensor.Dtype.F32)))
+    none -> ok(t)
+  end
 end
 
 ## The ids padded to `width`, the positions (the rows of the new tokens, `room` for the padding), and the

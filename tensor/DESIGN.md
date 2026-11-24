@@ -377,8 +377,13 @@ end
   of `gather` (so `embedding`). The rows of that `gather` stay `F16` in the
   trace, as on every backend, and ggml has widened them to `F32` already: only
   `to_dtype` to `F32` may take them. `ggml_mul_mat` reads the weight with the
-  `F32` activations and answers `F32`. Every other use of a half weight, and an
-  `F16` output, is an error naming the op, before anything compiles.
+  `F32` activations and answers `F32`. Every other use of a half weight is an
+  error naming the op, before anything compiles, except the KV cache of
+  `transformers`: `to_dtype(x, F16)` makes an `F16` node (`OP_CAST`, which may
+  be an output), `set_rows` writes `F32` rows into an `F16` input in place
+  (ggml rounds them), `attention` takes an `F16` key and value (flash attention
+  reads them as they are, the products read them in `mul_mat`), and
+  `to_dtype(input, F32)` widens an `F16` input.
   A half weight is for inference: `Trace.value_and_grad` and `grad` refuse
   one (so does `gradients` for a `Constant` one; an `F16` tensor of another
   backend keeps its gradient). Other paths are not guarded: a gradient graph
