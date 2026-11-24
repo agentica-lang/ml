@@ -12,6 +12,9 @@ path, and leaves:
 - `qwen2/`: `float32` weights of the Qwen2 layout (`Qwen2.5-0.5B`): no query and key norms, a bias on the query, key and
   value projections, no `head_dim` in the config (it is `hidden_size / num_attention_heads`);
 - `missing/`: `tiny` without one weight;
+- `half/`: `float32`, tied, one layer of width 256, so that the table and the
+  MLP matrices reach the half-weight threshold (no expected logits: the test
+  compares it with itself loaded as `F32`);
 - `expected.json`: for the batch `IDS`, the logits of every position of every
   row, of `tiny` and of `untied`, and of `tiny` on the longer row `LONG`.
 
@@ -188,6 +191,31 @@ def qwen(dtype, untied, qwen2=False):
     return m
 
 
+HALF_CONFIG = dict(CONFIG, hidden_size=256, num_hidden_layers=1, head_dim=64, intermediate_size=512,
+                   vocab_size=400)
+
+
+def half():
+    c = HALF_CONFIG
+    m = Model(2027, "F32", "model.embed_tokens.weight")
+    d, hd = c["hidden_size"], c["head_dim"]
+    m.add("model.embed_tokens.weight", [c["vocab_size"], d])
+    p = "model.layers.0."
+    m.add(p + "input_layernorm.weight", [d], 1.0, 0.25)
+    m.add(p + "self_attn.q_proj.weight", [c["num_attention_heads"] * hd, d])
+    m.add(p + "self_attn.k_proj.weight", [c["num_key_value_heads"] * hd, d])
+    m.add(p + "self_attn.v_proj.weight", [c["num_key_value_heads"] * hd, d])
+    m.add(p + "self_attn.o_proj.weight", [d, c["num_attention_heads"] * hd])
+    m.add(p + "self_attn.q_norm.weight", [hd], 1.0, 0.25)
+    m.add(p + "self_attn.k_norm.weight", [hd], 1.0, 0.25)
+    m.add(p + "post_attention_layernorm.weight", [d], 1.0, 0.25)
+    m.add(p + "mlp.gate_proj.weight", [c["intermediate_size"], d])
+    m.add(p + "mlp.up_proj.weight", [c["intermediate_size"], d])
+    m.add(p + "mlp.down_proj.weight", [d, c["intermediate_size"]])
+    m.add("model.norm.weight", [d], 1.0, 0.25)
+    return m
+
+
 def write(out):
     tied, untied, two = qwen("BF16", False), qwen("F32", True), qwen("F32", False, True)
     expected = {"ids": IDS, "tiny": [tied.logits(r) for r in IDS], "untied": [untied.logits(r) for r in IDS],
@@ -198,6 +226,9 @@ def write(out):
         (out / folder).mkdir()
         model.save(out / folder / "model.safetensors", skip)
         (out / folder / "config.json").write_text(json.dumps(config))
+    (out / "half").mkdir()
+    half().save(out / "half" / "model.safetensors")
+    (out / "half" / "config.json").write_text(json.dumps(HALF_CONFIG))
     (out / "expected.json").write_text(json.dumps(expected))
 
 

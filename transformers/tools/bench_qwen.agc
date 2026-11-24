@@ -3,9 +3,13 @@
 ## steps after it. Prints `RESULT load_ms prompt_tokens_per_s decode_tokens_per_s`. Run from `transformers/`:
 ##
 ##   agentica tools/bench_qwen.agc MODEL_DIR [cpu|vulkan]
+##
+## `WEIGHTS=f16` loads the big matrices as half weights and `VULKAN_FP16=1` makes Vulkan multiply in fp16;
+## both are off by default.
 
 import Generate from "../generate"
 import Qwen3 from "../qwen3"
+import Load from "pkg/hub/load"
 import Tensor from "pkg/tensor/tensor"
 
 PROMPT = 128
@@ -35,7 +39,8 @@ private
 
 def run(dir: String, backend: Tensor.Backend) -> Result[String]
   started = Time.monotonic_ms
-  m = try Qwen3.open(dir, backend)
+  try Load.vulkan_fp16_from_env()
+  m = try Qwen3.open(dir, backend, try Load.weights_from_env())
   load = Time.monotonic_ms - started
   g = try Generate.open(m)
   prompt = (0...PROMPT).map { |i| 1000 + (i * 7) % 5000 }

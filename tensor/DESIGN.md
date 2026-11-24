@@ -354,15 +354,18 @@ end
   device lock is queued for the lock's next holder, so no task's free waits
   for a graph to finish.
 - **Half weights.** `Tensor.from_file(..., dtype: F16)` on ggml keeps a weight
-  in 16 bits (`GGML_TYPE_F16`): the load converts a chunk at a time and fails
-  on a value beyond 65504 (naming its element), never clips it; a value too
-  small for F16, from a BF16 file for instance, becomes a subnormal or zero. A
-  trace takes a half weight as an input or a constant, and the lowering
-  accepts an `F16` node only as that leaf or its transpose, as the second
-  operand of `matmul` (so `linear`), or as the first of `gather` (so
-  `embedding`). The rows of that `gather` stay `F16` in the trace, as on every
-  backend, and ggml has widened them to `F32` already: only `to_dtype` to
-  `F32` may take them. `ggml_mul_mat` reads the weight with the `F32`
+  in 16 bits (`GGML_TYPE_F16`): the load converts a chunk at a time, with one
+  thread per run of whole chunks (the cores the process may use, at most 8;
+  each thread reads its run with `pread` and writes its own part of the
+  tensor; a run stops once an earlier one has failed), and fails on a value
+  beyond 65504, naming the first such element in file order, never clips it;
+  a value too small for F16, from a BF16 file for instance, becomes a
+  subnormal or zero. A trace takes a half weight as an input or a
+  constant, and the lowering accepts an `F16` node only as that leaf or its
+  transpose, as the second operand of `matmul` (so `linear`), or as the first
+  of `gather` (so `embedding`). The rows of that `gather` stay `F16` in the
+  trace, as on every backend, and ggml has widened them to `F32` already: only
+  `to_dtype` to `F32` may take them. `ggml_mul_mat` reads the weight with the `F32`
   activations and answers `F32`. Every other use of a half weight, and an
   `F16` output, is an error naming the op, before anything compiles.
   A half weight is for inference: `Trace.value_and_grad` and `grad` refuse
@@ -370,9 +373,9 @@ end
   backend keeps its gradient). Other paths are not guarded: a gradient graph
   that needs an `F16` fill, the zeros of a weight the output does not reach,
   ends in the lowering error, and `gradients` of an `Input` half weight that
-  only feeds `linear` or `matmul` returns an `F32` gradient. Use `linear(..., out_in: true)` with a checkpoint's
-  `[out, in]` weight: without it the lowering transposes (copies) the half
-  weight on every run.
+  only feeds `linear` or `matmul` returns an `F32` gradient. Use
+  `linear(..., out_in: true)` with a checkpoint's `[out, in]` weight: without
+  it the lowering transposes (copies) the half weight on every run.
 - **What a half weight costs.** The weight rounds once, at load. The
   activations of the product stay `F32` on ggml's CPU backend and on Vulkan at
   the default (measured against a double-precision sum of the same weights:

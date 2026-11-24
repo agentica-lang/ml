@@ -9,6 +9,7 @@
 #define TENSOR_FLOAT_FILE_H
 
 #include <errno.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -262,32 +263,28 @@ static bool ff_from_bytes(const uint8_t *data, size_t len, int64_t count, int64_
 #define FF_VALUES (FF_CHUNK / 2)
 typedef bool (*ff_sink)(void *ctx, const float *values, int64_t first, int64_t n, char *why, size_t why_len);
 
-/* The `count` values of `format` at byte `offset` of the file `path`, one open of the file for the whole range, handed
-   to `sink` a chunk at a time as floats: no buffer of the size of the tensor exists. */
-static inline bool ff_each(const char *path, size_t path_len, int64_t offset, int64_t count, int64_t format,
-                           ff_sink sink, void *ctx, char *why, size_t why_len) {
+/* The values `begin` to `end` (a part of the `count` that start at byte `offset`) of the open file `fd`, handed to `sink`
+   a chunk at a time as floats. `path` is only for the message of a short file. The run number `mine` and `lowest`, the
+   lowest number of a run that failed (shared by the threads, NULL for a lone run), let a run stop between chunks once
+   an earlier run has failed: it can no longer be the first failure in file order. */
+static inline bool ff_each_span(int fd, const char *path, size_t path_len, int64_t offset, int64_t begin, int64_t end,
+                                int64_t format, ff_sink sink, void *ctx, int mine, int *lowest, char *why,
+                                size_t why_len) {
   size_t width = ff_width(format);
-  int64_t done = 0, n;
+  int64_t done = begin, n;
   uint8_t *raw;
   float *values;
   bool ok = true;
-  int fd;
 
-  if (width == 0) {
-    snprintf(why, why_len, "unknown float format code %lld", (long long)format);
-    return false;
-  }
-  fd = ff_open_range(path, path_len, offset, count, width, why, why_len);
-  if (fd < 0) return false;
-  n = count < (int64_t)FF_VALUES ? count : (int64_t)FF_VALUES;
+  n = end - begin < (int64_t)FF_VALUES ? end - begin : (int64_t)FF_VALUES;
   raw = (uint8_t *)calloc((size_t)n + 1, width);
   values = (float *)calloc((size_t)n + 1, sizeof(float));
   if (raw == NULL || values == NULL) {
     snprintf(why, why_len, "out of memory");
     ok = false;
   }
-  while (ok && done < count) {
-    n = count - done < (int64_t)FF_VALUES ? count - done : (int64_t)FF_VALUES;
+  while (ok && done < end && (lowest == NULL || __atomic_load_n(lowest, __ATOMIC_RELAXED) > mine)) {
+    n = end - done < (int64_t)FF_VALUES ? end - done : (int64_t)FF_VALUES;
     if (!ff_pread(fd, raw, (size_t)n * width, offset + done * (int64_t)width)) {
       snprintf(why, why_len, "%.*s ended while it was read (it shrank?)", (int)path_len, path);
       ok = false;
@@ -300,6 +297,108 @@ static inline bool ff_each(const char *path, size_t path_len, int64_t offset, in
   }
   free(raw);
   free(values);
+  if (!ok && lowest != NULL) {
+    int seen = __atomic_load_n(lowest, __ATOMIC_RELAXED);
+
+    while (mine < seen) {
+      if (__atomic_compare_exchange_n(lowest, &seen, mine, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) break;
+    }
+  }
+  return ok;
+}
+
+/* The `count` values of `format` at byte `offset` of the file `path`, one open of the file for the whole range, handed
+   to `sink` a chunk at a time as floats: no buffer of the size of the tensor exists. With `threads` above 1 the range is
+   cut into runs of whole chunks, one per thread, and `sink` is called from several threads at once: it must only write
+   what its `first` and `n` name. The first failure in file order is the one reported. */
+struct ff_job {
+  int fd;
+  const char *path;
+  size_t path_len;
+  int64_t offset, begin, end, format;
+  ff_sink sink;
+  void *ctx;
+  int mine;
+  int *lowest;
+  char *why;
+  size_t why_len;
+  bool ok;
+};
+
+static void *ff_job_run(void *arg) {
+  struct ff_job *job = (struct ff_job *)arg;
+
+  job->ok = ff_each_span(job->fd, job->path, job->path_len, job->offset, job->begin, job->end, job->format, job->sink,
+                         job->ctx, job->mine, job->lowest, job->why, job->why_len);
+  return NULL;
+}
+
+#define FF_MAX_THREADS 16
+
+static inline bool ff_each(const char *path, size_t path_len, int64_t offset, int64_t count, int64_t format,
+                           ff_sink sink, void *ctx, int threads, char *why, size_t why_len) {
+  size_t width = ff_width(format);
+  struct ff_job jobs[FF_MAX_THREADS];
+  pthread_t ids[FF_MAX_THREADS] = {0};
+  bool started[FF_MAX_THREADS];
+  char *whys[FF_MAX_THREADS];
+  int64_t chunks, k;
+  bool ok = true;
+  int fd, t, used, lowest;
+
+  if (width == 0) {
+    snprintf(why, why_len, "unknown float format code %lld", (long long)format);
+    return false;
+  }
+  fd = ff_open_range(path, path_len, offset, count, width, why, why_len);
+  if (fd < 0) return false;
+  chunks = (count + (int64_t)FF_VALUES - 1) / (int64_t)FF_VALUES;
+  used = threads < 1 ? 1 : (threads > FF_MAX_THREADS ? FF_MAX_THREADS : threads);
+  if ((int64_t)used > chunks) used = chunks < 1 ? 1 : (int)chunks;
+  if (used == 1) {
+    ok = ff_each_span(fd, path, path_len, offset, 0, count, format, sink, ctx, 0, NULL, why, why_len);
+    close(fd);
+    return ok;
+  }
+
+  lowest = used;
+  for (t = 0; t < used; t++) {
+    jobs[t].fd = fd;
+    jobs[t].path = path;
+    jobs[t].path_len = path_len;
+    jobs[t].offset = offset;
+    jobs[t].format = format;
+    jobs[t].sink = sink;
+    jobs[t].ctx = ctx;
+    jobs[t].why_len = why_len;
+    jobs[t].ok = false;
+    jobs[t].mine = t;
+    jobs[t].lowest = &lowest;
+    jobs[t].begin = chunks * t / used * (int64_t)FF_VALUES;
+    k = chunks * (t + 1) / used * (int64_t)FF_VALUES;
+    jobs[t].end = k < count ? k : count;
+    whys[t] = (char *)calloc(why_len, 1);
+    jobs[t].why = whys[t];
+    started[t] = false;
+    if (whys[t] == NULL) {
+      snprintf(why, why_len, "out of memory");
+      ok = false;
+    }
+  }
+  for (t = 0; ok && t < used; t++) {
+    started[t] = pthread_create(&ids[t], NULL, ff_job_run, &jobs[t]) == 0;
+    if (!started[t]) ff_job_run(&jobs[t]);
+  }
+  for (t = 0; t < used; t++) {
+    if (started[t]) pthread_join(ids[t], NULL);
+  }
+  for (t = 0; ok && t < used; t++) {
+    if (!jobs[t].ok) {
+      snprintf(why, why_len, "%s", whys[t]);
+      ok = false;
+    }
+  }
+  for (t = 0; t < used; t++) free(whys[t]);
   close(fd);
   return ok;
 }

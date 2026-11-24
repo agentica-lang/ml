@@ -53,30 +53,35 @@ end
 
 ## The model in `dir`, which holds `config.json` and `model.safetensors` (or
 ## the `model.safetensors.index.json` of a sharded one).
-def open(dir: String, backend: Tensor.Backend) -> Result[Qwen3]
+def open(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype = Tensor.Dtype.F32) -> Result[Qwen3]
   text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
   config = try Source.within("#{dir}/config.json", JSON.decode(text, Config))
-  weights = "#{dir}/model.safetensors"
-  if not Path.real(weights).ok?
-    weights = "#{dir}/model.safetensors.index.json"
+  file = "#{dir}/model.safetensors"
+  if not Path.real(file).ok?
+    file = "#{dir}/model.safetensors.index.json"
   end
 
-  load(try Hub.open(weights), config, backend)
+  load(try Hub.open(file), config, backend, weights)
 end
 
 ## The model of an open checkpoint, its shapes checked against `config`.
-def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[Qwen3]
+def load(
+  c: Hub.Checkpoint,
+  config: Config,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+) -> Result[Qwen3]
   config = try with_head_dim(config)
   try check_config(config)
   width = config.hidden_size
-  tokens = try Load.embedding(c, "model.embed_tokens.weight", backend)
+  tokens = try Load.embedding(c, "model.embed_tokens.weight", backend, weights)
   try expect_shape("model.embed_tokens.weight", tokens.table, [config.vocab_size, width])
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
-    blocks = blocks.push(try block(c, "model.layers.#{i}.", config, backend))
+    blocks = blocks.push(try block(c, "model.layers.#{i}.", config, backend, weights))
   end
 
-  head = try head_of(c, config, tokens, backend)
+  head = try head_of(c, config, tokens, backend, weights)
   ok(
     Qwen3(
       config: config,
@@ -192,10 +197,16 @@ end
 
 ## The output head: the embedding table when the config ties them
 ## (the file's `lm_head.weight`, if any, is then ignored), else `lm_head`.
-def head_of(c: Hub.Checkpoint, config: Config, tokens: Nn.Embedding, backend: Tensor.Backend) -> Result[Nn.Dense]
+def head_of(
+  c: Hub.Checkpoint,
+  config: Config,
+  tokens: Nn.Embedding,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype,
+) -> Result[Nn.Dense]
   return ok(Nn.Dense(w: tokens.table, b: none, out_in: true)) if config.tie_word_embeddings
 
-  head = try Load.dense(c, "lm_head", backend)
+  head = try Load.dense(c, "lm_head", backend, weights)
   try expect_shape("lm_head.weight", head.w, [config.vocab_size, config.hidden_size])
   ok(head)
 end
@@ -214,7 +225,13 @@ def rms(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Backend) 
 end
 
 ## One decoder block under `p` (`model.layers.N.`).
-def block(c: Hub.Checkpoint, p: String, config: Config, backend: Tensor.Backend) -> Result[Nn.EncoderBlock]
+def block(
+  c: Hub.Checkpoint,
+  p: String,
+  config: Config,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype,
+) -> Result[Nn.EncoderBlock]
   width = config.hidden_size
   q_width = config.num_attention_heads * config.head_dim
   kv_width = config.num_key_value_heads * config.head_dim
@@ -230,10 +247,10 @@ def block(c: Hub.Checkpoint, p: String, config: Config, backend: Tensor.Backend)
   end
 
   attention = Nn.Attention(
-    query: try Load.dense(c, "#{a}q_proj", backend),
-    key: try Load.dense(c, "#{a}k_proj", backend),
-    value: try Load.dense(c, "#{a}v_proj", backend),
-    output: try Load.dense(c, "#{a}o_proj", backend),
+    query: try Load.dense(c, "#{a}q_proj", backend, weights),
+    key: try Load.dense(c, "#{a}k_proj", backend, weights),
+    value: try Load.dense(c, "#{a}v_proj", backend, weights),
+    output: try Load.dense(c, "#{a}o_proj", backend, weights),
     heads: config.num_attention_heads,
     kv_heads: some(config.num_key_value_heads),
     rope: some(Nn.Rope(base: config.rope_theta)),
@@ -247,10 +264,10 @@ def block(c: Hub.Checkpoint, p: String, config: Config, backend: Tensor.Backend)
   try expect_shape("#{a}o_proj.weight", attention.output.w, [width, q_width])
   m = "#{p}mlp."
   mlp = Nn.Mlp(
-    up: try Load.dense(c, "#{m}up_proj", backend),
-    down: try Load.dense(c, "#{m}down_proj", backend),
+    up: try Load.dense(c, "#{m}up_proj", backend, weights),
+    down: try Load.dense(c, "#{m}down_proj", backend, weights),
     activation: Nn.Activation.Silu,
-    gate: some(try Load.dense(c, "#{m}gate_proj", backend)),
+    gate: some(try Load.dense(c, "#{m}gate_proj", backend, weights)),
   )
 
   try expect_shape("#{m}up_proj.weight", mlp.up.w, [config.intermediate_size, width])

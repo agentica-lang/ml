@@ -266,6 +266,45 @@ A prefill of 128 tokens: 573.5 ms of kernels against 364 ms for llama.cpp (it wa
 
 The GPU was busy (`gpu_busy_percent` 99 percent, sampled at 10 Hz) and mostly in its top clock state (`pp_dpm_sclk`) in both our prefill loop and `llama-bench`, so the clock is not the gap; and `-DGGML_NATIVE=OFF -DGGML_OPENMP=OFF` of `build-engine.sh` are CPU flags, so there is no build flag to change.
 
+## Half weights (ml#86)
+
+`WEIGHTS=f16` keeps the big matrices (rank 2, at least 100000 values) of the checkpoint as F16 weights on ggml (`Load`, hub/DESIGN.md); `VULKAN_FP16=1` also lets Vulkan multiply in fp16 (`Tensor.vulkan_fp16`). The tools read both from the environment, and `bench_qwen.sh` and `bench_whisper.sh` have the rows: `ours-cpu-f16`, `ours-vulkan-f16` and `ours-vulkan-f16-fp16` for Qwen3, `agentica-ggml-cpu-f16`, `agentica-ggml-vulkan-f16` and `agentica-ggml-vulkan-f16-fp16` for whisper. The tokens of the Hugging Face goldens stay the same with F16 weights at the default; `vulkan_fp16` does not keep them (it also breaks them with F32 weights), so it stays off.
+
+Qwen3-0.6B, `bench_qwen.sh` as above, 2 rounds, on ml `e362042`; the load average was 3.5 at the start and 2.6 at the end, and the llama.cpp rows ran between ours, so the numbers carry a few percent of noise:
+
+| Row | Prompt, 128 tokens | 64 tokens after it | Load | Peak memory |
+|---|---|---|---|---|
+| ours, ggml CPU, F32 | 59.2 tokens/s | 8.97 tokens/s | 2.13 s | 2.53 GB |
+| ours, ggml CPU, F16 weights | 57.5 | 15.45 | 1.65 s | 1.43 GB |
+| llama.cpp CPU, F32 | 130.6 | 10.48 | | 2.89 GB |
+| llama.cpp CPU, F16 | 90.8 | 17.61 | | 1.49 GB |
+| ours, ggml Vulkan, F32 | 216.9 | 10.07 | 2.7 s | 0.85 GB |
+| ours, ggml Vulkan, F16 weights | 243.5 | 16.23 | 2.28 s | 0.58 GB |
+| ours, ggml Vulkan, F16 weights and `vulkan_fp16` | 372.8 | 16.16 | 2.03 s | 0.58 GB |
+| llama.cpp Vulkan, F32 | 416.2 | 13.87 | | 0.13 GB |
+| llama.cpp Vulkan, F16 | 450.7 | 26.25 | | 0.13 GB |
+
+On Vulkan F16 weights make our tokens 1.6 times faster (llama.cpp's own gain there is 1.9 times), the prompt 12 percent faster, and 1.7 times faster with `vulkan_fp16` as well. On the CPU this window measured +72 percent in the tokens (llama.cpp's gain is 1.7 times) and no gain in the prompt, but the PR 2 window (ml#134) showed none (5.6 and 6.1 against 7.6 and 5.9 tokens/s, with other loads on the machine): a CPU gain is not claimed until a repeat. The Vulkan gain was the same in both (+39 percent then, +60 percent now, on a different F32 base).
+
+whisper-tiny, `bench_whisper.sh` (`ONLY=agentica-ggml`, 3 runs, whisper-tiny at 384 wide, so its weights are small): the tokens equal Hugging Face's in all rows, including `vulkan_fp16`, on the two clips.
+
+| Row | RTF jfk | RTF es-hola |
+|---|---|---|
+| ours, ggml CPU | 0.116 | 0.419 |
+| ours, ggml CPU, F16 weights | 0.110 | 0.417 |
+| ours, ggml Vulkan | 0.069 | 0.238 |
+| ours, ggml Vulkan, F16 weights | 0.065 | 0.259 |
+| ours, ggml Vulkan, F16 weights and `vulkan_fp16` | 0.056 | 0.217 |
+
+Tiny gains 6 percent on jfk and nothing on es-hola from F16 weights alone: its decoder steps are short and its weights small, so the weights are not what it waits for.
+
+The load. The conversion of a BF16 or F32 file to F16 runs on up to 8 threads (one run of whole chunks of the tensor each, `tensor/native/float_file.h`); it was one thread, which made a half-weight load 2 to 3 times slower than an F32 one. Loading on the CPU, 3 rounds for whisper-medium and 2 for Qwen3:
+
+| Model | before (one thread) | after (threads) | F32 weights |
+|---|---|---|---|
+| whisper-medium | 7.5, 6.7, 7.1 s | 3.1, 3.1, 3.1 s | 2.3 to 2.6 s |
+| Qwen3-0.6B | 4.3, 3.2 s | 1.5, 1.5 s | about 1.5 s |
+
 ## Run it
 
 You need the Hugging Face checkout of `openai/whisper-tiny`, openai/whisper's `whisper/assets/mel_filters.npz`, a whisper.cpp checkout (never modified), `cmake`, a C++ compiler, `/usr/bin/time` (GNU time), `agentica` 0.36.0 on `PATH`, libtorch, and the Vulkan headers and `glslc` for the Vulkan rows. Python needs only the system numpy: the scripts run with `python3 -I`, which ignores virtual environments and `PYTHONPATH`.

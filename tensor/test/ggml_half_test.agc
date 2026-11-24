@@ -181,6 +181,72 @@ def test_a_value_beyond_f16_is_an_error_naming_its_element() -> Result[Void]
   ok()
 end
 
+## A file of six 1 MiB blocks (3 chunks, so the load runs on threads): block `b` is the 16 values `(b + 1) * pattern()`
+## over and over. Weighting row `r` by its block, `r / 16384 + 1`, the column sums say that every block landed where it
+## belongs, which no thread order may change.
+def pattern() -> List[Float]
+  out: List[Float] = []
+  for i in 0...16
+    out = out.push(((i * 5) % 11 - 5).to_f / 16.0)
+  end
+
+  out
+end
+
+def scaled_blocks() -> Result[List[Bytes]]
+  parts: List[Bytes] = []
+  for b in 0...6
+    block = try Bytes.from_list(pattern().flat_map { |x: Float| f32_bytes(x * (b + 1).to_f) })
+    for _ in 0...14
+      block = Bytes.concat([block, block])
+    end
+
+    parts = parts.push(block)
+  end
+
+  ok(parts)
+end
+
+def test_a_big_half_load_puts_every_chunk_where_it_belongs() -> Result[Void]
+  rows = 6 * 16384
+  weights = (0...rows).map { |r: Int| Tensor.Values.Float((r / 16384 + 1).to_f) }
+  want = pattern().map { |x: Float| x * 1490944.0 }
+  for device in try devices()
+    backend = Tensor.Backend.Ggml(device)
+    try with_file(try scaled_blocks()) do |path|
+      w = try Tensor.from_file(path, 0, [rows, 16], Tensor.FloatFormat.F32, backend, Tensor.Dtype.F16)
+      x = try Tensor.from_list(weights, [1, rows], Tensor.Dtype.F32, backend)
+      got = try Trace.eval_many([x, w]) do |a| ok([try Tensor.linear(a[0], a[1], none, false)]) end
+
+      try Test.eq(try floats(got[0]), want)
+      ok()
+    end
+  end
+
+  ok()
+end
+
+## The first value beyond F16 in file order is the one named, whichever thread meets a bad one first: 70000.0 at
+## element 0 and at element CHUNK (the second chunk).
+def test_the_first_bad_value_in_file_order_is_named_on_a_threaded_load() -> Result[Void]
+  bad = [0, 184, 136, 71]
+  zero = try Bytes.from_list([0, 0, 0, 0])
+  first = try Bytes.from_list(bad)
+  rest = zero
+  for _ in 0...18
+    first = Bytes.concat([first, rest])
+    rest = Bytes.concat([rest, rest])
+  end
+
+  # `first` is 1 MiB: the bad value, then zeros; `rest` is 1 MiB of zeros
+  parts = [first, rest, try Bytes.from_list(bad)]
+  for device in try devices()
+    try overflows(parts, Tensor.FloatFormat.F32, CHUNK + 1, 0, Tensor.Backend.Ggml(device))
+  end
+
+  ok()
+end
+
 def test_only_ggml_holds_a_half_weight() -> Result[Void]
   try with_file(try bytes_of(BYTES)) do |path|
     try refused(
@@ -214,8 +280,7 @@ def test_a_compiled_graph_reads_a_half_weight_as_the_f32_weight() -> Result[Void
         end
 
         # linear: the activations may round to F16, so each product is good to 2^-11; ggml's CPU backend keeps
-        # them F32,
-        # so there only the order of the sums differs
+        # them F32, so there only the order of the sums differs
         step = STEP
         if device == CPU
           step = 0.0

@@ -182,8 +182,12 @@ def layer_norm(p: LayerNorm, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   Tensor.add(scaled, try Tensor.broadcast_to(p.beta, shape))
 end
 
-## The rows of `p.table` for the rank-1 integer `ids`: `[ids, width]`.
-def embedding(p: Embedding, ids: Tensor.Tensor) -> Result[Tensor.Tensor] = Tensor.embedding(ids, p.table)
+## The rows of `p.table` for the rank-1 integer `ids`: `[ids, width]`, `F32` also for a half table (`F16`, ggml).
+def embedding(p: Embedding, ids: Tensor.Tensor) -> Result[Tensor.Tensor]
+  rows = try Tensor.embedding(ids, p.table)
+  return Tensor.to_dtype(rows, Tensor.Dtype.F32) if Tensor.dtype(p.table) == Tensor.Dtype.F16
+  ok(rows)
+end
 
 ## `x` plus the first `seq` rows of the positional table, for `x` of shape
 ## `[seq, width]` or `[batch, seq, width]`.
