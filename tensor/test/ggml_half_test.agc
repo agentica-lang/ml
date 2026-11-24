@@ -213,14 +213,21 @@ def test_a_compiled_graph_reads_a_half_weight_as_the_f32_weight() -> Result[Void
           try Test.eq(Tensor.dtype(half[i]), Tensor.Dtype.F32)
         end
 
-        # linear: the activations may round to F16, so each product is good to 2^-11
+        # linear: the activations may round to F16, so each product is good to 2^-11; ggml's CPU backend keeps
+        # them F32,
+        # so there only the order of the sums differs
+        step = STEP
+        if device == CPU
+          step = 0.0
+        end
+
         a = try floats(half[0])
         b = try floats(whole[0])
         for r in 0...2
           for j in 0...4
             bound = 0.000001
             for k in 0...3
-              bound += STEP * (xs[r * 3 + k] * w[j * 3 + k]).abs
+              bound += step * (xs[r * 3 + k] * w[j * 3 + k]).abs
             end
 
             try Test.assert(

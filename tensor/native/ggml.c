@@ -382,8 +382,8 @@ struct load_source {
   size_t len;
 };
 
-/* The F16 value of every float of a chunk, into the tensor's memory: the largest F16 is 65504, and a value beyond it
-   is an error naming its element (a value that rounds to it, or an infinity, is not one). */
+/* The F16 value of every float of a chunk, into the tensor's memory: a value up to 65504 in magnitude, the largest F16,
+   is kept (rounded), a larger finite one is an error naming its element, and an infinity passes through. */
 #define HALF_MAX 65504.0f
 
 struct half_sink {
