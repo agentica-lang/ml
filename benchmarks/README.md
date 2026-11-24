@@ -48,7 +48,7 @@ Long audio (ml#35, with timestamps, language detected, tokens the same as Huggin
 | ours, ggml CPU | 0.122 | 0.230 |
 | ours, ggml Vulkan | 0.162 | 0.332 |
 
-A 300 s clip (`jfk` six times with silence, four times, then 6 s of silence; 611 ids, 10 windows by 30 s) with timestamps and a named language (`asr/tools/bench_transcribe.agc`, the model loaded once, a warm-up run before the timed one, `/usr/bin/time -v` for the peak resident memory of the whole process). Both backends give the same ids and text. The whole-clip log-mel (30,000 frames) ran on Vulkan too, with no failure. The CPU row is the quiet-machine run: with other jobs on the machine the same run took 75 s and then 120 s.
+A 300 s clip (`jfk` six times with silence, four times, then 6 s of silence; 611 ids, at least 10 windows) with timestamps and a named language (`asr/tools/bench_transcribe.agc`, the model loaded once, a warm-up run before the timed one, `/usr/bin/time -v` for the peak resident memory of the whole process). Both backends give the same ids and text. The whole-clip log-mel (30,000 frames) ran on Vulkan too, with no failure. The CPU row is the quiet-machine run: with other jobs on the machine the same run took 75 s and then 120 s.
 
 | Row | Time | RTF | Peak memory |
 |---|---|---|---|
