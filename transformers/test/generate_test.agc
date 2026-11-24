@@ -154,6 +154,28 @@ def test_the_pick_of_a_tie_is_the_first_index() -> Result[Void]
   ok()
 end
 
+## A row of 1024 logits or more finds its maximum in pieces on ggml (1500 = 38 pieces of 39 and a tail that overlaps
+## them); a tie still goes to the first index, across two pieces, at a seam or in the tail.
+def test_the_pick_of_a_tie_in_a_long_row_is_the_first_index() -> Result[Void]
+  n = 1500
+  base = (0...n).map { |i| (i % 13).to_f * 0.25 }
+  for backend in [S.REF] + try S.ggml_backends()
+    for tie in [[38, 39], [5, 1499], [1481, 1490], [1482, 1499], [0, 38, 1482]]
+      scores = try S.f32(tie.reduce(base) do |acc, i| acc.set(i, 9.0) end, [n], backend)
+      got = try Lift.staged(
+        0,
+        ->(m: Int) { m },
+        [scores],
+        ->(_: Int, xs: List[Tensor.Tensor]) { ok([try Generate.picked(xs[0])]) },
+      )
+
+      try Test.eq(try S.floats_of(got[0]), [tie[0].to_f])
+    end
+  end
+
+  ok()
+end
+
 private
 
 def sampling(dir: String, backend: Tensor.Backend) -> Result[Void]

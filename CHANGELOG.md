@@ -2,6 +2,12 @@
 
 Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the first one and covers everything shipped so far (milestones 0.1.0 and 0.2.0).
 
+## [Unreleased]
+
+### tensor
+
+- ggml: a decode step runs fewer kernels (the positions converted and checked once for every cache, a long-row `max` in pieces, SwiGLU as one kernel): Qwen3-0.6B decode on Vulkan is 7 to 11% faster.
+
 ## [0.2.0] - 2026-11-24
 
 ### tensor

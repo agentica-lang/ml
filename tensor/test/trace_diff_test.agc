@@ -110,6 +110,74 @@ def test_diff_of_a_long_row_max_finds_nothing_on_cpu_and_vulkan() -> Result[Void
   ok()
 end
 
+## A long row is cut into k pieces of m floats (m the ceiling of its square root), the last piece overlapping the
+## others when m does not divide it: the largest value is found wherever it lies, at either end of a piece or only in
+## the overlapping tail (1500 = 38 pieces of 39 and a tail; 1521 = 39 * 39; 151936, a vocabulary).
+def test_a_long_row_max_finds_the_largest_at_the_seams_of_its_pieces() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  backends = [CPU]
+  vulkan = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+  if Tensor.available(vulkan)
+    backends = backends.push(vulkan)
+  end
+
+  for n in [1500, 1521, 151936]
+    m = Math.sqrt(n.to_f).ceil
+    k = n / m
+    ramp = Support.ramp(5, n)
+    seams = [0, m - 1, m, k * m - 1, k * m, n - m, n - 1].uniq.select { |i| i < n }
+    for at in seams
+      data = ramp.set(at, 3.0)
+      args = [try Support.f32(data, [n])]
+      for backend in backends
+        d = try Trace.diff(args, REF, backend) do |xs| Tensor.max(xs[0], some([0]), false) end
+        case d.first
+          some(node) -> return error("#{n} floats, the largest at #{at} on #{backend}: #{node.max_abs}")
+          none -> nil
+        end
+      end
+    end
+  end
+
+  ok()
+end
+
+## `silu(gate) * up`, an MLP's gate, is one swiglu on ggml, either way round, and agrees with the reference; the silu
+## alone is still there when something else reads it.
+def test_silu_times_up_on_ggml_matches_the_reference() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  backends = [CPU]
+  vulkan = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+  if Tensor.available(vulkan)
+    backends = backends.push(vulkan)
+  end
+
+  args = [
+    try Support.f32(Support.ramp(7, 24).map { |x| 4.0 * x }, [2, 12]),
+    try Support.f32(Support.ramp(8, 24), [2, 12]),
+  ]
+
+  for backend in backends
+    for d in [
+      try Trace.diff(args, REF, backend) do |xs| Tensor.mul(try Tensor.silu(xs[0]), xs[1]) end,
+      try Trace.diff(args, REF, backend) do |xs| Tensor.mul(xs[1], try Tensor.silu(xs[0])) end,
+      try Trace.diff(args, REF, backend) do |xs|
+        gate = try Tensor.silu(xs[0])
+        Tensor.add(try Tensor.mul(gate, xs[1]), gate)
+      end,
+    ]
+      case d.first
+        some(node) -> return error("on #{backend}: #{node.op} differs from the reference by #{node.max_abs}")
+        none -> nil
+      end
+    end
+  end
+
+  ok()
+end
+
 ## `rms_norm` is one node of a trace, like `layer_norm`, and its gradient on ggml is the reference's.
 def test_rms_norm_on_ggml_matches_the_reference() -> Result[Void]
   return ok() if !try Support.ggml_present()

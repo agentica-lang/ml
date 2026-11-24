@@ -119,6 +119,9 @@ struct gnode {
   struct ggml_tensor *guard; /* a gather's or scatter_add's count of indices out of range */
   struct ggml_tensor *dense; /* the contiguous copy of a view, made once for every op that needs one */
   struct ggml_tensor *at; /* the node as the I32 positions of a rope, made once */
+  struct ggml_tensor *ids; /* the node as the row ids of `ids_rows` rows for `ids_op`, made and guarded once */
+  int64_t ids_rows;
+  int ids_op;
   struct ggml_tensor *half; /* the node as the F16 mask of a flash attention, made once */
   struct ggml_tensor *packed; /* the node as an operand of mul_mat when `dense` is not packed, made once */
 };
@@ -431,6 +434,31 @@ static struct ggml_tensor *binary(struct entry *p, binary_fn fn, int commutes, c
   return fn(p->ctx, full_of(p, a), plain(p, b));
 }
 
+/* `silu(x) * u` as one ggml_swiglu_split when `a` and `b` are `x * sigmoid(x)` and `u` (either way round), all F32 at
+   one shape with dense rows, as an MLP's gate and up are; NULL otherwise. The node `x * sigmoid(x)` drops out of the
+   graph unless something else reads it. */
+static struct ggml_tensor *swiglu(struct entry *p, const struct gnode *a, const struct gnode *b) {
+  const struct gnode *pair[2] = {a, b};
+  int i, j;
+
+  if (a->lazy || b->lazy) return NULL;
+  for (i = 0; i < 2; i++) {
+    struct ggml_tensor *silu = pair[i]->t, *up = pair[1 - i]->t;
+
+    if (silu->op != GGML_OP_MUL) continue;
+    for (j = 0; j < 2; j++) {
+      struct ggml_tensor *x = silu->src[j], *sigmoid = silu->src[1 - j];
+
+      if (sigmoid->op == GGML_OP_UNARY && ggml_get_unary_op(sigmoid) == GGML_UNARY_OP_SIGMOID && sigmoid->src[0] == x &&
+          x->type == GGML_TYPE_F32 && up->type == GGML_TYPE_F32 && ggml_are_same_shape(x, up) &&
+          ggml_are_same_shape(x, silu) && ggml_is_contiguous_1(x) && ggml_is_contiguous_1(up)) {
+        return ggml_swiglu_split(p->ctx, x, up);
+      }
+    }
+  }
+  return NULL;
+}
+
 /* `1 - m` for a 0/1 mask. */
 static struct ggml_tensor *flip(struct entry *p, struct ggml_tensor *m) {
   return ggml_scale_bias(p->ctx, contiguous(p, m), -1.0f, 1.0f);
@@ -438,6 +466,35 @@ static struct ggml_tensor *flip(struct entry *p, struct ggml_tensor *m) {
 
 /* A max over one row at least this long is found with argmax, not pool_1d. */
 #define LONG_ROW 1024
+
+/* The largest of the values in `row` [n, 1] (contiguous) at its row: argmax
+   finds it in one workgroup and get_rows reads it. */
+static struct ggml_tensor *row_max(struct entry *p, struct ggml_tensor *row) {
+  return ggml_get_rows(p->ctx, ggml_reshape_2d(p->ctx, row, 1, row->ne[0]), ggml_argmax(p->ctx, row));
+}
+
+/* The largest value of each row of `t` [m, k] (contiguous), as [k, 1]. */
+static struct ggml_tensor *rows_max(struct entry *p, struct ggml_tensor *t) {
+  struct ggml_tensor *at = ggml_reshape_2d(p->ctx, ggml_argmax(p->ctx, t), 1, t->ne[1]);
+  struct ggml_tensor *picked = ggml_get_rows(p->ctx, ggml_reshape_3d(p->ctx, t, 1, t->ne[0], t->ne[1]), at);
+
+  return ggml_reshape_2d(p->ctx, picked, t->ne[1], 1);
+}
+
+/* The largest value of a long row [n, 1] (contiguous). One workgroup over the whole row is slow (1.2 ms for 151,936
+   floats on Vulkan), so the row is cut into k pieces of m (about the square root of n), the last one overlapping
+   the others when m does not divide n, and the largest of the pieces' maxima is the answer. */
+static struct ggml_tensor *long_row_max(struct entry *p, struct ggml_tensor *row) {
+  int64_t n = row->ne[0], m = (int64_t)ceil(sqrt((double)n)), k = n / m;
+  struct ggml_tensor *maxima = rows_max(p, ggml_view_2d(p->ctx, row, m, k, (size_t)m * row->nb[0], 0));
+
+  if (k * m < n) {
+    struct ggml_tensor *tail = ggml_view_2d(p->ctx, row, m, 1, (size_t)m * row->nb[0], (size_t)(n - m) * row->nb[0]);
+
+    maxima = ggml_concat(p->ctx, maxima, rows_max(p, tail), 0);
+  }
+  return row_max(p, maxima);
+}
 
 /* `x` as a 2-D tensor whose rows (ne[0]) are the reduced block: reshaped to
    [inner, outer] for trailing axes, transposed from [outer, inner] for
@@ -474,23 +531,36 @@ static struct ggml_tensor *slice(struct entry *p, const struct gnode *x, const i
   return ggml_cont(p->ctx, ggml_view_4d(p->ctx, t, ne[0], ne[1], ne[2], ne[3], t->nb[1], t->nb[2], t->nb[3], offset));
 }
 
-/* The indices as I32 row ids of a table of `rows` rows. ggml reads out of
-   bounds (or aborts) on a bad index, so the indices are clamped to the rows
-   first and `guard` counts the ones that were outside: `run` refuses its
+/* The indices as I32 row ids of a table of `rows` rows for an `op`. ggml reads
+   out of bounds (or aborts) on a bad index, so the indices are clamped to the
+   rows first and `guard` counts the ones that were outside: `run` refuses its
    result unless that count is 0. The indices are F32 here, exact below 2^24,
-   so `node` refuses a table with more rows. */
-static struct ggml_tensor *row_ids(struct entry *p, const struct gnode *indices, int64_t rows,
+   so `node` refuses a table with more rows. The ids are made once per indices,
+   rows and op (a decode step writes every layer's cache at the same
+   positions): a later node gets them with no guard of its own, since the
+   first one's guard already checks them. */
+static struct ggml_tensor *row_ids(struct entry *p, const struct gnode *indices, int64_t rows, int op,
                                    struct ggml_tensor **guard) {
-  struct ggml_tensor *at = ggml_reshape_1d(p->ctx, dense(p, indices), volume(indices->ne));
+  struct gnode *source = (struct gnode *)indices; /* the nodes are `p->nodes`; the ids are a cache */
+  struct ggml_tensor *at;
   float top = (float)(rows - 1);
-  /* ggml_clamp works in place: clamp a copy */
-  struct ggml_tensor *clamped = ggml_clamp(p->ctx, ggml_cont(p->ctx, at), 0.0f, top);
-  /* step(-i - 0.5) + step(i - top - 0.5): 1 for an index below 0 or past top */
-  struct ggml_tensor *below = ggml_step(p->ctx, ggml_scale_bias(p->ctx, at, -1.0f, -0.5f));
-  struct ggml_tensor *above = ggml_step(p->ctx, ggml_scale_bias(p->ctx, at, 1.0f, -top - 0.5f));
+  struct ggml_tensor *clamped, *below, *above;
 
+  if (source->ids != NULL && source->ids_rows == rows && source->ids_op == op) {
+    *guard = NULL;
+    return source->ids;
+  }
+  at = ggml_reshape_1d(p->ctx, dense(p, indices), volume(indices->ne));
+  /* ggml_clamp works in place: clamp a copy */
+  clamped = ggml_clamp(p->ctx, ggml_cont(p->ctx, at), 0.0f, top);
+  /* step(-i - 0.5) + step(i - top - 0.5): 1 for an index below 0 or past top */
+  below = ggml_step(p->ctx, ggml_scale_bias(p->ctx, at, -1.0f, -0.5f));
+  above = ggml_step(p->ctx, ggml_scale_bias(p->ctx, at, 1.0f, -top - 0.5f));
   *guard = ggml_sum(p->ctx, ggml_add(p->ctx, below, above));
-  return ggml_cast(p->ctx, clamped, GGML_TYPE_I32);
+  source->ids = ggml_cast(p->ctx, clamped, GGML_TYPE_I32);
+  source->ids_rows = rows;
+  source->ids_op = op;
+  return source->ids;
 }
 
 /* The rows of `source` (its first row-major axis) that `indices` name, as
@@ -500,7 +570,7 @@ static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, i
   int64_t rows = source->ne[rank - 1];
   struct ggml_tensor *table = ggml_reshape_2d(p->ctx, dense(p, source), volume(source->ne) / rows, rows);
 
-  return ggml_get_rows(p->ctx, table, row_ids(p, indices, rows, guard));
+  return ggml_get_rows(p->ctx, table, row_ids(p, indices, rows, OP_GATHER, guard));
 }
 
 /* The inverse of `gather`: the rows of `updates` ([width, k] once flat)
@@ -513,7 +583,7 @@ static struct ggml_tensor *scatter_add(struct entry *p, const struct gnode *indi
   struct ggml_tensor *flat = ggml_reshape_2d(p->ctx, dense(p, updates), volume(updates->ne) / k, k);
   struct ggml_tensor *shape = ggml_new_tensor_2d(p->ctx, GGML_TYPE_F32, flat->ne[0], rows);
 
-  return ggml_get_rows_back(p->ctx, flat, row_ids(p, indices, rows, guard), shape);
+  return ggml_get_rows_back(p->ctx, flat, row_ids(p, indices, rows, OP_SCATTER_ADD, guard), shape);
 }
 
 /* Whether `t` is the permute (0, 2, 1, 3) of its source: permuting it again gives the source back, so a norm that
@@ -790,7 +860,10 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       break;
     case OP_ADD: t = binary(p, ggml_add, 1, a, b); break;
     case OP_SUB: t = binary(p, ggml_sub, 0, a, b); break;
-    case OP_MUL: t = binary(p, ggml_mul, 1, a, b); break;
+    case OP_MUL:
+      t = swiglu(p, a, b);
+      if (t == NULL) t = binary(p, ggml_mul, 1, a, b);
+      break;
     case OP_DIV: t = binary(p, ggml_div, 0, a, b); break;
     case OP_NEG: t = ggml_neg(p->ctx, dense(p, a)); break;
     case OP_EXP: t = ggml_exp(p->ctx, dense(p, a)); break;
@@ -859,9 +932,9 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         return tg_error(env, text);
       }
       if (op == OP_MAX && rows->ne[1] == 1 && rows->ne[0] >= LONG_ROW) {
-        /* One thread walks a pooled row: 14 ms for 51,865 floats on Vulkan. argmax reduces it in a workgroup, and
+        /* One thread walks a pooled row: 14 ms for 51,865 floats on Vulkan. argmax reduces it in workgroups, and
            the value is read back with get_rows; which of several equal maxima it finds does not matter. */
-        t = ggml_get_rows(p->ctx, ggml_reshape_2d(p->ctx, rows, 1, rows->ne[0]), ggml_argmax(p->ctx, rows));
+        t = long_row_max(p, rows);
       } else if (op == OP_MAX) {
         t = ggml_pool_1d(p->ctx, rows, GGML_OP_POOL_MAX, (int)rows->ne[0], (int)rows->ne[0], 0);
       } else {
@@ -951,7 +1024,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       }
       if (copy) {
         if (a->t->type != GGML_TYPE_F32) return tg_error(env, "set_rows writes an F32 cache");
-        rows = row_ids(p, c, a->ne[1], &n->guard);
+        rows = row_ids(p, c, a->ne[1], OP_SET_ROWS, &n->guard);
         t = ggml_set_rows(p->ctx, ggml_dup(p->ctx, dense(p, a)), dense(p, b), rows);
       } else {
         struct port *leaf = NULL;
@@ -968,7 +1041,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         if (leaf->donated) return tg_error(env, "set_rows writes a leaf in place twice");
         leaf->donated = true;
         n->in_place = 1;
-        t = ggml_set_rows(p->ctx, a->t, dense(p, b), row_ids(p, c, a->ne[1], &n->guard));
+        t = ggml_set_rows(p->ctx, a->t, dense(p, b), row_ids(p, c, a->ne[1], OP_SET_ROWS, &n->guard));
       }
       break;
     }
