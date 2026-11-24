@@ -59,8 +59,12 @@ def test_a_gguf_tokenizer_of_another_kind_is_refused() -> Result[Void]
     words = {
       "other_model": "not gpt2", "other_pre": "not qwen2", "byte_token": "type 6", "types_short": "token types",
       "token_twice": "twice", "merge_no_space": "not a pair", "merge_three": "not a pair",
+      "merge_empty_half": "not a pair", "type_undefined": "type 0", "type_unknown": "type 2",
+      "no_types": "no key tokenizer.ggml.token_type", "no_merges": "no key tokenizer.ggml.merges",
+      "tokens_text": "not an array",
     }
 
+    try Test.eq(words.size, 13)
     for file in words.keys
       try S.expect_error(Bpe.open_gguf("#{dir}/#{file}.gguf"), words[file])
     end

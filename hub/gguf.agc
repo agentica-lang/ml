@@ -13,7 +13,7 @@ FIRST_READ = 8388608
 MAX_HEADER = 268435456
 ## What `parse` says when the bytes it was given end inside the header, and the file goes on.
 TRUNCATED = "the header continues past the bytes read"
-## The key-values, the tensors and the items of an array that is read that a header may count.
+## The key-values, the tensors and the items of an array read by `strings` or `ints` that a header may count.
 MAX_COUNT = 1000000
 ## ggml's `GGML_MAX_DIMS`.
 MAX_DIMS = 4
