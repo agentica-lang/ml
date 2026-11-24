@@ -37,7 +37,7 @@ The two ggml `ours` rows and the medium rows were measured again on ml#107 plus 
 | medium, ggml CPU | 8.17 | 7.04 | 22.4 | 18.2 |
 | medium, ggml Vulkan | 2.42 | 1.38 | 6.83 | 4.03 |
 
-Before that, the two ggml `ours` rows had been measured again on ml `0e0bb8b` plus the device pick (ml#81), with the same session's runs of `0e0bb8b` alone: 0.299 and 0.393 on jfk, and the medium table below 2.50 and 6.91. They are runs with `Options.timestamps` false. The libtorch row, the whisper.cpp rows and the load and memory columns are from the runs named below, not repeated. The three `ours` rows were measured again after ml#63 (the load and the memory changed, the rest is the same code and the same machine, so the real-time factors moved only by noise). Before it the load was 23.6 s, 23.3 s and 23.6 s, and a pass that stops after the load peaked at 3.05 GB, 2.84 GB and 3.26 GB. The Peak memory column is the whole run, transcriptions included; the load alone now peaks at 0.46 GB, 0.36 GB and 0.49 GB.
+The libtorch row, the whisper.cpp rows and the load and memory columns are from earlier runs of the same machine; the load and the memory moved only with ml#63 (the load was 23.6 s and the peak 3 GB before it).
 
 Whisper's window is 30 s whatever the clip, so a short clip costs the same encoder time as a long one: that is why es-hola has the larger factor.
 
@@ -87,7 +87,7 @@ More figures, all on jfk and from the same run (`report` prints the stages; the 
 Reading it:
 
 - **The encoder is on par on the CPU** (994 ms against 1054 ms without flash attention, 662 ms with it). Similar ggml CPU kernels (different ggml versions: v1.0.0 against 0.24.0). On Vulkan ours is 2.5 times slower (396 ms against 158 ms).
-- **The decoder is the gap.** A step takes about 68 ms on ggml CPU and 125 ms on Vulkan, against 7 and 11 ms for whisper.cpp. A step is one graph, but it costs 1.45 M VM steps, which is tracing and lowering a graph that does not change (about 6 to 12 ms of the 68, at the 120 to 230 M steps a second the VM runs here). The rest is not split: it is probably native time to feed the graph (the padded self-attention cache and the cross-attention cache go in as inputs every step) and to read the logits back as a list. This is what [#64](https://github.com/agentica-lang/ml/issues/64) is about, and it is 41 percent of a transcription on the CPU and 63 percent on Vulkan.
+- **The decoder is the gap.** A step takes about 68 ms on ggml CPU and 125 ms on Vulkan, against 7 and 11 ms for whisper.cpp. A step is one graph, but it costs 1.45 M VM steps, which is tracing and lowering a graph that does not change (about 6 to 12 ms of the 68, at the 120 to 230 M steps a second the VM runs here). The rest is not split: it is probably native time to feed the graph (the padded self-attention cache and the cross-attention cache go in as inputs every step) and to read the logits back as a list. It was 41 percent of a transcription on the CPU and 63 percent on Vulkan.
 - **The log-mel costs 35 ms on the CPU and 95 ms on Vulkan.** It was 0.5 s of Agentica code (a radix FFT over lists, 118 M VM steps) plus 62 to 74 ms to upload the result, the same on every backend. It is one graph of tensor ops now (the windowed DFT as a matmul, the mel filters as a second one) that `load` compiled, and its output stays on the device. On the same machine and session, jfk went from 605 + 71 ms to 35 ms on the CPU and from 540 + 74 ms to 95 ms on Vulkan; the median transcription of jfk (11 s) from 3008 to 1949 ms on the CPU (real-time factor 0.273 to 0.177) and from 2675 to 1981 ms on Vulkan (0.243 to 0.180). es-hola (2.6 s) went from 1850 to 1509 ms on the CPU (0.699 to 0.570) and from 1651 to 1414 ms on Vulkan (0.624 to 0.534). The graph computes every one of the 3000 frames, so its cost does not depend on the clip; Vulkan is slower than the CPU here because the matmul alone takes about 20 ms on this iGPU.
 - **The load was 23 s and 3 GB, and is 0.3 to 0.45 s, and the load alone peaks under 0.5 GB** (ml#63). 99 percent of it had been `hub/safetensors.agc` decoding the 37.8 M floats one by one (2.7 G VM steps), and the lists they went through held the memory. Now C reads each tensor's byte range into the backend's buffer (`Tensor.from_file`), so no float is an Agentica value. whisper.cpp reads the file in 0.1 s.
 - On Vulkan, the encoder gains 2.5 times over the CPU, but the decoder loses: a graph costs about 2 ms to dispatch (`note.md`), and a step has many small ones.
@@ -156,22 +156,6 @@ What this says:
 - **Nothing big is uploaded.** The step feeds 8 bytes. The weights and both caches are bound where they are (`bind` makes no copy for an F32 tensor). Each step makes 9 fresh output tensors: the logits (207 KB) and 8 self-attention caches of `capacity x 384` floats (393 KB in all at capacity 32), allocated and written by the graph. Only the logits come back to the host.
 - **The device part is what remains**: 41 ms on the CPU and 81 ms on Vulkan for a graph of 1,377 to 1,393 ggml nodes (the logits graph; the pick graph has 1,382 to 1,414). `ggml_run` times show ggml's compute is 39.0 ms on the CPU and 80.3 ms on Vulkan, and its allocator 0.4 and 0.7 ms, so the rest of `run` is under 2 ms. That is 58 us a node on Vulkan, so the node count is the lever there (whisper.cpp's decoder step is 7 and 11 ms).
 
-### With the cache written into the tensors of the step before
-
-A step takes the keys and values of the cache it replaces (`spare`) and writes the new ones into them (`Trace.run`'s `into`), so a decoder step on ggml makes no tensor of its own except the two inputs. The two sets take turns. Same session, `bench_step.agc` (96 timed steps) and `bench_transcribe.agc` (median of 5 runs, medium 2), ml `d688a31` against this branch:
-
-| | before | after |
-|---|---|---|
-| step, CPU, pick (ms) | 42.9 | 44.0 |
-| step, Vulkan, pick (ms) | 68.8 | 68.1 |
-| step, CPU, logits (ms) | 64.3 | 64.9 |
-| step, Vulkan, logits (ms) | 123.8 | 121.8 |
-| tiny CPU, jfk / es-hola (RTF) | 0.252 / 0.783 | 0.244 / 0.749 |
-| tiny Vulkan, jfk / es-hola (RTF) | 0.275 / 0.718 | 0.270 / 0.738 |
-| medium Vulkan, jfk / es-hola (RTF) | 2.42 / 6.87 | 2.38 / 6.91 |
-
-Every difference is inside the run-to-run noise of this machine (a few percent, 20 percent for es-hola on the CPU). The allocation of 24 small tensors a step was already cheap, as the earlier table said (0.02 to 0.7 ms); the change is kept for what it fixes, not for speed: the tensors a run reads are held until it ends, and the cache never takes a decoder step's graph out from under it. The device is still the cost.
-
 ### With the timestamp rules on the device
 
 The default, `Options.timestamps` true, applied Whisper's timestamp rules on the host over the 51,865 logits of every step. They now run in the step's graph (`Asr.scored`, from four numbers per step, `Greedy.state`), so the default path reads an id and a log-probability like the one without timestamps. `Asr.step` and `Greedy.allowed` stay as the reference, and tests compare the graph with them rule by rule on hand-made logits and over ten histories of a tiny model. Whole transcriptions with timestamps, `bench_transcribe.agc ... stamps`, median of 5 runs (medium 2), ml `ba20280`'s parent (`d688a31`, #81) against this branch in one session:
@@ -193,7 +177,7 @@ whisper-medium (the Hugging Face `openai/whisper-medium` checkpoint, 3.06 GB of 
 | ours, ggml CPU | 7.04 | 18.2 | 7.7 s | 4.0 GB | same as the medium output of whisper.cpp's server (`whisper/live/fixtures/server-*-medium.json`) |
 | ours, ggml Vulkan | 1.38 | 4.03 | 24 s | 0.49 GB | same |
 
-The Vulkan weights sit in the device's own buffers, which on this iGPU are system memory outside the process's resident set, so its row shows the process only. The encoder takes 22 s on the CPU and 5 s on Vulkan, and a decoder step about 2.0 s on the CPU and 0.34 s on Vulkan (one run, jfk), which is the per-step cost of #64 on a bigger model. The Vulkan load is slower than the CPU's (24 s against 7.7 s); where that time goes was not profiled.
+The Vulkan weights sit in the device's own buffers, which on this iGPU are system memory outside the process's resident set, so its row shows the process only. The encoder takes 22 s on the CPU and 5 s on Vulkan, and a decoder step about 2.0 s on the CPU and 0.34 s on Vulkan (one run, jfk). The Vulkan load is slower than the CPU's (24 s against 7.7 s); where that time goes was not profiled.
 
 ## Training loop on Vulkan, ours only
 
