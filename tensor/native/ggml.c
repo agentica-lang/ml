@@ -301,6 +301,9 @@ static bool make_tensor(an_env *env, int64_t device, ggml_list_Int *shape, enum 
   }
   if (code < 0) return failed_with(failure, an_void(env));
   for (i = 0; i < rank; i++) ne[i] = dims[rank - 1 - i];
+  if (ggml_is_quantized(type) && ne[0] % ggml_blck_size(type) != 0) {
+    return failed(env, failure, "a quantized tensor holds whole blocks of 32 values in each row");
+  }
   return tg_new_tensor(env, device, ne, type, state, failure);
 }
 
@@ -317,7 +320,10 @@ const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst) {
     ggml_backend_tensor_copy(src, dst);
     return NULL;
   }
-  if (src->type == GGML_TYPE_F16 || dst->type == GGML_TYPE_F16) return "an F16 tensor is not converted to or from another type";
+  if (src->type == GGML_TYPE_F16 || dst->type == GGML_TYPE_F16 || ggml_is_quantized(src->type) ||
+      ggml_is_quantized(dst->type)) {
+    return "an F16 or quantized tensor is not converted to or from another type";
+  }
   bytes = malloc(ggml_nbytes(src) > 0 ? ggml_nbytes(src) : 1);
   if (bytes == NULL) return "out of memory";
   ggml_backend_tensor_get(src, bytes, 0, ggml_nbytes(src));
@@ -440,21 +446,40 @@ static int half_threads(void) {
   return cores > HALF_MAX_THREADS ? HALF_MAX_THREADS : (int)cores;
 }
 
+/* What a loaded tensor holds, the code of `Types.held_code`: F32 or F16 converted from the floats of the source, or
+   the Q8_0 blocks of a Q8_0 source as they are. */
+enum { HELD_F32 = 0, HELD_F16 = 1, HELD_Q8_0 = 2 };
+
 /* The tensor is filled where the source is read: in place on a host buffer (the CPU), through a host copy for
-   a device that has its own memory (Vulkan). With `half` it is an F16 tensor, converted from the source's floats. */
+   a device that has its own memory (Vulkan). */
 static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const struct load_source *src,
-                         int64_t format, bool half) {
+                         int64_t format, int64_t held) {
   an_term term, failure;
   struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
   char why[FF_PATH_MAX + 160];
-  bool in_place, held, read;
+  bool in_place, locked, read;
+  enum ggml_type type = held == HELD_F16 ? GGML_TYPE_F16 : (held == HELD_Q8_0 ? GGML_TYPE_Q8_0 : GGML_TYPE_F32);
   void *host;
 
-  if (!make_tensor(env, device, &shape, half ? GGML_TYPE_F16 : GGML_TYPE_F32, state, &failure)) return failure;
+  if (held < HELD_F32 || held > HELD_Q8_0) return tg_error(env, "unknown held type code");
+  if ((held == HELD_Q8_0) != (format == FF_Q8_0) && held != HELD_F32) {
+    return tg_error(env, "a Q8_0 tensor is read from a Q8_0 range, and a Q8_0 range is read as F32 or kept as Q8_0");
+  }
+  if (!make_tensor(env, device, &shape, type, state, &failure)) return failure;
   in_place = !state->vulkan && ggml_backend_buffer_is_host(state->buffer);
   host = in_place ? state->t->data : host_bytes(state->t);
   if (host == NULL) return tg_error(env, "out of memory");
-  if (half) {
+  if (held == HELD_Q8_0) {
+    int64_t bytes = (int64_t)ggml_nbytes(state->t);
+
+    if (src->data != NULL) {
+      read = src->len == (size_t)bytes;
+      if (read) memcpy(host, src->data, src->len);
+      else snprintf(why, sizeof why, "%zu bytes are not the %lld of the tensor", src->len, (long long)bytes);
+    } else {
+      read = ff_read_bytes(src->path, src->path_len, src->offset, bytes, (uint8_t *)host, why, sizeof why);
+    }
+  } else if (held == HELD_F16) {
     struct half_sink sink = {(ggml_fp16_t *)host};
 
     if (src->data != NULL) {
@@ -474,25 +499,25 @@ static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const
     return tg_error(env, why);
   }
   if (!in_place) {
-    lock_for(state->vulkan, &held);
+    lock_for(state->vulkan, &locked);
     ggml_backend_tensor_set(state->t, host, 0, ggml_nbytes(state->t));
-    unlock_for(held);
+    unlock_for(locked);
     free(host);
   }
   return ggml_result_TensorHandle_ok(env, term);
 }
 
 an_term ggml_load(an_env *env, int64_t device, ng_str path, int64_t offset, ggml_list_Int shape, int64_t format,
-                  bool half) {
+                  int64_t held) {
   struct load_source src = {path.data, path.len, offset, NULL, 0};
 
-  return load_from(env, device, shape, &src, format, half);
+  return load_from(env, device, shape, &src, format, held);
 }
 
-an_term ggml_from_bytes(an_env *env, int64_t device, ng_buf data, ggml_list_Int shape, int64_t format, bool half) {
+an_term ggml_from_bytes(an_env *env, int64_t device, ng_buf data, ggml_list_Int shape, int64_t format, int64_t held) {
   struct load_source src = {NULL, 0, 0, data.data, data.len};
 
-  return load_from(env, device, shape, &src, format, half);
+  return load_from(env, device, shape, &src, format, held);
 }
 
 /* What `ggml_convert_file` writes: an open file, where the values go, and the format they take. */
@@ -671,6 +696,17 @@ an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t) {
   lock_for(t->vulkan, &held);
   ggml_backend_tensor_get(t->t, bytes, 0, ggml_nbytes(t->t));
   unlock_for(held);
+  if (ggml_is_quantized(t->t->type)) {
+    float *values = (float *)malloc((size_t)(count > 0 ? count : 1) * sizeof(float));
+
+    if (values == NULL) {
+      free(bytes);
+      return tg_error(env, "out of memory");
+    }
+    ggml_get_type_traits(t->t->type)->to_float(bytes, values, count);
+    free(bytes);
+    bytes = values;
+  }
   ggml_list_Float_begin(env, &out, (size_t)count);
   for (i = 0; i < count; i++) {
     if (t->t->type == GGML_TYPE_I32) ggml_list_Float_push(env, &out, (double)((int32_t *)bytes)[i]);

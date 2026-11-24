@@ -20,6 +20,12 @@ REL = 0.000000001
 F32_ABS = 0.0001
 F32_REL = 0.0001
 
+## The Q8_0 weights keep the blocks, and ggml rounds every activation to Q8_0 blocks (to F16 too on Vulkan): the logits
+## (up to 5) are within this of the dequantized model's. It is a measured margin, not a derived bound: the largest gap
+## on this model is 0.08 on the CPU, and a weight read in the wrong layout is off by whole units.
+Q8_ABS = 0.1
+Q8_REL = 0.0
+
 ## The logits (about 5 at most) of the half model are within a few 1e-3 of the F32 model's: every weight rounds once, by 2^-11.
 HALF_ABS = 0.01
 HALF_REL = 0.002
@@ -147,6 +153,38 @@ def test_an_f16_gguf_keeps_half_weights() -> Result[Void]
       )
     end
 
+    ok()
+  end
+end
+
+## A GGUF whose matrices are Q8_0 blocks (the peer's `q8.gguf`, width 32) dequantizes at load into the peer's model: the
+## logits match its forward in doubles, on the reference and on ggml.
+def test_a_q8_0_gguf_gives_the_peers_logits() -> Result[Void]
+  with_peer do |dir|
+    try matches_q8(dir, S.REF, Tensor.Dtype.F32, ABS, REL)
+    for backend in try S.ggml_backends()
+      try matches_q8(dir, backend, Tensor.Dtype.F32, F32_ABS, F32_REL)
+    end
+
+    ok()
+  end
+end
+
+## With `weights: Q8_0` the matrices (and the table, the tied head) stay Q8_0 blocks on ggml, the norms stay F32, and the
+## logits stay within the bound of ggml's rounding of the activations to Q8_0 blocks in every product.
+def test_q8_0_weights_keep_the_blocks_and_the_logits_close() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.ggml_backends()
+      m = try Qwen3.open("#{dir}/q8.gguf", backend, Tensor.Dtype.Q8_0)
+      block = m.stack.blocks[0]
+      try Test.eq(Tensor.dtype(m.tokens.table), Tensor.Dtype.Q8_0)
+      try Test.eq(Tensor.dtype(m.head.w), Tensor.Dtype.Q8_0)
+      try Test.eq(Tensor.dtype(block.attention.query.w), Tensor.Dtype.Q8_0)
+      try Test.eq(Tensor.dtype(block.mlp.down.w), Tensor.Dtype.Q8_0)
+      try matches_q8(dir, backend, Tensor.Dtype.Q8_0, Q8_ABS, Q8_REL)
+    end
+
+    try S.expect_error(Qwen3.open("#{dir}/q8.gguf", S.REF, Tensor.Dtype.Q8_0), "needs the ggml backend")
     ok()
   end
 end
@@ -333,9 +371,12 @@ end
 
 def expected(dir: String) -> Result[JSON.Value] = JSON.parse(try File.read_text("#{dir}/expected.json"))
 
-def ids(dir: String) -> Result[List[List[Int]]]
+def ids(dir: String) -> Result[List[List[Int]]] = ids_of(dir, "ids")
+
+## The batch of the peer's `key`.
+def ids_of(dir: String, key: String) -> Result[List[List[Int]]]
   out: List[List[Int]] = []
-  for row in try JSON.list(try JSON.get(try expected(dir), "ids"))
+  for row in try JSON.list(try JSON.get(try expected(dir), key))
     ints: List[Int] = []
     for v in try JSON.list(row)
       ints = ints.push(try JSON.int(v))
@@ -345,6 +386,15 @@ def ids(dir: String) -> Result[List[List[Int]]]
   end
 
   ok(out)
+end
+
+## The Q8_0 model of the peer on `backend`, loaded with `weights`, against the logits of its dequantized weights.
+def matches_q8(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype, abs: Float, rel: Float) -> Result[Void]
+  m = try Qwen3.open("#{dir}/q8.gguf", backend, weights)
+  rows = try ids_of(dir, "ids_q8")
+  got = try Qwen3.run(m, rows)
+  try Test.eq(Tensor.shape(got), [2, 6, 20])
+  S.expect_close(try S.floats_of(got), try S.flat(try JSON.get(try expected(dir), "q8")), abs, rel, "q8.gguf")
 end
 
 ## The model file `file` on `backend` against the peer's logits of `key`.

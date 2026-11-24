@@ -256,7 +256,7 @@ def test_only_ggml_holds_a_half_weight() -> Result[Void]
 
     try refused(
       Tensor.from_file(path, 3, [3], Tensor.FloatFormat.F32, Tensor.Backend.Reference, Tensor.Dtype.I32),
-      "F32 or F16",
+      "F32, F16 or Q8_0",
     )
 
     ok()

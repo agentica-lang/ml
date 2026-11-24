@@ -86,6 +86,20 @@ The test fixtures drop the `model.` part of the prefix
   `BF16` (an `F64` one) has no half form and stays `F32`. A `BF16` value under
   about 6e-8 (F16's smallest) becomes zero, and under 6e-5 it loses digits.
   `WEIGHTS=f16` (`Load.weights_from_env`) sets it for the tools.
+- **`weights: Q8_0` is opt-in too, and it keeps what the file holds.** A
+  rank-2 weight that the file stores as Q8_0 is read as a quantized weight
+  (`Hub.tensor` with `dtype: Q8_0`: ggml only, about a quarter of the memory of
+  `F32`); everything else (norms, a Q8_0 tensor of another rank, a tensor that
+  is not Q8_0 in its file) stays `F32`, because quantizing is not done here (a
+  file is quantized by llama.cpp's `llama-quantize`, from the F16 file that
+  `tools/to_gguf.agc` writes). Without the option a Q8_0 file loads as `F32`:
+  the dequantized values are exact, four times the memory, on any backend.
+  Another backend than ggml with `weights: Q8_0` is an error, and so is
+  `Hub.tensor` with `dtype: Q8_0` on a tensor that the file does not store as
+  Q8_0. `WEIGHTS=q8_0` sets it for the tools. The product of a quantized
+  weight is good to the half step of ggml's rounding of the activations to Q8_0
+  blocks, not to `F32`'s exactness (`tensor/DESIGN.md` §7); `Hub.dtype` says
+  how the file stores a tensor.
 
 ## GGUF
 
@@ -121,11 +135,14 @@ not by its magic. It is the same design as safetensors:
   reads it as an untied head: the loaded Qwen3-0.6B holds the table twice,
   0.3 GB more with `weights: F16` and 0.6 GB more in `F32`. A file without
   `output.weight` is read as tied.
-- **Types.** F32, F16, BF16 (read by the backend), and F64 and the integers (as
-  in safetensors). A quantized type (Q8_0, Q4_K and the others) is sized and
-  checked in blocks (a tensor may fill the data), and the tensor is refused
-  when read: it has no `tensor/` dtype yet. A type that is not sized here (the
-  IQ types) refuses the whole file.
+- **Types.** F32, F16, BF16 and Q8_0 (read by the backend), and F64 and the
+  integers (as in safetensors). A quantized type (Q8_0, Q4_K and the others)
+  is sized and checked in blocks (a tensor may fill the data). A Q8_0 tensor
+  reads as `F32` (`Tensor.from_file` with `format: Q8_0`, dequantized by the
+  backend, exact) or, with `dtype: Q8_0`, as a quantized weight that keeps its
+  blocks on ggml (`tensor/DESIGN.md` §7). The other quantized types are
+  refused when read: they have no `tensor/` dtype yet. A type that is not
+  sized here (the IQ types) refuses the whole file.
 
 ### Writing
 

@@ -399,6 +399,7 @@ static struct ggml_tensor *operand(struct entry *p, const struct gnode *n) {
   struct ggml_tensor *t = dense(p, n);
   int i;
 
+  if (ggml_is_quantized(t->type)) return t; /* a weight's blocks: its strides count bytes of blocks, and it is a leaf */
   for (i = 1; i < GGML_MAX_DIMS; i++) {
     if (t->nb[i] != t->nb[i - 1] * (size_t)t->ne[i - 1]) return ggml_cont(p->ctx, t);
   }
@@ -640,6 +641,18 @@ static int read_ints(an_env *env, ggml_list_Int *list, int64_t *out, int max, in
 /* The answer of a list that did not read: the cursor's error, or `text`. */
 static an_term bad_list(an_env *env, int r, const char *text) { return r == -1 ? an_void(env) : tg_error(env, text); }
 
+/* Where a packed operand (a quantized weight, or an F16 one) may go, as one closed list for every op: the leaf itself
+   as the argument of a transpose or the table of a gather, and the second argument of a matmul (the leaf, or the
+   transpose of one: a view, read in place). Any other use would copy or compute on blocks that ggml's ops do not take
+   (`ggml_cont` of a quantized view sizes its copy by rows and writes past its buffer), so it is an error before any
+   ggml call. `x` is argument `i` of a node of `op`; NULL when it fits. */
+static const char *packed_misuse(int64_t op, int i, const struct gnode *x) {
+  if (!ggml_is_quantized(x->t->type) && x->t->type != GGML_TYPE_F16) return NULL;
+  if (op == OP_MATMUL && i == 1) return NULL;
+  if (x->op == OP_LEAF && (op == OP_TRANSPOSE || (op == OP_GATHER && i == 0))) return NULL;
+  return "a quantized or F16 weight goes only into the weight of a matmul, a transpose of the weight itself or the table of a gather";
+}
+
 an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_list_Int args_list,
                   ggml_list_Int shape_list, ggml_list_Int ints_list) {
   struct entry *p = lease->e;
@@ -648,6 +661,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   struct gnode *n;
   const struct gnode *a = NULL, *b = NULL, *c = NULL;
   struct ggml_tensor *t = NULL;
+  enum ggml_type type;
+  const char *why;
   char text[256];
 
   if (p == NULL || p->compiled || p->graph != NULL) return tg_error(env, "the graph is compiled already, or its compile failed");
@@ -658,6 +673,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if ((r = read_ints(env, &ints_list, ints, 8, &nints)) != 0) return bad_list(env, r, "a node takes at most 8 ints");
   for (i = 0; i < nargs; i++) {
     if (args[i] < 0 || args[i] >= p->count) return tg_error(env, "an arg is not an earlier node");
+    why = packed_misuse(op, i, &p->nodes[args[i]]);
+    if (why != NULL) return tg_error(env, why);
   }
   if (!room(p, 24 + 4 * (size_t)nargs)) return tg_error(env, "the graph ran out of room: it lowers to more ggml tensors than its capacity allows");
   {
@@ -694,8 +711,13 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
 
   switch (op) {
     case OP_LEAF:
-      t = ggml_new_tensor_4d(p->port_ctx, nints > 0 && ints[0] != 0 ? GGML_TYPE_F16 : GGML_TYPE_F32, n->ne[0], n->ne[1],
-                             n->ne[2], n->ne[3]);
+      /* ints[0]: the type the leaf is bound to, as `Types.held_code`: 0 F32, 1 F16, 2 Q8_0 */
+      if (nints > 0 && (ints[0] < 0 || ints[0] > 2)) return tg_error(env, "a leaf is F32, F16 or Q8_0");
+      type = nints > 0 && ints[0] == 2 ? GGML_TYPE_Q8_0 : (nints > 0 && ints[0] == 1 ? GGML_TYPE_F16 : GGML_TYPE_F32);
+      if (type == GGML_TYPE_Q8_0 && (rank != 2 || n->ne[0] % ggml_blck_size(type) != 0)) {
+        return tg_error(env, "a Q8_0 leaf is a rank-2 weight whose rows hold whole blocks of 32 values");
+      }
+      t = ggml_new_tensor_4d(p->port_ctx, type, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
       ggml_set_input(t);
       p->leaves[p->leaf_count++].t = t;
       break;
@@ -723,6 +745,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
          is its argument and no copy is made. */
       if (b->op == OP_TRANSPOSE) {
         t = ggml_mul_mat(p->ctx, operand(p, &p->nodes[b->arg]), operand(p, a));
+      } else if (ggml_is_quantized(b->t->type)) {
+        return tg_error(env, "a quantized weight is read as [out, in]: use linear with out_in, not a matmul by the weight");
       } else {
         t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b))), operand(p, a));
       }
@@ -733,7 +757,9 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         snprintf(text, sizeof text, "transpose of a rank-%d tensor is not lowered to ggml", rank);
         return tg_error(env, text);
       }
-      t = ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, a)));
+      /* a quantized weight is only read in place, by the matmul that takes its transpose: the copy would need
+         rows of whole blocks along the other axis */
+      t = ggml_is_quantized(a->t->type) ? ggml_transpose(p->ctx, a->t) : ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, a)));
       n->arg = (int)args[0];
       break;
     case OP_RESHAPE:

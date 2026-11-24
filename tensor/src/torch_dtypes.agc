@@ -47,12 +47,14 @@ def name(dtype: Types.Dtype) -> String
     Types.Dtype.I64 -> "I64"
     Types.Dtype.U8 -> "U8"
     Types.Dtype.Bool -> "Bool"
+    Types.Dtype.Q8_0 -> "Q8_0"
   end
 end
 
 ## The code the native layer reads: `torch_scalar_type` in `native/torch.c`
 ## maps it to a libtorch scalar type. The order is the one libtorch's CPU
-## release offers for these nine, and it is a wire detail, not an API.
+## release offers for these nine, and it is a wire detail, not an API. `Q8_0`
+## (a weight of the ggml backend) has no libtorch type: `-1`, which the C layer refuses.
 def code(dtype: Types.Dtype) -> Int
   case dtype
     Types.Dtype.F32 -> 0
@@ -64,6 +66,7 @@ def code(dtype: Types.Dtype) -> Int
     Types.Dtype.I64 -> 6
     Types.Dtype.U8 -> 7
     Types.Dtype.Bool -> 8
+    Types.Dtype.Q8_0 -> -1
   end
 end
 

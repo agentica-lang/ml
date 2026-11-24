@@ -117,9 +117,9 @@ def same_as_peer(c: Hub.Checkpoint, expected: JSON.Value) -> Result[Void]
   ok()
 end
 
-## F32, F16 and BF16 load as `F32`; the other dtypes as the file has them.
+## F32, F16, BF16 and Q8_0 load as `F32`; the other dtypes as the file has them.
 def loaded_dtype(file_dtype: String) -> Tensor.Dtype
-  return Tensor.Dtype.F32 if ["F32", "F16", "BF16"].include?(file_dtype)
+  return Tensor.Dtype.F32 if ["F32", "F16", "BF16", "Q8_0"].include?(file_dtype)
   Shards.DTYPES[file_dtype]
 end
 

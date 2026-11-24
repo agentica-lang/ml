@@ -33,19 +33,20 @@ extern module "ggml"
   ## A tensor of the row-major `shape` (rank 4 at most) on `device`, holding
   ## `data`, one value per element.
   compute def upload(device: Int, shape: List[Int], data: List[Float], int32: Bool) -> Result[TensorHandle]
-  ## An F32 tensor (F16 when `half`) of the row-major `shape` on `device` from
-  ## the little-endian floats of `format` (a code of `Types.file_code`) that
-  ## start at byte `offset` of the file `path`. C reads the file itself, so no
-  ## value crosses as a list; a range past the end of the file is an error. A
-  ## half tensor converts the values a chunk at a time and refuses one that F16
-  ## does not hold (beyond 65504).
+  ## A tensor of the row-major `shape` on `device` from the `format` (a code of
+  ## `Types.file_code`) values that start at byte `offset` of the file `path`,
+  ## held as `held` says (a code of `Types.held_code`): F32, F16 (a value
+  ## beyond 65504 is an error) or Q8_0, the blocks of a Q8_0 range as they are.
+  ## C reads the file itself, so no value crosses as a list; a range past the
+  ## end of the file is an error. An F16 tensor converts the values a chunk at
+  ## a time.
   compute def load(
     device: Int,
     path: String,
     offset: Int,
     shape: List[Int],
     format: Int,
-    half: Bool,
+    held: Int,
   ) -> Result[TensorHandle]
   ## The same from `data`, the bytes of the range that Agentica read
   ## (`TENSOR_LOAD=agentica`): the call reads them in place and widens them into
@@ -55,7 +56,7 @@ extern module "ggml"
     data: Bytes,
     shape: List[Int],
     format: Int,
-    half: Bool,
+    held: Int,
   ) -> Result[TensorHandle]
   ## A tensor of `shape` on `device` with every element `value`, filled in C,
   ## so a large fill never crosses as a list.

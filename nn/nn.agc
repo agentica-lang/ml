@@ -182,10 +182,13 @@ def layer_norm(p: LayerNorm, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   Tensor.add(scaled, try Tensor.broadcast_to(p.beta, shape))
 end
 
-## The rows of `p.table` for the rank-1 integer `ids`: `[ids, width]`, `F32` also for a half table (`F16`, ggml).
+## The rows of `p.table` for the rank-1 integer `ids`: `[ids, width]`, `F32` also for a half or quantized table (`F16` or `Q8_0`, ggml).
 def embedding(p: Embedding, ids: Tensor.Tensor) -> Result[Tensor.Tensor]
   rows = try Tensor.embedding(ids, p.table)
-  return Tensor.to_dtype(rows, Tensor.Dtype.F32) if Tensor.dtype(p.table) == Tensor.Dtype.F16
+  if Tensor.dtype(p.table) == Tensor.Dtype.F16 or Tensor.dtype(p.table) == Tensor.Dtype.Q8_0
+    return Tensor.to_dtype(rows, Tensor.Dtype.F32)
+  end
+
   ok(rows)
 end
 

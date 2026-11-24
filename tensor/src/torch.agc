@@ -160,7 +160,7 @@ def from_file(
   _ = try ready(device, "from_file")
   if FileRange.agentica_read?()
     n = try Types.volume(shape)
-    bytes = try FileRange.read_range(path, offset, n * Types.file_width(format))
+    bytes = try FileRange.read_range(path, offset, try Types.file_bytes(format, n))
     return one(device, Types.Dtype.F32, shape) do Raw.from_bytes(bytes, shape, Types.file_code(format)) end
   end
 

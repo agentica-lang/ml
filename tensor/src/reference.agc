@@ -278,7 +278,7 @@ end
 ## oracle and for small files.
 def from_file(path: String, offset: Int, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
   n = try Types.volume(shape)
-  bytes = try FileRange.read_range(path, offset, n * Types.file_width(format))
+  bytes = try FileRange.read_range(path, offset, try Types.file_bytes(format, n))
   values: List[Float] = []
   for i in 0...n
     values = values.push(file_float(bytes, i, format))
@@ -1397,7 +1397,20 @@ def file_float(b: Bytes, i: Int, format: Types.FloatFormat) -> Float
     Types.FloatFormat.F32 -> Float.from_bits32(u16(b, 4 * i).bit_or(u16(b, 4 * i + 2).shift_left(16)))
     Types.FloatFormat.F16 -> half(u16(b, 2 * i))
     Types.FloatFormat.BF16 -> Float.from_bits32(u16(b, 2 * i).shift_left(16))
+    Types.FloatFormat.Q8_0 -> q8_0(b, i)
   end
+end
+
+## Value `i` of Q8_0 blocks (34 bytes of 32 values: a binary16 scale, 32 signed bytes): the scale times the byte.
+def q8_0(b: Bytes, i: Int) -> Float
+  at = (i / 32) * 34
+  byte = b[at + 2 + i % 32]
+  q = byte
+  if byte > 127
+    q = byte - 256
+  end
+
+  half(u16(b, at)) * q.to_f
 end
 
 def u16(b: Bytes, at: Int) -> Int = b[at].bit_or(b[at + 1].shift_left(8))
