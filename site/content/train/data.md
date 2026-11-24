@@ -75,6 +75,7 @@ end
 - `Data.feed(loader, epochs)` starts the feed. With `prefetch > 0` it also starts a task.
 - `Data.epoch(feed, e)` gives the feed for epoch `e`, counting from 1.
 - `Data.take(feed, i)` gives batch `i` of the epoch. A `Data.Batch` has `inputs`, `targets` and `index`, the row ids of the batch.
+- `Data.batch(loader, rows, i)` gives batch `i` of an epoch whose rows are `rows`, from `Data.order`, without a feed. `take` uses it when there is no prefetch.
 - `Data.release(batch)` frees the batch's native tensors. Call it when the step is done.
 - `Data.stop(feed)` ends the prefetch task. Call it when you are done, including after an error.
 
