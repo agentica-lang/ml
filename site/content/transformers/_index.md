@@ -80,9 +80,10 @@ end
 
 ## ResNet
 
-`ResNet.open(dir, backend)` loads `model.safetensors` and `config.json` of a `ResNetForImageClassification` (`microsoft/resnet-50`, `microsoft/resnet-18`). `ResNet.run(m, images)` takes the images as `F32` `[batch, 3, height, width]`, already normalized as the checkpoint's image processor does, and gives the logits `[batch, classes]`. `ResNet.top(m, logits, k)` gives the `k` best classes of each image as `Classify.Prediction(id, label, logit)`, best first, with the names of `config.json`. The [vision](../vision/_index.md) package makes the input: Hugging Face's image processor (`resample` 3, bicubic; `size` 224; `crop_pct` 0.875) of these checkpoints resizes the shorter side to 256 (224 over `crop_pct` 0.875), cuts the center 224 by 224, scales to `0..1` and normalizes with the ImageNet mean and std. `Vision.Resize(256)`, `CenterCrop(224, 224)` and `normalize` do the same up to two differences: libvips resizes with a kernel of its own, so pixels are up to 0.018 (normalized) from Pillow's, and a crop with an odd gap between the sizes (half a pixel) rounds the offset to the even pixel, as torchvision does, where Hugging Face floors it, so the crop can sit one pixel apart. To classify an image:
+`ResNet.open(dir, backend)` loads `model.safetensors` and `config.json` of a `ResNetForImageClassification` (`microsoft/resnet-50`, `microsoft/resnet-18`). `ResNet.run(m, images)` takes the images as `F32` `[batch, 3, height, width]`, already normalized as the checkpoint's image processor does, and gives the logits `[batch, classes]`. `ResNet.top(m, logits, k)` gives the `k` best classes of each image as `Classify.Prediction(id, label, logit)`, best first, with the names of `config.json`. The [vision](../vision/_index.md) package makes the input: Hugging Face's image processor (`resample` 3, bicubic; `size` 224; `crop_pct` 0.875) of these checkpoints resizes the shorter side to 256 (224 over `crop_pct` 0.875), cuts the center 224 by 224, scales to `0..1` and normalizes with the ImageNet mean and std. `Vision.Step.Resize(256, Image.Kernel.Cubic)`, `CenterCrop(224, 224)` and `normalize` do the same up to two differences: the pixels are still up to 0.0175 (normalized) from Pillow's, and a crop with an odd gap between the sizes (half a pixel) rounds the offset to the even pixel, as torchvision does, where Hugging Face floors it, so the crop can sit one pixel apart. To classify an image:
 
 ```agentica {mode="fragment"}
+import Image from "pkg/image/image"
 import ResNet from "pkg/transformers/resnet"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "pkg/vision/vision"
@@ -90,7 +91,7 @@ import Vision from "pkg/vision/vision"
 backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 m = ResNet.open("resnet-50", backend).unwrap!
 photo = Vision.Folder(classes: ["photo"], paths: ["cat.jpg"], labels: [0])
-steps = [Vision.Step.Resize(256), Vision.Step.CenterCrop(224, 224)]
+steps = [Vision.Step.Resize(256, Image.Kernel.Cubic), Vision.Step.CenterCrop(224, 224)]
 batch = Vision.samples(photo, [0], steps, 0, backend).unwrap!
 pixels = Vision.normalize(batch.inputs, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]).unwrap!
 logits = ResNet.run(m, pixels).unwrap!
@@ -101,15 +102,16 @@ end
 
 - The batch norm after each convolution is folded into the convolution when the model loads, so the model is for inference and the weights it holds are not the checkpoint's. On ggml `run` is one graph; close its logits with `ResNet.close(logits)` and the weights with `ResNet.close_model(m)`.
 - The ids and names are those of ImageNet-1k in the checkpoint's `config.json`. A `model_type` other than `resnet`, an activation other than `relu` and a `layer_type` other than `bottleneck` and `basic` are errors, and so is an input that is not `[batch, 3, height, width]`. Any height and width that the strides leave a pixel of are valid; the checkpoints were trained at 224.
-- Against Hugging Face's `ResNetForImageClassification` in `float32`, on four images through the whole pipeline, the best 5 classes are the same and in the same order for both models on CPU and Vulkan. On Hugging Face's own pixels the largest gap of a logit is 1.6e-5 (ResNet-50) and 1.1e-5 (ResNet-18); with `vision`'s own resize it is 0.16 and 0.065, from the pixels (libvips and Pillow resize with different kernels, up to 0.018 apart after normalizing).
+- Against Hugging Face's `ResNetForImageClassification` in `float32`, on four images through the whole pipeline, the best 5 classes are the same and in the same order for both models on CPU and Vulkan. On Hugging Face's own pixels the largest gap of a logit is 1.6e-5 (ResNet-50) and 1.1e-5 (ResNet-18); with `vision`'s own resize (`Cubic`, the kernel of `resample` 3) it is 0.092 and 0.048, from the pixels, which are up to 0.0175 from Pillow's after normalizing (0.16 and 0.065 with libvips' default Lanczos 3).
 - Speed on the machine of [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md) (ResNet-50, 224 by 224): 7.6 images per second at batch 1 and 8.1 at batch 32 on the CPU, 17.8 and 27.8 on Vulkan; the forward and backward of the folded model takes 1.5 s at batch 1 and 35 s at batch 32 on the CPU.
 - Reference and ggml are tested; libtorch is not. `ResNet.forward(m, images)` is the same model as plain tensor calls, for a loss.
 
 ## ViT
 
-`ViT.open(dir, backend)` loads `model.safetensors` and `config.json` of a `ViTForImageClassification` (`google/vit-base-patch16-224`). `ViT.run(m, images)` takes the images as `F32` `[batch, 3, 224, 224]`, already normalized as the checkpoint's image processor does, and gives the logits `[batch, classes]`. `ViT.top(m, logits, k)` gives the `k` best classes of each image as `Classify.Prediction(id, label, logit)`, best first, with the names of `config.json`. The [vision](../vision/_index.md) package makes the input: Hugging Face's image processor of this checkpoint stretches the whole image to 224 by 224 (no crop, no aspect ratio kept; `resample` bilinear), scales to `0..1` and normalizes with mean and std 0.5. `Vision.Step.ResizeTo(224, 224)` and `normalize` do the same, up to the resize kernel: libvips uses Lanczos 3 where Pillow's bilinear averages over the area it covers, so the pixels are up to 0.024 (normalized) from Pillow's. To classify an image:
+`ViT.open(dir, backend)` loads `model.safetensors` and `config.json` of a `ViTForImageClassification` (`google/vit-base-patch16-224`). `ViT.run(m, images)` takes the images as `F32` `[batch, 3, 224, 224]`, already normalized as the checkpoint's image processor does, and gives the logits `[batch, classes]`. `ViT.top(m, logits, k)` gives the `k` best classes of each image as `Classify.Prediction(id, label, logit)`, best first, with the names of `config.json`. The [vision](../vision/_index.md) package makes the input: Hugging Face's image processor of this checkpoint stretches the whole image to 224 by 224 (no crop, no aspect ratio kept; `resample` bilinear), scales to `0..1` and normalizes with mean and std 0.5. `Vision.Step.ResizeTo(224, 224, Image.Kernel.Linear)` and `normalize` do the same: the pixels are up to 0.0078 (normalized) from Pillow's (0.0235 with libvips' default Lanczos 3). To classify an image:
 
 ```agentica {mode="fragment"}
+import Image from "pkg/image/image"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "pkg/vision/vision"
 import ViT from "pkg/transformers/vit"
@@ -117,7 +119,7 @@ import ViT from "pkg/transformers/vit"
 backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 m = ViT.open("vit-base-patch16-224", backend).unwrap!
 photo = Vision.Folder(classes: ["photo"], paths: ["cat.jpg"], labels: [0])
-batch = Vision.samples(photo, [0], [Vision.Step.ResizeTo(224, 224)], 0, backend).unwrap!
+batch = Vision.samples(photo, [0], [Vision.Step.ResizeTo(224, 224, Image.Kernel.Linear)], 0, backend).unwrap!
 pixels = Vision.normalize(batch.inputs, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap!
 logits = ViT.run(m, pixels).unwrap!
 for p in ViT.top(m, logits, 5).unwrap![0]
@@ -127,17 +129,18 @@ end
 
 - The model is a convolution of stride 16 (the patches), a class token, learned positions, twelve pre-norm blocks of `Nn.EncoderBlock` with the exact GELU, a final layer norm and a linear head on the class token. On ggml `run` is one graph; close its logits with `ViT.close(logits)` and the weights with `ViT.close_model(m)`.
 - The ids and names are those of ImageNet-1k in the checkpoint's `config.json`. A `model_type` other than `vit` and an activation other than `gelu` are errors, and so is an input that is not `[batch, 3, image_size, image_size]`: the position table is for one size, and nothing interpolates it. The names and shapes of the checkpoint's tensors are checked before any is loaded.
-- Against Hugging Face's `ViTForImageClassification` in `float32`, on four images: with Hugging Face's own 8-bit pixels the top 5 classes are the same and in the same order, and the largest gap of a logit is 1.2e-5 on CPU and 9.6e-6 on Vulkan. Through `vision`'s own resize the largest gap is 0.156, from the pixels; the logits of these drawn images lie within 0.03 to 0.3 of each other, so the resize reorders the best five and can swap one with the sixth; every class that Hugging Face puts clearly (0.32) above its sixth is in ours.
+- Against Hugging Face's `ViTForImageClassification` in `float32`, on four images: with Hugging Face's own 8-bit pixels the top 5 classes are the same and in the same order, and the largest gap of a logit is 1.2e-5 on CPU and 9.6e-6 on Vulkan. Through `vision`'s own resize (`Linear`) the largest gap is 0.103 (0.156 with Lanczos 3), from the pixels; the logits of these drawn images lie within 0.03 to 0.3 of each other, so the resize reorders the best five and can swap one with the sixth; every class that Hugging Face puts clearly (0.21) above its sixth is in ours.
 - Speed on the machine of [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md): ViT-B/16 forward at 224 by 224 runs at 2.6 images per second at batch 1 and 3.4 at batch 32 on the CPU, 5.3 and 7.4 on Vulkan (exact `float32`).
 - Reference and ggml are tested; libtorch is not. `ViT.forward(m, images)` is the same model as plain tensor calls, for a loss.
 
 ## Zero-shot with CLIP
 
-`Clip.open(dir, backend)` loads `model.safetensors` and `config.json` of a `CLIPModel` (`laion/CLIP-ViT-B-32-laion2B-s34B-b79K`: LAION's ViT-B/32, with the architecture of OpenAI's but weights of its own; `openai/clip-vit-base-patch32` publishes no safetensors file). `Clip.image_embeds(m, images)` takes the images as `F32` `[batch, 3, 224, 224]`, normalized as the checkpoint's image processor does, and gives their embeddings `[batch, 512]`. `Clip.text_embeds(m, rows)` takes rows of ids from the tokenizer (`Clip.encode` of `pkg/transformers/tokenizer/clip`) and gives `[rows, 512]`. Neither is normalized, as `get_image_features` and `get_text_features` of Hugging Face give them. `Clip.logits(m, images, texts)` is the cosine of each image with each text times `exp(logit_scale)` (`m.scale`, 100 here), `[images, texts]`, and `Clip.probabilities` is the softmax of that over the texts: with a prompt for each class, the probability of each class. The [vision](../vision/_index.md) package makes the image input: Hugging Face's image processor of this checkpoint (`resample` 3, bicubic; `size` 224; `crop_size` 224) resizes the shorter side to 224, cuts the center 224 by 224, scales to `0..1` and normalizes with the mean `[0.48145466, 0.4578275, 0.40821073]` and the std `[0.26862954, 0.26130258, 0.27577711]`. `Vision.Resize(224)`, `CenterCrop(224, 224)` and `normalize` do the same up to the resize kernel (libvips resizes with Lanczos 3 where Pillow uses bicubic) and the half-pixel rounding of the crop, as for ResNet. To classify an image with no training on its classes:
+`Clip.open(dir, backend)` loads `model.safetensors` and `config.json` of a `CLIPModel` (`laion/CLIP-ViT-B-32-laion2B-s34B-b79K`: LAION's ViT-B/32, with the architecture of OpenAI's but weights of its own; `openai/clip-vit-base-patch32` publishes no safetensors file). `Clip.image_embeds(m, images)` takes the images as `F32` `[batch, 3, 224, 224]`, normalized as the checkpoint's image processor does, and gives their embeddings `[batch, 512]`. `Clip.text_embeds(m, rows)` takes rows of ids from the tokenizer (`Clip.encode` of `pkg/transformers/tokenizer/clip`) and gives `[rows, 512]`. Neither is normalized, as `get_image_features` and `get_text_features` of Hugging Face give them. `Clip.logits(m, images, texts)` is the cosine of each image with each text times `exp(logit_scale)` (`m.scale`, 100 here), `[images, texts]`, and `Clip.probabilities` is the softmax of that over the texts: with a prompt for each class, the probability of each class. The [vision](../vision/_index.md) package makes the image input: Hugging Face's image processor of this checkpoint (`resample` 3, bicubic; `size` 224; `crop_size` 224) resizes the shorter side to 224, cuts the center 224 by 224, scales to `0..1` and normalizes with the mean `[0.48145466, 0.4578275, 0.40821073]` and the std `[0.26862954, 0.26130258, 0.27577711]`. `Vision.Step.Resize(224, Image.Kernel.Cubic)`, `CenterCrop(224, 224)` and `normalize` do the same up to the half-pixel rounding of the crop, as for ResNet; the pixels are up to 0.015 from Pillow's. To classify an image with no training on its classes:
 
 ```agentica {mode="fragment"}
 import Clip from "pkg/transformers/clip"
 import ClipTokenizer from "pkg/transformers/tokenizer/clip"
+import Image from "pkg/image/image"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "pkg/vision/vision"
 
@@ -147,7 +150,7 @@ tok = ClipTokenizer.open("clip-vit-b-32").unwrap!
 labels = ["a photo of a cat", "a photo of a dog", "a photo of a bird"]
 rows = labels.map { |l| ClipTokenizer.encode(tok, l).unwrap! }
 photo = Vision.Folder(classes: ["photo"], paths: ["pet.jpg"], labels: [0])
-steps = [Vision.Step.Resize(224), Vision.Step.CenterCrop(224, 224)]
+steps = [Vision.Step.Resize(224, Image.Kernel.Cubic), Vision.Step.CenterCrop(224, 224)]
 batch = Vision.samples(photo, [0], steps, 0, backend).unwrap!
 mean = [0.48145466, 0.4578275, 0.40821073]
 std = [0.26862954, 0.26130258, 0.27577711]
@@ -160,7 +163,7 @@ puts(chances)
 
 - The tower of the images is a convolution of stride 32, a class embedding, learned positions, `pre_layrnorm`, twelve pre-norm blocks with the exact GELU, and the class token through `post_layernorm` and a projection; the tower of the texts is token and position embeddings, twelve pre-norm blocks under a causal mask, a final layer norm, and the vector of the end token through a projection. Each call is one graph on ggml: close what it gives with `Clip.close(t)` and the weights with `Clip.close_model(m)`. Rows of ids are padded to the longest, which changes nothing under the causal mask; a row is at most 77 ids, and an empty one is an error.
 - A `model_type` other than `clip`, an activation other than `gelu` (OpenAI's own checkpoints use `quick_gelu`), and a checkpoint whose tensors do not have the names and shapes of its `config.json` are errors, checked before any tensor is loaded. An image of another size than `image_size` is an error, as ViT's.
-- Against Hugging Face's `CLIPModel` in `float32`, on four images and six prompts: the ids of the prompts are the same, and on Hugging Face's own 8-bit crops the largest gap is 5e-6 for a text embedding, 2e-5 for an image embedding, 4e-5 for a logit (scale 100) and 2e-6 for a probability, on CPU and on Vulkan, with the same best prompt. Through `vision`'s own resize a logit is up to 0.43 away, from the pixels (libvips and Pillow resize with different kernels), and the best prompt is the same.
+- Against Hugging Face's `CLIPModel` in `float32`, on four images and six prompts: the ids of the prompts are the same, and on Hugging Face's own 8-bit crops the largest gap is 5e-6 for a text embedding, 2e-5 for an image embedding, 4e-5 for a logit (scale 100) and 2e-6 for a probability, on CPU and on Vulkan, with the same best prompt. Through `vision`'s own resize (`Cubic`) a logit is up to 0.21 away (0.43 with libvips' default Lanczos 3), from the pixels, and the best prompt is the same.
 - Speed on the machine of [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md): image embeddings (224 by 224) run at 10.3 images per second at batch 1 and 13.5 at batch 32 on the CPU, 13.3 and 29.2 on Vulkan; the text embeddings of rows of 77 ids at 14.2 and 17.6 texts per second on the CPU, 14.4 and 39.7 on Vulkan (exact `float32`).
 - Reference and ggml are tested; libtorch is not.
 

@@ -14,6 +14,7 @@
 import Clip from "pkg/transformers/clip"
 import ClipTokenizer from "pkg/transformers/tokenizer/clip"
 import Hf from "hf"
+import Image from "pkg/image/image"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "../vision"
 
@@ -23,15 +24,15 @@ SHORTER = 224
 
 ## What passes. The model alone is `float32` through 12 blocks and measured, on CPU and Vulkan, 5e-6 (text) and 2e-5
 ## (image) for an embedding, 4e-5 for a logit (the scale of 100 multiplies the gap of the cosine) and 2e-6 for a
-## probability; the tolerances leave room for other ggml builds. Through our own pipeline (libvips resizes with another
-## kernel than Pillow) the pixels measured 0.015 and the logits 0.43, from the pixels; those tolerances are about twice
-## that.
+## probability; the tolerances leave room for other ggml builds. Through our own pipeline, with the `Cubic` kernel of
+## the processor's `resample` 3, the pixels measured 0.015 and the logits 0.21 (0.015 and 0.43 with libvips' Lanczos 3),
+## from the pixels, on CPU and Vulkan; those tolerances are about twice that.
 MODEL_ABS = 0.0001
 MODEL_REL = 0.0
 LOGIT_ABS = 0.001
 PROBABILITY_ABS = 0.0001
 PIXEL_ABS = 0.03
-PIPELINE_ABS = 0.9
+PIPELINE_ABS = 0.43
 
 struct Text
   text: String
@@ -111,7 +112,7 @@ end
 
 ## The images as the image processor of the checkpoint makes them: normalized `[n, 3, 224, 224]`.
 def preprocessed(dir: String, names: List[String], backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  steps = [Vision.Step.Resize(SHORTER), Vision.Step.CenterCrop(Hf.SIZE, Hf.SIZE)]
+  steps = [Vision.Step.Resize(SHORTER, Image.Kernel.Cubic), Vision.Step.CenterCrop(Hf.SIZE, Hf.SIZE)]
   Vision.normalize(try Hf.loaded(dir, names, steps, backend), MEAN, STD)
 end
 

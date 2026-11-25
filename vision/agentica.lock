@@ -11,9 +11,9 @@ workspace = true
 name = "image"
 git = "https://github.com/agentica-lang/packages"
 subdir = "image"
-tag = "image-0.1.0"
-commit = "6f2c437fe3613d608664eb4455d025efdfa1e7f3"
-hash = "sha256:9c3ce26ea5cdaa0f6fc05095f4731736231eda4269e352e36ff11f24b9936c02"
+tag = "image-0.2.0"
+commit = "c627125558107de9071171e2b94a105ac2ae1693"
+hash = "sha256:3e710b55cd5cebe3aaf9479233d83ca26f930163e8c94cbf7a15f05f83b4b1f4"
 
 [[package]]
 name = "native-gen"

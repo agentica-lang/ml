@@ -144,7 +144,7 @@ end
 ## Batch `step`: the images of its rows, through the steps of `recipe`, normalized, with the class ids.
 def decoded(f: Vision.Folder, recipe: Recipe, backend: Tensor.Backend, batch: Int, step: Int) -> Result[Data.Batch]
   rows = (0...batch).map { |k| (step * batch + k) % FILES }
-  steps = [Vision.Step.Resize(recipe.shorter), Vision.Step.CenterCrop(SIDE, SIDE)]
+  steps = [Vision.Step.Resize(recipe.shorter, Image.Kernel.Cubic), Vision.Step.CenterCrop(SIDE, SIDE)]
   s = try Vision.samples(f, rows, steps, 0, backend)
   normal = try Vision.normalize(s.inputs, recipe.mean, recipe.std)
   Data.free(s.inputs)

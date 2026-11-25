@@ -31,7 +31,8 @@ All packages are released together at one version, each on its own tag, `<packag
 ### vision
 
 - A `U8` image is handed to the backend as bytes (ml#252), not cast to `F32` in the image library first: a quarter of the memory up to the backend, which widens it to `F32`; the scale to `0..1` runs on the device. `Vision.samples` inside a `Train.fit_batches` batch function decodes on its `prefetch` task.
-- `Vision.Step.ResizeTo(width, height)`: a resize to exactly that size, without keeping the aspect ratio.
+- `Vision.Step.Resize(n, kernel)` and `ResizeTo(width, height, kernel)` take the `Image.Kernel` that libvips resizes with (ml#258, `image-0.2.0`). The recipes of ResNet and CLIP use `Cubic` and ViT's `Linear`, as their Hugging Face processors do: the logits after the pipeline are 0.092 (ResNet-50), 0.048 (ResNet-18), 0.103 (ViT) and 0.21 (CLIP) from Hugging Face's, from 0.16, 0.065, 0.156 and 0.43 with Lanczos 3.
+- `Vision.Step.ResizeTo(width, height, kernel)`: a resize to exactly that size, without keeping the aspect ratio.
 - New package `vision` (ml#82): images for tensors, on the `image` package (libvips). It needs libvips.
 - `Vision.to_tensor`: the pixels of an image go straight into a tensor, as `F32` in `0..1` or as `U8`, in `Chw` or `Hwc`.
 - `Vision.apply`: `Resize` (shorter side), `CenterCrop`, `RandomCrop` and `HorizontalFlip`, with a seed.

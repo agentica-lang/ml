@@ -52,11 +52,13 @@ end
 
 | Step | Does |
 |---|---|
-| `Resize(n)` | scales the shorter side to `n` and keeps the aspect ratio; the longer side is cut to a whole number, as torchvision does |
-| `ResizeTo(width, height)` | scales to exactly that size, whatever the aspect ratio (what the processor of ViT does) |
+| `Resize(n, kernel)` | scales the shorter side to `n` and keeps the aspect ratio; the longer side is cut to a whole number, as torchvision does |
+| `ResizeTo(width, height, kernel)` | scales to exactly that size, whatever the aspect ratio (what the processor of ViT does) |
 | `CenterCrop(width, height)` | cuts the area at the center; when the gap is odd and falls between two pixels, the offset is the even one, as Python's `round` and torchvision do |
 | `RandomCrop(width, height)` | cuts the area at a random place |
 | `HorizontalFlip(p)` | mirrors the image with probability `p` |
+
+`kernel` is an `Image.Kernel` (`Nearest`, `Linear`, `Cubic`, `Lanczos2`, `Lanczos3`): the filter that libvips resizes with. Use the kernel of the model's image processor: Hugging Face's ResNet and CLIP processors resize with Pillow's bicubic (`Cubic`) and ViT's with its bilinear (`Linear`). libvips and Pillow still do not give the same samples with the same kernel: through the pipeline the pixels are up to 0.0175 (ResNet), 0.0078 (ViT) and 0.015 (CLIP) from Pillow's after normalizing, as measured in [the transformers page](../transformers/_index.md).
 
 The random steps draw from `seed`, so one seed gives one result. A crop larger than the image, a `Resize` below 1 or a `p` outside `0.0..1.0` is an `error`. The images that `apply` makes along the way are closed when it returns, but the one it gives stays open (see [image](https://www.agentica-lang.com/packages/image/) for the lifetime of an image).
 
@@ -70,7 +72,7 @@ A dataset of the whole folder feeds the loader of `train`, as in [the data loade
 
 ```agentica {mode="fragment"}
 folder = Vision.folder("photos").unwrap!
-steps = [Vision.Step.Resize(36), Vision.Step.CenterCrop(32, 32)]
+steps = [Vision.Step.Resize(36, Image.Kernel.Lanczos3), Vision.Step.CenterCrop(32, 32)]
 s = Vision.samples(folder, (0...folder.paths.size).to_a, steps, 0, backend).unwrap!
 dataset = Data.dataset(s.inputs, s.targets).unwrap!
 ```

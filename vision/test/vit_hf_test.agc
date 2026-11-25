@@ -11,6 +11,7 @@
 ## `VIT_MODEL=vit-base-patch16-224 agentica test --max-steps 1000000000000 test/vit_hf_test.agc`.
 
 import Hf from "hf"
+import Image from "pkg/image/image"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "../vision"
 import ViT from "pkg/transformers/vit"
@@ -18,15 +19,16 @@ import ViT from "pkg/transformers/vit"
 MEAN = [0.5, 0.5, 0.5]
 STD = [0.5, 0.5, 0.5]
 
-## What passes: about twice the gap measured for the pixels (0.0235) and the logits after the pipeline (0.156), which
-## differ from Hugging Face's in the resize (Lanczos in libvips, Pillow's bilinear). The model alone is `float32`
+## What passes: about twice the gap measured for the pixels (0.0078) and the logits after the pipeline (0.103) with the
+## `Linear` kernel of the processor's default `resample` 2 (0.0235 and 0.156 with libvips' Lanczos 3), on CPU and
+## Vulkan; they still differ from Hugging Face's. The model alone is `float32`
 ## through 12 blocks and measured 1.2e-5 on CPU and 9.6e-6 on Vulkan; its 1e-4 leaves room for other ggml builds.
 ## The logits of these drawn images lie within 0.03 to 0.3 of each other, so the resize reorders the top 5 and can swap
 ## a class with the sixth: the pipeline check allows for ties (`Hf.logit_gap`), the model alone keeps the order.
 MODEL_ABS = 0.0001
 MODEL_REL = 0.0
-PIXEL_ABS = 0.05
-PIPELINE_ABS = 0.32
+PIXEL_ABS = 0.016
+PIPELINE_ABS = 0.21
 
 struct Golden
   images: List[Hf.Pixel]
@@ -58,7 +60,7 @@ def test_the_model_and_the_pipeline_match_hugging_face() -> Result[Void]
     MODEL_REL,
   )
 
-  steps = [Vision.Step.ResizeTo(Hf.SIZE, Hf.SIZE)]
+  steps = [Vision.Step.ResizeTo(Hf.SIZE, Hf.SIZE, Image.Kernel.Linear)]
   pixels = try Vision.normalize(try Hf.loaded("test/fixtures/resnet", names, steps, backend), MEAN, STD)
   pixel = try Hf.pixel_gap(pixels, want.images)
   return error("the pixels are #{pixel} from Hugging Face's, more than #{PIXEL_ABS}") if pixel > PIXEL_ABS
