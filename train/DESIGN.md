@@ -3,7 +3,7 @@
 Losses, optimizers, a data loader and a minimal training loop over
 `tensor/`'s tracing (`tensor/DESIGN.md` §10). Depends on
 `tensor/` and `hub/` (a dataset from a safetensors file); `nn/` is a test
-dependency (`group = "test"`), used by the XOR test.
+dependency (`group = "test"`), used by the XOR test, and so is `prop`.
 
 ## API
 
@@ -25,10 +25,19 @@ Data.feed(loader, epochs) -> Result[Feed]; Data.epoch(feed, e); Data.take(feed, 
 Data.release(batch)                                          frees its native tensors
 Data.Batch { inputs, targets, index? }
 
-Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?) -> Result[Fit { params, history }]
+Metrics.open(root, name, sinks = Both) -> Result[Run]   ROOT/NAME/metrics.jsonl, events.out.tfevents.*
+Metrics.scalar(run, name, step, value) -> Result[Void]
+Metrics.close(run) -> Result[Void]
+
+Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?, metrics?) -> Result[Fit { params, history }]
   loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
   on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
 Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Module]
+
+Params.split(weights: Map[String, Tensor], trainable: Fn[String, Bool]) -> Result[Split { names, trainable, frozen }]
+Params.join(split, params) -> Result[Map[String, Tensor]]     every weight; the frozen ones as trace constants in a loss
+Params.named(split, params) -> Result[Map[String, Tensor]]    the trainable ones alone
+Params.update(weights, changed) -> Result[Map[String, Tensor]]
 ```
 
 ## Decisions
@@ -38,6 +47,19 @@ Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Modu
   structs from the list (`Nn.Dense(w: ps[0], b: some(ps[1]))`), which costs a
   struct per step and no copy. Flattening any struct of layers on its own
   (JAX's pytrees) waits for a model with enough layers to need it.
+- **Freezing is a split outside `fit`.** `fit` already gives a gradient and
+  optimizer state only to the tensors of `params`, so training part of a model
+  needs no second `fit`: `Params.split` picks the trainable weights of a
+  `Map[String, Tensor]` by a predicate on the name and hands `fit` their list,
+  and `Params.join` inside the loss gives the model every weight back, the
+  frozen ones as `Trace.constant`. The frozen tensors are then leaves the
+  graph only reads: no gradient is built for them and the step has no inputs,
+  moments or outputs for them. A model says its names itself
+  (`Qwen3.weights`, `Qwen3.with_weights` in `transformers/`). The trainable
+  part is saved as a safetensors file by `hub/`
+  (`SafetensorsWrite.write(path, Params.named(split, fit.params))`) and put
+  back with `Params.update`, which refuses a name the model lacks and another
+  shape.
 - **The batch enters the trace as constants.** `fit` wraps `inputs` and
   `targets` in `Trace.constant`, so the loss function sees traced tensors
   everywhere and is written once, as it would be eagerly.
@@ -52,9 +74,9 @@ Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Modu
   state, and runs them with one `Trace.eval_many`: on `Ggml` one compiled
   graph, which the structural cache compiles once per batch shape (a last
   partial batch is a second graph). The step count stays on the host, so
-  Adam's bias correction is a fill, set per run. A ggml graph has at most 256
-  outputs, the loss and the new tensors, so a step on `Ggml` takes at most 85
-  parameters with Adam, 127 with momentum SGD and 255 with plain SGD.
+  Adam's bias correction is a fill, set per run. A ggml graph has at most 512
+  outputs, the loss and the new tensors, so a step on `Ggml` takes at most 170
+  parameters with Adam, 255 with momentum SGD and 511 with plain SGD.
 - **Binary cross-entropy is built from ops that have backward rules.** It is
   `relu(z) + log(1 + exp(-|z|)) - t z`, stable for any `z`, with
   `|z| = 2 relu(z) - z`: `relu`'s derivative at `0` is `0`, and with this form
@@ -78,6 +100,37 @@ Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Modu
   libtorch and only the new state, parameters and loss leave it
   (`tensor/DESIGN.md` §8). The previous parameters and state were made
   before the arena, so it does not free them: they wait for the GC.
+- **Metrics live in `train/`.** Only `fit` reports through them, and the logger
+  needs no native code and no `tensor/` type, so a package of its own would be
+  a `agentica.toml`, a lock, a version pin and a CI job for one consumer. It is
+  three small modules (`metrics.agc`, `events.agc`, `crc32c.agc`), and a
+  package can take them out when a second consumer appears.
+- **One call, every sink, scalars only.** `Metrics.scalar(run, name, step,
+  value)` writes to each sink of the run and flushes, so TensorBoard and
+  `tail -f` see a value as it happens. Histograms, text and images are not
+  there; the series name is free text (`train/loss`, `/` groups in TensorBoard).
+  A value that is not finite or beyond float32 (the event file holds a float32)
+  and a negative step are errors: JSON cannot hold `NaN`, so the two sinks
+  agree on what a run holds. `fit` then stops, naming the epoch and the batch,
+  on a loss that is `NaN`, which a diverged run is better for.
+- **JSONL line.** `{"run", "name", "step", "value", "time"}`, `time` the Unix
+  time in seconds as a float. A run folder that exists is appended to.
+- **TensorBoard file, by hand.** The file holds the records of the TFRecord
+  framing: a `u64` length, the masked CRC-32C of those 8 bytes, the data, and the
+  masked CRC-32C of the data, little-endian (the mask is the CRC rotated right
+  by 15 bits, plus `0xA282EAD8`). The first record is an `Event` with
+  `file_version = "brain.Event:2"`, the others an `Event` with `wall_time`
+  (double), `step` and a `Summary` with one `Value { tag, simple_value }`
+  (a float32). The protobuf is a dozen lines (a varint, a key, a length) and
+  the checksum a table of 256 entries; the file is named
+  `events.out.tfevents.<seconds>.agentica.<pid>.<microseconds>`, which is what
+  TensorBoard looks for. No protobuf or TensorFlow dependency, and no C: neither
+  `std` nor `packages` has a CRC-32C (`Zlib.crc32` is the other polynomial).
+  `test/tfevents_peer.py` reads a file with the standard library only and
+  recomputes every CRC, so the test does not check the encoder with itself.
+- **`fit` reports per step.** With `metrics`, each step writes `train/loss`,
+  `train/lr` and `train/step_ms` (from a monotonic clock) at the optimizer's step count (from 1).
+  `fit` does not open or close the run.
 - **Reporting is a callback and a history.** `fit` answers the mean loss of
   every epoch and calls `on_epoch` after each; a caller logs from there
   (`std/logger` or `puts`). `fit` itself prints nothing.

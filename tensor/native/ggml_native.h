@@ -130,11 +130,11 @@ an_term ggml_list_Float_end(an_env *env, ggml_list_Float_builder *b);
 
 an_term ggml_result_list_Float_ok(an_env *env, an_term value);
 
+an_term ggml_result_Void_ok(an_env *env, an_term value);
+
 an_term ggml_result_Lease_ok(an_env *env, an_term value);
 
 an_term ggml_result_Int_ok(an_env *env, int64_t value);
-
-an_term ggml_result_Void_ok(an_env *env, an_term value);
 
 an_term ggml_result_Pin_ok(an_env *env, an_term value);
 
@@ -168,6 +168,10 @@ an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double val
 /* Host readback: the row-major values as doubles, which the caller tags
    with the tensor's dtype. */
 an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t);
+
+/* Appends the values of the `F32` tensor `t`, row-major and little-endian, to the existing file `path`: C writes
+   them, so no value crosses as a list. */
+an_term ggml_append_file(an_env *env, struct ggml_TensorHandle_state *t, ng_str path);
 
 /* A copy of `t` on `device`, of the same shape and storage. */
 an_term ggml_transfer(an_env *env, struct ggml_TensorHandle_state *t, int64_t device);
@@ -439,16 +443,16 @@ an_term ggml_result_list_Float_ok(an_env *env, an_term value) {
   return an_ok(env, value);
 }
 
+an_term ggml_result_Void_ok(an_env *env, an_term value) {
+  return an_ok(env, value);
+}
+
 an_term ggml_result_Lease_ok(an_env *env, an_term value) {
   return an_ok(env, value);
 }
 
 an_term ggml_result_Int_ok(an_env *env, int64_t value) {
   return an_ok(env, an_int(env, value));
-}
-
-an_term ggml_result_Void_ok(an_env *env, an_term value) {
-  return an_ok(env, value);
 }
 
 an_term ggml_result_Pin_ok(an_env *env, an_term value) {
@@ -538,6 +542,15 @@ static an_term ggml_native_readback(an_env *env, int argc, const an_term *argv) 
   struct ggml_TensorHandle_state *a0 = ggml_TensorHandle_get(env, argv[0]);
   if (!a0) return an_badarg(env, 0);
   return ggml_readback(env, a0);
+}
+
+static an_term ggml_native_append_file(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_TensorHandle_state *a0 = ggml_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  ng_str a1;
+  if (!an_get_string(env, argv[1], &a1.data, &a1.len)) return an_badarg(env, 1);
+  return ggml_append_file(env, a0, a1);
 }
 
 static an_term ggml_native_transfer(an_env *env, int argc, const an_term *argv) {
@@ -731,6 +744,7 @@ static const an_function ggml_native_functions[] = {
   {"from_bytes", "(Int, Bytes, List[Int], Int, Int) -> Result[TensorHandle]", ggml_native_from_bytes, AN_DIRTY},
   {"filled", "(Int, List[Int], Float, Bool) -> Result[TensorHandle]", ggml_native_filled, AN_DIRTY},
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
+  {"append_file", "(TensorHandle, String) -> Result[Void]", ggml_native_append_file, AN_DIRTY},
   {"transfer", "(TensorHandle, Int) -> Result[TensorHandle]", ggml_native_transfer, AN_DIRTY},
   {"acquire", "(Int, String, Int, Bool) -> Result[Lease]", ggml_native_acquire, AN_DIRTY},
   {"ready", "(Lease) -> Bool", ggml_native_ready, AN_SHORT},
@@ -758,5 +772,5 @@ static const an_function ggml_native_functions[] = {
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
     {"Pin", sizeof(struct ggml_Pin_state), GGML_Pin_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 23, NULL, 0, ggml_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 24, NULL, 0, ggml_native_resources, 3, LOAD)
 #endif

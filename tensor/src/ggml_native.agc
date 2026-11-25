@@ -64,6 +64,9 @@ extern module "ggml"
   ## Host readback: the row-major values as doubles, which the caller tags
   ## with the tensor's dtype.
   compute def readback(t: TensorHandle) -> Result[List[Float]]
+  ## Appends the values of the `F32` tensor `t`, row-major and little-endian, to the existing file `path`: C writes
+  ## them, so no value crosses as a list.
+  compute def append_file(t: TensorHandle, path: String) -> Result[Void]
   ## A copy of `t` on `device`, of the same shape and storage.
   compute def transfer(t: TensorHandle, device: Int) -> Result[TensorHandle]
 

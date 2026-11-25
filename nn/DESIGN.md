@@ -27,6 +27,7 @@ struct DecoderStack { blocks: List[DecoderBlock], final_norm: Optional[LayerNorm
 struct BlockOptions { kv_heads, rope, qk_norm, bias, rms, gated, norm_first, eps }   (for init_*)
 
 Nn.dense(p, x)                     x [..., in] -> [..., out]
+Nn.cosine_similarity(a, b)         [batch, width] twice -> [batch], the cosine of each pair of rows
 Nn.layer_norm(p, x)                last axis, then * gamma + beta
 Nn.embedding(p, ids)               ids rank-1 integer -> [ids, width]
 Nn.conv1d(p, x)                    x [in, L] or [batch, in, L] -> Tensor.conv1d + bias per channel
@@ -76,6 +77,11 @@ that are the layer's own (rank of `positional`, table length, heads).
   `mlp`, `embedding` with `positional`, a gelu `encoder_block` (the
   gradient of its input and of one gamma) and a silu `decoder_block` (its
   input and its encoder output) against a central difference.
+- **The cosine has no clamp.** PyTorch divides by each norm clamped to
+  `1e-8`; `clamp` has no backward rule, so `cosine_similarity` divides by
+  `sqrt(|a|^2 |b|^2 + 1e-16)`: the same values to `F32` rounding for a row
+  that is not zero, and a cosine of 0 with a finite gradient for one that is.
+  In `F16` the term would round to 0; training in `F16` is not a goal.
 - **Options are fields with defaults.** A model changes a detail of a block,
   so the detail is a field: `kv_heads`, `rope` and the query and key norms of
   `Attention`, `gate` of `Mlp`, `rms` of `LayerNorm`, `norm_first` of the

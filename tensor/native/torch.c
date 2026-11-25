@@ -1322,4 +1322,20 @@ an_term torch_readback(an_env *env, struct torch_TensorHandle_state *a) {
   }
 }
 
+an_term torch_append_file(an_env *env, struct torch_TensorHandle_state *a, ng_str path) {
+  char why[FF_PATH_MAX + 160];
+
+  try {
+    if (a->value->scalar_type() != torch::kFloat32) return error_text(env, "append_file writes an F32 tensor");
+    torch::Tensor flat = a->value->contiguous();
+    size_t len = (size_t)flat.numel() * sizeof(float);
+    if (!ff_append(path.data, path.len, len > 0 ? flat.data_ptr<float>() : NULL, len, why, sizeof why)) {
+      return error_text(env, why);
+    }
+    return torch_result_Void_ok(env, an_void(env));
+  } catch (...) {
+    return failed(env, "append_file");
+  }
+}
+
 TORCH_NATIVE_MODULE(NULL)

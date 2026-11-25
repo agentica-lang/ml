@@ -23,6 +23,7 @@
 ## `tanh`, `gelu_tanh_approx`): saturation of finite inputs stays legitimate,
 ## but non-finite storage never enters the core.
 
+import Binary from "std/binary"
 import FileRange from "file_range"
 import Types from "types"
 
@@ -43,6 +44,9 @@ EXP_MAX = 709.0
 
 ## Below this `exp_ref` answers `0.0`.
 EXP_MIN = -745.0
+
+## The values `append_file` encodes at a time (1 MiB of `F32`, the most `File.write_bytes` takes).
+APPEND_VALUES = 262144
 
 ## `exp(x)`, pure Agentica: range reduction to `x = k*ln2 + r` plus a
 ## degree-16 Taylor series in `r`, scaled back by `2^k`. Saturates instead
@@ -285,6 +289,28 @@ def from_file(path: String, offset: Int, shape: List[Int], format: Types.FloatFo
   end
 
   ok(make(shape, Types.Dtype.F32, values))
+end
+
+## Appends the `F32` values of `t` to the file `path`, encoded in Agentica: the slow path. Every NaN is written as
+## the canonical one.
+def append_file(t: Types.Tensor, path: String) -> Result[Void]
+  values = try data_of(t)
+  _ = try File.stat(path)
+  File.open(path, "append") do |f|
+    at = 0
+    while at < values.size
+      stop = [at + APPEND_VALUES, values.size].min.unwrap!
+      part: List[Bytes] = []
+      for i in at...stop
+        part = part.push(Binary.write_f32_le(values[i]))
+      end
+
+      try File.write_bytes(f, Bytes.concat(part))
+      at = stop
+    end
+
+    ok()
+  end
 end
 
 ## Readback: the values tagged with the tensor's dtype.

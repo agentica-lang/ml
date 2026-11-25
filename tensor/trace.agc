@@ -27,9 +27,9 @@ INV_SQRT_2PI = 0.3989422804014327
 ## How many nodes `Diff.worst` lists.
 WORST = 5
 
-## How many outputs one ggml graph returns at most is 256: `diff` asks for
-## 200 nodes at a time there.
-GGML_SLICE = 200
+## How many outputs one ggml graph returns at most is 512: `diff` asks for
+## 400 nodes at a time there.
+GGML_SLICE = 400
 
 ## The value of a scalar function and its gradient for each argument, in
 ## argument order.
@@ -347,7 +347,7 @@ end
 ## on `Reference` or `Torch` makes the next node an `error` there, which `diff` returns. The comparison runs on the
 ## host, so it is slow on big activations.
 ##
-## ggml runs the nodes 200 at a time, since one graph returns at most 256 outputs, and each slice runs its ancestors
+## ggml runs the nodes 400 at a time, since one graph returns at most 512 outputs, and each slice runs its ancestors
 ## again from the inputs. `Reference` and `Torch` run all the nodes at once.
 def diff(
   args: List[Types.Tensor],

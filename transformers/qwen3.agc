@@ -233,7 +233,143 @@ def traced(m: Qwen3) -> Qwen3
   )
 end
 
+## The weights of `m` by their Hugging Face names (`model.layers.0.self_attn.q_proj.weight`), for training part of the
+## model (`Params.split` of `train`). A tied head is the embedding table and has no name of its own.
+def weights(m: Qwen3) -> Map[String, Tensor.Tensor]
+  out = {"model.embed_tokens.weight": m.tokens.table}
+  if not m.config.tie_word_embeddings
+    out = dense_weights(out, "lm_head", m.head)
+  end
+
+  for i in 0...m.stack.blocks.size
+    b = m.stack.blocks[i]
+    p = "model.layers.#{i}."
+    out = dense_weights(out, "#{p}self_attn.q_proj", b.attention.query)
+    out = dense_weights(out, "#{p}self_attn.k_proj", b.attention.key)
+    out = dense_weights(out, "#{p}self_attn.v_proj", b.attention.value)
+    out = dense_weights(out, "#{p}self_attn.o_proj", b.attention.output)
+    out = norm_weights(out, "#{p}self_attn.q_norm", b.attention.query_norm)
+    out = norm_weights(out, "#{p}self_attn.k_norm", b.attention.key_norm)
+    out = norm_weights(out, "#{p}input_layernorm", some(b.norm1))
+    out = norm_weights(out, "#{p}post_attention_layernorm", some(b.norm2))
+    out = dense_weights(out, "#{p}mlp.up_proj", b.mlp.up)
+    out = dense_weights(out, "#{p}mlp.down_proj", b.mlp.down)
+    case b.mlp.gate
+      some(g) -> out = dense_weights(out, "#{p}mlp.gate_proj", g)
+      none -> nil
+    end
+  end
+
+  norm_weights(out, "model.norm", m.stack.final_norm)
+end
+
+## `m` with the tensors of `weights` in place of its own: the names must be those of `weights(m)`, no more and no
+## fewer, each with the shape the model holds. Inside a loss the tensors are traced and `logits` of the result is part
+## of the trace.
+def with_weights(m: Qwen3, weights: Map[String, Tensor.Tensor]) -> Result[Qwen3]
+  try fitting(m, weights)
+  tokens = Nn.Embedding(table: try named(weights, "model.embed_tokens.weight"))
+  head = Nn.Dense(w: tokens.table, b: none, out_in: true)
+  if not m.config.tie_word_embeddings
+    head = try with_dense(weights, "lm_head", m.head)
+  end
+
+  blocks: List[Nn.EncoderBlock] = []
+  for i in 0...m.stack.blocks.size
+    b = m.stack.blocks[i]
+    p = "model.layers.#{i}."
+    gate: Optional[Nn.Dense] = none
+    case b.mlp.gate
+      some(g) -> gate = some(try with_dense(weights, "#{p}mlp.gate_proj", g))
+      none -> nil
+    end
+
+    attention = b.attention.with(
+      query: try with_dense(weights, "#{p}self_attn.q_proj", b.attention.query),
+      key: try with_dense(weights, "#{p}self_attn.k_proj", b.attention.key),
+      value: try with_dense(weights, "#{p}self_attn.v_proj", b.attention.value),
+      output: try with_dense(weights, "#{p}self_attn.o_proj", b.attention.output),
+      query_norm: try with_norm(weights, "#{p}self_attn.q_norm", b.attention.query_norm),
+      key_norm: try with_norm(weights, "#{p}self_attn.k_norm", b.attention.key_norm),
+    )
+
+    mlp = b.mlp.with(
+      up: try with_dense(weights, "#{p}mlp.up_proj", b.mlp.up),
+      down: try with_dense(weights, "#{p}mlp.down_proj", b.mlp.down),
+      gate: gate,
+    )
+
+    blocks = blocks.push(
+      b.with(
+        norm1: (try with_norm(weights, "#{p}input_layernorm", some(b.norm1))).unwrap!,
+        attention: attention,
+        norm2: (try with_norm(weights, "#{p}post_attention_layernorm", some(b.norm2))).unwrap!,
+        mlp: mlp,
+      ),
+    )
+  end
+
+  final_norm = try with_norm(weights, "model.norm", m.stack.final_norm)
+  ok(m.with(tokens: tokens, stack: Nn.EncoderStack(blocks: blocks, final_norm: final_norm), head: head))
+end
+
 private
+
+## An error when `given` has a name `m` lacks or a tensor of another shape than the model's.
+def fitting(m: Qwen3, given: Map[String, Tensor.Tensor]) -> Result[Void]
+  own = weights(m)
+  for name in given.keys.sort
+    old = try own.get(name).to_result("the model has no weight #{name}")
+    if Tensor.shape(given[name]) != Tensor.shape(old)
+      return error("#{name}: the model holds #{Tensor.shape(old)}, got #{Tensor.shape(given[name])}")
+    end
+  end
+
+  ok()
+end
+
+def dense_weights(out: Map[String, Tensor.Tensor], prefix: String, d: Nn.Dense) -> Map[String, Tensor.Tensor]
+  named = out.put("#{prefix}.weight", d.w)
+  case d.b
+    some(b) -> named.put("#{prefix}.bias", b)
+    none -> named
+  end
+end
+
+## An RMS norm has one weight; its `beta` is not used.
+def norm_weights(
+  out: Map[String, Tensor.Tensor],
+  prefix: String,
+  n: Optional[Nn.LayerNorm],
+) -> Map[String, Tensor.Tensor]
+  case n
+    some(p) -> out.put("#{prefix}.weight", p.gamma)
+    none -> out
+  end
+end
+
+def named(weights: Map[String, Tensor.Tensor], name: String) -> Result[Tensor.Tensor]
+  weights.get(name).to_result("the weights have no #{name}")
+end
+
+def with_dense(weights: Map[String, Tensor.Tensor], prefix: String, d: Nn.Dense) -> Result[Nn.Dense]
+  w = try named(weights, "#{prefix}.weight")
+  case d.b
+    some(_) -> ok(d.with(w: w, b: some(try named(weights, "#{prefix}.bias"))))
+    none -> ok(d.with(w: w))
+  end
+end
+
+def with_norm(
+  weights: Map[String, Tensor.Tensor],
+  prefix: String,
+  n: Optional[Nn.LayerNorm],
+) -> Result[Optional[Nn.LayerNorm]]
+  case n
+    some(p) -> ok(some(p.with(gamma: try named(weights, "#{prefix}.weight"))))
+    none -> ok(none)
+  end
+end
 
 def with_head_dim(config: Config) -> Result[Config]
   return ok(config) if config.head_dim != 0
