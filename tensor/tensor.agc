@@ -78,6 +78,7 @@ import Xla from "src/xla"
 
 export Types.Backend
 export Types.Data
+export Types.DeltaRule
 export Types.Device
 export Types.Dtype
 export Types.FloatFormat
@@ -1001,6 +1002,134 @@ def top_ids(x: Types.Tensor, k: Int) -> Result[Types.Tensor]
       largest = (0...scores.size).to_a.sort_by { |i| 0.0 - scores[i] }
       from_list(largest.take(k).map { |i| Types.Values.Int(i) }, [k], Types.Dtype.I32, x.backend)
   end
+end
+
+## The gated delta rule over `tokens` steps, the recurrence of the linear attention of Qwen3.5 (`q` and `k` already
+## L2-normalized): per head, `state = exp(g) * state`, then `state = state + k (beta * (v - state k))^T`, and the
+## answer is `state q / sqrt(width)`: the op scales `q` itself, so a caller does not.
+## - `q`, `k`, `v`: `[tokens, heads, width]`; `g` (the log of the decay, normally at most 0; not checked) and `beta`: `[tokens, heads]`.
+## - `state`: `[heads, width, width]`, the transpose of the matrix of the paper (row `j` is the value axis, column
+##   `i` the key axis), the layout ggml has: the zeros to start, or the `state` of an earlier call to go on.
+## - `F32` only. A token with `g = 0` and `beta = 0` leaves the state as it was, which is how a padded prompt keeps the
+##   state of its last real token.
+## In a trace it is one node, which `Ggml` runs as `ggml_gated_delta_net` (CPU, and Vulkan for widths 16, 32, 64 and
+## 128); `XLA` has no lowering.
+## The other backends run the recurrence token by token over the ops of this module, so a long sequence is slow there.
+## No gradient.
+def gated_delta_rule(
+  q: Types.Tensor,
+  k: Types.Tensor,
+  v: Types.Tensor,
+  g: Types.Tensor,
+  beta: Types.Tensor,
+  state: Types.Tensor,
+) -> Result[Types.DeltaRule]
+  try check_delta_rule(q, k, v, g, beta, state)
+  tokens = q.shape[0]
+  heads = q.shape[1]
+  width = q.shape[2]
+  case q.backend
+    Types.Backend.Trace ->
+      packed = Graph.record(
+        Types.Op.GatedDeltaRule,
+        [q, k, v, g, beta, state],
+        [tokens + width, heads * width],
+        Types.Dtype.F32,
+      )
+
+      out = try reshape(try slice(packed, [0, 0], [tokens, heads * width]), [tokens, heads, width])
+      held = try reshape(try slice(packed, [tokens, 0], [tokens + width, heads * width]), [heads, width, width])
+      ok(Types.DeltaRule(out: out, state: held))
+    Types.Backend.Ggml(_) -> error(Ggml.compiled_only("gated_delta_rule").message)
+    Types.Backend.Xla(_) -> error(Xla.compiled_only("gated_delta_rule").message)
+    _ -> gated_delta_composed(q, k, v, g, beta, state)
+  end
+end
+
+## What a `gated_delta_rule` node answers: the answers as `tokens` rows of `heads * width`, then the state as `width`
+## rows of the same width (what ggml's op writes).
+def gated_delta_packed(
+  q: Types.Tensor,
+  k: Types.Tensor,
+  v: Types.Tensor,
+  g: Types.Tensor,
+  beta: Types.Tensor,
+  state: Types.Tensor,
+) -> Result[Types.Tensor]
+  r = try gated_delta_composed(q, k, v, g, beta, state)
+  tokens = q.shape[0]
+  width = q.shape[2]
+  cols = q.shape[1] * width
+  concat([try reshape(r.out, [tokens, cols]), try reshape(r.state, [width, cols])], 0)
+end
+
+## An error unless the six tensors are what `gated_delta_rule` takes.
+def check_delta_rule(
+  q: Types.Tensor,
+  k: Types.Tensor,
+  v: Types.Tensor,
+  g: Types.Tensor,
+  beta: Types.Tensor,
+  state: Types.Tensor,
+) -> Result[Void]
+  for t in [k, v, g, beta, state]
+    _ = try same_backend(q, t, "gated_delta_rule")
+    _ = try same_dtype(q, t, "gated_delta_rule")
+  end
+
+  return error("gated_delta_rule needs F32 tensors, got #{Types.dtype_name(q.dtype)}") if q.dtype != Types.Dtype.F32
+
+  if q.shape.size != 3 or q.shape[0] < 1 or q.shape[1] < 1 or q.shape[2] < 1
+    return error("gated_delta_rule needs q of [tokens, heads, width], got #{q.shape}")
+  end
+
+  if k.shape != q.shape or v.shape != q.shape
+    return error("gated_delta_rule needs q, k and v of one shape, got #{q.shape}, #{k.shape} and #{v.shape}")
+  end
+
+  per_head = [q.shape[0], q.shape[1]]
+  if g.shape != per_head or beta.shape != per_head
+    return error("gated_delta_rule needs g and beta of #{per_head}, got #{g.shape} and #{beta.shape}")
+  end
+
+  if state.shape != [q.shape[1], q.shape[2], q.shape[2]]
+    return error("gated_delta_rule needs a state of #{[q.shape[1], q.shape[2], q.shape[2]]}, got #{state.shape}")
+  end
+
+  ok()
+end
+
+## The recurrence of `gated_delta_rule` one token at a time, on any backend that computes.
+def gated_delta_composed(
+  q: Types.Tensor,
+  k: Types.Tensor,
+  v: Types.Tensor,
+  g: Types.Tensor,
+  beta: Types.Tensor,
+  state: Types.Tensor,
+) -> Result[Types.DeltaRule]
+  tokens = q.shape[0]
+  heads = q.shape[1]
+  width = q.shape[2]
+  matrix = [heads, width, width]
+  scale = try full([heads, width], Types.Values.Float(1.0 / Math.sqrt(width.to_f)), q.dtype, q.backend)
+  held = state
+  outs: List[Types.Tensor] = []
+  for t in 0...tokens
+    qt = try reshape(try slice(q, [t, 0, 0], [t + 1, heads, width]), [heads, 1, width])
+    kt = try broadcast_to(try reshape(try slice(k, [t, 0, 0], [t + 1, heads, width]), [heads, 1, width]), matrix)
+    vt = try reshape(try slice(v, [t, 0, 0], [t + 1, heads, width]), [heads, width])
+    decay = try exp(try reshape(try slice(g, [t, 0], [t + 1, heads]), [heads, 1, 1]))
+    rate = try broadcast_to(try reshape(try slice(beta, [t, 0], [t + 1, heads]), [heads, 1]), [heads, width])
+    held = try mul(held, try broadcast_to(decay, matrix))
+    seen = try sum(try mul(held, kt), some([2]), false)
+    change = try mul(try sub(vt, seen), rate)
+    held = try add(held, try mul(try broadcast_to(try reshape(change, [heads, width, 1]), matrix), kt))
+    answer = try mul(try sum(try mul(held, try broadcast_to(qt, matrix)), some([2]), false), scale)
+    outs = outs.push(try reshape(answer, [1, heads, width]))
+  end
+
+  ok(Types.DeltaRule(out: try concat(outs, 0), state: held))
 end
 
 ## The ops `set_rows` stands for: the cache with the written rows zeroed, plus the rows scattered into place.

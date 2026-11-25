@@ -132,6 +132,15 @@ step of a generation. It has no gradient.
 node `ggml_top_k` runs on the device, so a decoder can read back k logits and
 their ids and not the whole vocabulary; the ids are in no order on ggml, and
 the derived `top_k` stays on the host. It has no gradient.
+`gated_delta_rule(q, k, v, g, beta, state)` (the linear attention of Qwen3.5: per head a `[width, width]` state that
+decays by `exp(g)` and learns `k (beta * (v - state k))^T` at every token; the answers are `state q / sqrt(width)`, so
+the op scales `q` and a caller does not) is one node, which ggml runs as `ggml_gated_delta_net` (CPU, and Vulkan for
+widths 16, 32, 64 and 128) with the state in its layout, `[heads, value, key]`. Every other backend that computes runs
+it token by token over the ops of this module (slow for a long sequence; the reference is the oracle). The node
+answers the answers and the final state packed in one tensor (`[tokens + width, heads * width]`), which
+`gated_delta_rule` slices apart. `F32` only, the same width for `q`, `k` and `v`, and a token with `g = 0` and
+`beta = 0` leaves the state as it was, so a padded prompt keeps the state of its last real token. `g` is normally at
+most 0 (it is not checked). XLA has no lowering. It has no gradient.
 Normalization support: `rsqrt, mean_var` are **not** primitives. `layer_norm`
 and `rms_norm` are derived (§3.2) on every backend that computes, but a trace
 records each as one node, `layer_norm` or `rms_norm`, so that ggml can run it

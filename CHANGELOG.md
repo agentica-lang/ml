@@ -2,6 +2,12 @@
 
 All packages are released together at one version, each on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the first one and covers everything shipped so far (milestones 0.1.0 and 0.2.0).
 
+## [Unreleased]
+
+### tensor
+
+- `Tensor.gated_delta_rule`: the recurrence of Qwen3.5's linear attention (`F32`, no gradient; ggml `ggml_gated_delta_net`) (ml#150).
+
 ## [0.5.1] - 2026-11-25
 
 ### vision
