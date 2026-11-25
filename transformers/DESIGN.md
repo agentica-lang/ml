@@ -170,8 +170,9 @@ WordPiece reads the plain `truncation` of a file (cut at the right,
 and accepts padding to the longest of a batch, which adds nothing to one
 text: a sentence-transformers checkpoint sets both. Cutting a pair, another
 truncation, a fixed-length padding and `pad_to_multiple_of` above 1 stay
-errors. The file's `pad_id` and `pad_token` are not read: a model pads with
-its config's `pad_token_id`, and nothing here compares the two.
+errors. The `pad_id` of the file's padding is kept (`tok.pad_id`) and never
+used by `encode`: a model pads a batch with its config's `pad_token_id`, and
+`tools/distilbert_check.agc` fails when the two differ.
 
 `Bpe.open_gguf` reads the same tokenizer from a GGUF (`tokenizer.ggml.tokens`,
 `token_type` and `merges`, written by llama.cpp for `model` gpt2, `pre`
