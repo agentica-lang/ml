@@ -14,12 +14,17 @@ enableGitInfo = true
 [module.hugoVersion]
   min = "0.167.0"
 
-# No version: each package is released on its own tag (see the changelog in the repository).
 [params]
   description = "Machine learning for Agentica: tensors, training and inference, in a functional style."
   repo = "https://github.com/agentica-lang/ml"
   branch = "main"
   repoPublic = true
+
+# The version selector lists the releases and dev. All the packages are released together, as the tags tensor-X.Y.Z, so
+# the site's version is the one of tensor. The theme's tools/site_versions.py, run by pages.yml, builds each version and
+# writes versions.json; a plain `make site` builds only the current pages, without versions.json.
+[params.versions]
+  enabled = true
 
 # Plain quotes and dashes, as written in the Markdown (it is also what GitHub shows).
 [markup.goldmark.extensions]
