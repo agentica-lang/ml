@@ -11,9 +11,10 @@
 #   python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl
 #
 # PAIRS (1000), BATCH (16) and PAD_TO (1) set the run on both sides. The threads are the online CPUs on both sides: ggml
-# takes every online CPU (tensor/native/ggml.c) and reports no count, so this script writes the `threads` line of our
-# side; the peer sets `torch.set_num_threads` to the CPUs of its process and prints what PyTorch then runs with. A
-# process kept to fewer CPUs than are online is refused. Everything lives in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}:
+# takes every online CPU (`sysconf(_SC_NPROCESSORS_ONLN)` in tensor/native/ggml.c) and reports no count, so this script
+# writes the `threads` line of our side: that count by construction, not a measurement; the peer sets
+# `torch.set_num_threads` to the CPUs of its process and prints what PyTorch then runs with. A process kept to fewer
+# CPUs than are online is refused. Everything lives in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}:
 # the venv `venv-torch` (shared with benchmarks/training, so a setup of either changes it for both),
 # `hf/msmarco-distilbert-cos-v5` and `hf/stsb`. Only `model.safetensors` is fetched, never the pickle. Every run
 # checks the hashes of the parquet files and writes their JSON lines again, so a stale copy is never read.
@@ -30,8 +31,10 @@ pairs=${PAIRS:-1000}
 batch=${BATCH:-16}
 pad_to=${PAD_TO:-1}
 online=$(getconf _NPROCESSORS_ONLN)
-[ "$(nproc)" = "$online" ] ||
-  { echo "run.sh: the process may use $(nproc) CPUs, the machine has $online online" >&2; exit 1; }
+allowed=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
+[ "$allowed" = "$online" ] ||
+  { echo "run.sh: the process may use $allowed CPUs, the machine has $online online" >&2; exit 1; }
+unset OMP_THREAD_LIMIT
 export OMP_NUM_THREADS=$online
 
 model_repo=sentence-transformers/msmarco-distilbert-cos-v5
@@ -94,7 +97,7 @@ data() {
 
 # ours TRAIN VALIDATION PAIRS BATCH PAD_TO [WEIGHT_DECAY]: the Agentica side, with the ggml engine built
 ours() {
-  exports=$(sh "$root/transformers/tools/build-engine.sh")
+  exports=$(sh "$root/transformers/tools/build-engine.sh") || return 1
   echo "{\"kind\": \"threads\", \"value\": $online}"
   (cd "$root/transformers" && eval "$(printf '%s\n' "$exports" | grep '^export ')" &&
     agentica --max-steps 1000000000000 tools/distilbert_stsb.agc "$model" "$@")
@@ -108,6 +111,7 @@ peer() {
 lines() {
   to=$1
   shift
+  rm -f "$to"
   if ! "$@" >"$to.raw"; then
     cat "$to.raw" >&2
     rm -f "$to.raw"
@@ -115,8 +119,9 @@ lines() {
     exit 1
   fi
   grep -v '^{' "$to.raw" >&2 || true
-  grep '^{' "$to.raw" >"$to"
+  grep '^{' "$to.raw" >"$to.lines" || true
   rm -f "$to.raw"
+  mv "$to.lines" "$to"
 }
 
 quiet() {
@@ -137,9 +142,10 @@ case ${1:-} in
     lines "$out/peer.jsonl" peer "$fixture" "$fixture" 4 2 1 1.0
     lines "$out/plain.jsonl" peer "$fixture" "$fixture" 4 2 1 0.0
     python3 -I "$here/summary.py" "$out/ours.jsonl" "$out/peer.jsonl"
-    if python3 -I "$here/summary.py" "$out/ours.jsonl" "$out/plain.jsonl" >"$out/plain.txt"; then
+    python3 -I "$here/summary.py" "$out/ours.jsonl" "$out/plain.jsonl" >"$out/plain.txt" || true
+    if ! { grep -q '^verdict: the runs DIFFER' "$out/plain.txt" && grep -q '^largest loss gap' "$out/plain.txt"; }; then
       cat "$out/plain.txt" >&2
-      echo "run.sh: a peer without the weight decay passes, so the check sees no decay" >&2
+      echo "run.sh: a peer without the weight decay must differ by its losses, and it does not" >&2
       exit 1
     fi
     grep '^largest' "$out/plain.txt" | sed 's/^/without the weight decay the peer DIFFERS, as it must: /'

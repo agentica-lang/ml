@@ -17,11 +17,11 @@ SHAPES = [(8, True), (8, False), (16, True)]
 LOSSES = [0.30, 0.20, 0.10]
 
 
-def lines(losses=LOSSES, shapes=SHAPES, spearman=(0.5, 0.6), threads=8, token_ids="aa"):
+def lines(losses=LOSSES, shapes=SHAPES, spearman=(0.5, 0.6), threads=8, token_ids="aa", decayed=38, names="dd"):
     """The JSON lines of a run, as a tool prints them."""
     out = [
         {"kind": "threads", "value": threads},
-        {"kind": "checks", "decayed": 38, "decayed_names": "dd", "token_ids": token_ids},
+        {"kind": "checks", "decayed": decayed, "decayed_names": names, "token_ids": token_ids},
     ]
     out += [{"kind": "spearman", "when": when, "value": v} for when, v in zip(("before", "after"), spearman)]
     out += [
@@ -65,12 +65,16 @@ class Verdict(unittest.TestCase):
         self.assertFalse(self.verdict(spearman=(0.5,))[1])
         self.assertFalse(self.verdict(spearman=(0.5, math.nan))[1])
         self.assertFalse(self.verdict(spearman=(0.5, 0.61))[1])
+        self.assertTrue(self.verdict(spearman=(0.5, 0.6 + 5e-7))[1])
+        self.assertFalse(self.verdict(losses=[None, 0.20, 0.10])[1])
 
     def test_runs_that_cannot_be_compared_say_why(self):
         for changes, why in (
             ({"shapes": [(8, True), (8, False), (24, True)]}, "same steps"),
             ({"threads": 4}, "thread counts"),
             ({"token_ids": "bb"}, "token ids"),
+            ({"decayed": 39}, "decayed weights"),
+            ({"names": "ee"}, "decayed names"),
             ({"losses": [], "shapes": []}, "same steps"),
         ):
             report, same = self.verdict(**changes)
