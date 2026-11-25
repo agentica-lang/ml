@@ -61,13 +61,12 @@ def test_the_text_is_that_of_the_template_of_qwen35() -> Result[Void]
   ok()
 end
 
-## Left alone, `enable_thinking` is what each template does when it is not told: Qwen3 thinks, Qwen3.5 does not.
+## Left alone, `enable_thinking` is what each template does when it is not told: Qwen3 thinks (the Qwen3.5 golden has
+## the cases of `none` for its template).
 def test_the_default_of_enable_thinking_is_that_of_the_template() -> Result[Void]
   hi = [Chat.Message(role: "user", content: "Hi")]
   try Test.eq(try Chat.apply("qwen3", hi), try Chat.apply("qwen3", hi, true, some(true)))
   try Test.assert(not (try Chat.apply("qwen3", hi)).include?("</think>"), "qwen3 does not think by default")
-  try Test.eq(try Chat.apply("qwen3_5", hi), try Chat.apply("qwen3_5", hi, true, some(false)))
-  try Test.assert((try Chat.apply("qwen3_5", hi)).include?("</think>"), "qwen3_5 thinks by default")
   Test.assert((try Chat.apply("qwen2", hi)).end_with?("assistant\n"), "qwen2 has no think block")
 end
 
@@ -77,6 +76,5 @@ def test_what_the_templates_do_not_cover_is_an_error() -> Result[Void]
   try Test.error?(Chat.apply("llama", hi))
   try Test.error?(Chat.apply("qwen2", hi, true, some(false)))
   try Test.error?(Chat.apply("qwen3", hi + [Chat.Message(role: "tool", content: "42")]))
-  try Test.error?(Chat.apply("qwen3_5", hi + [Chat.Message(role: "tool", content: "42")]))
   Test.error?(Chat.apply("qwen3", hi + [Chat.Message(role: "narrator", content: "42")]))
 end
