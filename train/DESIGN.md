@@ -2,8 +2,9 @@
 
 Losses, optimizers, a data loader and a minimal training loop over
 `tensor/`'s tracing (`tensor/DESIGN.md` §10). Depends on
-`tensor/` and `hub/` (a dataset from a safetensors file); `nn/` is a test
-dependency (`group = "test"`), used by the XOR test, and so is `prop`.
+`tensor/`, `hub/` (a dataset from a safetensors file) and `nn/` (the start of
+a LoRA adapter, and the XOR test); `prop` is a test dependency
+(`group = "test"`).
 
 ## API
 
@@ -44,6 +45,12 @@ Params.split(weights: Map[String, Tensor], trainable: Fn[String, Bool]) -> Resul
 Params.join(split, params) -> Result[Map[String, Tensor]]     every weight; the frozen ones as trace constants in a loss
 Params.named(split, params) -> Result[Map[String, Tensor]]    the trainable ones alone
 Params.update(weights, changed) -> Result[Map[String, Tensor]]
+
+Lora.Config { targets: List[String], r = 8, alpha = 16.0, dropout = 0.0 }
+Lora.init(weights, config, seed, backend) -> Result[Adapter { config, names, a, b }]
+Lora.params(adapter) -> Result[List[Tensor]]                  A then B of each adapted weight: what fit trains
+Lora.with_params(adapter, params) -> Result[Adapter]
+Lora.applied(weights, adapter) -> Result[Map[String, Tensor]] every weight, the adapted ones as W + (alpha / r) B A
 ```
 
 ## Decisions
@@ -66,6 +73,24 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   (`SafetensorsWrite.write(path, Params.named(split, fit.params))`) and put
   back with `Params.update`, which refuses a name the model lacks and another
   shape.
+- **LoRA is a sum of weights, not a second path in the layer.** PEFT wraps
+  each `Linear` and adds `(alpha / r) · B (A x)` to its output. Here
+  `Lora.applied` builds `W + (alpha / r) · B A` and the model's own forward
+  runs on it (`with_weights`), which is the same function of `x`. So no layer
+  and no model knows about adapters, every model with `weights` and
+  `with_weights` takes one, and one function is the training forward (inside
+  a loss, where `W` is a `Trace.constant`), the run with an adapter and the
+  merge for inference. The price: the backward pass forms the `[out, in]`
+  gradient of the sum before it reaches `A` and `B`, which PEFT's path does
+  not, and there is no `x` to drop, so `lora_dropout` is not trained
+  (`Lora.params` refuses a dropout above 0; ml#209). The benchmark of ml#137
+  decides, by time and peak memory against PEFT, whether the adapter moves
+  into `Nn.dense`. The scale multiplies `B`, the small matrix, before the
+  product, and its `r` is the first dimension of `A`, so an adapter read from
+  a file has its own. `train` imports `nn` for the start of `A`
+  (`Init.uniform`); it already reached it through `hub`. The adapter is
+  `F32` and so are the weights it is applied to (`init` and `applied` refuse
+  `F16` and `BF16` ones: open the model with `weights: F32`).
 - **AdamW's decay is a flag per parameter, set by the caller.** PyTorch has
   parameter groups; here `decay: List[Bool]` follows the list of parameters,
   and a caller builds it from the names of a `Params.split`. The rule for a
