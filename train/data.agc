@@ -172,6 +172,18 @@ def release(b: Batch) -> Void
   end
 end
 
+## True when a tensor of `b` was freed (`release`, `free`): the batch can no longer be read.
+def freed?(b: Batch) -> Bool = closed?(b.inputs) or closed?(b.targets)
+
+## Frees the native memory of `t` now on libtorch and ggml; the reference has none. Nothing may read `t` afterwards.
+def free(t: Tensor.Tensor) -> Void
+  case t.handle
+    Tensor.Handle.Native(h) -> Native.close(h)
+    Tensor.Handle.Ggml(h) -> Native.close(h)
+    _ -> nil
+  end
+end
+
 private
 
 struct Job
@@ -196,7 +208,7 @@ end
 
 def alive(got: Result[Batch]) -> Result[Batch]
   b = try got
-  return error("the batch was freed: its prefetch task ended") if closed?(b.inputs) or closed?(b.targets)
+  return error("the batch was freed: its prefetch task ended") if freed?(b)
   ok(b)
 end
 
@@ -249,14 +261,6 @@ def closed?(t: Tensor.Tensor) -> Bool
     Tensor.Handle.Native(h) -> Native.closed?(h)
     Tensor.Handle.Ggml(h) -> Native.closed?(h)
     _ -> false
-  end
-end
-
-def free(t: Tensor.Tensor) -> Void
-  case t.handle
-    Tensor.Handle.Native(h) -> Native.close(h)
-    Tensor.Handle.Ggml(h) -> Native.close(h)
-    _ -> nil
   end
 end
 
