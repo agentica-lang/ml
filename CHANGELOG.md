@@ -27,6 +27,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### train
 
+- `Train.fit` on ggml gathers the rows of a batch inside the step instead of in a graph of its own, with the same batches: a step at batch 16 to 64 on Vulkan takes about half the time (14 ms to 6 to 9 ms). The loader's prefetch has nothing to do there, so `fit` starts no task.
 - `Optim` takes the Adam update through `Tensor.adam_step`, so on ggml it is one kernel for each parameter (`Optim.step_inputs` gives the 7 numbers of the step as one input, which `Optim.step` accepts).
 - `Lora`: LoRA adapters for the linear layers of a model by name (`init`, `params`, `with_params`, `applied`), trained with `Train.fit` while the model stays frozen.
 - `Train.fit_batches` trains over batches that a function makes, each with its own shape (sentences padded to the longest of the batch).

@@ -34,6 +34,32 @@ def test_batches_of_two_shapes_follow_the_closed_form() -> Result[Void]
   ok()
 end
 
+## A shuffled loader on ggml, whose batches `fit` gathers in the step, makes the batches of the reference (the seeded
+## order, a last batch of one row) and leaves the dataset's tensors the caller's.
+def test_a_shuffled_loader_on_ggml_trains_as_the_reference_and_keeps_its_dataset() -> Result[Void]
+  want = try shuffled(S.REF)
+  for backend in try S.ggml_backends()
+    xs = try S.tensor([1.0, 2.0, 3.0, 4.0, 5.0], [5], Tensor.Dtype.F32, backend)
+    got = try shuffled_over(backend, xs)
+    try S.expect_close(got, want, 0.000001, 0.00001, "loss history on #{backend}")
+    try S.expect_close(try S.floats_of(xs), [1.0, 2.0, 3.0, 4.0, 5.0], 0.0, 0.0, "the dataset on #{backend}")
+  end
+
+  ok()
+end
+
+def shuffled(backend: Tensor.Backend) -> Result[List[Float]]
+  shuffled_over(backend, try S.tensor([1.0, 2.0, 3.0, 4.0, 5.0], [5], Tensor.Dtype.F32, backend))
+end
+
+def shuffled_over(backend: Tensor.Backend, xs: Tensor.Tensor) -> Result[List[Float]]
+  ys = try S.tensor([2.0, 4.0, 6.0, 8.0, 10.0], [5], Tensor.Dtype.F32, backend)
+  w = try S.tensor([0.5], [1], Tensor.Dtype.F32, backend)
+  loader = Data.Loader(dataset: try Data.dataset(xs, ys), batch_size: 2, seed: 3)
+  sgd = Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.01))
+  ok((try Train.fit(&squares, [w], loader, sgd, 3)).history)
+end
+
 ## A line fitted by SGD to 5 rows (`y = 2 x`), 3 epochs: the mean loss of each epoch.
 def regression(backend: Tensor.Backend, calls: Channel[Int]) -> Result[List[Float]]
   xs = try S.tensor([1.0, 2.0, 3.0, 4.0, 5.0], [5], Tensor.Dtype.F32, backend)

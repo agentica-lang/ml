@@ -47,6 +47,7 @@ def fit(
   on_epoch: Optional[Fn[Epoch, Void]] = none,
   metrics: Optional[Metrics.Run] = none,
 ) -> Result[Fit]
+  return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics) if gathers_in_graph?(data, params)
   feed = try Data.feed(data, epochs)
   batches = ->(e: Int) {
     current = Data.epoch(feed, e)
@@ -114,7 +115,8 @@ end
 
 private
 
-## `batches` gives the batches of an epoch (from 1), each by its index below `count`.
+## `batches` gives the batches of an epoch (from 1), each by its index below `count`. With `indexed`, a batch is the
+## dataset's own tensors and the ids of its rows (`index`): the step gathers them in its graph, and frees only the ids.
 struct Run
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]]
   batches: Fn[Int, Fn[Int, Result[Data.Batch]]]
@@ -122,6 +124,7 @@ struct Run
   epochs: Int
   on_epoch: Optional[Fn[Epoch, Void]]
   metrics: Optional[Metrics.Run]
+  indexed: Bool = false
 end
 
 ## `kept` says, for each moment (the first ones, then the second), whether the step updated it where it lay, so that
@@ -142,6 +145,62 @@ end
 struct Taken
   stepped: Result[Stepped]
   programs: Map[String, Trace.Compiled]
+end
+
+## Whether `fit` gathers the rows of a batch inside the step: on ggml, where a gather in its own graph costs a launch and
+## a readback of the batch, when the dataset lives where the parameters do.
+def gathers_in_graph?(data: Data.Loader, params: List[Tensor.Tensor]) -> Bool
+  return false if params.empty?
+  backend = Tensor.backend(params[0])
+  case backend
+    Tensor.Backend.Ggml(_) ->
+      Tensor.backend(data.dataset.inputs) == backend and Tensor.backend(data.dataset.targets) == backend
+    _ -> false
+  end
+end
+
+## `fit` for a loader that gathers in the step. The batches are the same, in the same order; no prefetch task is
+## needed, since a batch is only its row ids (the loader's checks run as for any `fit`).
+def fit_indexed(
+  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  params: List[Tensor.Tensor],
+  data: Data.Loader,
+  optimizer: Optim.Optimizer,
+  epochs: Int,
+  on_epoch: Optional[Fn[Epoch, Void]],
+  metrics: Optional[Metrics.Run],
+) -> Result[Fit]
+  return error("prefetch must be 0 or more, got #{data.prefetch}") if data.prefetch < 0
+  Data.stop(try Data.feed(data.with(prefetch: 0), epochs))
+  batches = ->(e: Int) {
+    order = Data.order(data, e)
+    ->(i: Int) { row_ids(data, order, i) }
+  }
+
+  trained(
+    Run(
+      loss: loss,
+      batches: batches,
+      count: Data.count(data),
+      epochs: epochs,
+      on_epoch: on_epoch,
+      metrics: metrics,
+      indexed: true,
+    ),
+    params,
+    optimizer,
+  )
+end
+
+## The dataset's tensors and the ids of the rows of batch `i` of an epoch whose rows are `order`.
+def row_ids(data: Data.Loader, order: List[Int], i: Int) -> Result[Data.Batch]
+  return error("batch #{i} is past the #{Data.count(data)} of an epoch") if i < 0 or i >= Data.count(data)
+  d = data.dataset
+  from = i * data.batch_size
+  to = [from + data.batch_size, Data.size(d)].min.unwrap!
+  picked = (from...to).map { |k| Tensor.Values.Int(order[k]) }
+  at = try Tensor.from_list(picked, [to - from], Tensor.Dtype.I32, Tensor.backend(d.inputs))
+  ok(Data.Batch(inputs: d.inputs, targets: d.targets, index: some(at)))
 end
 
 ## The batch a function made, or an error when its tensors are freed already: a batch answered twice.
@@ -263,13 +322,13 @@ def take_step(
   case take.call(i)
     error(e) -> Taken(stepped: error(e), programs: programs)
     ok(batch) ->
-      key = shapes_of(batch)
-      taken = case compiled_for(r.loss, state, params, batch, key, programs)
-        ok(grown) -> Taken(stepped: step(grown[key], state, params, batch), programs: grown)
+      key = shapes_of(batch, r.indexed)
+      taken = case compiled_for(r.loss, state, params, batch, r.indexed, key, programs)
+        ok(grown) -> Taken(stepped: step(grown[key], state, params, batch, r.indexed), programs: grown)
         error(e) -> Taken(stepped: error(e), programs: programs)
       end
 
-      Data.release(batch)
+      release_batch(batch, r.indexed)
       taken
   end
 end
@@ -280,15 +339,34 @@ def compiled_for(
   state: Optim.State,
   params: List[Tensor.Tensor],
   batch: Data.Batch,
+  indexed: Bool,
   key: String,
   programs: Map[String, Trace.Compiled],
 ) -> Result[Map[String, Trace.Compiled]]
   return ok(programs) if programs.key?(key)
-  ok(programs.put(key, try compile_step(loss, state, params, batch)))
+  ok(programs.put(key, try compile_step(loss, state, params, batch, indexed)))
 end
 
-## The batch's shapes and dtypes: the steps of two batches that agree on them are one compiled graph.
-def shapes_of(batch: Data.Batch) -> String = JSON.encode([Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)])
+## Frees what a step is done with: the batch's tensors, or for an indexed one the row ids alone (the dataset is the
+## caller's).
+def release_batch(batch: Data.Batch, indexed: Bool) -> Void
+  return Data.release(batch) if !indexed
+  case batch.index
+    some(at) -> Data.free(at)
+    none -> nil
+  end
+end
+
+## The batch's shapes and dtypes: the steps of two batches that agree on them are one compiled graph. An indexed batch
+## is its row ids; the dataset is the same for the whole run.
+def shapes_of(batch: Data.Batch, indexed: Bool) -> String
+  case batch.index
+    some(at) -> return JSON.encode([Trace.spec_of(at)]) if indexed
+    none -> nil
+  end
+
+  JSON.encode([Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)])
+end
 
 ## The step of `fit` traced and lowered once for batches shaped like `batch`: its arguments are the parameters, the
 ## optimizer's first and second moments, the inputs of the step (`Optim.step_inputs`), then the batch's inputs and
@@ -299,6 +377,7 @@ def compile_step(
   state: Optim.State,
   params: List[Tensor.Tensor],
   batch: Data.Batch,
+  indexed: Bool,
 ) -> Result[Trace.Compiled]
   return error("a step needs at least one parameter") if params.empty?
   n = params.size
@@ -310,20 +389,47 @@ def compile_step(
   }
 
   moments = (state.first + state.second).map { |t| Trace.spec_of(t) }
-  specs = (
-    params.map { |t| Trace.spec_of(t) } +
-    moments +
-    scalars +
-    [Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)]
-  )
-
+  fed = try step_batch_specs(batch, indexed)
+  specs = params.map { |t| Trace.spec_of(t) } + moments + scalars + fed
   Trace.compile(
     specs,
     ->(xs: List[Tensor.Tensor]) {
-      data = xs.drop(xs.size - 2)
-      traced_step(loss, state, Data.Batch(inputs: data[0], targets: data[1]), n, k, xs.take(xs.size - 2))
+      data = xs.drop(xs.size - fed.size)
+      made = try step_batch(batch, indexed, data)
+      traced_step(loss, state, made, n, k, xs.take(xs.size - fed.size))
     },
   )
+end
+
+## The inputs a step takes for its batch: its two tensors, or the row ids alone for an indexed one.
+def step_batch_specs(batch: Data.Batch, indexed: Bool) -> Result[List[Trace.Spec]]
+  if indexed
+    case batch.index
+      some(at) -> return ok([Trace.spec_of(at)])
+      none -> return error("an indexed batch has no row ids")
+    end
+  end
+
+  ok([Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)])
+end
+
+## The batch the traced step gives its loss: its inputs, or the rows of the dataset (constants of the program, bound
+## once) that the row ids `data[0]` name.
+def step_batch(batch: Data.Batch, indexed: Bool, data: List[Tensor.Tensor]) -> Result[Data.Batch]
+  return ok(Data.Batch(inputs: data[0], targets: data[1])) if !indexed
+  ok(
+    Data.Batch(
+      inputs: try Tensor.gather(Trace.constant(batch.inputs), data[0]),
+      targets: try Tensor.gather(Trace.constant(batch.targets), data[0]),
+    ),
+  )
+end
+
+## The tensors of `batch` that a step takes as inputs: its two tensors, or the row ids alone for an indexed one.
+def step_batch_tensors(batch: Data.Batch, indexed: Bool) -> List[Tensor.Tensor]
+  return batch.index.map { |at| [at] }.unwrap_or([]) if indexed
+
+  [batch.inputs, batch.targets]
 end
 
 ## One step in its own native arena: only the new state, parameters and the
@@ -333,11 +439,12 @@ def step(
   state: Optim.State,
   params: List[Tensor.Tensor],
   batch: Data.Batch,
+  indexed: Bool,
 ) -> Result[Stepped]
   Native.arena do
     n = params.size
     k = state.first.size
-    args = params + state.first + state.second + try scalar_inputs(state, params) + [batch.inputs, batch.targets]
+    args = params + state.first + state.second + try scalar_inputs(state, params) + step_batch_tensors(batch, indexed)
     outs = try Trace.run(program, args)
     moved = state.with(steps: state.steps + 1, first: outs.drop(1 + n).take(k), second: outs.drop(1 + n + k))
     kept = Trace.donated(program).drop(1 + n)
