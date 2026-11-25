@@ -123,11 +123,16 @@ static void ggml_TensorHandle_free(void *state) {
 static bool want_fp16 = true; /* written under the device lock, read by `tg_fp16` without it: atomically */
 static bool chosen = false;
 static bool precision_fixed = false;
+static bool masked_scatter = true; /* TENSOR_SCATTER_ADD is not `get_rows_back`; read once, in `fix_precision` */
 
 static void fix_precision(void) {
+  const char *scatter;
+
   if (precision_fixed) return;
   /* This runs on a compute-pool thread, under the device lock, before ggml
-     reads the variable; nothing else of this module reads the environment. */
+     reads the variable; the environment is read here and nowhere else of this module. */
+  scatter = getenv("TENSOR_SCATTER_ADD");
+  if (scatter != NULL && strcmp(scatter, "get_rows_back") == 0) __atomic_store_n(&masked_scatter, false, __ATOMIC_RELAXED);
   if (!chosen && getenv("GGML_VK_DISABLE_F16") != NULL) __atomic_store_n(&want_fp16, false, __ATOMIC_RELAXED);
   if (want_fp16) unsetenv("GGML_VK_DISABLE_F16");
   else setenv("GGML_VK_DISABLE_F16", "1", 1);
@@ -215,6 +220,8 @@ ggml_backend_t tg_backend(int64_t device, char *why, size_t len) {
 }
 
 /* Read once a device is open, when the choice is fixed: it never changes after the first registry call. */
+bool tg_masked_scatter(void) { return __atomic_load_n(&masked_scatter, __ATOMIC_RELAXED); }
+
 bool tg_fp16(void) { return __atomic_load_n(&want_fp16, __ATOMIC_RELAXED); }
 
 an_term ggml_vulkan_fp16(an_env *env, bool enabled) {

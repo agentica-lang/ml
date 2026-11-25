@@ -171,6 +171,14 @@ def test_the_causal_mask_blocks_the_keys_after_each_query() -> Result[Void]
   Test.error?(Nn.causal_mask(0, Tensor.Dtype.F32, S.REF))
 end
 
+def test_the_padding_bias_blocks_the_keys_that_are_padding() -> Result[Void]
+  m = Nn.MASKED
+  bias = try Nn.padding_bias(try S.f32([1.0, 1.0, 1.0, 0.0], [2, 2]))
+  try Test.eq(Tensor.shape(bias), [2, 1, 2, 2])
+  try Test.eq(try S.floats_of(bias), [0.0, 0.0, 0.0, 0.0, 0.0, m, 0.0, m])
+  Test.error?(Nn.padding_bias(try S.f32([1.0, 0.0], [2])))
+end
+
 def test_a_decoder_block_over_a_longer_memory_matches_the_naive_model() -> Result[Void]
   x = Init.uniform_values(24, 1.0, 31)
   memory = Init.uniform_values(40, 1.0, 32)
