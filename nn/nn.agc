@@ -260,6 +260,43 @@ def conv2d(p: Conv2d, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   end
 end
 
+## `conv` followed by an inference batch norm (`gamma`, `beta`, `mean` and `var`, each `[out]`, and `eps`) as one
+## convolution: the weight of each output channel is scaled by `gamma / sqrt(var + eps)`, and the bias becomes
+## `beta + (bias - mean) * gamma / sqrt(var + eps)`. The ops are `Tensor` calls, so a loader runs them as one graph on
+## ggml. The batch norm is the one of a trained model: its statistics are not updated, so the result is for inference.
+def fold_batch_norm(
+  conv: Conv2d,
+  gamma: Tensor.Tensor,
+  beta: Tensor.Tensor,
+  mean: Tensor.Tensor,
+  var: Tensor.Tensor,
+  eps: Float,
+) -> Result[Conv2d]
+  shape = Tensor.shape(conv.weight)
+  channels = [shape[0]]
+  for t in [gamma, beta, mean, var]
+    if Tensor.shape(t) != channels
+      return error("fold_batch_norm needs the #{shape[0]} output channels of the convolution, got #{Tensor.shape(t)}")
+    end
+  end
+
+  floor = try Tensor.full(channels, Tensor.Values.Float(eps), Tensor.dtype(var), Tensor.backend(var))
+  scale = try Tensor.div(gamma, try Tensor.sqrt(try Tensor.add(var, floor)))
+  per_channel = try Tensor.broadcast_to(try Tensor.reshape(scale, [shape[0], 1, 1, 1]), shape)
+  centered = try Tensor.neg(mean)
+  case conv.bias
+    some(b) -> centered = try Tensor.sub(b, mean)
+    none -> nil
+  end
+
+  ok(
+    conv.with(
+      weight: try Tensor.mul(conv.weight, per_channel),
+      bias: some(try Tensor.add(beta, try Tensor.mul(centered, scale))),
+    ),
+  )
+end
+
 ## The mean of each channel over its height and width: `[batch, channels, h, w]` to `[batch, channels]`.
 def global_avg_pool2d(x: Tensor.Tensor) -> Result[Tensor.Tensor]
   return error("global_avg_pool2d needs a rank-4 input, got #{Tensor.shape(x)}") if Tensor.shape(x).size != 4

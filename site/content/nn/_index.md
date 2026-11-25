@@ -36,7 +36,7 @@ The shapes are the ones the layers take. `dense` takes any rank. Attention needs
 | `LayerNorm` | `gamma`, `beta`, `eps`, `rms` | `layer_norm(p, x)`; with `rms` it is an RMS norm and `beta` is ignored |
 | `Embedding` | `table` as `[rows, width]` | `embedding(p, ids)`; `positional(p, x)` adds the first rows of the table |
 | `Conv1d` | `weight` as `[out, in, kernel]`, `bias`, `stride`, `padding` | `conv1d(p, x)` |
-| `Conv2d` | `weight` as `[out, in / groups, kh, kw]`, `bias`, `stride`, `padding`, `groups` | `conv2d(p, x)` on `[batch, in, h, w]`; `global_avg_pool2d(x)` is the mean of each channel over `h` and `w`, `[batch, channels]` |
+| `Conv2d` | `weight` as `[out, in / groups, kh, kw]`, `bias`, `stride`, `padding`, `groups` | `conv2d(p, x)` on `[batch, in, h, w]`; `global_avg_pool2d(x)` is the mean of each channel over `h` and `w`, `[batch, channels]`; `fold_batch_norm(conv, gamma, beta, mean, var, eps)` folds the inference batch norm that follows a convolution into its weight and bias |
 | `Attention` | four `Dense` projections, `heads`, and optional `kv_heads`, `rope`, `query_norm`, `key_norm` | `attention(p, queries, memory, mask?, causal?, positions?, memory_positions?)`, `self_attention(p, x, mask?, causal?)`; `project` and `attend`, the two halves of `attention` |
 | `Heads` | `query`, `key`, `value`: the heads that `project` returns; `query` is `[batch, heads, q, head]`, and `key` and `value` are `[batch, kv_heads, k, head]` (`kv_heads` is `heads` when none) | the input of `attend` |
 | `Mlp` | `up`, `down`, `activation`, optional `gate` | `mlp(p, x)`: `dense`, activation, `dense`; with a `gate`, `down(activation(gate(x)) * up(x))` |
