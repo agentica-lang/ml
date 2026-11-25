@@ -96,9 +96,10 @@ The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, par
 fit = try Train.fit_batches(&loss, params, ->(_epoch: Int, i: Int) { padded(sentences, i) }, 63, optimizer, 1)
 ```
 
+- The function makes new tensors on every call. `fit_batches` frees a batch after its step, so a batch that is kept and answered again (a cache, a second epoch) is an error: `batch(2, 0) returned tensors that are already freed: make new ones`.
 - Each batch may have its own shape, such as token ids padded to the longest sentence of the batch. On ggml the step is compiled once per shape, so pad to a few lengths (a multiple of 8, for one) when the lengths vary a lot.
 - A batch is two tensors. What else the loss needs it derives from them: a padding mask is `1 - to_dtype(eq(ids, zeros), F32)`.
-- `fit_batches` frees a batch after its step, so the function makes new tensors on every call. An error of the function stops the run and names the epoch and the batch.
+- An error of the function stops the run and names the epoch and the batch.
 
 `fit` and `fit_batches` free the parameters and the optimizer state that a step replaces, at once, on libtorch and ggml. The `params` given stay the caller's and are never freed; the trained ones of the result are the caller's too.
 

@@ -162,7 +162,28 @@ def test_a_batch_that_fails_names_its_epoch_and_index() -> Result[Void]
   }
 
   case Train.fit_batches(&linear, start, broken, 2, adam(), 3)
-    ok(_) -> error("a failed batch did not stop the fit")
-    error(e) -> Test.eq(e.message, "epoch 2, batch 1: no rows")
+    ok(_) -> return error("a failed batch did not stop the fit")
+    error(e) -> try Test.eq(e.message, "epoch 2, batch 1: no rows")
   end
+
+  S.expect_close(try S.floats_of(start[0]), [0.3, -0.2], 0.0000001, 0.0, "the caller's weights after the error")
+end
+
+## `fit_batches` frees a batch after its step, so a function that answers the batches it kept fails at the second
+## epoch, with an error that says what to do. The run's own tensors are freed, and the caller's weights are not: on
+## libtorch and ggml, where a tensor has native memory to free.
+def test_a_batch_answered_twice_is_an_error_that_says_so() -> Result[Void]
+  for backend in (try backends()).drop(1)
+    start = try weights(backend)
+    kept = [try pair(backend, 0), try pair(backend, 1)]
+    case Train.fit_batches(&linear, start, ->(_e: Int, i: Int) { ok(kept[i]) }, 2, adam(), 2)
+      ok(_) -> return error("a freed batch trained on #{backend}")
+      error(e) ->
+        try Test.eq(e.message, "epoch 2, batch 0: batch(2, 0) returned tensors that are already freed: make new ones")
+    end
+
+    try S.expect_close(try S.floats_of(start[0]), [0.3, -0.2], 0.0000001, 0.0, "the caller's weights on #{backend}")
+  end
+
+  ok()
 end

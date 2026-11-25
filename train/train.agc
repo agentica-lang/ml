@@ -63,10 +63,11 @@ def fit(
   result
 end
 
-## `fit` over batches that a function makes: `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `epoch`
-## (from 1), for data that is not two tensors of one shape, such as sentences padded to the longest of each batch.
-## Each batch may have its own shape; the step is compiled once per shape, so few distinct shapes keep the compiles
-## few. `fit_batches` frees a batch after its step (`Data.release`), so the function makes new tensors on every call.
+## `fit` over batches that a function makes. The function makes new tensors on every call: `fit_batches` frees a batch
+## after its step (`Data.release`), so a batch kept and answered again (a cache, a second epoch) is an error that says
+## so. `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `epoch` (from 1), for data that is not two
+## tensors of one shape, such as sentences padded to the longest of each batch. Each batch may have its own shape; the
+## step is compiled once per shape, so few distinct shapes keep the compiles few.
 def fit_batches(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],
@@ -78,7 +79,7 @@ def fit_batches(
   metrics: Optional[Metrics.Run] = none,
 ) -> Result[Fit]
   return error("fit_batches needs at least one batch, got #{count}") if count < 1
-  batches = ->(e: Int) { ->(i: Int) { batch.call(e, i) } }
+  batches = ->(e: Int) { ->(i: Int) { fresh(batch.call(e, i), e, i) } }
   trained(
     Run(loss: loss, batches: batches, count: count, epochs: epochs, on_epoch: on_epoch, metrics: metrics),
     params,
@@ -134,6 +135,13 @@ end
 struct Taken
   stepped: Result[Stepped]
   programs: Map[String, Trace.Compiled]
+end
+
+## The batch a function made, or an error when its tensors are freed already: a batch answered twice.
+def fresh(made: Result[Data.Batch], e: Int, i: Int) -> Result[Data.Batch]
+  b = try made
+  return error("batch(#{e}, #{i}) returned tensors that are already freed: make new ones") if Data.freed?(b)
+  ok(b)
 end
 
 ## The run, then its compiled steps closed.
@@ -259,7 +267,9 @@ end
 def shapes_of(batch: Data.Batch) -> String = JSON.encode([Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)])
 
 ## The step of `fit` traced and lowered once for batches shaped like `batch`: its arguments are the parameters, the
-## optimizer's first and second moments, the scalars of the step, then the batch's inputs and targets.
+## optimizer's first and second moments, the scalars of the step, then the batch's inputs and targets. The function
+## keeps `state` for its optimizer and for how many moments it has, never for its tensors, which are arguments: `run`
+## frees them after the step.
 def compile_step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   state: Optim.State,

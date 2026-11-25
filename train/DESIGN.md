@@ -27,6 +27,7 @@ Data.size(dataset) / Data.count(loader) / Data.order(loader, epoch) / Data.batch
 Data.feed(loader, epochs) -> Result[Feed]; Data.epoch(feed, e); Data.take(feed, i); Data.stop(feed)
 Data.release(batch)                                          frees its native tensors
 Data.free(tensor)                                            frees one tensor's native memory now
+Data.freed?(batch) -> Bool                                   a tensor of the batch was freed
 Data.Batch { inputs, targets, index? }
 
 Metrics.open(root, name, sinks = Both) -> Result[Run]   ROOT/NAME/metrics.jsonl, events.out.tfevents.*
@@ -135,6 +136,8 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   does not count native memory, so waiting for it let a run of a large model
   hold several copies of its weights. The caller's `params` are never
   closed, and neither are the trained ones of the result.
+  `tools/fit_memory.agc STEPS` under `/usr/bin/time -v` shows it: the peak
+  of a fit of one 64 MB parameter does not grow with the step count.
 - **`fit_batches` takes a function, not a second kind of loader.** A loader
   cuts two tensors of one shape; sentences padded to the longest of each
   batch have a shape per batch, which no tensor holds. `fit_batches(loss,

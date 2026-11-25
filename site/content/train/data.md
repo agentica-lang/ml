@@ -77,6 +77,7 @@ end
 - `Data.take(feed, i)` gives batch `i` of the epoch. A `Data.Batch` has `inputs`, `targets` and `index`, the row ids of the batch.
 - `Data.batch(loader, rows, i)` gives batch `i` of an epoch whose rows are `rows`, from `Data.order`, without a feed. `take` uses it when there is no prefetch.
 - `Data.release(batch)` frees the batch's native tensors. Call it when the step is done.
+- `Data.free(tensor)` frees the native memory of one tensor now, on libtorch and ggml; the reference has none. Nothing may read the tensor afterwards. `Data.freed?(batch)` says whether a tensor of a batch was freed.
 - `Data.stop(feed)` ends the prefetch task. Call it when you are done, including after an error.
 
 ## Prefetch
