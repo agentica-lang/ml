@@ -11,6 +11,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### nn
 
+- `Nn.Attention` has `gate`: Qwen3.5's output-gated full attention (ml#150).
 - `Delta.gated_delta_net`, the linear attention layer of Qwen3.5 with its conv and recurrent state, in `pkg/nn/delta` (ml#150).
 
 ## [0.5.1] - 2026-11-25
