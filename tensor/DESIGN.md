@@ -478,7 +478,8 @@ end
   (56 ms), 50000 x 64 with 4096 indices 43 ms (957 ms); the CPU takes 0.7, 2.5
   and 9.1 ms, and a round trip of the updates and the answer through the CPU
   would take 1.1, 3.7 and 12 ms, so the masked matmul is a stopgap, not the
-  floor. The long-term fix is an upstream Vulkan kernel for `GGML_OP_GET_ROWS_BACK` with
+  floor: with the sched executor of #85, placing `scatter_add` on the CPU
+  measured 12 ms against 40 ms here; revisit then. The long-term fix is an upstream Vulkan kernel for `GGML_OP_GET_ROWS_BACK` with
   one thread per (index, column), which would make this lowering unneeded),
   and
   `permute` (a `ggml_permute` and a copy), `batch_matmul` (`mul_mat` over the
