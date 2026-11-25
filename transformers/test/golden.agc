@@ -5,6 +5,7 @@
 
 import WordPiece from "../tokenizer/wordpiece"
 import Bpe from "../tokenizer/bpe"
+import Clip from "../tokenizer/clip"
 import Source from "../tokenizer/source"
 
 struct Encode
@@ -67,6 +68,23 @@ def bpe_of(tok: Bpe.ByteLevelBpe, golden_path: String) -> Result[Int]
   ok(golden.encode.size + golden.decode.size)
 end
 
+## The ids of the texts of the golden at `golden_path` (`clip_tokenizer_golden.py`) from the CLIP tokenizer in the folder
+## `dir`.
+def clip(dir: String, golden_path: String) -> Result[Int]
+  tok = try Clip.open(dir)
+  cases = try JSON.decode(try Source.read_text(golden_path), List[ClipCase])
+  for c in cases
+    try agree("encode #{c.text.inspect}", "#{try Clip.encode(tok, c.text)}", "#{c.ids}")
+  end
+
+  ok(cases.size)
+end
+
 private
+
+struct ClipCase
+  text: String
+  ids: List[Int]
+end
 
 def agree(what: String, got: String, want: String) -> Result[Void] = Source.within(what, Test.eq(got, want))

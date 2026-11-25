@@ -6,13 +6,18 @@
 ##   agentica tools/tokenizer_check.agc wordpiece TOKENIZER_JSON GOLDEN.json
 ##
 ## `wordpiece` is `bert-base-uncased`, `bpe` is `Qwen/Qwen3-0.6B` or `Qwen/Qwen2.5-0.5B-Instruct`, which share the tokenizer.
+##
+## `clip` is the folder of a CLIP checkpoint (`vocab.json`, `merges.txt`) and its golden is
+## `python -I test/clip_tokenizer_golden.py golden VOCAB_JSON MERGES_TXT [N] > GOLDEN.json`:
+##
+##   agentica tools/tokenizer_check.agc clip CHECKPOINT_DIR GOLDEN.json
 
 import Golden from "../test/golden"
 
 def main() -> Void
   args = System.args
-  if args.size != 3 or not ["wordpiece", "bpe"].include?(args[0])
-    puts("usage: tokenizer_check.agc wordpiece|bpe TOKENIZER_JSON GOLDEN_JSON")
+  if args.size != 3 or not ["wordpiece", "bpe", "clip"].include?(args[0])
+    puts("usage: tokenizer_check.agc wordpiece|bpe|clip TOKENIZER_JSON_OR_DIR GOLDEN_JSON")
     System.exit(2)
   end
 
@@ -20,12 +25,14 @@ def main() -> Void
   result: Result[Int] = ok(0)
   if args[0] == "wordpiece"
     result = Golden.wordpiece(args[1], args[2])
+  elsif args[0] == "clip"
+    result = Golden.clip(args[1], args[2])
   else
     result = Golden.bpe(args[1], args[2])
   end
 
   case result
-    ok(n) -> puts("#{args[0]}: #{n} cases agree with tokenizers (#{Time.monotonic_ms - started} ms)")
+    ok(n) -> puts("#{args[0]}: #{n} cases agree with Hugging Face (#{Time.monotonic_ms - started} ms)")
     error(e) ->
       puts("#{args[0]}: #{e.message}")
       System.exit(1)
