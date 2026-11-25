@@ -5,6 +5,7 @@ from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
 with a KV cache (greedy or sampled), the tokenizers, and the weights by name
 for a fine-tune with `train/`. Qwen3.5 (text only) has its forward, its
 tokenizer, its chat template and generation; the 2B model follows (ml#150).
+Granite MoE (`granitemoe`) has its forward over whole sequences (ml#274).
 
 ## Generation
 
@@ -180,6 +181,26 @@ thinks, Qwen3.5 does not (its template thinks only when the option is exactly
 true), and Qwen2.5 refuses only `some(false)`. The `tokenizer.json` of
 Qwen2.5 writes a merge as `"a b"`, where Qwen3's writes `["a", "b"]`;
 `tokenizer/bpe.agc` reads both.
+
+## Granite MoE
+
+`granite_moe.agc`: `GraniteMoe.open(dir, backend, weights = F32)` (the folder of an official
+`ibm-granite/granite-3.*-a*-instruct` repository: `config.json` and `model.safetensors` or its `.index.json`),
+`GraniteMoe.run(m, rows, last)`, `GraniteMoe.logits(m, ids, last)` and `GraniteMoe.close_model(m)`. The forward is over
+whole sequences, with no cache; generation comes with the shared stepping code of ml#150 and is not here.
+
+- A layer is `Nn.Attention` (GQA, `Rope(base: rope_theta)`, no norms on the heads, no biases) and `Moe.Moe`
+  (`nn/DESIGN.md`), under pre-norm RMS norms. `block_sparse_moe.router.layer.weight`, `input_linear.weight` (`[experts,
+  2 * intermediate, hidden]`: the gate rows, then the value rows) and `output_linear.weight` are the router and the
+  `gate_up` and `down` of the block as they are stored.
+- Four multipliers of the config are not in a plain Llama forward: `embedding_multiplier` on the embeddings,
+  `attention_multiplier` as the attention scale (`Nn.Attention.scale`, `1/64` in 1B-A400M, not `1/sqrt(64)`),
+  `residual_multiplier` on each of the two branches before the add, and `logits_scaling` as a divisor of the logits.
+- The head is the embedding table when `tie_word_embeddings` is true (its default is false, as in Hugging Face), else
+  `lm_head`. `model_type`, `hidden_act` other than `silu`, `attention_bias` and `rope_scaling` that this loader does not
+  run are errors, and so are `weights` other than `F32`, as `expert_matmul` is `F32` only.
+- The batch goes through one graph (the block takes `[batch, seq, width]`; `Moe.moe` folds the tokens). The weights
+  are 5.3 GB in `F32`: the real check runs at a peak of 5.6 GB on the CPU.
 
 ## BERT
 
@@ -412,6 +433,23 @@ error row per config field.
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and
   in `float32` untied, on the reference and on ggml.
+- `test/granite_moe_test.agc` against `test/granite_moe_golden.py` (manual, Hugging Face's `GraniteMoeForCausalLM` in
+  `float32`, `fixtures/granite_moe_golden.json`): a tiny random model (2 layers, hidden 16, 6 experts of which 2 are
+  picked, the four multipliers set to values other than 1, tied head) written as a safetensors file under the official
+  names; the logits of every position of two rows match on the reference (1e-4) and on ggml CPU (1e-3); an untied head
+  is the file's; a config the model does not run and weights other than `F32` are errors.
+- `tools/granite_moe_check.agc` against Hugging Face's `GraniteMoeForCausalLM` on `ibm-granite/granite-3.1-1b-a400m-instruct`
+  (`test/granite_moe_check_golden.py`, manual: it loads the checkpoint in `bfloat16` and turns one layer at a time to
+  `float32`, so it fits in 5 GB): five prompts of 5 to 217 tokens, the logits of the last position over the vocabulary
+  and the five largest ids of every position (the long prompt at its last position only). Largest gap of a logit: 3.7e-5
+  on ggml CPU (peak 5.6 GB), 9.3e-5 on Vulkan with `vulkan_fp16` off, the top five equal; with `vulkan_fp16` on, 0.34,
+  and the fifth id of two positions differs (logits are 14 to 28 at the top). This is the gap of the fp16 path of
+  `Tensor.expert_matmul` that `tensor/DESIGN.md` leaves open. The checkpoint:
+
+  | Checkpoint | Revision | `model.safetensors` sha256 |
+  |---|---|---|
+  | `ibm-granite/granite-3.1-1b-a400m-instruct` | `0da7a48b0276d500ce5922fd2b33944091fc6c09` | `ac02591061f1344027a7e7b11dbb4143f75f166c47dc09b742f5de3ab1dde1d1` |
+
 - `test/qwen35_test.agc` against `test/qwen35_golden.py` (manual, Hugging Face's
   `Qwen3_5ForCausalLM` in `float32`, `fixtures/qwen35_golden.json`): a tiny
   random model (3 linear layers and 1 full layer, hidden 16, partial rotary

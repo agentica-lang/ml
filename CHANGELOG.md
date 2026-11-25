@@ -12,6 +12,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### nn
 
+- `Nn.Attention` has `scale`, the factor of `q k^T` when the model sets one (Granite MoE's `attention_multiplier`) (ml#274).
 - `Moe.moe`, the mixture-of-experts block (router, top-k, gated experts), in `pkg/nn/moe` (ml#274).
 - `Nn.Attention` has `gate`: Qwen3.5's output-gated full attention (ml#150).
 - `Delta.gated_delta_net`, the linear attention layer of Qwen3.5 with its conv and recurrent state, in `pkg/nn/delta` (ml#150).
@@ -19,6 +20,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
+- `GraniteMoe`: IBM Granite MoE (`ibm-granite/granite-3.1-1b-a400m-instruct`) from its official safetensors, forward over whole sequences (ml#274).
 - `Qwen3_5`: the text model of `Qwen/Qwen3.5-0.8B` (a hybrid of Gated DeltaNet and gated attention layers) from its official safetensors, forward over whole sequences (ml#150).
 - `Bpe` reads the tokenizer of Qwen3.5 (its split counts marks as letters), and `Chat.apply("qwen3_5", ...)` makes its chat prompt (ml#150).
 - `Generate` of `pkg/transformers/generate_qwen35`: greedy and sampled generation with Qwen3.5's hybrid cache (the keys and values of the full layers, the states of the linear ones), with `usable` to keep the sampler off the ids the tokenizer cannot decode (ml#150). The shared parts of `Generate` (`picked`, `Plans`, `Candidate`, the `Head` modes) moved to `pkg/transformers/stepping`; they were not documented API.

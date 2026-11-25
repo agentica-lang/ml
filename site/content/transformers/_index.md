@@ -1,10 +1,10 @@
 ---
 title: transformers
-description: BERT, Qwen3, Qwen3.5, Qwen2.5, ResNet, ViT and CLIP in Agentica from Hugging Face checkpoints, and the tokenizers that give Hugging Face's ids.
+description: BERT, Qwen3, Qwen3.5, Granite MoE, Qwen2.5, ResNet, ViT and CLIP in Agentica from Hugging Face checkpoints, and the tokenizers that give Hugging Face's ids.
 weight: 7
 ---
 
-`transformers` is BERT, Qwen3, Qwen3.5 (text), Qwen2.5, ResNet, ViT and CLIP in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), ResNet-18 and ResNet-50 and ViT-B/16 (image classification), CLIP ViT-B/32 (image and text embeddings, zero-shot classification), and the tokenizers of BERT, Qwen and CLIP: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
+`transformers` is BERT, Qwen3, Qwen3.5 (text), Granite MoE, Qwen2.5, ResNet, ViT and CLIP in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), ResNet-18 and ResNet-50 and ViT-B/16 (image classification), CLIP ViT-B/32 (image and text embeddings, zero-shot classification), and the tokenizers of BERT, Qwen and CLIP: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
 
 ## BERT
 
@@ -221,6 +221,26 @@ end
 - `Generate.open(m, usable)` sets how many ids a step may answer. The embedding of Qwen3.5 has more rows than its tokenizer has tokens (248,320 and 248,070 in 0.8B), and the ids in between have no text, so a caller with a tokenizer passes its token count (`Generate.open(m, tok.pieces.size)`) and the sampler never gives an id that `Bpe.decode` rejects. The default 0 is Hugging Face's, no mask.
 - Against Hugging Face's greedy `generate` for `Qwen/Qwen3.5-0.8B` in `float32`, the 24 new ids of each of six prompts (5 to 375 tokens) are equal on ggml CPU and on Vulkan (with `vulkan_fp16` off), at about 9 tokens per second after the prompt on both.
 - A `model_type` other than `qwen3_5`, an activation other than `silu`, `attention_bias: true`, a `rope_type` other than `default` and a layer type other than `linear_attention` and `full_attention` are errors.
+
+## Granite MoE
+
+`GraniteMoe.open(dir, backend, weights)` loads IBM Granite MoE (`granitemoe`, the 1B-A400M model `ibm-granite/granite-3.1-1b-a400m-instruct`) from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory, 5.3 GB for the 1B-A400M model). `GraniteMoe.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache; there is no generation, tokenizer or chat template for it yet, so a caller passes token ids.
+
+```agentica
+import GraniteMoe from "pkg/transformers/granite_moe"
+import Tensor from "pkg/tensor/tensor"
+
+def main() -> Void
+  m = GraniteMoe.open("granite-3.1-1b-a400m-instruct", Tensor.Backend.Ggml(Tensor.Device.Cpu)).unwrap!
+  puts(Tensor.shape(GraniteMoe.run(m, [[1318, 203, 35]], true).unwrap!))
+  GraniteMoe.close_model(m)
+end
+```
+
+- Each block is attention (grouped-query, rotary positions with `rope_theta`, the scores scaled by `attention_multiplier`) and a mixture of experts (`Moe.moe` of [nn](../nn/_index.md)): the router picks `num_experts_per_tok` of `num_local_experts` experts for each token, and their gated MLPs are added with the softmax of the picked scores as gates. The embeddings are multiplied by `embedding_multiplier`, each of the two branches of a block by `residual_multiplier` before it is added, and the logits are divided by `logits_scaling`. The head is the embedding table when `tie_word_embeddings` is true, else `lm_head.weight`.
+- Only `F32` weights are loaded, and the model cannot be fine-tuned with `train/`. The experts of a layer are two stacked tensors, so the model needs about 6 GB of memory on the CPU.
+- Against Hugging Face's `GraniteMoeForCausalLM` in `float32` on the real checkpoint, over five prompts of 5 to 217 tokens, the largest gap of a logit is 3.7e-5 on ggml CPU and 9.3e-5 on Vulkan with `vulkan_fp16` off, and the five largest logits of every position are the same ids. With `vulkan_fp16` on the largest gap is 0.34, and the fifth largest id of two positions differs. A tiny random model is tested on the reference and ggml.
+- A `model_type` other than `granitemoe`, an activation other than `silu`, `attention_bias: true` and `rope_scaling` are errors.
 
 ## Generation
 

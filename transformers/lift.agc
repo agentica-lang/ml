@@ -7,6 +7,7 @@
 ## model.
 
 import Delta from "pkg/nn/delta"
+import Moe from "pkg/nn/moe"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
@@ -78,6 +79,10 @@ def delta(p: Delta.GatedDeltaNet) -> Delta.GatedDeltaNet
   )
 end
 
+def moe(p: Moe.Moe) -> Moe.Moe
+  p.with(router: dense(p.router), gate_up: Trace.constant(p.gate_up), down: Trace.constant(p.down))
+end
+
 def block(b: Nn.EncoderBlock) -> Nn.EncoderBlock
   b.with(norm1: norm(b.norm1), norm2: norm(b.norm2), attention: attention(b.attention), mlp: mlp(b.mlp))
 end
@@ -133,6 +138,8 @@ def delta_parts(p: Delta.GatedDeltaNet) -> List[Tensor.Tensor]
 
   out
 end
+
+def moe_parts(p: Moe.Moe) -> List[Tensor.Tensor] = dense_parts(p.router) + [p.gate_up, p.down]
 
 def block_parts(b: Nn.EncoderBlock) -> List[Tensor.Tensor]
   attention_parts(b.attention) + mlp_parts(b.mlp) + norm_parts(b.norm1) + norm_parts(b.norm2)
