@@ -57,9 +57,7 @@ def optimizer(name: String) -> Optim.Optimizer
   Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.1, weight_decay: 0.1, decay: [true, false, true, false]))
 end
 
-def cases() -> Result[List[Case]]
-  ok([try forward(), try fit_step("fit_step"), try fit_step("fit_step_adamw")])
-end
+def cases() -> Result[List[Case]] = ok([try forward(), try fit_step("fit_step"), try fit_step("fit_step_adamw")])
 
 ## `x w1 + b1`, the activation, then `w2` and `b2`.
 def logits(
