@@ -239,7 +239,8 @@ IDS_Q8 = [[1, 5, 2, 7, 3, 19], [4, 4, 9, 0, 6, 11]]
 
 def q8_0(values):
     """ggml's Q8_0 of `values` (a multiple of 32 of them): per block of 32 a half scale `amax / 127` and the values over
-    the scale in single precision, rounded half away from zero. Returns the bytes and the values they dequantize to."""
+    the scale (in doubles here, in single precision in ggml; they agree on these inputs), rounded half away from
+    zero. Returns the bytes and the values they dequantize to."""
     raw, back = b"", []
     for i in range(0, len(values), 32):
         block = values[i:i + 32]
