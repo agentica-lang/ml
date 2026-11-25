@@ -174,7 +174,8 @@ end
 
 def test_merged_weights_are_the_applied_ones_on_every_backend() -> Result[Void]
   g = try golden()
-  want = try Lora.applied((try setup(S.REF)).weights, (try setup(S.REF)).adapter)
+  ref = try setup(S.REF)
+  want = try Lora.applied(ref.weights, ref.adapter)
   for backend in try backends()
     s = try setup(backend)
     before = try bits(s.weights["first.weight"])
@@ -189,11 +190,7 @@ def test_merged_weights_are_the_applied_ones_on_every_backend() -> Result[Void]
     try Test.eq(try bits(s.weights["first.weight"]), before)
   end
 
-  out = try model(
-    try Lora.merged((try setup(S.REF)).weights, (try setup(S.REF)).adapter),
-    (try setup(S.REF)).batch.inputs,
-  )
-
+  out = try model(try Lora.merged(ref.weights, ref.adapter), ref.batch.inputs)
   S.expect_close(try S.floats_of(out), g.output, ABS, REL, "the output of the merged model")
 end
 
