@@ -32,7 +32,12 @@ def install() -> Result[String]
   cache = try Xla.cache_dir()
   try Dir.mkdir(cache)
   whl = try Path.join([cache, "#{w.sha256}-#{System.pid()}.whl"])
-  try fetch(w, whl)
+  fetched = fetch(w, whl)
+  if !fetched.ok?
+    _ = Path.remove(whl)
+    return error(fetched.message)
+  end
+
   part = try Path.join([cache, "#{w.sha256}.part-#{System.pid()}"])
   extracted = unzip(whl, part)
   _ = Path.remove(whl)
