@@ -36,12 +36,15 @@ end
 ## The formats `Tensor.from_file` reads: little-endian IEEE binary32, binary16
 ## and bfloat16, and Q8_0 (ggml's blocks of 32 values: a binary16 scale and 32
 ## signed bytes). The tensor it makes is `F32` whichever one it reads, or a
-## `Q8_0` weight that keeps the blocks of a Q8_0 file (ggml only).
+## `Q8_0` weight that keeps the blocks of a Q8_0 file (ggml only). `U8` is for
+## `Tensor.from_bytes` alone: one unsigned byte per value, `0..255` as an `F32`,
+## such as the samples of an image.
 enum FloatFormat
   F32
   F16
   BF16
   Q8_0
+  U8
 end
 
 ## Where a backend computes: the host CPU, or the Vulkan device of that index
@@ -199,6 +202,7 @@ def file_bytes(format: FloatFormat, n: Int) -> Result[Int]
     FloatFormat.Q8_0 ->
       return error("Q8_0 holds whole blocks of 32 values, got #{n}") if n % 32 != 0
       ok((n / 32) * 34)
+    FloatFormat.U8 -> ok(n)
   end
 end
 
@@ -209,6 +213,7 @@ def file_code(format: FloatFormat) -> Int
     FloatFormat.F16 -> 1
     FloatFormat.BF16 -> 2
     FloatFormat.Q8_0 -> 3
+    FloatFormat.U8 -> 4
   end
 end
 

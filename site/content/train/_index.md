@@ -100,6 +100,7 @@ fit = try Train.fit_batches(&loss, params, ->(_epoch: Int, i: Int) { padded(sent
 - Each batch may have its own shape, such as token ids padded to the longest sentence of the batch. On ggml the step is compiled once per shape, so pad to a few lengths (a multiple of 8, for one) when the lengths vary a lot.
 - A batch is two tensors. What else the loss needs it derives from them: a padding mask is `1 - to_dtype(eq(ids, zeros), F32)`.
 - An error of the function stops the run and names the epoch and the batch.
+- With `prefetch: K` (0 by default), a task calls `batch(epoch, i)` for every batch of every epoch, in order, and builds up to `K + 1` batches ahead of the steps, so decoding image files or tokenizing text overlaps the device. The function runs on that task, and the task ends before `fit_batches` returns, on every path. An error of the function reaches the run at the step that would have used the batch, as it does without `prefetch`.
 
 `fit` and `fit_batches` free the parameters and the optimizer state that a step replaces, at once, on libtorch, ggml and XLA. The `params` given stay the caller's and are never freed; the trained ones of the result are the caller's too.
 

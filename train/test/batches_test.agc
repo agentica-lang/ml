@@ -219,3 +219,67 @@ def test_a_batch_answered_twice_is_an_error_that_says_so() -> Result[Void]
 
   ok()
 end
+
+## `prefetch` builds the batches on a task that stays ahead of the steps: the same losses and weights, bit for bit, for
+## batches of two shapes too, and a batch that fails is the same error of the same step, with the task ended.
+def test_prefetch_builds_the_batches_on_a_task_and_trains_the_same() -> Result[Void]
+  for backend in try backends()
+    start = try weights(backend)
+    make = ->(_e: Int, i: Int) { padded(backend, i) }
+    want = try Train.fit_batches(&pooled, try scalars(backend), make, 3, adam(), 4)
+    for ahead in [1, 3]
+      got = try Train.fit_batches(&pooled, try scalars(backend), make, 3, adam(), 4, prefetch: ahead)
+      try same(got, want, "on #{backend}, prefetch #{ahead}")
+    end
+
+    broken = ->(e: Int, i: Int) {
+      return error("no rows") if e == 2 and i == 1
+      pair(backend, i)
+    }
+
+    case Train.fit_batches(&linear, start, broken, 2, adam(), 3, prefetch: 2)
+      ok(_) -> return error("a failed batch did not stop the fit on #{backend}")
+      error(e) -> try Test.eq(e.message, "epoch 2, batch 1: no rows")
+    end
+  end
+
+  Test.error?(
+    Train.fit_batches(&linear, try weights(S.REF), ->(_e: Int, i: Int) { pair(S.REF, i) }, 2, adam(), 1, prefetch: -1),
+  )
+end
+
+## The calls the prefetch task made, in order, as `epoch * 10 + i`.
+def calls(log: Channel[Int]) -> List[Int]
+  out: List[Int] = []
+  got = log.recv(0)
+  while got.ok?
+    out = out.push(got.unwrap!)
+    got = log.recv(0)
+  end
+
+  out
+end
+
+def failing(_ps: List[Tensor.Tensor], _b: Data.Batch) -> Result[Tensor.Tensor] = error("boom")
+
+## The batch function runs `epochs * count` times, in order, on the task; a step that fails stops the fit after a few
+## calls only, with the task ended (`fit_batches` awaits it before it returns, and the runner fails a test that leaves
+## one running).
+def test_prefetch_calls_the_batch_function_in_order_and_stops_with_the_fit() -> Result[Void]
+  log: Channel[Int] = Channel.new(100)
+  record = ->(e: Int, i: Int) {
+    _ = log.send(e * 10 + i, 1000)
+    pair(S.REF, i)
+  }
+
+  try Train.fit_batches(&linear, try weights(S.REF), record, 2, adam(), 3, prefetch: 2)
+  try Test.eq(calls(log), [10, 11, 20, 21, 30, 31])
+  case Train.fit_batches(&failing, try weights(S.REF), record, 2, adam(), 50, prefetch: 2)
+    ok(_) -> return error("a failing step did not stop the fit")
+    error(e) -> try Test.eq(e.message, "epoch 1, batch 0: boom")
+  end
+
+  made = calls(log)
+  try Test.assert(made.size >= 1 and made.size <= 4, "the task made #{made.size} batches of the 100 for a failed step")
+  Test.eq(made.take(2), [10, 11])
+end

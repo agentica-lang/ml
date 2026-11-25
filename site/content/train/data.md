@@ -80,13 +80,19 @@ end
 - `Data.free(tensor)` frees the native memory of one tensor now, on libtorch and ggml; the reference has none. Nothing may read the tensor afterwards. `Data.freed?(batch)` says whether a tensor of a batch was freed.
 - `Data.stop(feed)` ends the prefetch task. Call it when you are done, including after an error.
 
+For batches that a function makes (image files to decode, text to tokenize), without a loader, `Train.fit_batches(..., prefetch: K)` does the following for you. By hand:
+
+- `Data.ahead(batch, count, epochs, prefetch)` starts a task that calls `batch(epoch, i)` for every batch of every epoch, in order, and answers the stream. `prefetch` is at least 1.
+- `Data.next(stream)` gives the next batch, in order. A batch that failed is an `error`, as is one whose tensors were freed.
+- `Data.finish(stream)` ends the task and frees the native tensors it made. Call it when you are done, including after an error: the task lives until then.
+
 ## Prefetch
 
-- With `prefetch = K > 0`, a task builds the batches of every epoch in order. It sends them through a channel of capacity `K`, so it stays at most `K` batches ahead while the caller steps.
+- With `prefetch = K > 0`, a task builds the batches of every epoch in order. It sends them through a channel of capacity `K`, so up to `K + 1` batches are built ahead while the caller steps (the `K` in the channel and the one the task holds).
 - Under prefetch, `take` gives the next batch of the stream. The `i` argument is not read, so take the batches in order.
 - A batch that fails to build reaches the caller as an error in its place. A crash of the task also reaches the caller as an error.
 - Native tensors made by the task belong to it. They stay usable until `stop`.
-- `fit` on `Ggml` and `Xla` does not use `prefetch`: a batch there is its row ids, and the gather runs inside the step. `Data.feed` and `fit_batches` still do.
+- `fit` on `Ggml` and `Xla` does not use `prefetch`: a batch there is its row ids, and the gather runs inside the step. `Data.feed` does, and `fit_batches` takes its own `prefetch` for a batch function.
 - Prefetch hides the time it takes to build a batch, and nothing more. The step's own compute is not overlapped.
 
 ## Limits

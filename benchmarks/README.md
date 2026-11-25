@@ -408,6 +408,26 @@ Loading takes 0.45 to 0.47 s on both.
 agentica --max-steps 1000000000000 transformers/tools/bench_clip.agc MODEL_DIR cpu|vulkan BATCH REPS image|text
 ```
 
+## Decoding in front of a model, with and without the prefetch task (ml#252), ours only
+
+The same ResNet-50 and CLIP checkpoints, now fed by real files: 32 JPEG files of 640 by 480 (90 KB each, made by the test) go through `Vision.samples` (`Resize`, `CenterCrop(224)`) and `Vision.normalize` to a batch of 32, and the model's image forward runs on it. Ours is `vision/test/prefetch_bench_test.agc` on this PR's branch (Agentica 0.38.0), same machine as above, nothing else running (`--bench` slot), Vulkan in exact `float32`. The mean of 3 steps on the CPU and of 6 on Vulkan after one warm-up batch, in three runs of the same batches: "device" decodes one batch once and runs only the model; "sync" decodes each batch in the step, as `fit_batches` does without `prefetch`; "prefetch" has a task decode 2 batches ahead (`Data.ahead`, the stream behind `fit_batches(..., prefetch: 2)`). "idle" is the time a step waits for its batch, which is how long the device does nothing. Times in ms.
+
+| | device | sync step | sync idle | prefetch step | prefetch idle |
+|---|---|---|---|---|---|
+| ResNet-50, ggml CPU | 4890 | 5311 | 327 | 4513 | 136 |
+| CLIP ViT-B/32, ggml CPU | 2373 | 2647 | 289 | 2635 | 173 |
+| ResNet-50, ggml Vulkan | 1153 | 1559 | 366 | 1263 | 86 |
+| CLIP ViT-B/32, ggml Vulkan | 1110 | 1509 | 355 | 1234 | 100 |
+
+On Vulkan the prefetch hides three quarters of the decoding: a step takes 1263 ms against 1559 (the model alone takes 1153). On the CPU the decoder and ggml's threads share the cores, so the gain is smaller (ResNet-50) or none (CLIP, 2635 against 2647). The "device" column of a run moves with the machine (the same CPU row was 3850 ms in the run before this PR's code, and 4890 in this one), so read the columns of one run against each other. Decoding costs about 11 ms an image, resize included.
+
+The `U8` samples of a `U8` image are handed to the backend as bytes now instead of being cast to `F32` by the image library first (the backend widens them to `F32` before it uploads them). Against the code before this PR (same bench, "sync" rows, a separate run: 384, 339, 338 and 365 ms of idle in the order above), the idle time is 327, 289, 366 and 355 ms: the cast was a small part of the decode, and the gain is memory: a batch of 32 crops is 4.8 MB of bytes up to the backend, not 19.3 MB.
+
+```sh
+PREFETCH_MODEL=resnet|clip PREFETCH_DIR=MODEL_DIR PREFETCH_DEVICE=cpu|vulkan PREFETCH_MODE=device|sync|prefetch PREFETCH_OUT=out.txt \
+  agentica test --max-steps 1000000000000 vision/test/prefetch_bench_test.agc
+```
+
 ## Run it
 
 You need the Hugging Face checkout of `openai/whisper-tiny`, openai/whisper's `whisper/assets/mel_filters.npz`, a whisper.cpp checkout (never modified), `cmake`, a C++ compiler, `/usr/bin/time` (GNU time), `agentica` 0.38.0 on `PATH`, libtorch, and the Vulkan headers and `glslc` for the Vulkan rows. Python needs only the system numpy: the scripts run with `python3 -I`, which ignores virtual environments and `PYTHONPATH`.

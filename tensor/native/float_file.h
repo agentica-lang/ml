@@ -36,7 +36,7 @@ _Static_assert(sizeof(off_t) == 8, "float_file.h needs a 64-bit off_t");
 #endif
 
 /* The codes of `Types.file_code` in `src/types.agc`. */
-enum { FF_F32 = 0, FF_F16 = 1, FF_BF16 = 2, FF_Q8_0 = 3 };
+enum { FF_F32 = 0, FF_F16 = 1, FF_BF16 = 2, FF_Q8_0 = 3, FF_U8 = 4 };
 
 /* A Q8_0 block: 32 values in 34 bytes. */
 #define FF_Q8_0_VALUES 32
@@ -377,6 +377,16 @@ static bool ff_from_bytes(const uint8_t *data, size_t len, int64_t count, int64_
                           size_t why_len) {
   size_t width = ff_width(format);
 
+  if (format == FF_U8) {
+    int64_t i;
+
+    if (count < 0 || (uint64_t)count != len) {
+      snprintf(why, why_len, "%zu bytes are not %lld U8 values", len, (long long)count);
+      return false;
+    }
+    for (i = 0; i < count; i++) dest[i] = (float)data[i];
+    return true;
+  }
   if (format == FF_Q8_0) {
     if (count < 0 || count % FF_Q8_0_VALUES != 0 || len != (size_t)ff_bytes(format, count)) {
       snprintf(why, why_len, "%zu bytes are not %lld Q8_0 values of whole blocks of %d bytes", len, (long long)count,

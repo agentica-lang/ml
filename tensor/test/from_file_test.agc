@@ -70,6 +70,12 @@ end
 ## shape's is an `error`.
 def test_from_bytes_reads_what_from_file_reads() -> Result[Void]
   all = BYTES
+  try with_file do |path|
+    try Test.error?(Tensor.from_file(path, 3, [3], Tensor.FloatFormat.U8))
+    try Test.error?(Tensor.convert_file(path, 0, Tensor.FloatFormat.U8, 3, path, 0, Tensor.FloatFormat.F32))
+    ok()
+  end
+
   for b in backends()
     f32 = try Tensor.from_bytes(try Bytes.from_list(all.drop(3).take(12)), [3, 1], Tensor.FloatFormat.F32, b)
     try Test.eq(Tensor.dtype(f32), Tensor.Dtype.F32)
@@ -78,6 +84,10 @@ def test_from_bytes_reads_what_from_file_reads() -> Result[Void]
     try Test.eq(try floats(f16), [1.0, -2.0, 0.5, 1.0 / 16777216.0, 65504.0])
     empty = try Tensor.from_bytes(try Bytes.from_list([]), [0, 4], Tensor.FloatFormat.F32, b)
     try Test.eq(Tensor.shape(empty), [0, 4])
+    u8 = try Tensor.from_bytes(try Bytes.from_list([0, 1, 127, 128, 255, 9]), [2, 3], Tensor.FloatFormat.U8, b)
+    try Test.eq(Tensor.dtype(u8), Tensor.Dtype.F32)
+    try Test.eq(try floats(u8), [0.0, 1.0, 127.0, 128.0, 255.0, 9.0])
+    try Test.error?(Tensor.from_bytes(try Bytes.from_list([0, 1, 2]), [2, 2], Tensor.FloatFormat.U8, b))
     try Test.error?(Tensor.from_bytes(try Bytes.from_list(all.drop(3).take(11)), [3, 1], Tensor.FloatFormat.F32, b))
     try Test.error?(Tensor.from_bytes(try Bytes.from_list(all.drop(3).take(12)), [2, 1], Tensor.FloatFormat.F32, b))
   end

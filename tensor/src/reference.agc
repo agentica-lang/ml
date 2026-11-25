@@ -1535,6 +1535,7 @@ def file_float(b: Bytes, i: Int, format: Types.FloatFormat) -> Float
     Types.FloatFormat.F16 -> half(u16(b, 2 * i))
     Types.FloatFormat.BF16 -> Float32.from_bits(u16(b, 2 * i).shift_left(16).to_uint32!).to_f
     Types.FloatFormat.Q8_0 -> q8_0(b, i)
+    Types.FloatFormat.U8 -> b[i].to_f
   end
 end
 
