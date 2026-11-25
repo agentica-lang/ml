@@ -1,0 +1,90 @@
+"""The PyTorch + PEFT peer of `lora_test.agc`: a two-layer MLP whose two `Linear` layers get a LoRA adapter from
+`peft.get_peft_model` (r 2, alpha 4, no dropout). With fixed base weights, a fixed adapter whose `B` is not zero, and
+fixed rows, it prints the output of the adapted model, the loss, PEFT's gradients of every `A` and `B`, and a short
+run of `torch.optim.AdamW` on the adapter alone (the loss of every step and the adapter at the end), in `float32`.
+
+Manual, not run by the tests: it needs `torch` and `peft` (torch 2.6.0+cpu and peft 0.21.2 were used, with accelerate
+1.15.0 and psutil 7.2.2, which peft imports). Run it from `train/`, in Python's isolated mode:
+
+    python -I test/lora_golden.py > test/fixtures/lora_golden.json
+"""
+
+import json
+
+import peft
+import torch
+
+R = 2
+ALPHA = 4
+STEPS = 5
+LR = 0.05
+LAYERS = ("first", "second")
+
+
+class Mlp(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.first = torch.nn.Linear(3, 4)
+        self.second = torch.nn.Linear(4, 2)
+
+    def forward(self, x):
+        return self.second(torch.relu(self.first(x)))
+
+
+def flat(t):
+    return [float(v) for v in t.detach().reshape(-1)]
+
+
+def adapter(model):
+    """`A` then `B` of each layer, in the order `Lora.params` gives them."""
+    layers = [getattr(model.base_model.model, name) for name in LAYERS]
+    return [m.weight for layer in layers for m in (layer.lora_A["default"], layer.lora_B["default"])]
+
+
+def main():
+    torch.manual_seed(137)
+    base = Mlp()
+    weights = {name: flat(p) for name, p in base.named_parameters()}
+    shapes = {name: list(p.shape) for name, p in base.named_parameters()}
+    model = peft.get_peft_model(base, peft.LoraConfig(r=R, lora_alpha=ALPHA, target_modules=list(LAYERS)))
+    with torch.no_grad():
+        for p in adapter(model):
+            p.copy_(torch.randn(p.shape) * 0.3)
+    start = [flat(p) for p in adapter(model)]
+    inputs, targets = torch.randn(6, 3), torch.randn(6, 2)
+
+    output = model(inputs)
+    loss = torch.nn.functional.mse_loss(output, targets)
+    loss.backward()
+    gradients = [flat(p.grad) for p in adapter(model)]
+
+    optimizer = torch.optim.AdamW(adapter(model), lr=LR, weight_decay=0.0)
+    history = []
+    for _ in range(STEPS):
+        optimizer.zero_grad()
+        step = torch.nn.functional.mse_loss(model(inputs), targets)
+        step.backward()
+        optimizer.step()
+        history.append(float(step))
+
+    print(
+        json.dumps(
+            {
+                "shapes": shapes,
+                "weights": weights,
+                "adapter_shapes": [list(p.shape) for p in adapter(model)],
+                "start": start,
+                "inputs": flat(inputs),
+                "targets": flat(targets),
+                "output": flat(output),
+                "loss": float(loss),
+                "gradients": gradients,
+                "history": history,
+                "trained": [flat(p) for p in adapter(model)],
+            }
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()

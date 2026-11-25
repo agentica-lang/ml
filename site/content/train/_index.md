@@ -139,6 +139,35 @@ A layer norm is named by its model: `LayerNorm` in BERT, and `embeddings.LayerNo
 - `Params.named(split, ps)` gives the trainable weights alone by name: what to save. `SafetensorsWrite.write` of the hub package writes them.
 - `Params.update(weights, changed)` puts the tensors of `changed` in place of the ones of the same name. To load a saved part: `Params.update(Qwen3.weights(m), try Hub.tensors(try Hub.open(path), backend))`, then `Qwen3.with_weights`. A name the model lacks or another shape is an error.
 
+## LoRA
+
+`Lora` (`import Lora from "pkg/train/lora"`) fine-tunes a model with small adapters. A weight `W` of a linear layer, `[out, in]`, stays frozen, and two small matrices are trained beside it: `A` of `[r, in]` and `B` of `[out, r]`. The layer then computes with `W + (alpha / r) · B A`. `B` starts at zero, so a new adapter changes nothing.
+
+```agentica
+weights = Qwen3.weights(m)
+config = Lora.Config(targets: ["q_proj", "v_proj"], r: 8, alpha: 16.0)
+adapter = try Lora.init(weights, config, 1, backend)
+fit = try Train.fit(
+  ->(ps: List[Tensor.Tensor], b: Data.Batch) {
+    with = try Lora.applied(weights, try Lora.with_params(adapter, ps))
+    loss(try Qwen3.with_weights(m, with), b)
+  },
+  try Lora.params(adapter),
+  loader,
+  Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.0001, weight_decay: 0.0)),
+  3,
+)
+
+trained = try Lora.with_params(adapter, fit.params)
+```
+
+- `Lora.Config(targets, r = 8, alpha = 16.0, dropout = 0.0)`: `targets` name the layers as PEFT's `target_modules` do. A layer is adapted when its name (the name of its weight without `.weight`) is a target or ends with `.` and a target, so `q_proj` takes every `model.layers.N.self_attn.q_proj`.
+- `Lora.init(weights, config, seed, backend)` makes a new `Adapter`: every `A` uniform in `±1 / sqrt(in)` from `seed`, every `B` zero. `adapter.names` are the adapted weights, sorted. A target that names no layer, or a weight that is not a matrix, is an error.
+- `Lora.params(adapter)` gives the list `fit` trains (`A` then `B` of each adapted weight), and `Lora.with_params(adapter, ps)` the adapter with those tensors, inside the loss and after `fit`.
+- `Lora.applied(weights, adapter)` gives every weight by name, the adapted ones as `W + (alpha / r) · B A`. Inside the loss the weights of the model enter the trace as constants, so only the adapter gets a gradient. Outside a loss it is the merged model, on a backend that computes eagerly (the reference, libtorch).
+
+LoRA trains without dropout: `Lora.params` refuses an adapter whose `dropout` is above 0 ([ml#209](https://github.com/agentica-lang/ml/issues/209)).
+
 ## Limits
 
 - The loss is traced once for each batch shape, not on every step. A backend that does not compile (the reference, libtorch) still evaluates the traced graph node by node on every step.
