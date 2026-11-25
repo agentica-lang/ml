@@ -15,3 +15,7 @@ site/resources/
 # The IREE venv of `make iree-venv`.
 /.venv-iree/
 __pycache__/
+
+# The programs that tools/check-skills.sh extracts from the skills.
+/tools/skills/gen/
+/tools/skills/gen.fmt/

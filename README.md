@@ -81,6 +81,15 @@ and `Backend.Torch` answers `error("backend not available")`.
 [`tensor/README.md`](tensor/README.md) has the setup, the coverage table, the
 tolerances and the measured cost of the dependency.
 
+## Agent skills
+
+Two skills in [`.agents/skills/`](.agents/skills/) guide an agent that uses the packages from an app: `ml-inference`
+(install by tag, backends, loading weights, Qwen3, DistilBERT, Whisper, memory and errors) and `ml-training` (`fit`,
+validation and checkpoints, LoRA and PEFT files, speed, checking against PyTorch). To give them to an agent, copy both
+folders (`ml-inference` and `ml-training`; the second points to the first) into the `.agents/skills/` folder of your
+project. Their code blocks are programs: `make check-skills` checks them, and runs the ones with an output on the
+reference backend.
+
 ## Checking the native C
 
 CI runs [cchecker](https://github.com/agentica-lang/cchecker) over the native C of `tensor/` (`ggml.c`, `ggml_graph.c`), `whisper/` and `asr/`: locks released on every path, and the ggml locks taken in order (device, cache, deferred), ownership, `gcc -fanalyzer` and clang-tidy. It fails on a finding that is not in `cchecker-baseline.json`. `torch.c` is left out: it is C++, and cchecker reads C.
