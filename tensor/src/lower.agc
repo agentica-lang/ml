@@ -63,6 +63,9 @@ TOP_K = 38
 CAST = 39
 ADAM_STEP = 40
 ADAM_PART = 41
+CONV2D = 42
+MAX_POOL2D = 43
+AVG_POOL2D = 44
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -389,6 +392,9 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Concat(axis) -> ints = [axis, 0]
       Types.Op.Stack(axis) -> ints = [axis, 1]
       Types.Op.Conv1d(stride, padding) -> ints = [stride, padding]
+      Types.Op.Conv2d(stride, padding, groups) -> ints = [stride, padding, groups]
+      Types.Op.MaxPool2d(kernel, stride, padding) -> ints = [kernel, stride, padding]
+      Types.Op.AvgPool2d(kernel, stride, padding) -> ints = [kernel, stride, padding]
       Types.Op.Permute(axes) -> ints = axes
       Types.Op.Attention(scale) -> ints = [try bits(scale, n), flag(try flash_mask(n.args))]
       Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
@@ -881,6 +887,9 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.Concat(_) -> ok(CONCAT)
     Types.Op.Stack(_) -> ok(CONCAT)
     Types.Op.Conv1d(_, _) -> ok(CONV1D)
+    Types.Op.Conv2d(_, _, _) -> ok(CONV2D)
+    Types.Op.MaxPool2d(_, _, _) -> ok(MAX_POOL2D)
+    Types.Op.AvgPool2d(_, _, _) -> ok(AVG_POOL2D)
     Types.Op.Permute(_) -> ok(PERMUTE)
     Types.Op.Attention(_) -> ok(ATTENTION)
     Types.Op.Rope(_, _, _, _) -> ok(ROPE)

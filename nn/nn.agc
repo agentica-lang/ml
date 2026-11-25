@@ -58,6 +58,16 @@ struct Conv1d
   padding: Int
 end
 
+## A 2-D convolution over `[batch, channels, height, width]`: `weight` is `[out, in / groups, kh, kw]`, `bias` is
+## `[out]`, added per channel.
+struct Conv2d
+  weight: Tensor.Tensor
+  bias: Optional[Tensor.Tensor]
+  stride: Int = 1
+  padding: Int = 0
+  groups: Int = 1
+end
+
 ## `Gelu` is the tanh approximation; `GeluErf` the exact form.
 enum Activation
   Relu
@@ -236,6 +246,24 @@ def conv1d(p: Conv1d, x: Tensor.Tensor) -> Result[Tensor.Tensor]
       Tensor.add(y, try Tensor.broadcast_to(column, shape))
     none -> ok(y)
   end
+end
+
+## `Tensor.conv2d` with the layer's stride, padding and groups, plus the bias of each output channel:
+## `[batch, out, h_out, w_out]`.
+def conv2d(p: Conv2d, x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  y = try Tensor.conv2d(x, p.weight, p.stride, p.padding, p.groups)
+  case p.bias
+    some(b) ->
+      plane = try Tensor.reshape(b, [1, Tensor.shape(b)[0], 1, 1])
+      Tensor.add(y, try Tensor.broadcast_to(plane, Tensor.shape(y)))
+    none -> ok(y)
+  end
+end
+
+## The mean of each channel over its height and width: `[batch, channels, h, w]` to `[batch, channels]`.
+def global_avg_pool2d(x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  return error("global_avg_pool2d needs a rank-4 input, got #{Tensor.shape(x)}") if Tensor.shape(x).size != 4
+  Tensor.mean(x, some([2, 3]), false)
 end
 
 def activate(a: Activation, x: Tensor.Tensor) -> Result[Tensor.Tensor]

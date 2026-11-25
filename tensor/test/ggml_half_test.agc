@@ -325,6 +325,9 @@ def test_a_half_weight_anywhere_else_is_an_error_naming_the_op() -> Result[Void]
       )
 
       try refused(Trace.eval([x, w]) do |a| Tensor.matmul(a[1], a[0]) end, "matmul")
+      kernel = try Tensor.from_file(path, 0, [4, 3, 1, 1], Tensor.FloatFormat.F32, backend, Tensor.Dtype.F16)
+      image = try Tensor.ones([1, 3, 1, 1], Tensor.Dtype.F32, backend)
+      try refused(Trace.eval([image, kernel]) do |a| Tensor.conv2d(a[0], a[1]) end, "conv2d")
       ok()
     end
   end

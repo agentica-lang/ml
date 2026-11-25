@@ -729,6 +729,58 @@ def avg_pool1d(
   one(device, input.dtype, out_shape) do Raw.avg_pool1d(h, kernel, stride, padding) end
 end
 
+## The cross-correlation of `input` (`[N, C, H, W]`) with `weight` over the last two axes, in `groups` groups.
+def conv2d(
+  device: Types.Device,
+  input: Types.Tensor,
+  weight: Types.Tensor,
+  stride: Int,
+  padding: Int,
+  groups: Int,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "conv2d")
+  hi = try handle_of(input)
+  hw = try handle_of(weight)
+  out_shape = TorchShapes.conv2d_output_shape(
+    input.shape,
+    weight.shape[0],
+    weight.shape[2],
+    weight.shape[3],
+    stride,
+    padding,
+  )
+
+  one(device, input.dtype, out_shape) do Raw.conv2d(hi, hw, stride, padding, groups) end
+end
+
+## The maximum over each square window of `kernel` positions.
+def max_pool2d(
+  device: Types.Device,
+  input: Types.Tensor,
+  kernel: Int,
+  stride: Int,
+  padding: Int,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "max_pool2d")
+  h = try handle_of(input)
+  out_shape = TorchShapes.pool2d_output_shape(input.shape, kernel, stride, padding)
+  one(device, input.dtype, out_shape) do Raw.max_pool2d(h, kernel, stride, padding) end
+end
+
+## The mean over each square window of `kernel` positions, with a divisor of `kernel * kernel`.
+def avg_pool2d(
+  device: Types.Device,
+  input: Types.Tensor,
+  kernel: Int,
+  stride: Int,
+  padding: Int,
+) -> Result[Types.Tensor]
+  _ = try ready(device, "avg_pool2d")
+  h = try handle_of(input)
+  out_shape = TorchShapes.pool2d_output_shape(input.shape, kernel, stride, padding)
+  one(device, input.dtype, out_shape) do Raw.avg_pool2d(h, kernel, stride, padding) end
+end
+
 private
 
 ## The native handle of `t`: the `Native` arm. A `Plain` tensor has no native

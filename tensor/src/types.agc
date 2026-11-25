@@ -149,6 +149,9 @@ enum Op
   Contiguous
   Conv1d(Int, Int)
   AvgPool1d(Int, Int, Int)
+  Conv2d(Int, Int, Int)
+  MaxPool2d(Int, Int, Int)
+  AvgPool2d(Int, Int, Int)
   Arange(Int, Int, Int)
   StopGrad
   Permute(List[Int])
@@ -422,6 +425,9 @@ def op_name(op: Op) -> String
     Op.Contiguous -> "contiguous"
     Op.Conv1d(_, _) -> "conv1d"
     Op.AvgPool1d(_, _, _) -> "avg_pool1d"
+    Op.Conv2d(_, _, _) -> "conv2d"
+    Op.MaxPool2d(_, _, _) -> "max_pool2d"
+    Op.AvgPool2d(_, _, _) -> "avg_pool2d"
     Op.Arange(_, _, _) -> "arange"
     Op.Permute(_) -> "permute"
     Op.Attention(_) -> "attention"

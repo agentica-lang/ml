@@ -268,6 +268,16 @@ an_term torch_conv1d(an_env *env, struct torch_TensorHandle_state *input, struct
    `padding` zeros on each side and a divisor of `kernel`. */
 an_term torch_avg_pool1d(an_env *env, struct torch_TensorHandle_state *input, int64_t kernel, int64_t stride, int64_t padding);
 
+/* The cross-correlation of the `[N, C, H, W]` `input` with `weight` over the last two axes, moved by `stride` with
+   `padding` zeros on each side, in `groups` groups of channels. */
+an_term torch_conv2d(an_env *env, struct torch_TensorHandle_state *input, struct torch_TensorHandle_state *weight, int64_t stride, int64_t padding, int64_t groups);
+
+/* The maximum over each window of `kernel` by `kernel` positions of the `[N, C, H, W]` `input`, moved by `stride`. */
+an_term torch_max_pool2d(an_env *env, struct torch_TensorHandle_state *input, int64_t kernel, int64_t stride, int64_t padding);
+
+/* The mean over each window of `kernel` by `kernel` positions, with a divisor of `kernel * kernel`. */
+an_term torch_avg_pool2d(an_env *env, struct torch_TensorHandle_state *input, int64_t kernel, int64_t stride, int64_t padding);
+
 /* Host readback: the row-major values as storage doubles, which the caller
    tags with the tensor's dtype. `I64` values past 2^53 lose precision. */
 an_term torch_readback(an_env *env, struct torch_TensorHandle_state *a);
@@ -954,6 +964,47 @@ static an_term torch_native_avg_pool1d(an_env *env, int argc, const an_term *arg
   return torch_avg_pool1d(env, a0, a1, a2, a3);
 }
 
+static an_term torch_native_conv2d(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  int64_t a4;
+  if (!an_get_int(env, argv[4], &a4)) return an_badarg(env, 4);
+  return torch_conv2d(env, a0, a1, a2, a3, a4);
+}
+
+static an_term torch_native_max_pool2d(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  return torch_max_pool2d(env, a0, a1, a2, a3);
+}
+
+static an_term torch_native_avg_pool2d(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  return torch_avg_pool2d(env, a0, a1, a2, a3);
+}
+
 static an_term torch_native_readback(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
@@ -1017,6 +1068,9 @@ static const an_function torch_native_functions[] = {
   {"contiguous", "(TensorHandle) -> Result[TensorHandle]", torch_native_contiguous, AN_DIRTY | AN_FRESH},
   {"conv1d", "(TensorHandle, TensorHandle, Int, Int) -> Result[TensorHandle]", torch_native_conv1d, AN_DIRTY | AN_FRESH},
   {"avg_pool1d", "(TensorHandle, Int, Int, Int) -> Result[TensorHandle]", torch_native_avg_pool1d, AN_DIRTY | AN_FRESH},
+  {"conv2d", "(TensorHandle, TensorHandle, Int, Int, Int) -> Result[TensorHandle]", torch_native_conv2d, AN_DIRTY | AN_FRESH},
+  {"max_pool2d", "(TensorHandle, Int, Int, Int) -> Result[TensorHandle]", torch_native_max_pool2d, AN_DIRTY | AN_FRESH},
+  {"avg_pool2d", "(TensorHandle, Int, Int, Int) -> Result[TensorHandle]", torch_native_avg_pool2d, AN_DIRTY | AN_FRESH},
   {"readback", "(TensorHandle) -> Result[List[Float]]", torch_native_readback, AN_DIRTY},
   {"append_file", "(TensorHandle, String) -> Result[Void]", torch_native_append_file, AN_DIRTY},
 };
@@ -1027,5 +1081,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 48, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 51, NULL, 0, torch_native_resources, 1, LOAD)
 #endif

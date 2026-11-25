@@ -15,6 +15,7 @@ import Lower from "src/lower"
 import Stablehlo from "src/stablehlo"
 import Tensor from "tensor"
 import Types from "src/types"
+import Windows from "src/windows"
 import Xla from "src/xla"
 
 export Stablehlo.Module
@@ -700,6 +701,10 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.ToDtype -> no_rule("to_dtype")
     Types.Op.Conv1d(_, _) -> no_rule("conv1d")
     Types.Op.AvgPool1d(_, _, _) -> no_rule("avg_pool1d")
+    Types.Op.Conv2d(stride, padding, groups) ->
+      part(Windows.conv2d_rule(n.args[0], n.args[1], ct, stride, padding, groups, i))
+    Types.Op.MaxPool2d(kernel, stride, padding) -> part(Windows.max_pool2d_rule(x, t, ct, kernel, stride, padding))
+    Types.Op.AvgPool2d(kernel, stride, padding) -> part(Windows.avg_pool2d_rule(x, ct, kernel, stride, padding))
     Types.Op.Permute(axes) -> part(Tensor.permute(ct, Types.inverse_axes(axes)))
     Types.Op.Attention(scale) -> attention_rule(n, ct, scale, i)
     Types.Op.Rope(base, dims, neox, inverse) -> rope_rule(n, ct, base, dims, neox, inverse, i)
@@ -1065,6 +1070,9 @@ def compute(
     Types.Op.Contiguous -> Tensor.contiguous(args[0])
     Types.Op.Conv1d(stride, padding) -> Tensor.conv1d(args[0], args[1], stride, padding)
     Types.Op.AvgPool1d(kernel, stride, padding) -> Tensor.avg_pool1d(args[0], kernel, stride, padding)
+    Types.Op.Conv2d(stride, padding, groups) -> Tensor.conv2d(args[0], args[1], stride, padding, groups)
+    Types.Op.MaxPool2d(kernel, stride, padding) -> Tensor.max_pool2d(args[0], kernel, stride, padding)
+    Types.Op.AvgPool2d(kernel, stride, padding) -> Tensor.avg_pool2d(args[0], kernel, stride, padding)
     Types.Op.Arange(start, stop, step) -> Tensor.arange(start, stop, step, t.dtype, backend)
     Types.Op.StopGrad -> Tensor.stop_grad(args[0])
     Types.Op.Permute(axes) -> Tensor.permute(args[0], axes)

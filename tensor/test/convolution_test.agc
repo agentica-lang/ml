@@ -151,3 +151,47 @@ end
 def test_avg_pool1d_rejects_an_int_dtype() -> Result[Void]
   Test.error?(Tensor.avg_pool1d(try Support.i64([1, 2], [1, 2]), 1, 1, 0))
 end
+
+def test_conv2d_matches_the_hand_values() -> Result[Void]
+  # out[y][x] = in[y][x] + in[y + 1][x + 1].
+  input = try Support.f32([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], [1, 1, 3, 3])
+  out = try Tensor.conv2d(input, try Support.f32([1.0, 0.0, 0.0, 1.0], [1, 1, 2, 2]))
+  try Test.eq(Tensor.shape(out), [1, 1, 2, 2])
+  try Support.expect_floats(out, [6.0, 8.0, 12.0, 14.0])
+  padded = try Tensor.conv2d(input, try Support.f32([1.0], [1, 1, 1, 1]), 2, 1)
+  try Test.eq(Tensor.shape(padded), [1, 1, 3, 3])
+  Support.expect_floats(padded, [0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0])
+end
+
+def test_conv2d_with_groups_reads_its_own_channels() -> Result[Void]
+  input = try Support.f32([1.0, 2.0, 10.0, 20.0], [1, 2, 1, 2])
+  out = try Tensor.conv2d(input, try Support.f32([1.0, 3.0], [2, 1, 1, 1]), 1, 0, 2)
+  Support.expect_floats(out, [1.0, 2.0, 30.0, 60.0])
+end
+
+def test_max_pool2d_never_picks_a_padded_position() -> Result[Void]
+  input = try Support.f32([-3.0, -1.0, -2.0, -4.0], [1, 1, 2, 2])
+  out = try Tensor.max_pool2d(input, 2, 1, 1)
+  try Test.eq(Tensor.shape(out), [1, 1, 3, 3])
+  Support.expect_floats(out, [-3.0, -1.0, -1.0, -2.0, -1.0, -1.0, -2.0, -2.0, -4.0])
+end
+
+def test_avg_pool2d_divides_by_the_whole_window() -> Result[Void]
+  input = try Support.f32([-3.0, -1.0, -2.0, -4.0], [1, 1, 2, 2])
+  out = try Tensor.avg_pool2d(input, 2, 1, 1)
+  Support.expect_floats(out, [-0.75, -1.0, -0.25, -1.25, -2.5, -1.25, -0.5, -1.5, -1.0])
+end
+
+def test_conv2d_and_the_pools_reject_what_they_cannot_run() -> Result[Void]
+  input = try Support.f32(Support.ramp(1, 16), [1, 4, 2, 2])
+  weight = try Support.f32([1.0, 1.0, 1.0, 1.0], [4, 1, 1, 1])
+  try Test.error?(Tensor.conv2d(try Tensor.reshape(input, [4, 2, 2]), weight))
+  try Test.error?(Tensor.conv2d(input, weight, 1, 0, 3))
+  try Test.error?(Tensor.conv2d(input, weight, 1, 0, 0))
+  try Test.error?(Tensor.conv2d(input, try Support.f32([1.0, 1.0, 1.0, 1.0], [1, 4, 1, 1]), 1, 0, 2))
+  try Test.error?(Tensor.conv2d(input, try Support.f32(Support.ramp(2, 36), [1, 4, 3, 3])))
+  try Test.error?(Tensor.max_pool2d(input, 2, 1, 2))
+  try Test.error?(Tensor.max_pool2d(input, 3, 1, 0))
+  try Test.error?(Tensor.avg_pool2d(try Tensor.reshape(input, [4, 2, 2]), 1))
+  Test.error?(Tensor.avg_pool2d(try Support.i64([1, 2, 3, 4], [1, 1, 2, 2]), 1))
+end

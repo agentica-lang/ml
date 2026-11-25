@@ -81,8 +81,8 @@ call the module, so both have to be declared here (`DESIGN.md` §1, §2, §7).
 
 ## What is implemented, and what is not
 
-`DESIGN.md` §3.1 names 49 primitives. Both backends compute them: the
-**reference computes all 49**, and the **libtorch backend implements 47** and
+`DESIGN.md` §3.1 names 52 primitives. Both backends compute them: the
+**reference computes all 52**, and the **libtorch backend implements 50** and
 answers `error("<op> is not implemented on the torch backend yet (see tensor/README.md)")` for the
 other two, so the gap is an error naming the op, never a wrong number. Every
 implemented one is checked against the reference on the same inputs, values and
@@ -96,7 +96,7 @@ shape/dtype, plus its error paths.
 | Linear algebra (3) | `matmul`, `transpose` | `batch_matmul` |
 | Attention (3) | `permute`, `attention` (grouped heads, additive mask, `scale`), `rope` (`neox` or paired, `dims`, `inverse`) | — |
 | Shape (9) | `reshape`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `broadcast_to`, `gather`, `scatter_add` | — |
-| Convolution/pooling (2) | `conv1d` (`stride`, `padding`), `avg_pool1d` (`kernel`, `stride`, `padding`) | — |
+| Convolution/pooling (5) | `conv1d` (`stride`, `padding`), `avg_pool1d` (`kernel`, `stride`, `padding`), `conv2d` (`stride`, `padding`, `groups`), `max_pool2d` and `avg_pool2d` (`kernel`, `stride`, `padding`) | — |
 | Movement (4) | `to_dtype`, `copy`, `contiguous` | `to_device` |
 
 Plus the host-crossing functions §4 names, `from_list`, `from_file`,
@@ -118,7 +118,10 @@ Why those two are out:
 `stride` ≥ 1 and `padding` ≥ 0, no dilation, no groups. `avg_pool1d` also caps
 `padding` at half the kernel, because that is the window the libtorch kernel
 admits; the cap lives in the public wrapper, so the reference and libtorch
-refuse exactly the same windows. `conv1d` takes `[C_in, L]` or
+refuse exactly the same windows. `conv2d`, `max_pool2d` and `avg_pool2d` take
+`[N, C, H, W]` only, the same `stride` and `padding` on both axes, and
+`max_pool2d` and `avg_pool2d` cap `padding` at half the kernel too; `conv2d`'s
+weight is `[C_out, C_in / groups, KH, KW]`. `conv1d` takes `[C_in, L]` or
 `[N, C_in, L]` against a `[C_out, C_in, K]` weight, and `avg_pool1d` takes
 `[C, L]` or `[N, C, L]`; both answer the input's leading axes plus the new
 length, and both refuse an empty input, a window wider than the padded input
@@ -251,7 +254,7 @@ the CPU backend and on Vulkan device 0, and runs two tasks on one Vulkan device.
 and of the cross-entropy against the reference within 1e-6 (relative to the
 largest value) on the CPU backend and on Vulkan, that a retrace with new values
 compiles nothing, `slice`, `gather` and `scatter_add` (an index outside the rows is an error),
-`concat` and `stack` on every axis, `test/ggml_attention_test.agc` (`attention` over grouped heads, masks and the causal flag, `rope`, `permute`, `batch_matmul` and the backward of attention, node by node with `Trace.diff`), the ops of Whisper's forward (`conv1d`,
+`concat` and `stack` on every axis, `test/ggml_attention_test.agc` (`attention` over grouped heads, masks and the causal flag, `rope`, `permute`, `batch_matmul` and the backward of attention, node by node with `Trace.diff`), `test/conv2d_test.agc` (`conv2d` with stride, padding and groups, `max_pool2d` and `avg_pool2d`, forward and gradients, against a Python peer in doubles on every backend), the ops of Whisper's forward (`conv1d`,
 `gelu_erf`, layer norm, softmax, masked attention) and the refusals. `test/ggml_turns_test.agc`, in a process of its own, that a
 graph without fills does not write into the buffer the shared allocator freed
 when a larger graph grew it. `test/threads_test.agc` checks, in processes of its own, that `TENSOR_THREADS` sets the threads of the CPU backend and a bad value leaves the default. `test/ggml_vulkan_mlp_test.agc` checks the
