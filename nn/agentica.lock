@@ -12,5 +12,5 @@ hash = "sha256:c1be453b21abab840feaa03242f0be32c1145fefe068dc131c8ce7c1b7b80652"
 name = "tensor"
 git = "https://github.com/agentica-lang/ml"
 subdir = "tensor"
-ref = "52494e115fe6a43bd823de3331ce1b6265d9f98b"
+ref = "f72667e03723cbbee63c34a8cd3ab3743de6f149"
 workspace = true
