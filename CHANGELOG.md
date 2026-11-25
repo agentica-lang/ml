@@ -12,7 +12,11 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### vision
 
-- A new package, `vision` (ml#82): images for tensors on the [image](https://github.com/agentica-lang/packages/tree/main/image) package (libvips). `Vision.to_tensor` reads the pixels of an image straight into a tensor (`F32` in `0..1` or `U8`, `Chw` or `Hwc`), `Vision.apply` runs `Resize` (shorter side), `CenterCrop`, `RandomCrop` and `HorizontalFlip` with a seed, `Vision.normalize` is a tensor op, and `Vision.folder` and `Vision.samples` make batches from a folder per class for the loader of `train`. It needs libvips.
+- New package `vision` (ml#82): images for tensors, on the `image` package (libvips). It needs libvips.
+- `Vision.to_tensor`: the pixels of an image go straight into a tensor, as `F32` in `0..1` or as `U8`, in `Chw` or `Hwc`.
+- `Vision.apply`: `Resize` (shorter side), `CenterCrop`, `RandomCrop` and `HorizontalFlip`, with a seed.
+- `Vision.normalize`: mean and std per channel, as tensor ops.
+- `Vision.folder` and `Vision.samples`: a folder per class becomes batches for the loader of `train`.
 
 ## [0.4.0] - 2026-11-25
 

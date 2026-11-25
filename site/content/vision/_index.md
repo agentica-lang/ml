@@ -80,5 +80,6 @@ dataset = Data.dataset(s.inputs, s.targets).unwrap!
 
 - No convolution beyond `conv1d` exists in `nn` yet, so a model for images starts with a flatten (`reshape`) and a dense layer. The `[n, 3, height, width]` layout is the one a 2-D convolution will take.
 - `dtype: U8` is not for ggml, which cannot convert to `U8`.
-- The samples cross as little-endian `F32`, so a big-endian machine is not supported.
+- The samples cross as little-endian `F32`. A big-endian machine is untested, and its pixels would be wrong.
+- The `U8` cast of `dtype: U8` is tested on the reference only, not on libtorch or XLA.
 - Decoding is not on the prefetch task of the loader: `samples` runs in the task that calls it.

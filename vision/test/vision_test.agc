@@ -13,17 +13,31 @@ RGB = [10, 20, 30, 40, 50, 60, 70, 80, 90, 110, 120, 130, 140, 150, 160, 170, 18
 
 def test_u8_pixels_reach_a_tensor_and_come_back_exact() -> Result[Void]
   image = try S.u8(RGB, 3, 2, 3)
-  for backend in [S.REF]
-    hwc = try Vision.to_tensor(image, backend, Tensor.Dtype.U8, Vision.Layout.Hwc)
+  hwc = try Vision.to_tensor(image, S.REF, Tensor.Dtype.U8, Vision.Layout.Hwc)
+  try Test.eq(Tensor.shape(hwc), [2, 3, 3])
+  try Test.eq(Tensor.dtype(hwc), Tensor.Dtype.U8)
+  got = try S.ints_of(hwc)
+  try Test.eq(got, RGB)
+  back = try Image.from_pixels(try Bytes.from_list(got), 3, 2, 3, Image.Format.U8)
+  try Test.eq(try S.samples_of(back), RGB)
+  chw = try Vision.to_tensor(image, S.REF, Tensor.Dtype.U8)
+  try Test.eq(Tensor.shape(chw), [3, 2, 3])
+  try Test.eq(try S.ints_of(chw), [10, 40, 70, 110, 140, 170, 20, 50, 80, 120, 150, 180, 30, 60, 90, 130, 160, 190])
+  ok()
+end
+
+## Distinct values in each band, so a wrong band order or permute on a backend shows.
+def test_f32_keeps_the_band_order_and_the_layout_on_each_backend() -> Result[Void]
+  image = try S.u8(RGB, 3, 2, 3)
+  unit = RGB.map { |v| v.to_f / 255.0 }
+  planes = [0, 1, 2].flat_map { |c| [0, 1, 2, 3, 4, 5].map { |i| unit[i * 3 + c] } }
+  for backend in try S.backends()
+    hwc = try Vision.to_tensor(image, backend, Tensor.Dtype.F32, Vision.Layout.Hwc)
     try Test.eq(Tensor.shape(hwc), [2, 3, 3])
-    try Test.eq(Tensor.dtype(hwc), Tensor.Dtype.U8)
-    got = try S.ints_of(hwc)
-    try Test.eq(got, RGB)
-    back = try Image.from_pixels(try Bytes.from_list(got), 3, 2, 3, Image.Format.U8)
-    try Test.eq(try S.samples_of(back), RGB)
-    chw = try Vision.to_tensor(image, backend, Tensor.Dtype.U8)
+    try S.close(try S.floats_of(hwc), unit, 0.000001)
+    chw = try Vision.to_tensor(image, backend)
     try Test.eq(Tensor.shape(chw), [3, 2, 3])
-    try Test.eq(try S.ints_of(chw), [10, 40, 70, 110, 140, 170, 20, 50, 80, 120, 150, 180, 30, 60, 90, 130, 160, 190])
+    try S.close(try S.floats_of(chw), planes, 0.000001)
   end
 
   ok()
@@ -137,7 +151,7 @@ def test_a_folder_lists_its_classes_and_images_in_order() -> Result[Void]
   end
 end
 
-def test_samples_make_one_batch_of_sRGB_images_on_each_backend() -> Result[Void]
+def test_samples_make_one_batch_of_srgb_images_on_each_backend() -> Result[Void]
   S.with_dir do |root|
     try make_folder(root)
     f = try Vision.folder(root)
@@ -171,5 +185,22 @@ def test_images_that_differ_or_have_alpha_are_an_error_that_names_the_path() -> 
     withalpha = Vision.samples(try Vision.folder(root), [0], [], 0)
     try Test.error?(withalpha)
     Test.assert(withalpha.message.include?("a/alpha.png"), "the error names no path: #{withalpha.message}")
+  end
+end
+
+def test_samples_keep_the_band_order_of_a_colour_image_on_each_backend() -> Result[Void]
+  S.with_dir do |root|
+    try Dir.mkdir("#{root}/a", 5000)
+    rgb = [10, 20, 30, 40, 50, 60, 70, 80, 90, 110, 120, 130]
+    try Image.save(try S.u8(rgb, 2, 2, 3), "#{root}/a/1.png")
+    planes = [0, 1, 2].flat_map { |c| [0, 1, 2, 3].map { |i| rgb[i * 3 + c].to_f / 255.0 } }
+    f = try Vision.folder(root)
+    for backend in try S.backends()
+      s = try Vision.samples(f, [0], [], 0, backend)
+      try Test.eq(Tensor.shape(s.inputs), [1, 3, 2, 2])
+      try S.close(try S.floats_of(s.inputs), planes, 0.000001)
+    end
+
+    ok()
   end
 end

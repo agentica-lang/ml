@@ -78,10 +78,7 @@ def normalize(
   end
 
   return error("normalize needs stds above 0.0, got #{std}") if std.any? { |s| s <= 0.0 }
-  view = shape.map { |_| 1 }.set(axis, channels)
-  means = try Tensor.floats(mean, view, Tensor.backend(x))
-  stds = try Tensor.floats(std, view, Tensor.backend(x))
-  Native.arena do scaled(x, means, stds) end
+  Native.arena do scaled(x, mean, std, axis) end
 end
 
 ## The folders of `root` as classes, in name order, and the images in each (`png`, `jpg`, `jpeg`, `webp`, `tif`,
@@ -163,11 +160,22 @@ end
 
 def advance(state: Int) -> Int = (state * MULTIPLIER) % MODULUS
 
-def row_seed(seed: Int, row: Int) -> Int = (seed.abs % 1048576) * 1000003 + row
+## One seed for each (seed, row): the rows of a seed, and the same row under other seeds, draw unrelated numbers. `mix`
+## breaks the line that a generator of Park-Miller draws along its seed.
+def row_seed(seed: Int, row: Int) -> Int = mix((mix(seed.abs % MODULUS) + row) % MODULUS)
 
-## `x` less `means` over `stds`, both of the shape of one channel, in one evaluation.
-def scaled(x: Tensor.Tensor, means: Tensor.Tensor, stds: Tensor.Tensor) -> Result[Tensor.Tensor]
+def mix(x: Int) -> Int
+  a = (x.bit_xor(x.shift_right(15)) * MULTIPLIER) % MODULUS
+  (a.bit_xor(a.shift_right(13)) * 69621) % MODULUS
+end
+
+## `x` less `mean` over `std` along the channel `axis`, in one evaluation; the arena of `normalize` closes the tensors
+## of `mean` and `std`.
+def scaled(x: Tensor.Tensor, mean: List[Float], std: List[Float], axis: Int) -> Result[Tensor.Tensor]
   shape = Tensor.shape(x)
+  view = shape.map { |_| 1 }.set(axis, shape[axis])
+  means = try Tensor.floats(mean, view, Tensor.backend(x))
+  stds = try Tensor.floats(std, view, Tensor.backend(x))
   Trace.eval([x, means, stds]) do |xs|
     centered = try Tensor.sub(xs[0], try Tensor.broadcast_to(xs[1], shape))
     Tensor.div(centered, try Tensor.broadcast_to(xs[2], shape))
@@ -202,7 +210,7 @@ end
 ## `decoded` when it is a good image of the size, bands and format of the first one of `parts`; the error names `path`.
 def labelled(decoded: Result[Pixels], parts: List[Pixels], path: String) -> Result[Pixels]
   case decoded
-    error(e) -> error("#{path}: #{e.message}")
+    error(e) -> error(e.with(message: "#{path}: #{e.message}"))
     ok(p) ->
       return ok(p) if parts.empty?
       first = parts[0]
