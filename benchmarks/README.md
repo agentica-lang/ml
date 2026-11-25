@@ -194,20 +194,20 @@ The Vulkan weights sit in the device's own buffers, which on this iGPU are syste
 
 ## Training against PyTorch and JAX (ml#50)
 
-One training step of an MLP classifier (784-512-512-10, relu, softmax cross-entropy, fp32) in every stack, on the same machine, with the same init, data, optimizer and thread count. The unit is ms per step, the median of 30 steps after the compile step and three warm ones (15 at batch 4096). A step is the forward, the gradients, the optimizer update and reading the loss back to the host; the batch stays on the device. The peers are [`bench_torch.py`](training/bench_torch.py) and [`bench_jax.py`](training/bench_jax.py), the Agentica side is [`train/tools/bench_train.agc`](../train/tools/bench_train.agc), and [`training/run.sh`](training/run.sh) runs the grid and [`training/table.py`](training/table.py) prints the tables from [`training/results.jsonl`](training/results.jsonl).
+One training step of an MLP classifier (784-512-512-10, relu, softmax cross-entropy, fp32) in every stack, on the same machine, with the same init, data, optimizer and thread count. The unit is ms per step, the median of 30 steps after the compile step and three warm ones (15 at batch 4096). A step is the forward, the gradients, the optimizer update and reading the loss back to the host; the batch stays on the device. The peers are [`bench_torch.py`](training/bench_torch.py) and [`bench_jax.py`](training/bench_jax.py), the Agentica side is [`train/tools/bench_train.agc`](../train/tools/bench_train.agc), and [`training/run.sh`](training/run.sh) runs the grid and [`training/table.py`](training/table.py) prints the tables from [`training/results.jsonl`](training/results.jsonl), which holds every run.
 
 | | |
 |---|---|
-| Machine | the one above (Ryzen 5 3550H, 8 threads; Vega iGPU for the Vulkan rows), the machine quiet, load average under 1.0 (`run.sh` refuses above that) |
-| Ours | agentica-lang/ml `8eb7514` plus this PR, Agentica 0.37.0, ggml `417a024b4fb6`; the Vulkan rows multiply in fp32 (`Tensor.vulkan_fp16(false)`) |
-| PyTorch | 2.6.0+cpu, Python 3.13; `eager` is autograd and `torch.optim`, `compile` is `torch.compile` of the loss and of a functional update |
+| Machine | the one above (Ryzen 5 3550H, 8 threads; Vega iGPU for the Vulkan rows), the machine quiet: `run.sh` checked the load average once, at the start of the run (0.53, limit 1.0), and the lines of this run do not record it (the lines `run.sh` writes now do) |
+| Ours | agentica-lang/ml `8eb7514` plus this PR, Agentica 0.37.0, ggml `417a024b4fb6`; the Vulkan rows multiply in fp32 because the program calls `Tensor.vulkan_fp16(false)` before the first ggml call |
+| PyTorch | 2.6.0+cpu, Python 3.13.5; `eager` is autograd and `torch.optim` (the default foreach implementation, not `fused=True`), `compile` is `torch.compile` of the loss and of a functional update, with one extra `copy_` of each parameter after it |
 | JAX | 0.12.0.1 with jaxlib 0.12.0.1 (numpy 2.5.5, ml_dtypes 0.7.0, scipy 1.18.1, opt_einsum 3.4.0), CPU, one `jax.jit` of the whole step |
-| Threads | 8 everywhere: `taskset -c 0-7` (ggml and XLA read the affinity) and `OMP_NUM_THREADS=8` (PyTorch, libtorch) |
+| Threads | 8 everywhere, the threads of the machine (`run.sh` refuses any other count): ggml uses every online CPU (`sysconf(_SC_NPROCESSORS_ONLN)`, not the affinity), PyTorch and libtorch use `OMP_NUM_THREADS=8`, and JAX uses XLA's default CPU pool (all the cores; its size was not checked) |
 | Data and init | the closed forms of `tensor/tools/bench-ggml.agc` (`values`), the labels `(i * 7) % 10`; SGD lr 0.01, Adam lr 0.001, betas 0.9 and 0.999, eps 1e-8 with the bias correction passed in as two scalars |
 
 The rows: `ggml-cpu` and `ggml-vulkan` are `Backend.Ggml`, `torch-cpu` is `Backend.Torch` (libtorch 2.4.1+cpu, the library the native module links, not the PyTorch 2.6.0 of the peers). `-fit` is the steps of `Train.fit`: the step is traced again every time and the batch is gathered from a one-batch dataset. `-compiled` is one `Trace.compile` of the whole step and a `run` per step, so the gap between the two is the cost of tracing, planning and the loader. There is no PyTorch or JAX row on the iGPU: neither trains on Vulkan here.
 
-Correctness comes first: every row prints the loss of its first ten steps, and `table.py` compares them with PyTorch in float64 from the same init and batch. A row more than 1e-3 off would show `WRONG` and no time. None did: all agree to about 1e-6.
+Correctness comes first: every row prints the loss of its first ten steps, and `table.py` compares them with PyTorch in float64 from the same init and batch, and shows `WRONG` and no time for a row that does not follow. It compares the movement of the loss (loss at step i minus loss at step 0), not the loss: SGD at lr 0.01 moves it only by 4e-6 to 2e-3 in ten steps, so a loss within 1e-3 of the oracle's would pass for an optimizer that does nothing (`table_test.py` checks that a curve that does not move, or is not finite or short, is `WRONG`). The movement must be within 1e-6 (four float32 steps of a loss near 2.3) plus 1% of the oracle's (SGD) or 10% (Adam). Every row of this run passes: its losses are within 8e-7 (SGD) and 5.4e-4 (Adam, which amplifies float32 rounding; `pytorch-eager` alone is within 2.2e-4) of the oracle's. At SGD batch 4096 the movement is 3.6e-6, so only a learning rate off by more than about 30 percent would show there.
 
 SGD, ms per step:
 
@@ -261,13 +261,26 @@ Adam, the median over the median of `pytorch-eager`:
 | pytorch-compile | 0.98 | 0.95 | 0.92 | 0.93 |
 | jax-jit | 0.94 | 0.76 | 0.77 | 0.70 |
 
-- On Vulkan the step beats PyTorch eager from batch 1024: `fit` takes 0.78 (SGD) and 0.98 (Adam) of its time there and 0.55 and 0.57 at batch 4096; the compiled step takes 0.60 and 0.82 at 1024 and 0.45 and 0.48 at 4096. JAX on the CPU is still ahead of the Vulkan `fit` at 1024 (28 ms against 36 ms with Adam) and behind it at 4096 (113 ms against 91 ms).
+- On Vulkan the step beats PyTorch eager from batch 1024 with SGD (`fit` takes 0.78 of its time, the compiled step 0.60) and from 4096 with Adam (`fit` 0.57, compiled 0.48); with Adam at 1024 `fit` ties (0.98) and only the compiled step wins (0.82). JAX on the CPU is still ahead of the Vulkan `fit` at 1024 (28 ms against 36 ms with Adam) and behind it at 4096 (113 ms against 91 ms).
 - At batch 64 and 256 PyTorch is faster by about 2 to 4 times on `fit` (Vulkan `fit` 3.8 to 4.2 times at 64): the step has a fixed cost of several ms (the host work and the dispatches, about 2 ms each on this iGPU) that a small batch does not hide. Compiling the step once takes that to 2.0 (SGD) and 2.1 (Adam) at 64, and to 1.0 and 1.2 at 256.
 - On the CPU, ggml is about 2 times slower than PyTorch eager at every batch (`fit` 2.0 to 2.8, compiled 1.8 to 2.6), and JAX is the fastest CPU stack (0.70 to 0.94 of PyTorch). `torch-cpu` (the same kind of kernels as PyTorch, driven from the VM) costs 2.4 (SGD) to 3.5 (Adam) times at batch 64 and 1.1 to 1.3 at batch 4096: that gap is the VM and the tracing, with libtorch 2.4.1 instead of 2.6.0.
 - What `fit` costs over the compiled step (tracing, planning and the loader's gather of the batch) is 1.5 ms on the CPU at batch 64 (9.1 against 7.7 ms with SGD) and 7 to 12 ms on Vulkan (14.1 against 7.5 ms with SGD, 23.4 against 11.8 ms with Adam); at batch 4096 it is about 15 ms on Vulkan and 37 (SGD) to 82 ms (Adam) on the CPU.
-- So the owner's goal of equal or better than PyTorch holds on Vulkan from batch 1024 on, and not on the CPU nor at small batches; the numbers say where to work: the fixed cost of a step (host and dispatch) and the CPU kernels.
+- So the owner's goal of equal or better than PyTorch holds on Vulkan from batch 1024 (SGD) or 4096 (Adam, `fit`), and not on the CPU nor at small batches; the numbers say where to work: the fixed cost of a step (host and dispatch) and the CPU kernels.
 
-Each cell is one run of one process. A cell whose median is over 1.15 times its minimum is marked `*` and is run once more, and only the second run is kept (8 of the 10 that crossed the line, the widest: four on Vulkan, `pytorch-compile` at batch 64 and 256, `jax-jit` Adam at 64 and `ggml-cpu-compiled` Adam at 4096, whose first run had a median of 643 ms against a minimum of 289 ms). The cells still marked had no third run. The iGPU is shared with the desktop, which is where most of the noise is. The first step, which holds the compile, is in `results.jsonl` as `first_ms`: 0.3 to 0.5 s for JAX, 2.5 to 10 s for `torch.compile`, 0.02 to 1 s for ggml and libtorch (the large batches are the long ones).
+How the cells were run. Each cell is one process of one run, and the first pass over the whole grid had no second look. Afterwards a cell with a median over 1.15 times its minimum was meant to be run again, and I ran eight of them (the widest, plus `pytorch-compile` SGD at batch 64, whose median of 38 ms was far above its neighbours): the tables show the second run of those, and `results.jsonl` keeps both (`run` 1 and 2). Both are here:
+
+| cell | run 1 | run 2 |
+|---|---|---|
+| ggml-cpu-compiled adam 4096 | 642.84 (289.11) | 297.30 (281.89) |
+| ggml-vulkan-compiled adam 64 | 14.99 (12.83) | 11.77 (10.96) |
+| ggml-vulkan-compiled adam 256 | 16.14 (13.50) | 13.88 (13.52) |
+| ggml-vulkan-fit sgd 64 | 16.66 (13.78) | 14.12 (13.05) |
+| ggml-vulkan-fit sgd 256 | 16.18 (13.33) | 18.32 (14.47) |
+| jax-jit adam 64 | 5.09 (3.25) | 5.17 (3.85) |
+| pytorch-compile adam 256 | 13.28 (10.52) | 11.14 (10.54) |
+| pytorch-compile sgd 64 | 38.33 (33.35) | 4.27 (4.05) |
+
+That choice biases the rerun cells: only cells whose first run was high were run again, and the second run is the one shown, so they look better than the cells that were not run again (six of the eight went down, two went up; four of the eight are Vulkan cells, which share the iGPU with the desktop). Three cells were over the line and were not run again: `ggml-vulkan-fit` Adam at 64, `pytorch-compile` Adam at 64 and `torch-cpu-fit` Adam at 4096 (1.15 to 1.16 times their minimum, marked `*`); the machine went back to the other jobs. Two rerun cells are still marked `*`, `ggml-vulkan-fit` SGD at 256 and `jax-jit` Adam at 64, and have no third run. The first step, which holds the compile, is in `results.jsonl` as `first_ms`: 0.3 to 0.5 s for JAX, 2.5 to 10 s for `torch.compile`, 0.02 to 1 s for ggml and libtorch (the large batches are the long ones).
 
 ## BERT (ml#78), ours against llama.cpp
 
@@ -419,13 +432,14 @@ The machine must be quiet: close builds and other jobs, and run each step under 
 
 whisper.cpp's `whisper-cli` gives the same words (`-l en -nt -bs 1 -bo 1 -nf -t 8`); the harness exists to time a warm process, the way `asr/` is timed.
 
-The training benchmarks of ml#50 need the JAX venv and the ggml engines, and take about 40 minutes with the machine quiet:
+The training benchmarks of ml#50 need the two venvs and the ggml engines, and take about 40 minutes with the machine quiet:
 
 ```sh
-sh benchmarks/training/run.sh setup                    # the JAX venv, once
+sh benchmarks/training/run.sh setup                    # the PyTorch and JAX venvs, once
 sh benchmarks/training/run.sh check                    # every row at batch 4 and 8, two steps: they run and agree
 sh benchmarks/training/run.sh run results.jsonl
-python3 benchmarks/training/table.py results.jsonl
+python3 -I benchmarks/training/table.py results.jsonl
+python3 -I benchmarks/training/table_test.py           # the loss-curve verdict of table.py
 ```
 
 ### The converter

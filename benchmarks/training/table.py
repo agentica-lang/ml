@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
-# The tables of benchmarks/training/README.md from the results.jsonl of run.sh, and the loss-curve verdict: a row whose
-# first ten losses differ from the float64 PyTorch oracle by more than TOLERANCE (relative) is WRONG, and its time is
-# not shown. A cell whose median is over SPREAD times its min is marked `*`: rerun it. The second table of each
-# optimizer is the median over the median of pytorch-eager.
+# The tables of benchmarks/training/README.md from the results.jsonl of run.sh, and the loss-curve verdict.
 #
-#   python3 table.py results.jsonl
+#   python3 -I table.py results.jsonl [LOSSES]
+#
+# A row is WRONG, and shows no time, when its first LOSSES losses (10; the `check` of run.sh passes fewer) are not
+# the oracle's, which is PyTorch in float64 from the same init and batch: the first loss within FIRST (relative), and
+# the movement from it (loss_i - loss_0) within FLOOR plus TOLERANCE times the oracle's largest movement. Comparing
+# the movement, not the loss, is what catches an optimizer that does nothing: SGD at lr 0.01 moves the loss by only
+# 4e-6 to 2e-3 in ten steps, so a loss within 1e-3 of the oracle's proves nothing. FLOOR is four float32 steps of a
+# loss near 2.3, the least the losses can tell apart; TOLERANCE is above what float32 does to the movement: every row of
+# the ml#50 run is within 8e-7 (SGD) and 5.4e-4 (Adam, which amplifies float32 rounding; pytorch-eager alone is 2.2e-4)
+# of the oracle's loss. At SGD batch 4096 the movement is 3.6e-6, so only a rate off by more than about 30 percent
+# shows. A missing, short, or not finite curve is WRONG too.
+#
+# A cell may have several runs (a `run` number each); the last one is shown, and a cell whose median is over SPREAD
+# times its minimum is marked `*`. The rerun cells are listed with both runs below the tables.
 import json
+import math
 import sys
 
-TOLERANCE = 1e-3
+FIRST = 1e-5
+FLOOR = 1e-6
+TOLERANCE = {"sgd": 0.01, "adam": 0.1}
 SPREAD = 1.15
 STACKS = [
     "ggml-cpu-fit",
@@ -22,57 +35,114 @@ STACKS = [
 ]
 
 
-def main():
+def verdict(losses, oracle, optimizer, need):
+    """None when `losses` follow `oracle`, else why not."""
+    if len(losses) < need or len(oracle) < need:
+        return f"fewer than {need} losses"
+    losses, oracle = losses[:need], oracle[:need]
+    if not all(math.isfinite(x) for x in losses):
+        return "a loss is not finite"
+    first = abs(losses[0] - oracle[0]) / abs(oracle[0])
+    if not first <= FIRST:
+        return f"the first loss differs by {first:.1e}"
+    move = max(abs(x - oracle[0]) for x in oracle)
+    worst = max(abs((a - losses[0]) - (b - oracle[0])) for a, b in zip(losses, oracle))
+    if not worst <= FLOOR + TOLERANCE[optimizer] * move:
+        return f"the movement differs by {worst:.1e} of {move:.1e}"
+    return None
+
+
+def load(path):
     cells = {}
-    for line in open(sys.argv[1]):
+    for line in open(path):
         row = json.loads(line)
-        cells[(row["stack"], row["optimizer"], row["batch"])] = row["result"]
+        cells.setdefault((row["stack"], row["optimizer"], row["batch"]), []).append(row)
+    for runs in cells.values():
+        runs.sort(key=lambda r: r.get("run", 1))
+    return cells
 
+
+def judge(cells, need):
+    """The shown result of each cell, and why it is WRONG (or missing) when it is."""
+    shown, wrong = {}, {}
+    for (stack, opt, batch), runs in cells.items():
+        result = runs[-1]["result"]
+        oracle = cells.get(("pytorch-oracle", opt, batch), [{"result": {"error": "missing"}}])[-1]["result"]
+        if "error" in result:
+            wrong[(stack, opt, batch)] = "the row failed"
+        elif "error" in oracle:
+            wrong[(stack, opt, batch)] = "no oracle"
+        else:
+            why = verdict(result["losses"], oracle["losses"], opt, need)
+            if why:
+                wrong[(stack, opt, batch)] = why
+        shown[(stack, opt, batch)] = result
+    return shown, wrong
+
+
+def cell_text(shown, wrong, key):
+    if key not in shown:
+        return "n/a"
+    if key in wrong:
+        return "WRONG" if wrong[key] != "the row failed" else "n/a"
+    r = shown[key]
+    return f"{r['median_ms']:.2f}" + ("*" if r["median_ms"] > SPREAD * r["min_ms"] else "")
+
+
+def ratio_text(shown, wrong, stack, opt, batch):
+    key, base = (stack, opt, batch), ("pytorch-eager", opt, batch)
+    if key not in shown or base not in shown:
+        return "n/a"
+    if key in wrong or base in wrong:
+        return "WRONG" if "the row failed" not in (wrong.get(key), wrong.get(base)) else "n/a"
+    return f"{shown[key]['median_ms'] / shown[base]['median_ms']:.2f}"
+
+
+def table(title, batches, text):
+    print(f"\n{title}\n")
+    print("| row | " + " | ".join(str(b) for b in batches) + " |")
+    print("|---|" + "---|" * len(batches))
+    for stack in STACKS:
+        print(f"| {stack} | " + " | ".join(text(stack, b) for b in batches) + " |")
+
+
+def main():
+    need = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+    cells = load(sys.argv[1])
+    shown, wrong = judge(cells, need)
     batches = sorted({batch for _, _, batch in cells})
-    wrong = []
     for opt in ("sgd", "adam"):
-        print(f"\n{opt}, ms per step (median)\n")
-        print("| row | " + " | ".join(str(b) for b in batches) + " |")
-        print("|---|" + "---|" * len(batches))
-        for stack in STACKS:
-            shown = []
-            for b in batches:
-                shown.append(show(cells, stack, opt, b, wrong))
-            print(f"| {stack} | " + " | ".join(shown) + " |")
+        table(f"{opt}, ms per step (median)", batches, lambda s, b: cell_text(shown, wrong, (s, opt, b)))
+        table(
+            f"{opt}, median over the median of pytorch-eager",
+            batches,
+            lambda s, b: ratio_text(shown, wrong, s, opt, b),
+        )
 
-        print(f"\n{opt}, median over the median of pytorch-eager\n")
-        print("| row | " + " | ".join(str(b) for b in batches) + " |")
-        print("|---|" + "---|" * len(batches))
-        for stack in STACKS:
-            print(f"| {stack} | " + " | ".join(ratio(cells, stack, opt, b) for b in batches) + " |")
+    reruns = [(k, runs) for k, runs in sorted(cells.items()) if len(runs) > 1]
+    if reruns:
+        print("\nrerun cells: median (min) ms of each run, the last one is shown above\n")
+        print("| cell | " + " | ".join(f"run {i + 1}" for i in range(max(len(r) for _, r in reruns))) + " |")
+        print("|---|" + "---|" * max(len(r) for _, r in reruns))
+        for (stack, opt, batch), runs in reruns:
+            runs_text = [f"{r['result']['median_ms']:.2f} ({r['result']['min_ms']:.2f})" for r in runs]
+            print(f"| {stack} {opt} {batch} | " + " | ".join(runs_text) + " |")
+
+    left = [
+        key
+        for key, runs in sorted(cells.items())
+        if len(runs) == 1 and key not in wrong and key[0] != "pytorch-oracle"
+        and runs[0]["result"]["median_ms"] > SPREAD * runs[0]["result"]["min_ms"]
+    ]
+    if left:
+        print("\nover the line and run once: " + ", ".join(f"{s} {o} {b}" for s, o, b in left))
 
     print()
-    for w in wrong:
-        print("WRONG:", w)
-    sys.exit(1 if wrong else 0)
+    for key, why in sorted(wrong.items()):
+        if key[0] != "pytorch-oracle":
+            print("WRONG:", *key, why)
+    sys.exit(1 if any(k[0] != "pytorch-oracle" for k in wrong) else 0)
 
 
-def ratio(cells, stack, opt, batch):
-    r = cells.get((stack, opt, batch))
-    base = cells.get(("pytorch-eager", opt, batch))
-    if r is None or base is None or "error" in r or "error" in base:
-        return "n/a"
-    return f"{r['median_ms'] / base['median_ms']:.2f}"
-
-
-def show(cells, stack, opt, batch, wrong):
-    r = cells.get((stack, opt, batch))
-    oracle = cells.get(("pytorch-oracle", opt, batch))
-    if r is None or "error" in r:
-        return "n/a"
-    if oracle is None or "error" in oracle:
-        return "no oracle"
-    worst = max(abs(a - b) / max(abs(b), 1e-12) for a, b in zip(r["losses"], oracle["losses"]))
-    if worst > TOLERANCE:
-        wrong.append(f"{stack} {opt} batch {batch}: loss differs by {worst:.2e}")
-        return "WRONG"
-    mark = "*" if r["median_ms"] > SPREAD * r["min_ms"] else ""
-    return f"{r['median_ms']:.2f}{mark}"
-
-
-main()
+if __name__ == "__main__":
+    main()

@@ -6,8 +6,9 @@
 #
 # Prints one JSON line like bench_train.agc. The whole step (loss, gradients, update) is one `jax.jit`.
 #
-# Pinned (venv of `run.sh setup`, installed with --only-binary :all:): Python 3.13, jax 0.12.0.1, jaxlib 0.12.0.1.
-# Threads: XLA's CPU pool follows the CPU affinity, which run.sh sets with taskset.
+# Pinned (venv of `run.sh setup`, installed with --only-binary :all:): Python 3.13.5, jax 0.12.0.1, jaxlib 0.12.0.1,
+# numpy 2.5.5, ml_dtypes 0.7.0, scipy 1.18.1, opt_einsum 3.4.0. Threads: XLA's own default for the CPU (all the cores);
+# its pool size is not checked here.
 import json
 import sys
 import time

@@ -1,94 +1,110 @@
 #!/bin/sh
 # Training benchmarks of benchmarks/training/README.md. Never in CI.
 #
-#   sh benchmarks/training/run.sh setup             the JAX venv (jax 0.12.0.1, --only-binary :all:)
-#   sh benchmarks/training/run.sh check             every row at batch 4 and 8, two steps: the rows run and agree
-#   sh benchmarks/training/run.sh run [OUT]         the full grid into OUT (results.jsonl), one JSON line per cell
-#   sh benchmarks/training/run.sh cell STACK OPT BATCH STEPS   one cell again: its line, to replace one of OUT
-#   python3 benchmarks/training/table.py OUT        the tables and the loss-curve verdict
+#   sh benchmarks/training/run.sh setup                  the PyTorch and JAX venvs, pinned, --only-binary :all:
+#   sh benchmarks/training/run.sh check                  every row at batch 4 and 8, two steps: the rows run and agree
+#   sh benchmarks/training/run.sh run [OUT]              the full grid into OUT (results.jsonl), one JSON line per cell
+#   sh benchmarks/training/run.sh cell STACK OPT BATCH STEPS RUN   one cell again: its line, to add to OUT (RUN 2)
+#   python3 -I benchmarks/training/table.py OUT          the tables and the loss-curve verdict
 #
-# Every row runs on the CPUs 0 to THREADS-1 (taskset: ggml and XLA size their pool from the affinity) with
-# OMP_NUM_THREADS=THREADS (libtorch and PyTorch). THREADS is 8, the threads of the machine. `run` refuses to start
-# when the load average is above 1.0. The venvs are `venv-torch` (torch 2.6.0+cpu) and `venv-jax`, in
-# ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}.
+# The threads are 8 everywhere, the threads of the machine: THREADS must be `nproc --all`. ggml takes every online CPU
+# (tensor/native/ggml.c, `sysconf(_SC_NPROCESSORS_ONLN)`), PyTorch and libtorch take OMP_NUM_THREADS, which run.sh
+# sets, and JAX's CPU pool is XLA's own default (all the cores; its size is not checked here). `run` refuses to start
+# when the load average is above 1.0, and every line records the load average at its start. The venvs are `venv-torch`
+# and `venv-jax`, in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 here=$root/benchmarks/training
 cache=${AGENTICA_ML_CACHE:-$HOME/.cache/agentica-ml}
 threads=${THREADS:-8}
-last=$((threads - 1))
+torch_venv=$cache/venv-torch
 jax_venv=$cache/venv-jax
-torch_py=$cache/venv-torch/bin/python
+torch_py=$torch_venv/bin/python
 jax_py=$jax_venv/bin/python
 
+[ "$threads" = "$(nproc --all)" ] || { echo "run.sh: THREADS is $threads, the machine has $(nproc --all) threads" >&2; exit 1; }
 export OMP_NUM_THREADS=$threads
-pin="taskset -c 0-$last"
 
 setup() {
-  python3 -m venv "$jax_venv"
+  [ -x "$torch_venv/bin/pip" ] || python3 -m venv "$torch_venv"
+  "$torch_venv/bin/pip" install --only-binary :all: --index-url https://download.pytorch.org/whl/cpu torch==2.6.0
+  "$torch_venv/bin/pip" freeze
+  [ -x "$jax_venv/bin/pip" ] || python3 -m venv "$jax_venv"
   "$jax_venv/bin/pip" install --only-binary :all: jax==0.12.0.1 jaxlib==0.12.0.1
   "$jax_venv/bin/pip" freeze
 }
 
-# agentica ROW BACKEND MODE OPT BATCH STEPS: the engines of the backend, then one run of bench_train.agc
+# agentica_row BACKEND MODE OPT BATCH STEPS: the engines of the backend, then one run of bench_train.agc
 agentica_row() {
-  case $2 in
+  case $1 in
     ggml-cpu) exports=$(sh "$root/train/tools/build-engine.sh") ;;
     ggml-vulkan) exports=$(sh "$root/train/tools/build-engine.sh" vulkan) ;;
     torch-cpu) exports=$(cd "$root/tensor" && sh tools/build-torch.sh) ;;
   esac
   (cd "$root/train" && eval "$(printf '%s\n' "$exports" | grep '^export ')" &&
-    $pin agentica --max-steps 100000000000 tools/bench_train.agc "$2" "$3" "$4" "$5" "$6" | tail -n 1)
+    agentica --max-steps 100000000000 tools/bench_train.agc "$1" "$2" "$3" "$4" "$5" | tail -n 1)
 }
 
-# cell STACK OPT BATCH STEPS: one line of OUT
+# cell STACK OPT BATCH STEPS RUN: one line of OUT
 cell() {
   stack=$1
   opt=$2
   batch=$3
   steps=$4
+  run=$5
+  load=$(cut -d' ' -f1 /proc/loadavg)
   case $stack in
-    ggml-cpu-fit) result=$(agentica_row "$stack" ggml-cpu fit "$opt" "$batch" "$steps") ;;
-    ggml-cpu-compiled) result=$(agentica_row "$stack" ggml-cpu compiled "$opt" "$batch" "$steps") ;;
-    ggml-vulkan-fit) result=$(agentica_row "$stack" ggml-vulkan fit "$opt" "$batch" "$steps") ;;
-    ggml-vulkan-compiled) result=$(agentica_row "$stack" ggml-vulkan compiled "$opt" "$batch" "$steps") ;;
-    torch-cpu-fit) result=$(agentica_row "$stack" torch-cpu fit "$opt" "$batch" "$steps") ;;
-    pytorch-eager) result=$($pin "$torch_py" "$here/bench_torch.py" eager "$opt" "$batch" "$steps") ;;
-    pytorch-compile) result=$($pin "$torch_py" "$here/bench_torch.py" compile "$opt" "$batch" "$steps") ;;
-    pytorch-oracle) result=$($pin "$torch_py" "$here/bench_torch.py" oracle "$opt" "$batch" 10) ;;
-    jax-jit) result=$($pin "$jax_py" "$here/bench_jax.py" "$opt" "$batch" "$steps") ;;
+    ggml-cpu-fit) result=$(agentica_row ggml-cpu fit "$opt" "$batch" "$steps") ;;
+    ggml-cpu-compiled) result=$(agentica_row ggml-cpu compiled "$opt" "$batch" "$steps") ;;
+    ggml-vulkan-fit) result=$(agentica_row ggml-vulkan fit "$opt" "$batch" "$steps") ;;
+    ggml-vulkan-compiled) result=$(agentica_row ggml-vulkan compiled "$opt" "$batch" "$steps") ;;
+    torch-cpu-fit) result=$(agentica_row torch-cpu fit "$opt" "$batch" "$steps") ;;
+    pytorch-eager) result=$("$torch_py" -I "$here/bench_torch.py" eager "$opt" "$batch" "$steps") ;;
+    pytorch-compile) result=$("$torch_py" -I "$here/bench_torch.py" compile "$opt" "$batch" "$steps") ;;
+    pytorch-oracle) result=$("$torch_py" -I "$here/bench_torch.py" oracle "$opt" "$batch" 10) ;;
+    jax-jit) result=$("$jax_py" -I "$here/bench_jax.py" "$opt" "$batch" "$steps") ;;
   esac || result=
   case $result in
     "{"*) ;;
     *) result='{"error": "the row failed"}' ;;
   esac
-  printf '{"stack": "%s", "optimizer": "%s", "batch": %s, "steps": %s, "result": %s}\n' \
-    "$stack" "$opt" "$batch" "$steps" "$result"
+  printf '{"stack": "%s", "optimizer": "%s", "batch": %s, "steps": %s, "run": %s, "loadavg": %s, "result": %s}\n' \
+    "$stack" "$opt" "$batch" "$steps" "$run" "$load" "$result"
 }
 
-grid() { # BATCHES STEPS OUT
-  : > "$3"
+grid() { # BATCHES STEPS OUT: the lines go to OUT.tmp, which becomes OUT at the end
+  : > "$3.tmp"
   for opt in sgd adam; do
     for batch in $1; do
       for stack in pytorch-oracle ggml-cpu-fit ggml-cpu-compiled ggml-vulkan-fit ggml-vulkan-compiled torch-cpu-fit \
         pytorch-eager pytorch-compile jax-jit; do
         steps=$2
         [ -n "$steps" ] || { [ "$batch" -ge 4096 ] && steps=15 || steps=30; }
-        cell "$stack" "$opt" "$batch" "$steps" | tee -a "$3"
+        cell "$stack" "$opt" "$batch" "$steps" 1 | tee -a "$3.tmp"
       done
     done
   done
+  mv "$3.tmp" "$3"
+}
+
+versions() {
+  echo "agentica $(agentica --version), $("$torch_py" -I -c 'import torch; print("torch", torch.__version__)'), $("$jax_py" -I -c 'import jax; print("jax", jax.__version__)')" >&2
 }
 
 case ${1:-} in
   setup) setup ;;
-  cell) cell "$2" "$3" "$4" "$5" ;;
-  check) grid "4 8" 2 "${TMPDIR:-/tmp}/training-check.jsonl" && python3 "$here/table.py" "${TMPDIR:-/tmp}/training-check.jsonl" ;;
+  check)
+    out=$(mktemp)
+    grid "4 8" 2 "$out" && python3 -I "$here/table.py" "$out" 6
+    rm -f "$out" "$out.tmp"
+    ;;
   run)
     load=$(cut -d' ' -f1 /proc/loadavg)
     awk -v l="$load" 'BEGIN { exit !(l > 1.0) }' && { echo "run.sh: the load average is $load, the machine is not quiet" >&2; exit 1; }
+    versions
     grid "64 256 1024 4096" "" "${2:-results.jsonl}"
     ;;
-  *) echo "usage: run.sh setup|check|run [OUT]|cell STACK OPT BATCH STEPS" >&2; exit 2 ;;
+  cell) cell "$2" "$3" "$4" "$5" "$6" ;;
+  *) echo "usage: run.sh setup|check|run [OUT]|cell STACK OPT BATCH STEPS RUN" >&2; exit 2 ;;
 esac
