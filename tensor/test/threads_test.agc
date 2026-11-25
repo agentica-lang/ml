@@ -25,7 +25,12 @@ end
 
 ## The threads a fresh process gets with `TENSOR_THREADS` set to `value`.
 def threads_with(value: String) -> Result[Int]
-  p = try Process.spawn_captured("agentica", ["test/threads_probe.agc"], Process.Options(env: {"TENSOR_THREADS": value}))
+  p = try Process.spawn_captured(
+    "agentica",
+    ["test/threads_probe.agc"],
+    Process.Options(env: {"TENSOR_THREADS": value}),
+  )
+
   out = try Process.output(p, 60000)
   code = try Process.wait(p, 60000)
   return error("the probe exited with #{code}: #{out.stdout} #{out.stderr}") if code != 0
