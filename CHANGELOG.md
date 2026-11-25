@@ -2,6 +2,10 @@
 
 All packages are released together at one version, each on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the first one and covers everything shipped so far (milestones 0.1.0 and 0.2.0).
 
+## [Unreleased]
+
+- The documentation site has a version selector: the pages of each release (`0.4.0`, `0.3.0`, `0.2.0`) and of `dev`.
+
 ## [0.4.0] - 2026-11-25
 
 - **Breaking:** ml needs Agentica 0.38.0.

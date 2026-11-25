@@ -144,8 +144,11 @@ this cannot be in the release PR): a small PR after the tags, with
   `ml-inference/SKILL.md` (and the `train` line of `ml-training/SKILL.md`)
   into an `agentica.toml`, run `agentica update` and `agentica install`, then
   `agentica check` on the first program of the skill.
-- The Pages run on `main` for the merge commit is green. If it did not run,
-  start it with `gh workflow run pages.yml --ref main -R agentica-lang/ml`.
+- The Pages run on `main` for the merge commit is green. It ran before the
+  tag, so start another one now:
+  `gh workflow run pages.yml --ref main -R agentica-lang/ml`. It builds the
+  site of every `tensor-X.Y.Z` tag, so the version selector of
+  https://www.agentica-lang.com/ml/ lists the release. Check that it does.
 - Each GitHub Release exists and is not a draft: `gh release view <tag>`.
 - Close the milestone once these pass: find its number in
   `gh api repos/agentica-lang/ml/milestones`, then
