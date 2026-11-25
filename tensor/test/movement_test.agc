@@ -31,12 +31,20 @@ def test_to_dtype_reads_bool_as_one_and_zero() -> Result[Void]
 end
 
 def test_to_dtype_range_checks_narrower_widths() -> Result[Void]
-  t = try Support.i64([127], [1])
-  _ = try Tensor.to_dtype(t, Tensor.Dtype.I8)
-  wide = try Support.i64([128], [1])
-  try Test.error?(Tensor.to_dtype(wide, Tensor.Dtype.I8))
-  neg = try Support.i64([-1], [1])
-  Test.error?(Tensor.to_dtype(neg, Tensor.Dtype.U8))
+  try keeps_only(Tensor.Dtype.I8, -128, 127)
+  try keeps_only(Tensor.Dtype.I16, -32768, 32767)
+  try keeps_only(Tensor.Dtype.I32, -2147483648, 2147483647)
+  keeps_only(Tensor.Dtype.U8, 0, 255)
+end
+
+## An I64 tensor of `low` or `high` converts to `dtype`; one value outside them does not.
+def keeps_only(dtype: Tensor.Dtype, low: Int, high: Int) -> Result[Void]
+  for v in [low, high]
+    _ = try Tensor.to_dtype(try Support.i64([v], [1]), dtype)
+  end
+
+  try Test.error?(Tensor.to_dtype(try Support.i64([low - 1], [1]), dtype))
+  Test.error?(Tensor.to_dtype(try Support.i64([high + 1], [1]), dtype))
 end
 
 def test_to_dtype_keeps_f16_and_f64_values() -> Result[Void]

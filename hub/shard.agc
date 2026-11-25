@@ -3,6 +3,7 @@
 ## then read by the backend from its byte range of the file (`Tensor.from_file`), so no value goes through an Agentica
 ## list; any other dtype is read here, from its offset (`File.seek`).
 
+import Binary from "std/binary"
 import Tensor from "pkg/tensor/tensor"
 
 CHUNK = 1048576
@@ -153,16 +154,18 @@ def held(name: String, backend: Tensor.Backend) -> Tensor.Dtype
   DTYPES[name]
 end
 
-## The values of the bytes `b` of one tensor, for the dtypes the backends do not read from the file.
+## The values of the bytes `b` of one tensor, for the dtypes the backends do not read from the file. The format's check
+## (`check_layout` of safetensors, `check_tensors` of GGUF) already put every tensor inside the buffer, so a read
+## cannot fail.
 def decode(b: Bytes, e: Entry) -> Result[List[Tensor.Values]]
   at = 0
   count = (e.stop - e.start) / WIDTHS[e.dtype]
   case e.dtype
-    "F64" -> ok((0...count).map { |i| Tensor.Values.Float(Float.from_bits(i64_at(b, at + 8 * i).wrap_uint64)) })
-    "I8" -> ok((0...count).map { |i| Tensor.Values.Int(signed(b[at + i], 8)) })
-    "I16" -> ok((0...count).map { |i| Tensor.Values.Int(signed(u16(b, at + 2 * i), 16)) })
-    "I32" -> ok((0...count).map { |i| Tensor.Values.Int(signed(u32(b, at + 4 * i), 32)) })
-    "I64" -> ok((0...count).map { |i| Tensor.Values.Int(i64_at(b, at + 8 * i)) })
+    "F64" -> ok((0...count).map { |i| Tensor.Values.Float(Binary.read_f64_le(b, at + 8 * i).unwrap!) })
+    "I8" -> ok((0...count).map { |i| Tensor.Values.Int(Binary.read_i8(b, at + i).unwrap!.to_i) })
+    "I16" -> ok((0...count).map { |i| Tensor.Values.Int(Binary.read_i16_le(b, at + 2 * i).unwrap!.to_i) })
+    "I32" -> ok((0...count).map { |i| Tensor.Values.Int(Binary.read_i32_le(b, at + 4 * i).unwrap!.to_i) })
+    "I64" -> ok((0...count).map { |i| Tensor.Values.Int(Binary.read_i64_le(b, at + 8 * i).unwrap!) })
     "U8" -> ok((0...count).map { |i| Tensor.Values.Int(b[at + i]) })
     "BOOL" -> bools(b, at, count)
     _ -> error("dtype #{e.dtype} has no tensor/ dtype")
@@ -177,19 +180,4 @@ def bools(b: Bytes, at: Int, count: Int) -> Result[List[Tensor.Values]]
   end
 
   ok(out)
-end
-
-# The readers below index without checks: the format's check (`check_layout` of
-# safetensors, `check_tensors` of GGUF) already put every tensor inside the
-# buffer, so `at` is in range.
-def u16(b: Bytes, at: Int) -> Int = b[at].bit_or(b[at + 1].shift_left(8))
-
-def u32(b: Bytes, at: Int) -> Int = u16(b, at).bit_or(u16(b, at + 2).shift_left(16))
-
-## All 64 bits: the top byte wraps into the sign, as `I64` wants.
-def i64_at(b: Bytes, at: Int) -> Int = u32(b, at).bit_or(u32(b, at + 4).shift_left(32))
-
-def signed(v: Int, bits: Int) -> Int
-  return v - 1.shift_left(bits) if v >= 1.shift_left(bits - 1)
-  v
 end

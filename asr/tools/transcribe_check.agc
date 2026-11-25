@@ -19,6 +19,7 @@
 ## runs only that case's index.
 
 import Asr from "../asr"
+import Binary from "std/binary"
 import Load from "pkg/hub/load"
 import Lower from "pkg/tensor/src/lower"
 import Tensor from "pkg/tensor/tensor"
@@ -201,16 +202,11 @@ end
 def pcm16(wav: Bytes) -> Result[List[Float]]
   at = 12
   while at + 8 <= wav.size
-    size = u16(wav, at + 4) + u16(wav, at + 6) * 65536
+    size = (try Binary.read_u32_le(wav, at + 4)).to_i
     if wav.slice(at, 4) == "data".bytes
       out: List[Float] = []
       for i in 0...(size / 2)
-        v = u16(wav, at + 8 + 2 * i)
-        if v >= 32768
-          v -= 65536
-        end
-
-        out = out.push(v.to_f / 32768.0)
+        out = out.push((try Binary.read_i16_le(wav, at + 8 + 2 * i)).to_f / 32768.0)
       end
 
       return ok(out)
@@ -221,5 +217,3 @@ def pcm16(wav: Bytes) -> Result[List[Float]]
 
   error("no data chunk")
 end
-
-def u16(b: Bytes, at: Int) -> Int = b[at] + b[at + 1] * 256
