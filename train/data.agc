@@ -1,4 +1,4 @@
-## Datasets and loaders (`train/DESIGN.md`, "Data"): `N` examples held as two
+## Datasets and loaders (`train/DESIGN.md`, "API"): `N` examples held as two
 ## tensors, `inputs` `[N, ...]` and `targets` `[N, ...]`, cut into batches of
 ## `batch_size` rows in a seeded order per epoch. A batch is one `gather` of
 ## each tensor, never a loop over examples, both run as one traced

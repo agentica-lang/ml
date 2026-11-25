@@ -6,8 +6,7 @@
 ## because a native handle is a resource, and a resource is nominal to the
 ## `extern module` block that declares it: `Tensor.handle` cannot name a
 ## handle declared elsewhere (`tensor/DESIGN.md` §2, §7). The module it drives
-## is `src/native.agc`; agentica-lang/agentica#1918 would make the handle
-## opaque and let this file move back out.
+## is `src/native.agc`.
 ##
 ## Rules this file keeps, inherited from the public wrappers and the repo's FFI
 ## rules:

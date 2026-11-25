@@ -7,7 +7,7 @@
 ## devices before a call here and answers `error` when the module is not
 ## loaded. It lives in `tensor/` for the reason the torch module does: the
 ## `Handle.Ggml` arm of `Tensor` has to name `TensorHandle`
-## (`tensor/DESIGN.md` §1, §7; agentica-lang/agentica#1918 is the way out).
+## (`tensor/DESIGN.md` §1, §7).
 ##
 ## The `.agc` is the one source of the signatures; after a change to the block,
 ## from the package folder:

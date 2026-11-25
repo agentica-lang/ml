@@ -94,10 +94,9 @@ Branch `release/<version>` off the merged `origin/main`. Change only:
    step 3 disagree. Also list `rg 'agentica = "' .agents/skills tools/skills`:
    those are the Agentica version, and change only when the packages move to a
    new Agentica. In `tools/skills/agentica.toml` the members are `path`
-   folders with `override = true` (a `path` is not the tag the members ask for),
-   and `whisper` is pinned by `ref`: when `whisper` is released, change that
-   line to its tag and run `agentica update` there. `make check-skills` must
-   pass.
+   folders with `override = true` (a `path` is not the tag the members ask for);
+   `whisper` is pinned by tag, moved after the tags (step 4). `make check-skills`
+   must pass.
 
 Title the PR `Release <version>`; the body lists each package and its tag.
 This PR changes manifests and locks, so CI runs, with the Pages check and the
@@ -124,6 +123,11 @@ gh release create tensor-0.1.0 -R agentica-lang/ml --verify-tag \
 ```
 
 The notes are never `Unreleased` or empty. Never create a release on a tag push.
+
+When `whisper` is tagged, its line in `tools/skills/agentica.toml` moves to
+`tag = "whisper-X.Y.Z"` (the tag does not exist before the tags are pushed, so
+this cannot be in the release PR): a small PR after the tags, with
+`agentica update` there and `make check-skills`.
 
 ## 5. Post-release checks
 

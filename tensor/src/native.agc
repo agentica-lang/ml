@@ -10,9 +10,7 @@
 ## The module lives in `tensor/` and not in a package of its own because a
 ## `resource` is nominal to the block that declares it: the `Handle.Native` arm
 ## of `Tensor` (`src/types.agc`) has to name `TensorHandle` here, and
-## `tensor.agc` has to dispatch to these calls (`tensor/DESIGN.md` §7).
-## agentica-lang/agentica#1918 is the change that would let the handle be
-## opaque and this module move out again.
+## `tensor.agc` has to dispatch to these calls (`tensor/DESIGN.md` §1, §7).
 ##
 ## The `.agc` is the one source of the signatures. native-gen comes from
 ## `agentica install` (see `../agentica.lock`); from the package folder, after a

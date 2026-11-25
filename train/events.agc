@@ -1,5 +1,5 @@
 ## TensorBoard event files: the TFRecord framing and the protobuf of an `Event` with a scalar `Summary`, written by hand
-## (`train/DESIGN.md`, "Metrics"). A file is the records of `file_version` and then of `scalar`, each framed by `record`.
+## (`train/DESIGN.md`, "Decisions", "Metrics live in `train/`"). A file is the records of `file_version` and then of `scalar`, each framed by `record`.
 ##
 ## ```text
 ## Event   { double wall_time = 1; int64 step = 2; string file_version = 3; Summary summary = 5 }

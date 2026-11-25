@@ -11,8 +11,8 @@ blank_line_after_end = true
 # name for each other (their tags), so each line is an `override`; the
 # post-release check of `ml-release` installs the skills' tags instead.
 # `whisper` is not a member and its engine is not built here: the examples
-# import its WAV reader only, from a commit of main. A release of whisper
-# moves this line to its tag.
+# import its WAV reader only, from its tag. A release of whisper moves this
+# line to the new tag, after the tags exist.
 [dependencies]
 tensor = { path = "../../tensor", override = true }
 nn = { path = "../../nn", override = true }
@@ -20,4 +20,4 @@ hub = { path = "../../hub", override = true }
 train = { path = "../../train", override = true }
 transformers = { path = "../../transformers", override = true }
 asr = { path = "../../asr", override = true }
-whisper = { git = "https://github.com/agentica-lang/ml", ref = "d05f8a8cccc6f24e55c4cb5f0dd70c417fab0be4", subdir = "whisper" }
+whisper = { git = "https://github.com/agentica-lang/ml", tag = "whisper-0.4.0", subdir = "whisper" }
