@@ -250,6 +250,55 @@ def stepped_and_first(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   ok(stepped + [a[2]])
 end
 
+## One compiled graph run twice, into two sets of tensors: the outputs are the new weight (a view of the copy the step
+## updates) and the moments, written where the caller holds them. Each set keeps its run, and the second run is the
+## fresh result.
+def test_a_graph_run_twice_into_two_targets_keeps_each_run() -> Result[Void]
+  for backend in try ggml_backends()
+    one = try tensors(backend, Tensor.Dtype.F32)
+    two = try with_grad(one, [0.3, 0.1, -0.2, 0.4, -0.05, 0.2], backend)
+    program = try Trace.compile(one.map { |t| Trace.spec_of(t) }) do |a| stepped_and_first(a) end
+    a_set = try targets(one, backend)
+    b_set = try targets(one, backend)
+    _ = try Trace.run(program, one, a_set.map { |t| some(t) })
+    _ = try Trace.run(program, two, b_set.map { |t| some(t) })
+    want_one = try Trace.eval_many(try on_reference(one)) do |a| stepped_and_first(a) end
+    want_two = try Trace.eval_many(try on_reference(two)) do |a| stepped_and_first(a) end
+    fresh = try Trace.run(program, two)
+    for i in 0...4
+      try close(try S.floats_of(a_set[i]), try S.floats_of(want_one[i]), 0.000001, "run 1, output #{i} on #{backend}")
+      try close(try S.floats_of(b_set[i]), try S.floats_of(want_two[i]), 0.000001, "run 2, output #{i} on #{backend}")
+      try close(try S.floats_of(fresh[i]), try S.floats_of(b_set[i]), 0.0, "a fresh run, output #{i} on #{backend}")
+    end
+
+    Trace.close(program)
+  end
+
+  ok()
+end
+
+## `args` with another gradient.
+def with_grad(args: List[Tensor.Tensor], grad: List[Float], backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  g = try Tensor.from_list(
+    grad.map { |x: Float| Tensor.Values.Float(x) },
+    Tensor.shape(args[1]),
+    Tensor.Dtype.F32,
+    backend,
+  )
+
+  ok([args[0], g, args[2], args[3], args[4]])
+end
+
+## Four zero tensors of the shape of the first four arguments.
+def targets(args: List[Tensor.Tensor], backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  out: List[Tensor.Tensor] = []
+  for i in 0...4
+    out = out.push(try Tensor.zeros(Tensor.shape(args[i]), Tensor.Dtype.F32, backend))
+  end
+
+  ok(out)
+end
+
 ## The gradient of a parameter the loss does not read is a fill of one value, a view at an offset of the fill store
 ## (a second fill goes first here): the kernel binds its gradient as a buffer, which Vulkan aborts on when it is not
 ## aligned, so the lowering copies it.

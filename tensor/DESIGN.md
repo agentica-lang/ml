@@ -391,7 +391,11 @@ end
   tensor alive. Only an `I32` leaf or output is copied, converted through a
   buffer of the graph's own when the run starts (`bind` touches no device); a
   small `I32` tensor made by `from_list` keeps its values on the host for that,
-  until a run writes it. A cached graph owns its fills and its finiteness
+  until a run writes it. An `F32` output that is a contiguous result of an op
+  is that op's own memory, bound to the caller's tensor, with no copy (an
+  `adam_step`'s weight and moments are views of the copy it updates, which is
+  bound); a leaf, a view at an offset or a reshaped view, a half and a node
+  returned twice are copied. A cached graph owns its fills and its finiteness
   checks; the intermediates live in one allocator per device that every graph
   shares, planned again only when another graph ran last: the graph that ran
   last keeps its allocation, and only the views of its leaves and outputs
@@ -538,7 +542,10 @@ end
   exact only when both branches are finite): enough for an MLP and softmax
   cross-entropy with their gradients, for a training step and its batch, and for
   Whisper's forward (`asr/`). An output that holds an infinity or a NaN is an
-  error. A graph has at most 512 outputs.
+  error, and so is a finite one whose sum overflows `F32` (the check is the
+  sum of its rows; the CPU adds in double and Vulkan in `F32`, so the edge
+  differs: `exp(80)` over 10 000 values fires on both). A graph has at most
+  512 outputs.
 - Vulkan computes `mul_mat` in fp16 by default (the owner's decision, ml#148):
   ggml reads `GGML_VK_DISABLE_F16` once per process, when it first enumerates
   its devices, and the C layer sets it (only when exact `F32` was asked for)

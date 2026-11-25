@@ -1434,18 +1434,19 @@ static bool in(const struct ggml_tensor *t, const struct ggml_tensor *store) {
    is a contiguous F32 result of an op, or what it is a whole view of (an `adam_step` result views its weight's copy).
    NULL when the value must be copied: a leaf, a view of something else, a half, a constant made on the way, or a
    tensor that is another output already. */
-static struct ggml_tensor *own_output(const struct gnode *n, const struct ggml_tensor *value) {
+static struct ggml_tensor *own_output(const struct entry *p, const struct gnode *n, const struct ggml_tensor *value) {
   struct ggml_tensor *root = n->t->view_src != NULL ? n->t->view_src : n->t;
 
   if (n->op == OP_LEAF || value != n->t || n->lazy || root->view_src != NULL || root->type != GGML_TYPE_F32) return NULL;
   if (root->flags & (GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT | GGML_TENSOR_FLAG_PARAM)) return NULL;
+  if (in(root, p->fill_store) || in(root, p->checks)) return NULL;
   if (!ggml_is_contiguous(root) || !same_ne(root, n->ne)) return NULL;
   if (n->t != root && (n->t->view_offs != 0 || !ggml_are_same_shape(n->t, root) || !ggml_are_same_stride(n->t, root))) return NULL;
   return root;
 }
 
 /* Non-finite values of `value` as the sum of its rows: an inf or a NaN stays one, so the run refuses it. A finite
-   output whose row sum overflows F32 is refused too. */
+   output whose sum overflows F32 is refused too (the CPU adds in double and Vulkan in F32, so the edge differs). */
 static struct ggml_tensor *finite_check(struct entry *p, struct ggml_tensor *value) {
   if (value->type != GGML_TYPE_F32) value = ggml_cast(p->ctx, value, GGML_TYPE_F32);
   return ggml_sum(p->ctx, ggml_sum_rows(p->ctx, value));
@@ -1480,7 +1481,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     struct ggml_tensor *check;
     struct ggml_tensor *own = NULL;
 
-    if (!n->in_place && !n->lazy) own = own_output(n, dense(p, n));
+    if (!n->in_place && !n->lazy) own = own_output(p, n, dense(p, n));
     p->outs[i].t = own != NULL ? own
                                : ggml_new_tensor_4d(p->port_ctx, n->t->type == GGML_TYPE_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32,
                                                     n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
@@ -1879,7 +1880,7 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   }
   for (i = 0; why == NULL && i < p->output_count; i++) {
     if (!isfinite(checks[i])) {
-      snprintf(text, sizeof text, "output %" PRId64 " of the graph holds a value that is not finite", i);
+      snprintf(text, sizeof text, "output %" PRId64 " of the graph holds a value that is not finite, or its sum overflows F32", i);
       why = text;
     } else if (p->outs[i].conv != NULL) {
       why = tg_copy(p->outs[i].t, p->outs[i].conv, NULL);

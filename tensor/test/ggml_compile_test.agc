@@ -540,7 +540,31 @@ def test_a_value_that_is_not_finite_is_refused_whether_it_is_copied_or_not() -> 
   try says(Trace.eval_many([x], &double_after_log), "output 0")
   big = try floats([1.0e30, 2.0e30, 3.0e30, 4.0e30], [2, 2], CPU)
   outs = try Trace.eval_many([big], &log_after_double)
-  Test.eq(outs.size, 2)
+  try Test.eq(outs.size, 2)
+  eighty = try floats((0...10000).map { |_| 80.0 }, [10000], CPU)
+  says(Trace.eval_many([eighty], ->(a: List[Tensor.Tensor]) { ok([try Tensor.exp(a[0])]) }), "its sum overflows F32")
+end
+
+## A node returned twice is copied for its second output, and both are checked.
+def test_a_node_returned_twice_gives_two_equal_outputs() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  x = try floats([1.0, 2.0, 3.0, 4.0], [2, 2], CPU)
+  outs = try Trace.eval_many([x], &twice)
+  try Test.eq(try Tensor.to_list(outs[0]), try Tensor.to_list(outs[1]))
+  try Test.eq(try Tensor.to_list(outs[1]), [2.0, 4.0, 6.0, 8.0].map { |v| Tensor.Values.Float(v) })
+  zero = try floats([1.0, 0.0, 2.0, 3.0], [2, 2], CPU)
+  says(Trace.eval_many([zero], &log_twice), "not finite")
+end
+
+def twice(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  y = try Tensor.add(a[0], a[0])
+  ok([y, y])
+end
+
+def log_twice(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  y = try Tensor.log(a[0])
+  ok([y, y])
 end
 
 def log_after_double(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
