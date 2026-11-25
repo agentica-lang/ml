@@ -203,6 +203,7 @@ def pcm16(wav: Bytes) -> Result[List[Float]]
   at = 12
   while at + 8 <= wav.size
     size = (try Binary.read_u32_le(wav, at + 4)).to_i
+    return error("the WAV chunk at byte #{at} runs past the file") if at + 8 + size > wav.size
     if wav.slice(at, 4) == "data".bytes
       out: List[Float] = []
       for i in 0...(size / 2)

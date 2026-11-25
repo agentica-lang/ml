@@ -1531,7 +1531,7 @@ end
 ## Element `i` of `b`, read as `format` says.
 def file_float(b: Bytes, i: Int, format: Types.FloatFormat) -> Float
   case format
-    Types.FloatFormat.F32 -> Binary.read_f32_le(b, 4 * i).unwrap!.to_f
+    Types.FloatFormat.F32 -> Float32.from_bits(u16(b, 4 * i).bit_or(u16(b, 4 * i + 2).shift_left(16)).to_uint32!).to_f
     Types.FloatFormat.F16 -> half(u16(b, 2 * i))
     Types.FloatFormat.BF16 -> Float32.from_bits(u16(b, 2 * i).shift_left(16).to_uint32!).to_f
     Types.FloatFormat.Q8_0 -> q8_0(b, i)
@@ -1542,7 +1542,7 @@ end
 ## Value `i` of Q8_0 blocks (34 bytes of 32 values: a binary16 scale, 32 signed bytes): the scale times the byte.
 def q8_0(b: Bytes, i: Int) -> Float
   at = (i / 32) * 34
-  half(u16(b, at)) * Binary.read_i8(b, at + 2 + i % 32).unwrap!.to_f
+  half(u16(b, at)) * b[at + 2 + i % 32].wrap_int8.to_f
 end
 
 def u16(b: Bytes, at: Int) -> Int = b[at].bit_or(b[at + 1].shift_left(8))

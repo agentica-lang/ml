@@ -162,7 +162,7 @@ def decode(b: Bytes, e: Entry) -> Result[List[Tensor.Values]]
   count = (e.stop - e.start) / WIDTHS[e.dtype]
   case e.dtype
     "F64" -> ok((0...count).map { |i| Tensor.Values.Float(Binary.read_f64_le(b, at + 8 * i).unwrap!) })
-    "I8" -> ok((0...count).map { |i| Tensor.Values.Int(Binary.read_i8(b, at + i).unwrap!.to_i) })
+    "I8" -> ok((0...count).map { |i| Tensor.Values.Int(b[at + i].wrap_int8.to_i) })
     "I16" -> ok((0...count).map { |i| Tensor.Values.Int(Binary.read_i16_le(b, at + 2 * i).unwrap!.to_i) })
     "I32" -> ok((0...count).map { |i| Tensor.Values.Int(Binary.read_i32_le(b, at + 4 * i).unwrap!.to_i) })
     "I64" -> ok((0...count).map { |i| Tensor.Values.Int(Binary.read_i64_le(b, at + 8 * i).unwrap!) })

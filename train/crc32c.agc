@@ -10,7 +10,7 @@ end
 
 ## The CRC-32C of `data`: `"123456789"` gives `0xE3069283`.
 def checksum(data: Bytes) -> UInt32
-  crc = 0xFFFFFFFF.to_uint32!
+  crc: UInt32 = 0xFFFFFFFF
   for b in data
     crc = TABLE[crc.bit_xor(b.to_uint32!).bit_and(255).to_i].bit_xor(crc.shift_right(8))
   end
