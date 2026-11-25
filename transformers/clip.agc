@@ -139,8 +139,8 @@ def image_embeds(m: Clip, images: Tensor.Tensor) -> Result[Tensor.Tensor]
 end
 
 ## The embeddings `[batch, projection_dim]` of `rows`, the ids of `Clip.encode` of each text (start token, tokens, end
-## token), not normalized (`get_text_features`). The rows are padded to the longest; the model is causal, so the padding
-## changes nothing, and the vector read is the one at each row's last id. No row may be empty or longer than
+## token), not normalized (`get_text_features`). The rows are padded to the longest; the model is causal, so the
+## padding changes nothing, and the vector read is the one at each row's last id. No row may be empty or longer than
 ## `max_position_embeddings`. The caller closes them (`close`).
 def text_embeds(m: Clip, rows: List[List[Int]]) -> Result[Tensor.Tensor]
   return error("text_embeds needs at least one row") if rows.empty?

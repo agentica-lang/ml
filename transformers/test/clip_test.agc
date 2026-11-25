@@ -1,6 +1,6 @@
-## A tiny random CLIP that the Python peer `clip_peer.py` writes with Hugging Face's names: the embeddings of two images
-## and of three rows of text ids, their scaled cosines and the probabilities of each text match the peer's forward in
-## doubles, on the reference and on ggml. Run from `transformers/`.
+## A tiny random CLIP that the Python peer `clip_peer.py` writes with Hugging Face's names: the embeddings of two
+## images and of three rows of text ids, their scaled cosines and the probabilities of each text match the peer's
+## forward in doubles, on the reference and on ggml. Run from `transformers/`.
 
 import Clip from "../clip"
 import S from "support"

@@ -73,9 +73,9 @@ end
 def step(i: Int) -> Int = (2 * i * (SIZE - 1) + GRID - 1) / (2 * (GRID - 1))
 
 ## The largest gap of the best 10 logits of each image from the golden; an error when a logit is past the tolerance or
-## the best 5 class ids `best` are not Hugging Face's, in the same order. Without `ordered` they may be reordered by the
-## near-ties of the logits: each of ours is in Hugging Face's best 10, and each class of Hugging Face's best 10 that is
-## more than `abs` above its sixth is in ours.
+## the best 5 class ids `best` are not Hugging Face's, in the same order. Without `ordered` they may be reordered by
+## the near-ties of the logits: each of ours is in Hugging Face's best 10, and each class of Hugging Face's best 10
+## that is more than `abs` above its sixth is in ours.
 def logit_gap(
   what: String,
   best: List[List[Int]],
@@ -125,6 +125,28 @@ def tied_top(what: String, image: Int, ours: List[Int], want: List[Entry], abs: 
   end
 
   ok()
+end
+
+## The largest gap of `t` (`[rows, columns]`) from `want`; an error when one is past the tolerance `abs` plus `rel` of
+## the value wanted.
+def matrix_gap(what: String, t: Tensor.Tensor, want: List[List[Float]], abs: Float, rel: Float) -> Result[Float]
+  values = try floats(t)
+  columns = Tensor.shape(t)[1]
+  return error("#{what}: #{Tensor.shape(t)} is not #{want.size} rows") if Tensor.shape(t)[0] != want.size
+  worst = 0.0
+  for r in 0...want.size
+    return error("#{what}: a row of #{want[r].size} values, not #{columns}") if want[r].size != columns
+    for c in 0...columns
+      gap = (values[r * columns + c] - want[r][c]).abs
+      if gap > abs + rel * want[r][c].abs
+        return error("#{what}, row #{r}, column #{c}: #{values[r * columns + c]}, expected #{want[r][c]}")
+      end
+
+      worst = [worst, gap].max.unwrap!
+    end
+  end
+
+  ok(worst)
 end
 
 def floats(t: Tensor.Tensor) -> Result[List[Float]]
