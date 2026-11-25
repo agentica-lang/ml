@@ -66,6 +66,25 @@ def test_every_format_reads_the_same_on_each_backend() -> Result[Void]
   end
 end
 
+## `Tensor.from_bytes` reads the bytes of a range as `from_file` does, on each backend, and a size that is not the
+## shape's is an `error`.
+def test_from_bytes_reads_what_from_file_reads() -> Result[Void]
+  all = BYTES
+  for b in backends()
+    f32 = try Tensor.from_bytes(try Bytes.from_list(all.drop(3).take(12)), [3, 1], Tensor.FloatFormat.F32, b)
+    try Test.eq(Tensor.dtype(f32), Tensor.Dtype.F32)
+    try Test.eq(try floats(f32), [1.5, -2.25, 0.0])
+    f16 = try Tensor.from_bytes(try Bytes.from_list(all.drop(15).take(10)), [5], Tensor.FloatFormat.F16, b)
+    try Test.eq(try floats(f16), [1.0, -2.0, 0.5, 1.0 / 16777216.0, 65504.0])
+    empty = try Tensor.from_bytes(try Bytes.from_list([]), [0, 4], Tensor.FloatFormat.F32, b)
+    try Test.eq(Tensor.shape(empty), [0, 4])
+    try Test.error?(Tensor.from_bytes(try Bytes.from_list(all.drop(3).take(11)), [3, 1], Tensor.FloatFormat.F32, b))
+    try Test.error?(Tensor.from_bytes(try Bytes.from_list(all.drop(3).take(12)), [2, 1], Tensor.FloatFormat.F32, b))
+  end
+
+  Test.error?(Tensor.from_bytes(try Bytes.from_list([0, 0, 0, 0]), [1], Tensor.FloatFormat.F32, Tensor.Backend.Trace))
+end
+
 ## `Tensor.append_file` writes what `from_file` read: after the bytes the file had, the same bytes as the range, on
 ## each backend, and only an `F32` tensor into a file that exists.
 def test_append_file_writes_back_the_bytes_of_a_range() -> Result[Void]

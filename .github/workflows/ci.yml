@@ -105,6 +105,11 @@ jobs:
           version: ${{ steps.pin.outputs.version }}
           sha256: ${{ steps.pin.outputs.sha256 }}
 
+      # vision/ links libvips: the image package builds its C module against it on the first use.
+      - name: Install libvips
+        if: matrix.package == 'vision'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev
+
       # tensor/tools/build-engine.sh keeps ggml outside the checkout, in
       # ~/.cache/agentica-ml, under a key of its own (commit, flags,
       # compiler). This step restores that folder, keyed by the ggml commit
@@ -192,11 +197,11 @@ jobs:
         # The 10x loosens the runaway guard for every member; that is fine
         # here, because the guard only catches an infinite loop, which still
         # ends, and the job has its own timeout-minutes.
-        # TENSOR_REQUIRE_GGML: tensor/, nn/, train/, asr/, transformers/ and hub/ build ggml in the
+        # TENSOR_REQUIRE_GGML: tensor/, nn/, train/, asr/, transformers/, hub/ and vision/ build ggml in the
         # engine step, so a ggml module that did not build fails their tests
         # instead of passing them through the absent path.
         env:
-          TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "nn", "train", "asr", "transformers", "hub"]'), matrix.package) && '1' || '' }}
+          TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "nn", "train", "asr", "transformers", "hub", "vision"]'), matrix.package) && '1' || '' }}
         run: agentica test --max-steps 10000000
 
       # A package with a long/ folder runs its long-input tests here, with a

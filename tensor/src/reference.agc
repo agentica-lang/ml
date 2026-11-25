@@ -283,7 +283,12 @@ end
 ## oracle and for small files.
 def from_file(path: String, offset: Int, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
   n = try Types.volume(shape)
-  bytes = try FileRange.read_range(path, offset, try Types.file_bytes(format, n))
+  from_bytes(try FileRange.read_range(path, offset, try Types.file_bytes(format, n)), shape, format)
+end
+
+## Creation: an `F32` tensor of `shape` from `bytes`, which hold exactly its values as `format` writes them.
+def from_bytes(bytes: Bytes, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
+  n = try Types.volume(shape)
   values: List[Float] = []
   for i in 0...n
     values = values.push(file_float(bytes, i, format))

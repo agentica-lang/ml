@@ -1,0 +1,84 @@
+---
+title: vision
+description: Load images with libvips, cut them with seeded transforms, and hand their pixels to a tensor as one buffer, with a folder-per-class dataset for the data loader.
+weight: 8
+---
+
+`vision` turns image files into tensors. [libvips](https://www.libvips.org/) (through the [image](https://www.agentica-lang.com/packages/image/) package) decodes and resizes them, and the pixels cross to the backend as one `Bytes` buffer, with no `List` of floats. The geometry runs in libvips. Scaling to `0..1`, the layout and `normalize` run as tensor ops on the backend.
+
+## Install
+
+`vision` needs `tensor`, the `image` package, and libvips with its development files (`libvips-dev` on Debian and Ubuntu, `brew install vips` on macOS). The `image` page has the details.
+
+```toml
+[dependencies]
+vision = { git = "https://github.com/agentica-lang/ml", tag = "vision-0.5.0", subdir = "vision" }
+image = { git = "https://github.com/agentica-lang/packages", tag = "image-0.1.0", subdir = "image" }
+```
+
+## Example
+
+Make an image of 3 by 2 pixels, cut one column off it, and read it as an `F32` tensor in `[channels, height, width]`:
+
+```agentica
+import Image from "pkg/image/image"
+import Tensor from "pkg/tensor/tensor"
+import Vision from "pkg/vision/vision"
+
+def main() -> Void
+  pixels = Bytes.from_list([0, 51, 102, 153, 204, 255]).unwrap!
+  image = Image.from_pixels(pixels, 3, 2, 1, Image.Format.U8).unwrap!
+  cut = Vision.apply(image, [Vision.Step.CenterCrop(2, 2)]).unwrap!
+  t = Vision.to_tensor(cut).unwrap!
+  puts(Tensor.shape(t))
+  puts(Tensor.to_list(t).unwrap!)
+end
+```
+
+```output
+[1, 2, 2]
+[Values.Float(0.0), Values.Float(0.2), Values.Float(0.6), Values.Float(0.8)]
+```
+
+## To a tensor
+
+- `to_tensor(image, backend, dtype, layout)` makes the tensor of one image. With `dtype: F32` (the default) the samples of a `U8` image are scaled to `0..1` (a `U16` one by 65535, an `F32` one is kept). With `dtype: U8` they are the samples as they are, which needs a `U8` image and a backend that converts to `U8` (not ggml). `layout` is `Chw` (`[channels, height, width]`, the default) or `Hwc` (`[height, width, channels]`). The image keeps all its bands, alpha included. A pixel format that is not `U8`, `U16` or `F32` is an `error`.
+- The pixels become a tensor with `Tensor.from_bytes`: the backend reads the interleaved `F32` samples itself. A `U8` image goes through `F32` on the way, which is exact.
+- `normalize(x, mean, std, layout)` gives `(x - mean) / std` for each channel. `x` is `F32` of rank 3 or more with the channels in the last three axes of `Chw` or the last axis of `Hwc`, so one call normalizes a whole batch. `mean` and `std` have one value for each channel, and a `std` of 0 is an `error`.
+
+## Transforms
+
+`apply(image, steps, seed)` runs a list of `Step` values in order and gives the new image:
+
+| Step | Does |
+|---|---|
+| `Resize(n)` | scales the shorter side to `n` and keeps the aspect ratio; the longer side is cut to a whole number, as torchvision does |
+| `CenterCrop(width, height)` | cuts the area at the center; when the gap is odd and falls between two pixels, the offset is the even one, as Python's `round` and torchvision do |
+| `RandomCrop(width, height)` | cuts the area at a random place |
+| `HorizontalFlip(p)` | mirrors the image with probability `p` |
+
+The random steps draw from `seed`, so one seed gives one result. A crop larger than the image, a `Resize` below 1 or a `p` outside `0.0..1.0` is an `error`. The images that `apply` makes along the way are closed when it returns, but the one it gives stays open (see [image](https://www.agentica-lang.com/packages/image/) for the lifetime of an image).
+
+## A folder per class
+
+`folder(root)` reads a folder per class, as ImageNet does (`root/cats/1.jpg`, `root/dogs/2.png`). The classes are the folder names in name order, and the images in each (`png`, `jpg`, `jpeg`, `webp`, `tif`, `tiff`, `bmp`, `gif`), in name order. A name that starts with `.` is skipped. It gives a `Folder` with `classes`, `paths` and `labels`.
+
+`samples(folder, rows, steps, seed, backend)` loads the images `rows` and gives a `Samples`: `inputs` is `[n, 3, height, width]` of `F32` in `0..1` and `targets` is `[n]` of `I32` class indexes. Each image is turned to sRGB (a grey one gets 3 bands), put through `steps`, and read as pixels; the batch is one tensor, made in one call. Every image must end with the same size, so end `steps` with a crop. An image with an alpha band, or one of another size, is an `error` that names its path. Image `i` draws its random steps from `seed` and `i`, so a new `seed` for each epoch gives new crops and flips.
+
+A dataset of the whole folder feeds the loader of `train`, as in [the data loader](../train/data.md):
+
+```agentica {mode="fragment"}
+folder = Vision.folder("photos").unwrap!
+steps = [Vision.Step.Resize(36), Vision.Step.CenterCrop(32, 32)]
+s = Vision.samples(folder, (0...folder.paths.size).to_a, steps, 0, backend).unwrap!
+dataset = Data.dataset(s.inputs, s.targets).unwrap!
+```
+
+`samples` of every row holds all the images as tensors, so it fits a dataset that fits in memory. For a larger one, or for new random crops each epoch, take `samples` of the rows of one batch inside a batch function of `Train.fit_batches`.
+
+## Limits
+
+- No convolution beyond `conv1d` exists in `nn` yet, so a model for images starts with a flatten (`reshape`) and a dense layer. The `[n, 3, height, width]` layout is the one a 2-D convolution will take.
+- `dtype: U8` is not for ggml, which cannot convert to `U8`.
+- The samples cross as little-endian `F32`, so a big-endian machine is not supported.
+- Decoding is not on the prefetch task of the loader: `samples` runs in the task that calls it.
