@@ -4,6 +4,10 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ## [Unreleased]
 
+### train
+
+- `Lora.save` and `Lora.open` keep an adapter in PEFT's files (`adapter_config.json`, `adapter_model.safetensors`): an adapter trained with PEFT runs here, and one trained here loads in PEFT.
+
 ## [0.3.0] - 2026-11-25
 
 ### tensor
