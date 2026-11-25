@@ -159,7 +159,7 @@ def encode(tok: ByteLevelBpe, text: String) -> Result[List[Int]]
         end
 
         for word in split(normal)
-          for symbol in merge(tok, byte_chars(word))
+          for symbol in merge(tok.ranks, byte_chars(word))
             case tok.vocab.get(symbol)
               some(id) -> out = out.push(id)
               none -> return error("the vocabulary has no #{symbol}")
@@ -213,6 +213,55 @@ def split(chars: List[Int]) -> List[List[Int]]
     size = piece_size(chars, at)
     out = out.push(Unicode.span(chars, at, at + size))
     at += size
+  end
+
+  out
+end
+
+## The symbols of one piece: its UTF-8 bytes, each as its character in the byte-level alphabet.
+def byte_chars(chars: List[Int]) -> List[String] = Unicode.text_of(chars).bytes.to_a.map { |b| CHAR_OF[b] }
+
+## `symbols` with adjacent pairs joined by `ranks` (the rank of a pair, keyed `left + " " + right`), lowest first
+## (leftmost first among equal ranks), until no pair is a merge: `tokenizers`' algorithm, a queue of candidate pairs
+## over a linked list of symbols, so a long piece costs O(n log n), not O(n^2).
+def merge(ranks: Map[String, Int], symbols: List[String]) -> List[String]
+  n = symbols.size
+  return symbols if n < 2
+  text = symbols
+  after = (0...n).to_a.map { |i| i + 1 }.set(n - 1, -1)
+  before = (0...n).to_a.map { |i| i - 1 }
+  alive = List.repeat(true, n)
+  queue = Heap.new do |a: Candidate, b: Candidate| a.rank < b.rank or (a.rank == b.rank and a.at < b.at) end
+  for i in 0...(n - 1)
+    queue = offer(ranks, queue, text[i], text[i + 1], i)
+  end
+
+  while not Heap.empty?(queue)
+    popped = Heap.pop(queue).unwrap!
+    queue = popped.remaining
+    at = popped.value.at
+    right = after[at]
+    if alive[at] and right >= 0 and rank_of(ranks, text[at], text[right]) == popped.value.rank
+      text = text.set(at, text[at] + text[right])
+      alive = alive.set(right, false)
+      next_at = after[right]
+      after = after.set(at, next_at)
+      if next_at >= 0
+        before = before.set(next_at, at)
+        queue = offer(ranks, queue, text[at], text[next_at], at)
+      end
+
+      if before[at] >= 0
+        queue = offer(ranks, queue, text[before[at]], text[at], before[at])
+      end
+    end
+  end
+
+  out: List[String] = []
+  at = 0
+  while at >= 0
+    out = out.push(text[at])
+    at = after[at]
   end
 
   out
@@ -368,61 +417,17 @@ def check_pre_tokenizer(p: PreJson) -> Result[Void]
   ok()
 end
 
-## The symbols of one piece: its UTF-8 bytes, each as its character.
-def byte_chars(chars: List[Int]) -> List[String] = Unicode.text_of(chars).bytes.to_a.map { |b| CHAR_OF[b] }
-
-## `symbols` with adjacent pairs joined by rank, lowest first (leftmost first
-## among equal ranks), until no pair is a merge: `tokenizers`' algorithm, a
-## queue of candidate pairs over a linked list of symbols, so a long piece costs
-## O(n log n), not O(n^2).
-def merge(tok: ByteLevelBpe, symbols: List[String]) -> List[String]
-  n = symbols.size
-  return symbols if n < 2
-  text = symbols
-  after = (0...n).to_a.map { |i| i + 1 }.set(n - 1, -1)
-  before = (0...n).to_a.map { |i| i - 1 }
-  alive = List.repeat(true, n)
-  queue = Heap.new do |a: Candidate, b: Candidate| a.rank < b.rank or (a.rank == b.rank and a.at < b.at) end
-  for i in 0...(n - 1)
-    queue = offer(tok, queue, text[i], text[i + 1], i)
-  end
-
-  while not Heap.empty?(queue)
-    popped = Heap.pop(queue).unwrap!
-    queue = popped.remaining
-    at = popped.value.at
-    right = after[at]
-    if alive[at] and right >= 0 and rank_of(tok, text[at], text[right]) == popped.value.rank
-      text = text.set(at, text[at] + text[right])
-      alive = alive.set(right, false)
-      next_at = after[right]
-      after = after.set(at, next_at)
-      if next_at >= 0
-        before = before.set(next_at, at)
-        queue = offer(tok, queue, text[at], text[next_at], at)
-      end
-
-      if before[at] >= 0
-        queue = offer(tok, queue, text[before[at]], text[at], before[at])
-      end
-    end
-  end
-
-  out: List[String] = []
-  at = 0
-  while at >= 0
-    out = out.push(text[at])
-    at = after[at]
-  end
-
-  out
-end
-
-def rank_of(tok: ByteLevelBpe, left: String, right: String) -> Int = tok.ranks.get(left + " " + right).unwrap_or(-1)
+def rank_of(ranks: Map[String, Int], left: String, right: String) -> Int = ranks.get(left + " " + right).unwrap_or(-1)
 
 ## `queue` with the pair `left right` at `at`, when it is a merge.
-def offer(tok: ByteLevelBpe, queue: Heap.Heap[Candidate], left: String, right: String, at: Int) -> Heap.Heap[Candidate]
-  rank = rank_of(tok, left, right)
+def offer(
+  ranks: Map[String, Int],
+  queue: Heap.Heap[Candidate],
+  left: String,
+  right: String,
+  at: Int,
+) -> Heap.Heap[Candidate]
+  rank = rank_of(ranks, left, right)
   return queue if rank < 0
   Heap.push(queue, Candidate(rank: rank, at: at))
 end

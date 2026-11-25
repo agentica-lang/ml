@@ -14,6 +14,7 @@ import Nn from "pkg/nn/nn"
 import Source from "tokenizer/source"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
+import Weights from "weights"
 
 ## The fields of `config.json` that the model reads.
 struct Config
@@ -40,12 +41,6 @@ struct ViT
   positions: Tensor.Tensor
   stack: Nn.EncoderStack
   classifier: Nn.Dense
-end
-
-## A tensor of the checkpoint and the shape that `config.json` gives it.
-struct Spec
-  name: String
-  shape: List[Int]
 end
 
 ## The model in `dir`, which holds `model.safetensors` and `config.json`.
@@ -76,24 +71,18 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[V
   end
 
   specs = specs_of(config, head[0])
-  try expect_specs(c, specs)
-  t = try tensors_of(c, specs, backend)
+  try Weights.check(c, specs)
+  t = try Weights.load(c, specs, backend)
   eps = config.layer_norm_eps
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
-    n = block_names("vit.encoder.layer.#{i}.")
     blocks = blocks.push(
-      Nn.EncoderBlock(
-        norm1: norm_of(t, n.norm1, eps),
-        attention: Nn.Attention(
-          query: dense_of(t, n.query),
-          key: dense_of(t, n.key),
-          value: dense_of(t, n.value),
-          output: dense_of(t, n.output),
-          heads: config.num_attention_heads,
-        ),
-        norm2: norm_of(t, n.norm2, eps),
-        mlp: Nn.Mlp(up: dense_of(t, n.up), down: dense_of(t, n.down), activation: Nn.Activation.GeluErf),
+      Weights.block_of(
+        t,
+        block_names("vit.encoder.layer.#{i}."),
+        config.num_attention_heads,
+        Nn.Activation.GeluErf,
+        eps,
       ),
     )
   end
@@ -103,14 +92,14 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[V
     ViT(
       config: config,
       patch: Nn.Conv2d(
-        weight: at(t, "#{patch}.weight"),
-        bias: some(at(t, "#{patch}.bias")),
+        weight: Weights.at(t, "#{patch}.weight"),
+        bias: some(Weights.at(t, "#{patch}.bias")),
         stride: config.patch_size,
       ),
-      cls: at(t, "vit.embeddings.cls_token"),
-      positions: at(t, "vit.embeddings.position_embeddings"),
-      stack: Nn.EncoderStack(blocks: blocks, final_norm: some(norm_of(t, "vit.layernorm", eps))),
-      classifier: dense_of(t, "classifier"),
+      cls: Weights.at(t, "vit.embeddings.cls_token"),
+      positions: Weights.at(t, "vit.embeddings.position_embeddings"),
+      stack: Nn.EncoderStack(blocks: blocks, final_norm: some(Weights.norm_of(t, "vit.layernorm", eps))),
+      classifier: Weights.dense_of(t, "classifier"),
     ),
   )
 end
@@ -190,10 +179,7 @@ def traced(m: ViT) -> ViT
     patch: Lift.conv2d(m.patch),
     cls: Trace.constant(m.cls),
     positions: Trace.constant(m.positions),
-    stack: Nn.EncoderStack(
-      blocks: m.stack.blocks.map { |b| Lift.block(b) },
-      final_norm: m.stack.final_norm.map { |n| Lift.norm(n) },
-    ),
+    stack: Lift.stack(m.stack),
     classifier: Lift.dense(m.classifier),
   )
 end
@@ -213,81 +199,27 @@ def block_names(p: String) -> Load.BlockNames
 end
 
 ## Every tensor that `load` reads, with its shape.
-def specs_of(config: Config, classes: Int) -> List[Spec]
+def specs_of(config: Config, classes: Int) -> List[Weights.Spec]
   width = config.hidden_size
   grid = config.image_size / config.patch_size
   patch = "vit.embeddings.patch_embeddings.projection"
   specs = [
-    Spec(name: "#{patch}.weight", shape: [width, config.num_channels, config.patch_size, config.patch_size]),
-    Spec(name: "#{patch}.bias", shape: [width]),
-    Spec(name: "vit.embeddings.cls_token", shape: [1, 1, width]),
-    Spec(name: "vit.embeddings.position_embeddings", shape: [1, grid * grid + 1, width]),
-    Spec(name: "vit.layernorm.weight", shape: [width]),
-    Spec(name: "vit.layernorm.bias", shape: [width]),
-    Spec(name: "classifier.weight", shape: [classes, width]),
-    Spec(name: "classifier.bias", shape: [classes]),
+    Weights.Spec(name: "#{patch}.weight", shape: [width, config.num_channels, config.patch_size, config.patch_size]),
+    Weights.Spec(name: "#{patch}.bias", shape: [width]),
+    Weights.Spec(name: "vit.embeddings.cls_token", shape: [1, 1, width]),
+    Weights.Spec(name: "vit.embeddings.position_embeddings", shape: [1, grid * grid + 1, width]),
+    Weights.Spec(name: "vit.layernorm.weight", shape: [width]),
+    Weights.Spec(name: "vit.layernorm.bias", shape: [width]),
+    Weights.Spec(name: "classifier.weight", shape: [classes, width]),
+    Weights.Spec(name: "classifier.bias", shape: [classes]),
   ]
 
   for i in 0...config.num_hidden_layers
-    n = block_names("vit.encoder.layer.#{i}.")
-    for norm in [n.norm1, n.norm2]
-      specs = specs + [Spec(name: "#{norm}.weight", shape: [width]), Spec(name: "#{norm}.bias", shape: [width])]
-    end
-
-    for p in [n.query, n.key, n.value, n.output]
-      specs = specs.push(Spec(name: "#{p}.weight", shape: [width, width]))
-      if config.qkv_bias or p == n.output
-        specs = specs.push(Spec(name: "#{p}.bias", shape: [width]))
-      end
-    end
-
     specs = (
       specs +
-      [
-        Spec(name: "#{n.up}.weight", shape: [config.intermediate_size, width]),
-        Spec(name: "#{n.up}.bias", shape: [config.intermediate_size]),
-        Spec(name: "#{n.down}.weight", shape: [width, config.intermediate_size]),
-        Spec(name: "#{n.down}.bias", shape: [width]),
-      ]
+      Weights.block_specs(block_names("vit.encoder.layer.#{i}."), width, config.intermediate_size, config.qkv_bias)
     )
   end
 
   specs
-end
-
-def expect_specs(c: Hub.Checkpoint, specs: List[Spec]) -> Result[Void]
-  for s in specs
-    return error("#{s.name}: the checkpoint has no such tensor") if !Hub.has?(c, s.name)
-    got = try Hub.shape(c, s.name)
-    return error("#{s.name}: needs #{s.shape}, got #{got}") if got != s.shape
-  end
-
-  ok()
-end
-
-## Every tensor of `specs` from the checkpoint, by name. When one fails to load, the ones before it are closed.
-def tensors_of(c: Hub.Checkpoint, specs: List[Spec], backend: Tensor.Backend) -> Result[Map[String, Tensor.Tensor]]
-  out: Map[String, Tensor.Tensor] = {}
-  for s in specs
-    case Load.weight(c, s.name, s.shape.size, backend)
-      ok(t) -> out = out.put(s.name, t)
-      error(e) ->
-        Lift.close(out.values)
-        return error(e)
-    end
-  end
-
-  ok(out)
-end
-
-## The tensor `name`, which `expect_specs` has checked and `tensors_of` has loaded.
-def at(t: Map[String, Tensor.Tensor], name: String) -> Tensor.Tensor = t.get(name).unwrap!
-
-## A dense layer as the checkpoint stores it (`[out, in]`), with a bias when the checkpoint has one.
-def dense_of(t: Map[String, Tensor.Tensor], prefix: String) -> Nn.Dense
-  Nn.Dense(w: at(t, "#{prefix}.weight"), b: t.get("#{prefix}.bias"), out_in: true)
-end
-
-def norm_of(t: Map[String, Tensor.Tensor], prefix: String, eps: Float) -> Nn.LayerNorm
-  Nn.LayerNorm(gamma: at(t, "#{prefix}.weight"), beta: at(t, "#{prefix}.bias"), eps: eps)
 end

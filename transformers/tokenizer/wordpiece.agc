@@ -213,6 +213,37 @@ def decode(tok: WordPiece, ids: List[Int], skip_special: Bool = true) -> Result[
   ok(parts.join(""))
 end
 
+## `chars` with the control characters (but tab and new lines) dropped and each white space made a space, as the
+## BERT normalizer and Hugging Face's `BasicTokenizer` do.
+def cleaned_chars(chars: List[Int]) -> List[Int]
+  out: List[Int] = []
+  for c in chars
+    next if c == 0 or c == 0xFFFD or (Unicode.other?(c) and c != 9 and c != 10 and c != 13)
+
+    if Unicode.space?(c)
+      out = out.push(32)
+    else
+      out = out.push(c)
+    end
+  end
+
+  out
+end
+
+## `chars` with a space on each side of every CJK ideograph.
+def spaced_chinese(chars: List[Int]) -> List[Int]
+  out: List[Int] = []
+  for c in chars
+    if chinese?(c)
+      out = out.push(32).push(c).push(32)
+    else
+      out = out.push(c)
+    end
+  end
+
+  out
+end
+
 private
 
 struct Json
@@ -328,47 +359,6 @@ def normalize(tok: WordPiece, chars: List[Int]) -> List[Int]
   out
 end
 
-def cleaned_chars(chars: List[Int]) -> List[Int]
-  out: List[Int] = []
-  for c in chars
-    next if c == 0 or c == 0xFFFD or (Unicode.other?(c) and c != 9 and c != 10 and c != 13)
-
-    if Unicode.space?(c)
-      out = out.push(32)
-    else
-      out = out.push(c)
-    end
-  end
-
-  out
-end
-
-def spaced_chinese(chars: List[Int]) -> List[Int]
-  out: List[Int] = []
-  for c in chars
-    if chinese?(c)
-      out = out.push(32).push(c).push(32)
-    else
-      out = out.push(c)
-    end
-  end
-
-  out
-end
-
-def chinese?(c: Int) -> Bool
-  (
-    (c >= 0x4E00 and c <= 0x9FFF) or
-    (c >= 0x3400 and c <= 0x4DBF) or
-    (c >= 0x20000 and c <= 0x2A6DF) or
-    (c >= 0x2A700 and c <= 0x2B73F) or
-    (c >= 0x2B740 and c <= 0x2B81F) or
-    (c >= 0x2B820 and c <= 0x2CEAF) or
-    (c >= 0xF900 and c <= 0xFAFF) or
-    (c >= 0x2F800 and c <= 0x2FA1F)
-  )
-end
-
 ## ASCII punctuation (the symbols too) and the Unicode P categories.
 def punctuation?(c: Int) -> Bool
   (
@@ -450,5 +440,18 @@ def cleaned(text: String) -> String
       .replace(" 's", "'s")
       .replace(" 've", "'ve")
       .replace(" 're", "'re")
+  )
+end
+
+def chinese?(c: Int) -> Bool
+  (
+    (c >= 0x4E00 and c <= 0x9FFF) or
+    (c >= 0x3400 and c <= 0x4DBF) or
+    (c >= 0x20000 and c <= 0x2A6DF) or
+    (c >= 0x2A700 and c <= 0x2B73F) or
+    (c >= 0x2B740 and c <= 0x2B81F) or
+    (c >= 0x2B820 and c <= 0x2CEAF) or
+    (c >= 0xF900 and c <= 0xFAFF) or
+    (c >= 0x2F800 and c <= 0x2FA1F)
   )
 end

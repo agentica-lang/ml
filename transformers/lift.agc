@@ -36,6 +36,10 @@ def close(ts: List[Tensor.Tensor]) -> Void
   end
 end
 
+def stack(s: Nn.EncoderStack) -> Nn.EncoderStack
+  s.with(blocks: s.blocks.map { |b| block(b) }, final_norm: s.final_norm.map { |n| norm(n) })
+end
+
 def embedding(p: Nn.Embedding) -> Nn.Embedding = Nn.Embedding(table: Trace.constant(p.table))
 
 def dense(p: Nn.Dense) -> Nn.Dense = p.with(w: Trace.constant(p.w), b: p.b.map { |b| Trace.constant(b) })
