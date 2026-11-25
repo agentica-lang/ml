@@ -4,6 +4,7 @@
 #   sh benchmarks/training/run.sh setup             the JAX venv (jax 0.12.0.1, --only-binary :all:)
 #   sh benchmarks/training/run.sh check             every row at batch 4 and 8, two steps: the rows run and agree
 #   sh benchmarks/training/run.sh run [OUT]         the full grid into OUT (results.jsonl), one JSON line per cell
+#   sh benchmarks/training/run.sh cell STACK OPT BATCH STEPS   one cell again: its line, to replace one of OUT
 #   python3 benchmarks/training/table.py OUT        the tables and the loss-curve verdict
 #
 # Every row runs on the CPUs 0 to THREADS-1 (taskset: ggml and XLA size their pool from the affinity) with
@@ -82,11 +83,12 @@ grid() { # BATCHES STEPS OUT
 
 case ${1:-} in
   setup) setup ;;
+  cell) cell "$2" "$3" "$4" "$5" ;;
   check) grid "4 8" 2 "${TMPDIR:-/tmp}/training-check.jsonl" && python3 "$here/table.py" "${TMPDIR:-/tmp}/training-check.jsonl" ;;
   run)
     load=$(cut -d' ' -f1 /proc/loadavg)
     awk -v l="$load" 'BEGIN { exit !(l > 1.0) }' && { echo "run.sh: the load average is $load, the machine is not quiet" >&2; exit 1; }
     grid "64 256 1024 4096" "" "${2:-results.jsonl}"
     ;;
-  *) echo "usage: run.sh setup|check|run [OUT]" >&2; exit 2 ;;
+  *) echo "usage: run.sh setup|check|run [OUT]|cell STACK OPT BATCH STEPS" >&2; exit 2 ;;
 esac

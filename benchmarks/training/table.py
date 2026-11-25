@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # The tables of benchmarks/training/README.md from the results.jsonl of run.sh, and the loss-curve verdict: a row whose
 # first ten losses differ from the float64 PyTorch oracle by more than TOLERANCE (relative) is WRONG, and its time is
-# not shown. A cell whose max time is over SPREAD times its min is marked `*`: rerun it.
+# not shown. A cell whose median is over SPREAD times its min is marked `*`: rerun it. The second table of each
+# optimizer is the median over the median of pytorch-eager.
 #
 #   python3 table.py results.jsonl
 import json
 import sys
 
 TOLERANCE = 1e-3
-SPREAD = 1.3
+SPREAD = 1.15
 STACKS = [
     "ggml-cpu-fit",
     "ggml-cpu-compiled",
@@ -39,10 +40,24 @@ def main():
                 shown.append(show(cells, stack, opt, b, wrong))
             print(f"| {stack} | " + " | ".join(shown) + " |")
 
+        print(f"\n{opt}, median over the median of pytorch-eager\n")
+        print("| row | " + " | ".join(str(b) for b in batches) + " |")
+        print("|---|" + "---|" * len(batches))
+        for stack in STACKS:
+            print(f"| {stack} | " + " | ".join(ratio(cells, stack, opt, b) for b in batches) + " |")
+
     print()
     for w in wrong:
         print("WRONG:", w)
     sys.exit(1 if wrong else 0)
+
+
+def ratio(cells, stack, opt, batch):
+    r = cells.get((stack, opt, batch))
+    base = cells.get(("pytorch-eager", opt, batch))
+    if r is None or base is None or "error" in r or "error" in base:
+        return "n/a"
+    return f"{r['median_ms'] / base['median_ms']:.2f}"
 
 
 def show(cells, stack, opt, batch, wrong):
@@ -56,7 +71,7 @@ def show(cells, stack, opt, batch, wrong):
     if worst > TOLERANCE:
         wrong.append(f"{stack} {opt} batch {batch}: loss differs by {worst:.2e}")
         return "WRONG"
-    mark = "*" if r["max_ms"] > SPREAD * r["min_ms"] else ""
+    mark = "*" if r["median_ms"] > SPREAD * r["min_ms"] else ""
     return f"{r['median_ms']:.2f}{mark}"
 
 
