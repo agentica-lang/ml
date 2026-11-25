@@ -1455,6 +1455,8 @@ static struct ggml_tensor *finite_check(struct entry *p, struct ggml_tensor *val
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
   struct entry *p = lease->e;
   int64_t outs[MAX_OUTPUTS];
+  struct ggml_tensor **inner, **views;
+  size_t slots;
   int nouts, r, i, j;
   char text[256];
 
@@ -1522,9 +1524,16 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
 
   /* Every node and source that is neither a port nor in the fill buffer: a view of a port follows its port, which
      every run binds (`views`); the rest is what the shared allocator places (`inner`). */
-  p->inner = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * (GGML_MAX_SRC + 1), sizeof(struct ggml_tensor *));
-  p->views = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * (GGML_MAX_SRC + 1), sizeof(struct ggml_tensor *));
-  if (p->inner == NULL || p->views == NULL) return tg_error(env, "out of memory");
+  slots = (size_t)ggml_graph_n_nodes(p->graph) * (GGML_MAX_SRC + 1);
+  inner = (struct ggml_tensor **)calloc(slots, sizeof(struct ggml_tensor *));
+  views = (struct ggml_tensor **)calloc(slots, sizeof(struct ggml_tensor *));
+  if (inner == NULL || views == NULL) {
+    free(inner);
+    free(views);
+    return tg_error(env, "out of memory");
+  }
+  p->inner = inner;
+  p->views = views;
   for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
     struct ggml_tensor *node = ggml_graph_node(p->graph, i);
 
