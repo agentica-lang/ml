@@ -128,7 +128,7 @@ A layer norm is named by its model: `LayerNorm` in BERT, and `embeddings.LayerNo
 
 ## Limits
 
-- The loss is traced once for each batch shape, not on every step. On the reference backend, which evaluates the traced graph node by node on every run, one epoch of the 2-8-1 MLP of the XOR test, with four rows, costs about 75 000 VM steps.
+- The loss is traced once for each batch shape, not on every step. A backend that does not compile (the reference, libtorch) still evaluates the traced graph node by node on every step.
 - The loss must return a float scalar. An op with no backward rule, listed on the [tensor page](../tensor/_index.md), makes `fit` fail.
 - On `Ggml`, the step is one compiled graph with at most 512 outputs: the loss, the new parameters and the optimizer's moments. That allows 170 parameters with Adam or AdamW, 255 with momentum SGD and 511 with plain SGD.
 - The losses and the optimizers use only ops that ggml supports, so a batch and its step run on `Ggml` when the dataset is on `Ggml`.
