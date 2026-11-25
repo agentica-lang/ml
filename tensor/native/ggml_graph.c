@@ -343,9 +343,10 @@ static struct ggml_context *new_context(size_t bytes) {
 }
 
 /* Room for the graph: a traced node lowers to a handful of ggml tensors at
-   most (a matmul's transpose and cont, a reduction's reshapes; a `gather` or
-   `scatter_add` is the largest, about 14 with its index guard); `node` and
-   `compile` check the room is there. */
+   most (a matmul's transpose and cont, a reduction's reshapes; a `gather` is
+   the largest, about 14 with its index guard); `node` and `compile` check the
+   room is there. A masked `scatter_add` is more (about 12 for each of its
+   chunks) and checks the room for them itself. */
 static size_t graph_size(int64_t capacity) { return (size_t)(capacity * 16 + 8 * MAX_OUTPUTS + 64); }
 
 /* True when the graph's context has room for `tensors` more tensor headers
@@ -684,9 +685,12 @@ static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, i
 
 static bool on_vulkan(const struct entry *p);
 
-/* The most floats of one chunk of the mask `scatter_add_masked` makes (64 MB), and the most chunks it makes. */
+/* The most floats of one chunk of the mask `scatter_add_masked` makes (64 MB), the most chunks it makes (so k is at
+   most 32768), and the ggml tensors it makes for each chunk and besides them. */
 #define MASK_CELLS (1 << 24)
 #define MASK_CHUNKS 64
+#define MASK_TENSORS_PER_CHUNK 12
+#define MASK_TENSORS_BESIDES 8
 
 /* `scatter_add` on Vulkan: its `get_rows_back` kernel has a thread for each cell of the answer, each one reading all
    k indices, so it costs rows * k * width. Here every row of `updates` is first given the sum of the rows that name
@@ -719,21 +723,23 @@ static struct ggml_tensor *scatter_add_masked(struct entry *p, struct ggml_tenso
 /* The inverse of `gather`: the rows of `updates` ([width, k] once flat)
    added into `rows` zero rows, at the row each of the k indices names, as
    ggml_get_rows_back. The reference tensor only gives the answer its shape;
-   it is not part of the graph. On Vulkan, when k is below the rows, the masked
-   sums of `scatter_add_masked` do it with less work. */
+   it is not part of the graph. On Vulkan in F32 mode (the fp16 mode would round
+   the updates in the matmul), when k is below the rows and the graph has room for
+   the chunks, the masked sums of `scatter_add_masked` do it with less work. */
 static struct ggml_tensor *scatter_add(struct entry *p, const struct gnode *indices, const struct gnode *updates,
                                        int64_t rows, struct ggml_tensor **guard) {
   int64_t k = volume(indices->ne);
   struct ggml_tensor *flat = ggml_reshape_2d(p->ctx, dense(p, updates), volume(updates->ne) / k, k);
   struct ggml_tensor *ids = row_ids(p, indices, rows, OP_SCATTER_ADD, guard);
   int64_t kc = MASK_CELLS / k > 0 ? MASK_CELLS / k : 1;
-  const char *force = getenv("TENSOR_SCATTER_ADD");
+  int64_t chunks;
+  bool masked;
 
   if (kc > k) kc = k;
-  if (force != NULL && strcmp(force, "get_rows_back") == 0) k = rows; /* the old kernel, for the benchmarks */
-  if (on_vulkan(p) && k < rows && (k + kc - 1) / kc <= MASK_CHUNKS) {
-    return scatter_add_masked(p, flat, ids, rows, kc);
-  }
+  chunks = (k + kc - 1) / kc;
+  masked = on_vulkan(p) && !tg_fp16() && tg_masked_scatter() && k < rows && chunks <= MASK_CHUNKS &&
+           room(p, (size_t)(MASK_TENSORS_PER_CHUNK * chunks + MASK_TENSORS_BESIDES));
+  if (masked) return scatter_add_masked(p, flat, ids, rows, kc);
   return ggml_get_rows_back(p->ctx, flat, ids, ggml_new_tensor_2d(p->ctx, GGML_TYPE_F32, flat->ne[0], rows));
 }
 

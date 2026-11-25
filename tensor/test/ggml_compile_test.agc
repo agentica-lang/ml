@@ -437,11 +437,18 @@ end
 
 ## On Vulkan the lowering adds the rows of an index with a matmul by a mask of equal indices, a chunk of its columns at
 ## a time, instead of ggml's `get_rows_back`: one index, heavy repeats, k below and above the rows, and k above the
-## 2^24 cells of a chunk (5000 indices) must all give the reference's sums.
+## 2^24 cells of a chunk (5000 indices, with 4999 or 50 distinct) must all give the reference's sums.
 def test_scatter_add_on_vulkan_sums_the_rows_of_an_index_like_the_reference() -> Result[Void]
   return ok() if !try present(VULKAN)
 
-  for shape in [[1, 16, 3, 1], [5, 16, 3, 3], [256, 1000, 8, 7], [300, 200, 4, 150], [5000, 6000, 4, 4999]]
+  for shape in [
+    [1, 16, 3, 1],
+    [5, 16, 3, 3],
+    [256, 1000, 8, 7],
+    [300, 200, 4, 150],
+    [5000, 6000, 4, 4999],
+    [5000, 6000, 4, 50],
+  ]
     worst = try scatter_gap(VULKAN, shape[0], shape[1], shape[2], shape[3])
     try Test.assert(worst < TOL * 10.0, "k #{shape[0]} into #{shape[1]} rows differs by #{worst}")
   end

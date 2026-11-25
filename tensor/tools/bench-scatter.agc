@@ -10,17 +10,19 @@
 ## agentica tools/bench-scatter.agc cpu
 ## ```
 ##
+## Vulkan runs in F32 (`vulkan_fp16(false)`, as training does), the only mode the masked matmul is used in.
 ## `TENSOR_SCATTER_ADD=get_rows_back` makes the Vulkan lowering keep ggml's
 ## kernel (one process, one choice). Times are wall clock, the median of the
 ## runs after two warm ones, with the first (which compiles the graph) apart.
+## Every index appears twice or more, and the gradient column includes tracing the loss.
 
 import Lower from "../src/lower"
 import Types from "../src/types"
 import Tensor from "../tensor"
 import Trace from "../trace"
 
-## The rows of the table, the indices and the width of a row: the three cases of ml#102.
-CASES: List[List[Int]] = [[1000, 256, 64], [10000, 1024, 64], [50000, 4096, 64]]
+## The rows of the table, the indices and the width of a row: the three cases of ml#102, and one with k near the rows.
+CASES: List[List[Int]] = [[1000, 256, 64], [10000, 1024, 64], [50000, 4096, 64], [10000, 8192, 64]]
 ## Runs timed; the median drops the first two, so it is of 18.
 RUNS = 20
 
@@ -42,7 +44,9 @@ def run(args: List[String]) -> Result[Void]
     _ -> return error("the device is cpu or vulkan, got #{args[0]}")
   end
 
+  try Tensor.vulkan_fp16(false)
   return error("ggml #{args[0]} is not available") if !Tensor.available(Tensor.Backend.Ggml(device))
+  puts("Vulkan precision: F32")
   for c in CASES
     try bench(device, c[0], c[1], c[2])
   end
@@ -52,7 +56,7 @@ end
 
 def bench(device: Tensor.Device, rows: Int, k: Int, width: Int) -> Result[Void]
   cpu = Tensor.Device.Cpu
-  ids = try labels((0...k).to_a.map { |i| (i * 7919) % rows }, device)
+  ids = try labels((0...k).to_a.map { |i| (i * 7919) % [rows, k / 2].min.unwrap! }, device)
   updates = try floats(values(k * width, 3), [k, width], device)
   table = try floats(values(rows * width, 5), [rows, width], device)
   scatter = try timed(-> { Trace.eval([ids, updates]) do |a| Tensor.scatter_add(a[0], a[1], rows) end })
@@ -76,8 +80,8 @@ def lookup_gradient(table: Tensor.Tensor, ids: Tensor.Tensor) -> Result[Tensor.T
   ok(both.grads[0])
 end
 
-## The updates down to the CPU, the scatter there and the answer back up: a bound, since a lowering that did it
-## would also have to copy the indices.
+## The updates and the indices down to the CPU, the scatter there and the answer back up: what a lowering that
+## placed the op on the CPU would pay, as a bound (the answer's copy to the device is part of it).
 def round_trip(device: Tensor.Device, ids: Tensor.Tensor, updates: Tensor.Tensor, rows: Int) -> Result[String]
   cpu = Tensor.Device.Cpu
   timed(
