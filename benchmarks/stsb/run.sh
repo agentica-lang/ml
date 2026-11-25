@@ -10,9 +10,9 @@
 #   sh benchmarks/stsb/run.sh peer [OUT]         the run in PyTorch, its lines into OUT (peer.jsonl)
 #   python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl
 #
-# PAIRS (1000), BATCH (16) and PAD_TO (1) set the run on both sides. The threads are the online CPUs on both sides: ggml
-# takes every online CPU (`sysconf(_SC_NPROCESSORS_ONLN)` in tensor/native/ggml.c) and reports no count, so this script
-# writes the `threads` line of our side: that count by construction, not a measurement; the peer sets
+# PAIRS (1000), BATCH (16) and PAD_TO (1) set the run on both sides. The threads are the online CPUs on both sides: this
+# script sets `TENSOR_THREADS` to them for ggml (its default is the physical cores, tensor/native/ggml.c) and ggml
+# reports no count to the run, so it writes the `threads` line of our side: that count by construction, not a measurement; the peer sets
 # `torch.set_num_threads` to the CPUs of its process and prints what PyTorch then runs with. A process kept to fewer
 # CPUs than are online is refused. Everything lives in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}:
 # the venv `venv-torch` (shared with benchmarks/training, so a setup of either changes it for both),
@@ -35,7 +35,7 @@ allowed=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
 [ "$allowed" = "$online" ] ||
   { echo "run.sh: the process may use $allowed CPUs, the machine has $online online" >&2; exit 1; }
 unset OMP_THREAD_LIMIT
-export OMP_NUM_THREADS=$online
+export OMP_NUM_THREADS=$online TENSOR_THREADS=$online
 
 model_repo=sentence-transformers/msmarco-distilbert-cos-v5
 model_rev=c598d92e340e735b82e5b73d7db135209b57b4b0
