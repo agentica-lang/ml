@@ -99,8 +99,8 @@ shape/dtype, plus its error paths.
 | Convolution/pooling (2) | `conv1d` (`stride`, `padding`), `avg_pool1d` (`kernel`, `stride`, `padding`) | — |
 | Movement (4) | `to_dtype`, `copy`, `contiguous` | `to_device` |
 
-Plus the host-crossing functions §4 names, `from_list`, `from_file` and
-`to_list` (readback), which are not primitives, `append_file`, which appends
+Plus the host-crossing functions §4 names, `from_list`, `from_file`,
+`from_bytes` and `to_list` (readback), which are not primitives, `append_file`, which appends
 the values of an `F32` tensor to a file, and `convert_file`, which
 writes a range of floats of one file into another as another float format.
 `gelu_erf`, the exact GELU, is outside §3.1: it runs on every backend for

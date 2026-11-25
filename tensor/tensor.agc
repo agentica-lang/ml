@@ -323,6 +323,28 @@ def from_file(
   end
 end
 
+## Creation: an `F32` tensor of `shape` from `data`, which holds exactly its values as `format` writes them (little
+## endian, `F32` by default): what `from_file` makes of a range, for bytes that are in memory already, such as the
+## pixels of an image. The backend widens the bytes itself, so no value becomes a list. A `data` of another size is an
+## `error`.
+def from_bytes(
+  data: Bytes,
+  shape: List[Int],
+  format: Types.FloatFormat = Types.FloatFormat.F32,
+  backend: Types.Backend = Types.Backend.Reference,
+) -> Result[Types.Tensor]
+  n = try Types.volume(shape)
+  size = try Types.file_bytes(format, n)
+  return error("from_bytes needs #{size} bytes for #{shape}, got #{data.size}") if data.size != size
+  case backend
+    Types.Backend.Reference -> Reference.from_bytes(data, shape, format)
+    Types.Backend.Torch(device) -> Torch.from_bytes(device, data, shape, format)
+    Types.Backend.Trace -> error("from_bytes makes no traced tensor: lift one with Trace.constant")
+    Types.Backend.Ggml(device) -> Ggml.from_bytes(device, data, shape, format)
+    Types.Backend.Xla(device) -> Xla.from_bytes(device, data, shape, format)
+  end
+end
+
 ## Converting a range of one file into another, for writing a checkpoint: the `count` floats of `src_format` that
 ## start at byte `src_offset` of the file `src` are written as `dst_format` at byte `dst_offset` of `dst`, which must
 ## exist (a file that grows to the end of the range). C does it in chunks on several threads, so no tensor and no

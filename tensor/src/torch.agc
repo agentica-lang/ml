@@ -159,11 +159,17 @@ def from_file(
   _ = try ready(device, "from_file")
   if FileRange.agentica_read?()
     n = try Types.volume(shape)
-    bytes = try FileRange.read_range(path, offset, try Types.file_bytes(format, n))
-    return one(device, Types.Dtype.F32, shape) do Raw.from_bytes(bytes, shape, Types.file_code(format)) end
+    return from_bytes(device, try FileRange.read_range(path, offset, try Types.file_bytes(format, n)), shape, format)
   end
 
   one(device, Types.Dtype.F32, shape) do Raw.load(path, offset, shape, Types.file_code(format)) end
+end
+
+## Creation: an `F32` tensor of `shape` from `bytes`, which hold exactly its values as `format` writes them; C widens
+## them into the tensor's own memory.
+def from_bytes(device: Types.Device, bytes: Bytes, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
+  _ = try ready(device, "from_bytes")
+  one(device, Types.Dtype.F32, shape) do Raw.from_bytes(bytes, shape, Types.file_code(format)) end
 end
 
 ## Appends the `F32` values of `t` to the file `path`, written by C.

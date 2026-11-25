@@ -162,6 +162,13 @@ def from_file(
   uploaded(device, try Reference.from_file(path, offset, shape, format))
 end
 
+## Creation: an `F32` tensor of `shape` from `bytes`, which hold exactly its values as `format` writes them, decoded by
+## the reference and uploaded.
+def from_bytes(device: Types.Device, bytes: Bytes, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
+  _ = try ready(device, Types.Dtype.F32, "from_bytes")
+  uploaded(device, try Reference.from_bytes(bytes, shape, format))
+end
+
 ## Host readback: the row-major values tagged with `t`'s dtype.
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   read = XlaRaw.readback(try handle_of(t))

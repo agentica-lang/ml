@@ -1,0 +1,12 @@
+name = "vision"
+agentica = "0.38.0"
+
+# Every bare `end` is followed by an empty line (AGENTS.md).
+[style]
+blank_line_after_end = true
+
+[dependencies]
+tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.4.0", subdir = "tensor" }
+image = { git = "https://github.com/agentica-lang/packages", tag = "image-0.1.0", subdir = "image" }
+train = { git = "https://github.com/agentica-lang/ml", tag = "train-0.4.0", subdir = "train", group = "test" }
+nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.4.0", subdir = "nn", group = "test" }

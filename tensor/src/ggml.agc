@@ -117,6 +117,16 @@ def from_file(
   made("from_file", device, shape, dtype) do GgmlRaw.load(code, path, offset, shape, Types.file_code(format), held) end
 end
 
+## Creation: an `F32` tensor of `shape` from `bytes`, which hold exactly its values as `format` writes them; C widens
+## them into the buffer.
+def from_bytes(device: Types.Device, bytes: Bytes, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
+  code = try ready(device, shape, Types.Dtype.F32, "from_bytes")
+  held = Types.held_code(Types.Dtype.F32)
+  made("from_bytes", device, shape, Types.Dtype.F32) do
+    GgmlRaw.from_bytes(code, bytes, shape, Types.file_code(format), held)
+  end
+end
+
 ## Host readback: the row-major values tagged with `t`'s dtype.
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   _ = try usable("to_list")

@@ -35,7 +35,7 @@ Stop and report if one fails:
 - CI is green on `main`:
   `gh run list -R agentica-lang/ml --workflow ci.yml --branch main -L 1`.
 - The packages that ask for each other release together, at one version:
-  every member (`tensor`, `nn`, `hub`, `train`, `transformers`, `asr`) is
+  every member (`tensor`, `nn`, `hub`, `train`, `transformers`, `asr`, `vision`) is
   tagged `<pkg>-X.Y.Z` on the same merge commit, because the members ask for
   each other by that tag (step 3, first bullet), not by commit. A package left
   out leaves the tags of the others asking for a tag that does not exist, so a

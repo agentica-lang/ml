@@ -6,6 +6,18 @@ All packages are released together at one version, each on its own tag, `<packag
 
 - The documentation site has a version selector: the pages of each release (`0.4.0`, `0.3.0`, `0.2.0`) and of `dev`.
 
+### tensor
+
+- `Tensor.from_bytes(data, shape, format, backend)`: an `F32` tensor from bytes that are in memory, as `from_file` makes one from a range of a file. libtorch and ggml read the bytes in C, so no value becomes a list.
+
+### vision
+
+- New package `vision` (ml#82): images for tensors, on the `image` package (libvips). It needs libvips.
+- `Vision.to_tensor`: the pixels of an image go straight into a tensor, as `F32` in `0..1` or as `U8`, in `Chw` or `Hwc`.
+- `Vision.apply`: `Resize` (shorter side), `CenterCrop`, `RandomCrop` and `HorizontalFlip`, with a seed.
+- `Vision.normalize`: mean and std per channel, as tensor ops.
+- `Vision.folder` and `Vision.samples`: a folder per class becomes batches for the loader of `train`.
+
 ## [0.4.0] - 2026-11-25
 
 - **Breaking:** ml needs Agentica 0.38.0.
