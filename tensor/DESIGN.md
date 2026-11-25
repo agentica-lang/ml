@@ -147,8 +147,10 @@ are not slices of one), except in a function compiled by `Trace.compile` when
 both are inputs that no other node reads, not outputs, and the two parts for
 them are outputs (`adam_donors`): then they are updated where they lie, and
 their results are the input tensors (`Trace.donated`), consumed like the cache
-of a `set_rows`, and not checked for finite values: a non-finite moment reaches
-the new weight through the update, which is checked. `Trace.eval` and
+of a `set_rows`, even by a run that fails. The first moment is not checked for
+finite values (a non-finite one reaches the new weight through the update,
+which is checked); the second is, since an infinite one leaves the weight finite
+and frozen. `Trace.eval` and
 `eval_many` never donate. It has no gradient (a gradient through the Adam
 update of `Optim.step` is an error). A StableHLO module does not take it
 (`Train.stablehlo` passes rank-0 scalars, which keep the older composition).

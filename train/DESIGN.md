@@ -137,8 +137,10 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   (`Trace.donated`), and `run` does not free the old moment that is the new one
   (`Stepped.kept`). The parameters are never written (the loss reads them), so
   the caller's weights need no copy on the first step; the moments are the
-  run's own zeros. A non-finite moment is not checked where it is written: it
-  reaches the new parameter through the update, which is checked.
+  run's own zeros. The first moment is not checked for finite values where it is
+  written (a non-finite one reaches the new parameter through the update, which
+  is checked); the second is, since an infinite one leaves the parameter finite
+  and frozen.
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on
   libtorch and only the new state, parameters and loss leave it

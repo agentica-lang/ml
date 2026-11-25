@@ -529,52 +529,48 @@ def adam_input(o: Types.Tensor, positions: Map[Ref, Int], donors: List[Ref]) -> 
   end
 end
 
-## The `adam_step` nodes that update their moments in place: the first and second moment are inputs (not constants,
-## two different ones) that no node but the step reads and that are not outputs, and the step's two parts for them are
-## outputs, one node each. A step that fails any of that works on copies, which is what any other caller gets.
+## The `adam_step` nodes that update their moments in place: the first and second moment are inputs (not constants) that
+## the step alone reads, once each, and that are not outputs, and the step's two parts for them are outputs, one node
+## each, listed once. A step that fails any of that works on copies, which is what any other caller gets. One walk counts
+## the readers and the parts.
 def adam_donors(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[Types.Tensor]) -> Result[List[Ref]]
-  output_ids = outs.map { |o| Graph.id_of(o) }
+  listed: Map[Ref, Int] = {}
+  for o in outs
+    id = Graph.id_of(o)
+    listed = listed.put(id, listed.get(id, 0) + 1)
+  end
+
+  reads: Map[Ref, Int] = {}
+  parts: Map[Ref, List[Int]] = {}
+  for t in walked
+    n = try Graph.node_of(t)
+    for a in n.args
+      id = Graph.id_of(a)
+      reads = reads.put(id, reads.get(id, 0) + 1)
+    end
+
+    case n.op
+      Types.Op.AdamPart(i) ->
+        step = Graph.id_of(n.args[0])
+        if i > 0 and listed.get(n.id, 0) == 1
+          parts = parts.put(step, parts.get(step, []).push(i))
+        end
+
+      _ -> nil
+    end
+  end
+
   found: List[Ref] = []
   for t in walked
     n = try Graph.node_of(t)
     case n.op
       Types.Op.AdamStep ->
-        m = try Graph.node_of(n.args[2])
-        v = try Graph.node_of(n.args[3])
-        sound = m.id != v.id and try an_input(n.args[2]) and try an_input(n.args[3])
-        sound = sound and !output_ids.include?(m.id) and !output_ids.include?(v.id)
-        for u in walked
-          r = try Graph.node_of(u)
-          for a in r.args
-            if (Graph.id_of(a) == m.id or Graph.id_of(a) == v.id) and r.id != n.id
-              sound = false
-            end
-          end
-        end
-
-        firsts = 0
-        seconds = 0
-        for u in walked
-          r = try Graph.node_of(u)
-          case r.op
-            Types.Op.AdamPart(i) ->
-              if Graph.id_of(r.args[0]) == n.id and i > 0
-                if (!output_ids.include?(r.id) or output_ids.select { |id| id == r.id }.size != 1)
-                  sound = false
-                end
-
-                if i == 1
-                  firsts = firsts + 1
-                else
-                  seconds = seconds + 1
-                end
-              end
-
-            _ -> nil
-          end
-        end
-
-        if sound and firsts == 1 and seconds == 1
+        m = Graph.id_of(n.args[2])
+        v = Graph.id_of(n.args[3])
+        sound = m != v and try an_input(n.args[2]) and try an_input(n.args[3])
+        sound = sound and reads.get(m, 0) == 1 and reads.get(v, 0) == 1
+        sound = sound and listed.get(m, 0) == 0 and listed.get(v, 0) == 0
+        if sound and parts.get(n.id, []).sort == [1, 2]
           found = found.push(n.id)
         end
 

@@ -86,7 +86,7 @@ enum {
   OP_SET_ROWS,    /* args: a cache leaf, the rows, their positions; written in place, its result is an output that is the leaf */
   OP_TOP_K,       /* the indices of the k largest of a vector, as F32; ints: k */
   OP_CAST,        /* ints: 1 for F16, 0 for F32; a node that already has the type is passed through */
-  OP_ADAM_STEP,   /* args: p, grad, m, v, the 7 numbers of ggml's AdamW; the result stacks the new p, m and v */
+  OP_ADAM_STEP,   /* args: p, grad, m, v, the 7 numbers of ggml's AdamW; ints: 1 to update m and v in place; the node is its new p */
   OP_ADAM_PART,   /* args: an adam_step; ints: 0, 1 or 2, the new p, m or v of it */
   OP_COUNT
 };
@@ -152,6 +152,7 @@ struct gnode {
   struct ggml_tensor *window; /* a slice from the first element as the view it is: what flash attention reads */
   struct ggml_tensor *adam[3]; /* an adam_step: its new weight, first and second moment, each a tensor of its own */
   int adam_donates;            /* an adam_step that updates its moments, two input leaves, in place */
+  int part;                    /* an adam_part: 0 the new weight, 1 the first moment, 2 the second */
 };
 
 #define MAX_OUTPUTS 512
@@ -492,6 +493,12 @@ static struct ggml_tensor *full_of(struct entry *p, const struct gnode *n) {
 
 static struct ggml_tensor *contiguous(struct entry *p, struct ggml_tensor *t) {
   return ggml_is_contiguous(t) ? t : ggml_cont(p->ctx, t);
+}
+
+/* `t` as a tensor that starts at the beginning of its buffer: a view at an offset (a value of the fill store, a slice) is
+   copied. */
+static struct ggml_tensor *aligned(struct entry *p, struct ggml_tensor *t) {
+  return t->view_src != NULL && t->view_offs != 0 ? ggml_cont(p->ctx, t) : t;
 }
 
 static struct ggml_tensor *dense(struct entry *p, const struct gnode *n) {
@@ -1310,7 +1317,9 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
           moments[k] = moment->t;
         }
       }
-      step = ggml_opt_step_adamw(p->ctx, weight, dense(p, g), moments[0], moments[1], dense(p, hyper));
+      /* the kernel binds its gradient and its numbers as buffers: a view at an offset (one value of the fill store,
+         a slice) is not aligned for every backend, so such a tensor is copied first */
+      step = ggml_opt_step_adamw(p->ctx, weight, aligned(p, dense(p, g)), moments[0], moments[1], aligned(p, dense(p, hyper)));
       /* The three results, each a view that depends on the step, so that whoever reads one runs after it. */
       n->adam[0] = step;
       for (k = 0; k < 2; k++) {
@@ -1331,8 +1340,10 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         return tg_error(env, "adam_part takes 0, 1 or 2 of an adam_step");
       }
       t = a->adam[ints[0]];
-      /* the moments of a step that updates them in place: the output is the input itself, nothing to copy or check
-         (a non-finite moment reaches the weight, which is checked) */
+      /* the moments of a step that updates them in place: the output is the input itself, nothing to copy. The first
+         moment is not checked (a non-finite one reaches the weight, which is); the second is, since an infinite one
+         leaves the weight finite and frozen. */
+      n->part = (int)ints[0];
       if (a->adam_donates && ints[0] > 0) n->in_place = 1;
       break;
     case OP_CONCAT:
@@ -1450,9 +1461,13 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     p->outs[i].t = ggml_new_tensor_4d(p->port_ctx, n->t->type == GGML_TYPE_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32,
                                       n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
     if (n->in_place) {
-      /* the output is the leaf itself: nothing to copy or to check, the node only has to run */
+      /* the output is the leaf itself: nothing to copy, the node only has to run */
       p->outs[i].donated = true;
       ggml_build_forward_expand(p->graph, n->t);
+      if (n->op == OP_ADAM_PART && n->part == 2) {
+        check = ggml_sum(p->ctx, ggml_sum_rows(p->ctx, ggml_scale(p->ctx, n->t, 0.0f)));
+        ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
+      }
       continue;
     }
     value = dense(p, n);

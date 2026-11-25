@@ -24,10 +24,13 @@ WANT_V = [0.001009, 0.002038, 0.003087, 0.0, 0.0039985, 0.005155]
 
 private
 
-## The ggml backends of this machine: none without the module, the CPU one, and Vulkan when a device is there.
+## The ggml backends of this machine: none without the module, the CPU one, and Vulkan when a device is there (without
+## one the Vulkan cases below do not run and pass; with `TENSOR_REQUIRE_VULKAN` set a missing device is an error).
 def ggml_backends() -> Result[List[Tensor.Backend]]
   return ok([]) if !try S.ggml_present()
   return ok([CPU, VULKAN]) if Tensor.available(VULKAN)
+  flag = System.env("TENSOR_REQUIRE_VULKAN")
+  return error("a Vulkan device is required (TENSOR_REQUIRE_VULKAN is set)") if flag.ok? and try flag != ""
   ok([CPU])
 end
 
@@ -245,4 +248,82 @@ end
 def stepped_and_first(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   stepped = try Tensor.adam_step(a[0], a[1], a[2], a[3], a[4])
   ok(stepped + [a[2]])
+end
+
+## The gradient of a parameter the loss does not read is a fill of one value, a view at an offset of the fill store
+## (a second fill goes first here): the kernel binds its gradient as a buffer, which Vulkan aborts on when it is not
+## aligned, so the lowering copies it.
+def test_a_constant_gradient_of_one_value_runs_on_every_backend() -> Result[Void]
+  for backend in try ggml_backends()
+    args: List[Tensor.Tensor] = []
+    for x in [0.5, 0.0, 0.0]
+      args = args.push(try Tensor.from_list([Tensor.Values.Float(x)], [1], Tensor.Dtype.F32, backend))
+    end
+
+    hyper = try Tensor.from_list(HYPER.map { |x: Float| Tensor.Values.Float(x) }, [7], Tensor.Dtype.F32, backend)
+    got = try Trace.eval_many(args + [hyper]) do |a| after_a_fill(a) end
+    want = try Trace.eval_many(try on_reference(args + [hyper])) do |a| after_a_fill(a) end
+    for i in 0...4
+      try close(try S.floats_of(got[i]), try S.floats_of(want[i]), 0.000001, "output #{i} on #{backend}")
+    end
+  end
+
+  ok()
+end
+
+## A fill of 3, then the step with a gradient that is a fill of 0.25.
+def after_a_fill(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  three = try Tensor.full([1], Tensor.Values.Float(3.0), Tensor.Dtype.F32, Tensor.backend(a[0]))
+  grad = try Tensor.full([1], Tensor.Values.Float(0.25), Tensor.Dtype.F32, Tensor.backend(a[0]))
+  stepped = try Tensor.adam_step(a[0], grad, a[1], a[2], a[3])
+  ok([three] + stepped)
+end
+
+## A gradient of 1e20 squares past `F32`: the second moment is infinite and the weight stays finite (its step is 0). The
+## second moment is checked where it is written in place, so the run is an error and the weight does not freeze unseen.
+def test_an_infinite_second_moment_is_an_error() -> Result[Void]
+  for backend in try ggml_backends()
+    args = try tensors(backend, Tensor.Dtype.F32)
+    big = try Tensor.from_list(
+      [
+        Tensor.Values.Float(1e20),
+        Tensor.Values.Float(1e20),
+        Tensor.Values.Float(1e20),
+        Tensor.Values.Float(1e20),
+        Tensor.Values.Float(1e20),
+        Tensor.Values.Float(1e20),
+      ],
+      [2, 3],
+      Tensor.Dtype.F32,
+      backend,
+    )
+
+    args = [args[0], big, args[2], args[3], args[4]]
+    program = try Trace.compile(args.map { |t| Trace.spec_of(t) }) do |a|
+      Tensor.adam_step(a[0], a[1], a[2], a[3], a[4])
+    end
+
+    try Test.eq(Trace.donated(program), [false, true, true])
+    try Test.assert(!Trace.run(program, args).ok?, "an infinite second moment must fail on #{backend}")
+    Trace.close(program)
+  end
+
+  ok()
+end
+
+## A moment that is also the gradient is read twice, so the step copies it.
+def test_a_moment_read_twice_is_copied() -> Result[Void]
+  for backend in try ggml_backends()
+    args = try tensors(backend, Tensor.Dtype.F32)
+    program = try Trace.compile(args.map { |t| Trace.spec_of(t) }) do |a|
+      Tensor.adam_step(a[0], a[2], a[2], a[3], a[4])
+    end
+
+    try Test.eq(Trace.donated(program), [false, false, false])
+    _ = try Trace.run(program, args)
+    try close(try S.floats_of(args[2]), FIRST, 0.0000001, "the moment on #{backend}")
+    Trace.close(program)
+  end
+
+  ok()
 end
