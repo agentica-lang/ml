@@ -4,18 +4,20 @@
 ##
 ## ```sh
 ## agentica --max-steps 1000000000000 tools/distilbert_stsb.agc \
-##   MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO]]]
+##   MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY]]]]
 ## ```
 ##
 ## The rules, the same on both sides: the first PAIRS pairs of TRAIN_JSONL (1000) in order, BATCH pairs a step (16),
 ## one epoch; the checkpoint's WordPiece with a limit of 128 tokens; both sentences of a batch go through the model as
 ## one batch of `2 BATCH` rows, padded to the longest of them rounded up to a multiple of PAD_TO (1: the longest);
 ## mean pooling, and the cosine loss of the pair against its score; AdamW (lr 2e-5, betas 0.9 and 0.999, eps 1e-8,
-## weight decay 0.01, none on a bias or a layer-norm weight), no warmup, no clipping, no dropout; `F32`.
+## weight decay WEIGHT_DECAY (0.01), none on a bias or a layer-norm weight), no warmup, no clipping, no dropout; `F32`.
 ##
-## It prints JSON lines: `spearman` (of the cosine of the normalized embeddings against the scores of
-## VALIDATION_JSONL, before and after the training), and one `step` per step with its loss, its wall time in ms, the
-## padded length and `new_shape`, true for a step that compiled the graph of its shape, which a median leaves out.
+## It prints JSON lines: `checks` (how many weights decay, a SHA-256 of their names and one of every token id, which
+## `summary.py` compares with the peer's), `spearman` (of the cosine of the normalized embeddings against the scores
+## of VALIDATION_JSONL, before and after the training), and one `step` per step with its loss, its wall time in ms
+## (`batch_ms` of it is building the batch), the padded length and `new_shape`, true for a step that compiled the
+## graph of its shape, which a median leaves out.
 
 import Data from "pkg/train/data"
 import DistilBert from "../distilbert"
@@ -29,7 +31,6 @@ import WordPiece from "../tokenizer/wordpiece"
 
 MAX_LENGTH = 128
 LR = 0.00002
-WEIGHT_DECAY = 0.01
 
 ## How many sentences an inference batch of the validation has.
 EMBED_BATCH = 32
@@ -48,6 +49,13 @@ struct Pair
 end
 
 ## The lines of the output.
+struct Checks
+  kind: String
+  decayed: Int
+  decayed_names: String
+  token_ids: String
+end
+
 struct Correlation
   kind: String
   when: String
@@ -59,6 +67,7 @@ struct Step
   step: Int
   loss: Float
   ms: Float
+  batch_ms: Float
   length: Int
   new_shape: Bool
 end
@@ -69,6 +78,7 @@ struct Setup
   validation: List[Pair]
   batch: Int
   pad_to: Int
+  weight_decay: Float
 end
 
 def main() -> Void
@@ -83,11 +93,18 @@ end
 private
 
 def run(args: List[String]) -> Result[Void]
-  return error("usage: MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO]]]") if args.size < 3
+  if args.size < 3
+    return error("usage: MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY]]]]")
+  end
 
   pairs = try number(args, 3, 1000)
   batch = try number(args, 4, 16)
   pad_to = try number(args, 5, 1)
+  weight_decay = 0.01
+  if args.size > 6
+    weight_decay = try args[6].to_f
+  end
+
   tok = try WordPiece.open("#{args[0]}/tokenizer.json")
   m = try DistilBert.open(args[0], Tensor.Backend.Ggml(Tensor.Device.Cpu))
   pad = tok.pad_id.unwrap_or(m.config.pad_token_id)
@@ -97,7 +114,16 @@ def run(args: List[String]) -> Result[Void]
 
   train = (try tokenized(tok, args[1])).take(pairs)
   return error("#{args[1]} has #{train.size} pairs, fewer than #{pairs}") if train.size < pairs
-  s = Setup(model: m, train: train, validation: try tokenized(tok, args[2]), batch: batch, pad_to: pad_to)
+  s = Setup(
+    model: m,
+    train: train,
+    validation: try tokenized(tok, args[2]),
+    batch: batch,
+    pad_to: pad_to,
+    weight_decay: weight_decay,
+  )
+
+  puts(JSON.encode(checks(s)))
   puts(JSON.encode(Correlation(kind: "spearman", when: "before", value: try spearman(m, s.validation))))
   trained = try fit(s)
   puts(JSON.encode(Correlation(kind: "spearman", when: "after", value: try spearman(trained, s.validation))))
@@ -124,6 +150,27 @@ def tokenized(tok: WordPiece.WordPiece, path: String) -> Result[List[Pair]]
   end
 
   ok(out)
+end
+
+## What both sides must agree on before a loss means anything: the weights that decay (their names without the
+## prefix of the file, sorted) and every token id, the training pairs first.
+def checks(s: Setup) -> Checks
+  names = DistilBert.weights(s.model).keys.select { |name: String| decays?(name) }
+  bare = names.map { |name: String| name.slice(s.model.prefix.length, name.length - s.model.prefix.length) }.sort
+  ids = (s.train + s.validation).map { |p: Pair| "#{text(p.left)}\n#{text(p.right)}\n" }
+  Checks(
+    kind: "checks",
+    decayed: bare.size,
+    decayed_names: OpenSSL.Digest.sha256_hexdigest(bare.join("\n").bytes),
+    token_ids: OpenSSL.Digest.sha256_hexdigest(ids.join("").bytes),
+  )
+end
+
+def text(ids: List[Int]) -> String = ids.map { |id: Int| id.to_s }.join(",")
+
+## Whether AdamW decays the weight `name`: not a bias, not a layer-norm weight (Hugging Face's rule).
+def decays?(name: String) -> Bool
+  !(name.end_with?(".bias") or name.include?("LayerNorm") or name.include?("layer_norm"))
 end
 
 ## The padded length of batch `i`: its longest sentence, rounded up to a multiple of `pad_to`.
@@ -165,6 +212,14 @@ def batch(s: Setup, i: Int) -> Result[Data.Batch]
   end
 end
 
+## `batch(s, i)`, with the ms it took sent to `builds`.
+def timed_batch(s: Setup, i: Int, builds: Channel[Float]) -> Result[Data.Batch]
+  started = Time.monotonic_ns()
+  made = try batch(s, i)
+  _ = builds.send((Time.monotonic_ns() - started).to_f / 1000000.0, 0)
+  ok(made)
+end
+
 ## The cosine loss of a batch: the mask is `ids != pad`, both sides go through the model as one batch, and each
 ## pair's two mean embeddings are compared with its score.
 def loss(
@@ -193,17 +248,17 @@ end
 ## end of each one.
 def fit(s: Setup) -> Result[DistilBert.DistilBert]
   split = try Params.split(DistilBert.weights(s.model), ->(_name: String) { true })
-  norm = ->(name: String) { name.include?("LayerNorm") or name.include?("layer_norm") }
-  decay = split.names.map { |name: String| !(name.end_with?(".bias") or norm.call(name)) }
+  decay = split.names.map { |name: String| decays?(name) }
   steps = (s.train.size + s.batch - 1) / s.batch
   ends: Channel[Int] = Channel.new(steps)
+  builds: Channel[Float] = Channel.new(steps)
   started = Time.monotonic_ns()
   fit = try Train.fit_batches(
     ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(s.model, split, ps, b) },
     split.trainable,
-    ->(e: Int, _i: Int) { batch(s, e - 1) },
+    ->(e: Int, _i: Int) { timed_batch(s, e - 1, builds) },
     1,
-    Optim.Optimizer.AdamW(Optim.AdamW(lr: LR, weight_decay: WEIGHT_DECAY, decay: decay)),
+    Optim.Optimizer.AdamW(Optim.AdamW(lr: LR, weight_decay: s.weight_decay, decay: decay)),
     steps,
     some(->(_e: Train.Epoch) { _ = ends.send(Time.monotonic_ns(), 0) }),
   )
@@ -220,6 +275,7 @@ def fit(s: Setup) -> Result[DistilBert.DistilBert]
       step: i + 1,
       loss: fit.history[i],
       ms: (done - last).to_f / 1000000.0,
+      batch_ms: try builds.recv(0),
       length: seq,
       new_shape: !seen.include?(shape),
     )

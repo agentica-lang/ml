@@ -2,24 +2,28 @@
 """The PyTorch peer of `transformers/tools/distilbert_stsb.agc` (ml#182): the same fine-tune of a sentence-transformers
 DistilBERT on scored sentence pairs, on the CPU, with the same rules. Never run in CI.
 
-    python -I distilbert_stsb.py MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO]]]
+    python -I distilbert_stsb.py MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY]]]]
 
 The rules: the first PAIRS pairs (1000) in order, BATCH pairs a step (16), one epoch; the checkpoint's tokenizer with a
 limit of 128 tokens; both sentences of a batch go through the model as one batch of `2 BATCH` rows, padded to the
 longest of them rounded up to a multiple of PAD_TO (1: the longest); mean pooling by hand (no sentence-transformers),
 and the mean squared gap of the cosine of a pair from its score; `torch.optim.AdamW` (lr 2e-5, betas 0.9 and 0.999, eps
-1e-8, weight decay 0.01, none on a bias or a layer-norm weight: two parameter groups), no warmup, no clipping, no
-dropout (`eval()`, with gradients); float32; `torch.set_num_threads` of every online CPU, as ggml takes them.
+1e-8, weight decay WEIGHT_DECAY (0.01), none on a bias or a layer-norm weight: two parameter groups), no warmup, no
+clipping, no dropout (`eval()`, with gradients); float32; `torch.set_num_threads` of the CPUs of the process, which
+`run.sh` checks are every online CPU, as ggml takes them.
 
-It prints the JSON lines of the Agentica side: `spearman` before and after, and one `step` per step with its loss, its
-wall time in ms (forward, backward, update and the loss read back), the padded length and `new_shape`, true for the
-first step of a shape: PyTorch compiles nothing, but the median leaves the same steps out on both sides.
+It prints the JSON lines of the Agentica side: `checks` (how many weights decay, a SHA-256 of their names and one of
+every token id), `spearman` before and after, and one `step` per step with its loss, its wall time in ms (the batch,
+forward, backward, update and the loss read back; `batch_ms` of it is building the batch), the padded length and
+`new_shape`, true for the first step of a shape: PyTorch compiles nothing, but the median leaves the same steps out on
+both sides. It also prints `threads`, the count PyTorch runs with.
 
-Pinned (the venv of `run.sh setup`, every wheel `--only-binary :all:`): Python 3.13.5, torch 2.6.0+cpu, transformers
-4.57.6, tokenizers 0.22.1, huggingface_hub 0.36.0, safetensors 0.6.2, numpy 2.2.6, regex 2025.9.18. Only
-`model.safetensors` is read, never a pickle.
+The venv of `run.sh setup` (every wheel `--only-binary :all:`): Python 3.13.5, torch 2.6.0+cpu, transformers 4.57.6,
+tokenizers 0.22.1, huggingface_hub 0.36.0, safetensors 0.6.2, numpy 2.2.6, regex 2025.9.18. Only `model.safetensors`
+is read, never a pickle.
 """
 
+import hashlib
 import json
 import math
 import os
@@ -32,7 +36,6 @@ from transformers import DistilBertModel
 
 MAX_LENGTH = 128
 LR = 2e-5
-WEIGHT_DECAY = 0.01
 EMBED_BATCH = 32
 COSINE_EPS = 1e-16
 MIN_COUNT = 1e-9
@@ -62,6 +65,22 @@ def pooled(model, ids, mask):
 def cosine_loss(a, b, scores):
     dot, aa, bb = (a * b).sum(dim=1), (a * a).sum(dim=1), (b * b).sum(dim=1)
     return ((dot / torch.sqrt(aa * bb + COSINE_EPS) - scores) ** 2).mean()
+
+
+def no_decay(name):
+    return name.endswith(".bias") or "LayerNorm" in name or "layer_norm" in name
+
+
+def digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def checks(named, pairs):
+    """What both sides must agree on before a loss means anything: the weights that decay and every token id."""
+    decayed = sorted(n for n, _ in named if not no_decay(n))
+    ids = "".join(f"{','.join(map(str, left))}\n{','.join(map(str, right))}\n" for left, right, _ in pairs)
+    names = digest("\n".join(decayed))
+    return {"kind": "checks", "decayed": len(decayed), "decayed_names": names, "token_ids": digest(ids)}
 
 
 def ranks(values):
@@ -103,10 +122,12 @@ def number(i, default):
 
 def main():
     if len(sys.argv) < 4:
-        raise SystemExit("usage: MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO]]]")
+        raise SystemExit("usage: MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY]]]]")
     path = sys.argv[1]
     count, batch, pad_to = number(4, 1000), number(5, 16), number(6, 1)
+    weight_decay = float(sys.argv[7]) if len(sys.argv) > 7 else 0.01
     torch.set_num_threads(len(os.sched_getaffinity(0)))
+    print(json.dumps({"kind": "threads", "value": torch.get_num_threads()}), flush=True)
     tok = Tokenizer.from_file(f"{path}/tokenizer.json")
     tok.enable_truncation(max_length=MAX_LENGTH)
     tok.no_padding()
@@ -118,15 +139,12 @@ def main():
     if len(train) < count:
         raise SystemExit(f"{sys.argv[2]} has {len(train)} pairs, fewer than {count}")
     validation = tokenized(tok, sys.argv[3])
-    print(json.dumps({"kind": "spearman", "when": "before", "value": spearman(model, validation, pad)}), flush=True)
-
-    def no_decay(name):
-        return name.endswith(".bias") or "LayerNorm" in name or "layer_norm" in name
-
     named = list(model.named_parameters())
+    print(json.dumps(checks(named, train + validation)), flush=True)
+    print(json.dumps({"kind": "spearman", "when": "before", "value": spearman(model, validation, pad)}), flush=True)
     optimizer = torch.optim.AdamW(
         [
-            {"params": [p for n, p in named if not no_decay(n)], "weight_decay": WEIGHT_DECAY},
+            {"params": [p for n, p in named if not no_decay(n)], "weight_decay": weight_decay},
             {"params": [p for n, p in named if no_decay(n)], "weight_decay": 0.0},
         ],
         lr=LR,
@@ -141,6 +159,7 @@ def main():
         started = time.perf_counter_ns()
         ids, mask = padded([s for left, right, _ in picked for s in (left, right)], seq, pad)
         scores = torch.tensor([score for _, _, score in picked], dtype=torch.float32)
+        batch_ms = (time.perf_counter_ns() - started) / 1e6
         optimizer.zero_grad()
         sides = pooled(model, ids, mask)
         loss = cosine_loss(sides[0::2], sides[1::2], scores)
@@ -149,10 +168,11 @@ def main():
         value = loss.item()
         ms = (time.perf_counter_ns() - started) / 1e6
         shape = (len(picked), seq)
-        line = {"kind": "step", "step": step, "loss": value, "ms": ms, "length": seq, "new_shape": shape not in seen}
-        print(json.dumps(line), flush=True)
+        line = {"kind": "step", "step": step, "loss": value, "ms": ms, "batch_ms": batch_ms, "length": seq}
+        print(json.dumps(line | {"new_shape": shape not in seen}), flush=True)
         seen.add(shape)
     print(json.dumps({"kind": "spearman", "when": "after", "value": spearman(model, validation, pad)}), flush=True)
 
 
-main()
+if __name__ == "__main__":
+    main()

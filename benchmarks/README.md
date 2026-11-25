@@ -309,7 +309,9 @@ We are 2.24 times slower than PyTorch, at both paddings. This is before ml#192 t
 
 Memory, the peak resident size of the process (GNU time): 3.55 GB for our whole run (2.74 GB for one step on the longest batch alone, 32 rows of 28 tokens), 1.90 GB for PyTorch.
 
-Correctness comes first: `summary.py` exits 1 when the two runs do not have the same steps and shapes, or when their losses differ by more than 1.5e-7 at any step. The tolerance comes from three measurements on this machine: PyTorch against itself at 8 and at 4 threads differs by up to 2.4e-8, ours against PyTorch by up to 6.0e-8, and PyTorch without the weight decay differs from PyTorch by 2.8e-7. So 1.5e-7 is 2.5 times the gap of a right run and half the gap of the smallest mistake we tried; it is tied to these rules and this checkpoint, and a different run needs its own.
+Correctness comes first: `summary.py` exits 1 when the two runs did not use the same thread count, the same decayed weights (their count and a SHA-256 of their names) or the same token ids (a SHA-256 of all of them), when they do not have the same steps and shapes, when a loss is not finite or the two losses of a step differ by more than 1.5e-7, or when a Spearman value is missing or differs by more than 1e-6.
+
+The 1.5e-7 is a guard for this run, not a proof. It comes from three measurements on this machine: PyTorch against itself at 8 and at 4 threads differs by up to 2.4e-8, ours against PyTorch by up to 6.0e-8, and PyTorch without the weight decay differs from PyTorch by 2.8e-7. So it is 2.5 times the gap of a right run and half the gap of the smallest mistake we tried: at lr 2e-5 a weight decay of 0.01 moves the weights very little in 63 steps. It is tied to these rules and this checkpoint, and a different run needs its own. The check with room is `run.sh smoke`: four made-up pairs (one of two 221-word sentences, which the limit of 128 tokens cuts) with a weight decay of 1, where the two sides agree to 3.7e-9 and a peer without the decay is 2.4e-6 away, which the smoke run requires to fail.
 
 ## BERT (ml#78), ours against llama.cpp
 
@@ -471,20 +473,19 @@ python3 -I benchmarks/training/table.py results.jsonl
 python3 -I benchmarks/training/table_test.py           # the loss-curve verdict of table.py
 ```
 
-The STS-B fine-tune of ml#182 needs the PyTorch venv, `curl` and the ggml engine. The two runs take about 10 minutes together; run them one after the other with the machine quiet:
+The STS-B fine-tune of ml#182 needs the PyTorch venv, `curl` and the ggml engine. The two runs take about 10 minutes together; run them one after the other with the machine quiet, and wait about 3 minutes between them: a run leaves the load average above the 1.0 at which `run.sh` refuses to start. The venv is the `venv-torch` of the training benchmarks, so `setup` changes it for both.
 
 ```sh
-sh benchmarks/stsb/run.sh setup                        # torch, transformers, pyarrow and their dependencies, pinned
+sh benchmarks/stsb/run.sh setup                        # torch, transformers and pyarrow at pinned versions
 sh benchmarks/stsb/run.sh fetch                        # the checkpoint and STS-B, at pinned revisions, sha256 checked
-sh benchmarks/stsb/run.sh data                         # the parquet files as JSON lines
-sh benchmarks/stsb/run.sh smoke                        # both sides on three pairs: they run and agree
+sh benchmarks/stsb/run.sh smoke                        # both sides on four pairs agree; without the decay they do not
 sh benchmarks/stsb/run.sh ours ours.jsonl              # PAD_TO=8 for the other row
 sh benchmarks/stsb/run.sh peer peer.jsonl
 python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl
 python3 -I benchmarks/stsb/summary_test.py             # the verdict of summary.py
 ```
 
-`pyarrow` alone reads the parquet files, not the `datasets` package, which would bring a dozen more dependencies for one `read_table`.
+`pyarrow` alone reads the parquet files, not the `datasets` package, which would bring a dozen more dependencies for one `read_table`. Each run writes the JSON lines again from the parquet files, whose hashes it checks first.
 
 ### The converter
 
