@@ -6,14 +6,14 @@
 ## It creates tensors, uploads them, reads them back and copies them between
 ## devices (`to_device`). ggml is fast when a whole computation is one
 ## compiled graph (a Vulkan dispatch costs about 2 ms,
-## spike/ggml-graph/README.md), so ops run only there, from a traced graph
+## https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md), so ops run only there, from a traced graph
 ## (`Trace`, `src/lower.agc`). Eagerly, every other primitive answers
 ## `compiled_only(op)`: an error naming the op, never a wrong number and
 ## never a slow op-by-op path (§7).
 ##
 ## Storage: ggml holds `F32` and `I32`. `Bool`, `I8`, `I16` and `U8` are held
 ## as `F32`, which represents each of their values exactly; `F16`, `Q8_0`,
-## `F64` and `I64` are refused, as the spike's lowering refuses them, except
+## `F64` and `I64` are refused, as the lowering refuses them, except
 ## the weights `from_file` makes.
 ##
 ## Lifetimes (§8): one `Native.arena` per call, as in `src/torch.agc`.

@@ -265,7 +265,7 @@ traces the loss, its gradients and the update and runs them as one graph,
 retraced every step. Milliseconds per step, median of 18 steps, with `F32`
 `mul_mat`; before, the update ran as one more graph per parameter (seven
 graphs a step); the spike compiled its step once and ran it with no retrace
-(`spike/ggml-graph/README.md`, run B):
+([run B](https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md)):
 
 | batch | Vega iGPU, one graph | seven graphs | spike | ggml CPU, one graph | seven graphs |
 |---|---|---|---|---|---|

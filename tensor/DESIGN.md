@@ -344,7 +344,7 @@ end
   never vendored.
 - **`Ggml` has no eager ops.** A Vulkan dispatch costs about 2 ms, so ggml is
   fast only when a whole computation is one compiled graph
-  (`spike/ggml-graph/README.md`). Its arms create tensors (`zeros`, `ones`,
+  ([the ggml-graph spike](https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md)). Its arms create tensors (`zeros`, `ones`,
   `empty`, `full`, `like`, `arange`, `scalar_to_tensor`, `from_list`), read them
   back (`to_list`), copy them between devices (`to_device`) and pass `stop_grad`
   through; every other primitive answers `Ggml.compiled_only(op)`, an `error`
@@ -551,7 +551,7 @@ end
   Vulkan or without the module it changes nothing. fp16 is 1.7× faster for the products of Qwen3 on
   the Vega iGPU (1.55 ms against 2.7 ms for `m=3072 n=128 k=1024`), 1.1–1.5×
   from batch 256 to 4096 in the spike, and changes gradients by up to about
-  10 % at MLP sizes (the spike's run B, `spike/ggml-graph/README.md`). It does
+  10 % at MLP sizes ([the spike's run B](https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md)). It does
   not keep the ids of Hugging Face's greedy `generate`, so every check against
   Hugging Face or whisper.cpp chooses `F32` first: the tools through
   `Load.vulkan_fp16_from_env()` (`VULKAN_FP16=1` runs a check in fp16), the

@@ -117,7 +117,7 @@ static void ggml_TensorHandle_free(void *state) {
 /* ggml-Vulkan converts F32 `mul_mat` inputs to fp16 on a device that has
    fp16, unless GGML_VK_DISABLE_F16 is set when ggml first enumerates its
    devices (any registry call does), and no per-op switch exists
-   (spike/ggml-graph/README.md). So the precision belongs to the process:
+   (https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md). So the precision belongs to the process:
    `ggml_vulkan_fp16` records the choice in `want_fp16` (fp16 unless asked
    otherwise), and the first registry call of this file sets the variable
    from it (set only for F32) and fixes it. Without a `ggml_vulkan_fp16` call, a
