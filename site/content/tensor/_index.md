@@ -85,7 +85,7 @@ On `Ggml`, a direct call to an op is an eager call: it runs the op right away. E
 
 `Tensor.to_device(t, Device.Vulkan(0))` moves a ggml tensor to another ggml device.
 
-The ggml CPU backend runs a graph on one thread per physical core of the machine (the cores this process may use), not per hardware thread: its threads wait for each other by spinning, so a second thread on a core makes a step slower. Set the environment variable `TENSOR_THREADS` to a positive integer to choose the number; any other value leaves the default.
+The ggml CPU backend runs a graph on one thread per physical core of the machine, not per hardware thread: its threads wait for each other by spinning, so a second thread on a core adds stalls when the machine is busy. On Linux the cores are the ones this process may use (a cpuset limits them; a CPU quota does not). Set the environment variable `TENSOR_THREADS` to a positive integer, at most 512 (ggml's limit), to choose the number; any other value leaves the default.
 
 ## Tracing and gradients
 

@@ -250,7 +250,7 @@ an_term ggml_convert_file(an_env *env, ng_str src, int64_t src_offset, int64_t s
 /* How many graphs this process has compiled: the cache's misses. */
 an_term ggml_compiles(an_env *env);
 
-/* The threads of the CPU backend (opened if it is not): `TENSOR_THREADS`, else the physical cores. */
+/* The threads of the CPU backend (or the ones it will run on): `TENSOR_THREADS`, else the physical cores. */
 an_term ggml_cpu_threads(an_env *env);
 
 /* Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every

@@ -218,7 +218,8 @@ static int core_of(int cpu) {
   return head;
 }
 
-/* The physical cores among the CPUs this process may run on, or 0 when sysfs does not say. */
+/* The physical cores among the CPUs this process may run on; without sysfs topology, those CPUs themselves. 0 when
+   the affinity is unknown. */
 static int physical_cores(void) {
   cpu_set_t allowed;
   int seen[MAX_CPUS], found = 0;
@@ -229,7 +230,7 @@ static int physical_cores(void) {
     int head;
 
     if (!CPU_ISSET(cpu, &allowed)) continue;
-    if ((head = core_of(cpu)) < 0) return 0;
+    if ((head = core_of(cpu)) < 0) return CPU_COUNT(&allowed);
     for (i = 0; i < found && seen[i] != head; i++) {}
     if (i == found) seen[found++] = head;
   }
@@ -247,8 +248,9 @@ static int physical_cores(void) {
 static int physical_cores(void) { return 0; }
 #endif
 
-/* The threads of the CPU backend: `TENSOR_THREADS` when it is a positive integer, else the physical cores (ggml's
-   threads busy-wait, so a second thread on a core slows a step), else the online CPUs, else 4. */
+/* The threads of the CPU backend, at most `GGML_MAX_N_THREADS`: `TENSOR_THREADS` when it is a positive integer, else
+   the physical cores (ggml's threads busy-wait, so a second thread on a core adds stalls when the machine is busy),
+   else the online CPUs, else 4. */
 static int cpu_threads_choice(void) {
   const char *set = getenv("TENSOR_THREADS");
   long cores;
@@ -258,10 +260,11 @@ static int cpu_threads_choice(void) {
     char *end;
     long n = strtol(set, &end, 10);
 
-    if (end != set && *end == '\0' && n > 0 && n <= MAX_CPUS) return (int)n;
+    if (end != set && *end == '\0' && n > 0 && n <= GGML_MAX_N_THREADS) return (int)n;
   }
-  if ((physical = physical_cores()) > 0) return physical;
+  if ((physical = physical_cores()) > 0) return physical > GGML_MAX_N_THREADS ? GGML_MAX_N_THREADS : physical;
   cores = sysconf(_SC_NPROCESSORS_ONLN);
+  if (cores > GGML_MAX_N_THREADS) return GGML_MAX_N_THREADS;
   return cores > 0 ? (int)cores : 4;
 }
 
@@ -309,16 +312,13 @@ an_term ggml_vulkan_fp16(an_env *env, bool enabled) {
   return ggml_result_Void_ok(env, an_void(env));
 }
 
+/* What the CPU backend runs on, or will: it does not open the backend (that would fix the precision of Vulkan). */
 an_term ggml_cpu_threads(an_env *env) {
-  char why[160];
-  ggml_backend_t backend;
   int n;
 
   tg_lock_device();
-  backend = tg_backend(-1, why, sizeof why);
-  n = cpu_threads;
+  n = cpu_threads != 0 ? cpu_threads : cpu_threads_choice();
   tg_unlock_device();
-  if (backend == NULL) return tg_error(env, why);
   return ggml_result_Int_ok(env, n);
 }
 

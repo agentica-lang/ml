@@ -1,5 +1,5 @@
-## The threads of the ggml CPU backend: `TENSOR_THREADS` sets them, and anything that is not a positive integer leaves
-## the default (the physical cores). The choice is made once per process, so each case is a process of its own. Without
+## The threads of the ggml CPU backend: `TENSOR_THREADS` sets them, and anything that is not a positive integer, or is
+## above ggml's 512 threads, leaves the default (the physical cores), and asking does not fix Vulkan's precision. The choice is made once per process, so each case is a process of its own. Without
 ## the ggml module the checks pass by asserting nothing, unless `TENSOR_REQUIRE_GGML` is set (CI sets it).
 
 import Tensor from "../tensor"
@@ -8,9 +8,12 @@ def test_tensor_threads_sets_the_threads_and_a_bad_value_leaves_the_default() ->
   return ok() if !try present()
   default = try threads_with("")
   try Test.assert(default >= 1, "the default is #{default}")
-  try Test.eq(try threads_with("3"), 3)
-  try Test.eq(try threads_with("0"), default)
-  Test.eq(try threads_with("many"), default)
+  try Test.eq(try threads_with("#{default + 1}"), default + 1)
+  for bad in ["0", "many", "3x", "100000"]
+    try Test.eq(try threads_with(bad), default)
+  end
+
+  ok()
 end
 
 private

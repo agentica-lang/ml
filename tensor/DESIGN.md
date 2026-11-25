@@ -233,7 +233,8 @@ Tensor.backend(t) -> Backend                      # no native call
   one host copy on Vulkan.
 - The ggml CPU backend runs on the physical cores (`native/ggml.c`: the distinct
   `thread_siblings_list` of the CPUs the process may run on on Linux,
-  `hw.physicalcpu` on macOS, else the online CPUs). ggml's threads spin while
+  `hw.physicalcpu` on macOS, else the CPUs the process may run on or the online
+  ones; at most ggml's 512 threads). ggml's threads spin while
   they wait, so a second thread on a core only adds stalls when the machine is
   busy. `TENSOR_THREADS=n` (a positive integer) sets it; `Lower.cpu_threads()`
   says what a process got.
