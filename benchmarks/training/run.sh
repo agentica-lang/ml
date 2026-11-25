@@ -9,7 +9,8 @@
 #   python3 -I benchmarks/training/table.py OUT          the tables and the loss-curve verdict
 #
 # The threads: THREADS must be the online CPUs (8 here) for PyTorch and libtorch, which take OMP_NUM_THREADS, which
-# run.sh sets. ggml's CPU rows run on the physical cores (tensor/native/ggml.c; `TENSOR_THREADS=n` in the environment
+# run.sh sets. The XLA rows need the plugin (`agentica tools/install_xla.agc` in tensor/) and run on the thread pool
+# of the plugin (not checked here, as for JAX). ggml's CPU rows run on the physical cores (tensor/native/ggml.c; `TENSOR_THREADS=n` in the environment
 # sets another count, for example the online CPUs), and JAX's CPU pool is XLA's own default (all the cores; its size
 # is not checked here). `run` refuses to start when the load average is above 1.0, and every line records the load
 # average at its start. The venvs are `venv-torch` and `venv-jax`, in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}.
@@ -43,6 +44,7 @@ agentica_row() {
     ggml-cpu) exports=$(sh "$root/train/tools/build-engine.sh") ;;
     ggml-vulkan) exports=$(sh "$root/train/tools/build-engine.sh" vulkan) ;;
     torch-cpu) exports=$(cd "$root/tensor" && sh tools/build-torch.sh) ;;
+    xla-cpu) exports= ;;
   esac
   (cd "$root/train" && eval "$(printf '%s\n' "$exports" | grep '^export ')" &&
     agentica --max-steps 100000000000 tools/bench_train.agc "$1" "$2" "$3" "$4" "$5" | tail -n 1)
@@ -62,6 +64,8 @@ cell() {
     ggml-vulkan-fit) result=$(agentica_row ggml-vulkan fit "$opt" "$batch" "$steps") ;;
     ggml-vulkan-compiled) result=$(agentica_row ggml-vulkan compiled "$opt" "$batch" "$steps") ;;
     torch-cpu-fit) result=$(agentica_row torch-cpu fit "$opt" "$batch" "$steps") ;;
+    xla-cpu-fit) result=$(agentica_row xla-cpu fit "$opt" "$batch" "$steps") ;;
+    xla-cpu-compiled) result=$(agentica_row xla-cpu compiled "$opt" "$batch" "$steps") ;;
     pytorch-eager) result=$("$torch_py" -I "$here/bench_torch.py" eager "$opt" "$batch" "$steps") ;;
     pytorch-compile) result=$("$torch_py" -I "$here/bench_torch.py" compile "$opt" "$batch" "$steps") ;;
     pytorch-oracle) result=$("$torch_py" -I "$here/bench_torch.py" oracle "$opt" "$batch" 10) ;;
@@ -80,7 +84,7 @@ grid() { # BATCHES STEPS OUT: the lines go to OUT.tmp, which becomes OUT at the 
   for opt in sgd adam; do
     for batch in $1; do
       for stack in pytorch-oracle ggml-cpu-fit ggml-cpu-compiled ggml-vulkan-fit ggml-vulkan-compiled torch-cpu-fit \
-        pytorch-eager pytorch-compile jax-jit; do
+        xla-cpu-fit xla-cpu-compiled pytorch-eager pytorch-compile jax-jit; do
         steps=$2
         [ -n "$steps" ] || { [ "$batch" -ge 4096 ] && steps=15 || steps=30; }
         cell "$stack" "$opt" "$batch" "$steps" 1 | tee -a "$3.tmp"

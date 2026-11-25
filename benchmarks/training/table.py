@@ -29,6 +29,8 @@ STACKS = [
     "ggml-vulkan-fit",
     "ggml-vulkan-compiled",
     "torch-cpu-fit",
+    "xla-cpu-fit",
+    "xla-cpu-compiled",
     "pytorch-eager",
     "pytorch-compile",
     "jax-jit",

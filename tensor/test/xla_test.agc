@@ -107,7 +107,7 @@ def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]
 end
 
 ## A dtype that cannot hold the row count of the table needs no upper bound: U8 ids on 300 rows match the reference,
-## and a negative I8 id on 200 rows is still an error.
+## a negative I8 id on 200 rows and a U8 id of 200 on 100 rows are still errors.
 def test_a_narrow_index_dtype_gathers_from_a_larger_table() -> Result[Void]
   return ok() if !try present()
   rows = ->(xs: List[Tensor.Tensor]) { Tensor.gather(xs[0], xs[1]) }
@@ -123,7 +123,10 @@ def test_a_narrow_index_dtype_gathers_from_a_larger_table() -> Result[Void]
   try close([got], [want])
   bad = try Tensor.from_list([Tensor.Values.Int(-1)], [1], Tensor.Dtype.I8, XLA)
   r = Trace.eval([try floats(uniform(400, 42, 1.0), [200, 2], XLA), bad], rows)
-  Test.assert(!r.ok?, "gather at -1 of 200 rows ran on XLA")
+  try Test.assert(!r.ok?, "gather at -1 of 200 rows ran on XLA")
+  past = try Tensor.from_list([Tensor.Values.Int(200)], [1], Tensor.Dtype.U8, XLA)
+  r = Trace.eval([try floats(uniform(200, 43, 1.0), [100, 2], XLA), past], rows)
+  Test.assert(!r.ok?, "gather at 200 of 100 rows ran on XLA")
 end
 
 def test_an_adam_step_consumes_the_moments_it_updates() -> Result[Void]
