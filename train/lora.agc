@@ -4,6 +4,7 @@
 ## `merged` computes it once for inference. `B` starts at zero, so a new adapter changes nothing. `save` and `open`
 ## keep an adapter in PEFT's files, so an adapter trained with PEFT runs here and one trained here loads in PEFT.
 
+import Data from "data"
 import Hub from "pkg/hub/hub"
 import Init from "pkg/nn/init"
 import SafetensorsWrite from "pkg/hub/safetensors_write"
@@ -121,10 +122,11 @@ def applied(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map
 end
 
 ## `weights` with the adapter merged in, for inference: the adapted weights are new tensors on their backend, each
-## `W + (alpha / r) · B A`, and the others are the tensors of `weights`, shared and not copied. Nothing is closed:
-## the weights under the adapted ones stay the caller's. The sums run as traced graphs, `MERGED_AT_ONCE` weights
-## each, so this works on ggml too, which `applied` outside a loss does not. A model made from them runs at the cost
-## of the model alone. An adapted weight that is not on the adapter's backend is an error.
+## `W + (alpha / r) · B A`, and the others are the tensors of `weights`, shared and not copied. Nothing of the
+## caller's is closed: the weights under the adapted ones stay theirs. The sums run as traced graphs,
+## `MERGED_AT_ONCE` weights each, so this works on ggml too, which `applied` outside a loss does not. A model made
+## from them runs at the cost of the model alone. An adapted weight that is not on the adapter's backend is an
+## error, and when a graph fails the sums of the graphs before it are freed.
 def merged(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map[String, Tensor.Tensor]]
   out = weights
   at = 0
@@ -135,10 +137,18 @@ def merged(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map[
       b: adapter.b.drop(at).take(MERGED_AT_ONCE),
     )
 
-    under = try adapted_of(weights, part)
-    sums = try Trace.eval_many(part.a + part.b, ->(ps: List[Tensor.Tensor]) { sums_of(under, part, ps) }, false)
-    for i in 0...part.names.size
-      out = out.put(part.names[i], sums[i])
+    case sums_on(weights, part)
+      ok(sums) ->
+        for i in 0...part.names.size
+          out = out.put(part.names[i], sums[i])
+        end
+
+      error(e) ->
+        for name in adapter.names.take(at)
+          Data.free(out[name])
+        end
+
+        return error(e)
     end
 
     at = at + MERGED_AT_ONCE
@@ -361,6 +371,12 @@ def adapted_by(key: String) -> Result[String]
   end
 
   error("#{key} is not the lora_A or lora_B of a layer")
+end
+
+## The merged weights of `adapter`, in the order of its names, as one graph.
+def sums_on(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[List[Tensor.Tensor]]
+  under = try adapted_of(weights, adapter)
+  Trace.eval_many(adapter.a + adapter.b, ->(ps: List[Tensor.Tensor]) { sums_of(under, adapter, ps) }, false)
 end
 
 ## The weights of `weights` that `adapter` adapts, each on the adapter's backend.
