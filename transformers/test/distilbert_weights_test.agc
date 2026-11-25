@@ -83,7 +83,11 @@ def test_the_names_are_the_checkpoints_and_the_weights_go_back() -> Result[Void]
       end
 
       other = try DistilBert.with_weights(m, scaled)
-      try Test.assert(own != try S.floats_of(try DistilBert.pooled(other, flat, mask, true)), "the weights were ignored")
+      try Test.assert(
+        own != try S.floats_of(try DistilBert.pooled(other, flat, mask, true)),
+        "the weights were ignored",
+      )
+
       back = try DistilBert.with_weights(other, w)
       try Test.eq(try S.floats_of(try DistilBert.pooled(back, flat, mask, true)), own)
 
@@ -143,8 +147,9 @@ end
 ## The peer computes the loss in doubles with its own forward and takes its slope for one value of 14 weights
 ## (tables, attention, norms, MLP) as a central difference: no code of `Trace` is in it. The key bias of an attention
 ## has a gradient of zero, since a softmax does not change when every score of a row moves by the same amount; every
-## other weight has a gradient that is not zero.
-def test_the_loss_and_its_gradients_match_the_peers_central_difference() -> Result[Void]
+## other weight has a gradient that is not zero. Then ggml gives the same loss and the same 36 gradients as the
+## reference, in one test: the gradients of the reference cost most of the step budget, so they are taken once.
+def test_the_gradients_match_the_peers_central_difference_and_agree_on_ggml() -> Result[Void]
   with_peer do |dir|
     peer = try JSON.decode(try File.read_text("#{dir}/expected.json"), Expected)
     ours = try graded(dir, S.REF)
@@ -164,19 +169,12 @@ def test_the_loss_and_its_gradients_match_the_peers_central_difference() -> Resu
       end
     end
 
-    ok()
-  end
-end
-
-def test_the_loss_and_every_gradient_agree_on_the_backends() -> Result[Void]
-  with_peer do |dir|
-    want = try graded(dir, S.REF)
-    try Test.eq(want.grads.size, 36)
+    try Test.eq(ours.grads.size, 36)
     for backend in try S.ggml_backends()
       got = try graded(dir, backend)
-      try S.expect_close([got.value], [want.value], ABS, REL, "loss on #{backend}")
-      for i in 0...want.grads.size
-        try S.expect_close(got.grads[i], want.grads[i], ABS, REL, "#{want.split.names[i]} on #{backend}")
+      try S.expect_close([got.value], [ours.value], ABS, REL, "loss on #{backend}")
+      for i in 0...ours.grads.size
+        try S.expect_close(got.grads[i], ours.grads[i], ABS, REL, "#{ours.split.names[i]} on #{backend}")
       end
     end
 
