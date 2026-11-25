@@ -20,6 +20,9 @@ LAYER_NORM_EPS = 0.00001
 ## softmax weight is zero.
 MASKED = -1000000000.0
 
+## Added to `|a|^2 |b|^2` under the root of `cosine_similarity`: the square of the `1e-8` PyTorch clamps a norm to.
+COSINE_EPS = 0.0000000000000001
+
 ## `y = x w + b` over the last axis: `w` is `[inputs, outputs]`, `b` is
 ## `[outputs]`. With `out_in`, `w` is `[outputs, inputs]` as a checkpoint
 ## stores it, and `dense` multiplies by its transpose: ggml does that with no
@@ -158,6 +161,25 @@ struct Heads
   query: Tensor.Tensor
   key: Tensor.Tensor
   value: Tensor.Tensor
+end
+
+## The cosine of each pair of rows of `a` and `b` (`[batch, width]` both), as `[batch]`:
+## `a.b / sqrt(|a|^2 |b|^2 + COSINE_EPS)`. The small term keeps a row of zeros at a cosine of 0 with a finite
+## gradient; for any other row it is below `F32` rounding, so the values are those of PyTorch's `cosine_similarity`.
+def cosine_similarity(a: Tensor.Tensor, b: Tensor.Tensor) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(a)
+  if shape.size != 2 or Tensor.shape(b) != shape
+    return error("cosine_similarity needs two [batch, width] tensors, got #{shape} and #{Tensor.shape(b)}")
+  end
+
+  dot = try Tensor.sum(try Tensor.mul(a, b), some([1]))
+  squares = try Tensor.mul(
+    try Tensor.sum(try Tensor.mul(a, a), some([1])),
+    try Tensor.sum(try Tensor.mul(b, b), some([1])),
+  )
+
+  floor = try Tensor.full([shape[0]], Tensor.Values.Float(COSINE_EPS), Tensor.dtype(a), Tensor.backend(a))
+  Tensor.div(dot, try Tensor.sqrt(try Tensor.add(squares, floor)))
 end
 
 ## `x w + b` on the last axis of an input of any rank >= 1: the leading axes
