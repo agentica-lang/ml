@@ -1441,6 +1441,11 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       if (a->rank != 4 || b->rank != 4 || b->ne[2] * ints[2] != a->ne[2] || b->ne[3] % ints[2] != 0) {
         return tg_error(env, "conv2d takes an input [B, C, H, W] and a weight [O, C / groups, KH, KW]");
       }
+      /* ggml's direct kernel on the CPU works in 16 MiB (GGML_IM2COL_WORK_SIZE) and aborts when one patch of
+         KW * KH * C_in floats and its C_out answers do not fit. Vulkan has no such limit. */
+      if (p->device < 0 && ((size_t)(b->ne[0] * b->ne[1] * b->ne[2] + b->ne[3] / ints[2]) * sizeof(float)) > 16u * 1024 * 1024) {
+        return tg_error(env, "conv2d on the ggml CPU backend needs (KW * KH * C_in per group + C_out per group) * 4 bytes to fit in 16 MiB");
+      }
       if (!room(p, 6 * (size_t)ints[2])) return tg_error(env, "conv2d: the groups lower to more ggml tensors than the graph has room for");
       t = conv2d(p, a, b, (int)ints[0], (int)ints[1], (int)ints[2]);
       break;

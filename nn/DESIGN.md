@@ -13,6 +13,7 @@ struct Dense        { w: [in, out] ([out, in] with out_in), b: Optional [out], o
 struct LayerNorm    { gamma: [width], beta: [width], eps: Float, rms: Bool = false }
 struct Embedding    { table: [rows, width] }
 struct Conv1d       { weight: [out, in, kernel], bias: Optional [out], stride, padding: Int }
+struct Conv2d       { weight: [out, in / groups, kh, kw], bias: Optional [out], stride = 1, padding = 0, groups = 1 }
 enum   Activation   = Relu | Gelu | GeluErf | Silu
 struct Rope         { base: Float = 10000.0, neox: Bool = true, dims: Optional[Int] = none }
 struct Attention    { query, key, value, output: Dense, heads: Int, kv_heads: Optional[Int] = none,
@@ -31,6 +32,8 @@ Nn.cosine_similarity(a, b)         [batch, width] twice -> [batch], the cosine o
 Nn.layer_norm(p, x)                last axis, then * gamma + beta
 Nn.embedding(p, ids)               ids rank-1 integer -> [ids, width]
 Nn.conv1d(p, x)                    x [in, L] or [batch, in, L] -> Tensor.conv1d + bias per channel
+Nn.conv2d(p, x)                    x [batch, in, H, W] -> Tensor.conv2d + bias per channel
+Nn.global_avg_pool2d(x)            [batch, channels, H, W] -> [batch, channels], the mean over H and W
 Nn.positional(p, x)                x [seq, width] or [batch, seq, width] + table rows 0...seq
 Nn.activate(a, x)
 Nn.attention(p, queries, memory, mask?, causal?, positions?, memory_positions?)

@@ -107,6 +107,8 @@ def main():
         conv_case("3x3 stride 1 padding 1", rng, 2, 3, 5, 6, 4, 3, 3, 1, 1, 1),
         conv_case("3x3 stride 2 padding 1, an odd remainder", rng, 1, 2, 7, 6, 3, 3, 3, 2, 1, 1),
         conv_case("2x3 kernel, stride 2, two groups", rng, 2, 4, 6, 7, 4, 2, 3, 2, 1, 2),
+        conv_case("two groups of 2 in and 3 out channels", rng, 2, 4, 5, 5, 6, 3, 3, 1, 1, 2),
+        conv_case("depthwise, two outputs per channel", rng, 1, 3, 6, 5, 6, 3, 3, 2, 1, 3),
         conv_case("1x1 stride 2", rng, 2, 3, 5, 5, 4, 1, 1, 2, 0, 1),
         conv_case("7x7 stride 2 padding 3", rng, 1, 2, 9, 9, 2, 7, 7, 2, 3, 1),
         pool_case("max 3x3 stride 2 padding 1", rng, True, 2, 2, 7, 7, 3, 2, 1),

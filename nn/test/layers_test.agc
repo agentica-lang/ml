@@ -395,3 +395,19 @@ def test_attention_runs_weights_with_a_head_width_of_its_own() -> Result[Void]
   x = try S.f32(Init.uniform_values(8, 1.0, 5), [1, 2, 4])
   Test.eq(Tensor.shape(try Nn.self_attention(p, x)), [1, 2, 4])
 end
+
+def test_conv2d_adds_the_bias_per_output_channel_and_global_avg_pool2d_means_each_channel() -> Result[Void]
+  # Two output channels of a 1x1 kernel over two input channels of a 2x2 image: 1 * a + 2 * b and -1 * a + 0.5 * b.
+  weight = try S.f32([1.0, 2.0, -1.0, 0.5], [2, 2, 1, 1])
+  p = Nn.Conv2d(weight: weight, bias: some(try S.f32([10.0, -1.0], [2])))
+  x = try S.f32([1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0], [1, 2, 2, 2])
+  y = try Nn.conv2d(p, x)
+  try Test.eq(Tensor.shape(y), [1, 2, 2, 2])
+  try Test.eq(try S.floats_of(y), [31.0, 52.0, 73.0, 94.0, 3.0, 7.0, 11.0, 15.0])
+  bare = try Nn.conv2d(p.with(bias: none), x)
+  try Test.eq(try S.floats_of(bare), [21.0, 42.0, 63.0, 84.0, 4.0, 8.0, 12.0, 16.0])
+  pooled = try Nn.global_avg_pool2d(y)
+  try Test.eq(Tensor.shape(pooled), [1, 2])
+  try Test.eq(try S.floats_of(pooled), [62.5, 9.0])
+  Test.error?(Nn.global_avg_pool2d(try S.f32([1.0, 2.0], [1, 2])))
+end

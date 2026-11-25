@@ -17,6 +17,9 @@ import Types from "types"
 
 NEGATIVE_INFINITY = -1.0e308 * 10.0
 
+# The floats of the work space of the convolution of ggml on the CPU (16 MiB).
+WORK_FLOATS = 4194304
+
 ## The gradient of argument `i` of `conv2d(x, w, stride, padding, groups)` given the gradient `ct` of its answer.
 def conv2d_rule(
   x: Types.Tensor,
@@ -89,7 +92,7 @@ end
 
 private
 
-## The gradient of the `[N, C, rows, cols]` input of a convolution by `w`, given the gradient `ct` of its answer.
+# The gradient of the `[N, C, rows, cols]` input of a convolution by `w`, given the gradient `ct` of its answer.
 def input_grad(
   rows: Int,
   cols: Int,
@@ -125,7 +128,8 @@ def input_grad(
   Tensor.concat(parts, 1)
 end
 
-## The gradient of the weight of a convolution of `x`, given the gradient `ct` of its answer.
+# The gradient of the weight of a convolution of `x`, given the gradient `ct` of its answer. The batch is the channel
+# axis of the convolution, and ggml's CPU kernel works in 16 MiB, so a big batch is cut in chunks whose answers add up.
 def weight_grad(
   x: Types.Tensor,
   w: Types.Tensor,
@@ -137,19 +141,40 @@ def weight_grad(
   out_per_group = w.shape[0] / groups
   in_per_group = w.shape[1]
   spread_ct = try spread(ct, stride)
+  chunk = (WORK_FLOATS - out_per_group) / (spread_ct.shape[2] * spread_ct.shape[3])
+  if chunk < 1
+    chunk = 1
+  end
+
   parts: List[Types.Tensor] = []
   for g in 0...groups
     input = try cut(x, 1, g * in_per_group, (g + 1) * in_per_group)
     window = try cut(spread_ct, 1, g * out_per_group, (g + 1) * out_per_group)
-    grown = try Tensor.conv2d(
-      try Tensor.permute(input, [1, 0, 2, 3]),
-      try Tensor.permute(window, [1, 0, 2, 3]),
-      1,
-      padding,
-      1,
-    )
+    grown: Optional[Types.Tensor] = none
+    first = 0
+    while first < x.shape[0]
+      last = first + chunk
+      if last > x.shape[0]
+        last = x.shape[0]
+      end
 
-    kernel = try Tensor.slice(grown, [0, 0, 0, 0], [in_per_group, out_per_group, w.shape[2], w.shape[3]])
+      part = try Tensor.conv2d(
+        try Tensor.permute(try cut(input, 0, first, last), [1, 0, 2, 3]),
+        try Tensor.permute(try cut(window, 0, first, last), [1, 0, 2, 3]),
+        1,
+        padding,
+        1,
+      )
+
+      case grown
+        some(so_far) -> grown = some(try Tensor.add(so_far, part))
+        none -> grown = some(part)
+      end
+
+      first = last
+    end
+
+    kernel = try Tensor.slice(grown.unwrap_or(x), [0, 0, 0, 0], [in_per_group, out_per_group, w.shape[2], w.shape[3]])
     parts = parts.push(try Tensor.permute(kernel, [1, 0, 2, 3]))
   end
 
@@ -157,12 +182,12 @@ def weight_grad(
   Tensor.concat(parts, 0)
 end
 
-## `w` read backwards along both kernel axes, with its first two axes swapped.
+# `w` read backwards along both kernel axes, with its first two axes swapped.
 def flipped(w: Types.Tensor) -> Result[Types.Tensor]
   Tensor.permute(try reversed(try reversed(w, 2), 3), [1, 0, 2, 3])
 end
 
-## `t` read backwards along `axis`.
+# `t` read backwards along `axis`.
 def reversed(t: Types.Tensor, axis: Int) -> Result[Types.Tensor]
   parts: List[Types.Tensor] = []
   for k in 0...t.shape[axis]
@@ -173,13 +198,13 @@ def reversed(t: Types.Tensor, axis: Int) -> Result[Types.Tensor]
   Tensor.concat(parts, axis)
 end
 
-## The part of `t` from `from` to `to` along `axis`, or `t` itself when that is all of it.
+# The part of `t` from `from` to `to` along `axis`, or `t` itself when that is all of it.
 def cut(t: Types.Tensor, axis: Int, from: Int, to: Int) -> Result[Types.Tensor]
   return ok(t) if from == 0 and to == t.shape[axis]
   Tensor.slice(t, t.shape.map { |_| 0 }.set(axis, from), t.shape.set(axis, to))
 end
 
-## `t` with `value` around its two last axes.
+# `t` with `value` around its two last axes.
 def pad(t: Types.Tensor, top: Int, bottom: Int, left: Int, right: Int, value: Float) -> Result[Types.Tensor]
   rows = try pad_axis(t, 2, top, bottom, value)
   pad_axis(rows, 3, left, right, value)
@@ -199,8 +224,8 @@ def pad_axis(t: Types.Tensor, axis: Int, before: Int, after: Int, value: Float) 
   Tensor.concat(parts, axis)
 end
 
-## `t` (`[N, C, H, W]`) with `stride - 1` zeros after each position of its two last axes, up to the last position:
-## `[N, C, (H - 1) * stride + 1, (W - 1) * stride + 1]`.
+# `t` (`[N, C, H, W]`) with `stride - 1` zeros after each position of its two last axes, up to the last position:
+# `[N, C, (H - 1) * stride + 1, (W - 1) * stride + 1]`.
 def spread(t: Types.Tensor, stride: Int) -> Result[Types.Tensor]
   return ok(t) if stride == 1
   n = t.shape[0]
@@ -215,7 +240,7 @@ def spread(t: Types.Tensor, stride: Int) -> Result[Types.Tensor]
   Tensor.slice(wide, [0, 0, 0, 0], [n, c, (h - 1) * stride + 1, (w - 1) * stride + 1])
 end
 
-## Every `stride`-th position of the two last axes of `t`, from the first: `[N, C, H / stride, W / stride]`.
+# Every `stride`-th position of the two last axes of `t`, from the first: `[N, C, H / stride, W / stride]`.
 def pick(t: Types.Tensor, stride: Int) -> Result[Types.Tensor]
   return ok(t) if stride == 1
   n = t.shape[0]
@@ -229,8 +254,8 @@ def pick(t: Types.Tensor, stride: Int) -> Result[Types.Tensor]
   Tensor.reshape(across, [n, c, h, w])
 end
 
-## The `[N, C, rows, cols]` positions `(dy + stride * y, dx + stride * x)` of `padded`: the elements the offset `(dy,
-## dx)` of every window of a pool reads.
+# The `[N, C, rows, cols]` positions `(dy + stride * y, dx + stride * x)` of `padded`: the elements the offset `(dy,
+# dx)` of every window of a pool reads.
 def patch(padded: Types.Tensor, dy: Int, dx: Int, rows: Int, cols: Int, stride: Int) -> Result[Types.Tensor]
   n = padded.shape[0]
   c = padded.shape[1]
@@ -238,8 +263,8 @@ def patch(padded: Types.Tensor, dy: Int, dx: Int, rows: Int, cols: Int, stride: 
   pick(block, stride)
 end
 
-## The adjoint of `patch`: `g` (`[N, C, rows, cols]`) put back at the positions of the offset `(dy, dx)` in zeros of
-## `[N, C, padded_rows, padded_cols]`.
+# The adjoint of `patch`: `g` (`[N, C, rows, cols]`) put back at the positions of the offset `(dy, dx)` in zeros of
+# `[N, C, padded_rows, padded_cols]`.
 def unpatch(g: Types.Tensor, dy: Int, dx: Int, padded_rows: Int, padded_cols: Int, stride: Int) -> Result[Types.Tensor]
   wide = try spread(g, stride)
   after_rows = padded_rows - dy - wide.shape[2]

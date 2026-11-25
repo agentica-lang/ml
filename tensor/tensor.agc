@@ -1145,6 +1145,10 @@ def conv2d(
   _ = try float_only(weight, "conv2d")
   return error("conv2d needs a rank-4 input, got #{input.shape}") if input.shape.size != 4
   return error("conv2d needs a rank-4 weight, got #{weight.shape}") if weight.shape.size != 4
+  for d in input.shape + weight.shape
+    return error("conv2d needs a nonempty input and weight, got #{input.shape} and #{weight.shape}") if d < 1
+  end
+
   _ = try check_window(stride, padding, "conv2d")
   return error("conv2d needs groups >= 1, got #{groups}") if groups < 1
   channels = input.shape[1]
@@ -1833,6 +1837,7 @@ end
 def check_pool2d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int, op: String) -> Result[Bool]
   _ = try float_only(input, op)
   return error("#{op} needs a rank-4 input, got #{input.shape}") if input.shape.size != 4
+  return error("#{op} needs a nonempty input, got #{input.shape}") if input.shape[0] < 1 or input.shape[1] < 1
   return error("#{op} needs kernel >= 1, got #{kernel}") if kernel < 1
   _ = try check_window(stride, padding, op)
   if padding > kernel / 2

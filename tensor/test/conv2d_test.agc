@@ -1,7 +1,8 @@
-## `conv2d`, `max_pool2d` and `avg_pool2d` against `conv2d_peer.py`, which writes nine cases with plain loops in doubles:
-## the answer, and the gradient of `sum(out * ct)` for the input and the weight. The reference (in doubles), libtorch and
-## ggml (CPU, and Vulkan when it is there) each run the forward pass as a trace, and the reference and libtorch also
-## run it eagerly; every backend's gradient comes from the backward rules of `trace.agc`. Run from `tensor/`.
+## `conv2d`, `max_pool2d` and `avg_pool2d` against `conv2d_peer.py`, which writes eleven cases with plain loops in
+## doubles: the answer, and the gradient of `sum(out * ct)` for the input and the weight. The reference (in doubles),
+## libtorch and ggml (CPU, and Vulkan when it is there) each run the forward pass as a trace, and the reference and
+## libtorch also run it eagerly; every backend's gradient comes from the backward rules of `trace.agc`. Run from
+## `tensor/`.
 
 import Support from "support"
 import Tensor from "../tensor"
@@ -46,8 +47,51 @@ def test_every_backend_matches_the_peer_forward_and_backward() -> Result[Void]
       end
     end
 
-    Test.assert(cases.size == 9 and !runs.empty?, "ran #{cases.size} cases on #{runs.size} backends")
+    Test.assert(cases.size == 11 and !runs.empty?, "ran #{cases.size} cases on #{runs.size} backends")
   end
+end
+
+def test_a_padding_of_the_kernel_has_no_gradient() -> Result[Void]
+  x = try Tensor.ones([1, 1, 3, 3], Tensor.Dtype.F32, Tensor.Backend.Reference)
+  w = try Tensor.ones([1, 1, 1, 1], Tensor.Dtype.F32, Tensor.Backend.Reference)
+  try Trace.eval([x, w], ->(a: List[Tensor.Tensor]) { padded_loss(a) })
+  grads = Trace.value_and_grad([x, w], ->(a: List[Tensor.Tensor]) { padded_loss(a) })
+  case grads
+    ok(_) -> error("a gradient came back for a padding of the kernel")
+    error(e) -> Test.assert(e.message.include?("padding"), "the error said \"#{e.message}\"")
+  end
+end
+
+## ggml's CPU kernel works in 16 MiB: a window past it is an error, never an abort of the process.
+def test_a_convolution_past_the_work_space_of_ggml_on_the_cpu_is_an_error() -> Result[Void]
+  cpu = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+  return ok() if !try Support.ggml_present()
+  x = try Tensor.ones([1, 1, 2048, 2049], Tensor.Dtype.F32, cpu)
+  w = try Tensor.ones([1, 1, 2048, 2049], Tensor.Dtype.F32, cpu)
+  ran = Trace.eval([x, w]) do |a| Tensor.conv2d(a[0], a[1]) end
+  case ran
+    ok(_) -> error("the convolution ran past the work space")
+    error(e) -> Test.assert(e.message.include?("16 MiB"), "the error said \"#{e.message}\"")
+  end
+end
+
+## The weight gradient puts the batch in the channels of a convolution: 2700 images of 40 by 40 do not fit in one, so the
+## rule cuts them in chunks. Every weight gets its images times the windows that cover it, 2700 * 1600 at the centre.
+def test_the_weight_gradient_of_a_big_batch_is_cut_to_fit_ggml_on_the_cpu() -> Result[Void]
+  cpu = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+  return ok() if !try Support.ggml_present()
+  x = try Tensor.ones([2700, 1, 40, 40], Tensor.Dtype.F32, cpu)
+  w = try Tensor.ones([1, 1, 3, 3], Tensor.Dtype.F32, cpu)
+  step = try Trace.value_and_grad([x, w]) do |a| Tensor.sum(try Tensor.conv2d(a[0], a[1], 1, 1), none) end
+  edge = 2700.0 * 39.0 * 40.0
+  corner = 2700.0 * 39.0 * 39.0
+  want = [corner, edge, corner, edge, 2700.0 * 1600.0, edge, corner, edge, corner]
+  try Test.eq(Tensor.shape(step.grads[1]), [1, 1, 3, 3])
+  Test.eq(try Support.floats_of(step.grads[1]), want)
+end
+
+def padded_loss(a: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  Tensor.sum(try Tensor.conv2d(a[0], a[1], 1, 1), none)
 end
 
 def check(r: Run, c: Case) -> Result[Void]

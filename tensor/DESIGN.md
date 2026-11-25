@@ -810,7 +810,11 @@ The price:
   convolution on every plane with a kernel of `1 / kernel^2`. `max_pool2d`
   sends `ct` to the first position of a window that holds the maximum, in
   row-major order as libtorch does (not the even split of `max`), by taking
-  each of the `kernel * kernel` offsets of the windows in turn. Each is checked
+  each of the `kernel * kernel` offsets of the windows in turn. The weight
+  gradient puts the batch in the channel axis of a convolution, which ggml's
+  CPU kernel (a 16 MiB buffer, so `(KW * KH * C_in + C_out) * 4` bytes must fit,
+  else `error`) cannot take for a big batch, so the rule cuts the batch in
+  chunks and adds their answers. Each is checked
   against a Python peer on every backend (`test/conv2d_test.agc`).
 - Still open: rules for `pow`, `clamp`, `batch_matmul`, `to_dtype` between
   float dtypes (a precision cast), `conv1d` and `avg_pool1d`; the rule of
