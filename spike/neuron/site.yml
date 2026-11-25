@@ -1,0 +1,118 @@
+# Spike ml#80 on the inf2 instance. .venv/bin/ansible-playbook -i inventory.ini site.yml [--tags probe,test,bench]
+# Setup always runs (idempotent); measurements by tag; logs come back to results/.
+- hosts: neuron
+  vars:
+    ver: "0.38.0"
+    pkg: "agentica-0.38.0-linux-x86_64"
+    sum: "e3452adc1c70423970284e29f90ea54b68900137da5d80f1650c243b568c5464"
+    here: "{{ playbook_dir }}"
+    tree: "{{ lookup('env', 'TREE') | default('/tmp/ml-neuron-tree', true) }}"
+    repo: "{{ playbook_dir }}/.."
+    plugin: /opt/aws_neuronx_venv_jax_0_10/lib/python3.12/site-packages/libneuronxla/libneuronpjrt.so
+    env: >-
+      export PATH=/opt/aws_neuronx_venv_jax_0_10/bin:$HOME/agc/{{ pkg }}/bin:$PATH;
+      export AGENTICA_ML_XLA_PLUGIN={{ plugin }};
+    batches: "64 256 1024"
+  tasks:
+    - name: ml tree of origin/main + plugin-path.patch (local)
+      delegate_to: localhost
+      ansible.builtin.shell: |
+        set -e
+        git -C {{ repo }} fetch -q origin
+        git -C {{ repo }} worktree add -q --detach {{ tree }} origin/main
+        git -C {{ tree }} submodule update --init --recursive -q
+        git -C {{ tree }} apply {{ here }}/plugin-path.patch
+      args: { creates: "{{ tree }}/tensor" }
+      tags: always
+    - ansible.builtin.file: { path: "{{ item }}", state: directory }
+      loop: [~/agc, ~/logs]
+      tags: always
+    - name: agentica {{ ver }}
+      ansible.builtin.get_url:
+        url: "https://github.com/agentica-lang/agentica/releases/download/{{ ver }}/{{ pkg }}.tar.gz"
+        dest: "~/agc/{{ pkg }}.tar.gz"
+        checksum: "sha256:{{ sum }}"
+      tags: always
+    - ansible.builtin.unarchive: { src: "~/agc/{{ pkg }}.tar.gz", dest: ~/agc, remote_src: true, creates: "~/agc/{{ pkg }}/bin/agentica" }
+      tags: always
+    - name: ml tree
+      ansible.posix.synchronize: { src: "{{ tree }}/", dest: ml/, delete: true, rsync_opts: [--exclude=.git, --exclude=site/] }
+      tags: always
+    - ansible.builtin.copy: { src: "{{ here }}/neuron_probe.agc", dest: ml/tensor/tools/neuron_probe.agc }
+      tags: always
+    - ansible.builtin.copy: { src: "{{ here }}/gspmd.c", dest: ml/tensor/tools/gspmd.c }
+      tags: always
+    - name: agentica install, the CPU XLA plugin (baseline)
+      ansible.builtin.shell: |
+        export PATH=$HOME/agc/{{ pkg }}/bin:$PATH
+        (cd ml/tensor && agentica install) >/dev/null 2>&1; (cd ml/train && agentica install) >/dev/null 2>&1
+        cd ml/tensor && agentica tools/install_xla.agc | tail -1
+      changed_when: false
+      tags: always
+    - name: env file
+      ansible.builtin.copy: { dest: ~/neuron.env, content: "{{ env }}\n" }
+      tags: always
+    - name: root cron safety line (only when missing)
+      become: true
+      ansible.builtin.shell: crontab -l 2>/dev/null | grep -qF 'shutdown -h now'
+      register: has_cron
+      failed_when: false
+      changed_when: false
+      tags: always
+    - become: true
+      ansible.builtin.cron:
+        name: power off at 22:00 Madrid
+        minute: "0"
+        hour: "20,21"
+        job: '[ "$(TZ=Europe/Madrid date +\%H)" = 22 ] && /usr/sbin/shutdown -h now'
+      when: has_cron.rc != 0
+      tags: always
+
+    - name: probe (open, compile per shape, run overhead) on neuron then cpu
+      ansible.builtin.shell: |
+        . ~/neuron.env; cd ml/tensor
+        n=$(date +%H%M%S)
+        agentica tools/neuron_probe.agc {{ batches }} > ~/logs/probe-neuron-$n.log 2>&1
+        AGENTICA_ML_XLA_PLUGIN= agentica tools/neuron_probe.agc {{ batches }} > ~/logs/probe-cpu-$n.log 2>&1
+      tags: [never, probe]
+    - name: tensor xla tests on neuron
+      ansible.builtin.shell: |
+        . ~/neuron.env; cd ml/tensor
+        agentica test --timing test/xla_test.agc > ~/logs/xla_test_neuron-$(date +%H%M%S).log 2>&1
+      tags: [never, test]
+    - name: bench_train (fit and compiled, sgd and adam) on neuron then cpu
+      ansible.builtin.shell: |
+        . ~/neuron.env; cd ml/train
+        out=~/logs/bench-$(date +%H%M%S).jsonl
+        for p in neuron cpu; do for m in fit compiled; do for o in sgd adam; do for b in {{ batches }}; do
+          [ $p = cpu ] && export AGENTICA_ML_XLA_PLUGIN=
+          r=$(agentica --max-steps 100000000000 tools/bench_train.agc xla-cpu $m $o $b 2>>$out.err | tail -n 1)
+          echo "{\"plugin\": \"$p\", \"mode\": \"$m\", \"opt\": \"$o\", \"batch\": $b, \"result\": $r}" >> $out
+        done; done; done; done
+      async: 7200
+      poll: 30
+      tags: [never, bench]
+    - name: extra - cached first step, bf16 auto-cast (neuron), PyTorch eager CPU (torch-neuronx venv, 4 threads)
+      ansible.builtin.shell: |
+        . ~/neuron.env; cd ml/train
+        out=~/logs/extra-$(date +%H%M%S).jsonl
+        for o in sgd adam; do for b in {{ batches }}; do
+          r=$(agentica --max-steps 100000000000 tools/bench_train.agc xla-cpu compiled $o $b 2>>$out.err | tail -n 1)
+          echo "{\"what\": \"neuron cached\", \"opt\": \"$o\", \"batch\": $b, \"result\": $r}" >> $out
+          r=$(NEURON_CC_FLAGS="--auto-cast matmult" agentica --max-steps 100000000000 tools/bench_train.agc xla-cpu compiled $o $b 2>>$out.err | tail -n 1)
+          echo "{\"what\": \"neuron bf16 matmult\", \"opt\": \"$o\", \"batch\": $b, \"result\": $r}" >> $out
+          r=$(OMP_NUM_THREADS=4 /opt/aws_neuronx_venv_torch_neuronx_2_14_0/bin/python -I ../benchmarks/training/bench_torch.py eager $o $b 30 2>>$out.err | tail -n 1)
+          echo "{\"what\": \"pytorch eager cpu\", \"opt\": \"$o\", \"batch\": $b, \"result\": $r}" >> $out
+        done; done
+      async: 3600
+      poll: 30
+      tags: [never, extra]
+    - name: gspmd - 2 NeuronCores, matmul split by columns and rows (Shardy text, own options)
+      ansible.builtin.shell: |
+        . ~/neuron.env; cd ml/tensor/tools
+        gcc -O1 -I ../native gspmd.c -ldl -lm -o /tmp/gspmd
+        for s in "8 16 32" "256 2048 2048" "1024 4096 4096"; do /tmp/gspmd "$AGENTICA_ML_XLA_PLUGIN" $s 2>&1 | grep -vE "absl|^(W|I)0000"; done > ~/logs/gspmd-$(date +%H%M%S).log
+      tags: [never, gspmd]
+    - name: logs back to results/
+      ansible.posix.synchronize: { mode: pull, src: logs/, dest: "{{ here }}/results/" }
+      tags: always

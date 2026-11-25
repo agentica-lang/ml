@@ -1,0 +1,72 @@
+Wed Nov 25 11:22:15 AM UTC 2026
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605736.372926    3396 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+{"what": "open", "ms": 5468.227}
+I0000 00:00:1795605741.830110    3396 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+{"what": "compile add[4]", "ms": 1581.822}
+{"what": "run add[4]", "median_ms": 0.221}
+{"what": "run+read add[4]", "mean_ms": 0.326}
+{"what": "mlp forward", "batch": 64, "compile_ms": 1699.536, "median_ms": 0.279}
+{"what": "mlp forward", "batch": 256, "compile_ms": 1631.901, "median_ms": 0.333}
+{"what": "mlp forward", "batch": 1024, "compile_ms": 1689.579, "median_ms": 0.411}
+	Command being timed: "agentica --max-steps 100000000000 tools/neuron_probe.agc 64 256 1024"
+	User time (seconds): 9.60
+	System time (seconds): 7.05
+	Percent of CPU this job got: 118%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:14.04
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 252184
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 39
+	Minor (reclaiming a frame) page faults: 367931
+	Voluntary context switches: 28937
+	Involuntary context switches: 1021
+	Swaps: 0
+	File system inputs: 2920
+	File system outputs: 9152
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

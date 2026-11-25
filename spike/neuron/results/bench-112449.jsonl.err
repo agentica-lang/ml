@@ -1,0 +1,972 @@
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605890.827906    5073 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605896.189274    5073 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605900.384234    5165 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605906.723633    5165 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605911.113724    5253 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605918.542485    5253 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605923.183552    5357 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605928.760640    5357 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605934.642243    5443 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605940.467863    5443 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605946.479661    5529 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605951.948796    5529 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605958.096220    5624 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605964.500320    5624 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605968.598661    5709 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605976.290203    5709 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605980.552706    5794 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605986.841225    5794 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795605991.303179    5888 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795605997.610862    5888 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795606003.411444    5974 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795606009.856445    5974 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795606015.802162    6069 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+I0000 00:00:1795606022.407453    6069 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606028.451175    6155 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606030.339164    6196 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606032.415948    6237 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606035.150318    6278 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606037.132915    6319 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606039.317099    6360 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606042.205553    6401 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606044.088764    6451 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606046.153301    6492 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606048.814944    6533 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606050.802105    6574 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1795606052.972440    6615 pjrt_c_api_cpu_internal.cc:59] cpu_device_count set via create_options: 1

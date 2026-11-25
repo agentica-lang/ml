@@ -1,0 +1,12 @@
+Platform 'neuron' is experimental and not all JAX functionality may be correctly supported!
+[NeuronCore(id=0), NeuronCore(id=1)]
+module @jit__lambda attributes {mhlo.num_partitions = 2 : i32, mhlo.num_replicas = 1 : i32} {
+  sdy.mesh @mesh = <["m"=2]>
+  func.func public @main(%arg0: tensor<8x16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {}]>}, %arg1: tensor<16x32xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"m"}]>}) -> (tensor<8x32xf32> {jax.result_info = "result", sdy.sharding = #sdy.sharding<@mesh, [{}, {"m"}]>}) {
+    %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<8x16xf32>, tensor<16x32xf32>) -> tensor<8x32xf32>
+    return %0 : tensor<8x32xf32>
+  }
+}
+
+col compile 1.605 s run 0.277 ms gap 4.8e-07
+row compile 1.409 s run 0.516 ms gap 4.8e-07

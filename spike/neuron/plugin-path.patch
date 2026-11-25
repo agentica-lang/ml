@@ -1,0 +1,17 @@
+diff --git a/tensor/src/xla.agc b/tensor/src/xla.agc
+index 84e8033..8adf8b8 100644
+--- a/tensor/src/xla.agc
++++ b/tensor/src/xla.agc
+@@ -96,7 +96,11 @@ end
+ def wheel_dir(w: Wheel) -> Result[String] = Path.join([try cache_dir(), w.sha256])
+ 
+ ## Where the plugin of this machine is once installed.
+-def plugin_path() -> Result[String] = Path.join([try wheel_dir(try wheel()), PLUGIN])
++def plugin_path() -> Result[String]
++  given = set_env("AGENTICA_ML_XLA_PLUGIN")
++  return ok(given) if !given.empty?
++  Path.join([try wheel_dir(try wheel()), PLUGIN])
++end
+ 
+ ## True when `device` can hold XLA tensors here: the module is built, the device is the CPU, and the plugin loads.
+ def available(device: Types.Device) -> Bool

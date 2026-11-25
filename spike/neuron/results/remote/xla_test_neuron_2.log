@@ -1,0 +1,60 @@
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / an mlp forward compiled by xla matches the reference
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / chained training steps compiled by xla match the reference
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / value and grad on xla matches the reference
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / steps that close old tensors keep no buffer alive
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / a retrace and a closed function compile nothing again
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / gather and adam step compiled by xla match the reference
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / a gather index outside the rows is an error
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / a narrow index dtype gathers from a larger table and checks its bounds
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / an adam step consumes the moments it updates
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / adam steps that consume their moments keep no buffer alive
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / an eager op on xla is an error naming it
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / the creation ops round trip
+PASS /home/ubuntu/ml/tensor/test/xla_test.agc / a device other than the cpu is an error
+timing: 5531 ms
+  5498 ms of scenarios /home/ubuntu/ml/tensor/test/xla_test.agc (13 scenarios)
+slowest scenarios:
+  5261 ms /home/ubuntu/ml/tensor/test/xla_test.agc / an mlp forward compiled by xla matches the reference
+  73 ms /home/ubuntu/ml/tensor/test/xla_test.agc / a narrow index dtype gathers from a larger table and checks its bounds
+  48 ms /home/ubuntu/ml/tensor/test/xla_test.agc / gather and adam step compiled by xla match the reference
+  41 ms /home/ubuntu/ml/tensor/test/xla_test.agc / chained training steps compiled by xla match the reference
+  34 ms /home/ubuntu/ml/tensor/test/xla_test.agc / value and grad on xla matches the reference
+13 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors

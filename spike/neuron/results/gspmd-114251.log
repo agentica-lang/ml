@@ -1,0 +1,42 @@
+api 0.104
+initialized
+client
+devices: 2
+  0: kind NC_v2, NeuronCore(id=0, process_index=0, local_id=0)
+  0: kind NC_v2, NeuronCore(id=0, process_index=0, local_id=0), memory limit 17179869184 bytes
+  1: kind NC_v2, NeuronCore(id=1, process_index=0, local_id=1)
+  1: kind NC_v2, NeuronCore(id=1, process_index=0, local_id=1), memory limit 17179869184 bytes
+one device: compile 0.201 s, run 0.178 ms (B=8 K=16 N=32)
+compiling col
+compiled col
+running col
+column split: compile 0.025 s, run 0.218 ms, gap 0
+row split: compile 0.050 s, run 0.422 ms, gap 6.3e-08
+api 0.104
+initialized
+client
+devices: 2
+  0: kind NC_v2, NeuronCore(id=0, process_index=0, local_id=0)
+  0: kind NC_v2, NeuronCore(id=0, process_index=0, local_id=0), memory limit 17179869184 bytes
+  1: kind NC_v2, NeuronCore(id=1, process_index=0, local_id=1)
+  1: kind NC_v2, NeuronCore(id=1, process_index=0, local_id=1), memory limit 17179869184 bytes
+one device: compile 0.201 s, run 0.329 ms (B=256 K=2048 N=2048)
+compiling col
+compiled col
+running col
+column split: compile 0.024 s, run 0.313 ms, gap 0
+row split: compile 0.049 s, run 0.413 ms, gap 2.3e-07
+api 0.104
+initialized
+client
+devices: 2
+  0: kind NC_v2, NeuronCore(id=0, process_index=0, local_id=0)
+  0: kind NC_v2, NeuronCore(id=0, process_index=0, local_id=0), memory limit 17179869184 bytes
+  1: kind NC_v2, NeuronCore(id=1, process_index=0, local_id=1)
+  1: kind NC_v2, NeuronCore(id=1, process_index=0, local_id=1), memory limit 17179869184 bytes
+one device: compile 0.226 s, run 2.545 ms (B=1024 K=4096 N=4096)
+compiling col
+compiled col
+running col
+column split: compile 0.039 s, run 1.779 ms, gap 0
+row split: compile 0.073 s, run 2.147 ms, gap 7.5e-07

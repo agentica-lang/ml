@@ -1,0 +1,14 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1795606541.403466    8413 neuronpjrt.cc:2284] Use PJRT C-API 0.104 as client did not specify a PJRT C-API version
+api 0.104
+initialized
+client
+devices: 2
+  0: kind NC_v2, NeuronCore(id=0, process_index=0, local_id=0)
+  0: kind NC_v2, NeuronCore(id=0, process_index=0, local_id=0), memory limit 17179869184 bytes
+  1: kind NC_v2, NeuronCore(id=1, process_index=0, local_id=1)
+  1: kind NC_v2, NeuronCore(id=1, process_index=0, local_id=1), memory limit 17179869184 bytes
+I0000 00:00:1795606546.858469    8413 neuronpjrt.cc:394] Registered Neuron auto-sharding: platform=2.0, devices_per_node=32
+one device: compile 1.557 s, run 0.185 ms (B=8 K=16 N=32)
+corrupted size vs. prev_size
+timeout: the monitored command dumped core

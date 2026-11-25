@@ -1,0 +1,6 @@
+one device: compile 1.626 s, run 0.328 ms (B=256 K=2048 N=2048)
+column split: compile 1.411 s, run 0.484 ms, gap 0
+row split: compile 1.459 s, run 0.521 ms, gap 2.3e-07
+one device: compile 2.045 s, run 2.544 ms (B=1024 K=4096 N=4096)
+column split: compile 1.640 s, run 4.461 ms, gap 0
+row split: compile 1.649 s, run 4.717 ms, gap 7.5e-07

@@ -1,0 +1,53 @@
+[WARNING]: Found both group and host with same name: neuron
+
+PLAY [neuron] ******************************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [neuron]
+
+TASK [ml tree of origin/main + plugin-path.patch (local)] **********************
+ok: [neuron -> localhost]
+
+TASK [ansible.builtin.file] ****************************************************
+ok: [neuron] => (item=~/agc)
+ok: [neuron] => (item=~/logs)
+
+TASK [agentica 0.38.0] *********************************************************
+ok: [neuron]
+
+TASK [ansible.builtin.unarchive] ***********************************************
+skipping: [neuron]
+
+TASK [ml tree] *****************************************************************
+changed: [neuron]
+
+TASK [ansible.builtin.copy] ****************************************************
+changed: [neuron]
+
+TASK [agentica install, the CPU XLA plugin (baseline)] *************************
+ok: [neuron]
+
+TASK [env file] ****************************************************************
+ok: [neuron]
+
+TASK [root cron safety line (only when missing)] *******************************
+ok: [neuron]
+
+TASK [ansible.builtin.cron] ****************************************************
+skipping: [neuron]
+
+TASK [bench_train (fit and compiled, sgd and adam) on neuron then cpu] *********
+ASYNC POLL on neuron: jid=j214460940456.5041 started=1 finished=0
+ASYNC POLL on neuron: jid=j214460940456.5041 started=1 finished=0
+ASYNC POLL on neuron: jid=j214460940456.5041 started=1 finished=0
+ASYNC POLL on neuron: jid=j214460940456.5041 started=1 finished=0
+ASYNC POLL on neuron: jid=j214460940456.5041 started=1 finished=0
+ASYNC OK on neuron: jid=j214460940456.5041
+changed: [neuron]
+
+TASK [logs back to results/] ***************************************************
+changed: [neuron]
+
+PLAY RECAP *********************************************************************
+neuron                     : ok=11   changed=4    unreachable=0    failed=0    skipped=2    rescued=0    ignored=0   
+
