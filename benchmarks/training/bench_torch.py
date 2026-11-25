@@ -8,7 +8,7 @@
 # (eager in float64, the reference of the loss curve). Prints one JSON line like bench_train.agc.
 #
 # Pinned (the venv of `run.sh setup`: torch 2.6.0 from the PyTorch CPU wheel index, --only-binary :all:): Python 3.13.5,
-# torch 2.6.0+cpu, filelock 4.2.4, fsspec 2026.9.0, Jinja2 3.1.6, MarkupSafe 3.0.3, mpmath 1.3.0, networkx 3.7,
+# torch 2.6.0+cpu and, as installed on the run date, filelock 4.2.4, fsspec 2026.9.0, Jinja2 3.1.6, MarkupSafe 3.0.3, mpmath 1.3.0, networkx 3.7,
 # setuptools 78.1.0, sympy 1.13.1, typing_extensions 4.16.0; there is no numpy. Threads: OMP_NUM_THREADS and
 # set_num_threads. Eager uses torch.optim's default (foreach, not fused=True). The compile step pays one extra `copy_`
 # of each parameter into the leaf after the update, which the eager step does not.

@@ -1,13 +1,14 @@
 #!/bin/sh
 # Training benchmarks of benchmarks/training/README.md. Never in CI.
 #
-#   sh benchmarks/training/run.sh setup                  the PyTorch and JAX venvs, pinned, --only-binary :all:
+#   sh benchmarks/training/run.sh setup                  the PyTorch and JAX venvs: torch, jax and jaxlib pinned,
+#                                                        their dependencies as installed that day (setup prints them)
 #   sh benchmarks/training/run.sh check                  every row at batch 4 and 8, two steps: the rows run and agree
 #   sh benchmarks/training/run.sh run [OUT]              the full grid into OUT (results.jsonl), one JSON line per cell
 #   sh benchmarks/training/run.sh cell STACK OPT BATCH STEPS RUN   one cell again: its line, to add to OUT (RUN 2)
 #   python3 -I benchmarks/training/table.py OUT          the tables and the loss-curve verdict
 #
-# The threads are 8 everywhere, the threads of the machine: THREADS must be `nproc --all`. ggml takes every online CPU
+# The threads are 8 everywhere, the threads of the machine: THREADS must be the online CPUs. ggml takes every online CPU
 # (tensor/native/ggml.c, `sysconf(_SC_NPROCESSORS_ONLN)`), PyTorch and libtorch take OMP_NUM_THREADS, which run.sh
 # sets, and JAX's CPU pool is XLA's own default (all the cores; its size is not checked here). `run` refuses to start
 # when the load average is above 1.0, and every line records the load average at its start. The venvs are `venv-torch`
@@ -23,7 +24,8 @@ jax_venv=$cache/venv-jax
 torch_py=$torch_venv/bin/python
 jax_py=$jax_venv/bin/python
 
-[ "$threads" = "$(nproc --all)" ] || { echo "run.sh: THREADS is $threads, the machine has $(nproc --all) threads" >&2; exit 1; }
+online=$(getconf _NPROCESSORS_ONLN)
+[ "$threads" = "$online" ] || { echo "run.sh: THREADS is $threads, the machine has $online online CPUs" >&2; exit 1; }
 export OMP_NUM_THREADS=$threads
 
 setup() {
@@ -96,8 +98,9 @@ case ${1:-} in
   setup) setup ;;
   check)
     out=$(mktemp)
-    grid "4 8" 2 "$out" && python3 -I "$here/table.py" "$out" 6
-    rm -f "$out" "$out.tmp"
+    trap 'rm -f "$out" "$out.tmp"' EXIT
+    grid "4 8" 2 "$out"
+    python3 -I "$here/table.py" "$out" 6
     ;;
   run)
     load=$(cut -d' ' -f1 /proc/loadavg)

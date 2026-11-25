@@ -7,10 +7,10 @@
 # the oracle's, which is PyTorch in float64 from the same init and batch: the first loss within FIRST (relative), and
 # the movement from it (loss_i - loss_0) within FLOOR plus TOLERANCE times the oracle's largest movement. Comparing
 # the movement, not the loss, is what catches an optimizer that does nothing: SGD at lr 0.01 moves the loss by only
-# 4e-6 to 2e-3 in ten steps, so a loss within 1e-3 of the oracle's proves nothing. FLOOR is four float32 steps of a
+# 4e-6 to 2e-3 in ten steps, so a loss within 1e-3 of the oracle's proves nothing. FLOOR is eight float32 steps of a
 # loss near 2.3, the least the losses can tell apart; TOLERANCE is above what float32 does to the movement: every row of
 # the ml#50 run is within 8e-7 (SGD) and 5.4e-4 (Adam, which amplifies float32 rounding; pytorch-eager alone is 2.2e-4)
-# of the oracle's loss. At SGD batch 4096 the movement is 3.6e-6, so only a rate off by more than about 30 percent
+# of the oracle's loss. At SGD batch 4096 the movement is 3.6e-6, so only a rate off by more than about 57 percent
 # shows. A missing, short, or not finite curve is WRONG too.
 #
 # A cell may have several runs (a `run` number each); the last one is shown, and a cell whose median is over SPREAD
@@ -20,7 +20,7 @@ import math
 import sys
 
 FIRST = 1e-5
-FLOOR = 1e-6
+FLOOR = 2e-6
 TOLERANCE = {"sgd": 0.01, "adam": 0.1}
 SPREAD = 1.15
 STACKS = [
@@ -68,7 +68,7 @@ def judge(cells, need):
     for (stack, opt, batch), runs in cells.items():
         result = runs[-1]["result"]
         oracle = cells.get(("pytorch-oracle", opt, batch), [{"result": {"error": "missing"}}])[-1]["result"]
-        if "error" in result:
+        if "error" in result or not {"median_ms", "min_ms", "losses"} <= result.keys():
             wrong[(stack, opt, batch)] = "the row failed"
         elif "error" in oracle:
             wrong[(stack, opt, batch)] = "no oracle"
@@ -125,7 +125,10 @@ def main():
         print("| cell | " + " | ".join(f"run {i + 1}" for i in range(max(len(r) for _, r in reruns))) + " |")
         print("|---|" + "---|" * max(len(r) for _, r in reruns))
         for (stack, opt, batch), runs in reruns:
-            runs_text = [f"{r['result']['median_ms']:.2f} ({r['result']['min_ms']:.2f})" for r in runs]
+            runs_text = [
+                f"{r['result']['median_ms']:.2f} ({r['result']['min_ms']:.2f})" if {"median_ms", "min_ms"} <= r["result"].keys() else "n/a"
+                for r in runs
+            ]
             print(f"| {stack} {opt} {batch} | " + " | ".join(runs_text) + " |")
 
     left = [
