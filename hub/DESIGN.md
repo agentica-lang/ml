@@ -11,7 +11,9 @@ Hub.open(path) -> Result[Checkpoint]        a .safetensors file, a .gguf file, o
 Hub.names(c) -> List[String]                sorted
 Hub.has?(c, name) -> Bool
 Hub.tensor(c, name, backend, dtype = F32) -> Result[Tensor]   F32/F16/BF16 as F32 (F16 with dtype F16: ggml half weight), else the file's dtype (F64 on ggml: F32)
+Hub.tensors(c, backend) -> Result[Map[String, Tensor]]   every tensor, read as `tensor` reads one
 Hub.shape(c, name) -> Result[List[Int]]     from the header
+Hub.dtype(c, name) -> Result[String]        how the file stores it, from the header
 Hub.source(c, name) -> Result[Shards.Source]   where an F32/F16/BF16 tensor's values are in its file (for the writer)
 Hub.metadata(c) -> Map[file, Map[String, String]]   each shard's __metadata__
 
@@ -80,7 +82,7 @@ The test fixtures drop the `model.` part of the prefix
   least `HALF_MIN_ELEMENTS` (100000) values is read as a half weight
   (`tensor/DESIGN.md` §7), everything else stays `F32`; a smaller matrix gains
   nothing by halving. Only the tokens of a model are loaded this way, not its
-  positional tables, which `Nn.positions` slices. `Nn.embedding` widens the
+  positional tables, which `Nn.positional` slices. `Nn.embedding` widens the
   rows of a half table with `to_dtype`. Another backend than ggml, or a dtype
   other than `F32` or `F16`, is an error. A file that is not `F32`, `F16` or
   `BF16` (an `F64` one) has no half form and stays `F32`. A `BF16` value under
@@ -103,7 +105,7 @@ The test fixtures drop the `model.` part of the prefix
 
 ## GGUF
 
-`gguf.agc` reads version 3 files and, for now, the `qwen3` architecture only
+`gguf.agc` reads version 3 files and the `qwen3` architecture only
 (another one is an error that names it). Little-endian files only, which is
 every file in use. `Hub.open` takes a file for GGUF by its `.gguf` extension,
 not by its magic. It is the same design as safetensors:
@@ -179,8 +181,7 @@ Measured on the machine of `benchmarks/README.md` (Ryzen 5 3550H), F32 weights:
 - `open` reads the header only.
 - A float tensor on libtorch or ggml costs one `pread` and one copy into the
   tensor's memory, and no Agentica value. Whisper tiny (151 MB) loads in
-  0.3-0.45 s and the process peaks under 0.5 GB while it loads, against 23 s
-  and 3 GB when each float went through `Float.from_bits32` and a list.
+  0.3-0.45 s and the process peaks at about 0.5 GB while it loads.
   Whisper medium (3 GB of F32) loads in about 8 s on the CPU and 24 s on
   Vulkan, and the process peaks at 4 GB on the CPU (the weights of Vulkan are
   outside the process).

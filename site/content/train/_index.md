@@ -76,7 +76,7 @@ adam = Optim.Optimizer.Adam(Optim.Adam(lr: 0.0001, schedule: Optim.Schedule.Warm
 
 The optimizers are pure: `Optim.step(state, params, grads, scalars = [])` returns a new state and new parameters, and changes none of its arguments. `Optim.init(optimizer, params)` makes the state. `fit` does this for you, and compiles the step so that the moments are updated where they lie: the new state's moments are the old ones' tensors, which `fit` owns. The same holds for a step you compile with `Trace.compile` (the tensors of the moments you pass are consumed).
 
-`Optim.step_inputs(state)` gives the numbers that the next step depends on, one list per input of the step: SGD's learning rate, or for Adam the 7 numbers of `Tensor.adam_step` (the learning rate with its schedule, `beta1`, `beta2`, `eps`, the weight decay, and the two bias corrections); AdamW has two such lists, the second without decay for the parameters that do not decay. `fit` gives them to the step as inputs, so a learning rate that changes at every step is not a new graph on ggml, and on ggml the Adam update of each parameter is one `ggml_opt_step_adamw` kernel. `Train.stablehlo` takes the same numbers. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those inputs after the moments (`Trace.stablehlo` in the tensor page).
+`Optim.step_inputs(state)` gives the numbers that the next step depends on, one list per input of the step: SGD's learning rate, or for Adam the 7 numbers of `Tensor.adam_step` (the learning rate with its schedule, `beta1`, `beta2`, `eps`, the weight decay, and the two bias corrections); AdamW has two such lists, the second without decay for the parameters that do not decay. `fit` gives them to the step as inputs, so a learning rate that changes at every step is not a new graph on ggml, and on ggml the Adam update of each parameter is one `ggml_opt_step_adamw` kernel. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those inputs after the moments (`Trace.stablehlo` in the tensor page).
 
 `Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 
@@ -183,7 +183,7 @@ LoRA trains without dropout: `Lora.params` refuses an adapter whose `dropout` is
 
 ## Limits
 
-- The loss is traced once for each batch shape, not on every step. A backend that does not compile (the reference, libtorch) still evaluates the traced graph node by node on every step.
+- A backend that does not compile (the reference, libtorch) still evaluates the traced graph node by node on every step.
 - The loss must return a float scalar. An op with no backward rule, listed on the [tensor page](../tensor/_index.md), makes `fit` fail.
 - On `Ggml`, the step is one compiled graph with at most 512 outputs: the loss, the new parameters and the optimizer's moments. That allows 170 parameters with Adam or AdamW, 255 with momentum SGD and 511 with plain SGD.
 - The losses and the optimizers use only ops that ggml supports, so a batch and its step run on `Ggml` when the dataset is on `Ggml`.
@@ -193,4 +193,4 @@ LoRA trains without dropout: `Lora.params` refuses an adapter whose `dropout` is
 
 A model here is a loss function of a parameter list and a batch. `Train.fit` traces that function, and an optimizer updates the parameters from its gradients.
 
-Each step is one compiled evaluation. `fit` traces the loss, its gradients and the optimizer update once for each batch shape (`Trace.compile`), and runs them together on every batch of that shape. So the value, the gradients and the new parameters come from one run of the graph.
+Each step is one compiled evaluation: the loss, its gradients and the optimizer update are one graph, so the value, the gradients and the new parameters come from one run.

@@ -1,10 +1,10 @@
 # nn — design
 
-Functional layers over `tensor/`, forward only (inference). Depends only on
-`tensor/` (a member of the same workspace, read from `../tensor`). The
-reference and libtorch run a layer eagerly; ggml runs it traced only: the
-layer is called on `Trace` tensors and the graph goes to `Trace.eval` or
-`Trace.compile` (`tensor/DESIGN.md` §10).
+Functional layers over `tensor/`. Depends only on `tensor/` (a member of the
+same workspace, read from `../tensor`). The reference and libtorch run a layer
+eagerly; ggml and XLA run it traced only: the layer is called on `Trace`
+tensors and the graph goes to `Trace.eval` or `Trace.compile`
+(`tensor/DESIGN.md` §10).
 
 ## API
 
@@ -55,6 +55,9 @@ Nn.init_dense / init_layer_norm / init_embedding / init_attention /
   init_mlp / init_encoder_block / init_decoder_block / init_encoder_stack /
   init_decoder_stack(..., seed, backend, options?) -> Result[layer]
 Init.uniform(shape, limit, seed, backend), Init.glorot_uniform(shape, seed, backend)
+
+Padded (kv.agc)   the padded KV cache that the decoding models share: capacity, reach, reached,
+                  padded_mask, spread_of, written
 ```
 
 Every function returns `Result`; the checks are `tensor/`'s, plus the few
@@ -64,7 +67,7 @@ that are the layer's own (rank of `positional`, table length, heads).
 
 - **A layer is a struct of parameters and a function `layer(params, x)`.**
   No classes, no state, no model object: a model is a struct of layer
-  structs, and a training step will return new structs. Structs over maps
+  structs, and a training step returns new structs. Structs over maps
   because the fields are fixed and the checker then knows them.
 - **No math of its own.** Every layer composes `tensor/`'s public calls,
   mostly its derived ops (`linear`, `layer_norm`, `rms_norm`, `embedding`,
@@ -89,19 +92,19 @@ that are the layer's own (rank of `positional`, table length, heads).
   blocks. Each default is the old behaviour, so a struct built field by field
   (as `hub/` does) keeps working. `BlockOptions` carries the same choices to
   `init_*`; it is not a layer. The cross-attention of a decoder block takes
-  only its `bias`. A loader that rebuilds a layer (`hub/`, ml#78) must use
+  only its `bias`. A loader that rebuilds a layer (`hub/`) must use
   `.with(...)` on the struct it has, not a constructor call, or it drops the
   options added later. The head width is the width of `query` over `heads`,
   so loaded weights may have a head width other than `width / heads`
   (Qwen3); `init_attention` makes only `width / heads`.
-- **`project` and `attend` split attention for a cache.** `nn/` has no KV cache,
-  but a decoder that keeps one must rotate the new token's key at its own
+- **`project` and `attend` split attention for a cache.** The layers hold no
+  cache (`Padded` has the helpers the models share), but a decoder that keeps one must rotate the new token's key at its own
   position and read the cached keys as they are: `project` takes the integer
   `positions` (queries) and `memory_positions` (keys; the queries' when only
   those are given: only `positions` means self-attention, pass
   `memory_positions` for cross-attention), and `attend` takes the heads or a
   cache of them.
-  `attention` is their composition, with the same results as before.
+  `attention` is their composition.
 - **Attention is `Tensor.attention`.** `attention` splits the projections into
   heads with `reshape` and `permute`, applies the query and key norms, then
   `rope` (positions `0...seq` of each input, so a cross-attention gets rope
@@ -123,14 +126,14 @@ that are the layer's own (rank of `positional`, table length, heads).
   differ freely. With fewer queries than keys the mask ends on the last key
   (the end-aligned mask of a decode step); more queries than keys is an
   error, and on `Reference` `q * k` of the mask is at most 1,048,576
-  (`Tensor.full`). It assumes an `F32` or `F64` compute dtype. There is no KV
-  cache and no decode loop: each call recomputes every position.
+  (`Tensor.full`). It assumes an `F32` or `F64` compute dtype. `decoder_block`
+  has no KV cache and no decode loop: each call recomputes every position.
 - **Weights are `[in, out]`** (`x w`, as `Tensor.linear` takes them), or
   `[out, in]` with `Dense.out_in`. Hugging Face and PyTorch checkpoints store
   `[out, in]`, and `hub/` keeps that layout: `dense` multiplies by its
   transpose, which ggml reads with no copy (a weight `[in, out]` is copied
-  transposed on every run: 171 of the 296 ms of kernels of a whisper-medium
-  step on Vulkan). `Tensor.linear(..., out_in)` reads it as it is on ggml and
+  transposed on every run: copies were 187 of the 296 ms of kernels of a
+  whisper-medium step on Vulkan, `benchmarks/README.md`). `Tensor.linear(..., out_in)` reads it as it is on ggml and
   libtorch.
 - **Attention costs what `tensor/` costs.** `Tensor.attention` is one op on
   every backend (a fused kernel on ggml and libtorch), so a layer is a few

@@ -9,20 +9,21 @@ the grad-in-Agentica decision),
 [agentica#1091](https://github.com/agentica-lang/agentica/issues/1091)
 (native arenas; see §8), and
 [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
-(opaque native resources that can live in data and cross modules; see §2 and §7).
+(opaque native resources that can live in data and cross modules; closed
+without them, see §1).
 
 ## 1. Goals and scope
 
 - **Training and inference.** `tensor/` and `nn/` (forward) run over
-  `reference` (the pure Agentica oracle) and libtorch (eager); `train/`
-  (losses, SGD/Adam, a training loop) and the traced
-  `grad`/`value_and_grad` it needs sit on the same primitives (§10).
+  `reference` (the pure Agentica oracle), libtorch (eager), and ggml and XLA
+  (compiled traces, §7); `train/` (losses, SGD/Adam, a training loop) and the
+  traced `grad`/`value_and_grad` it needs sit on the same primitives (§10).
 - Every backend is **forward-only**. `grad` lives in Agentica over a traced
   graph (ml#1 key decision, as Nx does), so per-backend autograd is out.
 - The backend interface is small, and one shared conformance suite checks
   every backend against the reference (§11).
 - **`tensor/` declares the native module of every backend it dispatches to**
-  (`torch`, and `ggml` for `Backend.Ggml`). A `Tensor` carries the backend's
+  (`torch`, `ggml` and `xla`). A `Tensor` carries the backend's
   handle, and a native handle is a
   `resource`: resources are nominal to the `extern module` block that declares
   them and cannot cross into another module, so `Handle` (§2) can only name a
@@ -31,10 +32,13 @@ the grad-in-Agentica decision),
   a machine without libtorch still checks, formats and tests with the arm
   answering `error("backend not available")`; `Tensor.available/1` answers the
   same question before a call does. The cost is that `tensor/` ships the thin
-  layer of libtorch and its build table.
-  [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918) is the
-  change that lets a handle be opaque, at which point the backend code moves
-  back out into its own package and this bullet goes away.
+  layer of each backend and its build table.
+  [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918) asked
+  for a resource that crosses modules and was closed without it: a resource is
+  still nominal to its block. Agentica's answer is a data type generic over the
+  handle (`Tensor[H]`, `Ops[H]`) that the backend fills in
+  (`native-modules.md` of its programming skill). `tensor/` does not use it, so
+  the backends stay in this package.
 
 ## 2. Types
 
@@ -43,24 +47,25 @@ Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool | Q8_0   # Q8_0: a 
 Device  = Cpu | Vulkan(Int)                                    # enum; Vulkan(i): ggml's device i
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
-Backend = Reference | Torch(Device) | Trace | Ggml(Device)     # enum, see §7, §10
+Backend = Reference | Torch(Device) | Trace | Ggml(Device) | Xla(Device)   # enum, see §7, §10
 Handle  = Native(TensorHandle) | Plain(Data) | Traced(Node)
-        | Ggml(ggml TensorHandle)                              # enum, see §2, §8, §10
+        | Ggml(ggml TensorHandle) | Xla(Buffer)                # enum, see §2, §8, §10
 Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 ```
 
 - `Device` names where a backend computes: `Cpu`, or `Vulkan(i)`, the Vulkan
   device `i` in ggml's numbering. `Backend.Torch(Device)`, `Backend.Ggml(Device)`
   and every backend function take the device explicitly (§4). `Torch` and
-  `Reference` serve `Cpu` only and answer `error` for `Vulkan`; `Ggml` serves
-  both.
+  `Reference` serve `Cpu` only and answer `error` for `Vulkan`; `Xla` has
+  `Cpu` only (§7); `Ggml` serves both.
 - `Tensor` values are **immutable**; every op returns a new `Tensor`.
   A training step returns new parameters.
 - `handle` is `Native(TensorHandle)` on the libtorch backend (a
   `struct NAME_state *` + thread-safe `NAME_FREE`, C data only, never terms;
   valid only during the call, never stored), `Ggml(TensorHandle)` on the ggml
   backend (the resource of `extern module "ggml"` in `src/ggml_native.agc`: a
-  ggml context and the backend buffer of one tensor on its device), and
+  ggml context and the backend buffer of one tensor on its device),
+  `Xla(Buffer)` on XLA (a PJRT buffer, `src/xla_native.agc`), and
   `Plain(Data)` on `reference`, where `Data` is plain Agentica data. `TensorHandle` is the resource the
   `extern module "torch"` block of `src/native.agc` declares: a resource is
   nominal to its block, so the handle type has to be the concrete one and it
@@ -70,7 +75,8 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
   native-gen regenerates the header; blocking work is `compute def` on the
   compute pool; `List`/`Map` cross via cursors/builders).
 - **Dtype rule:** numeric compute is `F32`; `F16`
-  and `F64` weights are converted to it on load (§6, lossy for `F64`). Two
+  and `F64` weights are converted to it on load (§6, lossy for `F64`), except
+  the half and `Q8_0` weights that ggml keeps as they are (§7). Two
   kinds of non-`F32` compute tensors are required by the op set itself: `Bool`
   masks (`eq`, `lt`, the condition of `where`) and integer index tensors
   (`gather` indices, `argmax` output). The other table entries are checkpoint
@@ -159,8 +165,7 @@ groups).
 Random: none (dropout is identity at inference).
 Movement: `to_dtype, to_device, copy, contiguous`.
 
-Deliberately missing: `softmax`, attention, `silu`, beam search — all
-derived (§3.2). `layer_norm` and `rms_norm` are derived too, and a trace
+Deliberately missing: `softmax`, `silu`, beam search — all derived (§3.2). `layer_norm` and `rms_norm` are derived too, and a trace
 keeps each as one node. The exact (`erf`) GELU is `gelu_erf`, outside this
 set; `Trace` records it as one node and differentiates it.
 
@@ -224,28 +229,24 @@ Tensor.backend(t) -> Backend                      # no native call
   and BF16 widened in chunks) and no value crosses as a list. The tensor is
   `F32`, the compute dtype (§2), or with `dtype: F16` a half weight or with
   `dtype: Q8_0` a quantized weight (ggml only, §7). A `format: Q8_0` range
-  (ggml's blocks of 32 values: a binary16 scale and 32 signed bytes, 34
-  bytes) loads as `F32` on every backend, each value the scale times the
-  byte, as ggml dequantizes it; `convert_file` does not take it; a short file, a bad offset or a missing file
+  loads as `F32` on every backend, as ggml dequantizes it; `convert_file`
+  does not take it; a short file, a bad offset or a missing file
   is an `error`, checked in C against the size of the file. `Reference` reads
   the bytes in Agentica (`File.seek` and `File.read_bytes`, `src/file_range.agc`)
   and decodes them there, which is slow on a large file. ggml takes it through
   one host copy on Vulkan.
-- The ggml CPU backend runs on the physical cores (`native/ggml.c`: the distinct
-  `thread_siblings_list` of the CPUs the process may run on on Linux,
-  `hw.physicalcpu` on macOS, else the CPUs the process may run on or the online
-  ones; at most ggml's 512 threads). ggml's threads spin while
-  they wait, so a second thread on a core only adds stalls when the machine is
-  busy. `TENSOR_THREADS=n` (a positive integer) sets it; `Lower.cpu_threads()`
-  says what a process got.
+- The ggml CPU backend runs one thread per physical core (`native/ggml.c`),
+  not per hardware thread: ggml's threads spin while they wait, so a second
+  thread on a core only adds stalls when the machine is busy. `TENSOR_THREADS=n`
+  (a positive integer, at most ggml's 512) sets it; `Lower.cpu_threads()` says
+  what a process got.
 - `TENSOR_LOAD=agentica` (an environment variable) makes the native
   backends take the Agentica read too: Agentica reads the range and passes
   the `Bytes` to the native `from_bytes`, which reads them in place
   (`an_get_bytes`, no copy on entry) and widens them into the backend buffer
   with the same code as `pread`'s. It is for small models, where the read in
-  Agentica costs little: it is slower and peaks higher than the native `pread`
-  (whisper-tiny on libtorch: 0.5-0.6 s and 0.54 GB, against 0.33-0.36 s and
-  0.42-0.49 GB). The default stays the native `pread`.
+  Agentica costs little: it is slower and peaks higher than the native `pread`,
+  which stays the default.
 - Every fallible op returns `Result`; shape/dtype mismatches are `error`,
   never a halt. Introspection is free (fields, no FFI round-trip).
 - Device is explicit, never a global: dispatch is **by value** (`t.backend`),
@@ -286,11 +287,12 @@ reference implementation gives for the same input.
   header with `dtype`, `shape`, `data_offsets` plus optional `__metadata__`,
   contiguous little-endian C-order buffer, no strides). No code runs at load;
   that property is the reason for choosing it.
-- Numeric tensors are converted to `F32` on load (lossy for `F64`), while
+- Numeric tensors are converted to `F32` on load (lossy for `F64`; ggml may
+  keep a half or `Q8_0` weight, §7), while
   integer index tensors and `Bool` masks keep their dtype because the op set
   needs them (§2).
-- The reader and the sharded index are `hub/` (`hub/DESIGN.md`). `gguf`
-  checkpoints stay with the whisper.cpp binding.
+- The reader and the sharded index are `hub/` (`hub/DESIGN.md`), which reads
+  GGUF files too.
 
 ## 7. Backend dispatch
 
@@ -322,10 +324,7 @@ end
   package owning the dispatch still has to carry both backends' handles in one
   type. An untyped handle (an `Int` into a registry) would break §8, where
   ownership, arena closing and `RUNTIME-NATIVE-CLOSED` all key on the resource
-  value. [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
-  is the change that makes the handle opaque; when it lands the module and its
-  wrapper move back out into `torch/`, and neither this `case` nor `Tensor`
-  changes shape.
+  value. A handle that stays nominal is why the module stays here (§1).
 - The module is `optional = true` and built from `native/torch.c` on first
   use, with libtorch found by the environment (`tools/build-torch.sh`). Where
   it is not built, `Backend.Torch(device)` answers
@@ -338,8 +337,7 @@ end
   in one process for oracle comparison. The considered alternative — a
   struct of functions per backend (object-style interface) — cannot carry a
   native handle across the package boundary while a resource is nominal to its
-  block; [agentica#1918](https://github.com/agentica-lang/agentica/issues/1918)
-  would unblock it, and with it the move of this module out of the package.
+  block (§1).
 - The libtorch backend is one `extern module` with a thin C layer (C++ as
   `tch-rs` does), declared as `[native.torch]`. Heavy third parties (ML
   engines, models) enter only as pinned git submodules under `third_party/`,
@@ -474,13 +472,11 @@ end
   exact (a binary16 scale times a byte has 19 significant bits).
 - **What a half weight costs.** The weight rounds once, at load. The
   activations of the product stay `F32` on ggml's CPU backend and on Vulkan at
-  the F32 choice (measured against a double-precision sum of the same weights:
-  7e-8 and 1e-7 apart). With fp16, the Vulkan default, Vulkan computes the
-  product in fp16, as it does for an `F32` weight: about 2e-3 apart on outputs
-  of 0.4, and an activation beyond 65504 overflows. A kernel that rounded the
-  activations to F16 would do the same, so a half-weight result is good to
-  about 2^-11 relative per product on any backend. `F32` is the exact path
-  and the default.
+  the F32 choice (1e-7 from a double-precision sum). With fp16, the Vulkan
+  default, Vulkan computes the product in fp16, as it does for an `F32`
+  weight, so a half-weight result is good to about 2^-11 relative per product
+  on any backend, and an activation beyond 65504 overflows. `F32` is the exact
+  path and the default.
 - The lowering computes in `F32`. `Bool` (0/1) and integers up to 32 bits are
   exact there below 2^24; a node of `F64` or `I64`, an `F16` node that is not
   a half weight (below), an integer `div`, a
@@ -507,20 +503,14 @@ end
   update row the sum of the rows that name its index, by one matmul with the
   `k x k` mask of equal indices (`O(k^2 width)`, exact: it adds only the rows
   of one index), and writes those sums into zero rows with `set_rows` (the
-  rows of one index write the same sum). The mask is made `kc` columns at a
-  time, at most 2^24 cells each, so at most 64 chunks. Anything else keeps
+  rows of one index write the same sum). Anything else keeps
   `get_rows_back`. `TENSOR_SCATTER_ADD=get_rows_back` keeps ggml's kernel, for
-  the benchmark (`tools/bench-scatter.agc`). In F32 on the Vega iGPU the
-  gradient of a lookup over 1000 x 64 with 256 indices takes 6.3 ms (6.7 ms
-  with `get_rows_back`), 10000 x 64 with 1024 indices 8.0 ms (57 ms), 50000 x
-  64 with 4096 indices 48 ms (959 ms) and 10000 x 64 with 8192 indices, near
-  `k = rows`, 162 ms (389 ms); the CPU takes 0.7, 2.1, 7.6 and 4.4 ms, and a
-  round trip of the updates and the answer through the CPU would take 1.3, 3.7,
-  11 and 6.0 ms, so the masked matmul is a stopgap, not the floor: with the
-  sched executor of #85, placing `scatter_add` on the CPU measured 11 ms
-  against 45 ms at 50000 x 64 here; revisit then. The long-term fix is an
-  upstream Vulkan kernel for `GGML_OP_GET_ROWS_BACK` with one thread per
-  (index, column), which would make this lowering unneeded),
+  the benchmark (`tools/bench-scatter.agc`). The masked matmul is a stopgap, not
+  the floor: it beats `get_rows_back` from about 10000 rows up, and running
+  `scatter_add` on the CPU would be faster still (revisit with the sched
+  executor of #85). The long-term fix is an upstream Vulkan kernel for
+  `GGML_OP_GET_ROWS_BACK` with one thread per (index, column), which would make
+  this lowering unneeded),
   and
   `permute` (a `ggml_permute` and a copy), `batch_matmul` (`mul_mat` over the
   batch axes) and `rope` (`ggml_rope_ext`, with the sequence axis swapped to
@@ -557,8 +547,8 @@ end
   before that opts out to exact `F32` `mul_mat`, process-wide (it is ggml's
   choice per process, not per tensor, the one exception to §4's "never a
   global"); a different choice after it is an error, and on a build without
-  Vulkan or without the module it changes nothing. fp16 is 1.7× faster for the products of Qwen3 on
-  the Vega iGPU (1.55 ms against 2.7 ms for `m=3072 n=128 k=1024`), 1.1–1.5×
+  Vulkan or without the module it changes nothing. fp16 is faster for the products (about 1.8× for
+  a large one in ggml's own perf test: `benchmarks/README.md`, fp16), 1.1–1.5×
   from batch 256 to 4096 in the spike, and changes gradients by up to about
   10 % at MLP sizes ([the spike's run B](https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md)). It does
   not keep the ids of Hugging Face's greedy `generate`, so every check against
@@ -602,7 +592,9 @@ end
   (`tf.aliasing_output`), so XLA writes them over the old ones: the run
   consumes those inputs and answers new tensors (`Trace.donated` is false), and
   every other input is kept. A run holds its inputs only while it runs.
-  `Train.fit` runs on XLA as on ggml, the batch gathered in the step.
+  `Train.fit` runs on XLA as on ggml, the batch gathered in the step. XLA
+  stores `F32`, `F64`, `I32`, `I64`, `I16`, `I8`, `U8` and `Bool`; `F16` and
+  `Q8_0` are refused (no half or quantized weights).
 
 ## 8. Tensor lifetime
 
@@ -643,9 +635,10 @@ Usage for tensors:
   (allocate, write, read, free) runs under one lock in the C layer, so tasks
   on one device never overlap a transfer; a free hook never waits for it and
   leaves the free to the next holder (§7). `fit`'s training step is one
-  evaluation (`Trace.eval_many`): it reads the parameters and the optimizer
-  state in place and writes the new ones into fresh `Handle.Ggml` tensors (no
-  donation).
+  program, compiled once per batch shape (`Trace.compile`, `train/DESIGN.md`):
+  it reads the parameters and the optimizer state in place and writes the new
+  ones into fresh `Handle.Ggml` tensors, except Adam's moments, which are
+  updated where they lie (§3.1).
 - `compute def` kernels only push data or return a resource; the loop lives
   in Agentica and the native side never calls back (existing FFI invariant).
 
@@ -686,7 +679,7 @@ Usage for tensors:
 
 Agentica has no macros (§7), so nothing rewrites a function the way `defn`
 does. A function is traced by **calling it with tracer values through the same
-API**, as Nx does with its `Expr` backend: `Backend.Trace` is a fifth arm of
+API**, as Nx does with its `Expr` backend: `Backend.Trace` is an arm of
 every dispatch `case`, and a tensor on it holds `Handle.Traced(Node)` instead
 of storage. `Trace.value_and_grad(params, &loss)` calls `loss` with `Trace`
 tensors; each `Tensor.*` call runs the wrapper's checks (§9) as it always does
@@ -760,20 +753,19 @@ The price:
 - `evaluate` runs a graph on the inputs' backend, computing each node once; a
   lifted constant must live on that backend. A backend that computes op by op
   (`Reference`, `Torch`) runs it through the public `Tensor.*` calls. A backend
-  that compiles (`Ggml`) runs the whole graph as one graph of its own and does
-  not go through `Tensor.*` (§7), so it supports the ops its lowering knows and
+  that compiles (`Ggml`, `Xla`) runs the whole graph as one program of its own
+  and does not go through `Tensor.*` (§7), so it supports the ops its lowering knows and
   answers an error naming any other. `value_and_grad` evaluates the output and
   its gradients in one pass, so the backward reads the forward values it shares;
   `eval_many` evaluates every tensor a traced function answers in one pass (a
   training step: the loss, the new parameters and the optimizer state).
   Backends stay forward-only.
-- First rules: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `relu`,
-  `matmul`, `transpose`, `sum`, `mean`, `broadcast_to`, `reshape`, `where`,
-  and the identity of `copy`, `contiguous` and `to_device` to `Cpu` (every
-  backend that computes today is on `Cpu`; a move across devices answers an
-  error). Each is tested against a central difference of the traced
-  function on the reference backend. On libtorch, the forward ops of a
-  2-layer MLP's gradient graph are run and compared with the reference.
+- The rules are the `vjp` of `trace.agc`, one arm per op. `copy`, `contiguous`
+  and `to_device` to `Cpu` are the identity (every backend that computes is on
+  `Cpu`; a move across devices answers an error). Each rule is tested against
+  a central difference of the traced function on the reference backend. On
+  libtorch, the forward ops of a 2-layer MLP's gradient graph are run and
+  compared with the reference.
 - A parity suite runs every op of §3.1 traced (`Trace.eval`) and eagerly over
   good and bad inputs: both fail, or both give the same shape, dtype and
   values, and the shape and dtype a trace records are the eager ones.
@@ -781,20 +773,14 @@ The price:
   wrapper answers `t` itself on every backend that computes and, on `Trace`,
   records a node whose rule is zero. `softmax` subtracts its maximum through
   it: the shift cancels out of the value, so it needs no gradient.
-- More rules: `sqrt` (`ct / 2 sqrt(x)`, infinite at `0`), `sigmoid`, `tanh`,
-  `gelu_tanh_approx` (the derivative of the tanh form), `gelu_erf`
-  (`Phi(x) + x phi(x)`, with `Phi(x)` read back as `gelu_erf(x) / x`, `0.5`
-  at `0`), `squeeze` and
-  `unsqueeze` (a `reshape` back), `slice` (`ct` padded with zeros by
-  `concat`), `concat` (each argument's window of `ct`), `stack` (entry `i`
-  along the axis), `gather` (`scatter_add` of `ct` at the indices: a
-  repeated index sums its rows), `scatter_add` (for its updates, `gather` of
-  `ct` at the indices; the indices have no gradient) and `max`
-  (the cotangent goes to the positions that hold the maximum and is split
-  evenly between ties, as `jax.numpy.max` and `torch.amax` do). With them,
-  `softmax`, `layer_norm`, `rms_norm`, `silu`, `gelu`, `embedding` and
-  `multi_head_attention` are differentiable; each rule and the last two are
-  tested against a central difference.
+- Rules with a choice in them: `sqrt` is infinite at `0`; `gelu_erf` is
+  `Phi(x) + x phi(x)`, with `Phi(x)` read back as `gelu_erf(x) / x` (`0.5` at
+  `0`); `gather` is `scatter_add` of `ct` at the indices, so a repeated index
+  sums its rows; `scatter_add` gives its updates the `gather` of `ct` (the
+  indices have no gradient); `max` sends the cotangent to the positions that
+  hold the maximum and splits it evenly between ties, as `jax.numpy.max` and
+  `torch.amax` do. With the rules, `softmax`, `layer_norm`, `rms_norm`,
+  `silu`, `gelu`, `embedding` and `multi_head_attention` are differentiable.
 - `permute` (the inverse permutation), `rope` (the same rotation turned the
   other way, `inverse`; the positions have no gradient) and `attention`. The
   backward of `attention` recomputes the probabilities from `q`, `k` and the

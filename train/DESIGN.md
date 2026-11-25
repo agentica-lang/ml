@@ -90,9 +90,9 @@ Lora.open(dir, backend) -> Result[Adapter]
   model costs. The price: the backward pass forms the `[out, in]`
   gradient of the sum before it reaches `A` and `B`, which PEFT's path does
   not, and there is no `x` to drop, so `lora_dropout` is not trained
-  (`Lora.params` refuses a dropout above 0; ml#209). The benchmark of ml#137
-  decides, by time and peak memory against PEFT, whether the adapter moves
-  into `Nn.dense`. The scale multiplies `B`, the small matrix, before the
+  (`Lora.params` refuses a dropout above 0; ml#209). Whether the adapter
+  moves into `Nn.dense`, as PEFT has it, is open (ml#236: the DistilBERT
+  fine-tune takes 1.35 times PEFT's time per step, `benchmarks/README.md`). The scale multiplies `B`, the small matrix, before the
   product, and its `r` is the first dimension of `A`, so an adapter read from
   a file has its own. `train` imports `nn` for the start of `A`
   (`Init.uniform`); it already reached it through `hub`. The adapter is
@@ -129,9 +129,9 @@ Lora.open(dir, backend) -> Result[Adapter]
   `save` also refuses a rank that is not `config.r` and a weight that no
   target takes, since PEFT would not load them, and gives each file its name
   when it is whole (`Path.replace`, so a second save into a folder replaces
-  the first). The test reads files that PEFT wrote (checked in,
-  1.7 kB: the one `.safetensors` in the repository, which `.gitattributes`
-  notes), and `test/lora_golden.py check` loads what `save` wrote with PEFT
+  the first). The test reads files that PEFT wrote (checked in in
+  `test/fixtures/lora_peft/`, 1.7 kB: `.gitattributes` notes the
+  `.safetensors` exception), and `test/lora_golden.py check` loads what `save` wrote with PEFT
   (manual).
 - **AdamW's decay is a flag per parameter, set by the caller.** PyTorch has
   parameter groups; here `decay: List[Bool]` follows the list of parameters,
@@ -149,8 +149,8 @@ Lora.open(dir, backend) -> Result[Adapter]
   everywhere and is written once, as it would be eagerly, and a step pays no
   tracing or planning. A smaller last batch is a second compiled step; the
   compiled steps are closed when `fit` returns. The native constants of
-  `loss` (frozen weights, masks) are built when it is traced, so they now live
-  for the whole fit, once for each shape, and not for one step.
+  `loss` (frozen weights, masks) are built when it is traced, so they live for
+  the whole fit, once for each shape, and not for one step.
 - **Optimizers are pure.** `step` takes the state, the parameters and the
   gradients and answers new ones; nothing mutates. Updates are `Tensor.*`
   calls, with scalars as `Tensor.full` of the parameter's shape (`tensor/` ops
@@ -160,7 +160,8 @@ Lora.open(dir, backend) -> Result[Adapter]
 - **A step is one traced evaluation.** `fit` traces the loss, its gradients
   (`Trace.gradients`) and `Optim.step` over the parameters and the optimizer
   state, and compiles them (`Trace.compile`) once for each batch shape: on
-  `Ggml` one graph, a last partial batch being a second one. The step count
+  `Ggml` one graph and on `Xla` one program, a last partial batch being a
+  second one. The step count
   stays on the host, so the learning rate and Adam's bias correction are
   scalar inputs, set for every step, and a schedule is not a new graph. A ggml graph has at most 512
   outputs, the loss and the new tensors, so a step on `Ggml` takes at most 170
@@ -184,7 +185,8 @@ Lora.open(dir, backend) -> Result[Adapter]
   where Hugging Face's cosine rises again. `fit` starts every run at step 0, so
   a resumed run starts its warmup again. One
   way: the schedule is a field of the optimizer, not a hook of `fit`, and
-  `Optim.learning_rate(state)` is what `Metrics` logs. No one-cycle yet.
+  `Optim.learning_rate(state)` is what `Metrics` logs. There is no one-cycle
+  schedule.
 - **A step is one program of every step.** `Train.stablehlo` traces the same
   step as `fit` (`traced_step`) and writes it as StableHLO
   (`tensor/DESIGN.md` §12). Adam's bias corrections depend on the step count, so
@@ -199,7 +201,7 @@ Lora.open(dir, backend) -> Result[Adapter]
 - **Adam's moments are updated where they lie.** A step on ggml runs Adam's
   update as `Tensor.adam_step`, and in the compiled step of `fit` its first and
   second moments are inputs that nothing else reads, so the lowering updates
-  them in place: the step's results for them are the very tensors it was given
+  them in place (on XLA the outputs are aliased to the moments): the step's results for them are the very tensors it was given
   (`Trace.donated`), and `run` does not free the old moment that is the new one
   (`Stepped.kept`). The parameters are never written (the loss reads them), so
   the caller's weights need no copy on the first step; the moments are the
@@ -280,11 +282,12 @@ Lora.open(dir, backend) -> Result[Adapter]
   channel as an error in its place; a crash of the task reaches the reader
   through a `Task.monitor` notice into the same channel. A feed is a
   sequential stream: under prefetch `take` gives the next batch and does not
-  read its index. On ggml `fit` does not use it: a batch is its row ids (made
-  in the order `Data.order` gives, so the same batches), the step takes the
-  dataset's tensors as constants and gathers in its own graph, which saves a
-  graph run and the readback and re-upload of the batch (2 to 5 ms a step on
-  Vulkan at batch 16 to 64); `Data.feed` and `fit_batches` keep the prefetch.
+  read its index. On ggml and XLA `fit` does not use it when the dataset lives on the
+  parameters' backend: a batch is its row ids (made in the order `Data.order`
+  gives, so the same batches), the step takes the dataset's tensors as
+  constants and gathers in its own graph, which saves a graph run and the
+  readback and re-upload of the batch (on XLA, a compile per batch shape);
+  `Data.feed` and `fit_batches` keep the prefetch.
 - **The prefetch task lives until `stop`.** A native tensor belongs to the
   task that made it and is freed when that task ends, and a tensor made
   directly from a freed one can no longer be used (the VM keeps one level of
@@ -297,21 +300,19 @@ Lora.open(dir, backend) -> Result[Adapter]
 
 ## Cost
 
-`fit` traces the step again on every batch (`tensor/DESIGN.md` §10.1). On the
-reference backend an epoch of the XOR test (a 2-8-1 relu MLP, four rows)
-costs about 100,000 VM steps, most of it the evaluation of the forward,
-gradient and update graphs, so the test trains for 20 epochs. On libtorch an
-epoch costs about 70,000.
+`fit` traces the step once for each batch shape; on the reference backend and
+libtorch the compiled step is the traced graph, evaluated node by node on
+every run (`Trace.compile`). An epoch of the XOR test (a 2-8-1 relu MLP, four
+rows) costs about 100,000 VM steps on the reference, most of it the
+evaluation of the forward, gradient and update graphs, so the test trains for
+20 epochs. On libtorch an epoch costs about 70,000.
 
-Prefetch hides the cost of building a batch, not more. Measured once with a
-throwaway benchmark (libtorch, 16384 rows of 32, batches of 2048, about 3 ms
-to build one): 154 steps/s without prefetch and 232 with it; with a step made
-5 ms slower on purpose, 77 and 105.
+Prefetch hides the cost of building a batch, not more.
 
 ## The repository is a workspace
 
-`train/` depends on `hub/` and `tensor/`, and `hub/` on `nn/`, which depends
-on `tensor/`. Only a root project may
+`train/` depends on `hub/`, `nn/` and `tensor/`, and `hub/` on `nn/`, which
+depends on `tensor/`. Only a root project may
 write a `path` dependency (`PKG-ROOT-ONLY`), so the repository root has an
 `agentica.toml` with `[workspace]`, and members name each other by the
 repository and a `subdir`: a member reads another from its folder, with no

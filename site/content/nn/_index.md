@@ -46,8 +46,10 @@ The shapes are the ones the layers take. `dense` takes any rank. Attention needs
 An activation is a function applied to each value, such as `relu`. The `Activation` type is one of these:
 
 - `Relu` and `Silu`.
-- `Gelu`, a smooth activation in its tanh approximation. `Trace` can take its gradient.
-- `GeluErf`, the exact form that Whisper uses. `Trace` refuses it.
+- `Gelu`, a smooth activation in its tanh approximation.
+- `GeluErf`, the exact form that Whisper and BERT use.
+
+`Trace` differentiates all of them.
 
 `activate(activation, x)` applies one of them to a tensor. `mlp` uses it.
 
@@ -137,13 +139,13 @@ Each layer has an `init_*` function. It takes a seed (a number that makes the ra
 ## Limits
 
 - `init_*` make `F32` tensors. The layers themselves take any float dtype.
-- `attention` runs `tensor`'s `attention`, one op on every backend. `multi_head_attention` stays in `tensor` as a wrapper over it, and `nn` does not call it.
-- A layer runs eagerly on `Reference` and libtorch. On ggml it runs traced only: call it on `Trace` tensors and evaluate or compile the graph.
+- `attention` runs `tensor`'s `attention`, one op on every backend.
+- A layer runs eagerly on `Reference` and libtorch. On ggml and Xla it runs traced only: call it on `Trace` tensors and evaluate or compile the graph.
 - `causal` with fewer queries than keys ends on the last key (the end-aligned mask of a decode step), and with more queries than keys it is an error. On `Reference`, `q * k` of the causal mask stops at 1,048,576.
 - `init_attention` makes heads of `width / heads`; weights loaded from a checkpoint may have another head width (Qwen3), and the layers run them.
 - Rotary positions of a layer start at 0 for each input unless `positions` says otherwise. There is no KV cache in `nn`: a decoder that has one calls `project` on the new token alone with its position (`positions` of `[n]` for position `n`), appends the key, already rotated, to its cache, and gives `attend` the cache. One position vector serves every batch row and head.
 - `decoder_block` has no KV cache (a store of past keys and values): each call recomputes every position. `asr` has its own cache.
-- `causal` and `causal_mask` use `-1e9` for a masked position, which assumes an `F32` or `F64` compute dtype. `causal` needs no more queries than keys.
+- `causal` and `causal_mask` use `-1e9` for a masked position, which assumes an `F32` or `F64` compute dtype.
 - `init_attention` needs a width that is divisible by the head count, and `kv_heads` that divides it. `positional` refuses more positions than its table has.
 
 ## How it works

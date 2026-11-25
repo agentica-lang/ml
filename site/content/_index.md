@@ -34,11 +34,12 @@ end
 
 A gradient is built in Agentica. A function runs once on tracing tensors, which record its ops as a graph, and the gradient is built from that graph. So each backend only has to compute the forward ops.
 
-There are three backends:
+There are four backends:
 
 - `Reference`: pure Agentica code. It is slow. It is the answer the tests trust, and the other backends are checked against it.
 - `Torch`: libtorch (the C++ library under PyTorch), on the CPU.
 - `Ggml`: ggml (a small tensor library in C), on the CPU or on Vulkan (a GPU API). It runs a traced function as one compiled graph.
+- `Xla`: XLA (the compiler under JAX), on the CPU, through a plugin that you install. It compiles a traced function, and `Train.fit` runs each step as one program.
 
 The [tensor page](tensor/_index.md) has their limits.
 
