@@ -6,7 +6,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
-- `Tensor.gated_delta_rule`: the gated delta rule of the linear attention of Qwen3.5 (ml#150). ggml runs it as one `ggml_gated_delta_net` node; the reference and libtorch run the recurrence token by token. It matches Hugging Face's recurrent rule.
+- `Tensor.gated_delta_rule`: the recurrence of Qwen3.5's linear attention (`F32`, no gradient; ggml `ggml_gated_delta_net`) (ml#150).
 
 ## [0.5.1] - 2026-11-25
 

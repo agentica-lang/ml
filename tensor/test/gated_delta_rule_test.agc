@@ -2,6 +2,7 @@
 ## (`gated_delta_rule_golden.py`, `fixtures/gated_delta_rule_golden.json`), a state carried over two calls, a padding
 ## that leaves the state alone, and `ggml_gated_delta_net` (a trace on ggml) against the reference. Run from `tensor/`.
 
+import Conform from "torch_support"
 import Support from "support"
 import Tensor from "../tensor"
 import Trace from "../trace"
@@ -78,11 +79,6 @@ def close(got: Tensor.Tensor, want: List[Float], tol: Float, what: String) -> Re
   Test.assert(worst <= tol, "#{what} differs by #{worst}")
 end
 
-## The same values on another backend.
-def moved(t: Tensor.Tensor, backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  Tensor.floats(try Support.floats_of(t), Tensor.shape(t), backend)
-end
-
 def test_the_reference_matches_hugging_face() -> Result[Void]
   cases = (try golden()).cases
   try Test.eq(cases.size, 3)
@@ -128,13 +124,10 @@ def test_a_state_carries_over_two_calls() -> Result[Void]
   close(both, try Support.floats_of(whole.out), 0.000000001, "out")
 end
 
-## A padded prompt: tokens with `g = 0` and `beta = 0` after the real ones change neither the answers of the real
-## ones nor the state, whatever their `q`, `k` and `v` are.
-def test_a_token_with_no_gate_and_no_beta_leaves_the_state_alone() -> Result[Void]
-  c = (try golden()).cases[1]
-  extra = 3
+## The case `c` followed by `extra` tokens with `g = 0` and `beta = 0` and any `q`, `k` and `v`.
+def padded(c: Case, extra: Int) -> Case
   row = c.heads * c.width
-  padded = c.with(
+  c.with(
     tokens: c.tokens + extra,
     q: c.q + Support.ramp(1, extra * row),
     k: c.k + Support.ramp(2, extra * row),
@@ -142,10 +135,96 @@ def test_a_token_with_no_gate_and_no_beta_leaves_the_state_alone() -> Result[Voi
     g: c.g + (0...(extra * c.heads)).map { |_i| 0.0 },
     beta: c.beta + (0...(extra * c.heads)).map { |_i| 0.0 },
   )
+end
 
-  r = try rule(try inputs_of(padded, REF))
+## A padded prompt: tokens with `g = 0` and `beta = 0` after the real ones change neither the answers of the real
+## ones nor the state, whatever their `q`, `k` and `v` are.
+def test_a_token_with_no_gate_and_no_beta_leaves_the_state_alone() -> Result[Void]
+  c = (try golden()).cases[1]
+  r = try rule(try inputs_of(padded(c, 3), REF))
   try close(r.state, c.final, GOLDEN_TOL, "state")
   close(try Tensor.slice(r.out, [0, 0, 0], [c.tokens, c.heads, c.width]), c.out, GOLDEN_TOL, "out")
+end
+
+## The same padding through a trace on ggml.
+def test_the_padding_leaves_the_state_alone_on_ggml() -> Result[Void]
+  return ok() if !try Support.ggml_present()
+
+  c = (try golden()).cases[1]
+  x = try inputs_of(padded(c, 3), CPU)
+  outs = try Trace.eval_many([x.q, x.k, x.v, x.g, x.beta, x.state]) do |t|
+    r = try Tensor.gated_delta_rule(t[0], t[1], t[2], t[3], t[4], t[5])
+    ok([r.out, r.state])
+  end
+
+  try close(outs[1], c.final, F32_TOL, "state")
+  real = try Tensor.floats((try Support.floats_of(outs[0])).take(c.out.size), [c.tokens, c.heads, c.width], REF)
+  close(real, c.out, F32_TOL, "out")
+end
+
+## A trace on the reference runs the node as `Trace.compute` does, through the packed answer.
+def test_a_trace_on_the_reference_matches_hugging_face() -> Result[Void]
+  for c in (try golden()).cases
+    x = try inputs_of(c, REF)
+    outs = try Trace.eval_many([x.q, x.k, x.v, x.g, x.beta, x.state]) do |t|
+      r = try Tensor.gated_delta_rule(t[0], t[1], t[2], t[3], t[4], t[5])
+      ok([r.out, r.state])
+    end
+
+    try close(outs[0], c.out, GOLDEN_TOL, "out")
+    try close(outs[1], c.final, GOLDEN_TOL, "state")
+  end
+
+  ok()
+end
+
+## libtorch runs the recurrence over its own ops: the packed answer is the reference's.
+def test_libtorch_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  c = (try golden()).cases[1]
+  shape = [c.tokens, c.heads, c.width]
+  gate = [c.tokens, c.heads]
+  ours: Result[Tensor.Tensor] = Native.arena do
+    Tensor.gated_delta_packed(
+      try Conform.on_torch(c.q, shape),
+      try Conform.on_torch(c.k, shape),
+      try Conform.on_torch(c.v, shape),
+      try Conform.on_torch(c.g, gate),
+      try Conform.on_torch(c.beta, gate),
+      try Conform.on_torch(c.state, [c.heads, c.width, c.width]),
+    )
+  end
+
+  theirs = try Tensor.gated_delta_packed(
+    try Conform.on_ref(c.q, shape),
+    try Conform.on_ref(c.k, shape),
+    try Conform.on_ref(c.v, shape),
+    try Conform.on_ref(c.g, gate),
+    try Conform.on_ref(c.beta, gate),
+    try Conform.on_ref(c.state, [c.heads, c.width, c.width]),
+  )
+
+  Conform.agrees(try ours, theirs, "gated delta rule")
+end
+
+def test_there_is_no_gradient() -> Result[Void]
+  c = (try golden()).cases[0]
+  x = try inputs_of(c, REF)
+  Test.error?(
+    Trace.grad([x.q]) do |t|
+      r = try Tensor.gated_delta_rule(
+        t[0],
+        Trace.constant(x.k),
+        Trace.constant(x.v),
+        Trace.constant(x.g),
+        Trace.constant(x.beta),
+        Trace.constant(x.state),
+      )
+
+      Tensor.sum(r.out)
+    end,
+  )
 end
 
 def test_ggml_matches_the_reference_as_a_trace() -> Result[Void]

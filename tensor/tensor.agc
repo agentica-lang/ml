@@ -1006,13 +1006,14 @@ end
 
 ## The gated delta rule over `tokens` steps, the recurrence of the linear attention of Qwen3.5 (`q` and `k` already
 ## L2-normalized): per head, `state = exp(g) * state`, then `state = state + k (beta * (v - state k))^T`, and the
-## answer is `state q / sqrt(width)`.
-## - `q`, `k`, `v`: `[tokens, heads, width]`; `g` (the log of the decay, at most 0) and `beta`: `[tokens, heads]`.
+## answer is `state q / sqrt(width)`: the op scales `q` itself, so a caller does not.
+## - `q`, `k`, `v`: `[tokens, heads, width]`; `g` (the log of the decay, normally at most 0; not checked) and `beta`: `[tokens, heads]`.
 ## - `state`: `[heads, width, width]`, the transpose of the matrix of the paper (row `j` is the value axis, column
 ##   `i` the key axis), the layout ggml has: the zeros to start, or the `state` of an earlier call to go on.
 ## - `F32` only. A token with `g = 0` and `beta = 0` leaves the state as it was, which is how a padded prompt keeps the
 ##   state of its last real token.
-## In a trace it is one node, which `Ggml` runs as `ggml_gated_delta_net` (CPU and Vulkan); `XLA` has no lowering.
+## In a trace it is one node, which `Ggml` runs as `ggml_gated_delta_net` (CPU, and Vulkan for widths 16, 32, 64 and
+## 128); `XLA` has no lowering.
 ## The other backends run the recurrence token by token over the ops of this module, so a long sequence is slow there.
 ## No gradient.
 def gated_delta_rule(
