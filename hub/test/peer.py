@@ -380,6 +380,8 @@ def gguf_write(out):
         "h": tensor("BF16", [4], [to_bf16_bits(v) for v in f32_values(4)]),
         "i": tensor("F32", [2, 2, 2, 2], f32_values(16)),
         "n": tensor("I32", [2], [1, 2]),
+        # a NaN rounds to a NaN, in F16 as in BF16
+        "j": tensor("F32", [3], [float("nan"), 1.0, -2.5]),
     }
     write(out / "src.safetensors", sources)
     spec = {
@@ -398,6 +400,7 @@ def gguf_write(out):
             {"out": "e.f16", "src": "e", "format": "F16"}, {"out": "f.bf16", "src": "f", "format": "BF16"},
             {"out": "g.f16", "src": "g", "format": "F16"}, {"out": "h.bf16", "src": "h", "format": "BF16"},
             {"out": "i.f32", "src": "i", "format": "F32"}, {"out": "i.bf16", "src": "i", "format": "BF16"},
+            {"out": "j.f16", "src": "j", "format": "F16"}, {"out": "j.bf16", "src": "j", "format": "BF16"},
             # the last tensor is 28 bytes: the file ends 4 bytes of padding later
             {"out": "c.f32", "src": "c", "format": "F32"},
         ],
