@@ -2,7 +2,7 @@
 
 Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the first one and covers everything shipped so far (milestones 0.1.0 and 0.2.0).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-25
 
 - **Breaking:** ml needs Agentica 0.38.0.
 - Install by tag with no `override = true` (ml#240): the packages ask for each other by the tag of their own release (`tensor-0.4.0`), not by commit, so an app that declares `tensor` and `nn` by their 0.4.0 tags gets one source for each package.
