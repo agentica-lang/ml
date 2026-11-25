@@ -174,8 +174,12 @@ def weight_grad(
       first = last
     end
 
-    kernel = try Tensor.slice(grown.unwrap_or(x), [0, 0, 0, 0], [in_per_group, out_per_group, w.shape[2], w.shape[3]])
-    parts = parts.push(try Tensor.permute(kernel, [1, 0, 2, 3]))
+    case grown
+      some(sum) ->
+        kernel = try Tensor.slice(sum, [0, 0, 0, 0], [in_per_group, out_per_group, w.shape[2], w.shape[3]])
+        parts = parts.push(try Tensor.permute(kernel, [1, 0, 2, 3]))
+      none -> return error("conv2d weight gradient of an empty batch")
+    end
   end
 
   return ok(parts[0]) if groups == 1
