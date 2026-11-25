@@ -137,4 +137,4 @@ A layer norm is named by its model: `LayerNorm` in BERT, and `embeddings.LayerNo
 
 A model here is a loss function of a parameter list and a batch. `Train.fit` traces that function, and an optimizer updates the parameters from its gradients.
 
-Each step is one traced evaluation. `fit` traces the loss, its gradients and the optimizer update, and runs them together. So the value, the gradients and the new parameters come from one run of the graph.
+Each step is one compiled evaluation. `fit` traces the loss, its gradients and the optimizer update once for each batch shape (`Trace.compile`), and runs them together on every batch of that shape. So the value, the gradients and the new parameters come from one run of the graph.

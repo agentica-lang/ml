@@ -93,4 +93,4 @@ end
 - A batch is one compiled graph per batch shape on `Ggml`, so a last partial batch costs a second graph.
 - A dataset must have fewer than 2 147 483 646 rows.
 - The shuffle runs as VM steps, `O(N)` for each epoch, and counts against `--max-steps` like any Agentica code.
-- `fit` retraces the loss on every step, so each step pays the trace again.
+- `fit` traces the loss once for each batch shape, not on every step; the batch is an input of the compiled step.

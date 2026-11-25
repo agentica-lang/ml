@@ -164,20 +164,27 @@ def take_step(
     error(e) -> Taken(stepped: error(e), programs: programs)
     ok(batch) ->
       key = shapes_of(batch)
-      grown = programs
-      if !programs.key?(key)
-        case compile_step(r.loss, state, params, batch)
-          ok(program) -> grown = programs.put(key, program)
-          error(e) ->
-            Data.release(batch)
-            return Taken(stepped: error(e), programs: programs)
-        end
+      taken = case compiled_for(r.loss, state, params, batch, key, programs)
+        ok(grown) -> Taken(stepped: step(grown[key], state, params, batch), programs: grown)
+        error(e) -> Taken(stepped: error(e), programs: programs)
       end
 
-      done = step(grown[key], state, params, batch)
       Data.release(batch)
-      Taken(stepped: done, programs: grown)
+      taken
   end
+end
+
+## `programs` with the step of `batch`'s shape (`key`), compiled now when no batch of that shape came before.
+def compiled_for(
+  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  state: Optim.State,
+  params: List[Tensor.Tensor],
+  batch: Data.Batch,
+  key: String,
+  programs: Map[String, Trace.Compiled],
+) -> Result[Map[String, Trace.Compiled]]
+  return ok(programs) if programs.key?(key)
+  ok(programs.put(key, try compile_step(loss, state, params, batch)))
 end
 
 ## The batch's shapes and dtypes: the steps of two batches that agree on them are one compiled graph.
@@ -243,6 +250,8 @@ def traced_step(
   k: Int,
   xs: List[Tensor.Tensor],
 ) -> Result[List[Tensor.Tensor]]
+  # `Trace.constant` matters to `stablehlo`, where the batch is a constant of the program; in `fit` it is an
+  # input already.
   ps = xs.take(n)
   value = try loss.call(ps, Data.Batch(inputs: Trace.constant(batch.inputs), targets: Trace.constant(batch.targets)))
   grads = try Trace.gradients(value, ps)
