@@ -150,7 +150,8 @@ struct gnode {
   struct ggml_tensor *half; /* the node as the F16 mask of a flash attention, made once */
   struct ggml_tensor *packed; /* the node as an operand of mul_mat when `dense` is not packed, made once */
   struct ggml_tensor *window; /* a slice from the first element as the view it is: what flash attention reads */
-  struct ggml_tensor *whole; /* an adam_part: the stack of the three tensors of its step, which its finiteness check covers */
+  struct ggml_tensor *adam[3]; /* an adam_step: its new weight, first and second moment, each a tensor of its own */
+  int adam_donates;            /* an adam_step that updates its moments, two input leaves, in place */
 };
 
 #define MAX_OUTPUTS 512
@@ -1264,11 +1265,11 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
     }
     case OP_ADAM_STEP: {
       struct gnode *g = &p->nodes[args[1]], *m = &p->nodes[args[2]], *v = &p->nodes[args[3]], *hyper = &p->nodes[args[4]];
-      struct ggml_tensor *stack, *copies[3], *sources[3], *step;
+      struct ggml_tensor *weight, *moments[2], *step;
       int axis = a->rank, k;
 
-      if (nints != 0 || rank != a->rank + 1 || rank > 4 || n->ne[axis] != 3) {
-        return tg_error(env, "adam_step stacks 3 copies of a tensor of rank 3 or less");
+      if (nints != 1 || (ints[0] != 0 && ints[0] != 1) || rank != a->rank + 1 || rank > 4 || n->ne[axis] != 3) {
+        return tg_error(env, "adam_step takes a tensor of rank 3 or less, and 1 to update its moments in place");
       }
       for (k = 0; k < axis; k++) {
         if (n->ne[k] != a->ne[k] || g->ne[k] != a->ne[k] || m->ne[k] != a->ne[k] || v->ne[k] != a->ne[k]) {
@@ -1278,40 +1279,61 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       if (g->rank != a->rank || m->rank != a->rank || v->rank != a->rank || volume(hyper->ne) != 7) {
         return tg_error(env, "adam_step takes p, grad, m and v of one shape, and 7 hyper-parameters");
       }
-      sources[0] = dense(p, a);
-      sources[1] = dense(p, m);
-      sources[2] = dense(p, v);
-      for (k = 0; k < 3; k++) {
-        if (sources[k]->type != GGML_TYPE_F32) return tg_error(env, "adam_step takes F32 tensors");
-      }
-      if (dense(p, g)->type != GGML_TYPE_F32 || dense(p, hyper)->type != GGML_TYPE_F32) {
+      if (dense(p, a)->type != GGML_TYPE_F32 || dense(p, g)->type != GGML_TYPE_F32 || dense(p, hyper)->type != GGML_TYPE_F32 ||
+          (ints[0] == 0 && (dense(p, m)->type != GGML_TYPE_F32 || dense(p, v)->type != GGML_TYPE_F32))) {
         return tg_error(env, "adam_step takes F32 tensors");
       }
-      /* The op updates its weight and moments in place, and the arguments are values other nodes may read (the
-         inputs of the program are the caller's tensors): so it works on copies, the three slices of one buffer. */
-      stack = ggml_new_tensor_4d(p->ctx, GGML_TYPE_F32, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
-      for (k = 0; k < 3; k++) {
-        struct ggml_tensor *slice = ggml_view_4d(p->ctx, stack, a->ne[0], a->ne[1], a->ne[2], a->ne[3], stack->nb[1], stack->nb[2],
-                                                 stack->nb[3], (size_t)k * stack->nb[axis]);
-
-        copies[k] = ggml_cpy(p->ctx, sources[k], slice);
-      }
+      /* The op updates its weight and moments where they lie. The weight is read by the rest of the graph (the loss
+         and the gradients), and every argument may be a value other nodes or the caller read, so the weight is always
+         a copy. The moments are copies too, unless the step updates them in place (`ints[0]`, which the lowering sets
+         only for two inputs that nothing else reads, whose results are outputs): the caller's moments are then the
+         new ones. Each of the three is a tensor of its own, so that the backend binds it at an aligned offset. */
+      weight = ggml_cpy(p->ctx, dense(p, a), ggml_dup_tensor(p->ctx, dense(p, a)));
       /* ggml asserts that the weight is a parameter (a leaf marked for training); `ggml_set_param` refuses a tensor
          that is not a leaf, as a copy is. Only that assert reads the flag here: no backward pass is built. */
-      copies[0]->flags |= GGML_TENSOR_FLAG_PARAM;
-      step = ggml_opt_step_adamw(p->ctx, copies[0], dense(p, g), copies[1], copies[2], dense(p, hyper));
-      /* A view of the stack that depends on the step, so that whoever reads the new values runs after it. */
-      t = ggml_view_4d(p->ctx, stack, n->ne[0], n->ne[1], n->ne[2], n->ne[3], stack->nb[1], stack->nb[2], stack->nb[3], 0);
-      t->src[1] = step;
+      weight->flags |= GGML_TENSOR_FLAG_PARAM;
+      for (k = 0; k < 2; k++) {
+        struct gnode *moment = k == 0 ? m : v;
+
+        if (ints[0] == 0) {
+          moments[k] = ggml_cpy(p->ctx, dense(p, moment), ggml_dup_tensor(p->ctx, dense(p, moment)));
+        } else {
+          struct port *leaf = NULL;
+          int64_t l;
+
+          if (moment->op != OP_LEAF || moment->t->type != GGML_TYPE_F32) return tg_error(env, "adam_step updates F32 inputs in place");
+          for (l = 0; l < p->leaf_count; l++) {
+            if (p->leaves[l].t == moment->t) leaf = &p->leaves[l];
+          }
+          if (leaf == NULL || leaf->donated || m == v) return tg_error(env, "adam_step updates two inputs, each in place once");
+          leaf->donated = true;
+          moments[k] = moment->t;
+        }
+      }
+      step = ggml_opt_step_adamw(p->ctx, weight, dense(p, g), moments[0], moments[1], dense(p, hyper));
+      /* The three results, each a view that depends on the step, so that whoever reads one runs after it. */
+      n->adam[0] = step;
+      for (k = 0; k < 2; k++) {
+        n->adam[k + 1] = ggml_view_4d(p->ctx, moments[k], a->ne[0], a->ne[1], a->ne[2], a->ne[3], moments[k]->nb[1], moments[k]->nb[2],
+                                      moments[k]->nb[3], 0);
+        n->adam[k + 1]->src[1] = step;
+      }
+      n->adam_donates = (int)ints[0];
+      /* the node itself is its weight; its recorded shape is the stack of the three, which only the trace holds */
+      n->t = step;
+      n->ne[axis] = 1;
+      n->rank = a->rank;
+      t = step;
       break;
     }
     case OP_ADAM_PART:
-      if (nints != 1 || ints[0] < 0 || ints[0] > 2 || a->rank != rank + 1 || a->ne[rank] != 3) {
+      if (a->op != OP_ADAM_STEP || nints != 1 || ints[0] < 0 || ints[0] > 2 || a->adam[0] == NULL) {
         return tg_error(env, "adam_part takes 0, 1 or 2 of an adam_step");
       }
-      t = ggml_view_4d(p->ctx, a->t, n->ne[0], n->ne[1], n->ne[2], n->ne[3], a->t->nb[1], a->t->nb[2], a->t->nb[3],
-                       (size_t)ints[0] * a->t->nb[rank]);
-      n->whole = a->t;
+      t = a->adam[ints[0]];
+      /* the moments of a step that updates them in place: the output is the input itself, nothing to copy or check
+         (a non-finite moment reaches the weight, which is checked) */
+      if (a->adam_donates && ints[0] > 0) n->in_place = 1;
       break;
     case OP_CONCAT:
       if (nints != 2 || ints[0] < 0 || ints[0] >= rank) return tg_error(env, "concat takes an axis and the stack flag");
@@ -1400,7 +1422,6 @@ static bool in(const struct ggml_tensor *t, const struct ggml_tensor *store) {
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
   struct entry *p = lease->e;
   int64_t outs[MAX_OUTPUTS];
-  struct ggml_tensor *shared[MAX_OUTPUTS] = {NULL};
   int nouts, r, i, j;
   char text[256];
 
@@ -1437,22 +1458,9 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     value = dense(p, n);
     ggml_set_output(p->outs[i].t);
     ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, value, p->outs[i].t));
-    /* The three outputs of one adam_step share one check, of their stack: fewer nodes for the same answer, a value
-       that is not finite in any of them is reported at the first. */
-    check = NULL;
-    if (n->whole != NULL) {
-      for (j = 0; j < i && check == NULL; j++) {
-        if (p->nodes[outs[j]].whole == n->whole) check = shared[j];
-      }
-    }
     /* 0 * x is NaN for an inf or a NaN; sum_rows first, since one ggml_sum
        of a large tensor is a single slow workgroup on Vulkan */
-    if (check == NULL) {
-      struct ggml_tensor *whole = n->whole != NULL ? n->whole : value;
-
-      check = ggml_sum(p->ctx, ggml_sum_rows(p->ctx, ggml_scale(p->ctx, whole->type == GGML_TYPE_F32 ? whole : ggml_cast(p->ctx, whole, GGML_TYPE_F32), 0.0f)));
-    }
-    shared[i] = check;
+    check = ggml_sum(p->ctx, ggml_sum_rows(p->ctx, ggml_scale(p->ctx, value->type == GGML_TYPE_F32 ? value : ggml_cast(p->ctx, value, GGML_TYPE_F32), 0.0f)));
     ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
   }
   p->output_count = nouts;
@@ -1769,10 +1777,10 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
     int64_t k;
 
     if (!p->leaves[i].donated) continue;
-    if (p->leaves[i].conv != NULL) return tg_error(env, "an input a set_rows writes in place must be the F32 or F16 tensor the graph was lowered with");
+    if (p->leaves[i].conv != NULL) return tg_error(env, "an input written in place (a set_rows cache, an adam_step moment) must be the tensor the graph was lowered with");
     for (k = 0; k < p->leaf_count; k++) {
       if (k != i && p->leaves[k].held != NULL && p->leaves[k].held == p->leaves[i].held) {
-        return tg_error(env, "an input a set_rows writes in place is bound to another input too");
+        return tg_error(env, "an input written in place is bound to another input too");
       }
     }
   }

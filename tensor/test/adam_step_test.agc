@@ -137,3 +137,112 @@ def test_a_rank_4_weight_composes() -> Result[Void]
 
   ok()
 end
+
+## Weights of 3 and 10 values: the moments are not at an aligned offset of anything (ggml-Vulkan binds each of them as a
+## buffer, and aborts on a misaligned one), so each is a tensor of its own.
+def test_small_odd_sizes_run_on_every_backend() -> Result[Void]
+  for backend in try ggml_backends()
+    for n in [3, 10]
+      try odd_size(backend, n)
+    end
+  end
+
+  ok()
+end
+
+def odd_size(backend: Tensor.Backend, n: Int) -> Result[Void]
+  args: List[Tensor.Tensor] = []
+  for r in [WEIGHT, GRAD, FIRST, SECOND]
+    values = r.take(n).map { |x: Float| Tensor.Values.Float(x) }
+    if n > r.size
+      values = (0...n).map { |i| Tensor.Values.Float(r[i % r.size]) }
+    end
+
+    args = args.push(try Tensor.from_list(values, [n], Tensor.Dtype.F32, backend))
+  end
+
+  hyper = try Tensor.from_list(HYPER.map { |x: Float| Tensor.Values.Float(x) }, [7], Tensor.Dtype.F32, backend)
+  got = try Trace.eval_many(args + [hyper]) do |a| Tensor.adam_step(a[0], a[1], a[2], a[3], a[4]) end
+  want = try Trace.eval_many(try on_reference(args + [hyper])) do |a|
+    Tensor.adam_step(a[0], a[1], a[2], a[3], a[4])
+  end
+
+  for i in 0...3
+    try close(try S.floats_of(got[i]), try S.floats_of(want[i]), 0.000001, "part #{i} of #{n} on #{backend}")
+  end
+
+  ok()
+end
+
+## `tensors` as reference tensors with the same values.
+def on_reference(tensors: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  out: List[Tensor.Tensor] = []
+  for t in tensors
+    values = try Tensor.to_list(t)
+    out = out.push(try Tensor.from_list(values, Tensor.shape(t), Tensor.Dtype.F32, Tensor.Backend.Reference))
+  end
+
+  ok(out)
+end
+
+## An argument that is the result of another node and is read by another output: the step works on a copy of it.
+def test_a_weight_that_is_read_elsewhere_is_not_changed() -> Result[Void]
+  for backend in try ggml_backends()
+    args = try tensors(backend, Tensor.Dtype.F32)
+    got = try Trace.eval_many(args) do |a| doubled_and_stepped(a) end
+    want = try Trace.eval_many(try on_reference(args)) do |a| doubled_and_stepped(a) end
+    for i in 0...4
+      try close(try S.floats_of(got[i]), try S.floats_of(want[i]), 0.000001, "output #{i} on #{backend}")
+    end
+  end
+
+  ok()
+end
+
+## The new `[p, m, v]` of a weight that is twice the input, and that weight too.
+def doubled_and_stepped(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  w = try Tensor.add(a[0], a[0])
+  stepped = try Tensor.adam_step(w, a[1], a[2], a[3], a[4])
+  ok(stepped + [w])
+end
+
+## In a compiled function the moments are updated where they lie: their results are the very inputs, which hold the new
+## values after the run, and the weight is never written. A second run from the results follows the reference.
+def test_a_compiled_step_updates_its_moments_in_place() -> Result[Void]
+  for backend in try ggml_backends()
+    args = try tensors(backend, Tensor.Dtype.F32)
+    specs = args.map { |t| Trace.spec_of(t) }
+    program = try Trace.compile(specs) do |a| Tensor.adam_step(a[0], a[1], a[2], a[3], a[4]) end
+    try Test.eq(Trace.donated(program), [false, true, true])
+    outs = try Trace.run(program, args)
+    try close(try S.floats_of(outs[0]), WANT_P, 0.000001, "p on #{backend}")
+    try close(try S.floats_of(args[0]), WEIGHT, 0.0000001, "the weight on #{backend}")
+    try close(try S.floats_of(args[2]), WANT_M, 0.000001, "the first moment, an input, on #{backend}")
+    try close(try S.floats_of(args[3]), WANT_V, 0.000001, "the second moment, an input, on #{backend}")
+    try close(try S.floats_of(outs[1]), WANT_M, 0.000001, "the first moment on #{backend}")
+    Trace.close(program)
+  end
+
+  ok()
+end
+
+## When a moment is also read by another node, or its result is not an output, the step copies.
+def test_a_moment_that_is_read_elsewhere_is_copied() -> Result[Void]
+  for backend in try ggml_backends()
+    args = try tensors(backend, Tensor.Dtype.F32)
+    specs = args.map { |t| Trace.spec_of(t) }
+    program = try Trace.compile(specs) do |a| stepped_and_first(a) end
+    try Test.eq(Trace.donated(program), [false, false, false, false])
+    outs = try Trace.run(program, args)
+    try close(try S.floats_of(args[2]), FIRST, 0.0000001, "the first moment on #{backend}")
+    try close(try S.floats_of(outs[3]), FIRST, 0.0000001, "the first moment read elsewhere on #{backend}")
+    Trace.close(program)
+  end
+
+  ok()
+end
+
+def stepped_and_first(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  stepped = try Tensor.adam_step(a[0], a[1], a[2], a[3], a[4])
+  ok(stepped + [a[2]])
+end

@@ -151,7 +151,10 @@ def compiled(s: Setup) -> Result[Measured]
   state = try Optim.init(s.optimizer, s.params)
   counts = Counts(params: s.params.size, first: state.first.size, second: state.second.size)
   dtype = Tensor.dtype(s.params[0])
-  scalars = Optim.step_inputs(state).map { |nums| Trace.Spec(shape: shape_of(nums), dtype: dtype, backend: s.backend) }
+  scalars = Optim.step_inputs(state).map { |nums|
+    Trace.Spec(shape: Optim.input_shape(nums), dtype: dtype, backend: s.backend)
+  }
+
   moments = (state.first + state.second).map { |t| Trace.spec_of(t) }
   specs = s.params.map { |t| Trace.spec_of(t) } + moments + scalars + [Trace.spec_of(s.x), Trace.spec_of(s.y)]
   program = try Trace.compile(specs, ->(xs: List[Tensor.Tensor]) { traced_step(state, counts, xs) })
@@ -177,12 +180,6 @@ def compiled(s: Setup) -> Result[Measured]
   ok(Measured(first_ns: first, steps_ns: ns, losses: losses))
 end
 
-## A single number is a rank-0 input of the step, more are a rank-1 one (as in `Train.fit`).
-def shape_of(nums: List[Float]) -> List[Int]
-  return [] if nums.size == 1
-  [nums.size]
-end
-
 def compiled_step(
   program: Trace.Compiled,
   state: Optim.State,
@@ -193,7 +190,7 @@ def compiled_step(
     scalars: List[Tensor.Tensor] = []
     for nums in Optim.step_inputs(state)
       values = nums.map { |x: Float| Tensor.Values.Float(x) }
-      scalars = scalars.push(try Tensor.from_list(values, shape_of(nums), Tensor.Dtype.F32, s.backend))
+      scalars = scalars.push(try Tensor.from_list(values, Optim.input_shape(nums), Tensor.Dtype.F32, s.backend))
     end
 
     n = params.size

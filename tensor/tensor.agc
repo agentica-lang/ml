@@ -1101,7 +1101,10 @@ end
 ## `m = beta1 m + (1 - beta1) g`, `v = beta2 v + (1 - beta2) g^2`,
 ## `p = p (1 - lr decay) - lr (m / (1 - beta1^t)) / (sqrt(v / (1 - beta2^t)) + eps)`. In a trace of `F32` tensors of
 ## rank 3 or less it is one node, which ggml runs as `ggml_opt_step_adamw` on copies of the arguments (they stay
-## unchanged); every other case is the composition of the ops above.
+## unchanged); every other case is the composition of the ops above. In a function compiled by `Trace.compile`, the
+## moments `m` and `v` are updated in place, and their results are those very tensors (as the cache of a `set_rows`),
+## when they are inputs that nothing else reads and both results are outputs: they are consumed. `Trace.eval` and
+## `eval_many` never do.
 def adam_step(
   p: Types.Tensor,
   g: Types.Tensor,
@@ -1519,7 +1522,8 @@ def layer_norm_composed(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   div(centered, denom)
 end
 
-## Derived: `adam_step` from the ops of §3.1.
+## Derived: `adam_step` from the ops of §3.1. A computing backend holds `hyper`, which is read once into constants of
+## the shape of `p`, as for the one-node form; a trace slices it, which costs nothing when it runs.
 def adam_composed(
   p: Types.Tensor,
   g: Types.Tensor,
@@ -1527,14 +1531,20 @@ def adam_composed(
   v: Types.Tensor,
   hyper: Types.Tensor,
 ) -> Result[List[Types.Tensor]]
+  numbers: List[Types.Values] = []
+  case p.backend
+    Types.Backend.Trace -> nil
+    _ -> numbers = try to_list(hyper)
+  end
+
   one = try full(p.shape, Types.Values.Float(1.0), p.dtype, p.backend)
-  alpha = try hyper_at(hyper, 0, p)
-  beta1 = try hyper_at(hyper, 1, p)
-  beta2 = try hyper_at(hyper, 2, p)
-  eps = try hyper_at(hyper, 3, p)
-  decay = try hyper_at(hyper, 4, p)
-  correct1 = try hyper_at(hyper, 5, p)
-  correct2 = try hyper_at(hyper, 6, p)
+  alpha = try hyper_at(hyper, numbers, 0, p)
+  beta1 = try hyper_at(hyper, numbers, 1, p)
+  beta2 = try hyper_at(hyper, numbers, 2, p)
+  eps = try hyper_at(hyper, numbers, 3, p)
+  decay = try hyper_at(hyper, numbers, 4, p)
+  correct1 = try hyper_at(hyper, numbers, 5, p)
+  correct2 = try hyper_at(hyper, numbers, 6, p)
   first = try add(try mul(m, beta1), try mul(g, try sub(one, beta1)))
   second = try add(try mul(v, beta2), try mul(try mul(g, g), try sub(one, beta2)))
   denominator = try add(try sqrt(try mul(second, correct2)), eps)
@@ -1543,9 +1553,12 @@ def adam_composed(
   ok([try sub(try mul(p, keep), step), first, second])
 end
 
-## The number `i` of `hyper` as a tensor of `like`'s shape.
-def hyper_at(hyper: Types.Tensor, i: Int, like: Types.Tensor) -> Result[Types.Tensor]
-  broadcast_to(try reshape(try slice(hyper, [i], [i + 1]), []), like.shape)
+## The number `i` of `hyper` as a tensor of `like`'s shape: a constant from `numbers` when they were read, else a
+## slice of the traced `hyper`.
+def hyper_at(hyper: Types.Tensor, numbers: List[Types.Values], i: Int, like: Types.Tensor) -> Result[Types.Tensor]
+  return broadcast_to(try reshape(try slice(hyper, [i], [i + 1]), []), like.shape) if numbers.empty?
+
+  full(like.shape, numbers[i], like.dtype, like.backend)
 end
 
 ## The ops `rms_norm` stands for, from §3.1 only.

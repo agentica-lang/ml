@@ -322,6 +322,11 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   leaves: List[Leaf] = []
   fills: List[Float] = []
   walked = try walk(outs, positions)
+  donors: List[Ref] = []
+  if donate
+    donors = try adam_donors(outs, positions, walked)
+  end
+
   for t in walked
     n = try Graph.node_of(t)
     half_ok = try half_node(t, n)
@@ -378,6 +383,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
         end
 
       Types.Op.RmsNorm(eps) -> ints = [Float.to_bits32(eps)]
+      Types.Op.AdamStep -> ints = [flag(donors.include?(n.id))]
       Types.Op.AdamPart(i) -> ints = [i]
       _ -> nil
     end
@@ -402,7 +408,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   outputs = outs.map { |o| pos[Graph.id_of(o)] }
   donates = outs.map { |_| -1 }
   if donate
-    donates = try donations(outs, positions, walked)
+    donates = try donations(outs, positions, walked, donors)
   end
 
   # ggml holds an I32 tensor as I32 and a leaf as F32: that one is converted at every bind.
@@ -444,7 +450,12 @@ end
 ## Per output, the position of the input a `set_rows` writes in place (`-1` for the others), when the writes are sound:
 ## the cache of a `set_rows` is an input read by no other node, the `set_rows` is an output (its result is the input
 ## itself, so it is not given twice), and an input is not also an output.
-def donations(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[Types.Tensor]) -> Result[List[Int]]
+def donations(
+  outs: List[Types.Tensor],
+  positions: Map[Ref, Int],
+  walked: List[Types.Tensor],
+  donors: List[Ref],
+) -> Result[List[Int]]
   output_ids = outs.map { |o| Graph.id_of(o) }
   written: Map[Ref, Int] = {}
   for t in walked
@@ -493,15 +504,85 @@ def donations(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[T
   end
 
   per_output: List[Int] = []
-  for id in output_ids
+  for o in outs
+    id = Graph.id_of(o)
     if written.has_key?(id)
       per_output = per_output.push(written[id])
     else
-      per_output = per_output.push(-1)
+      per_output = per_output.push(try adam_input(o, positions, donors))
     end
   end
 
   ok(per_output)
+end
+
+## The position of the input an output is when it is the first or second moment of an `adam_step` that updates its
+## moments in place (`adam_donors`), else `-1`.
+def adam_input(o: Types.Tensor, positions: Map[Ref, Int], donors: List[Ref]) -> Result[Int]
+  n = try Graph.node_of(o)
+  case n.op
+    Types.Op.AdamPart(i) ->
+      step = try Graph.node_of(n.args[0])
+      return ok(positions[Graph.id_of(step.args[1 + i])]) if i > 0 and donors.include?(step.id)
+      ok(-1)
+    _ -> ok(-1)
+  end
+end
+
+## The `adam_step` nodes that update their moments in place: the first and second moment are inputs (not constants,
+## two different ones) that no node but the step reads and that are not outputs, and the step's two parts for them are
+## outputs, one node each. A step that fails any of that works on copies, which is what any other caller gets.
+def adam_donors(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[Types.Tensor]) -> Result[List[Ref]]
+  output_ids = outs.map { |o| Graph.id_of(o) }
+  found: List[Ref] = []
+  for t in walked
+    n = try Graph.node_of(t)
+    case n.op
+      Types.Op.AdamStep ->
+        m = try Graph.node_of(n.args[2])
+        v = try Graph.node_of(n.args[3])
+        sound = m.id != v.id and try an_input(n.args[2]) and try an_input(n.args[3])
+        sound = sound and !output_ids.include?(m.id) and !output_ids.include?(v.id)
+        for u in walked
+          r = try Graph.node_of(u)
+          for a in r.args
+            if (Graph.id_of(a) == m.id or Graph.id_of(a) == v.id) and r.id != n.id
+              sound = false
+            end
+          end
+        end
+
+        firsts = 0
+        seconds = 0
+        for u in walked
+          r = try Graph.node_of(u)
+          case r.op
+            Types.Op.AdamPart(i) ->
+              if Graph.id_of(r.args[0]) == n.id and i > 0
+                if (!output_ids.include?(r.id) or output_ids.select { |id| id == r.id }.size != 1)
+                  sound = false
+                end
+
+                if i == 1
+                  firsts = firsts + 1
+                else
+                  seconds = seconds + 1
+                end
+              end
+
+            _ -> nil
+          end
+        end
+
+        if sound and firsts == 1 and seconds == 1
+          found = found.push(n.id)
+        end
+
+      _ -> nil
+    end
+  end
+
+  ok(found)
 end
 
 ## The bits of the double `x`, which the C layer reads back as `x`: a node takes integers only. A float

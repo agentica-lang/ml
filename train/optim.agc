@@ -156,6 +156,12 @@ def step_inputs(state: State) -> List[List[Float]]
   end
 end
 
+## The shape of the input of `step_inputs` that holds `numbers`: one number is a rank-0 tensor, more are a rank-1 one.
+def input_shape(numbers: List[Float]) -> List[Int]
+  return [] if numbers.size == 1
+  [numbers.size]
+end
+
 private
 
 def zeros_like(params: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]

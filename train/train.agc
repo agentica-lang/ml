@@ -204,7 +204,7 @@ def compile_step(
   dtype = Tensor.dtype(params[0])
   backend = Tensor.backend(params[0])
   scalars = Optim.step_inputs(state).map { |numbers|
-    Trace.Spec(shape: input_shape(numbers), dtype: dtype, backend: backend)
+    Trace.Spec(shape: Optim.input_shape(numbers), dtype: dtype, backend: backend)
   }
 
   moments = (state.first + state.second).map { |t| Trace.spec_of(t) }
@@ -273,17 +273,11 @@ def scalar_inputs(state: Optim.State, params: List[Tensor.Tensor]) -> Result[Lis
   for numbers in Optim.step_inputs(state)
     values = numbers.map { |x: Float| Tensor.Values.Float(x) }
     out = out.push(
-      try Tensor.from_list(values, input_shape(numbers), Tensor.dtype(params[0]), Tensor.backend(params[0])),
+      try Tensor.from_list(values, Optim.input_shape(numbers), Tensor.dtype(params[0]), Tensor.backend(params[0])),
     )
   end
 
   ok(out)
-end
-
-## A single number is a rank-0 tensor, more are a rank-1 one.
-def input_shape(numbers: List[Float]) -> List[Int]
-  return [] if numbers.size == 1
-  [numbers.size]
 end
 
 def scalar(t: Tensor.Tensor) -> Result[Float]

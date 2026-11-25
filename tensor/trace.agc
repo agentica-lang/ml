@@ -282,6 +282,16 @@ def run(
   end
 end
 
+## Per output of `compiled`, whether a run answers the input tensor itself, which it wrote in place (the cache of a
+## `set_rows`, the moments of an `adam_step`), and not a new tensor: whoever freed the inputs of the run after it must
+## not free that one. Only a compiled ggml function does it.
+def donated(compiled: Compiled) -> List[Bool]
+  case compiled.program
+    some(p) -> p.donates.map { |d| d >= 0 }
+    none -> compiled.outs.map { |_| false }
+  end
+end
+
 ## Ends the pin of `compiled` (its graph stays in the cache, evictable). The
 ## `Compiled` still runs: a run builds the graph again if the cache lost it.
 def close(compiled: Compiled) -> Void
