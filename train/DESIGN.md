@@ -94,7 +94,9 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   `Schedule` gives the factor at step `t` (from 0): `WarmupLinear(w, n)` rises
   from 0 to 1 over `w` steps and falls straight to 0 at `n`; `WarmupCosine` falls
   along a half cosine. They are Hugging Face's `Trainer` schedules, the ones a
-  sentence-transformers fine-tune uses, and the factor stays 0 after `n`. One
+  sentence-transformers fine-tune uses, up to `n`; after it the factor stays 0,
+  where Hugging Face's cosine rises again. `fit` starts every run at step 0, so
+  a resumed run starts its warmup again. One
   way: the schedule is a field of the optimizer, not a hook of `fit`, and
   `Optim.learning_rate(state)` is what `Metrics` logs. No one-cycle yet.
 - **A step is one program of every step.** `Train.stablehlo` traces the same

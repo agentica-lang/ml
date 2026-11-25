@@ -762,11 +762,11 @@ The price:
   `ui8`.
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,
-  then Adam's two step-dependent scalars (`Optim.step_scalars`: `lr / (1 -
-  beta1^t)` and `1 / (1 - beta2^t)`) as rank-0 tensors, then the batch. One
-  program is every step: the host computes the two scalars from the step
-  count, as `fit` sets its fills on ggml, and feeds the outputs (the loss, the
-  new parameters and moments) back in.
+  then the step-dependent scalars (`Optim.step_scalars`: SGD's learning rate,
+  or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)`) as rank-0 tensors,
+  then the batch. One program is every step: the host computes the scalars
+  from the step count and the schedule, as `fit` passes them on ggml, and
+  feeds the outputs (the loss, the new parameters and moments) back in.
 - **Goldens.** `train/test/fixtures/stablehlo/NAME.mlir` is the emitted text of
   each case (`train/tools/stablehlo_cases.agc`): CI compares it, which finds a
   change and says nothing of correctness. `NAME.golden.json` holds the

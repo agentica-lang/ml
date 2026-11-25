@@ -65,8 +65,9 @@ def test_the_scalars_of_a_step_are_inputs_that_change_nothing() -> Result[Void]
   given = try Optim.step(sgd, [p], [g], [try S.tensor(rate, [])])
   baked = try Optim.step(sgd, [p], [g])
   try S.expect_close(try S.floats_of(given.params[0]), try S.floats_of(baked.params[0]), TOL, 0.0, "sgd")
-  try Test.assert(!Optim.step(sgd, [p], [g], vectors).ok?, "an SGD scalar is rank 0")
-  Test.assert(!Optim.step(sgd, [p], [g], vectors.take(2)).ok?, "an SGD step takes one scalar")
+  try Test.assert(!Optim.step(sgd, [p], [g], vectors.take(1)).ok?, "an SGD scalar is rank 0")
+  twice = [try S.tensor(rate, []), try S.tensor(rate, [])]
+  Test.assert(!Optim.step(sgd, [p], [g], twice).ok?, "an SGD step takes one scalar")
 end
 
 ## The parameter `[1, -1]` after one step per gradient in `grads`.

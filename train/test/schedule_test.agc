@@ -24,6 +24,8 @@ end
 struct Golden
   linear: List[Float]
   cosine: List[Float]
+  linear_no_warmup: List[Float]
+  cosine_all_warmup: List[Float]
   shapes: List[List[Int]]
   start: List[List[Float]]
   inputs: List[Float]
@@ -57,6 +59,24 @@ def test_the_learning_rate_of_a_step_follows_lambdalr() -> Result[Void]
   adam = Optim.Optimizer.Adam(Optim.Adam(lr: BASE, schedule: Optim.Schedule.WarmupCosine(3, 12)))
   try S.expect_close(try rates(sgd, g.linear.size), g.linear, 0.000000000000001, 0.000000000001, "linear")
   try S.expect_close(try rates(adam, g.cosine.size), g.cosine, 0.000000000000001, 0.000000000001, "cosine")
+  edge_linear = Optim.Optimizer.Sgd(Optim.Sgd(lr: BASE, schedule: Optim.Schedule.WarmupLinear(0, 4)))
+  edge_cosine = Optim.Optimizer.Adam(Optim.Adam(lr: BASE, schedule: Optim.Schedule.WarmupCosine(4, 4)))
+  try S.expect_close(
+    try rates(edge_linear, g.linear_no_warmup.size),
+    g.linear_no_warmup,
+    0.000000000000001,
+    0.000000000001,
+    "no warmup",
+  )
+
+  try S.expect_close(
+    try rates(edge_cosine, g.cosine_all_warmup.size),
+    g.cosine_all_warmup,
+    0.000000000000001,
+    0.000000000001,
+    "all warmup",
+  )
+
   constant = Optim.Optimizer.Sgd(Optim.Sgd(lr: BASE))
   S.expect_close(try rates(constant, 4), [BASE, BASE, BASE, BASE], 0.0, 0.0, "constant")
 end
@@ -128,6 +148,8 @@ def test_the_same_fits_on_libtorch_and_ggml() -> Result[Void]
   backends = try S.ggml_backends()
   if Tensor.available(S.TORCH)
     backends = backends.push(S.TORCH)
+  else
+    puts("schedule_test: libtorch is not available, its run is skipped")
   end
 
   for backend in backends

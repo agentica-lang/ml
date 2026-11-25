@@ -66,7 +66,7 @@ Both take a `schedule:` that moves the learning rate with the step count `t` (fr
 - `Optim.Schedule.WarmupLinear(warmup, total)` rises from 0 to 1 over `warmup` steps, then falls in a straight line to 0 at step `total`.
 - `Optim.Schedule.WarmupCosine(warmup, total)` rises the same way and falls along a half cosine.
 
-They are the schedules of Hugging Face's `Trainer`. The factor stays 0 after `total`, and `Optim.init` refuses a `warmup` below 0 or above `total`, and a `total` below 1. `Optim.learning_rate(state)` is the rate of the next step, and it is the value that `fit` logs as `train/lr`.
+They are the schedules of Hugging Face's `Trainer` up to `total`; after it the factor stays 0, where Hugging Face's cosine rises again. `fit` starts every run at step 0, so a resumed run starts its warmup again. `Optim.init` refuses a `warmup` below 0 or above `total`, and a `total` below 1. `Optim.learning_rate(state)` is the rate of the next step, and it is the value that `fit` logs as `train/lr`.
 
 ```agentica
 adam = Optim.Optimizer.Adam(Optim.Adam(lr: 0.0001, schedule: Optim.Schedule.WarmupLinear(100, 1000)))
@@ -74,7 +74,7 @@ adam = Optim.Optimizer.Adam(Optim.Adam(lr: 0.0001, schedule: Optim.Schedule.Warm
 
 The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, params)` makes the state, and `Optim.step(state, params, grads, scalars = [])` returns a new state and new parameters. `fit` does this for you.
 
-`Optim.step_scalars(state)` gives the numbers that the next step depends on: SGD's learning rate, or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` (its learning rate with the bias correction). `fit` gives them to the step as inputs, so a learning rate that changes at every step is not a new graph on ggml. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those two numbers as inputs after the moments (`Trace.stablehlo` in the tensor page).
+`Optim.step_scalars(state)` gives the numbers that the next step depends on: SGD's learning rate, or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` (its learning rate with the bias correction). `fit` gives them to the step as inputs, so a learning rate that changes at every step is not a new graph on ggml. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those numbers as inputs after the moments (`Trace.stablehlo` in the tensor page).
 
 `Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 

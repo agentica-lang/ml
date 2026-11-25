@@ -11,7 +11,8 @@ PI = 3.141592653589793
 ## How the learning rate follows the step count `t`, from 0: the optimizer's `lr` times a factor. `WarmupLinear(warmup,
 ## total)` rises from 0 to 1 over `warmup` steps, then falls straight to 0 at step `total`; `WarmupCosine` falls along a
 ## half cosine. They are the schedules of Hugging Face's `Trainer` (`get_linear_schedule_with_warmup` and
-## `get_cosine_schedule_with_warmup`), and the factor stays 0 after `total`.
+## `get_cosine_schedule_with_warmup`) up to `total`; after it the factor stays 0, where Hugging Face's cosine rises
+## again. `fit` starts every run at step 0, so a resumed run starts its warmup again.
 enum Schedule
   Constant
   WarmupLinear(Int, Int)
@@ -82,10 +83,10 @@ def step(
 
   case state.optimizer
     Optimizer.Sgd(o) ->
-      try check_scalars(scalars, 1, "an SGD step")
+      try check_scalars(scalars, 1, "an SGD step takes one scalar")
       sgd(o, state, params, grads, scalars)
     Optimizer.Adam(o) ->
-      try check_scalars(scalars, 2, "an Adam step")
+      try check_scalars(scalars, 2, "an Adam step takes two scalars")
       adam(o, state, params, grads, scalars)
   end
 end
@@ -203,12 +204,12 @@ def adam(
   ok(Step(state: state.with(steps: t, first: first, second: second), params: out))
 end
 
-# A step reads none, or `n` rank-0 tensors.
-def check_scalars(scalars: List[Tensor.Tensor], n: Int, what: String) -> Result[Void]
+# A step reads none, or `n` rank-0 tensors; `rule` says how many ("an SGD step takes one scalar").
+def check_scalars(scalars: List[Tensor.Tensor], n: Int, rule: String) -> Result[Void]
   return ok() if scalars.empty?
-  return error("#{what} takes #{n} scalars, got #{scalars.size}") if scalars.size != n
+  return error("#{rule}, got #{scalars.size}") if scalars.size != n
   for s in scalars
-    return error("a scalar of #{what} is a rank-0 tensor, got shape #{Tensor.shape(s)}") if !Tensor.shape(s).empty?
+    return error("a scalar of a step is a rank-0 tensor, got shape #{Tensor.shape(s)}") if !Tensor.shape(s).empty?
   end
 
   ok()

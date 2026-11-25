@@ -86,6 +86,8 @@ def main():
                 "torch": torch.__version__,
                 "linear": rates(linear(2, 10), 0.1),
                 "cosine": rates(cosine(3, 12), 0.1),
+                "linear_no_warmup": rates(linear(0, 4), 0.1),
+                "cosine_all_warmup": rates(cosine(4, 4), 0.1),
                 "shapes": shapes,
                 "start": [[float(v) for v in w.flatten()] for w in start],
                 "inputs": [float(v) for v in inputs.flatten()],
