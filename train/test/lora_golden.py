@@ -3,13 +3,21 @@
 fixed rows, it prints the output of the adapted model, the loss, PEFT's gradients of every `A` and `B`, and a short
 run of `torch.optim.AdamW` on the adapter alone (the loss of every step and the adapter at the end), in `float32`.
 
+It also saves that adapter as PEFT does, with a `lora_dropout` of 0.1 in its config, into `test/fixtures/lora_peft/`
+(`adapter_config.json` and `adapter_model.safetensors`), which `lora_peft_test.agc` reads. With `check DIR` it does
+the other way: it loads the adapter folder DIR, which `Lora.save` wrote from that same adapter
+(`agentica tools/lora_save.agc DIR`), with `PeftModel.from_pretrained` and compares the model's output.
+
 Manual, not run by the tests: it needs `torch` and `peft` (torch 2.6.0+cpu and peft 0.21.2 were used, with accelerate
 1.15.0 and psutil 7.2.2, which peft imports). Run it from `train/`, in Python's isolated mode:
 
     python -I test/lora_golden.py > test/fixtures/lora_golden.json
+    python -I test/lora_golden.py check DIR
 """
 
 import json
+import os
+import sys
 
 import peft
 import torch
@@ -19,6 +27,7 @@ ALPHA = 4
 STEPS = 5
 LR = 0.05
 LAYERS = ("first", "second")
+SAVED = "test/fixtures/lora_peft"
 
 
 class Mlp(torch.nn.Module):
@@ -55,7 +64,41 @@ def adapter_of(model: peft.PeftModel) -> list[torch.Tensor]:
     return [layer.lora_A["default"].weight, layer.lora_B["default"].weight]
 
 
+def saved(start: list[torch.Tensor], inputs: torch.Tensor, output: torch.Tensor) -> None:
+    """The adapter `start` as PEFT writes it, from a config with dropout, which a run does not apply."""
+    torch.manual_seed(137)
+    config = peft.LoraConfig(r=R, lora_alpha=ALPHA, lora_dropout=0.1, target_modules=list(LAYERS))
+    model = peft.get_peft_model(Mlp(), config).eval()
+    with torch.no_grad():
+        for p, value in zip(adapter(model), start):
+            p.copy_(value)
+        if not torch.equal(model(inputs), output):
+            raise SystemExit("the saved adapter does not give the output of the run")
+    model.save_pretrained(SAVED)
+    os.remove(f"{SAVED}/README.md")
+
+
+def check(folder: str) -> None:
+    """Loads the adapter of `folder` into the base model with PEFT and compares its output with the fixture's."""
+    with open("test/fixtures/lora_golden.json", encoding="utf-8") as f:
+        golden = json.load(f)
+    torch.manual_seed(137)
+    model = peft.PeftModel.from_pretrained(Mlp(), folder).eval()
+    loaded = [flat(p) for p in adapter(model)]
+    if loaded != golden["start"]:
+        raise SystemExit("PEFT did not load the tensors of the adapter")
+    with torch.no_grad():
+        output = model(torch.tensor(golden["inputs"]).reshape(6, 3))
+    gap = max(abs(a - b) for a, b in zip(flat(output), golden["output"]))
+    if gap > 1e-6:
+        raise SystemExit(f"the output differs by {gap}")
+    print(f"ok: PEFT loads {folder} and gives the output of the fixture (largest gap {gap:.1e})")
+
+
 def main() -> None:
+    if len(sys.argv) > 1:
+        check(sys.argv[2])
+        return
     torch.manual_seed(137)
     base = Mlp()
     weights = {name: flat(p) for name, p in base.named_parameters()}
@@ -65,11 +108,13 @@ def main() -> None:
         for p in adapter(model):
             p.copy_(torch.randn(p.shape) * 0.3)
     start = [flat(p) for p in adapter(model)]
+    kept = [p.detach().clone() for p in adapter(model)]
     inputs, targets = torch.randn(6, 3), torch.randn(6, 2)
 
     output = model(inputs)
     loss = torch.nn.functional.mse_loss(output, targets)
     loss.backward()
+    saved(kept, inputs, output.detach())
     gradients = [flat(p.grad) for p in adapter(model)]
 
     optimizer = torch.optim.AdamW(adapter(model), lr=LR, weight_decay=0.0)

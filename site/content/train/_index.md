@@ -166,6 +166,16 @@ trained = try Lora.with_params(adapter, fit.params)
 - `Lora.params(adapter)` gives the list `fit` trains (`A` then `B` of each adapted weight), and `Lora.with_params(adapter, ps)` the adapter with those tensors, inside the loss and after `fit`.
 - `Lora.applied(weights, adapter)` gives every weight by name, the adapted ones as `W + (alpha / r) · B A`. Inside the loss the weights of the model enter the trace as constants, so only the adapter gets a gradient. Outside a loss it is the merged model, on a backend that computes eagerly (the reference, libtorch).
 
+An adapter is kept in PEFT's files, so one trained with PEFT runs here and one trained here loads in PEFT:
+
+```agentica
+try Lora.save("adapter", trained)
+adapter = try Lora.open("adapter", backend)
+```
+
+- `Lora.save(dir, adapter)` writes `adapter_config.json` and `adapter_model.safetensors` into the folder `dir`, as `PeftModel.save_pretrained` does. Every adapted weight is written as a linear layer's. PEFT keeps the adapter of an `Embedding` under other names, which an adapter here does not know, so one that adapts an embedding table is not for PEFT.
+- `Lora.open(dir, backend)` reads such a folder. `adapter.names` come from the names of its tensors. An error names what is not computed here: another `peft_type`, DoRA, rsLoRA, `fan_in_fan_out`, a trained bias, `modules_to_save`, a rank or alpha pattern, `target_modules` as a regular expression, and the adapter of an `Embedding`. An adapter trained with `lora_dropout` is read and runs.
+
 LoRA trains without dropout: `Lora.params` refuses an adapter whose `dropout` is above 0 ([ml#209](https://github.com/agentica-lang/ml/issues/209)).
 
 ## Limits

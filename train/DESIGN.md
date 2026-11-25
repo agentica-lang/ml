@@ -51,6 +51,8 @@ Lora.init(weights, config, seed, backend) -> Result[Adapter { config, names, a, 
 Lora.params(adapter) -> Result[List[Tensor]]                  A then B of each adapted weight: what fit trains
 Lora.with_params(adapter, params) -> Result[Adapter]
 Lora.applied(weights, adapter) -> Result[Map[String, Tensor]] every weight, the adapted ones as W + (alpha / r) B A
+Lora.save(dir, adapter) -> Result[Void]                       PEFT's adapter_config.json and adapter_model.safetensors
+Lora.open(dir, backend) -> Result[Adapter]
 ```
 
 ## Decisions
@@ -91,6 +93,25 @@ Lora.applied(weights, adapter) -> Result[Map[String, Tensor]] every weight, the 
   (`Init.uniform`); it already reached it through `hub`. The adapter is
   `F32` and so are the weights it is applied to (`init` and `applied` refuse
   `F16` and `BF16` ones: open the model with `weights: F32`).
+- **An adapter is kept in PEFT's files.** `Lora.save` writes
+  `adapter_config.json` and `adapter_model.safetensors` as
+  `PeftModel.save_pretrained` does: the weight `x.weight` has
+  `base_model.model.x.lora_A.weight` `[r, in]` and `...lora_B.weight`
+  `[out, r]`, `F32`, with the `format: pt` metadata. The config holds the keys
+  PEFT needs and the ones that change the math; PEFT fills the rest with its
+  defaults, and `Lora.open` ignores the rest. `open` takes the adapted weights
+  from the names of the tensors, not from `target_modules`, and refuses what
+  `applied` does not compute, each by name: another `peft_type`, DoRA,
+  rsLoRA, `fan_in_fan_out`, a trained bias (`bias`, `lora_bias`),
+  `modules_to_save`, a rank or alpha pattern, `target_modules` as a regular
+  expression, any tensor that is not a `lora_A` or `lora_B`, and the adapter
+  of an `Embedding` (`lora_embedding_A` and `B`, the transposed layout). A
+  `lora_dropout` is read and written back: it runs, and `params` refuses to
+  train it. The other way has one limit: an adapter here does not know which
+  of its weights is an `Embedding` in PyTorch, so `save` writes every one as
+  a linear layer's, and an adapter on an embedding table is not for PEFT.
+  The test reads files that PEFT wrote (checked in, 1.7 kB), and
+  `test/lora_golden.py check` loads what `save` wrote with PEFT (manual).
 - **AdamW's decay is a flag per parameter, set by the caller.** PyTorch has
   parameter groups; here `decay: List[Bool]` follows the list of parameters,
   and a caller builds it from the names of a `Params.split`. The rule for a
