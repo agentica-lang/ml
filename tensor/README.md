@@ -245,7 +245,7 @@ compiles nothing, `slice`, `gather` and `scatter_add` (an index outside the rows
 `concat` and `stack` on every axis, `test/ggml_attention_test.agc` (`attention` over grouped heads, masks and the causal flag, `rope`, `permute`, `batch_matmul` and the backward of attention, node by node with `Trace.diff`), the ops of Whisper's forward (`conv1d`,
 `gelu_erf`, layer norm, softmax, masked attention) and the refusals. `test/ggml_turns_test.agc`, in a process of its own, that a
 graph without fills does not write into the buffer the shared allocator freed
-when a larger graph grew it. `test/ggml_vulkan_mlp_test.agc` checks the
+when a larger graph grew it. `test/threads_test.agc` checks, in processes of its own, that `TENSOR_THREADS` sets the threads of the CPU backend and a bad value leaves the default. `test/ggml_vulkan_mlp_test.agc` checks the
 benchmark's 784 → 512 → 512 → 10 model at batch 256 on Vulkan with
 `Tensor.vulkan_fp16(false)` against ggml's CPU backend within 1.5e-6 (local only;
 `TENSOR_VULKAN_TOL` overrides the bound on another device), and

@@ -231,6 +231,13 @@ Tensor.backend(t) -> Backend                      # no native call
   the bytes in Agentica (`File.seek` and `File.read_bytes`, `src/file_range.agc`)
   and decodes them there, which is slow on a large file. ggml takes it through
   one host copy on Vulkan.
+- The ggml CPU backend runs on the physical cores (`native/ggml.c`: the distinct
+  `thread_siblings_list` of the CPUs the process may run on on Linux,
+  `hw.physicalcpu` on macOS, else the CPUs the process may run on or the online
+  ones; at most ggml's 512 threads). ggml's threads spin while
+  they wait, so a second thread on a core only adds stalls when the machine is
+  busy. `TENSOR_THREADS=n` (a positive integer) sets it; `Lower.cpu_threads()`
+  says what a process got.
 - `TENSOR_LOAD=agentica` (an environment variable) makes the native
   backends take the Agentica read too: Agentica reads the range and passes
   the `Bytes` to the native `from_bytes`, which reads them in place
