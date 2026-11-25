@@ -472,8 +472,13 @@ end
   rows of one index write the same sum). The mask is made `kc` columns at a
   time, at most 2^24 cells each (a table of more than 64 chunks, k above about
   130000, and `k >= rows` keep `get_rows_back`). `TENSOR_SCATTER_ADD=get_rows_back`
-  keeps ggml's kernel, for the benchmark (`tools/bench-scatter.agc`). The
-  long-term fix is an upstream Vulkan kernel for `GGML_OP_GET_ROWS_BACK` with
+  keeps ggml's kernel, for the benchmark (`tools/bench-scatter.agc`): on the
+  Vega iGPU the gradient of a lookup over 1000 x 64 with 256 indices takes
+  5.9 ms (7.0 ms with `get_rows_back`), 10000 x 64 with 1024 indices 7.5 ms
+  (56 ms), 50000 x 64 with 4096 indices 43 ms (957 ms); the CPU takes 0.7, 2.5
+  and 9.1 ms, and a round trip of the updates and the answer through the CPU
+  would take 1.1, 3.7 and 12 ms, so the masked matmul is a stopgap, not the
+  floor. The long-term fix is an upstream Vulkan kernel for `GGML_OP_GET_ROWS_BACK` with
   one thread per (index, column), which would make this lowering unneeded),
   and
   `permute` (a `ggml_permute` and a copy), `batch_matmul` (`mul_mat` over the
