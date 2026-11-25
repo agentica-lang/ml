@@ -6,12 +6,11 @@
 ## ggml may refuse a trace over a packed weight, and only with the messages that fail closed (`fail_closed?`): any
 ## other error is a failure, so a lowering bug or a shape error does not hide as a refusal.
 
+import Files from "ggml_file_support"
 import Support from "prop_support"
 import Tensor from "../tensor"
 import Trace from "../trace"
 
-## Cases per property: the fast tier.
-CASES = 60
 ## The seed of the sample whose runs are counted.
 SEED = 20261124
 ## The width of the input and of the weight.
@@ -66,28 +65,12 @@ struct Kind
   tight: List[Int]
 end
 
-def devices() -> Result[List[Tensor.Device]]
-  return ok([CPU]) if Tensor.available(Tensor.Backend.Ggml(CPU))
-  flag = System.env("TENSOR_REQUIRE_GGML")
-  return ok([]) if !flag.ok?
-  return ok([]) if try flag == ""
-  error("ggml required but not built (TENSOR_REQUIRE_GGML is set)")
-end
+def devices() -> Result[List[Tensor.Device]] = Files.devices([CPU])
 
 ## `label` keeps the directories of the files of a parallel run apart (each starts from the same seed).
 def with_file(label: String, body: Fn[Rig, Result[Void]]) -> Result[Void]
-  dir = "/tmp/agentica-packed-#{label}-#{Random.int(0, 999999999)}"
-  try Dir.mkdir_private(dir, 5000)
-  path = "#{dir}/weights.bin"
-  try File.open(path, "write", 5000) do |f|
-    try File.write_bytes(f, try file_bytes(), 5000)
-    ok()
-  end
-
   w = weights()
-  result = body.call(Rig(path: path, w: w, mag: abs_all(w)))
-  _ = Path.remove(dir, 5000)
-  result
+  Files.with_file("packed-#{label}", try file_bytes()) do |path| body.call(Rig(path: path, w: w, mag: abs_all(w))) end
 end
 
 def kinds() -> List[Kind]
@@ -166,7 +149,7 @@ end
 ## weight). With F32 ggml runs all of them; with F16 and Q8_0 the refused pairs from the input are `kind.refused`, and
 ## ggml runs `kind.from_weight` of those from the weight.
 def pairs_for(kind: Kind, start: Int) -> Result[Void]
-  try with_file("#{kind.name}-#{start}") do |rig|
+  with_file("#{kind.name}-#{start}") do |rig|
     for device in try devices()
       ref_env = try reference_env(sweep_x(), SWEEP_IDS, rig.w)
       first_shape = Tensor.shape(try start_of(start, ref_env))
@@ -213,8 +196,6 @@ def pairs_for(kind: Kind, start: Int) -> Result[Void]
 
     ok()
   end
-
-  ok()
 end
 
 private
@@ -264,15 +245,10 @@ struct Env
   ids: Tensor.Tensor
 end
 
-## The error bound carried beside a value, and whether a norm made it loose.
+# The error bound carried beside a value, and whether a norm made it loose.
 struct Carried
   err: Tensor.Tensor
   loose: Bool
-end
-
-def f32_bytes(x: Float) -> List[Int]
-  bits = Float.to_bits32(x)
-  [bits % 256, (bits / 256) % 256, (bits / 65536) % 256, bits / 16777216]
 end
 
 def byte_of(b: Int, j: Int) -> Int = (j * 7 + b * 13) % 17 - 8
@@ -291,7 +267,7 @@ end
 
 ## The file: 3 padding bytes, the F32 weights, then the same weights in 3 blocks of Q8_0.
 def file_bytes() -> Result[Bytes]
-  out = [9, 9, 9] + weights().flat_map { |x: Float| f32_bytes(x) }
+  out = [9, 9, 9] + weights().flat_map { |x: Float| Files.f32_bytes(x) }
   for b in 0...ROWS
     out = out.push(SCALES[b] % 256)
     out = out.push(SCALES[b] / 256)
