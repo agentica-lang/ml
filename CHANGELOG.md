@@ -46,6 +46,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### transformers
 
 - ggml: a decode step reads the rows of the cache in use, not its whole capacity: Qwen3-0.6B decode on Vulkan at 2048 rows is 5% faster.
+- `tools/distilbert_stsb.agc` fine-tunes a sentence-transformers DistilBERT on STS-B on the CPU (`benchmarks/stsb/` has the same run in PyTorch); `train` is now a plain dependency of the package for it.
 - `DistilBert.weights`, `with_weights` and `pooled`: the weights of a DistilBERT by name and its forward inside a trace, so `Train.fit` fine-tunes it.
 - `DistilBert`: DistilBERT from a Hugging Face checkpoint, with the mean pooling and the normalization of a sentence-transformers model (`embed`).
 - `Sentence`: `mean_pooled`, `normalized` and `cosine_similarity_loss`, the pieces of a sentence-embedding model.

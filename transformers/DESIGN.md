@@ -147,6 +147,9 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
   its domain: the cosine itself is generic math in `nn/`
   (`Nn.cosine_similarity`), and the loss on scored pairs is here, next to
   the pooling it is trained with.
+- `train` is a plain dependency, not a test one: `tools/distilbert_stsb.agc`
+  (the fine-tune of `benchmarks/stsb/`) calls `Train.fit_batches`, and a tool
+  cannot import a test dependency. No module of the package imports `train`.
 - The pins in `agentica.toml` are those of `asr/`: outside this repository
   `transformers` gets the `hub` without the `gamma`/`beta` fallback until the
   next release moves them (the workspace reads the folders).
