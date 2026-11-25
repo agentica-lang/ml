@@ -1,5 +1,5 @@
-## A tiny random ViT that the Python peer `vit_peer.py` writes with Hugging Face's names (with and without the biases of
-## the query, key and value projections): the logits of two images match the peer's forward in doubles, on the
+## A tiny random ViT that the Python peer `vit_peer.py` writes with Hugging Face's names (with and without the biases
+## of the query, key and value projections): the logits of two images match the peer's forward in doubles, on the
 ## reference and on ggml. Run from `transformers/`.
 
 import Lift from "../lift"

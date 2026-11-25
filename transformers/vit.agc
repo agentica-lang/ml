@@ -56,7 +56,7 @@ def open(dir: String, backend: Tensor.Backend) -> Result[ViT]
 end
 
 ## The model of an open checkpoint. The names and shapes of its tensors are checked against `config` before any is
-## loaded, so a checkpoint that does not fit leaves nothing open.
+## loaded, and a tensor that then fails to load closes the ones loaded before it.
 def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[ViT]
   return error("model_type is #{config.model_type}, not vit") if config.model_type != "vit"
   return error("hidden_act #{config.hidden_act} is not supported, only gelu") if config.hidden_act != "gelu"
@@ -75,35 +75,42 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[V
     return error("id2label names #{config.id2label.size} classes, classifier.weight has #{head[0]}")
   end
 
-  try expect_specs(c, specs_of(config, head[0]))
-  patch_name = "vit.embeddings.patch_embeddings.projection"
+  specs = specs_of(config, head[0])
+  try expect_specs(c, specs)
+  t = try tensors_of(c, specs, backend)
   eps = config.layer_norm_eps
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
+    n = block_names("vit.encoder.layer.#{i}.")
     blocks = blocks.push(
-      try Load.encoder_block(
-        c,
-        block_names("vit.encoder.layer.#{i}."),
-        config.num_attention_heads,
-        Nn.Activation.GeluErf,
-        eps,
-        backend,
+      Nn.EncoderBlock(
+        norm1: norm_of(t, n.norm1, eps),
+        attention: Nn.Attention(
+          query: dense_of(t, n.query),
+          key: dense_of(t, n.key),
+          value: dense_of(t, n.value),
+          output: dense_of(t, n.output),
+          heads: config.num_attention_heads,
+        ),
+        norm2: norm_of(t, n.norm2, eps),
+        mlp: Nn.Mlp(up: dense_of(t, n.up), down: dense_of(t, n.down), activation: Nn.Activation.GeluErf),
       ),
     )
   end
 
+  patch = "vit.embeddings.patch_embeddings.projection"
   ok(
     ViT(
       config: config,
       patch: Nn.Conv2d(
-        weight: try Load.weight(c, "#{patch_name}.weight", 4, backend),
-        bias: some(try Load.weight(c, "#{patch_name}.bias", 1, backend)),
+        weight: at(t, "#{patch}.weight"),
+        bias: some(at(t, "#{patch}.bias")),
         stride: config.patch_size,
       ),
-      cls: try Load.weight(c, "vit.embeddings.cls_token", 3, backend),
-      positions: try Load.weight(c, "vit.embeddings.position_embeddings", 3, backend),
-      stack: Nn.EncoderStack(blocks: blocks, final_norm: some(try Load.layer_norm(c, "vit.layernorm", eps, backend))),
-      classifier: try Load.dense(c, "classifier", backend),
+      cls: at(t, "vit.embeddings.cls_token"),
+      positions: at(t, "vit.embeddings.position_embeddings"),
+      stack: Nn.EncoderStack(blocks: blocks, final_norm: some(norm_of(t, "vit.layernorm", eps))),
+      classifier: dense_of(t, "classifier"),
     ),
   )
 end
@@ -256,4 +263,31 @@ def expect_specs(c: Hub.Checkpoint, specs: List[Spec]) -> Result[Void]
   end
 
   ok()
+end
+
+## Every tensor of `specs` from the checkpoint, by name. When one fails to load, the ones before it are closed.
+def tensors_of(c: Hub.Checkpoint, specs: List[Spec], backend: Tensor.Backend) -> Result[Map[String, Tensor.Tensor]]
+  out: Map[String, Tensor.Tensor] = {}
+  for s in specs
+    case Load.weight(c, s.name, s.shape.size, backend)
+      ok(t) -> out = out.put(s.name, t)
+      error(e) ->
+        Lift.close(out.values)
+        return error(e)
+    end
+  end
+
+  ok(out)
+end
+
+## The tensor `name`, which `expect_specs` has checked and `tensors_of` has loaded.
+def at(t: Map[String, Tensor.Tensor], name: String) -> Tensor.Tensor = t.get(name).unwrap!
+
+## A dense layer as the checkpoint stores it (`[out, in]`), with a bias when the checkpoint has one.
+def dense_of(t: Map[String, Tensor.Tensor], prefix: String) -> Nn.Dense
+  Nn.Dense(w: at(t, "#{prefix}.weight"), b: t.get("#{prefix}.bias"), out_in: true)
+end
+
+def norm_of(t: Map[String, Tensor.Tensor], prefix: String, eps: Float) -> Nn.LayerNorm
+  Nn.LayerNorm(gamma: at(t, "#{prefix}.weight"), beta: at(t, "#{prefix}.bias"), eps: eps)
 end

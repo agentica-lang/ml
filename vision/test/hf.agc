@@ -74,7 +74,9 @@ end
 def step(i: Int) -> Int = (2 * i * (SIZE - 1) + GRID - 1) / (2 * (GRID - 1))
 
 ## The largest gap of the best 10 logits of each image from the golden; an error when a logit is past the tolerance or
-## the best 5 classes `best` are not the same (in the same order, with `ordered`).
+## the best 5 classes `best` are not Hugging Face's, in the same order. Without `ordered` they may be reordered by the
+## near-ties of the logits: each of ours is in Hugging Face's best 10, and each class of Hugging Face's best 10 that is
+## more than `abs` above its sixth is in ours.
 def logit_gap(
   what: String,
   best: List[List[Classify.Prediction]],
@@ -90,12 +92,12 @@ def logit_gap(
   for i in 0...cases.size
     ours = best[i].map { |p| p.id }
     theirs = cases[i].take(5).map { |e| e.id }
-    if !ordered
-      ours = ours.sort
-      theirs = theirs.sort
+    if ordered
+      return error("#{what}, image #{i}: the top 5 is #{ours}, expected #{theirs}") if ours != theirs
+    else
+      try tied_top(what, i, ours, cases[i], abs)
     end
 
-    return error("#{what}, image #{i}: the top 5 is #{ours}, expected #{theirs}") if ours != theirs
     for e in cases[i]
       got = values[i * classes + e.id]
       gap = (got - e.logit).abs
@@ -106,6 +108,24 @@ def logit_gap(
   end
 
   ok(worst)
+end
+
+## `ours` (the best 5 ids) against the best 10 of Hugging Face, `want`, allowing for ties within `abs` of its sixth.
+def tied_top(what: String, image: Int, ours: List[Int], want: List[Entry], abs: Float) -> Result[Void]
+  sixth = want[5].logit
+  for id in ours
+    if !want.any? { |e| e.id == id }
+      return error("#{what}, image #{image}: class #{id} of the top 5 is not in Hugging Face's best 10")
+    end
+  end
+
+  for e in want
+    if e.logit > sixth + abs and !ours.include?(e.id)
+      return error("#{what}, image #{image}: class #{e.id} (#{e.logit}) is clearly in the top 5 and is not in #{ours}")
+    end
+  end
+
+  ok()
 end
 
 def floats(t: Tensor.Tensor) -> Result[List[Float]]

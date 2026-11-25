@@ -1,8 +1,9 @@
 ## ViT and the image pipeline against Hugging Face (`vit_golden.py`): each image of `fixtures/resnet` goes through
-## `ResizeTo(224, 224)` and `normalize` (the mean and std of 0.5), as the image processor of `google/vit-base-patch16-224`
-## does, and then through the model in `float32` on ggml. The pixels are compared with the golden (the mean of each
-## channel and a grid of 8 by 8), the best 10 logits and the top-5 classes too. The 8-bit images that Hugging Face's
-## processor made (`fixtures/vit/crops`) go through the model alone, which is the strict check.
+## `ResizeTo(224, 224)` and `normalize` (the mean and std of 0.5), as the image processor of
+## `google/vit-base-patch16-224` does, and then through the model in `float32` on ggml. The pixels are compared with
+## the golden (the mean of each channel and a grid of 8 by 8), the best 10 logits and the top-5 classes too. The 8-bit
+## images that Hugging Face's processor made (`fixtures/vit/crops`) go through the model alone, which is the strict
+## check.
 ##
 ## It needs the checkpoint, which is not in the repository, so it runs only when `VIT_MODEL` names its folder (the
 ## revision of `transformers/DESIGN.md`, with `model.safetensors` and `config.json`). `VIT_DEVICE=vulkan` runs on
@@ -20,8 +21,8 @@ STD = [0.5, 0.5, 0.5]
 ## What passes: about twice the gap measured for the pixels (0.0235) and the logits after the pipeline (0.156), which
 ## differ from Hugging Face's in the resize (Lanczos in libvips, Pillow's bilinear). The model alone is `float32`
 ## through 12 blocks and measured 1.2e-5 on CPU and 9.6e-6 on Vulkan; its 1e-4 leaves room for other ggml builds.
-## The logits of these drawn images lie within 0.03 to 0.3 of each other, so the resize reorders the top 5: the
-## pipeline keeps the same five classes, and the model alone keeps their order too.
+## The logits of these drawn images lie within 0.03 to 0.3 of each other, so the resize reorders the top 5 and can swap
+## a class with the sixth: the pipeline check allows for ties (`Hf.logit_gap`), the model alone keeps the order.
 MODEL_ABS = 0.0001
 MODEL_REL = 0.0
 PIXEL_ABS = 0.05

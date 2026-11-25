@@ -85,6 +85,8 @@ def test_resize_to_stretches_to_the_size_whatever_the_aspect_ratio() -> Result[V
   try Test.eq(try S.samples_of(square), List.repeat(1, 9))
   same = try Vision.apply(wide, [Vision.Step.ResizeTo(8, 4)])
   try Test.eq([Image.width(same), Image.height(same)], [8, 4])
+  slim = try Vision.apply(wide, [Vision.Step.ResizeTo(5, 2)])
+  try Test.eq([Image.width(slim), Image.height(slim)], [5, 2])
   try Test.error?(Vision.apply(wide, [Vision.Step.ResizeTo(0, 3)]))
   Test.error?(Vision.apply(wide, [Vision.Step.ResizeTo(3, 0)]))
 end

@@ -17,9 +17,9 @@ enum Layout
 end
 
 ## One transform of `apply`. `Resize(n)` scales the shorter side to `n` and keeps the aspect ratio; the longer side is
-## cut to a whole number, as torchvision does. `ResizeTo(width, height)` scales to exactly that size, whatever the aspect
-## ratio. `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an area of that size. `HorizontalFlip(p)`
-## mirrors the image with probability `p` (`1.0` always).
+## cut to a whole number, as torchvision does. `ResizeTo(width, height)` scales to exactly that size, whatever the
+## aspect ratio. `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an area of that size.
+## `HorizontalFlip(p)` mirrors the image with probability `p` (`1.0` always).
 enum Step
   Resize(Int)
   ResizeTo(Int, Int)
