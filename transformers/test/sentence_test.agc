@@ -46,11 +46,7 @@ end
 
 def test_the_traced_cosine_loss_runs_on_ggml() -> Result[Void]
   for backend in try S.ggml_backends()
-    args = [
-      try S.f32(ROWS_A, [3, 4], backend),
-      try S.f32(ROWS_B, [3, 4], backend),
-      try S.f32(SCORES, [3], backend),
-    ]
+    args = [try S.f32(ROWS_A, [3, 4], backend), try S.f32(ROWS_B, [3, 4], backend), try S.f32(SCORES, [3], backend)]
 
     both = try Trace.value_and_grad(args, &loss)
     try S.expect_close(try S.floats_of(both.value), [LOSS], F32_TOL, 0.0, "loss on #{backend}")

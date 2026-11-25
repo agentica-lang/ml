@@ -14,7 +14,9 @@ NORM_EPS = 0.0000000000000001
 def mean_pooled(hidden: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(hidden)
   if shape.size != 3 or Tensor.shape(mask) != [shape[0], shape[1]]
-    return error("mean_pooled needs [batch, seq, width] and a [batch, seq] mask, got #{shape} and #{Tensor.shape(mask)}")
+    return error(
+      "mean_pooled needs [batch, seq, width] and a [batch, seq] mask, got #{shape} and #{Tensor.shape(mask)}",
+    )
   end
 
   across = [shape[0], shape[2], shape[1]]
