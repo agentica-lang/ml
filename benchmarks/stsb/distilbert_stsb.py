@@ -2,7 +2,8 @@
 """The PyTorch peer of `transformers/tools/distilbert_stsb.agc` (ml#182): the same fine-tune of a sentence-transformers
 DistilBERT on scored sentence pairs, on the CPU, with the same rules. Never run in CI.
 
-    python -I distilbert_stsb.py MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY]]]]
+    python -I distilbert_stsb.py \
+        MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY [ADAPTER_DIR]]]]]
 
 The rules: the first PAIRS pairs (1000) in order, BATCH pairs a step (16), one epoch; the checkpoint's tokenizer with a
 limit of 128 tokens; both sentences of a batch go through the model as one batch of `2 BATCH` rows, padded to the
@@ -11,6 +12,11 @@ and the mean squared gap of the cosine of a pair from its score; `torch.optim.Ad
 1e-8, weight decay WEIGHT_DECAY (0.01), none on a bias or a layer-norm weight: two parameter groups), no warmup, no
 clipping, no dropout (`eval()`, with gradients); float32; `torch.set_num_threads` of the CPUs of the process, which
 `run.sh` checks are every online CPU, as it makes ggml take them (`TENSOR_THREADS`).
+
+With ADAPTER_DIR the run is a LoRA fine-tune (ml#137) with PEFT: the model is frozen and the adapter of that
+folder, which the Agentica side wrote before its first step (`Lora.save`: `q_lin` and `v_lin`, r 8, alpha 16, `B`
+zero), is loaded with `PeftModel.from_pretrained(is_trainable=True)` and trained, every tensor decayed, lr 2e-4. So
+both sides start from the same tensors. It needs `peft`, which the other run does not import.
 
 It prints the JSON lines of the Agentica side: `checks` (how many weights decay, a SHA-256 of their names and one of
 every token id), `spearman` before and after, and one `step` per step with its loss, its wall time in ms (the batch,
@@ -36,6 +42,7 @@ from transformers import DistilBertModel
 
 MAX_LENGTH = 128
 LR = 2e-5
+LORA_LR = 2e-4
 EMBED_BATCH = 32
 COSINE_EPS = 1e-16
 MIN_COUNT = 1e-9
@@ -75,9 +82,9 @@ def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def checks(named, pairs):
-    """What both sides must agree on before a loss means anything: the weights that decay and every token id."""
-    decayed = sorted(n for n, _ in named if not no_decay(n))
+def checks(decayed, pairs):
+    """What both sides must agree on before a loss means anything: the names that decay and every token id."""
+    decayed = sorted(decayed)
     ids = "".join(f"{','.join(map(str, left))}\n{','.join(map(str, right))}\n" for left, right, _ in pairs)
     names = digest("\n".join(decayed))
     return {"kind": "checks", "decayed": len(decayed), "decayed_names": names, "token_ids": digest(ids)}
@@ -122,7 +129,9 @@ def number(i, default):
 
 def main():
     if len(sys.argv) < 4:
-        raise SystemExit("usage: MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY]]]]")
+        raise SystemExit(
+            "usage: MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY [ADAPTER_DIR]]]]]"
+        )
     path = sys.argv[1]
     count, batch, pad_to = number(4, 1000), number(5, 16), number(6, 1)
     weight_decay = float(sys.argv[7]) if len(sys.argv) > 7 else 0.01
@@ -139,18 +148,26 @@ def main():
     if len(train) < count:
         raise SystemExit(f"{sys.argv[2]} has {len(train)} pairs, fewer than {count}")
     validation = tokenized(tok, sys.argv[3])
-    named = list(model.named_parameters())
-    print(json.dumps(checks(named, train + validation)), flush=True)
-    print(json.dumps({"kind": "spearman", "when": "before", "value": spearman(model, validation, pad)}), flush=True)
-    optimizer = torch.optim.AdamW(
-        [
+    if len(sys.argv) > 8:
+        import peft
+
+        model = peft.PeftModel.from_pretrained(model, sys.argv[8], is_trainable=True).eval()
+        named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+        # PEFT's names in the model, as in its file: no `base_model.model.` and no adapter name.
+        decayed = [n.removeprefix("base_model.model.").replace(".default.", ".") for n, _ in named]
+        groups = [{"params": [p for _, p in named], "weight_decay": weight_decay}]
+        lr = LORA_LR
+    else:
+        named = list(model.named_parameters())
+        decayed = [n for n, _ in named if not no_decay(n)]
+        groups = [
             {"params": [p for n, p in named if not no_decay(n)], "weight_decay": weight_decay},
             {"params": [p for n, p in named if no_decay(n)], "weight_decay": 0.0},
-        ],
-        lr=LR,
-        betas=(0.9, 0.999),
-        eps=1e-8,
-    )
+        ]
+        lr = LR
+    print(json.dumps(checks(decayed, train + validation)), flush=True)
+    print(json.dumps({"kind": "spearman", "when": "before", "value": spearman(model, validation, pad)}), flush=True)
+    optimizer = torch.optim.AdamW(groups, lr=lr, betas=(0.9, 0.999), eps=1e-8)
     seen = set()
     for step, at in enumerate(range(0, len(train), batch), 1):
         picked = train[at : at + batch]
