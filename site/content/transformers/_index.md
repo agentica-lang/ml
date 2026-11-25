@@ -66,6 +66,8 @@ end
 ```
 
 - `DistilBert.forward(m, ids, mask)` is `run` on tensors: `I32` ids and an `F32` mask (1.0 for a token, 0.0 for padding), both `[batch, seq]`.
+- `DistilBert.weights(m)` gives the weights by their names in the checkpoint (`transformer.layer.0.attention.q_lin.weight`; under `distilbert.` when the file has that prefix), and `DistilBert.with_weights(m, weights)` gives the model with those tensors in their place: the names of `weights(m)`, no more and no fewer, with the same shapes. With `Params` of the train package they train the model or part of it.
+- `DistilBert.pooled(m, ids, mask, normalize)` is the mean embedding as plain tensor calls, for a loss: with the traced weights of `with_weights` it is part of the trace, so `Train.fit` takes its gradient. `Sentence.cosine_similarity_loss` of two of them is the loss of a model trained on scored pairs. On ggml it runs only inside a trace; `embed` is the call for inference. The gradient runs on the reference and ggml (libtorch has no `batch_matmul`).
 - The results belong to the caller (`Lift.close`), and `DistilBert.close_model(m)` frees the weights. Nothing may use a closed model.
 - A checkpoint with the `distilbert.` prefix (`DistilBertFor...`) loads too, and its head is ignored. The layer-norm `eps` is 1e-12, as in Hugging Face's code. A `model_type` other than `distilbert`, an activation other than `gelu` and sinusoidal positions are errors.
 - Only `model.safetensors` is read, never `pytorch_model.bin`. Reference and ggml are tested; libtorch is not.
