@@ -152,8 +152,10 @@ an_term xla_filled(an_env *env, xla_list_Int shape, double value, int64_t dtype)
 /* Host readback: the row-major values as doubles, which the caller tags with the tensor's dtype. */
 an_term xla_readback(an_env *env, struct xla_Buffer_state *b);
 
-/* The StableHLO module `text` compiled for one CPU device; it must return `outputs` tensors. */
-an_term xla_compile(an_env *env, ng_str text, int64_t outputs);
+/* The StableHLO module `text` compiled for one CPU device; it must return `outputs` tensors. `donated` are the
+   inputs the text aliases to an output (`tf.aliasing_output`): a run gives up those buffers, and keeps the others.
+   A program of the same text compiled lately comes from the cache of the process (32 programs), compiled once. */
+an_term xla_compile(an_env *env, ng_str text, int64_t outputs, xla_list_Int donated);
 
 /* An empty call of `p`. */
 an_term xla_call(an_env *env, struct xla_Program_state *p);
@@ -167,6 +169,9 @@ an_term xla_execute(an_env *env, struct xla_Call_state *c);
 
 /* How many buffers are alive in the process, for a test. */
 an_term xla_buffers(an_env *env);
+
+/* How many programs the process has compiled (the misses of the cache), for a test. */
+an_term xla_compiles(an_env *env);
 
 #ifdef __cplusplus
 }
@@ -427,11 +432,16 @@ static an_term xla_native_readback(an_env *env, int argc, const an_term *argv) {
 
 static an_term xla_native_compile(an_env *env, int argc, const an_term *argv) {
   (void)argc;
+  ng_fail fail;
   ng_str a0;
   if (!an_get_string(env, argv[0], &a0.data, &a0.len)) return an_badarg(env, 0);
   int64_t a1;
   if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
-  return xla_compile(env, a0, a1);
+  xla_list_Int a2;
+  if (!xla_native_open_list_Int(env, argv[2], &a2, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 2);
+  a2.argument = 3;
+  return xla_compile(env, a0, a1, a2);
 }
 
 static an_term xla_native_call(an_env *env, int argc, const an_term *argv) {
@@ -463,17 +473,24 @@ static an_term xla_native_buffers(an_env *env, int argc, const an_term *argv) {
   return xla_buffers(env);
 }
 
+static an_term xla_native_compiles(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  (void)argv;
+  return xla_compiles(env);
+}
+
 static const an_function xla_native_functions[] = {
   {"arch", "() -> String", xla_native_arch, AN_SHORT},
   {"open", "(String) -> Result[Void]", xla_native_open, AN_DIRTY},
   {"upload", "(List[Int], List[Float], Int) -> Result[Buffer]", xla_native_upload, AN_DIRTY},
   {"filled", "(List[Int], Float, Int) -> Result[Buffer]", xla_native_filled, AN_DIRTY},
   {"readback", "(Buffer) -> Result[List[Float]]", xla_native_readback, AN_DIRTY},
-  {"compile", "(String, Int) -> Result[Program]", xla_native_compile, AN_DIRTY},
+  {"compile", "(String, Int, List[Int]) -> Result[Program]", xla_native_compile, AN_DIRTY},
   {"call", "(Program) -> Call", xla_native_call, AN_SHORT},
   {"arg", "(Call, Buffer) -> Result[Void]", xla_native_arg, AN_SHORT},
   {"execute", "(Call) -> Result[List[Buffer]]", xla_native_execute, AN_DIRTY},
   {"buffers", "() -> Int", xla_native_buffers, AN_SHORT},
+  {"compiles", "() -> Int", xla_native_compiles, AN_SHORT},
 };
 
 /* Ends the module's one .c file: the tables and agentica_native_init. LOAD is NULL or a const char *(*)(void)
@@ -484,5 +501,5 @@ static const an_function xla_native_functions[] = {
     {"Program", sizeof(struct xla_Program_state), XLA_Program_FREE}, \
     {"Call", sizeof(struct xla_Call_state), XLA_Call_FREE}, \
   }; \
-  AN_MODULE_TABLES("xla", xla_native_functions, 10, NULL, 0, xla_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("xla", xla_native_functions, 11, NULL, 0, xla_native_resources, 3, LOAD)
 #endif

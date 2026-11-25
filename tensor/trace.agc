@@ -250,8 +250,8 @@ def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tenso
         ),
       )
     Types.Backend.Xla(_) ->
-      m = try Stablehlo.emit(inputs, outs)
-      p = try Xla.compile(m.text, m.constants, outs)
+      m = try Stablehlo.emit(inputs, outs, true, true)
+      p = try Xla.compile(m.text, m.constants, outs, m.donated, m.checked)
       ok(Compiled(specs: specs, inputs: [], outs: [], backend: backend, program: none, pin: none, xla: some(p)))
     _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none, pin: none, xla: none))
   end
@@ -314,6 +314,12 @@ end
 ## Such a tensor has the shape, dtype and backend of its output, is not an
 ## input of the run, and is returned as it is. The run overwrites it, so
 ## whoever else reads it must be done.
+##
+## On XLA the moments that an `adam_step` updates in place (as on ggml) are
+## consumed: XLA writes the new moment over the old one, so the input tensor
+## cannot be read after the run (free it), and the output is a new tensor.
+## They are consumed even when the run then fails its gather check (an index
+## outside the rows of its source).
 def run(
   compiled: Compiled,
   args: List[Types.Tensor],
@@ -351,8 +357,8 @@ end
 
 ## Ends the pin of `compiled` (its graph stays in the cache, evictable). The
 ## `Compiled` still runs: a run builds the graph again if the cache lost it.
-## On XLA it frees the compiled program instead, and a run afterwards is an
-## error.
+## On XLA it lets go of the compiled program, which stays in the process's
+## cache of programs, evictable, as a ggml graph does.
 def close(compiled: Compiled) -> Void
   case compiled.pin
     some(p) -> Native.close(p)
@@ -498,8 +504,8 @@ def xla_evaluate(outs: List[Types.Tensor], env: Map[Ref, Types.Tensor]) -> Resul
   end
 
   inputs = (try Lower.walk(outs, positions)).select { |t| env.has_key?(Graph.id_of(t)) }
-  m = try Stablehlo.emit(inputs, outs)
-  p = try Xla.compile(m.text, m.constants, outs)
+  m = try Stablehlo.emit(inputs, outs, false, true)
+  p = try Xla.compile(m.text, m.constants, outs, [], m.checked)
   values = Xla.execute(p, inputs.map { |t| env[Graph.id_of(t)] })
   Native.close(p.program)
   values

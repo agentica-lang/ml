@@ -73,9 +73,9 @@ def test_a_fit_with_adamw_follows_pytorch_on_the_reference() -> Result[Void]
   follows(g, adamw(Optim.Schedule.WarmupLinear(2, 10)), g.warmup, S.REF)
 end
 
-def test_the_same_fits_on_libtorch_and_ggml() -> Result[Void]
+def test_the_same_fits_on_libtorch_ggml_and_xla() -> Result[Void]
   g = try golden()
-  backends = try S.ggml_backends()
+  backends = try S.compiled_backends()
   if Tensor.available(S.TORCH)
     backends = backends.push(S.TORCH)
   else

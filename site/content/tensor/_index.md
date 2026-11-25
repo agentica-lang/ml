@@ -86,7 +86,7 @@ On `Ggml`, a direct call to an op is an eager call: it runs the op right away. E
 
 `Tensor.to_device(t, Device.Vulkan(0))` moves a ggml tensor to another ggml device.
 
-`Xla` works like `Ggml`: eager calls only create and read tensors, and every other op is an error that names it. `Trace.compile` turns the function into StableHLO and XLA compiles it once, and `Trace.run` runs it. `Trace.eval`, `eval_many` and `value_and_grad` compile for each call. XLA comes as a plugin that the package loads when it first needs it and never links. Install it once, from the `tensor` folder (it needs `unzip`):
+`Xla` works like `Ggml`: eager calls only create and read tensors, and every other op is an error that names it. `Trace.compile` turns the function into StableHLO and XLA compiles it once, and `Trace.run` runs it. `Trace.eval`, `eval_many` and `value_and_grad` compile for each call, and a cache of the last 32 programs makes a function traced again compile once. As on ggml, the moments that `adam_step` updates in place are written over: on XLA the run consumes them, so read the new ones it returns. XLA comes as a plugin that the package loads when it first needs it and never links. Install it once, from the `tensor` folder (it needs `unzip`):
 
 ```sh
 agentica tools/install_xla.agc

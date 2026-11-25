@@ -64,14 +64,97 @@ def test_steps_that_close_old_tensors_keep_no_buffer_alive() -> Result[Void]
   Test.assert(Xla.buffers() <= first, "#{Xla.buffers()} buffers are alive after the steps, #{first} after the first")
 end
 
-## `Trace.close` frees the compiled program: a run afterwards is an error.
-def test_a_closed_xla_function_does_not_run() -> Result[Void]
+## A program compiled once serves a retrace of the same function and a run after `Trace.close`, as on ggml: both
+## find it in the cache of the process, and `eval` per step compiles once.
+def test_a_retrace_and_a_closed_function_compile_nothing_again() -> Result[Void]
   return ok() if !try present()
   args = try mlp_args(XLA)
-  f = try Trace.compile(args.map { |t| Trace.spec_of(t) }, ->(xs: List[Tensor.Tensor]) { ok([try forward(xs)]) })
-  try Trace.run(f, args)
+  specs = args.map { |t| Trace.spec_of(t) }
+  f = try Trace.compile(specs, ->(xs: List[Tensor.Tensor]) { ok([try forward(xs)]) })
+  want = try Trace.run(f, args)
+  before = Xla.compiles()
   Trace.close(f)
-  Test.assert(!Trace.run(f, args).ok?, "a closed XLA function ran")
+  try close(try Trace.run(f, args), want)
+  g = try Trace.compile(specs, ->(xs: List[Tensor.Tensor]) { ok([try forward(xs)]) })
+  try close(try Trace.run(g, args), want)
+  for _ in 0...3
+    _ = try Trace.eval(args, &forward)
+  end
+
+  Test.assert(Xla.compiles() - before <= 1, "#{Xla.compiles() - before} compiles, at most the one of eval")
+end
+
+## `gather` and `adam_step` (one node in a trace) as a compiled program, against the reference: the rows of a
+## dataset at the ids of a batch, and an Adam update whose moments the run takes over (they are consumed).
+def test_gather_and_adam_step_compiled_by_xla_match_the_reference() -> Result[Void]
+  return ok() if !try present()
+  got = try gather_and_adam(XLA)
+  want = try gather_and_adam(REF)
+  close(got, want)
+end
+
+## An index outside the rows is an error, as on the reference, not a clamped row.
+def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]
+  return ok() if !try present()
+  table = try floats(uniform(15, 31, 1.0), [5, 3], XLA)
+  for bad in [[1, 5], [-1, 0]]
+    r = Trace.eval([table, try labels(bad, XLA)], ->(xs: List[Tensor.Tensor]) { Tensor.gather(xs[0], xs[1]) })
+    try Test.assert(!r.ok?, "gather at #{bad} of 5 rows ran on XLA")
+    try Test.assert(r.message.include?("outside the rows"), r.message)
+  end
+
+  ok()
+end
+
+## A dtype that cannot hold the row count of the table needs no upper bound: U8 ids on 300 rows match the reference,
+## and a negative I8 id on 200 rows is still an error.
+def test_a_narrow_index_dtype_gathers_from_a_larger_table() -> Result[Void]
+  return ok() if !try present()
+  rows = ->(xs: List[Tensor.Tensor]) { Tensor.gather(xs[0], xs[1]) }
+  values = uniform(600, 41, 1.0)
+  ids = [0, 255, 7].map { |i| Tensor.Values.Int(i) }
+  got = try Trace.eval([try floats(values, [300, 2], XLA), try Tensor.from_list(ids, [3], Tensor.Dtype.U8, XLA)], rows)
+
+  want = try Trace.eval(
+    [try floats(values, [300, 2], REF), try Tensor.from_list(ids, [3], Tensor.Dtype.U8, REF)],
+    rows,
+  )
+
+  try close([got], [want])
+  bad = try Tensor.from_list([Tensor.Values.Int(-1)], [1], Tensor.Dtype.I8, XLA)
+  r = Trace.eval([try floats(uniform(400, 42, 1.0), [200, 2], XLA), bad], rows)
+  Test.assert(!r.ok?, "gather at -1 of 200 rows ran on XLA")
+end
+
+def test_an_adam_step_consumes_the_moments_it_updates() -> Result[Void]
+  return ok() if !try present()
+  args = try adam_args(XLA)
+  f = try Trace.compile(args.map { |t| Trace.spec_of(t) }, &adam)
+  _ = try Trace.run(f, args)
+  try Test.assert(Tensor.to_list(args[0]).ok?, "the parameter was consumed")
+  try Test.assert(Tensor.to_list(args[1]).ok?, "the gradient was consumed")
+  try Test.assert(!Tensor.to_list(args[2]).ok?, "the first moment was not consumed")
+  Test.assert(!Tensor.to_list(args[3]).ok?, "the second moment was not consumed")
+end
+
+def test_adam_steps_that_consume_their_moments_keep_no_buffer_alive() -> Result[Void]
+  return ok() if !try present()
+  args = try adam_args(XLA)
+  f = try Trace.compile(args.map { |t| Trace.spec_of(t) }, &adam)
+  first = 0
+  for i in 0...20
+    outs = try Trace.run(f, args)
+    for t in [args[0], args[2], args[3]]
+      free(t)
+    end
+
+    args = [outs[0], args[1], outs[1], outs[2], args[4]]
+    if i == 0
+      first = Xla.buffers()
+    end
+  end
+
+  Test.assert(Xla.buffers() <= first, "#{Xla.buffers()} buffers are alive after the steps, #{first} after the first")
 end
 
 def test_an_eager_op_on_xla_is_an_error_naming_it() -> Result[Void]
@@ -109,6 +192,33 @@ def free(t: Tensor.Tensor) -> Void
     Tensor.Handle.Xla(h) -> Native.close(h)
     _ -> nil
   end
+end
+
+## `p, g, m, v` of shape `[3, 4]` and Adam's 7 numbers.
+def adam_args(backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  ok([
+    try floats(uniform(12, 21, 1.0), [3, 4], backend),
+    try floats(uniform(12, 22, 0.5), [3, 4], backend),
+    try floats(uniform(12, 23, 0.1), [3, 4], backend),
+    try floats(uniform(12, 24, 0.1).map { |x| x.abs }, [3, 4], backend),
+    try floats([0.01, 0.9, 0.999, 0.00000001, 0.1, 1.5, 1.2], [7], backend),
+  ])
+end
+
+def adam(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]] = Tensor.adam_step(xs[0], xs[1], xs[2], xs[3], xs[4])
+
+## The rows of a `[5, 3]` table at `[4, 0, 4, 2]`, then an Adam step: one compiled program each.
+def gather_and_adam(backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  table = try floats(uniform(15, 31, 1.0), [5, 3], backend)
+  ids = try labels([4, 0, 4, 2], backend)
+  rows = try Trace.compile(
+    [Trace.spec_of(table), Trace.spec_of(ids)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.gather(xs[0], xs[1])]) },
+  )
+
+  args = try adam_args(backend)
+  step = try Trace.compile(args.map { |t| Trace.spec_of(t) }, &adam)
+  ok(try Trace.run(rows, [table, ids]) + try Trace.run(step, args))
 end
 
 ## True when the plugin is there; with `TENSOR_REQUIRE_XLA` set, a missing one is an error, never a pass.

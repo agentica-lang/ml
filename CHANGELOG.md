@@ -15,6 +15,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### train
 
+- `Train.fit` runs on `Backend.Xla(Device.Cpu)`: each step is one XLA program, with the batch gathered in it and Adam's moments updated in place.
 - `Lora.merged`: the weights of a model with an adapter merged in, for inference, on any backend.
 - `Train.fit` on ggml gathers the rows of a batch inside the step instead of in a graph of its own, with the same batches: a step at batch 16 to 64 on Vulkan takes up to half the time (14 ms to 7 to 9 ms), and a CPU step 4 to 17 percent less. The loader's prefetch has nothing to do there, so `fit` starts no task.
 - `Lora.save` and `Lora.open` keep an adapter in PEFT's files (`adapter_config.json`, `adapter_model.safetensors`): an adapter trained with PEFT runs here, and one trained here loads in PEFT.

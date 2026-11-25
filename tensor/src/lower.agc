@@ -278,6 +278,18 @@ def walk(roots: List[Types.Tensor], env: Map[Ref, Int]) -> Result[List[Types.Ten
   ok(found.sort_by { |t| Graph.id_of(t) })
 end
 
+## Per output of `outs`, the position of the input an `adam_step` updates in place when it is that output (its first
+## or second moment, under the rules of `adam_donors`), else `-1`. `positions` holds the inputs' positions.
+def adam_moments(outs: List[Types.Tensor], positions: Map[Ref, Int]) -> Result[List[Int]]
+  donors = try adam_donors(outs, positions, try walk(outs, positions))
+  per_output: List[Int] = []
+  for o in outs
+    per_output = per_output.push(try adam_input(o, positions, donors))
+  end
+
+  ok(per_output)
+end
+
 private
 
 ## Binds the leaves `slots` of `p` for the next run of `lease`: an input to its tensor of `inputs`, a constant to
