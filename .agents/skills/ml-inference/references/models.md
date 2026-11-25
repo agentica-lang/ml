@@ -27,7 +27,7 @@ curl -sIL "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/$rev/model.safetensors
 | Whisper tiny | `openai/whisper-tiny` | the same | `Asr.open` (`speech.md`) |
 
 Only `.safetensors` is read, never `pytorch_model.bin`. A sharded model has `model.safetensors.index.json` beside its
-shards and opens by that file (`Hub.open`, `Asr.open`; `Bert.open` does not read sharded checkpoints yet and
+shards and opens by that file (`Hub.open`, `Asr.open`; `Bert.open` does not read sharded checkpoints and
 `Qwen3.open` is untested on them). A `.gguf` file of a Qwen3 opens too, with `Qwen3.open("model.gguf", backend)`.
 
 ## Look inside a checkpoint

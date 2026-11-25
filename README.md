@@ -1,30 +1,30 @@
 # ml
 
 Machine learning for Agentica: tensors, training and inference over a
-reference backend, libtorch and ggml (CPU and Vulkan). The API is functional, in
-the style of JAX and Nx: values are immutable, and a training step returns new
-parameters.
+reference backend, libtorch, ggml (CPU and Vulkan) and XLA (CPU). The API is
+functional, in the style of JAX and Nx: values are immutable, and a training
+step returns new parameters.
 
 Status: in progress. The API is not stable yet.
 
-Works today: `tensor/` (the reference, libtorch and ggml backends, tracing and
-gradients), `nn/` (layers, forward only), `train/` (losses, SGD and Adam, a
-training loop, a data loader), `hub/` (safetensors and GGUF checkpoints),
-`asr/` (Whisper on the reference, libtorch and ggml backends, with Hugging
-Face's token ids on the test clips), `transformers/` (BERT, Qwen3 and Qwen2.5)
-and `whisper/` (a binding over whisper.cpp).
+Works today: `tensor/` (the reference, libtorch, ggml and XLA backends, tracing
+and gradients), `nn/` (layers, forward only), `train/` (losses, SGD and Adam, a
+training loop, a data loader, LoRA with PEFT's files), `hub/` (safetensors and
+GGUF checkpoints), `asr/` (Whisper on the reference, libtorch and ggml
+backends, with Hugging Face's token ids on the test clips), `transformers/`
+(BERT, DistilBERT, Qwen3 and Qwen2.5) and `whisper/` (a binding over
+whisper.cpp).
 
 Works, but slow: `asr/` on ggml. Its tokens match, but on the test clips it
-runs about 2 to 3 times slower than whisper.cpp on CPU and about 5 times
-slower on Vulkan. The numbers and the machine are in
+runs about 1.5 times slower than whisper.cpp on CPU and about 1.7 times
+slower on Vulkan (jfk). The numbers and the machine are in
 [`benchmarks/README.md`](benchmarks/README.md).
 
-Not yet: what the [roadmap](roadmap.md) lists, from LoRA and inference
-benchmarks to CUDA.
+Not yet: what the [roadmap](roadmap.md) lists, from vision models and more
+GGUF formats to CUDA, serving and distributed training.
 
-The tensor stack is designed in [`tensor/DESIGN.md`](tensor/DESIGN.md), with the
-order of work in [`roadmap.md`](roadmap.md) and the original design in
-[issue #1](https://github.com/agentica-lang/ml/issues/1).
+The tensor stack is designed in [`tensor/DESIGN.md`](tensor/DESIGN.md) and the
+original design is in [issue #1](https://github.com/agentica-lang/ml/issues/1).
 
 ## Packages
 
@@ -36,12 +36,12 @@ tag. The API is not stable yet, so expect changes between versions.
 
 | Folder | What | Needs |
 |---|---|---|
-| `tensor/` | the tensor API, the backend interface, a slow reference backend in Agentica, the libtorch (eager) backend behind a thin C++ layer, and the ggml backend (CPU and Vulkan), which runs a traced function as one graph | nothing native for the reference backend; libtorch 2.4.1+cpu, **optional**, for `Backend.Torch`; ggml (the `third_party/ggml` submodule, built by `tensor/tools/build-engine.sh`), **optional**, for `Backend.Ggml` |
+| `tensor/` | the tensor API, the backend interface, a slow reference backend in Agentica, the libtorch (eager) backend behind a thin C++ layer, the ggml backend (CPU and Vulkan), which runs a traced function as one graph, and the XLA backend (CPU), which compiles it with the PJRT plugin | nothing native for the reference backend; libtorch 2.4.1+cpu, **optional**, for `Backend.Torch`; ggml (the `third_party/ggml` submodule, built by `tensor/tools/build-engine.sh`), **optional**, for `Backend.Ggml`; the XLA plugin (`agentica tools/install_xla.agc`), **optional**, for `Backend.Xla` |
 | `nn/` | functional layers, forward only: dense, layer norm, embeddings, convolution, attention (grouped-query, rotary), MLP, transformer encoder and decoder blocks and stacks, seeded initializers | `tensor` |
-| `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam), a data loader (seeded shuffle, background prefetch), the training loop over `tensor/`'s gradients, training part of a model and LoRA adapters | `tensor`, `hub`, `nn` |
-| `hub/` | `safetensors` checkpoints (one file or sharded with an index) read in Agentica, and `nn` layers loaded from them by name | `tensor`, `nn` |
+| `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam, AdamW), a data loader (seeded shuffle, background prefetch), the training loop over `tensor/`'s gradients, training part of a model and LoRA adapters | `tensor`, `hub`, `nn` |
+| `hub/` | `safetensors` checkpoints (one file or sharded with an index) and GGUF files, and `nn` layers loaded from them by name | `tensor`, `nn` |
 | `asr/` | Whisper in Agentica: the model forward loaded from a Hugging Face checkpoint, its log-mel frontend, its tokenizer and `transcribe` (greedy decoding with a KV cache, language detection, timestamps, translation) for audio of any length, in windows of 30 s that seek; on the reference backend, libtorch and ggml (CPU and Vulkan) | `tensor`, `nn`, `hub` |
-| `transformers/` | BERT and Qwen3 (the forward and greedy generation with a KV cache) from Hugging Face checkpoints, and the WordPiece and byte-level BPE tokenizers, which give Hugging Face's ids | `tensor`, `nn`, `hub`, `train` (for the fine-tune tool of `tools/`) |
+| `transformers/` | BERT, DistilBERT, Qwen3 and Qwen2.5 (the forward and generation with a KV cache) from Hugging Face checkpoints, and the WordPiece and byte-level BPE tokenizers, which give Hugging Face's ids | `tensor`, `nn`, `hub`, `train` (for the fine-tune tool of `tools/`) |
 | `whisper/` | a binding over the pinned whisper.cpp engine, with WAV reading, microphone capture and long-audio chunking | whisper.cpp (a submodule), a C/C++ compiler |
 
 An inference app depends on `nn` and one backend; a training app adds `train`.

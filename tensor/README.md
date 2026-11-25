@@ -20,9 +20,9 @@ answers whether this machine has it, and the dispatch arm answers
 
 - `tensor.agc` — the public API. Every op returns `Result` (`error`, never a
   halt), validates shape/dtype/backend/device before it dispatches
-  (`DESIGN.md` §9), and dispatches by value over the `Backend` arms: two
-  compute backends (`Reference`, `Torch`), the `Trace` recorder that records a
-  node instead of computing (§7, §10).
+  (`DESIGN.md` §9), and dispatches by value over the `Backend` arms: four
+  compute backends (`Reference`, `Torch`, `Ggml`, `Xla`), the `Trace` recorder
+  that records a node instead of computing (§7, §10).
 - `trace.agc` — tracing and gradients: `value_and_grad`, `grad`, `eval` and
   `eval_many` (several outputs, one evaluation) call a function written against
   `tensor.agc` with tensors of the `Trace` backend, derive the gradient graph
@@ -67,7 +67,7 @@ answers whether this machine has it, and the dispatch arm answers
   `collect-licenses.sh` gathers the licenses of what it links. The plugin
   needs a CPU with AVX.
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
-- `tools/bench-ggml.agc` — the step times in "The ggml backend".
+- `tools/bench-ggml.agc` — the data and the init of the training benchmark (`benchmarks/README.md`).
 - `test/` — the unit tests of the reference backend, the libtorch conformance
   suite (`test/torch_*_test.agc`) that runs the same public call on both
   backends and compares, and the property tests (`test/prop_*_test.agc`, with
@@ -78,8 +78,6 @@ The native module lives in this package rather than in a `torch/` of its own
 because a `resource` is nominal to the `extern module` block that declares it:
 `Tensor.handle` has to name `TensorHandle`, and the `Backend.Torch` arm has to
 call the module, so both have to be declared here (`DESIGN.md` §1, §2, §7).
-[agentica#1918](https://github.com/agentica-lang/agentica/issues/1918) is the
-change that lets the backend move out into its own package again.
 
 ## What is implemented, and what is not
 
@@ -113,8 +111,8 @@ Why those two are out:
 - **`batch_matmul`** is expressible (`at::matmul` already takes a batch) and
   untested. `multi_head_attention` does not need it: it splits heads into
   rank-2 `matmul` calls (§3.2).
-- **`to_device`** would only move a tensor to the one device this CPU release
-  serves, which is the identity; `Device` has only `Cpu`.
+- **`to_device`** would only move a tensor to the one device libtorch serves
+  here, which is the identity: it serves `Device.Cpu` only.
 
 `conv1d`/`avg_pool1d` take the window `DESIGN.md` §3.1 admits and no more:
 `stride` ≥ 1 and `padding` ≥ 0, no dilation, no groups. `avg_pool1d` also caps
@@ -241,7 +239,7 @@ MLP sizes; `Tensor.vulkan_fp16(false)`, before any other ggml call (a CPU one, o
 `mul_mat` (on a build without Vulkan it changes nothing), and the checks against
 Hugging Face and whisper.cpp do. ggml
 holds `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are held as `F32`, which is
-exact for them; `F16`, `F64` and `I64` are refused, and so is a rank above 4. A
+exact for them; `F64` and `I64` are refused, `F16` and `Q8_0` are held only as a weight from `from_file` (or an `F16` cache), and a rank above 4 is refused. A
 fill is made in C, so it has no `List.repeat` cap. Vulkan buffer operations
 (allocate, write, read, free) run under one lock, so tasks can share a device.
 `Device.Vulkan(i)` counts only devices that are not a CPU (a software rasterizer
@@ -270,26 +268,7 @@ module fails the checks instead of passing them. Run the tests with
 
 ### Step time through `Trace`
 
-`tools/bench-ggml.agc`: the MLP 784 → 512 → 512 → 10 of the spike, an SGD
-step through the public API as `Train.fit` takes it: one `Trace.eval_many`
-traces the loss, its gradients and the update and runs them as one graph,
-retraced every step. Milliseconds per step, median of 18 steps, with `F32`
-`mul_mat`; before, the update ran as one more graph per parameter (seven
-graphs a step); the spike compiled its step once and ran it with no retrace
-([run B](https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md)):
-
-| batch | Vega iGPU, one graph | seven graphs | spike | ggml CPU, one graph | seven graphs |
-|---|---|---|---|---|---|
-| 64 | 11.8 | 36.3 | 4.60 | 8.6 | 26.4 |
-| 256 | 12.4 | 36.7 | 7.19 | 16.9 | 33.4 |
-| 1024 | 22.2 | 36.6 | 18.89 | 65.6 | 85.0 |
-| 4096 | 69.9 | 94.2 | 67.92 | 292.5 | 349.6 |
-
-At batch 4096 the graph is the step. Below it, what costs the rest is the gap
-between runs: retracing, differentiating and lowering a step takes about 1–3
-ms in Agentica, and in that gap the iGPU drops to its lowest clock (200 MHz in
-`pp_dpm_sclk`), so the next graph runs slower; the spike ran its graph with no
-gap. That gap is the price of retracing, which keeps `Trace` the only API.
+A step of `Train.fit` is one graph that the loop retraces, differentiates and lowers every step (about 1 to 3 ms in Agentica, in which gap the iGPU drops to its lowest clock, so the next graph runs slower; that gap is the price of retracing, which keeps `Trace` the only API), or one `Trace.compile` of the whole step run again and again. `benchmarks/README.md` has the times against PyTorch and JAX.
 
 ## The XLA backend
 

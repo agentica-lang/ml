@@ -1,13 +1,14 @@
 # transformers — design
 
-BERT and Qwen3 for inference, from Hugging Face checkpoints, over `tensor/`,
-`nn/` and `hub/`. BERT, the Qwen3 forward, generation with a KV cache (greedy or
-sampled) and the tokenizers are here; more models come in later PRs of ml#128.
+BERT, DistilBERT, Qwen3 and Qwen2.5, from Hugging Face checkpoints (Qwen3 also
+from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
+with a KV cache (greedy or sampled), the tokenizers, and the weights by name
+for a fine-tune with `train/`. Qwen3.5 is planned (ml#150, ml#151).
 
 ## Generation
 
-`generate.agc`, the design of `asr/`'s decoder copied and adapted (ml#117 tracks
-sharing it): `Generate.open(m)` is the generator of a model, which holds its
+`generate.agc` follows `asr/`'s decoder (the padded-cache helpers are shared,
+`nn/kv.agc`; each model keeps its own forward): `Generate.open(m)` is the generator of a model, which holds its
 compiled steps in a one-slot channel (as `Asr.Model.plans`), and
 `Generate.generate(g, ids, max_new, stop, sampling)` decodes greedily, or by
 `sample.agc` (below); `start`, then `step` (the id with the largest logit) or
@@ -54,15 +55,16 @@ compiled steps in a one-slot channel (as `Asr.Model.plans`), and
   grows the capacity widens the old ones first, and the one-token step reads
   the `F16` cache in flash attention and `set_rows` rounds its new row into
   it). The logits of Qwen3-0.6B drift from the forward by 5e-3 to 7e-3 (2.5e-5
-  with `F32`), no top-1 flip in 24 steps, and decode is 3.6% faster at 1024
-  rows and 6.9% at 2048 on Vulkan. `Q8_0` was measured on llama.cpp (`-ctk q8_0
+  with `F32`), no top-1 flip in 24 steps, and a decode step reads half the
+  bytes of the cache. `Q8_0` was measured on llama.cpp (`-ctk q8_0
   -ctv q8_0`) and is no faster than `F16` on this iGPU, so it is not here.
 - Chunked prefill is not done: a prompt is one step, to the model's
   `max_position_embeddings`.
 
 ## Qwen3
 
-`qwen3.agc`: `Qwen3.open(dir, backend)` (`config.json` and `model.safetensors`),
+`qwen3.agc`: `Qwen3.open(dir, backend, weights = F32)` (`config.json` and
+`model.safetensors` or its `.index.json`, or a `.gguf` file),
 `Qwen3.run(m, rows, last)` over rows of ids and `Qwen3.logits(m, ids, last)`
 over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 
@@ -77,8 +79,7 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 - The head is the embedding table itself (`out_in`) when
   `tie_word_embeddings` is true, with no copy of it, else `lm_head`. The `bfloat16` weights come as `F32` through `hub`.
 - The forward is one graph on ggml (`Lift.staged`). Every call traces and
-  plans the graph again: under two seconds on the CPU, 0.6 s on Vulkan for a 50 token
-  prompt. Generation (below) keeps a cache and compiles its steps.
+  plans the graph again. Generation (below) keeps a cache and compiles its steps.
 - `model_type` `qwen3` or `qwen2` (Qwen2.5), `silu`, no `attention_bias`, no
   `rope_scaling` and `use_sliding_window: false` are read; the rest is an
   error. `qwen2` has no `q_norm` and `k_norm` and a bias on `q_proj`, `k_proj`
@@ -86,8 +87,7 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
   `head_dim` in its config (`hidden_size / num_attention_heads`, read once in
   `load`). `tie_word_embeddings` defaults to `true`, as in Hugging Face, and
   then the file's `lm_head.weight` is ignored. On the reference backend
-  attention needs `q * k` of at most 1,048,576 (about 1024 tokens, causal). GPT-2
-  is a later config.
+  attention needs `q * k` of at most 1,048,576 (about 1024 tokens, causal).
 
 `chat.agc`: `Chat.apply(model_type, messages, add_generation_prompt,
 enable_thinking)` is the ChatML text of `apply_chat_template` for the two
@@ -121,7 +121,7 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
   model with its weights as trace constants, as in `asr/`.
 - Other `model_type`s, `position_embedding_type`s and activations are errors;
   so is an encoding with no token. Only `model.safetensors` is read (no
-  sharded checkpoint yet).
+  sharded checkpoint).
 - Memory (as `asr/`): `run` closes its input tensors, `embed` closes its
   hidden state and mask and skips the pooler, `Bert.close(out)` and
   `Bert.close_model(m)` free the rest, and off ggml the forward runs in
@@ -158,9 +158,6 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
 - `train` is a plain dependency, not a test one: `tools/distilbert_stsb.agc`
   (the fine-tune of `benchmarks/stsb/`) calls `Train.fit_batches`, and a tool
   cannot import a test dependency. No module of the package imports `train`.
-- The pins in `agentica.toml` are those of `asr/`: outside this repository
-  `transformers` gets the `hub` without the `gamma`/`beta` fallback until the
-  next release moves them (the workspace reads the folders).
 
 ## Qwen3 as a GGUF
 
@@ -176,8 +173,7 @@ llama.cpp (it falls back to `token_embd.weight`) and `Qwen3.open` read as
 tied. `add_bos_token` and `add_eos_token` are the file's when
 `tokenizer_config.json` gives them as booleans, else false, and the chat
 template is the config's, else `chat_template.jinja`. `tools/to_gguf.agc` runs
-it: Qwen3-0.6B writes in 4 s as `F16` and 22 s as `F32` on the CPU of the
-benchmark machine.
+it.
 
 ## Tokenizers
 
@@ -248,15 +244,11 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and
-  in `float32` untied, the logits of every position of two rows, on the
-  reference and on ggml; the last row alone; refusals; bad inputs; a closed
-  model.
+  in `float32` untied, on the reference and on ggml.
 - `test/generate_test.agc` against the same peer: the logits of every step of
-  a row of 20 ids (a prompt of 5, 8 or 9 padded to a bucket, then one id at a
-  time, the cache growing to 16 and 32 rows) match the peer's forward over the whole
-  row on the reference (1e-9) and ggml (1e-4); `generate` picks what the
-  forward without a cache picks, with a stop id, and a second call compiles
-  none; the pick of a tie is the first index; bad steps are errors.
+  a row of 20 ids (the prompt padded to a bucket, the cache growing to 16 and
+  32 rows) match the peer's forward over the whole row on the reference (1e-9)
+  and ggml (1e-4); the pick of a tie is the first index.
 - `tools/generate_check.agc` against Hugging Face's greedy `generate`
   (`test/qwen_golden.py`): 24 new ids for each of the five prompts, equal on
   ggml CPU and on Vulkan (the smallest gap between the two largest logits of
@@ -284,21 +276,19 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
   `F16` KV cache. The Q8_0 run takes 2.0 GB at its peak against 4.1 GB with `F32`
   weights, and its prompts 15% to 25% less time (one run).
 - `test/bert_test.agc` against `test/bert_peer.py` (standard library, doubles):
-  a tiny random BERT in both namings, a padded batch, the hidden state, the
-  pooler and the mean embedding, on the reference and on ggml (CPU, and Vulkan
-  where there is one); and the refusals.
+  a tiny random BERT in both namings and a padded batch, on the reference and
+  on ggml (CPU, and Vulkan where there is one).
 - `tools/bert_check.agc` against Hugging Face's `BertModel`
   (`test/bert_golden.py`, manual): six sentences and pairs alone and one padded
   batch, in `float32` on ggml CPU and Vulkan; the largest gap is 5.0e-5 (CPU)
   and 2.8e-5 (Vulkan) on `bert-base-uncased`.
 - `test/unicode_test.agc` against Python's `unicodedata` (`unicode_peer.py`,
-  live), on sample strings.
-- `test/wordpiece_test.agc` and `test/bpe_test.agc` against ids recorded from
-  `tokenizers` for tiny hand-made tokenizers (`test/fixtures/`), made by
-  `test/tokenizer_golden.py fixtures` (manual: it needs `tokenizers`).
+  live); `test/wordpiece_test.agc` and `test/bpe_test.agc` against ids
+  recorded from `tokenizers` for tiny hand-made tokenizers
+  (`test/tokenizer_golden.py fixtures`, manual: it needs `tokenizers`).
 - `long/long_input_test.agc`: 200k characters and 50k CJK through the Unicode
-  functions and both tokenizers, and a 20k-letter BPE piece, each under 10 s
-  (about a second); `long/` runs in its own CI step with `--max-steps 400000000` (the heaviest test spends about 580 M steps, the file 1.33 G).
+  functions and both tokenizers, and a 20k-letter BPE piece; `long/` runs in
+  its own CI step with `--max-steps 400000000`.
 - `tools/tokenizer_check.agc` against the real `bert-base-uncased` and
   `Qwen3-0.6B` files, from a golden of `test/tokenizer_golden.py golden`, with
   `N` random strings (seeded). It matched on 48312 cases (BERT) and 39139

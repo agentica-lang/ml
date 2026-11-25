@@ -9,11 +9,9 @@ binding; this package does not touch it.
 ## API
 
 ```text
-struct Config   the fields of HF config.json: d_model, encoder_layers, decoder_layers,
-                encoder_attention_heads, decoder_attention_heads, num_mel_bins,
-                vocab_size, max_source_positions, max_target_positions
+struct Config   the fields of HF config.json that the forward needs
 Asr.config(path) -> Result[Config]
-Asr.open(path, backend) -> Result[Model]     a .safetensors or .index.json, config.json beside it
+Asr.open(path, backend, weights = F32) -> Result[Model]   a .safetensors or .index.json, config.json beside it
 Asr.close_model(m)                          frees the weights and the log-mel plan; later use is an error
 Asr.load(checkpoint, config, backend) -> Result[Model]
 Asr.encode(m, mel [batch, num_mel_bins, frames]) -> [batch, ceil(frames / 2), d_model]
@@ -22,9 +20,10 @@ Asr.listen(m, audio [1, frames, d_model]) -> Result[Cache]     the cross-attenti
 Asr.step(m, cache, ids) -> Result[Stepped]       the logits of the last id, and the cache
 Asr.step_pick(m, cache, ids, mask) -> Result[Picked]   the id and log-probability of the largest masked logit, and the cache
 Asr.transcribe(m, tok, pcm, options = Options()) -> Result[Transcript]
-struct Options      language (none: detect), translate, timestamps, max_tokens
-struct Transcript   text, language, language_probability, tokens, segments (start, stop, text)
-Mel.features(samples, mels, frames, backend) -> Result[Tensor]     [1, mels, frames] on the backend
+struct Options      language (none: detect), translate, timestamps, max_tokens, max_windows
+struct Transcript   text, language, language_probability, tokens, segments (start, stop, text),
+                    avg_logprob, no_speech_prob, truncated
+Mel.features(samples, mels, frames, backend, plan = none) -> Result[Tensor]   [1, mels, frames] on the backend
 Mel.log_mel(samples, mels, frames = 3000) -> Result[List[Float]]   row-major [mels, frames], in doubles
 Asr.features(model, samples, frames) -> Result[Tensor]             Mel.features with the model's plan
 Tokenizer.open(path) -> Result[Tokenizer]       a tokenizer.json
@@ -72,20 +71,17 @@ padding 1) → gelu → `+ embed_positions` → blocks → `layer_norm`. Decoder
   in F32), and its mask hides the later positions and the padding. A step's
   graph changes shape only with the number of ids and the capacity, so a
   transcription compiles a few graphs and the next one none. The compiled
-  steps and the encoder block are kept by the model (`Model.plans`, a channel
-  of one value that holds the map, which a task takes and puts back at once),
-  named by their kind and the shapes and dtypes of their inputs, so audio of
-  another length gets its own. Every transcription of a model, from any task,
-  finds them: `planned` looks the name up, and compiles and stores on a miss.
-  Two tasks that miss the same name both compile, and one copy is kept. The
-  kept copy has no pin (that stays with the task that compiled), so a run of
-  it builds the graph again if the cache lost it. The map has no bound: a
-  caller that sends many shapes through `encode` adds an entry for each. A task
-  cancelled while it holds the map loses it; the next caller whose take times
-  out (50 ms; a slow holder takes the same path) puts a new, empty map in the
-  channel, which costs one round of compiles. A channel that was closed makes
-  every call compile, as before. The token ids and positions are I32, which
-  ggml holds.
+  steps and the encoder block are kept by the model (`Model.plans`: a channel
+  of one value, the map, which a task takes and puts back at once), named by
+  their kind and the shapes and dtypes of their inputs, so every
+  transcription of the model, from any task, finds them (`planned`). Two
+  tasks that miss the same name both compile, and one copy is kept, without
+  its pin (that stays with the task that compiled; a run of it builds the
+  graph again if the cache lost it). The map has no bound: a caller that
+  sends many shapes through `encode` adds an entry for each. A task cancelled
+  while it holds the map loses it; the next caller whose take times out
+  (50 ms) puts a new, empty map back, which costs one round of compiles. A closed channel makes every call
+  compile. The token ids and positions are I32, which ggml holds.
 
 ## The log-mel frontend (`mel.agc`)
 
@@ -133,8 +129,8 @@ power overflows there).
   Slaney area norm), which Whisper's `mel_filters.npz` and Hugging Face's
   extractor both use. That needs no file beside the checkpoint and gives 80 or
   128 bins.
-- **`exp`, `log`, `log10`, `sin` and `cos` come from Agentica's `Math`**
-  (0.37.0). `test/math_test.agc` checks them against Python's `math`.
+- **`exp`, `log`, `log10`, `sin` and `cos` come from Agentica's `Math`**;
+  `test/math_test.agc` checks them against Python's `math`.
 - **`log_mel` skips silent frames**: a frame that starts after the last
   non-zero sample is `log10(1e-10)` (unless the end reflection reaches a
   sample), so a short clip costs only its own frames. The graph computes all
@@ -151,8 +147,7 @@ against them within 1e-6. `test/hf_golden.py` wrote `test/fixtures/hf_mel.json`
 once, by hand (it needs `transformers`, so the tests do not run it). An `Inf`,
 a `NaN` and a 1e30 sample are errors on each backend. `test/model_test.agc`
 checks that a ggml model's compiled plan and the traced graph give the same
-features. whisper.cpp keeps its mel internal (its `debug_mode` dump is not
-wired), so it was not compared directly; it runs the same steps in floats.
+features.
 
 ## The tokenizer (`tokenizer.agc`)
 
@@ -189,8 +184,7 @@ so no text is ever encoded.
 the special ids of whisper-tiny, whisper-large-v3 and whisper-tiny.en. Checked
 once against whisper-tiny's `tokenizer.json`: 206 id lists (5 encoded texts in
 five scripts, 200 random ones, one with the prompt and timestamps) decode as
-the peer and as Hugging Face's `WhisperTokenizerFast` do; it loads in about
-0.1 s.
+the peer and as Hugging Face's `WhisperTokenizerFast` do.
 
 ## Greedy decoding (`greedy.agc`) and the KV cache
 
@@ -221,10 +215,6 @@ and the KV cache that feeds them one token at a time.
   block's self-attention keys and values and feeds one token at a time (a
   prompt at once, under the causal mask), and returns only the last token's
   logits.
-
-`test/greedy_test.agc` checks the rules on hand-made logits and the segments
-over `test/fixtures/tokenizer.json`; `test/model_test.agc` checks the steps
-against the peer's full forward.
 
 ## Transcription (`transcribe`)
 
@@ -284,10 +274,8 @@ tokenizer before the audio costs anything.
   the first token. `Asr.scored` reads them in the graph, with the rule that
   no text token may come when the timestamps together are likelier than the
   best text token (a log-sum-exp over the timestamp range against the
-  maximum over the text). `Greedy.allowed` stays the reference. The tests
-  check the graph against it on hand-made logits, one case per rule, where
-  each rule changes the pick from the largest logit, and `step_pick` over ten
-  histories of the tiny model. The step after `<|startoftranscript|>` always
+  maximum over the text). `Greedy.allowed` stays the reference. The graph is tested
+  against it rule by rule. The step after `<|startoftranscript|>` always
   reads its logits, for `no_speech_prob` and the language.
 - **The first step** feeds `<|startoftranscript|>` alone. `no_speech_prob` is
   the softmax of its logits at `<|nospeech|>` (`<|nocaptions|>` in the first
@@ -323,9 +311,7 @@ tokenizer before the audio costs anything.
   id and its log-probability instead, and on ggml the logits never leave the
   device (`Asr.picked`, in the step's graph); the loop closes the cache it
   replaced. A call runs in a task of its own, which closes what it opened when
-  it ends (the encoder output and the cross-attention cache). Before 0.37.0
-  an arena kept everything its result came from, so each block handed its
-  output out as a list and built the tensor again outside: 1.5-2 s a call.
+  it ends (the encoder output and the cross-attention cache).
 
 Checked against Hugging Face's `generate` (transformers 4.57.6, greedy) on
 whisper-tiny: `tools/transcribe_check.agc` runs the seven cases of
@@ -334,33 +320,13 @@ whisper.cpp's `samples/jfk.wav`: detected and named language, transcribe and
 translate, with and without timestamps; and two clips of 73.5 s and 75.5 s
 made of them, jfk six times with gaps of silence and es-hola 24 times, read in
 three windows each). The token ids match exactly, and so do the text and the
-segments (their times within 1e-9). The language probability is within
-1.3e-6 (es) and 1e-7 (en); with the tanh GELU it was 4.1e-4 and 1.2e-4.
-`test/transcribe_golden.py` wrote the golden once, by hand (it needs `torch`
+segments (their times within 1e-9). The language probability is checked within
+1e-5 (the tolerance `CLOSE` of the tool, not a measured gap). `test/transcribe_golden.py` wrote the golden once, by hand (it needs `torch`
 and `transformers`). The tests run neither: the checkpoint is not in git.
 
-Speed on this machine (Ryzen 5 3550H, shared with other jobs, so the numbers
-spread): with Agentica 0.37.0 libtorch takes 2.5 s for the 2.6 s of es-hola (a
-real-time factor of 0.96) and 3.6–3.8 s for the 11 s of jfk (0.33–0.35); 1 s is
-the encoder over the 30 s window and 0.06–0.08 s each decoder step. Before
-0.37.0 (each block's output went out of its arena as a list) it was 5.4–6.7 s
-(2.1–2.6) and 7.3–7.5 s (0.66–0.68), 3.2 s of it the encoder, and the run
-peaked at 1.6 GB against 1.0 GB. The reference backend gave the same ids for
-es-hola in 22 minutes (a real-time factor of about 500). Loading the checkpoint takes
-0.3–0.5 s (it took 25–40 s before `Tensor.from_file`). On ggml the five cases
-give the same ids, the text and the segments too,
-and compile 12 graphs in all, 11 of them in the first case (104 when every
-step compiled its own). In one run after another (a quiet machine), the
-real-time factor was:
-
-| backend | es-hola (2.6 s) | jfk (11 s) |
-|---|---|---|
-| libtorch, CPU | 0.96–0.98 | 0.33–0.35 |
-| ggml, CPU | 0.95–1.07 | 0.36–0.41 |
-| ggml, Vulkan (Vega iGPU) | 1.03–1.31 | 0.41–0.47 |
-
-With another job on the CPU, ggml's CPU threads slow down most: 7–14 for
-es-hola in one such run.
+Speed (real-time factors on every backend, against whisper.cpp, and the
+stages of a transcription) is in `benchmarks/README.md`. The reference backend
+is the exact model for the tests, not a fast one.
 
 ## Tests of the model
 

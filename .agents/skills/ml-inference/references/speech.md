@@ -5,7 +5,7 @@ Two packages transcribe:
 - `asr`: Whisper written in Agentica over `tensor`, `nn` and `hub`. It loads a Hugging Face checkpoint and runs on
   ggml (CPU or Vulkan), libtorch or the reference backend. Its token ids equal Hugging Face's on the test clips. Use it
   by default.
-- `whisper`: a binding over whisper.cpp. It is faster (`asr` takes about 2 to 3 times as long on the CPU, see
+- `whisper`: a binding over whisper.cpp. It is faster (`asr` takes about 1.5 times as long on the CPU, see
   `https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md`), but it needs the C++ engine built from a submodule and a ggml model file
   (`whisper/tools/fetch-model.sh` in a clone of the ml repository downloads one). Use it when speed matters more than setup.
 
@@ -58,7 +58,7 @@ end
   The segment times count from the start of the audio.
 - `Options.max_tokens` and `max_windows` bound a run that hallucinates; `t.truncated` says when `max_windows` stopped it.
 - Decoding is greedy. There is no beam search and no resampling.
-- Whisper-tiny on ggml CPU runs at a real-time factor of about 0.24 (4 seconds for 17 s of audio). Vulkan fp16 can
+- Whisper-tiny on ggml CPU runs at a real-time factor of about 0.12 (2 seconds for 17 s of audio). Vulkan fp16 can
   change tokens (`backends.md`, Settings).
 - `Asr.open(path, backend, Tensor.Dtype.F16)` keeps half weights (`memory-and-errors.md`).
 

@@ -10,16 +10,12 @@ chunking.
   beam search), `transcribe_detailed` adds each segment's tokens and
   probabilities and the detected language, and `transcribe` is `join_text` of
   the segments with the default options. They run in the compute pool, on the
-  GPU when the engine was built with Vulkan, else on the CPU. One decode
-  accepts up to five minutes of audio.
+  GPU when the engine was built with Vulkan, else on the CPU.
 - `mic.agc` — microphone capture: 16 kHz mono s16le PCM from a command run
-  through `Process` (pinned `arecord` invocation, configurable), plus the
-  `Source` abstraction (`Samples` for synthetic PCM in tests, `Command` for
-  a live capture). There is no native audio module: `Process` is the transport.
-- `stream.agc` — long-audio transcription: a PCM stream cut into bounded
-  windows with overlap, gated by pure-Agentica RMS energy VAD, each window
-  decoded by `transcribe_with` (the long work stays in the compute pool)
-  and merged back onto one timeline with absolute timestamps.
+  through `Process`, plus the `Source` abstraction (`Samples` for tests,
+  `Command` for a live capture). There is no native audio module.
+- `stream.agc` — long-audio transcription: windows with overlap, gated by an
+  RMS energy VAD, each decoded by `transcribe_with`, merged onto one timeline.
 - `wav.agc` — a pure Agentica WAV reader (PCM, mono, 16 kHz, 16-bit).
 - `native/whisper.c` — the thin C layer on the generated header
   `native/whisper_native.h`. It links the engine (never copied into `native/`)
@@ -32,11 +28,8 @@ chunking.
 - `tools/fetch-model.sh` — downloads the two pinned multilingual models and
   checks their sha256 (see "Models" below). Weights never enter git
   (`models/` is ignored).
-- `live/transcribe_jfk.agc` — the English end-to-end check as a program.
-- `live/transcribe_detailed.agc` — the detailed decode as a program: language
-  detection, timed tokens, `max_len` segments and beam search.
-- `live/transcribe_spanish.agc` — the Spanish case: options, timed segments
-  and translation, also as a program (see below).
+- `live/transcribe_*.agc` — the end-to-end checks as programs (see "What each
+  layer covers").
 
 ## The calls
 
@@ -117,9 +110,7 @@ text = try Whisper.transcribe(model, pcm)   # "¡Hola! Esto es una prueba de aud
 `join_text(segments)` is pure and public: each text trimmed, the empty ones
 dropped, one space between them and none at either end, so no segments (or
 nothing but whitespace) is `""`. The binding trims a segment on the native
-side too, so `transcribe` no longer carries the single leading space the
-tokenizer puts in front of a segment; the word sequence is what the checks
-pin.
+side too.
 
 ## Microphone capture
 
@@ -138,8 +129,7 @@ samples = try Mic.capture(Mic.default_capture())
   "plughw:1,0"])` picks a card.
 - Any command that writes the same raw format works: `sox -d -t raw
   -r 16000 -c 1 -b 16 -e signed-integer -` or `ffmpeg -f alsa -i default
-  -ar 16000 -ac 1 -f s16le -` (both untested here: only `arecord` is
-  pinned). Nothing here resamples: the command must output 16 kHz mono
+  -ar 16000 -ac 1 -f s16le -` (both untested here). Nothing here resamples: the command must output 16 kHz mono
   s16le.
 - The capture reads standard output in ~1 s chunks until the cap or the end
   of the output, then closes the process on every path (a read timeout kills
@@ -231,22 +221,17 @@ flags pin AVX2).
 One program links one ggml: `tensor/`'s ggml module or this engine's, never
 both, since each carries its own copy of ggml's symbols and backends.
 
-`tools/build-engine.sh` builds the pinned engine submodule (static; needs
-cmake and a C/C++ compiler) and prints the
-`C_INCLUDE_PATH`/`LIBRARY_PATH` exports; `agentica install` fetches
-native-gen (the locked dependency that regenerates the header). Any
-`agentica` invocation that builds the native module (`install`, `check` is
-exempt, `test`, a run) needs those two exports set first — they are part of
-the native build key, so changing them rebuilds correctly. Microphone
-capture needs `arecord` (alsa-utils) plus a device, but only for
-`Mic.capture` and `live/mic_live_test.agc`'s capture path: every other check
-runs without either.
+Any `agentica` invocation that builds the native module (`install`, `test`, a
+run; `check` is exempt) needs the two exports (`C_INCLUDE_PATH`, `LIBRARY_PATH`) set first: they are part of the
+native build key, so changing them rebuilds correctly. Microphone capture
+needs `arecord` (alsa-utils) plus a device, but only for `Mic.capture` and
+`live/mic_live_test.agc`'s capture path: every other check runs without
+either.
 
 ## Models
 
 Both are multilingual, pinned by commit and sha256 in `tools/fetch-model.sh`,
-and downloaded to `whisper/models/` (or the folder given first); git never
-holds them:
+and downloaded to `whisper/models/` (or the folder given first):
 
 ```sh
 sh tools/fetch-model.sh                # both models, into whisper/models
@@ -332,9 +317,8 @@ more, none, a non-finite sample, or a finite one past the range of a `float`
 (about 3.4e38) is an error, never a halt, and so is a
 language code past 32 bytes, a `beam_size` outside 0–8, a `max_len` outside
 0–100 000, an unknown language code, or more than a megabyte of text (the
-segments' text, plus the tokens' for `transcribe_detailed`). `load_model`
-copies paths of 4096 bytes at most. The library thread count and the
-engine's other defaults stay. Every failure is an `error`; the native side
+segments' text, plus the tokens' for `transcribe_detailed`). The library
+thread count and the engine's other defaults stay. Every failure is an `error`; the native side
 frees the audio and the text buffers on every path, and holds the per-model
 mutex for the decode, the detection and the copy of the results, nothing
 else.
