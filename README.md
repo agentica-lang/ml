@@ -20,7 +20,7 @@ runs about 1.5 times slower than whisper.cpp on CPU and about 1.7 times
 slower on Vulkan (jfk). The numbers and the machine are in
 [`benchmarks/README.md`](benchmarks/README.md).
 
-Not yet: what the [roadmap](roadmap.md) lists, from vision models and more
+Not yet: what the [roadmap](roadmap.md) lists, from vision-language models and more
 GGUF formats to CUDA, serving and distributed training.
 
 The tensor stack is designed in [`tensor/DESIGN.md`](tensor/DESIGN.md) and the
