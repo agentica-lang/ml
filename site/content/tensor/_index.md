@@ -192,7 +192,7 @@ On `Ggml`, `Trace.eval`, `eval_many`, `grad` and `value_and_grad` compile the wh
 - Rank: ggml holds tensors of rank 4 at most.
 - Positions: on ggml, the `positions` of `rope` are any integer dtype but `I64`, which is refused. ggml turns by an angle it makes in `F32`, so at positions in the thousands it is a few 1e-4 off the reference.
 - Gather: on ggml, the source of a `gather`, the answer of a `scatter_add` and the cache of a `set_rows` and the vector of a `top_ids` hold at most 2^24 rows, because its integer indices are exact in `F32` only below that.
-- Non-finite values: `exp`, `log`, `sqrt`, `pow`, `sigmoid`, `tanh` and `gelu_tanh_approx` refuse `NaN` and infinite inputs, except that `exp(-inf)` is `0`. A ggml output that is not finite is an error, except the cache that `set_rows` writes in place and the first moment that `adam_step` writes in place, which are not checked (the second moment is, and the new weight).
+- Non-finite values: `exp`, `log`, `sqrt`, `pow`, `sigmoid`, `tanh` and `gelu_tanh_approx` refuse `NaN` and infinite inputs, except that `exp(-inf)` is `0`. A ggml output that is not finite, or whose sum overflows `F32` (`exp(80)` over 10 000 values), is an error, except the cache that `set_rows` writes in place and the first moment that `adam_step` writes in place, which are not checked (the second moment is, and the new weight).
 - Integers: an integer overflow is an error, never a wrap-around. On libtorch, readback of `I64` past 2^53 loses precision.
 - Speed: `Reference` is for checks. On one machine, a 64 x 64 matmul took about 6.6 ms on `Reference` and 33 µs on libtorch (`tensor/README.md`).
 

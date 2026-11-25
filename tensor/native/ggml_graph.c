@@ -183,7 +183,7 @@ struct entry {
   struct ggml_tensor *fill_store; /* one F32 per fill; each fill is a view */
   int64_t fill_count;
   struct port outs[MAX_OUTPUTS];
-  struct ggml_tensor *checks; /* the sum of 0 * output per output (NaN unless finite), then the guards */
+  struct ggml_tensor *checks; /* the sum of each output (inf or NaN unless finite), then the guards */
   int64_t output_count, guard_count;
   struct ggml_tensor **inner; /* what the shared allocator places: valid while the device's plan is this graph's */
   int64_t inner_count;
@@ -1430,9 +1430,33 @@ static bool in(const struct ggml_tensor *t, const struct ggml_tensor *store) {
   return store != NULL && (t == store || t->view_src == store);
 }
 
+/* The tensor that an output can be: the memory of the value itself, so that no copy is made. That is the value when it
+   is a contiguous F32 result of an op, or what it is a whole view of (an `adam_step` result views its weight's copy).
+   NULL when the value must be copied: a leaf, a view of something else, a half, a constant made on the way, or a
+   tensor that is another output already. */
+static struct ggml_tensor *own_output(const struct entry *p, const struct gnode *n, const struct ggml_tensor *value) {
+  struct ggml_tensor *root = n->t->view_src != NULL ? n->t->view_src : n->t;
+
+  if (n->op == OP_LEAF || value != n->t || n->lazy || root->view_src != NULL || root->type != GGML_TYPE_F32) return NULL;
+  if (root->flags & (GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT | GGML_TENSOR_FLAG_PARAM)) return NULL;
+  if (in(root, p->fill_store) || in(root, p->checks)) return NULL;
+  if (!ggml_is_contiguous(root) || !same_ne(root, n->ne)) return NULL;
+  if (n->t != root && (n->t->view_offs != 0 || !ggml_are_same_shape(n->t, root) || !ggml_are_same_stride(n->t, root))) return NULL;
+  return root;
+}
+
+/* Non-finite values of `value` as the sum of its rows: an inf or a NaN stays one, so the run refuses it. A finite
+   output whose sum overflows F32 is refused too (the CPU adds in double and Vulkan in F32, so the edge differs). */
+static struct ggml_tensor *finite_check(struct entry *p, struct ggml_tensor *value) {
+  if (value->type != GGML_TYPE_F32) value = ggml_cast(p->ctx, value, GGML_TYPE_F32);
+  return ggml_sum(p->ctx, ggml_sum_rows(p->ctx, value));
+}
+
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
   struct entry *p = lease->e;
   int64_t outs[MAX_OUTPUTS];
+  struct ggml_tensor **inner, **views;
+  size_t slots;
   int nouts, r, i, j;
   char text[256];
 
@@ -1457,25 +1481,28 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     struct gnode *n = &p->nodes[outs[i]];
     struct ggml_tensor *value;
     struct ggml_tensor *check;
+    struct ggml_tensor *own = NULL;
 
-    p->outs[i].t = ggml_new_tensor_4d(p->port_ctx, n->t->type == GGML_TYPE_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32,
-                                      n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
+    if (!n->in_place && !n->lazy) own = own_output(p, n, dense(p, n));
+    p->outs[i].t = own != NULL ? own
+                               : ggml_new_tensor_4d(p->port_ctx, n->t->type == GGML_TYPE_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32,
+                                                    n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
     if (n->in_place) {
       /* the output is the leaf itself: nothing to copy, the node only has to run */
       p->outs[i].donated = true;
       ggml_build_forward_expand(p->graph, n->t);
       if (n->op == OP_ADAM_PART && n->part == 2) {
-        check = ggml_sum(p->ctx, ggml_sum_rows(p->ctx, ggml_scale(p->ctx, n->t, 0.0f)));
+        check = finite_check(p, n->t);
         ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
       }
       continue;
     }
     value = dense(p, n);
     ggml_set_output(p->outs[i].t);
-    ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, value, p->outs[i].t));
-    /* 0 * x is NaN for an inf or a NaN; sum_rows first, since one ggml_sum
-       of a large tensor is a single slow workgroup on Vulkan */
-    check = ggml_sum(p->ctx, ggml_sum_rows(p->ctx, ggml_scale(p->ctx, value->type == GGML_TYPE_F32 ? value : ggml_cast(p->ctx, value, GGML_TYPE_F32), 0.0f)));
+    if (own == NULL) ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, value, p->outs[i].t));
+    /* sum_rows first, since one ggml_sum of a large tensor is a single slow workgroup on Vulkan; the check reads
+       the value, so it runs after the node that makes it */
+    check = finite_check(p, value);
     ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
   }
   p->output_count = nouts;
@@ -1497,9 +1524,16 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
 
   /* Every node and source that is neither a port nor in the fill buffer: a view of a port follows its port, which
      every run binds (`views`); the rest is what the shared allocator places (`inner`). */
-  p->inner = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * (GGML_MAX_SRC + 1), sizeof(struct ggml_tensor *));
-  p->views = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * (GGML_MAX_SRC + 1), sizeof(struct ggml_tensor *));
-  if (p->inner == NULL || p->views == NULL) return tg_error(env, "out of memory");
+  slots = (size_t)ggml_graph_n_nodes(p->graph) * (GGML_MAX_SRC + 1);
+  inner = (struct ggml_tensor **)calloc(slots, sizeof(struct ggml_tensor *));
+  views = (struct ggml_tensor **)calloc(slots, sizeof(struct ggml_tensor *));
+  if (inner == NULL || views == NULL) {
+    free(inner);
+    free(views);
+    return tg_error(env, "out of memory");
+  }
+  p->inner = inner;
+  p->views = views;
   for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
     struct ggml_tensor *node = ggml_graph_node(p->graph, i);
 
@@ -1855,7 +1889,7 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   }
   for (i = 0; why == NULL && i < p->output_count; i++) {
     if (!isfinite(checks[i])) {
-      snprintf(text, sizeof text, "output %" PRId64 " of the graph holds a value that is not finite", i);
+      snprintf(text, sizeof text, "output %" PRId64 " of the graph holds a value that is not finite, or its sum overflows F32", i);
       why = text;
     } else if (p->outs[i].conv != NULL) {
       why = tg_copy(p->outs[i].t, p->outs[i].conv, NULL);

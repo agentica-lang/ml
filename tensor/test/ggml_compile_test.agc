@@ -530,6 +530,58 @@ def test_a_graph_that_failed_a_run_runs_again() -> Result[Void]
   gives([try floats([1.0, 1.0], [2], CPU)], f, [0.0, 0.0])
 end
 
+## An output that is the result of an op is written where the caller holds it, and a view of one is copied there; both
+## are checked, and the error names the output.
+def test_a_value_that_is_not_finite_is_refused_whether_it_is_copied_or_not() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  x = try floats([1.0, 0.0, 2.0, 3.0], [2, 2], CPU)
+  try says(Trace.eval_many([x], &log_after_double), "output 1")
+  try says(Trace.eval_many([x], &double_after_log), "output 0")
+  big = try floats([1.0e30, 2.0e30, 3.0e30, 4.0e30], [2, 2], CPU)
+  outs = try Trace.eval_many([big], &log_after_double)
+  try Test.eq(outs.size, 2)
+  eighty = try floats((0...10000).map { |_| 80.0 }, [10000], CPU)
+  says(Trace.eval_many([eighty], ->(a: List[Tensor.Tensor]) { ok([try Tensor.exp(a[0])]) }), "its sum overflows F32")
+end
+
+## A node returned twice is copied for its second output, and both are checked.
+def test_a_node_returned_twice_gives_two_equal_outputs() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  x = try floats([1.0, 2.0, 3.0, 4.0], [2, 2], CPU)
+  outs = try Trace.eval_many([x], &twice)
+  try Test.eq(try Tensor.to_list(outs[0]), try Tensor.to_list(outs[1]))
+  try Test.eq(try Tensor.to_list(outs[1]), [2.0, 4.0, 6.0, 8.0].map { |v| Tensor.Values.Float(v) })
+  zero = try floats([1.0, 0.0, 2.0, 3.0], [2, 2], CPU)
+  says(Trace.eval_many([zero], &log_twice), "not finite")
+end
+
+def twice(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  y = try Tensor.add(a[0], a[0])
+  ok([y, y])
+end
+
+def log_twice(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  y = try Tensor.log(a[0])
+  ok([y, y])
+end
+
+def log_after_double(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  ok([try Tensor.add(a[0], a[0]), try Tensor.reshape(try Tensor.log(a[0]), [4])])
+end
+
+def double_after_log(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  ok([try Tensor.log(a[0]), try Tensor.reshape(try Tensor.add(a[0], a[0]), [4])])
+end
+
+def says(r: Result[List[Tensor.Tensor]], text: String) -> Result[Void]
+  case r
+    ok(_) -> error("computed outputs where an error naming \"#{text}\" was due")
+    error(e) -> Test.assert(e.message.include?(text), "the error said \"#{e.message}\"")
+  end
+end
+
 def test_an_i32_graph_converts_in_and_out() -> Result[Void]
   return ok() if !try present(CPU)
 
