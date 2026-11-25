@@ -17,10 +17,12 @@ enum Layout
 end
 
 ## One transform of `apply`. `Resize(n)` scales the shorter side to `n` and keeps the aspect ratio; the longer side is
-## cut to a whole number, as torchvision does. `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an
-## area of that size. `HorizontalFlip(p)` mirrors the image with probability `p` (`1.0` always).
+## cut to a whole number, as torchvision does. `ResizeTo(width, height)` scales to exactly that size, whatever the aspect
+## ratio. `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an area of that size. `HorizontalFlip(p)`
+## mirrors the image with probability `p` (`1.0` always).
 enum Step
   Resize(Int)
+  ResizeTo(Int, Int)
   CenterCrop(Int, Int)
   RandomCrop(Int, Int)
   HorizontalFlip(Float)
@@ -236,6 +238,7 @@ def transformed(image: Image.Image, steps: List[Step], seed: Int) -> Result[Imag
   for step in steps
     case step
       Step.Resize(shorter) -> current = try resize_shorter(current, shorter)
+      Step.ResizeTo(width, height) -> current = try resize_to(current, width, height)
       Step.CenterCrop(width, height) ->
         left = centered(Image.width(current), width)
         current = try crop_at(current, width, height, left, centered(Image.height(current), height))
@@ -272,6 +275,12 @@ def resize_shorter(image: Image.Image, shorter: Int) -> Result[Image.Image]
   end
 
   return ok(image) if width == w and height == h
+  Image.resize(image, width, height)
+end
+
+def resize_to(image: Image.Image, width: Int, height: Int) -> Result[Image.Image]
+  return error("ResizeTo needs sides of 1 or more, got #{width}x#{height}") if width < 1 or height < 1
+  return ok(image) if width == Image.width(image) and height == Image.height(image)
   Image.resize(image, width, height)
 end
 
