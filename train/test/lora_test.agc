@@ -32,6 +32,15 @@ struct Golden
   gradients: List[List[Float]]
   history: List[Float]
   trained: List[List[Float]]
+  fresh: Fresh
+end
+
+## What PEFT starts a layer with: the largest `|A|` of its `[r, in]` and whether `B` is all zero.
+struct Fresh
+  inputs: Int
+  r: Int
+  a_max: Float
+  b_zero: Bool
 end
 
 struct Setup
@@ -81,6 +90,8 @@ end
 
 def bits(t: Tensor.Tensor) -> Result[List[String]] = ok((try S.floats_of(t)).map { |x: Float| "#{Float.to_bits(x)}" })
 
+## The reference, ggml where it is built, and libtorch where it is built. CI builds ggml and not libtorch, so the
+## libtorch cases are local only.
 def backends() -> Result[List[Tensor.Backend]]
   out = [S.REF] + try S.ggml_backends()
   return ok(out.push(S.TORCH)) if Tensor.available(S.TORCH)
@@ -100,6 +111,54 @@ def test_a_new_adapter_takes_the_targets_and_changes_nothing() -> Result[Void]
   try Test.eq(with.keys.sort, s.weights.keys.sort)
   for name in s.weights.keys
     try Test.eq(try bits(with[name]), try bits(s.weights[name]))
+  end
+
+  ok()
+end
+
+def test_a_new_adapter_starts_as_peft_does() -> Result[Void]
+  g = try golden()
+  weights = {"layer.weight": try Tensor.zeros([g.fresh.inputs, g.fresh.inputs], Tensor.Dtype.F32, S.REF)}
+  made = try Lora.init(weights, Lora.Config(targets: ["layer"], r: g.fresh.r), 3, S.REF)
+  bound = 1.0 / Math.sqrt(g.fresh.inputs.to_f)
+  top = (try S.floats_of(made.a[0])).map { |x: Float| x.abs }.max.unwrap!
+  try Test.assert((top - g.fresh.a_max).abs < 0.05 * bound, "the largest |A| is #{top}, PEFT's #{g.fresh.a_max}")
+  try Test.assert(top > 0.5 * bound and top <= bound, "|A| fills 0...#{bound}")
+  try Test.assert(g.fresh.b_zero, "PEFT starts B at zero")
+  try Test.assert((try S.floats_of(made.b[0])).all? { |x: Float| x == 0.0 }, "B starts at zero")
+  ok()
+end
+
+def adapted(weights: Map[String, Tensor.Tensor], targets: List[String]) -> Result[List[String]]
+  ok((try Lora.init(weights, Lora.Config(targets: targets), 1, S.REF)).names)
+end
+
+def test_targets_match_by_the_end_of_the_name_and_in_any_order() -> Result[Void]
+  w = try Tensor.zeros([2, 2], Tensor.Dtype.F32, S.REF)
+  weights = {
+    "m.layers.0.q_proj.weight": w,
+    "m.layers.0.proj.weight": w,
+    "m.layers.1.q_proj.weight": w,
+    "m.layers.1.q_proj.bias": w,
+    "q_proj_extra.weight": w,
+  }
+
+  try Test.eq(try adapted(weights, ["q_proj"]), ["m.layers.0.q_proj.weight", "m.layers.1.q_proj.weight"])
+  try Test.eq(try adapted(weights, ["proj"]), ["m.layers.0.proj.weight"])
+  both = ["m.layers.0.proj.weight", "m.layers.0.q_proj.weight", "m.layers.1.q_proj.weight"]
+  try Test.eq(try adapted(weights, ["q_proj", "proj"]), both)
+  try Test.eq(try adapted(weights, ["proj", "q_proj", "layers.0.q_proj", "proj"]), both)
+  try Test.eq(try adapted(weights, ["layers.1.q_proj"]), ["m.layers.1.q_proj.weight"])
+  ok()
+end
+
+def test_params_and_with_params_are_inverses() -> Result[Void]
+  s = try setup(S.REF)
+  params = try Lora.params(s.adapter)
+  again = try Lora.params(try Lora.with_params(s.adapter, params))
+  try Test.eq(again.size, 2 * s.adapter.names.size)
+  for i in 0...params.size
+    try Test.eq(try bits(again[i]), try bits(params[i]))
   end
 
   ok()
@@ -132,7 +191,11 @@ def test_a_fit_of_the_adapter_follows_peft_and_keeps_the_model() -> Result[Void]
   g = try golden()
   for backend in try backends()
     s = try setup(backend)
-    before = try bits(s.weights["first.weight"])
+    before: Map[String, List[String]] = {}
+    for name in s.weights.keys
+      before = before.put(name, try bits(s.weights[name]))
+    end
+
     rows = try Data.dataset(s.batch.inputs, s.batch.targets)
     fit = try Train.fit(
       ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(s, ps, b) },
@@ -149,7 +212,9 @@ def test_a_fit_of_the_adapter_follows_peft_and_keeps_the_model() -> Result[Void]
       try S.expect_close(try S.floats_of(got[i]), g.trained[i], ABS, REL, "tensor #{i} on #{backend}")
     end
 
-    try Test.eq(try bits(s.weights["first.weight"]), before)
+    for name in s.weights.keys
+      try Test.eq(try bits(s.weights[name]), before[name])
+    end
   end
 
   Test.assert(g.history[g.history.size - 1] < g.history[0], "the peer lowered the loss")
@@ -161,6 +226,14 @@ def test_what_does_not_fit_is_an_error() -> Result[Void]
   try Test.assert(!Lora.init(s.weights, Lora.Config(targets: []), 1, S.REF).ok?, "no target")
   try Test.assert(!Lora.init(s.weights, Lora.Config(targets: ["first"], r: 0), 1, S.REF).ok?, "rank 0")
   dropped = s.adapter.with(config: CONFIG.with(dropout: 0.1))
+  try Test.assert(!Lora.init(s.weights, Lora.Config(targets: ["first"], alpha: 0.0), 1, S.REF).ok?, "alpha 0")
+  vector = {"norm.weight": try Tensor.zeros([4], Tensor.Dtype.F32, S.REF)}
+  try Test.assert(!Lora.init(vector, Lora.Config(targets: ["norm"]), 1, S.REF).ok?, "a rank-1 target")
+  table = {"model.embed_tokens.weight": try Tensor.zeros([4, 3], Tensor.Dtype.F32, S.REF)}
+  try Test.assert(!Lora.init(table, Lora.Config(targets: ["embed_tokens"]), 1, S.REF).ok?, "an embedding")
+  half = try Tensor.zeros([2, 2], Tensor.Dtype.F16, S.REF)
+  try Test.assert(!Lora.init({"layer.weight": half}, Lora.Config(targets: ["layer"]), 1, S.REF).ok?, "an F16 weight")
+  try Test.assert(!Lora.applied(s.weights.put("first.weight", half), s.adapter).ok?, "an F16 weight to apply to")
   try Test.assert(!Lora.params(dropped).ok?, "a dropout above 0 is not trained")
   try Test.assert(Lora.applied(s.weights, dropped).ok?, "and it runs")
   try Test.assert(!Lora.with_params(s.adapter, s.adapter.a).ok?, "half the tensors")

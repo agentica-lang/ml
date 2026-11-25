@@ -7,8 +7,9 @@ import Init from "pkg/nn/init"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
-## `targets` name the layers as PEFT's `target_modules` do: a layer is adapted when its name (its weight's name
-## without `.weight`) is a target or ends with `.` and a target (`q_proj` takes every `...self_attn.q_proj`).
+## `targets` name the layers as PEFT's `target_modules` do (a list of names, not a regular expression): a layer is
+## adapted when its name (its weight's name without `.weight`) is a target or ends with `.` and a target (`q_proj`
+## takes every `...self_attn.q_proj`).
 ## `dropout` is what a PEFT adapter was trained with; an adapter with a dropout above 0 runs, and is not trained here.
 struct Config
   targets: List[String]
@@ -30,13 +31,15 @@ end
 ## matrix.
 def init(weights: Map[String, Tensor.Tensor], config: Config, seed: Int, backend: Tensor.Backend) -> Result[Adapter]
   return error("a LoRA rank is at least 1, got #{config.r}") if config.r < 1
+  return error("a LoRA alpha is above 0, got #{config.alpha}: the adapter would add nothing") if config.alpha <= 0.0
   names = try adapted(weights.keys, config.targets)
   a: List[Tensor.Tensor] = []
   b: List[Tensor.Tensor] = []
   for i in 0...names.size
     shape = Tensor.shape(weights[names[i]])
     return error("#{names[i]}: LoRA adapts a matrix, got #{shape}") if shape.size != 2
-    a = a.push(try Init.uniform([config.r, shape[1]], 1.0 / Math.sqrt(shape[1].to_f), seed + i, backend))
+    try float32(names[i], weights[names[i]])
+    a = a.push(try Init.uniform([config.r, shape[1]], 1.0 / Math.sqrt(shape[1].to_f), Init.derive(seed, i), backend))
     b = b.push(try Tensor.zeros([shape[0], config.r], Tensor.Dtype.F32, backend))
   end
 
@@ -91,12 +94,13 @@ def applied(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map
     out = out.put(name, w)
   end
 
-  scale = adapter.config.alpha / adapter.config.r.to_f
   for i in 0...adapter.names.size
     name = adapter.names[i]
     w = try out.get(name).to_result("the model has no weight #{name}")
+    try float32(name, w)
     a = adapter.a[i]
     b = adapter.b[i]
+    scale = adapter.config.alpha / Tensor.shape(a)[0].to_f
     want = [Tensor.shape(b)[0], Tensor.shape(a)[1]]
     return error("#{name}: the model holds #{Tensor.shape(w)}, the adapter is for #{want}") if Tensor.shape(w) != want
     scaled = try Tensor.mul(
@@ -122,7 +126,22 @@ def adapted(names: List[String], targets: List[String]) -> Result[List[String]]
     out = out + taken
   end
 
+  for name in out
+    if name.include?("embed")
+      return error("#{name} is an embedding: PEFT adapts it with lora_embedding_A and B, which LoRA here does not")
+    end
+  end
+
   ok(out.uniq.sort)
+end
+
+## The adapter is `F32`: a weight of another dtype (`weights: F16` of a model's `open`) is refused, not cast.
+def float32(name: String, w: Tensor.Tensor) -> Result[Void]
+  if Tensor.dtype(w) != Tensor.Dtype.F32
+    return error("#{name} is #{Tensor.dtype(w)}: LoRA adapts F32 weights, so open the model with weights F32")
+  end
+
+  ok()
 end
 
 def takes?(target: String, name: String) -> Bool = name == "#{target}.weight" or name.end_with?(".#{target}.weight")

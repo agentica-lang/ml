@@ -31,17 +31,31 @@ class Mlp(torch.nn.Module):
         return self.second(torch.relu(self.first(x)))
 
 
-def flat(t):
+def flat(t: torch.Tensor) -> list[float]:
     return [float(v) for v in t.detach().reshape(-1)]
 
 
-def adapter(model):
+def adapter(model: peft.PeftModel) -> list[torch.Tensor]:
     """`A` then `B` of each layer, in the order `Lora.params` gives them."""
     layers = [getattr(model.base_model.model, name) for name in LAYERS]
     return [m.weight for layer in layers for m in (layer.lora_A["default"], layer.lora_B["default"])]
 
 
-def main():
+def fresh() -> dict:
+    """What PEFT starts a layer with: A's largest value and whether B is all zero (64 inputs, r 8)."""
+    torch.manual_seed(5)
+    config = peft.LoraConfig(r=8, target_modules=["0"])
+    model = peft.get_peft_model(torch.nn.Sequential(torch.nn.Linear(64, 32)), config)
+    a, b = adapter_of(model)
+    return {"inputs": 64, "r": 8, "a_max": float(a.abs().max()), "b_zero": bool((b == 0).all())}
+
+
+def adapter_of(model: peft.PeftModel) -> list[torch.Tensor]:
+    layer = model.base_model.model[0]
+    return [layer.lora_A["default"].weight, layer.lora_B["default"].weight]
+
+
+def main() -> None:
     torch.manual_seed(137)
     base = Mlp()
     weights = {name: flat(p) for name, p in base.named_parameters()}
@@ -81,6 +95,7 @@ def main():
                 "gradients": gradients,
                 "history": history,
                 "trained": [flat(p) for p in adapter(model)],
+                "fresh": fresh(),
             }
         )
     )

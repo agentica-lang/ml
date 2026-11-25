@@ -2,8 +2,9 @@
 
 Losses, optimizers, a data loader and a minimal training loop over
 `tensor/`'s tracing (`tensor/DESIGN.md` §10). Depends on
-`tensor/` and `hub/` (a dataset from a safetensors file); `nn/` is a test
-dependency (`group = "test"`), used by the XOR test, and so is `prop`.
+`tensor/`, `hub/` (a dataset from a safetensors file) and `nn/` (the start of
+a LoRA adapter, and the XOR test); `prop` is a test dependency
+(`group = "test"`).
 
 ## API
 
@@ -86,8 +87,13 @@ Lora.applied(weights, adapter) -> Result[Map[String, Tensor]] every weight, the 
   (`Lora.params` refuses a dropout above 0; ml#209). The benchmark of ml#137
   decides, by time and peak memory against PEFT, whether the adapter moves
   into `Nn.dense`. The scale multiplies `B`, the small matrix, before the
-  product. `train` imports `nn` for the start of `A` (`Init.uniform`); it
-  already reached it through `hub`.
+  product, and its `r` is the first dimension of `A`, so an adapter read from
+  a file has its own. `train` imports `nn` for the start of `A`
+  (`Init.uniform`); it already reached it through `hub`. The adapter is
+  `F32` and so are the weights it is applied to (`init` and `applied` refuse
+  `F16` and `BF16` ones: open the model with `weights: F32`). Not adapted, and
+  refused: an embedding (PEFT's `lora_embedding_A` and `B` have another
+  layout) and, for PR B's loader, an adapter file with `fan_in_fan_out`.
 - **AdamW's decay is a flag per parameter, set by the caller.** PyTorch has
   parameter groups; here `decay: List[Bool]` follows the list of parameters,
   and a caller builds it from the names of a `Params.split`. The rule for a
