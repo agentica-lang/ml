@@ -69,6 +69,10 @@ ggml_backend_t tg_backend(int64_t device, char *why, size_t len);
 /* Whether the process chose fp16 products on Vulkan (`ggml_vulkan_fp16`, true by default). */
 bool tg_fp16(void);
 
+/* Whether `scatter_add` may use the masked matmul on Vulkan: false when TENSOR_SCATTER_ADD=get_rows_back (a benchmark
+   switch), read once when the process fixes its precision. */
+bool tg_masked_scatter(void);
+
 /* A fresh tensor of `ne` and `type` on `device` into `state`; false with the
    error term in `failure`. Takes the device lock itself. */
 bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_type type,

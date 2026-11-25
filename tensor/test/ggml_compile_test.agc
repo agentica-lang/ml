@@ -5,7 +5,8 @@
 ##
 ## Without the module the checks pass by asserting nothing, unless
 ## `TENSOR_REQUIRE_GGML` is set (CI sets it), and then they fail. Without a
-## Vulkan device the Vulkan checks pass the same way (note.md §5).
+## Vulkan device the Vulkan checks pass the same way (note.md §5), unless
+## `TENSOR_REQUIRE_VULKAN` is set.
 
 import Lower from "../src/lower"
 import Tensor from "../tensor"
@@ -20,15 +21,20 @@ TOL = 0.000001
 private
 
 ## True when `backend` is there; with `TENSOR_REQUIRE_GGML` set, a missing
-## ggml CPU backend is an error, never a pass.
+## ggml CPU backend is an error, never a pass, and with `TENSOR_REQUIRE_VULKAN`
+## set so is a missing Vulkan device.
 def present(backend: Tensor.Backend) -> Result[Bool]
   try Tensor.vulkan_fp16(false)
   return ok(true) if Tensor.available(backend)
-  return ok(false) if backend != CPU
-  flag = System.env("TENSOR_REQUIRE_GGML")
+  name = "TENSOR_REQUIRE_VULKAN"
+  if backend == CPU
+    name = "TENSOR_REQUIRE_GGML"
+  end
+
+  flag = System.env(name)
   return ok(false) if !flag.ok?
   return ok(false) if try flag == ""
-  error("ggml required but not built (TENSOR_REQUIRE_GGML is set)")
+  error("the backend is required but not available (#{name} is set)")
 end
 
 ## `count` floats in `[-scale, scale)` from `seed`.
@@ -415,6 +421,48 @@ def test_a_scatter_add_with_one_index_outside_the_rows_is_an_error() -> Result[V
   try refused(Trace.eval([try labels([5], CPU), updates], rows), "scatter_add is outside the rows")
   try gives([try labels([2], CPU), updates], rows, [0.0, 0.0, 0.0, 0.0, 1.0, 2.0])
   ok()
+end
+
+## `scatter_add` of `k` rows of `width` into `rows` rows on `backend` and on the reference, the indices repeating over
+## `period` rows: the largest gap between them, relative to the largest value.
+def scatter_gap(backend: Tensor.Backend, k: Int, rows: Int, width: Int, period: Int) -> Result[Float]
+  at = (0...k).map { |i| (i * 7) % period }
+  gap(try scattered(backend, at, rows, width), try scattered(REF, at, rows, width))
+end
+
+def scattered(backend: Tensor.Backend, at: List[Int], rows: Int, width: Int) -> Result[Tensor.Tensor]
+  updates = try floats(uniform(at.size * width, 11, 1.0), [at.size, width], backend)
+  Trace.eval([try labels(at, backend), updates]) do |a| Tensor.scatter_add(a[0], a[1], rows) end
+end
+
+## On Vulkan the lowering adds the rows of an index with a matmul by a mask of equal indices, a chunk of its columns at
+## a time, instead of ggml's `get_rows_back`: one index, heavy repeats, k below and above the rows, and k above the
+## 2^24 cells of a chunk (5000 indices, with 4999 or 50 distinct) must all give the reference's sums.
+def test_scatter_add_on_vulkan_sums_the_rows_of_an_index_like_the_reference() -> Result[Void]
+  return ok() if !try present(VULKAN)
+
+  for shape in [
+    [1, 16, 3, 1],
+    [5, 16, 3, 3],
+    [256, 1000, 8, 7],
+    [300, 200, 4, 150],
+    [5000, 6000, 4, 4999],
+    [5000, 6000, 4, 50],
+  ]
+    worst = try scatter_gap(VULKAN, shape[0], shape[1], shape[2], shape[3])
+    try Test.assert(worst < TOL * 10.0, "k #{shape[0]} into #{shape[1]} rows differs by #{worst}")
+  end
+
+  ok()
+end
+
+def test_a_scatter_add_index_outside_the_rows_is_an_error_on_vulkan() -> Result[Void]
+  return ok() if !try present(VULKAN)
+
+  rows = ->(a: List[Tensor.Tensor]) { Tensor.scatter_add(a[0], a[1], 3) }
+  updates = try floats([1.0, 2.0], [1, 2], VULKAN)
+  try refused(Trace.eval([try labels([5], VULKAN), updates], rows), "scatter_add is outside the rows")
+  gives([try labels([2], VULKAN), updates], rows, [0.0, 0.0, 0.0, 0.0, 1.0, 2.0])
 end
 
 ## Every lookup of a chain of `n` makes about 14 ggml tensors, more than the

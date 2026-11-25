@@ -343,9 +343,10 @@ static struct ggml_context *new_context(size_t bytes) {
 }
 
 /* Room for the graph: a traced node lowers to a handful of ggml tensors at
-   most (a matmul's transpose and cont, a reduction's reshapes; a `gather` or
-   `scatter_add` is the largest, about 14 with its index guard); `node` and
-   `compile` check the room is there. */
+   most (a matmul's transpose and cont, a reduction's reshapes; a `gather` is
+   the largest, about 14 with its index guard); `node` and `compile` check the
+   room is there. A masked `scatter_add` is more (about 12 for each of its
+   chunks) and checks the room for them itself. */
 static size_t graph_size(int64_t capacity) { return (size_t)(capacity * 16 + 8 * MAX_OUTPUTS + 64); }
 
 /* True when the graph's context has room for `tensors` more tensor headers
@@ -682,17 +683,64 @@ static struct ggml_tensor *gather(struct entry *p, const struct gnode *source, i
   return ggml_get_rows(p->ctx, table, row_ids(p, indices, rows, OP_GATHER, guard));
 }
 
+static bool on_vulkan(const struct entry *p);
+
+/* The most floats of one chunk of the mask `scatter_add_masked` makes (64 MB), the most chunks it makes (so k is at
+   most 32768), and the ggml tensors it makes for each chunk and besides them. */
+#define MASK_CELLS (1 << 24)
+#define MASK_CHUNKS 64
+#define MASK_TENSORS_PER_CHUNK 12
+#define MASK_TENSORS_BESIDES 8
+
+/* `scatter_add` on Vulkan: its `get_rows_back` kernel has a thread for each cell of the answer, each one reading all
+   k indices, so it costs rows * k * width. Here every row of `updates` is first given the sum of the rows that name
+   its own row, with one matmul by the k x k mask `ids[i] == ids[j]` (k * k * width, exact: it adds only the rows of one
+   index), and those totals are then written with set_rows into the zero rows (the rows that share an index write the
+   same total). The mask is made, and multiplied, kc columns at a time. */
+static struct ggml_tensor *scatter_add_masked(struct entry *p, struct ggml_tensor *flat, struct ggml_tensor *ids,
+                                              int64_t rows, int64_t kc) {
+  int64_t k = flat->ne[1], at;
+  struct ggml_tensor *ids_f32 = ggml_cast(p->ctx, ids, GGML_TYPE_F32);
+  struct ggml_tensor *by_index = ggml_cont(p->ctx, ggml_transpose(p->ctx, flat)); /* [k, width] */
+  struct ggml_tensor *answer = ggml_fill(p->ctx, ggml_new_tensor_2d(p->ctx, GGML_TYPE_F32, flat->ne[0], rows), 0.0f);
+
+  for (at = 0; at < k; at += kc) {
+    int64_t n = k - at < kc ? k - at : kc;
+    struct ggml_tensor *all = ggml_reshape_2d(p->ctx, ids_f32, k, 1);
+    struct ggml_tensor *mine =
+        ggml_reshape_2d(p->ctx, ggml_view_1d(p->ctx, ids_f32, n, (size_t)at * sizeof(float)), 1, n);
+    struct ggml_tensor *grid = ggml_new_tensor_2d(p->ctx, GGML_TYPE_F32, k, n); /* a shape for the repeat */
+    struct ggml_tensor *apart = ggml_abs(p->ctx, ggml_sub(p->ctx, ggml_repeat(p->ctx, all, grid), mine));
+    /* the ids are whole numbers: 1 - |difference| is 1 for a pair that shares its row and at most 0 for any other */
+    struct ggml_tensor *same = ggml_relu(p->ctx, ggml_scale_bias(p->ctx, apart, -1.0f, 1.0f));
+    struct ggml_tensor *totals = ggml_mul_mat(p->ctx, by_index, same); /* [width, n] */
+
+    answer = ggml_set_rows(p->ctx, answer, totals, ggml_view_1d(p->ctx, ids, n, (size_t)at * sizeof(int32_t)));
+  }
+  return answer;
+}
+
 /* The inverse of `gather`: the rows of `updates` ([width, k] once flat)
    added into `rows` zero rows, at the row each of the k indices names, as
    ggml_get_rows_back. The reference tensor only gives the answer its shape;
-   it is not part of the graph. */
+   it is not part of the graph. On Vulkan in F32 mode (the fp16 mode would round
+   the updates in the matmul), when k is below the rows and the graph has room for
+   the chunks, the masked sums of `scatter_add_masked` do it with less work. */
 static struct ggml_tensor *scatter_add(struct entry *p, const struct gnode *indices, const struct gnode *updates,
                                        int64_t rows, struct ggml_tensor **guard) {
   int64_t k = volume(indices->ne);
   struct ggml_tensor *flat = ggml_reshape_2d(p->ctx, dense(p, updates), volume(updates->ne) / k, k);
-  struct ggml_tensor *shape = ggml_new_tensor_2d(p->ctx, GGML_TYPE_F32, flat->ne[0], rows);
+  struct ggml_tensor *ids = row_ids(p, indices, rows, OP_SCATTER_ADD, guard);
+  int64_t kc = MASK_CELLS / k > 0 ? MASK_CELLS / k : 1;
+  int64_t chunks;
+  bool masked;
 
-  return ggml_get_rows_back(p->ctx, flat, row_ids(p, indices, rows, OP_SCATTER_ADD, guard), shape);
+  if (kc > k) kc = k;
+  chunks = (k + kc - 1) / kc;
+  masked = on_vulkan(p) && !tg_fp16() && tg_masked_scatter() && k < rows && chunks <= MASK_CHUNKS &&
+           room(p, (size_t)(MASK_TENSORS_PER_CHUNK * chunks + MASK_TENSORS_BESIDES));
+  if (masked) return scatter_add_masked(p, flat, ids, rows, kc);
+  return ggml_get_rows_back(p->ctx, flat, ids, ggml_new_tensor_2d(p->ctx, GGML_TYPE_F32, flat->ne[0], rows));
 }
 
 /* Whether `t` is the permute (0, 2, 1, 3) of its source: permuting it again gives the source back, so a norm that
