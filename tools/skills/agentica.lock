@@ -17,7 +17,6 @@ subdir = "native-gen"
 tag = "native-gen-0.5.0"
 commit = "32ebb6ea25d60e0f7a44e811c1f280db76c3e882"
 hash = "sha256:c1be453b21abab840feaa03242f0be32c1145fefe068dc131c8ce7c1b7b80652"
-override = true
 
 [[package]]
 name = "nn"
@@ -43,6 +42,6 @@ override = true
 name = "whisper"
 git = "https://github.com/agentica-lang/ml"
 subdir = "whisper"
-ref = "b1243ef610eae0664b63af2b42f4a013a4db8245"
-commit = "b1243ef610eae0664b63af2b42f4a013a4db8245"
-hash = "sha256:015c44d6fe705a33e19986be7a9150980e118d742714daf802b0f312c96af2d6"
+ref = "d05f8a8cccc6f24e55c4cb5f0dd70c417fab0be4"
+commit = "d05f8a8cccc6f24e55c4cb5f0dd70c417fab0be4"
+hash = "sha256:fb23c272c6603fccd4a2b91f261af0aa2a7cde055216a043bbcafbd4c5224c7b"

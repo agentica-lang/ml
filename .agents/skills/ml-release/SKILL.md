@@ -10,9 +10,10 @@ description: >-
 
 # ml release
 
-ml is one repository with one folder per package. Each package releases on
-its own tag, `<pkg>-X.Y.Z` (for example `tensor-0.1.0`), with no `v` prefix.
-The tag goes on the merge commit of the release PR.
+ml is one repository with one folder per package. Each package has one tag,
+`<pkg>-X.Y.Z` (for example `tensor-0.1.0`), with no `v` prefix, and all the
+members are tagged at the same version. The tags go on the merge commit of the
+release PR.
 
 Tags, tag pushes and GitHub Releases are outward-facing. Do none of them
 until the owner says yes for those exact tags.
@@ -33,11 +34,15 @@ Stop and report if one fails:
   open, the owner must agree to move them first.
 - CI is green on `main`:
   `gh run list -R agentica-lang/ml --workflow ci.yml --branch main -L 1`.
-- Member pins point at a commit that has every change the member needs: each
-  `agentica.toml` pin of `tensor`, `nn` and `hub` (for example, `transformers/`
-  needs the `hub` that reads `gamma` and `beta` layer norms) names a commit
-  that holds what the member's code calls, or the member fails when installed
-  from outside this repository.
+- The packages that ask for each other release together, at one version:
+  every member (`tensor`, `nn`, `hub`, `train`, `transformers`, `asr`) is
+  tagged `<pkg>-X.Y.Z` on the same merge commit, because the members ask for
+  each other by that tag (step 3, first bullet), not by commit. A package left
+  out leaves the tags of the others asking for a tag that does not exist, so a
+  patch to one member means retagging all members at the new version (the cost
+  of the tag scheme). `whisper`
+  asks for no member and may move alone, but its `native-gen` tag must be the
+  one of `tensor` (`rg native-gen */agentica.toml`).
 - The owner gave an explicit OK for the tags, with the packages and versions.
 
 ## 2. Docs pruning PR (merged first)
@@ -70,28 +75,33 @@ Branch `release/<version>` off the merged `origin/main`. Change only:
 2. Version fields, if a package has one (`rg '^version' */agentica.toml`).
    The `agentica = "X.Y.Z"` line is the Agentica version: never change it.
 
-3. The `README.md` install snippet: `ref = "COMMIT"` becomes
-   `tag = "<pkg>-X.Y.Z"` for each released package. Update the sentence that
-   says there are no releases yet. `site/content/_index.md` has the same
-   snippet.
+3. The member manifests and the install snippet:
+   - Each dependency of a member on another member (`rg 'ml", tag = ' */agentica.toml`)
+     becomes `tag = "<pkg>-X.Y.Z"` of this release. Inside the workspace the
+     tag is ignored (the folder is read); outside it, an app that declares the
+     tags of one release gets one source for each package, with no `override`.
+     Run `agentica update` in each member folder to rewrite its lock, and
+     `agentica check` in each.
+   - The `README.md` install snippet: the tags of the released packages.
+     `site/content/_index.md` has the same snippet.
 
 4. The tags and versions that the two agent skills (`.agents/skills/ml-inference`
    and `ml-training`) show. List them with
    `rg -e '-0\.[0-9]+\.[0-9]+' .agents/skills` (the install blocks, and the
    `git clone --branch tensor-0.4.0` of `references/backends.md`) and bump
-   each `<pkg>-X.Y.Z` of a released package. `native-gen` is not an ml tag: it
-   comes from `agentica-lang/packages`, and moves only with the pin of the
-   packages (`rg native-gen tensor/agentica.toml`). Also list
-   `rg 'agentica = "' .agents/skills tools/skills`: those are the Agentica
-   version, and change only when the packages move to a new Agentica. In
-   `tools/skills/agentica.toml`, `whisper` is pinned by `ref` because its last
-   tag does not check on the Agentica of this repository: when `whisper` is
-   released, change that line to its tag and run `agentica update` there.
-   `make check-skills` must pass.
+   each `<pkg>-X.Y.Z` of a released package. The install blocks have no
+   `override = true` and no `native-gen`: if one appears, the manifests of
+   step 3 disagree. Also list `rg 'agentica = "' .agents/skills tools/skills`:
+   those are the Agentica version, and change only when the packages move to a
+   new Agentica. In `tools/skills/agentica.toml` the members are `path`
+   folders with `override = true` (a `path` is not the tag the members ask for),
+   and `whisper` is pinned by `ref`: when `whisper` is released, change that
+   line to its tag and run `agentica update` there. `make check-skills` must
+   pass.
 
 Title the PR `Release <version>`; the body lists each package and its tag.
-CI skips Markdown-only changes, so this PR runs no CI. Its Pages check runs,
-and the Skills check when a skill changes. Merge when they are green.
+This PR changes manifests and locks, so CI runs, with the Pages check and the
+Skills check when a skill changes. Merge when they are green.
 
 ## 4. Tags and GitHub Releases (owner's OK)
 
@@ -117,15 +127,19 @@ The notes are never `Unreleased` or empty. Never create a release on a tag push.
 
 ## 5. Post-release checks
 
-- A fresh project installs the package by its tag. In an empty folder, write
-  an `agentica.toml` that depends on it with
-  `tag = "tensor-0.1.0", subdir = "tensor"` (the `agentica` version is the
-  package's `AGENTICA_VERSION`). Run `agentica install`, then `agentica check`
-  on a one-file program that imports it.
-- The install blocks of the skills work as written: in an empty folder, copy
-  the `toml` block of `ml-inference/SKILL.md` (and the `train` line of
-  `ml-training/SKILL.md`) into an `agentica.toml`, run `agentica update` and
-  `agentica install`, then `agentica check` on the first program of the skill.
+- A fresh project installs the packages by their tags. In an empty folder
+  (never at the scratchpad root), write an `agentica.toml` with the snippet of
+  `README.md` (`tensor` and `nn` by `tag = "<pkg>-X.Y.Z", subdir = "<pkg>"`,
+  no `override`; the `agentica` version is the package's
+  `AGENTICA_VERSION`). Run `agentica update`, `agentica install`, then
+  `agentica check` on a one-file program that imports both. A
+  `PKG-SOURCE-CONFLICT` here means a member manifest names another tag than
+  the release (step 3, first bullet): stop, do not add an `override`.
+- The install blocks of the skills work exactly as written, with no edit and
+  no `override`: in an empty folder, copy the `toml` block of
+  `ml-inference/SKILL.md` (and the `train` line of `ml-training/SKILL.md`)
+  into an `agentica.toml`, run `agentica update` and `agentica install`, then
+  `agentica check` on the first program of the skill.
 - The Pages run on `main` for the merge commit is green. If it did not run,
   start it with `gh workflow run pages.yml --ref main -R agentica-lang/ml`.
 - Each GitHub Release exists and is not a draft: `gh release view <tag>`.

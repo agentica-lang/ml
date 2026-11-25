@@ -21,26 +21,21 @@ from an app. If the `agentica-programming` skill is available, read it first whe
 ## Install
 
 Write the packages in the `agentica.toml` of the app, then lock and fetch them.
-`override = true` is needed on the packages that other packages ask for
-(`tensor`, `nn`, `hub`, `train`): the manifests of the packages pin each other by
-commit, and your tags must win. The override lines go away with
-[ml#240](https://github.com/agentica-lang/ml/issues/240).
+Use the tags of one release for every package: the packages ask for each other
+by the tag of their own release, and the tags meet.
 
 ```toml
 name = "app"
 agentica = "0.38.0"
 
 [dependencies]
-tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.4.0", subdir = "tensor", override = true }
-nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.4.0", subdir = "nn", override = true }
-hub = { git = "https://github.com/agentica-lang/ml", tag = "hub-0.4.0", subdir = "hub", override = true }
+tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.4.0", subdir = "tensor" }
+nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.4.0", subdir = "nn" }
+hub = { git = "https://github.com/agentica-lang/ml", tag = "hub-0.4.0", subdir = "hub" }
 transformers = { git = "https://github.com/agentica-lang/ml", tag = "transformers-0.4.0", subdir = "transformers" }
 asr = { git = "https://github.com/agentica-lang/ml", tag = "asr-0.4.0", subdir = "asr" }
 # only to read WAV files with `pkg/whisper/wav` (it needs no C++ engine), or to use whisper.cpp:
 whisper = { git = "https://github.com/agentica-lang/ml", tag = "whisper-0.4.0", subdir = "whisper" }
-# only with whisper: its manifest asks for another native-gen than the ml packages do. It comes from
-# agentica-lang/packages, not from ml, so it has no ml tag.
-native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.5.0", subdir = "native-gen", override = true }
 ```
 
 ```sh
@@ -50,7 +45,7 @@ agentica install   # writes deps/
 
 Keep only the lines the app needs: `tensor` and `nn` for tensor code, add
 `hub` for weights, `transformers` for Qwen3 and BERT models, `asr` for Whisper
-(`whisper` and `native-gen` only for the WAV reader or whisper.cpp). The tags
+(`whisper` only for the WAV reader or whisper.cpp). The tags
 are released per package: list them with
 `git ls-remote --tags https://github.com/agentica-lang/ml 'tensor-*'`.
 

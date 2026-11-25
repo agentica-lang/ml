@@ -315,7 +315,6 @@ on `tensor/`. Only a root project may
 write a `path` dependency (`PKG-ROOT-ONLY`), so the repository root has an
 `agentica.toml` with `[workspace]`, and members name each other by the
 repository and a `subdir`: a member reads another from its folder, with no
-fetch, and the `ref` it writes is not used inside the workspace. A project
-outside the workspace fetches a member at the `ref` written, so a PR that
-changes several members leaves outside users on the old pin until a follow-up
-bumps the `ref` (or a release tag replaces it).
+fetch, and the `tag` it writes is not used inside the workspace. A project
+outside the workspace fetches a member at the tag of the release written, so
+the members are released together and a release PR bumps those tags.
