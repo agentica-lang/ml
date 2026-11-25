@@ -91,7 +91,8 @@ end
 ## output over `heads`, so loaded weights may have a head width other than
 ## `width / heads` (Qwen3); `init_attention` makes only `width / heads`. `query_norm` and `key_norm` normalize each
 ## head over its width (Qwen3), before `rope`. With `gate` (Qwen3.5) `query` projects to `2 * heads` heads: per head
-## its query and then its gate, and `attend` multiplies the merged heads by `sigmoid(gate)` before `output`.
+## its query and then its gate, and `attend` multiplies the merged heads by `sigmoid(gate)` before `output`. `scale` is
+## the factor of `q k^T` when the model sets one (Granite MoE's `attention_multiplier`), `1 / sqrt(head width)` when none.
 struct Attention
   query: Dense
   key: Dense
@@ -103,6 +104,7 @@ struct Attention
   query_norm: Optional[LayerNorm] = none
   key_norm: Optional[LayerNorm] = none
   gate: Bool = false
+  scale: Optional[Float] = none
 end
 
 ## `dense -> activation -> dense`; with a `gate`, the gated form
@@ -368,7 +370,7 @@ def attend(
 ) -> Result[Tensor.Tensor]
   return error("a gated attention needs the gate of its heads") if p.gate and gate.none?
   return error("a gate is for a gated attention: this one has no gate") if !p.gate and gate.some?
-  context = try Tensor.attention(query, key, value, mask: mask, causal: causal)
+  context = try Tensor.attention(query, key, value, mask: mask, causal: causal, scale: p.scale)
   merged = try merge_heads(context)
   case gate
     some(g) -> merged = try Tensor.mul(merged, try Tensor.sigmoid(try merge_heads(g)))

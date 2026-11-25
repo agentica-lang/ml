@@ -274,6 +274,17 @@ def test_causal_attention_with_fewer_queries_than_keys_ends_on_the_last_key() ->
   S.expect_close(try S.floats_of(got), want.flat_map { |row| row }, ABS, REL, "end-aligned causal")
 end
 
+## `scale` is the factor of `q k^T`: twice the default scale is the attention of a query projection twice as large
+## (the rotation is linear).
+def test_a_scale_multiplies_the_scores() -> Result[Void]
+  p = try Nn.init_attention(4, 2, 3, S.REF)
+  x = try S.f32(Init.uniform_values(24, 1.0, 9), [2, 3, 4])
+  doubled = try S.map_dense(p.query) do |t| Tensor.add(t, t) end
+  want = try S.floats_of(try Nn.self_attention(p.with(query: doubled), x, none, true))
+  got = try S.floats_of(try Nn.self_attention(p.with(scale: some(2.0 / Math.sqrt(2.0))), x, none, true))
+  S.expect_close(got, want, ABS, REL, "scale")
+end
+
 ## A decoder that keeps the keys and values of its past: each token projected alone at its own position (`project`),
 ## its key appended to the cache already rotated, and `attend` over the cache, gives the rows of the causal attention
 ## over the whole sequence. Grouped-query attention with rope and query and key norms, as Qwen has.

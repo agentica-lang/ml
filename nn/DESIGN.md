@@ -18,7 +18,7 @@ enum   Activation   = Relu | Gelu | GeluErf | Silu
 struct Rope         { base: Float = 10000.0, neox: Bool = true, dims: Optional[Int] = none }
 struct Attention    { query, key, value, output: Dense, heads: Int, kv_heads: Optional[Int] = none,
                       rope: Optional[Rope] = none, query_norm, key_norm: Optional[LayerNorm] = none,
-                      gate: Bool = false }
+                      gate: Bool = false, scale: Optional[Float] = none }
 struct Mlp          { up, down: Dense, activation: Activation, gate: Optional[Dense] = none }
 struct EncoderBlock { norm1: LayerNorm, attention: Attention, norm2: LayerNorm, mlp: Mlp,
                       norm_first: Bool = true }

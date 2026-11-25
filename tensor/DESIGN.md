@@ -143,8 +143,9 @@ backend that computes runs a loop over the pairs, which reads the ids on the
 host (slow, and the reference is the oracle). An id outside the experts is an
 error: the reference finds it at the call, ggml counts it as it does for a
 `gather` and `run` refuses the answer. `F32` only. XLA has no lowering. It has no
-gradient. On Vulkan it is checked with `vulkan_fp16(false)`; the gap of the fp16 path is for the first model that runs it
-(Granite MoE) to report.
+gradient. On Vulkan it is checked with `vulkan_fp16(false)`. With fp16 on, Granite MoE 1B-A400M's logits (14 to 28 at the top) gap
+Hugging Face's by 0.34, and Qwen3-0.6B's (dense) by 0.028 (`transformers/DESIGN.md`); the share of `expert_matmul` in
+the first is not isolated.
 `gated_delta_rule(q, k, v, g, beta, state)` (the linear attention of Qwen3.5: per head a `[width, width]` state that
 decays by `exp(g)` and learns `k (beta * (v - state k))^T` at every token; the answers are `state q / sqrt(width)`, so
 the op scales `q` and a caller does not) is one node, which ggml runs as `ggml_gated_delta_net` (CPU, and Vulkan for
