@@ -172,6 +172,15 @@ def release(b: Batch) -> Void
   end
 end
 
+## Frees the native memory of `t` now on libtorch and ggml; the reference has none. Nothing may read `t` afterwards.
+def free(t: Tensor.Tensor) -> Void
+  case t.handle
+    Tensor.Handle.Native(h) -> Native.close(h)
+    Tensor.Handle.Ggml(h) -> Native.close(h)
+    _ -> nil
+  end
+end
+
 private
 
 struct Job
@@ -249,14 +258,6 @@ def closed?(t: Tensor.Tensor) -> Bool
     Tensor.Handle.Native(h) -> Native.closed?(h)
     Tensor.Handle.Ggml(h) -> Native.closed?(h)
     _ -> false
-  end
-end
-
-def free(t: Tensor.Tensor) -> Void
-  case t.handle
-    Tensor.Handle.Native(h) -> Native.close(h)
-    Tensor.Handle.Ggml(h) -> Native.close(h)
-    _ -> nil
   end
 end
 

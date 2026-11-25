@@ -26,6 +26,7 @@ Data.Loader { dataset, batch_size, shuffle = true, seed = 0, drop_last = false, 
 Data.size(dataset) / Data.count(loader) / Data.order(loader, epoch) / Data.batch(loader, rows, i)
 Data.feed(loader, epochs) -> Result[Feed]; Data.epoch(feed, e); Data.take(feed, i); Data.stop(feed)
 Data.release(batch)                                          frees its native tensors
+Data.free(tensor)                                            frees one tensor's native memory now
 Data.Batch { inputs, targets, index? }
 
 Metrics.open(root, name, sinks = Both) -> Result[Run]   ROOT/NAME/metrics.jsonl, events.out.tfevents.*
@@ -33,6 +34,7 @@ Metrics.scalar(run, name, step, value) -> Result[Void]
 Metrics.close(run) -> Result[Void]
 
 Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?, metrics?) -> Result[Fit { params, history }]
+Train.fit_batches(loss, params, batch: Fn[Int, Int, Result[Batch]], count, optimizer, epochs, on_epoch?, metrics?) -> Result[Fit]
   loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
   on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
 Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Module]
@@ -128,7 +130,19 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   the intermediates of the trace's evaluation die at the step's end on
   libtorch and only the new state, parameters and loss leave it
   (`tensor/DESIGN.md` §8). The previous parameters and state were made
-  before the arena, so it does not free them: they wait for the GC.
+  before the arena, so it does not free them: `fit` closes them itself once
+  the step has replaced them, and the last moments when it returns. The GC
+  does not count native memory, so waiting for it let a run of a large model
+  hold several copies of its weights. The caller's `params` are never
+  closed, and neither are the trained ones of the result.
+- **`fit_batches` takes a function, not a second kind of loader.** A loader
+  cuts two tensors of one shape; sentences padded to the longest of each
+  batch have a shape per batch, which no tensor holds. `fit_batches(loss,
+  params, batch, count, ...)` asks `batch(epoch, i)` for each batch and is
+  otherwise `fit`, which runs on the same loop with the loader behind such a
+  function. The step is compiled once per batch shape either way. A batch
+  is two tensors; what else a loss needs it derives (a padding mask is `ids
+  != 0`).
 - **Metrics live in `train/`.** Only `fit` reports through them, and the logger
   needs no native code and no `tensor/` type, so a package of its own would be
   a `agentica.toml`, a lock, a version pin and a CI job for one consumer. It is

@@ -24,6 +24,8 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### train
 
+- `Train.fit_batches` trains over batches that a function makes, each with its own shape (sentences padded to the longest of the batch).
+- `Train.fit` frees the parameters and the optimizer state a step replaces at once on libtorch and ggml, where they waited for the GC: a large model no longer holds several copies of its weights.
 - `Optim.AdamW`: Adam with decoupled weight decay, as PyTorch's `AdamW`, with a `decay` flag per parameter (biases and layer-norm weights do not decay in a fine-tune).
 - `Optim.Schedule` (`Constant`, `WarmupLinear`, `WarmupCosine`) for the `schedule:` of `Sgd`, `Adam` and `AdamW`: the learning rate follows the step count, as in Hugging Face's `Trainer` up to `total` (after it the factor stays 0). SGD's learning rate is now an input of the step (`Optim.step_scalars`), like Adam's.
 - **Breaking:** the StableHLO module of `Train.stablehlo` for SGD takes one more rank-0 argument after the moments, its learning rate (`Optim.step_scalars`); an SGD step of `Optim.step` takes one scalar or none.
