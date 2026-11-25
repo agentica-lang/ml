@@ -164,7 +164,8 @@ trained = try Lora.with_params(adapter, fit.params)
 - `Lora.Config(targets, r = 8, alpha = 16.0, dropout = 0.0)`: `targets` name the layers as PEFT's `target_modules` do. A target may be an embedding table, which trains and runs here; `Lora.save` cannot write that one for PEFT. A layer is adapted when its name (the name of its weight without `.weight`) is a target or ends with `.` and a target, so `q_proj` takes every `model.layers.N.self_attn.q_proj`.
 - `Lora.init(weights, config, seed, backend)` makes a new `Adapter`: every `A` uniform in `±1 / sqrt(in)` from `seed`, every `B` zero. `adapter.names` are the adapted weights, sorted. A target that names no layer, or a weight that is not a matrix, is an error.
 - `Lora.params(adapter)` gives the list `fit` trains (`A` then `B` of each adapted weight), and `Lora.with_params(adapter, ps)` the adapter with those tensors, inside the loss and after `fit`.
-- `Lora.applied(weights, adapter)` gives every weight by name, the adapted ones as `W + (alpha / r) · B A`. Inside the loss the weights of the model enter the trace as constants, so only the adapter gets a gradient. Outside a loss it is the merged model, on a backend that computes eagerly (the reference, libtorch).
+- `Lora.applied(weights, adapter)` gives every weight by name, the adapted ones as `W + (alpha / r) · B A`. Inside the loss the weights of the model enter the trace as constants, so only the adapter gets a gradient.
+- `Lora.merged(weights, adapter)` gives the weights with the adapter merged in, for inference: the adapted ones are new tensors on their backend (ggml included) and the others are those of `weights`. `Qwen3.with_weights(m, try Lora.merged(weights, trained))` is the fine-tuned model, and it runs at the cost of the model alone.
 
 An adapter is kept in PEFT's files, so one trained with PEFT runs here and one trained here loads in PEFT:
 

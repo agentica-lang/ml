@@ -51,6 +51,7 @@ Lora.init(weights, config, seed, backend) -> Result[Adapter { config, names, a, 
 Lora.params(adapter) -> Result[List[Tensor]]                  A then B of each adapted weight: what fit trains
 Lora.with_params(adapter, params) -> Result[Adapter]
 Lora.applied(weights, adapter) -> Result[Map[String, Tensor]] every weight, the adapted ones as W + (alpha / r) B A
+Lora.merged(weights, adapter) -> Result[Map[String, Tensor]]  the same sums, computed once on the backend
 Lora.save(dir, adapter, embeddings = []) -> Result[Void]      PEFT's adapter_config.json and adapter_model.safetensors
 Lora.open(dir, backend) -> Result[Adapter]
 ```
@@ -81,8 +82,12 @@ Lora.open(dir, backend) -> Result[Adapter]
   runs on it (`with_weights`), which is the same function of `x`. So no layer
   and no model knows about adapters, every model with `weights` and
   `with_weights` takes one, and one function is the training forward (inside
-  a loss, where `W` is a `Trace.constant`), the run with an adapter and the
-  merge for inference. The price: the backward pass forms the `[out, in]`
+  a loss, where `W` is a `Trace.constant`) and the merge for inference:
+  `Lora.merged` runs the sums of `applied` as one traced graph on the
+  adapter's backend and answers the weights with the adapted ones replaced.
+  A traced graph because ggml computes nothing else; so there is no
+  "unmerged" run to keep apart, a model made from `merged` costs what the
+  model costs. The price: the backward pass forms the `[out, in]`
   gradient of the sum before it reaches `A` and `B`, which PEFT's path does
   not, and there is no `x` to drop, so `lora_dropout` is not trained
   (`Lora.params` refuses a dropout above 0; ml#209). The benchmark of ml#137
