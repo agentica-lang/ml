@@ -9,7 +9,16 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- The bias gradient of a convolution (a sum over the batch and the plane) runs on ggml at a batch above 1: the gradient of `broadcast_to` sums a leading and a trailing block of axes in two steps.
 - `Tensor.from_bytes(data, shape, format, backend)`: an `F32` tensor from bytes that are in memory, as `from_file` makes one from a range of a file. libtorch and ggml read the bytes in C, so no value becomes a list.
+
+### nn
+
+- `Nn.fold_batch_norm`: a convolution and the inference batch norm after it as one convolution.
+
+### transformers
+
+- `ResNet` (ml#83): ResNet-18 and ResNet-50 from the official `microsoft/resnet-*` checkpoints, with the batch norms folded into the convolutions at load. Their logits and top-5 classes match Hugging Face's on images through `vision`'s resize, crop and normalize.
 
 ### vision
 

@@ -10,3 +10,4 @@ tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.4.0", su
 image = { git = "https://github.com/agentica-lang/packages", tag = "image-0.1.0", subdir = "image" }
 train = { git = "https://github.com/agentica-lang/ml", tag = "train-0.4.0", subdir = "train", group = "test" }
 nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.4.0", subdir = "nn", group = "test" }
+transformers = { git = "https://github.com/agentica-lang/ml", tag = "transformers-0.4.0", subdir = "transformers", group = "test" }

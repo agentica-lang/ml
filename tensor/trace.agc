@@ -779,7 +779,24 @@ def unbroadcast(ct: Types.Tensor, from: List[Int]) -> Result[Types.Tensor]
   end
 
   return Tensor.reshape(ct, from) if axes.empty?
-  Tensor.reshape(try Tensor.sum(ct, some(axes), true), from)
+  Tensor.reshape(try sum_in_blocks(ct, axes), from)
+end
+
+## `ct` summed over `axes` with the dims kept: a bias `[out, 1, 1]` of an image batch sums axes 0, 2 and 3, which ggml
+## cannot reduce at once (a reduction takes a leading or a trailing block of axes), so the leading axes are a sum of
+## their own when the rest are the trailing ones.
+def sum_in_blocks(ct: Types.Tensor, axes: List[Int]) -> Result[Types.Tensor]
+  rank = ct.shape.size
+  lead = 0
+  while lead < axes.size and axes[lead] == lead
+    lead = lead + 1
+  end
+
+  rest = axes.drop(lead)
+  trailing = (0...rest.size).all? { |i| rest[i] == rank - rest.size + i }
+  return Tensor.sum(ct, some(axes), true) if lead == 0 or rest.empty? or !trailing
+
+  Tensor.sum(try Tensor.sum(ct, some(rest), true), some(axes.take(lead)), true)
 end
 
 ## A traced fill of `like`'s shape and dtype with `x`.

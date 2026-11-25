@@ -90,6 +90,25 @@ def test_the_weight_gradient_of_a_big_batch_is_cut_to_fit_ggml_on_the_cpu() -> R
   Test.eq(try Support.floats_of(step.grads[1]), want)
 end
 
+## The bias of a convolution is summed over the batch and the plane (axes 0, 2 and 3), which ggml reduces as two blocks.
+def test_the_bias_gradient_of_a_batch_of_images_sums_the_batch_and_the_plane() -> Result[Void]
+  for backend in try backends()
+    x = try Tensor.ones([3, 1, 4, 5], backend.dtype, backend.backend)
+    w = try Tensor.ones([2, 1, 1, 1], backend.dtype, backend.backend)
+    b = try Tensor.ones([2], backend.dtype, backend.backend)
+    step = try Trace.value_and_grad([x, w, b]) do |a|
+      y = try Tensor.conv2d(a[0], a[1])
+      plane = try Tensor.reshape(a[2], [1, 2, 1, 1])
+      Tensor.sum(try Tensor.add(y, try Tensor.broadcast_to(plane, Tensor.shape(y))), none)
+    end
+
+    try Test.eq(Tensor.shape(step.grads[2]), [2])
+    try Test.eq(try Support.floats_of(step.grads[2]), [60.0, 60.0])
+  end
+
+  ok()
+end
+
 def padded_loss(a: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
   Tensor.sum(try Tensor.conv2d(a[0], a[1], 1, 1), none)
 end

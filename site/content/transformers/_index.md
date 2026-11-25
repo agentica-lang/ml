@@ -1,10 +1,10 @@
 ---
 title: transformers
-description: BERT, Qwen3 and Qwen2.5 in Agentica from Hugging Face checkpoints, and the tokenizers that give Hugging Face's ids.
+description: BERT, Qwen3, Qwen2.5 and ResNet in Agentica from Hugging Face checkpoints, and the tokenizers that give Hugging Face's ids.
 weight: 7
 ---
 
-`transformers` is BERT, Qwen3 and Qwen2.5 in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
+`transformers` is BERT, Qwen3, Qwen2.5 and ResNet in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), ResNet-18 and ResNet-50 (image classification), and the tokenizers of BERT and Qwen: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
 
 ## BERT
 
@@ -77,6 +77,33 @@ end
 - `Sentence.mean_pooled(hidden, mask)` averages `[batch, seq, width]` over the tokens the `[batch, seq]` mask keeps. A row with no token gives zeros.
 - `Sentence.normalized(x)` gives each row of `[batch, width]` over its length. A row of zeros stays zeros.
 - `Sentence.cosine_similarity_loss(a, b, scores)` is the mean of `(cosine - score)^2` over pairs of rows (`Nn.cosine_similarity`) with `[batch]` scores: sentence-transformers' `CosineSimilarityLoss`.
+
+## ResNet
+
+`ResNet.open(dir, backend)` loads `model.safetensors` and `config.json` of a `ResNetForImageClassification` (`microsoft/resnet-50`, `microsoft/resnet-18`). `ResNet.run(m, images)` takes the images as `F32` `[batch, 3, height, width]`, already normalized as the checkpoint's image processor does, and gives the logits `[batch, classes]`. `ResNet.top(m, logits, k)` gives the `k` best classes of each image as `Prediction(id, label, logit)`, best first, with the names of `config.json`. The [vision](../vision/_index.md) package makes the input: Hugging Face's image processor (`resample` 3, bicubic; `size` 224; `crop_pct` 0.875) of these checkpoints resizes the shorter side to 256 (224 over `crop_pct` 0.875), cuts the center 224 by 224, scales to `0..1` and normalizes with the ImageNet mean and std. `Vision.Resize(256)`, `CenterCrop(224, 224)` and `normalize` do the same up to two differences: libvips resizes with a kernel of its own, so pixels are up to 0.018 (normalized) from Pillow's, and a crop with an odd gap between the sizes (half a pixel) rounds the offset to the even pixel, as torchvision does, where Hugging Face floors it, so the crop can sit one pixel apart. To classify an image:
+
+```agentica {mode="fragment"}
+import ResNet from "pkg/transformers/resnet"
+import Tensor from "pkg/tensor/tensor"
+import Vision from "pkg/vision/vision"
+
+backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+m = ResNet.open("resnet-50", backend).unwrap!
+photo = Vision.Folder(classes: ["photo"], paths: ["cat.jpg"], labels: [0])
+steps = [Vision.Step.Resize(256), Vision.Step.CenterCrop(224, 224)]
+batch = Vision.samples(photo, [0], steps, 0, backend).unwrap!
+pixels = Vision.normalize(batch.inputs, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]).unwrap!
+logits = ResNet.run(m, pixels).unwrap!
+for p in ResNet.top(m, logits, 5).unwrap![0]
+  puts("#{p.label}: #{p.logit}")
+end
+```
+
+- The batch norm after each convolution is folded into the convolution when the model loads, so the model is for inference and the weights it holds are not the checkpoint's. On ggml `run` is one graph; close its logits with `ResNet.close(logits)` and the weights with `ResNet.close_model(m)`.
+- The ids and names are those of ImageNet-1k in the checkpoint's `config.json`. A `model_type` other than `resnet`, an activation other than `relu` and a `layer_type` other than `bottleneck` and `basic` are errors, and so is an input that is not `[batch, 3, height, width]`. Any height and width that the strides leave a pixel of are valid; the checkpoints were trained at 224.
+- Against Hugging Face's `ResNetForImageClassification` in `float32`, on four images through the whole pipeline, the best 5 classes are the same and in the same order for both models on CPU and Vulkan. On Hugging Face's own pixels the largest gap of a logit is 1.6e-5 (ResNet-50) and 1.1e-5 (ResNet-18); with `vision`'s own resize it is 0.16 and 0.065, from the pixels (libvips and Pillow resize with different kernels, up to 0.018 apart after normalizing).
+- Speed on the machine of [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md) (ResNet-50, 224 by 224): 7.6 images per second at batch 1 and 8.1 at batch 32 on the CPU, 17.8 and 27.8 on Vulkan; the forward and backward of the folded model takes 1.5 s at batch 1 and 35 s at batch 32 on the CPU.
+- Reference and ggml are tested; libtorch is not. `ResNet.forward(m, images)` is the same model as plain tensor calls, for a loss.
 
 ## Qwen3
 

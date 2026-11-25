@@ -33,6 +33,7 @@ Nn.layer_norm(p, x)                last axis, then * gamma + beta
 Nn.embedding(p, ids)               ids rank-1 integer -> [ids, width]
 Nn.conv1d(p, x)                    x [in, L] or [batch, in, L] -> Tensor.conv1d + bias per channel
 Nn.conv2d(p, x)                    x [batch, in, H, W] -> Tensor.conv2d + bias per channel
+Nn.fold_batch_norm(conv, gamma, beta, mean, var, eps)  Conv2d and the batch norm after it -> one Conv2d (inference)
 Nn.global_avg_pool2d(x)            [batch, channels, H, W] -> [batch, channels], the mean over H and W
 Nn.positional(p, x)                x [seq, width] or [batch, seq, width] + table rows 0...seq
 Nn.activate(a, x)

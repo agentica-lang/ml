@@ -40,6 +40,10 @@ def embedding(p: Nn.Embedding) -> Nn.Embedding = Nn.Embedding(table: Trace.const
 
 def dense(p: Nn.Dense) -> Nn.Dense = p.with(w: Trace.constant(p.w), b: p.b.map { |b| Trace.constant(b) })
 
+def conv2d(p: Nn.Conv2d) -> Nn.Conv2d
+  p.with(weight: Trace.constant(p.weight), bias: p.bias.map { |b| Trace.constant(b) })
+end
+
 def norm(p: Nn.LayerNorm) -> Nn.LayerNorm = p.with(gamma: Trace.constant(p.gamma), beta: Trace.constant(p.beta))
 
 def mlp(p: Nn.Mlp) -> Nn.Mlp = p.with(up: dense(p.up), down: dense(p.down), gate: p.gate.map { |g| dense(g) })
@@ -67,6 +71,13 @@ def dense_parts(p: Nn.Dense) -> List[Tensor.Tensor]
   end
 
   out
+end
+
+def conv2d_parts(p: Nn.Conv2d) -> List[Tensor.Tensor]
+  case p.bias
+    some(b) -> [p.weight, b]
+    none -> [p.weight]
+  end
 end
 
 def norm_parts(p: Nn.LayerNorm) -> List[Tensor.Tensor] = [p.gamma, p.beta]

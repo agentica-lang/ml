@@ -43,3 +43,10 @@ git = "https://github.com/agentica-lang/ml"
 subdir = "train"
 tag = "train-0.4.0"
 workspace = true
+
+[[package]]
+name = "transformers"
+git = "https://github.com/agentica-lang/ml"
+subdir = "transformers"
+tag = "transformers-0.4.0"
+workspace = true
