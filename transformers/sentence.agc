@@ -10,8 +10,8 @@ import Tensor from "pkg/tensor/tensor"
 MIN_COUNT = 0.000000001
 
 ## `hidden` `[batch, seq, width]` averaged over the tokens `mask` keeps (`[batch, seq]`, 1.0 for a token and 0.0 for
-## padding), as `[batch, width]`. A row whose mask is all zeros gives zeros. The tokens are the last axis while they are summed, as ggml lowers only sums over a
-## leading or trailing block of axes.
+## padding), as `[batch, width]`. A row whose mask is all zeros gives zeros. The tokens are the last axis while they
+## are summed, as ggml lowers only sums over a leading or trailing block of axes.
 def mean_pooled(hidden: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(hidden)
   if shape.size != 3 or Tensor.shape(mask) != [shape[0], shape[1]]
