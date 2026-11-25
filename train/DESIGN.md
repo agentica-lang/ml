@@ -12,10 +12,12 @@ Loss.mse(prediction, target)                   mean of (p - t)^2
 Loss.binary_cross_entropy(logits, targets)     mean of softplus(z) - t z
 Loss.cross_entropy(logits, labels)             mean of -log softmax(z)[label]
 
-Optim.Optimizer = Sgd(Sgd { lr, momentum = 0 }) | Adam(Adam { lr = 1e-3, beta1 = 0.9, beta2 = 0.999, eps = 1e-8 })
+Optim.Optimizer = Sgd(Sgd { lr, momentum = 0, schedule = Constant }) | Adam(Adam { lr = 1e-3, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, schedule = Constant })
+Optim.Schedule = Constant | WarmupLinear(warmup, total) | WarmupCosine(warmup, total)
 Optim.init(optimizer, params) -> Result[State]
 Optim.step(state, params, grads, scalars = []) -> Result[Step { state, params }]
-Optim.step_scalars(state) -> List[Float]        Adam's two numbers of the next step; none for SGD
+Optim.learning_rate(state) -> Float             lr times the schedule at the step count
+Optim.step_scalars(state) -> List[Float]        SGD's learning rate, or Adam's two numbers, for the next step
 
 Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
 Data.load(path, inputs, targets, backend) -> Result[Dataset]  two named tensors of a safetensors file
@@ -74,7 +76,7 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   state, and runs them with one `Trace.eval_many`: on `Ggml` one compiled
   graph, which the structural cache compiles once per batch shape (a last
   partial batch is a second graph). The step count stays on the host, so
-  Adam's bias correction is a fill, set per run. A ggml graph has at most 512
+  the learning rate and Adam's bias correction are scalar inputs, set per run. A ggml graph has at most 512
   outputs, the loss and the new tensors, so a step on `Ggml` takes at most 170
   parameters with Adam, 255 with momentum SGD and 511 with plain SGD.
 - **Binary cross-entropy is built from ops that have backward rules.** It is
@@ -88,12 +90,21 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   the graph (`arange`, `eq`, `where`). A label outside `0...classes` is an
   error in an eager call. Traced labels, those `fit` lifts with
   `Trace.constant` included, are not checked, and such a label adds `0`.
+- **A learning rate is a schedule of the step count.** `lr` is the peak and a
+  `Schedule` gives the factor at step `t` (from 0): `WarmupLinear(w, n)` rises
+  from 0 to 1 over `w` steps and falls straight to 0 at `n`; `WarmupCosine` falls
+  along a half cosine. They are Hugging Face's `Trainer` schedules, the ones a
+  sentence-transformers fine-tune uses, and the factor stays 0 after `n`. One
+  way: the schedule is a field of the optimizer, not a hook of `fit`, and
+  `Optim.learning_rate(state)` is what `Metrics` logs. No one-cycle yet.
 - **A step is one program of every step.** `Train.stablehlo` traces the same
   step as `fit` (`traced_step`) and writes it as StableHLO
   (`tensor/DESIGN.md` §12). Adam's bias corrections depend on the step count, so
-  there they are two rank-0 inputs after the moments (`Optim.step_scalars`,
-  passed as the `scalars` of `Optim.step`) and not constants of one step; `fit`
-  keeps them as fills, set per run. The goldens in `test/fixtures/stablehlo/`
+  there they are rank-0 inputs after the moments (`Optim.step_scalars`: SGD's
+  learning rate, or Adam's two numbers, passed as the `scalars` of
+  `Optim.step`) and not constants of one step; `fit` passes them the same way, so
+  a learning rate that changes at every step (a schedule, which starts at 0)
+  is not a new graph. The goldens in `test/fixtures/stablehlo/`
   are three chained runs on IREE, which `fit` reproduces at steps 1 and 3.
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on

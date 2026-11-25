@@ -157,7 +157,7 @@ def step(
     n = params.size
     k = state.first.size
     outs = try Trace.eval_many(
-      params + state.first + state.second,
+      params + state.first + state.second + try scalar_inputs(state, params),
       ->(xs: List[Tensor.Tensor]) { traced_step(loss, state, batch, n, k, xs) },
     )
 
@@ -168,7 +168,7 @@ end
 
 ## The traced step over `xs`, the `n` parameters then the optimizer's `k`
 ## first and its second moments, then the scalars of its step when they are
-## inputs (`stablehlo`): the loss, then the new parameters, first and second
+## inputs (`fit` and `stablehlo`): the loss, then the new parameters, first and second
 ## moments.
 def traced_step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
@@ -185,6 +185,20 @@ def traced_step(
   held = state.with(first: xs.drop(n).take(k), second: xs.drop(n + k).take(state.second.size))
   stepped = try Optim.step(held, ps, grads, xs.drop(moments))
   ok([value] + stepped.params + stepped.state.first + stepped.state.second)
+end
+
+## The numbers of `Optim.step_scalars` as rank-0 tensors of the dtype and backend of the first parameter: inputs of the
+## step, so that a learning rate that changes (a schedule) is not a new graph.
+def scalar_inputs(state: Optim.State, params: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  out: List[Tensor.Tensor] = []
+  return ok(out) if params.empty?
+  for v in Optim.step_scalars(state)
+    out = out.push(
+      try Tensor.from_list([Tensor.Values.Float(v)], [], Tensor.dtype(params[0]), Tensor.backend(params[0])),
+    )
+  end
+
+  ok(out)
 end
 
 def scalar(t: Tensor.Tensor) -> Result[Float]

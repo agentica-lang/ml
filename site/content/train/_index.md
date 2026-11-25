@@ -60,9 +60,21 @@ Each loss takes a prediction and a target. It gives a rank-0 tensor (a single nu
 
 `Optim.Optimizer` is `Sgd(Optim.Sgd(lr:, momentum: 0.0))` or `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))`. Adam's defaults are `lr` 0.001, `beta1` 0.9, `beta2` 0.999 and `eps` 1e-8.
 
+Both take a `schedule:` that moves the learning rate with the step count `t` (from 0). `lr` is the peak, and the rate of a step is `lr` times a factor:
+
+- `Optim.Schedule.Constant` (the default) is a factor of 1.
+- `Optim.Schedule.WarmupLinear(warmup, total)` rises from 0 to 1 over `warmup` steps, then falls in a straight line to 0 at step `total`.
+- `Optim.Schedule.WarmupCosine(warmup, total)` rises the same way and falls along a half cosine.
+
+They are the schedules of Hugging Face's `Trainer`. The factor stays 0 after `total`, and `Optim.init` refuses a `warmup` below 0 or above `total`, and a `total` below 1. `Optim.learning_rate(state)` is the rate of the next step, and it is the value that `fit` logs as `train/lr`.
+
+```agentica
+adam = Optim.Optimizer.Adam(Optim.Adam(lr: 0.0001, schedule: Optim.Schedule.WarmupLinear(100, 1000)))
+```
+
 The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, params)` makes the state, and `Optim.step(state, params, grads, scalars = [])` returns a new state and new parameters. `fit` does this for you.
 
-`Optim.step_scalars(state)` gives the two numbers that Adam's next step depends on (its bias corrections, `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)`), and none for SGD. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those two numbers as inputs after the moments (`Trace.stablehlo` in the tensor page).
+`Optim.step_scalars(state)` gives the numbers that the next step depends on: SGD's learning rate, or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` (its learning rate with the bias correction). `fit` gives them to the step as inputs, so a learning rate that changes at every step is not a new graph on ggml. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those two numbers as inputs after the moments (`Trace.stablehlo` in the tensor page).
 
 `Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 
