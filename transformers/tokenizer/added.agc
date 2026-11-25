@@ -30,6 +30,7 @@ struct Setting
   max_length: Optional[Int]
   direction: Optional[String]
   stride: Optional[Int]
+  pad_to_multiple_of: Optional[Int]
 end
 
 enum Part
@@ -47,11 +48,19 @@ end
 
 ## The most tokens an encoding has when the file truncates (`max_length`, the special tokens counted), none when it
 ## does not. Only the plain form is read: cut at the right, `LongestFirst`, no stride. `padding` to the longest of a
-## batch is accepted and changes nothing, since one text is its own batch; any other padding is an error.
+## batch is accepted and changes nothing, since one text is its own batch. Any other strategy is an error (a fixed
+## length is an object in the file, so it fails when the file is decoded), and so is `pad_to_multiple_of` above 1,
+## which pads one text too.
 def limit(truncation: Optional[Setting], padding: Optional[Setting]) -> Result[Optional[Int]]
   case padding
     some(p) ->
-      return error("the file pads to a fixed length, which is not supported") if p.strategy != some("BatchLongest")
+      if p.strategy != some("BatchLongest")
+        return error("the padding strategy #{p.strategy.unwrap_or("")} is not supported, only BatchLongest")
+      end
+
+      if p.pad_to_multiple_of.unwrap_or(0) > 1
+        return error("padding to a multiple of #{p.pad_to_multiple_of.unwrap_or(0)} is not supported")
+      end
 
     none -> nil
   end

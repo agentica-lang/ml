@@ -46,11 +46,15 @@ end
 def test_the_truncation_of_the_file_cuts_one_text() -> Result[Void]
   text = try File.read_text("test/fixtures/wordpiece.json")
   limited = try S.replaced(text, "\"truncation\": null", truncation(6, "LongestFirst", "Right", 0))
-  padding = "\"padding\": {\"strategy\": \"BatchLongest\", \"direction\": \"Right\", \"pad_id\": 0}"
+  padding = "\"padding\": {\"strategy\": \"BatchLongest\", \"pad_to_multiple_of\": null, \"pad_id\": 0}"
   tok = try WordPiece.parse(try S.replaced(limited, "\"padding\": null", padding))
   try Test.eq(tok.max_length, some(6))
   long = "hello world hello world hello"
-  try Test.eq((try WordPiece.encode(tok, long)).ids, [tok.cls, 13, 14, 13, 14, tok.sep])
+  cut = try WordPiece.encode(tok, long)
+  try Test.eq(cut.ids, [tok.cls, 13, 14, 13, 14, tok.sep])
+  try Test.eq(cut.type_ids, [0, 0, 0, 0, 0, 0])
+  # `unaffable` is `un ##aff ##able`: the cut falls inside the word.
+  try Test.eq((try WordPiece.encode(tok, "unaffable", none, true, some(4))).ids, [tok.cls, 16, 17, tok.sep])
   try Test.eq((try WordPiece.encode(tok, "hello world")).ids, [tok.cls, 13, 14, tok.sep])
   try Test.eq((try WordPiece.encode(tok, long, none, false)).ids, [13, 14, 13, 14, 13])
   try Test.eq((try WordPiece.encode(tok, long, none, true, some(3))).ids, [tok.cls, 13, tok.sep])
@@ -73,6 +77,11 @@ def test_other_pipelines_are_errors() -> Result[Void]
     try S.replaced(text, "\"truncation\": null", truncation(8, "LongestFirst", "Left", 0)),
     try S.replaced(text, "\"truncation\": null", truncation(8, "LongestFirst", "Right", 2)),
     try S.replaced(text, "\"padding\": null", "\"padding\": {\"strategy\": {\"Fixed\": 8}, \"pad_id\": 0}"),
+    try S.replaced(
+      text,
+      "\"padding\": null",
+      "\"padding\": {\"strategy\": \"BatchLongest\", \"pad_to_multiple_of\": 8}",
+    ),
     # The second "WordPiece" is the model's, after the decoder's.
     try S.edited(text, "\"WordPiece\"", "\"Unigram\"", 1),
     try S.replaced(text, "\"prefix\": \"##\"", "\"prefix\": \"@@\""),

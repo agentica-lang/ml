@@ -112,7 +112,8 @@ end
 ## `[SEP]` around them when `add_special` is true, as `tokenizer.encode` gives them.
 ## Added tokens in the text (`[MASK]`) are one id each. With `max_length`, or else the `truncation` of the file, an
 ## encoding of one text has that many ids at most, `[CLS]` and `[SEP]` counted: the tokens past it are dropped. A pair
-## longer than the limit is an error (cutting a pair is not supported).
+## longer than the limit is an error (cutting a pair is not supported), and so is a limit that leaves no room for a
+## token, whatever the text. A call cannot turn the file's limit off, only replace it.
 def encode(
   tok: WordPiece,
   text: String,

@@ -155,9 +155,11 @@ post-processor or template, decoder or model, `truncation`, `padding`, BPE
 `normalized`), so a different tokenizer is an error, never a quiet difference.
 WordPiece reads the plain `truncation` of a file (cut at the right,
 `LongestFirst`, no stride) as the `max_length` of an encoding of one text,
-and accepts padding to the longest of a batch, which never pads one text: a
-sentence-transformers checkpoint sets both. Cutting a pair, another
-truncation and a fixed-length padding stay errors.
+and accepts padding to the longest of a batch, which adds nothing to one
+text: a sentence-transformers checkpoint sets both. Cutting a pair, another
+truncation, a fixed-length padding and `pad_to_multiple_of` above 1 stay
+errors. The file's `pad_id` and `pad_token` are not read: a model pads with
+its config's `pad_token_id`, and nothing here compares the two.
 
 `Bpe.open_gguf` reads the same tokenizer from a GGUF (`tokenizer.ggml.tokens`,
 `token_type` and `merges`, written by llama.cpp for `model` gpt2, `pre`
