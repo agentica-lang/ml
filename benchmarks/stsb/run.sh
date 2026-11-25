@@ -35,8 +35,8 @@ batch=${BATCH:-16}
 pad_to=${PAD_TO:-1}
 # Where `ours-lora` saves the adapter it starts from, which `peer-lora` loads.
 adapter=$cache/lora/stsb-adapter
-# The loss tolerance of the LoRA runs (see the README).
-lora_tolerance=1.5e-7
+# The loss tolerance of the LoRA runs: the full run agrees to 1.4e-7 and a peer without the weight decay is 1.1e-6 away.
+lora_tolerance=3e-7
 online=$(getconf _NPROCESSORS_ONLN)
 allowed=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
 [ "$allowed" = "$online" ] ||
