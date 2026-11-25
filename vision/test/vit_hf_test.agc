@@ -51,7 +51,7 @@ def test_the_model_and_the_pipeline_match_hugging_face() -> Result[Void]
   alone_logits = try ViT.run(m, try Vision.normalize(crops, MEAN, STD))
   alone = try Hf.logit_gap(
     "model alone",
-    try ViT.top(m, alone_logits, 5),
+    try best_ids(m, alone_logits),
     alone_logits,
     want.cases,
     MODEL_ABS,
@@ -63,10 +63,15 @@ def test_the_model_and_the_pipeline_match_hugging_face() -> Result[Void]
   pixel = try Hf.pixel_gap(pixels, want.images)
   return error("the pixels are #{pixel} from Hugging Face's, more than #{PIXEL_ABS}") if pixel > PIXEL_ABS
   logits = try ViT.run(m, pixels)
-  pipeline = try Hf.logit_gap("pipeline", try ViT.top(m, logits, 5), logits, want.cases, PIPELINE_ABS, 0.0, false)
+  pipeline = try Hf.logit_gap("pipeline", try best_ids(m, logits), logits, want.cases, PIPELINE_ABS, 0.0, false)
   puts(
     "vit: largest gap of the logits of the model alone #{alone}, of the pixels #{pixel}, of the logits after the pipeline #{pipeline}",
   )
 
   ok()
+end
+
+## The ids of the best 5 classes of each image.
+def best_ids(m: ViT.ViT, logits: Tensor.Tensor) -> Result[List[List[Int]]]
+  ok((try ViT.top(m, logits, 5)).map { |row| row.map { |p| p.id } })
 end

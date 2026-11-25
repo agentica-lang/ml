@@ -60,20 +60,13 @@ def check(dir: String, want: Golden, backend: Tensor.Backend) -> Result[String]
   names = want.images.map { |g| g.name }
   crops = try Hf.loaded("test/fixtures/resnet/crops", names, [], backend)
   alone_logits = try ResNet.run(m, try Vision.normalize(crops, MEAN, STD))
-  alone = try Hf.logit_gap(
-    "model alone",
-    try ResNet.top(m, alone_logits, 5),
-    alone_logits,
-    cases,
-    MODEL_ABS,
-    MODEL_REL,
-  )
+  alone = try Hf.logit_gap("model alone", try best_ids(m, alone_logits), alone_logits, cases, MODEL_ABS, MODEL_REL)
 
   pixels = try preprocessed("test/fixtures/resnet", names, backend)
   pixel = try Hf.pixel_gap(pixels, want.images)
   return error("the pixels are #{pixel} from Hugging Face's, more than #{PIXEL_ABS}") if pixel > PIXEL_ABS
   logits = try ResNet.run(m, pixels)
-  pipeline = try Hf.logit_gap("pipeline", try ResNet.top(m, logits, 5), logits, cases, PIPELINE_ABS, 0.0)
+  pipeline = try Hf.logit_gap("pipeline", try best_ids(m, logits), logits, cases, PIPELINE_ABS, 0.0)
   ok(
     "#{name}: largest gap of the logits of the model alone #{alone}, of the pixels #{pixel}, of the logits after the pipeline #{pipeline}",
   )
@@ -83,4 +76,9 @@ end
 def preprocessed(dir: String, names: List[String], backend: Tensor.Backend) -> Result[Tensor.Tensor]
   steps = [Vision.Step.Resize(SHORTER), Vision.Step.CenterCrop(Hf.SIZE, Hf.SIZE)]
   Vision.normalize(try Hf.loaded(dir, names, steps, backend), MEAN, STD)
+end
+
+## The ids of the best 5 classes of each image.
+def best_ids(m: ResNet.ResNet, logits: Tensor.Tensor) -> Result[List[List[Int]]]
+  ok((try ResNet.top(m, logits, 5)).map { |row| row.map { |p| p.id } })
 end

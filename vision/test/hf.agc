@@ -1,7 +1,6 @@
 ## What the tests against Hugging Face share (`resnet_hf_test.agc`, `vit_hf_test.agc`): the golden of their scripts
 ## (the pixels that the image processor made, and the best 10 logits), the images through `vision`, and the gaps.
 
-import Classify from "pkg/transformers/classify"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "../vision"
 
@@ -74,12 +73,12 @@ end
 def step(i: Int) -> Int = (2 * i * (SIZE - 1) + GRID - 1) / (2 * (GRID - 1))
 
 ## The largest gap of the best 10 logits of each image from the golden; an error when a logit is past the tolerance or
-## the best 5 classes `best` are not Hugging Face's, in the same order. Without `ordered` they may be reordered by the
+## the best 5 class ids `best` are not Hugging Face's, in the same order. Without `ordered` they may be reordered by the
 ## near-ties of the logits: each of ours is in Hugging Face's best 10, and each class of Hugging Face's best 10 that is
 ## more than `abs` above its sixth is in ours.
 def logit_gap(
   what: String,
-  best: List[List[Classify.Prediction]],
+  best: List[List[Int]],
   logits: Tensor.Tensor,
   cases: List[List[Entry]],
   abs: Float,
@@ -90,7 +89,7 @@ def logit_gap(
   classes = Tensor.shape(logits)[1]
   worst = 0.0
   for i in 0...cases.size
-    ours = best[i].map { |p| p.id }
+    ours = best[i]
     theirs = cases[i].take(5).map { |e| e.id }
     if ordered
       return error("#{what}, image #{i}: the top 5 is #{ours}, expected #{theirs}") if ours != theirs
