@@ -182,7 +182,7 @@ def step_top(g: Generator, cache: Cache, ids: List[Int], k: Int) -> Result[Candi
     end
   end
 
-  if (found.size != k or found.any? { |c| c.id < 0 or c.id >= vocab })
+  if found.size != k or found.any? { |c| c.id < 0 or c.id >= vocab }
     finish(s.cache)
     return error("step_top: the graph gave no ids, or ids outside the vocabulary")
   end

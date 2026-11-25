@@ -1,8 +1,8 @@
 ## Shared types of the `tensor/` package (`tensor/DESIGN.md` §2).
 ##
-## This module imports two things: `src/native.agc` and `src/ggml_native.agc`,
-## the `extern module` declarations whose `TensorHandle` resources the
-## `Native` and `Ggml` arms of `Handle` name. Agentica resources are nominal to the block that declares them, so
+## This module imports three things: `src/native.agc`, `src/ggml_native.agc`
+## and `src/xla_native.agc`, the `extern module` declarations whose resources
+## the `Native`, `Ggml` and `Xla` arms of `Handle` name. Agentica resources are nominal to the block that declares them, so
 ## the backend's handle type has to be visible here for a `Tensor` to carry one
 ## (`tensor/DESIGN.md` §2, §7; agentica-lang/agentica#1918 is the way out).
 ## Everything else about this module is unchanged: the reference backend
@@ -18,6 +18,7 @@
 
 import GgmlRaw from "ggml_native"
 import Raw from "native"
+import XlaRaw from "xla_native"
 
 enum Dtype
   F32
@@ -55,6 +56,7 @@ enum Backend
   Torch(Device)
   Trace
   Ggml(Device)
+  Xla(Device)
 end
 
 ## Plain Agentica backing store: the row-major values of one tensor.
@@ -73,6 +75,7 @@ enum Handle
   Native(Raw.TensorHandle)
   Traced(Node)
   Ggml(GgmlRaw.TensorHandle)
+  Xla(XlaRaw.Buffer)
 end
 
 ## One dtype-tagged value: the element type of `from_list`/`to_list`.
@@ -284,6 +287,7 @@ def backend_name(backend: Backend) -> String
     Backend.Torch(device) -> "Torch(#{device_name(device)})"
     Backend.Trace -> "Trace"
     Backend.Ggml(device) -> "Ggml(#{device_name(device)})"
+    Backend.Xla(device) -> "Xla(#{device_name(device)})"
   end
 end
 

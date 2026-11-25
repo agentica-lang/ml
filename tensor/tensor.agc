@@ -4,13 +4,13 @@
 ## `Result` and reports `error`, never a halt; shape, dtype and backend
 ## mismatches are validated eagerly in these wrappers, before dispatch.
 ## Dispatch is by value (`t.backend`) through an exhaustive `case` over all
-## four `Backend` arms (`tensor/DESIGN.md` §7): `Reference` runs in Agentica,
+## five `Backend` arms (`tensor/DESIGN.md` §7): `Reference` runs in Agentica,
 ## `Torch` runs on libtorch through `src/torch.agc` and `src/native.agc`,
 ## `Trace` records a node of a traced graph after the same checks
 ## (`src/graph.agc`, `trace.agc`, §10), and `Ggml` creates and reads back
 ## tensors on ggml (`src/ggml.agc`) and answers `compiled_only` for every other
-## op. With a native module absent (both are `optional`) its arm answers
-## `error("backend not available")`, and `available/1` says so before a call
+## op, as `Xla` does on XLA (`src/xla.agc`). With a native module absent (all
+## are `optional`) its arm answers `error("backend not available")`, and `available/1` says so before a call
 ## does.
 ##
 ## Rules this file enforces:
@@ -73,6 +73,7 @@ import Graph from "src/graph"
 import Reference from "src/reference"
 import Torch from "src/torch"
 import Types from "src/types"
+import Xla from "src/xla"
 
 export Types.Backend
 export Types.Data
@@ -103,7 +104,8 @@ def backend(t: Types.Tensor) -> Types.Backend = t.backend
 ## True when `backend` can run on this machine: `Reference` always can, `Torch`
 ## when the native libtorch module is built (`[native.torch] optional = true` in
 ## `agentica.toml`), `Ggml` when the native ggml module is built and, for
-## `Vulkan(i)`, ggml sees that device. A caller that needs to work on both asks
+## `Vulkan(i)`, ggml sees that device, `Xla(Cpu)` when the XLA plugin loads
+## (`tools/install_xla.agc`). A caller that needs to work on both asks
 ## this instead of catching the `error("backend not available")` an op would
 ## answer. `Trace` is never available: it records ops and computes nothing
 ## (`trace.agc`).
@@ -113,6 +115,7 @@ def available(backend: Types.Backend) -> Bool
     Types.Backend.Torch(_) -> Torch.available()
     Types.Backend.Trace -> false
     Types.Backend.Ggml(device) -> Ggml.available(device)
+    Types.Backend.Xla(device) -> Xla.available(device)
   end
 end
 
@@ -140,6 +143,7 @@ def zeros(
     Types.Backend.Torch(device) -> Torch.zeros(device, shape, dtype)
     Types.Backend.Trace -> Graph.filled(shape, 0.0, dtype)
     Types.Backend.Ggml(device) -> Ggml.filled(device, shape, dtype, 0.0, "zeros")
+    Types.Backend.Xla(device) -> Xla.filled(device, shape, dtype, 0.0, "zeros")
   end
 end
 
@@ -156,6 +160,7 @@ def ones(
     Types.Backend.Torch(device) -> Torch.ones(device, shape, dtype)
     Types.Backend.Trace -> Graph.filled(shape, 1.0, dtype)
     Types.Backend.Ggml(device) -> Ggml.filled(device, shape, dtype, 1.0, "ones")
+    Types.Backend.Xla(device) -> Xla.filled(device, shape, dtype, 1.0, "ones")
   end
 end
 
@@ -169,6 +174,7 @@ def empty(shape: List[Int], dtype: Types.Dtype, backend: Types.Backend) -> Resul
     Types.Backend.Torch(device) -> Torch.empty(device, shape, dtype)
     Types.Backend.Trace -> Graph.filled(shape, 0.0, dtype)
     Types.Backend.Ggml(device) -> Ggml.filled(device, shape, dtype, 0.0, "empty")
+    Types.Backend.Xla(device) -> Xla.filled(device, shape, dtype, 0.0, "empty")
   end
 end
 
@@ -186,6 +192,7 @@ def full(
     Types.Backend.Torch(device) -> Torch.full(device, shape, value, dtype)
     Types.Backend.Trace -> Graph.fill(shape, value, dtype)
     Types.Backend.Ggml(device) -> Ggml.full(device, shape, value, dtype)
+    Types.Backend.Xla(device) -> Xla.full(device, shape, value, dtype)
   end
 end
 
@@ -197,6 +204,7 @@ def like(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.like(device, t)
     Types.Backend.Trace -> Graph.filled(t.shape, 0.0, t.dtype)
     Types.Backend.Ggml(device) -> Ggml.filled(device, t.shape, t.dtype, 0.0, "like")
+    Types.Backend.Xla(device) -> Xla.filled(device, t.shape, t.dtype, 0.0, "like")
   end
 end
 
@@ -210,6 +218,7 @@ def arange(start: Int, stop: Int, step: Int, dtype: Types.Dtype, backend: Types.
     Types.Backend.Torch(device) -> Torch.arange(device, start, stop, step, dtype)
     Types.Backend.Trace -> ok(Graph.arange(start, stop, step, dtype))
     Types.Backend.Ggml(device) -> Ggml.arange(device, start, stop, step, dtype)
+    Types.Backend.Xla(device) -> Xla.arange(device, start, stop, step, dtype)
   end
 end
 
@@ -220,6 +229,7 @@ def scalar_to_tensor(value: Types.Values, dtype: Types.Dtype, backend: Types.Bac
     Types.Backend.Torch(device) -> Torch.scalar_to_tensor(device, value, dtype)
     Types.Backend.Trace -> Graph.fill([], value, dtype)
     Types.Backend.Ggml(device) -> Ggml.full(device, [], value, dtype)
+    Types.Backend.Xla(device) -> Xla.full(device, [], value, dtype)
   end
 end
 
@@ -238,6 +248,7 @@ def from_list(
     Types.Backend.Torch(device) -> Torch.from_list(device, data, shape, dtype)
     Types.Backend.Trace -> error("from_list makes no traced tensor: lift one with Trace.constant")
     Types.Backend.Ggml(device) -> Ggml.from_list(device, data, shape, dtype)
+    Types.Backend.Xla(device) -> Xla.from_list(device, data, shape, dtype)
   end
 end
 
@@ -308,6 +319,7 @@ def from_file(
     Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format)
     Types.Backend.Trace -> error("from_file makes no traced tensor: lift one with Trace.constant")
     Types.Backend.Ggml(device) -> Ggml.from_file(device, path, offset, shape, format, dtype)
+    Types.Backend.Xla(device) -> Xla.from_file(device, path, offset, shape, format)
   end
 end
 
@@ -351,6 +363,7 @@ def floats(
   case backend
     Types.Backend.Torch(device) -> Torch.floats(device, values, shape)
     Types.Backend.Ggml(device) -> Ggml.floats(device, values, shape)
+    Types.Backend.Xla(device) -> Xla.floats(device, values, shape)
     _ -> from_list(values.map { |x: Float| Types.Values.Float(x) }, shape, Types.Dtype.F32, backend)
   end
 end
@@ -362,6 +375,7 @@ def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
     Types.Backend.Torch(_) -> Torch.to_list(t)
     Types.Backend.Trace -> error("a traced tensor has no values: run it with Trace.eval")
     Types.Backend.Ggml(_) -> Ggml.to_list(t)
+    Types.Backend.Xla(_) -> Xla.to_list(t)
   end
 end
 
@@ -376,6 +390,7 @@ def append_file(t: Types.Tensor, path: String) -> Result[Void]
     Types.Backend.Torch(_) -> Torch.append_file(t, path)
     Types.Backend.Trace -> error("a traced tensor has no values: run it with Trace.eval")
     Types.Backend.Ggml(_) -> Ggml.append_file(t, path)
+    Types.Backend.Xla(_) -> Xla.append_file(t, path)
   end
 end
 
@@ -390,6 +405,7 @@ def add(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.add(device, a, b)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Add, [a, b], a.shape, a.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("add")
+    Types.Backend.Xla(_) -> Xla.compiled_only("add")
   end
 end
 
@@ -404,6 +420,7 @@ def sub(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.sub(device, a, b)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Sub, [a, b], a.shape, a.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("sub")
+    Types.Backend.Xla(_) -> Xla.compiled_only("sub")
   end
 end
 
@@ -418,6 +435,7 @@ def mul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.mul(device, a, b)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Mul, [a, b], a.shape, a.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("mul")
+    Types.Backend.Xla(_) -> Xla.compiled_only("mul")
   end
 end
 
@@ -432,6 +450,7 @@ def div(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.div(device, a, b)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Div, [a, b], a.shape, a.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("div")
+    Types.Backend.Xla(_) -> Xla.compiled_only("div")
   end
 end
 
@@ -443,6 +462,7 @@ def neg(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.neg(device, t)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Neg, [t], t.shape, t.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("neg")
+    Types.Backend.Xla(_) -> Xla.compiled_only("neg")
   end
 end
 
@@ -454,6 +474,7 @@ def exp(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.exp(device, t)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Exp, [t], t.shape, t.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("exp")
+    Types.Backend.Xla(_) -> Xla.compiled_only("exp")
   end
 end
 
@@ -465,6 +486,7 @@ def log(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.log(device, t)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Log, [t], t.shape, t.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("log")
+    Types.Backend.Xla(_) -> Xla.compiled_only("log")
   end
 end
 
@@ -476,6 +498,7 @@ def sqrt(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.sqrt(device, t)
     Types.Backend.Trace -> Graph.same(Types.Op.Sqrt, [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("sqrt")
+    Types.Backend.Xla(_) -> Xla.compiled_only("sqrt")
   end
 end
 
@@ -491,6 +514,7 @@ def pow(base: Types.Tensor, exponent: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.pow(device, base, exponent)
     Types.Backend.Trace -> Graph.same(Types.Op.Pow, [base, exponent], base)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("pow")
+    Types.Backend.Xla(_) -> Xla.compiled_only("pow")
   end
 end
 
@@ -502,6 +526,7 @@ def relu(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.relu(device, t)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Relu, [t], t.shape, t.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("relu")
+    Types.Backend.Xla(_) -> Xla.compiled_only("relu")
   end
 end
 
@@ -513,6 +538,7 @@ def sigmoid(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.sigmoid(device, t)
     Types.Backend.Trace -> Graph.same(Types.Op.Sigmoid, [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("sigmoid")
+    Types.Backend.Xla(_) -> Xla.compiled_only("sigmoid")
   end
 end
 
@@ -524,6 +550,7 @@ def tanh(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.tanh(device, t)
     Types.Backend.Trace -> Graph.same(Types.Op.Tanh, [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("tanh")
+    Types.Backend.Xla(_) -> Xla.compiled_only("tanh")
   end
 end
 
@@ -536,6 +563,7 @@ def gelu_tanh_approx(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.gelu_tanh_approx(device, t)
     Types.Backend.Trace -> Graph.same(Types.Op.Gelu, [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("gelu_tanh_approx")
+    Types.Backend.Xla(_) -> Xla.compiled_only("gelu_tanh_approx")
   end
 end
 
@@ -549,6 +577,7 @@ def gelu_erf(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.gelu_erf(device, t)
     Types.Backend.Trace -> Graph.same(Types.Op.GeluErf, [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("gelu_erf")
+    Types.Backend.Xla(_) -> Xla.compiled_only("gelu_erf")
   end
 end
 
@@ -563,6 +592,7 @@ def eq(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.eq(device, a, b)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Eq, [a, b], a.shape, Types.Dtype.Bool))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("eq")
+    Types.Backend.Xla(_) -> Xla.compiled_only("eq")
   end
 end
 
@@ -577,6 +607,7 @@ def lt(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.lt(device, a, b)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Lt, [a, b], a.shape, Types.Dtype.Bool))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("lt")
+    Types.Backend.Xla(_) -> Xla.compiled_only("lt")
   end
 end
 
@@ -594,6 +625,7 @@ def where(cond: Types.Tensor, a: Types.Tensor, b: Types.Tensor) -> Result[Types.
     Types.Backend.Torch(device) -> Torch.where(device, cond, a, b)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Where, [cond, a, b], a.shape, a.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("where")
+    Types.Backend.Xla(_) -> Xla.compiled_only("where")
   end
 end
 
@@ -606,6 +638,7 @@ def clamp(t: Types.Tensor, lo: Float, hi: Float) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.clamp(device, t, lo, hi)
     Types.Backend.Trace -> Graph.same(Types.Op.Clamp(lo, hi), [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("clamp")
+    Types.Backend.Xla(_) -> Xla.compiled_only("clamp")
   end
 end
 
@@ -620,6 +653,7 @@ def sum(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = fal
     Types.Backend.Torch(device) -> Torch.sum(device, t, axs, keep_dims)
     Types.Backend.Trace -> ok(Graph.reduction(true, t, axs, keep_dims))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("sum")
+    Types.Backend.Xla(_) -> Xla.compiled_only("sum")
   end
 end
 
@@ -632,6 +666,7 @@ def mean(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = fa
     Types.Backend.Torch(device) -> Torch.mean(device, t, axs, keep_dims)
     Types.Backend.Trace -> ok(Graph.reduction(false, t, axs, keep_dims))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("mean")
+    Types.Backend.Xla(_) -> Xla.compiled_only("mean")
   end
 end
 
@@ -644,6 +679,7 @@ def max(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = fal
     Types.Backend.Torch(device) -> Torch.max(device, t, axs, keep_dims)
     Types.Backend.Trace -> ok(Graph.reduced(false, t, axs, keep_dims))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("max")
+    Types.Backend.Xla(_) -> Xla.compiled_only("max")
   end
 end
 
@@ -659,6 +695,7 @@ def argmax(t: Types.Tensor, axes: Optional[List[Int]] = none, keep_dims: Bool = 
     Types.Backend.Torch(device) -> Torch.argmax(device, t, axs, keep_dims)
     Types.Backend.Trace -> ok(Graph.reduced(true, t, axs, keep_dims))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("argmax")
+    Types.Backend.Xla(_) -> Xla.compiled_only("argmax")
   end
 end
 
@@ -674,6 +711,7 @@ def matmul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.matmul(device, a, b)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Matmul, [a, b], [a.shape[0], b.shape[1]], a.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("matmul")
+    Types.Backend.Xla(_) -> Xla.compiled_only("matmul")
   end
 end
 
@@ -699,6 +737,7 @@ def batch_matmul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(_) -> Torch.unsupported("batch_matmul")
     Types.Backend.Trace -> ok(Graph.batch_matmul(a, b))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("batch_matmul")
+    Types.Backend.Xla(_) -> Xla.compiled_only("batch_matmul")
   end
 end
 
@@ -710,6 +749,7 @@ def transpose(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.transpose(device, t)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.Transpose, [t], t.shape.reverse, t.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("transpose")
+    Types.Backend.Xla(_) -> Xla.compiled_only("transpose")
   end
 end
 
@@ -725,6 +765,7 @@ def permute(t: Types.Tensor, axes: List[Int]) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.permute(device, t, axes)
     Types.Backend.Trace -> ok(Graph.permute(t, axes))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("permute")
+    Types.Backend.Xla(_) -> Xla.compiled_only("permute")
   end
 end
 
@@ -736,6 +777,7 @@ def reshape(t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.reshape(device, t, shape)
     Types.Backend.Trace -> Graph.reshape(t, shape)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("reshape")
+    Types.Backend.Xla(_) -> Xla.compiled_only("reshape")
   end
 end
 
@@ -747,6 +789,7 @@ def squeeze(t: Types.Tensor, axis: Optional[Int] = none) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.squeeze(device, t, axis)
     Types.Backend.Trace -> ok(Graph.squeeze(t, axis))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("squeeze")
+    Types.Backend.Xla(_) -> Xla.compiled_only("squeeze")
   end
 end
 
@@ -758,6 +801,7 @@ def unsqueeze(t: Types.Tensor, axis: Int = 0) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.unsqueeze(device, t, axis)
     Types.Backend.Trace -> ok(Graph.unsqueeze(t, axis))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("unsqueeze")
+    Types.Backend.Xla(_) -> Xla.compiled_only("unsqueeze")
   end
 end
 
@@ -769,6 +813,7 @@ def slice(t: Types.Tensor, starts: List[Int], ends: List[Int]) -> Result[Types.T
     Types.Backend.Torch(device) -> Torch.slice(device, t, starts, ends)
     Types.Backend.Trace -> ok(Graph.slice(t, starts, ends))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("slice")
+    Types.Backend.Xla(_) -> Xla.compiled_only("slice")
   end
 end
 
@@ -792,6 +837,7 @@ def concat(tensors: List[Types.Tensor], axis: Int) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.concat(device, tensors, axis)
     Types.Backend.Trace -> ok(Graph.concat(tensors, axis))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("concat")
+    Types.Backend.Xla(_) -> Xla.compiled_only("concat")
   end
 end
 
@@ -811,6 +857,7 @@ def stack(tensors: List[Types.Tensor], axis: Int = 0) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.stack(device, tensors, axis)
     Types.Backend.Trace -> ok(Graph.stack(tensors, axis))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("stack")
+    Types.Backend.Xla(_) -> Xla.compiled_only("stack")
   end
 end
 
@@ -822,6 +869,7 @@ def broadcast_to(t: Types.Tensor, shape: List[Int]) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.broadcast_to(device, t, shape)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.BroadcastTo, [t], shape, t.dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("broadcast_to")
+    Types.Backend.Xla(_) -> Xla.compiled_only("broadcast_to")
   end
 end
 
@@ -838,6 +886,7 @@ def gather(source: Types.Tensor, indices: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.gather(device, source, indices)
     Types.Backend.Trace -> ok(Graph.gather(source, indices))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("gather")
+    Types.Backend.Xla(_) -> Xla.compiled_only("gather")
   end
 end
 
@@ -862,6 +911,7 @@ def scatter_add(indices: Types.Tensor, updates: Types.Tensor, rows: Int) -> Resu
     Types.Backend.Torch(device) -> Torch.scatter_add(device, indices, updates, rows)
     Types.Backend.Trace -> ok(Graph.scatter_add(indices, updates, rows))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("scatter_add")
+    Types.Backend.Xla(_) -> Xla.compiled_only("scatter_add")
   end
 end
 
@@ -894,6 +944,7 @@ def set_rows(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) 
   case cache.backend
     Types.Backend.Trace -> Graph.same(Types.Op.SetRows, [cache, fresh, positions], cache)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("set_rows")
+    Types.Backend.Xla(_) -> Xla.compiled_only("set_rows")
     _ -> set_rows_composed(cache, fresh, positions)
   end
 end
@@ -909,6 +960,7 @@ def top_ids(x: Types.Tensor, k: Int) -> Result[Types.Tensor]
   case x.backend
     Types.Backend.Trace -> ok(Graph.record(Types.Op.TopK(k), [x], [k], Types.Dtype.I32))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("top_ids")
+    Types.Backend.Xla(_) -> Xla.compiled_only("top_ids")
     _ ->
       values = try to_list(x)
       scores: List[Float] = []
@@ -944,6 +996,7 @@ def to_dtype(t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.to_dtype(device, t, dtype)
     Types.Backend.Trace -> ok(Graph.record(Types.Op.ToDtype, [t], t.shape, dtype))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("to_dtype")
+    Types.Backend.Xla(_) -> Xla.compiled_only("to_dtype")
   end
 end
 
@@ -954,6 +1007,7 @@ def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
     Types.Backend.Torch(_) -> Torch.unsupported("to_device")
     Types.Backend.Trace -> Graph.same(Types.Op.ToDevice(device), [t], t)
     Types.Backend.Ggml(_) -> Ggml.to_device(t, device)
+    Types.Backend.Xla(_) -> Xla.to_device(t, device)
   end
 end
 
@@ -964,6 +1018,7 @@ def copy(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.copy(device, t)
     Types.Backend.Trace -> Graph.same(Types.Op.Copy, [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("copy")
+    Types.Backend.Xla(_) -> Xla.compiled_only("copy")
   end
 end
 
@@ -975,6 +1030,7 @@ def contiguous(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(device) -> Torch.contiguous(device, t)
     Types.Backend.Trace -> Graph.same(Types.Op.Contiguous, [t], t)
     Types.Backend.Ggml(_) -> Ggml.compiled_only("contiguous")
+    Types.Backend.Xla(_) -> Xla.compiled_only("contiguous")
   end
 end
 
@@ -987,6 +1043,7 @@ def stop_grad(t: Types.Tensor) -> Result[Types.Tensor]
     Types.Backend.Torch(_) -> ok(t)
     Types.Backend.Trace -> Graph.same(Types.Op.StopGrad, [t], t)
     Types.Backend.Ggml(_) -> ok(t)
+    Types.Backend.Xla(_) -> ok(t)
   end
 end
 
@@ -1015,6 +1072,7 @@ def conv1d(input: Types.Tensor, weight: Types.Tensor, stride: Int = 1, padding: 
     Types.Backend.Torch(device) -> Torch.conv1d(device, input, weight, stride, padding)
     Types.Backend.Trace -> ok(Graph.conv1d(input, weight, stride, padding))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("conv1d")
+    Types.Backend.Xla(_) -> Xla.compiled_only("conv1d")
   end
 end
 
@@ -1042,6 +1100,7 @@ def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int = 1, padding: Int =
     Types.Backend.Torch(device) -> Torch.avg_pool1d(device, input, kernel, stride, padding)
     Types.Backend.Trace -> ok(Graph.avg_pool1d(input, kernel, stride, padding))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("avg_pool1d")
+    Types.Backend.Xla(_) -> Xla.compiled_only("avg_pool1d")
   end
 end
 
@@ -1068,7 +1127,7 @@ def layer_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   _ = try float_only(x, "layer_norm")
   case x.backend
     Types.Backend.Trace ->
-      if eps > 3.4028234663852886e38 or Float.to_bits32(eps) == 0
+      if eps > 3.4028234663852886e38 or Float32.to_bits(eps.to_float32) == 0
         return error("layer_norm needs an eps that is neither above F32's range nor 0 in F32, got #{eps}")
       end
 
@@ -1086,7 +1145,7 @@ def rms_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   _ = try float_only(x, "rms_norm")
   case x.backend
     Types.Backend.Trace ->
-      if eps > 3.4028234663852886e38 or Float.to_bits32(eps) == 0
+      if eps > 3.4028234663852886e38 or Float32.to_bits(eps.to_float32) == 0
         return error("rms_norm needs an eps that is neither above F32's range nor 0 in F32, got #{eps}")
       end
 
@@ -1291,6 +1350,7 @@ def attention(
   return error("attention needs a finite scale, got #{chosen}") if !Types.is_finite(chosen)
   case q.backend
     Types.Backend.Ggml(_) -> return Ggml.compiled_only("attention")
+    Types.Backend.Xla(_) -> return Xla.compiled_only("attention")
     _ -> nil
   end
 
@@ -1301,6 +1361,7 @@ def attention(
     Types.Backend.Torch(device) -> Torch.attention(device, q, k, v, bias, chosen)
     Types.Backend.Trace -> ok(Graph.attention(q, k, v, bias, chosen))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("attention")
+    Types.Backend.Xla(_) -> Xla.compiled_only("attention")
   end
 end
 
@@ -1344,6 +1405,7 @@ def rope(
     Types.Backend.Torch(device) -> Torch.rope(device, x, positions, base, rotated, neox, inverse)
     Types.Backend.Trace -> ok(Graph.rope(x, positions, base, rotated, neox, inverse))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("rope")
+    Types.Backend.Xla(_) -> Xla.compiled_only("rope")
   end
 end
 

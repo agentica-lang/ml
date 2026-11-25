@@ -88,6 +88,7 @@ def native_closed(t: Tensor.Tensor) -> Bool
     Tensor.Handle.Plain(_) -> false
     Tensor.Handle.Traced(_) -> false
     Tensor.Handle.Ggml(h) -> Native.closed?(h)
+    Tensor.Handle.Xla(h) -> Native.closed?(h)
   end
 end
 

@@ -8,3 +8,6 @@
 #   reads `t = j < 0 ? node : node->src[j]`, and the analyzer takes the test `t != NULL` for `node != NULL`. `node` comes
 #   from ggml_graph_node(graph, i) with i below the node count, so it is never NULL. Left in the baseline and not
 #   suppressed in the code, because the open PR that changes these lines (#47) would conflict.
+# - CC-TIDY-BUGPRONE-SIZEOF-EXPRESSION in tensor/native/pjrt_c_api.h, 50 times: the vendored PJRT header (kept as it is)
+#   measures each args struct with `sizeof(((T*)0)->last_field)` (PJRT_DEFINE_STRUCT_TRAITS), and the last field is a
+#   pointer. That is the size the API means, not a mistake.

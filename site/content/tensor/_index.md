@@ -1,6 +1,6 @@
 ---
 title: tensor
-description: Tensors over a reference backend, libtorch on the CPU and ggml on the CPU and Vulkan, with tracing and gradients.
+description: Tensors over a reference backend, libtorch on the CPU, ggml on the CPU and Vulkan and XLA on the CPU, with tracing and gradients.
 weight: 1
 ---
 
@@ -63,7 +63,7 @@ A tensor has a shape, a dtype (its number type, such as `F32`, a 32-bit float) a
 
 ## Backends
 
-`Torch` runs on libtorch, the C++ library under PyTorch. `Ggml` runs on ggml, a small tensor library in C.
+`Torch` runs on libtorch, the C++ library under PyTorch. `Ggml` runs on ggml, a small tensor library in C. `Xla` runs on XLA, the compiler under JAX.
 
 | Backend | Where it computes | Needs |
 |---|---|---|
@@ -71,6 +71,7 @@ A tensor has a shape, a dtype (its number type, such as `F32`, a 32-bit float) a
 | `Backend.Torch(Device.Cpu)` | libtorch 2.4.1, one op at a time | libtorch (optional) |
 | `Backend.Ggml(Device.Cpu)` | ggml on the CPU | the ggml module (optional) |
 | `Backend.Ggml(Device.Vulkan(i))` | ggml on Vulkan device `i`, counted over the devices that are not a CPU | a ggml build with Vulkan |
+| `Backend.Xla(Device.Cpu)` | XLA on the CPU, a compiled function at a time | the XLA plugin, installed below (Linux x86_64 and aarch64) |
 | `Backend.Trace` | nothing: it records a graph of the ops, see below | nothing |
 
 A device is where the values are computed. `Reference` and `Torch` serve `Device.Cpu` only.
@@ -84,6 +85,14 @@ A tensor carries its backend, so tensors on different backends can live in one p
 On `Ggml`, a direct call to an op is an eager call: it runs the op right away. Eager calls only create, read and copy tensors. Every other op is an error that points to `Trace`, because ggml is fast when a whole computation is one graph.
 
 `Tensor.to_device(t, Device.Vulkan(0))` moves a ggml tensor to another ggml device.
+
+`Xla` works like `Ggml`: eager calls only create and read tensors, and every other op is an error that names it. `Trace.compile` turns the function into StableHLO and XLA compiles it once, and `Trace.run` runs it. `Trace.eval`, `eval_many` and `value_and_grad` compile for each call. XLA comes as a plugin that the package loads when it first needs it and never links. Install it once, from the `tensor` folder (it needs `unzip`):
+
+```sh
+agentica tools/install_xla.agc
+```
+
+It downloads the pinned `xla-cpu-pjrt` wheel from PyPI, checks its sha256 and keeps the plugin in `~/.cache/agentica-ml/xla/` (or under `AGENTICA_ML_CACHE`). PyPI has the plugin for Linux on x86_64 and aarch64 only, and CI tests x86_64 only. On x86_64 the plugin needs a CPU with AVX. On any other system, and before the install, `Tensor.available(Backend.Xla(Device.Cpu))` is `false` and an op answers an error that names the install step.
 
 The ggml CPU backend runs a graph on one thread per physical core of the machine, not per hardware thread: its threads wait for each other by spinning, so a second thread on a core adds stalls when the machine is busy. On Linux the cores are the ones this process may use (a cpuset limits them; a CPU quota does not). Set the environment variable `TENSOR_THREADS` to a positive integer, at most 512 (ggml's limit), to choose the number; any other value leaves the default.
 

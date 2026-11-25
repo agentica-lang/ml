@@ -293,7 +293,7 @@ def file() -> Bytes
 
   padded = header + " " * ((8 - header.bytesize % 8) % 8)
   floats = [0.0, 0.25, 1.0, 1.25, 2.0, 2.25, 0.5, 1.5, 2.5]
-  data = floats.flat_map { |f| le(Float.to_bits32(f), 4) }
+  data = floats.flat_map { |f| le(Float32.to_bits(f.to_float32).to_i, 4) }
   Bytes.from_list(le(padded.bytesize, 8) + padded.bytes.to_a + data).unwrap!
 end
 

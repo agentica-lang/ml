@@ -1,10 +1,10 @@
 name = "hub"
-agentica = "0.37.0"
+agentica = "0.38.0"
 
 # Every bare `end` is followed by an empty line (AGENTS.md).
 [style]
 blank_line_after_end = true
 
 [dependencies]
-tensor = { git = "https://github.com/agentica-lang/ml", ref = "b2937efd15953180f4c14ab5479dddd3ad53634b", subdir = "tensor" }
-nn = { git = "https://github.com/agentica-lang/ml", ref = "2aff464400c2f47299037084920c3232747d28a0", subdir = "nn" }
+tensor = { git = "https://github.com/agentica-lang/ml", ref = "7cb468a864e79412bbec93a4e14d4ba4344fed94", subdir = "tensor" }
+nn = { git = "https://github.com/agentica-lang/ml", ref = "3cad8637528b5f6acfacc66db26e67f452e7664e", subdir = "nn" }
