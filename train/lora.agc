@@ -1,7 +1,7 @@
 ## LoRA (`train/DESIGN.md`): a weight `W` of a linear layer, `[out, in]`, stays frozen and two small matrices are
 ## trained beside it, `A` of `[r, in]` and `B` of `[out, r]`. The layer then computes with `W + (alpha / r) · B A`.
 ## `applied` builds that sum, so the model's own forward runs on it: inside a loss it is the training forward, and
-## outside it is the merge for inference. `B` starts at zero, so a new adapter changes nothing. `save` and `open`
+## `merged` computes it once for inference. `B` starts at zero, so a new adapter changes nothing. `save` and `open`
 ## keep an adapter in PEFT's files, so an adapter trained with PEFT runs here and one trained here loads in PEFT.
 
 import Hub from "pkg/hub/hub"
@@ -33,8 +33,8 @@ struct Adapter
 end
 
 ## A new adapter for the layers of `weights` that `config.targets` name: every `A` uniform in `±1 / sqrt(in)` from
-## `seed` (PEFT's start) and every `B` zero. A target may be an embedding table (see `Config`). An error when a target names no layer, or a layer whose weight is not a
-## matrix.
+## `seed` (PEFT's start) and every `B` zero. A target may be an embedding table (see `Config`). An error when a target
+## names no layer, or a layer whose weight is not a matrix.
 def init(weights: Map[String, Tensor.Tensor], config: Config, seed: Int, backend: Tensor.Backend) -> Result[Adapter]
   return error("a LoRA rank is at least 1, got #{config.r}") if config.r < 1
   return error("a LoRA alpha is above 0, got #{config.alpha}: the adapter would add nothing") if config.alpha <= 0.0
@@ -120,6 +120,33 @@ def applied(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map
   ok(out)
 end
 
+## `weights` with the adapter merged in, for inference: the adapted weights are new tensors on their backend, each
+## `W + (alpha / r) · B A`, and the others are the tensors of `weights`, shared and not copied. Nothing is closed:
+## the weights under the adapted ones stay the caller's. The sums run as traced graphs, `MERGED_AT_ONCE` weights
+## each, so this works on ggml too, which `applied` outside a loss does not. A model made from them runs at the cost
+## of the model alone. An adapted weight that is not on the adapter's backend is an error.
+def merged(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map[String, Tensor.Tensor]]
+  out = weights
+  at = 0
+  while at < adapter.names.size
+    part = adapter.with(
+      names: adapter.names.drop(at).take(MERGED_AT_ONCE),
+      a: adapter.a.drop(at).take(MERGED_AT_ONCE),
+      b: adapter.b.drop(at).take(MERGED_AT_ONCE),
+    )
+
+    under = try adapted_of(weights, part)
+    sums = try Trace.eval_many(part.a + part.b, ->(ps: List[Tensor.Tensor]) { sums_of(under, part, ps) }, false)
+    for i in 0...part.names.size
+      out = out.put(part.names[i], sums[i])
+    end
+
+    at = at + MERGED_AT_ONCE
+  end
+
+  ok(out)
+end
+
 ## Writes `adapter` into the folder `dir` (made when it is not there) as PEFT does: `adapter_config.json` and
 ## `adapter_model.safetensors`, where the weight `x.weight` has `base_model.model.x.lora_A.weight` and
 ## `...lora_B.weight`. Each file gets its name when it is whole. Every adapted weight is written as a linear
@@ -176,9 +203,10 @@ end
 ## The adapter of the folder `dir`, written by PEFT or by `save`, on `backend` (as `F32`: a half-float adapter is
 ## widened). Its `names` are the weights it adapts, from the names of its tensors. It reads a LoRA adapter of linear
 ## layers alone, and an error names what is not computed here: another `peft_type`; DoRA, rsLoRA, aLoRA, QALoRA,
-## BD-LoRA or another variant (Arrow, KaSA, MonteCLoRA, VeLoRA); `fan_in_fan_out`; a trained bias;
-## `modules_to_save`, `target_parameters` or `trainable_token_indices`; `layer_replication`; a rank or alpha
-## pattern; `target_modules` as a regular expression; and the adapter of an `Embedding`. Which model the adapter is for (`base_model_name_or_path`) is not kept.
+## BD-LoRA or another variant (Arrow, KaSA, MonteCLoRA, VeLoRA); `fan_in_fan_out`; a trained bias; `modules_to_save`,
+## `target_parameters` or `trainable_token_indices`; `layer_replication`; a rank or alpha pattern; `target_modules` as
+## a regular expression; and the adapter of an `Embedding`. Which model the adapter is for (`base_model_name_or_path`)
+## is not kept.
 def open(dir: String, backend: Tensor.Backend) -> Result[Adapter]
   file = try Shards.within("#{dir}/#{CONFIG}", config("#{dir}/#{CONFIG}"))
   c = try Hub.open("#{dir}/#{WEIGHTS}")
@@ -203,6 +231,10 @@ def open(dir: String, backend: Tensor.Backend) -> Result[Adapter]
 end
 
 private
+
+## How many weights one graph of `merged` adds: a ggml graph answers at most 512 tensors, and fewer at once keep
+## fewer sums in memory before they are handed over.
+MERGED_AT_ONCE = 256
 
 CONFIG = "adapter_config.json"
 WEIGHTS = "adapter_model.safetensors"
@@ -329,6 +361,33 @@ def adapted_by(key: String) -> Result[String]
   end
 
   error("#{key} is not the lora_A or lora_B of a layer")
+end
+
+## The weights of `weights` that `adapter` adapts, each on the adapter's backend.
+def adapted_of(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map[String, Tensor.Tensor]]
+  out: Map[String, Tensor.Tensor] = {}
+  for i in 0...adapter.names.size
+    name = adapter.names[i]
+    w = try weights.get(name).to_result("the model has no weight #{name}")
+    if Tensor.backend(w) != Tensor.backend(adapter.a[i])
+      return error("#{name} is on #{Tensor.backend(w)} and its adapter on #{Tensor.backend(adapter.a[i])}")
+    end
+
+    out = out.put(name, w)
+  end
+
+  ok(out)
+end
+
+## The adapted weights of `applied`, in the order of `names`, with `ps` (every `A`, then every `B`) as the adapter.
+def sums_of(
+  weights: Map[String, Tensor.Tensor],
+  adapter: Adapter,
+  ps: List[Tensor.Tensor],
+) -> Result[List[Tensor.Tensor]]
+  count = adapter.names.size
+  with = try applied(weights, adapter.with(a: ps.take(count), b: ps.drop(count)))
+  ok(adapter.names.map { |name: String| with[name] })
 end
 
 ## The weights of `names` that `targets` take, sorted. Each target must take one.
