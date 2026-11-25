@@ -55,11 +55,11 @@ Add the package to the `agentica.toml` of your project. Give the repository, its
 
 ```toml
 [dependencies]
-tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.4.0", subdir = "tensor" }
+tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.5.0", subdir = "tensor" }
 ```
 
-The tag of a package is `<package>-<version>`, such as `nn-0.4.0`. The API is not stable yet, so expect changes between versions.
+The tag of a package is `<package>-<version>`, such as `nn-0.5.0`. The API is not stable yet, so expect changes between versions.
 
-A package that depends on another, such as `nn` on `tensor`, asks for the tag of the same release (`nn-0.4.0` asks for `tensor-0.4.0`). Declare the packages you import by the tags of one release and the tags meet, with no `override = true`.
+A package that depends on another, such as `nn` on `tensor`, asks for the tag of the same release (`nn-0.5.0` asks for `tensor-0.5.0`). Declare the packages you import by the tags of one release and the tags meet, with no `override = true`.
 
 Inside the repository, `tensor`, `nn`, `train`, `hub`, `asr`, `transformers` and `vision` are members of one workspace. They read each other from their folders. `whisper` is a project of its own.

@@ -2,7 +2,7 @@
 
 All packages are released together at one version, each on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the first one and covers everything shipped so far (milestones 0.1.0 and 0.2.0).
 
-## [Unreleased]
+## [0.5.0] - 2026-11-25
 
 - `tensor` has `conv2d` (stride, padding and groups), `max_pool2d` and `avg_pool2d` for `[N, C, H, W]` images (ml#83): on the reference, libtorch and ggml (a native kernel on the CPU and on Vulkan), with gradients on every backend. XLA has no lowering for them, as for `conv1d`. `nn` has `Conv2d`, `conv2d` and `global_avg_pool2d`.
 - The documentation site has a version selector: the pages of each release (`0.4.0`, `0.3.0`, `0.2.0`) and of `dev`.
@@ -16,6 +16,10 @@ All packages are released together at one version, each on its own tag, `<packag
 ### nn
 
 - `Nn.fold_batch_norm`: a convolution and the inference batch norm after it as one convolution.
+
+### hub
+
+- Writing a GGUF file refuses a `U8` tensor with an error: `U8` is the format of `Tensor.from_bytes`, not of a file, and only `F32`, `F16`, `BF16` and `Q8_0` are written.
 
 ### train
 
@@ -38,6 +42,14 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Vision.apply`: `Resize` (shorter side), `CenterCrop`, `RandomCrop` and `HorizontalFlip`, with a seed.
 - `Vision.normalize`: mean and std per channel, as tensor ops.
 - `Vision.folder` and `Vision.samples`: a folder per class becomes batches for the loader of `train`.
+
+### asr
+
+- No changes of its own: released at 0.5.0 with the others, on the same `tensor`, `nn` and `hub`.
+
+### whisper
+
+- No changes of its own: released at 0.5.0 with the others.
 
 ## [0.4.0] - 2026-11-25
 
