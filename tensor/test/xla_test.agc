@@ -60,7 +60,8 @@ def test_steps_that_close_old_tensors_keep_no_buffer_alive() -> Result[Void]
     end
   end
 
-  Test.eq(Xla.buffers(), first)
+  # The counter is the process's: a collection may free a tensor of another test meanwhile, never add one.
+  Test.assert(Xla.buffers() <= first, "#{Xla.buffers()} buffers are alive after the steps, #{first} after the first")
 end
 
 ## `Trace.close` frees the compiled program: a run afterwards is an error.
