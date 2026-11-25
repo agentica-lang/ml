@@ -201,7 +201,7 @@ end
 
 ## Qwen3.5
 
-`Qwen3_5.open(dir, backend, weights)` loads the text model of `Qwen/Qwen3.5-0.8B` from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory). `Qwen3_5.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache yet (generation and the tokenizer come next).
+Its tokenizer is `Bpe` and its chat template `Chat.apply("qwen3_5", ...)`, below. `Qwen3_5.open(dir, backend, weights)` loads the text model of `Qwen/Qwen3.5-0.8B` from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory). `Qwen3_5.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache yet (generation and the tokenizer come next).
 
 ```agentica
 import Qwen3_5 from "pkg/transformers/qwen3_5"
@@ -261,7 +261,7 @@ A GGUF file carries its tokenizer: `Bpe.open_gguf("Qwen3-0.6B-F16.gguf")` gives 
 
 ## Chat template
 
-`Chat.apply(model_type, messages, add_generation_prompt, enable_thinking)` makes the prompt text of a conversation for the instruct models of the Qwen family, as Hugging Face's `apply_chat_template` does without tools. `model_type` is the one of the model's `config.json` (`qwen2` or `qwen3`), `messages` is a list of `Chat.Message(role, content)` with the roles `system`, `user` and `assistant`, and the answer is text for the tokenizer (`<|im_start|>` and `<|im_end|>` are special tokens it knows). With `add_generation_prompt: true` (the default) it ends with the opening of the assistant's turn; `qwen2` adds the system turn "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." when the first message is not a system one, and `enable_thinking: false` (Qwen3 only) opens the assistant's turn with an empty think block, so the model answers without thinking. For `qwen3`, an assistant message `<think>reasoning</think>answer` is read as the template does: after the last user message the reasoning is kept in a think block, before it only the answer stays, and the leading newlines of the answer are dropped; for `qwen2` the text is written as it is. A `tool` role, an unknown role and no messages are errors. The text equals Hugging Face's on 27 conversations for the two templates (`test/chat_golden.py`).
+`Chat.apply(model_type, messages, add_generation_prompt, enable_thinking)` makes the prompt text of a conversation for the instruct models of the Qwen family, as Hugging Face's `apply_chat_template` does without tools. `model_type` is the one of the model's `config.json` (`qwen2`, `qwen3` or `qwen3_5`), `messages` is a list of `Chat.Message(role, content)` with the roles `system`, `user` and `assistant`, and the answer is text for the tokenizer (`<|im_start|>` and `<|im_end|>` are special tokens it knows). With `add_generation_prompt: true` (the default) it ends with the opening of the assistant's turn; `qwen2` adds the system turn "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." when the first message is not a system one, and `enable_thinking: false` (Qwen3 only) opens the assistant's turn with an empty think block, so the model answers without thinking. For `qwen3`, an assistant message `<think>reasoning</think>answer` is read as the template does: after the last user message the reasoning is kept in a think block, before it only the answer stays, and the leading newlines of the answer are dropped; for `qwen2` the text is written as it is. `qwen3_5` (text only) trims every message, wants the system message first and at least one user message, puts a think block (empty or not) in every assistant message after the last user message and none before it, and ends the prompt with `<think>\n` under `enable_thinking: true` or with the empty think block under `false`; Hugging Face's template reads an `enable_thinking` that is not given as `false`, where this takes `true` by default. A `tool` role, an unknown role and no messages are errors. The text equals Hugging Face's on 27 conversations for the two first templates (`test/chat_golden.py`) and 22 for `qwen3_5` (`test/chat35_golden.py`, 4 of them refused).
 
 ```agentica
 import Chat from "pkg/transformers/chat"
@@ -347,7 +347,7 @@ Hello, world!<|im_end|>
 
 ## Byte-level BPE
 
-`Bpe.open(path)` reads a Qwen tokenizer: NFC normalization, the Qwen split pattern, bytes mapped to the byte-level alphabet, and BPE merges. A file with another pattern is an error.
+`Bpe.open(path)` reads a Qwen tokenizer: NFC normalization, the Qwen split pattern (that of Qwen3 and Qwen2.5, or that of Qwen3.5, which counts the marks `\p{M}` as letters), bytes mapped to the byte-level alphabet, and BPE merges. A file with another pattern is an error. The tokenizer of `Qwen/Qwen3.5-0.8B` (248,320 tokens) gives Hugging Face's ids on 1,827 encode and decode cases.
 
 - `Bpe.parse(text)` reads the tokenizer from the text of a `tokenizer.json`, and `Bpe.open(path)` from its file.
 - `Bpe.encode(tok, text)` gives the ids. It adds no tokens; added tokens in the text (`<|im_start|>`) are one id each.

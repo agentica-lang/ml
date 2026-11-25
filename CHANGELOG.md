@@ -17,6 +17,7 @@ All packages are released together at one version, each on its own tag, `<packag
 ### transformers
 
 - `Qwen3_5`: the text model of `Qwen/Qwen3.5-0.8B` (a hybrid of Gated DeltaNet and gated attention layers) from its official safetensors, forward over whole sequences (ml#150).
+- `Bpe` reads the tokenizer of Qwen3.5 (its split counts marks as letters), and `Chat.apply("qwen3_5", ...)` makes its chat prompt (ml#150).
 
 ## [0.5.1] - 2026-11-25
 

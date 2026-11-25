@@ -132,7 +132,14 @@ families, with the system turn of Qwen2.5 by default, the empty think block of
 Qwen3 (`enable_thinking: false`, and before an assistant message that ends the
 conversation), the `</think>` split of an assistant message (Qwen3) and no
 tools (a `tool` role is an error). The golden is
-Hugging Face's own output (`test/chat_golden.py`). The `tokenizer.json` of
+Hugging Face's own output (`test/chat_golden.py`). `qwen3_5` follows the
+template of Qwen3.5 (`test/chat35_golden.py`, `fixtures/chat35_golden.json`):
+every message is stripped, the system message must come first, a conversation
+needs a user message (a `<tool_response>` one does not count), every assistant
+message after the last user message gets a think block, empty or not, and
+the generation prompt is `<think>\n` or, with `enable_thinking: false`, the
+empty block. Hugging Face reads a missing `enable_thinking` as false; `apply`
+keeps its default `true`. The `tokenizer.json` of
 Qwen2.5 writes a merge as `"a b"`, where Qwen3's writes `["a", "b"]`;
 `tokenizer/bpe.agc` reads both.
 
@@ -214,7 +221,7 @@ it.
 
 ## Tokenizers
 
-`tokenizer/wordpiece.agc` (BERT) and `tokenizer/bpe.agc` (Qwen) read a
+`tokenizer/wordpiece.agc` (BERT) and `tokenizer/bpe.agc` (Qwen, Qwen3.5) read a
 `tokenizer.json` and match Hugging Face `tokenizers`: the same ids from
 `encode` and the same text from `decode`. They read the file's own flags and
 refuse what they do not implement (another normalizer, pre-tokenizer,
@@ -229,6 +236,13 @@ truncation, a fixed-length padding and `pad_to_multiple_of` above 1 stay
 errors. The `pad_id` of the file's padding is kept (`tok.pad_id`) and never
 used by `encode`: a model pads a batch with its config's `pad_token_id`, and
 `tools/distilbert_check.agc` fails when the two differ.
+
+The split of Qwen3.5 is Qwen3's with `[\p{L}\p{M}]` where it has `\p{L}` and `\p{M}` excluded from the
+symbol class: `Bpe` reads either pattern (`PATTERN`, `PATTERN_MARKS`, the field
+`marks`) and anything else is an error. `\p{M}` is a table of its own
+(`Unicode.any_mark?`, `tools/unicode_tables.py`: Mn, Mc and Me), the nonspacing
+table of BERT's accent stripping stays. Qwen3.5 has 248,320 ids, 26 of them
+added tokens (`<|im_start|>` is 248045).
 
 `Bpe.open_gguf` reads the same tokenizer from a GGUF (`tokenizer.ggml.tokens`,
 `token_type` and `merges`, written by llama.cpp for `model` gpt2, `pre`
@@ -354,6 +368,14 @@ best classes with their `id2label` names.
   half, tied head) written as a safetensors file under the official names; the
   logits of every position of two rows match on the reference (1e-4) and on
   ggml CPU (1e-3), and the unsupported configs are errors.
+- `test/bpe_test.agc` on `fixtures/bpe_marks.json`, a tiny tokenizer with the
+  split of Qwen3.5 (`test/tokenizer_golden.py marks`, `tokenizers` 0.23.3):
+  the ids and text of `tokenizers` on the strings of the BPE test, 16 where a
+  mark decides the cut and 60 random ones. `tools/tokenizer_check.agc bpe` on the
+  `tokenizer.json` of `Qwen/Qwen3.5-0.8B` (manual, 300 random strings more):
+  1,827 cases agree.
+- `test/chat_test.agc` against `test/chat35_golden.py` (`transformers` 5.22.2):
+  22 conversations of the Qwen3.5 template, 4 of them refused by it.
 - `tools/qwen35_check.agc` against Hugging Face's `Qwen3_5ForCausalLM`
   (`test/qwen35_check_golden.py`, manual): `Qwen/Qwen3.5-0.8B` on five prompts
   of 5 to 50 tokens, the logits of the last position over the vocabulary and the

@@ -117,6 +117,8 @@ def main():
         lines("NUMBER", category("N")),
         "\n",
         lines("MARK_NONSPACING", category("Mn")),
+        "\n## All marks (Mn, Mc and Me): `\\p{M}`, which the split of Qwen3.5 counts with the letters.\n",
+        lines("MARK", category("M")),
         "\n",
         lines("PUNCTUATION", category("P")),
         "\n",
