@@ -8,6 +8,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### tensor
 
+- `tools/build-torch.sh` finds Debian's `libtorch-dev` (system headers and multiarch libraries) when no libtorch release folder is found.
 - `Backend.Xla(Device.Cpu)`: a traced function compiled and run by XLA on the CPU, through the PJRT plugin loaded at run time; `agentica tools/install_xla.agc` installs the plugin (Linux x86_64 and aarch64).
 - ggml: the CPU build uses llamafile's sgemm for the F32 matmul (`-DGGML_LLAMAFILE=ON` in `build-engine.sh`, so the cache entry is built once more): a training step of an MLP is 1.2 to 1.7 times faster on the CPU, and the prompt of Qwen3-0.6B 1.9 times.
 - ggml: the CPU backend runs on one thread per physical core instead of one per hardware thread (4 instead of 8 on a 4-core machine with SMT). The median step is about the same at batch 1024 and 4096 (3 to 9 percent less at 1024) and up to 20 percent slower in some small-batch `fit` cells (Adam, batch 64: 9.1 ms against 7.4 ms); the slowest step of a run is shorter (62 ms at most, against up to 123 ms). `TENSOR_THREADS` sets the number (up to 512, ggml's limit).
@@ -23,6 +24,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### transformers
 
 - `Qwen3.embeddings` and `DistilBert.embeddings`: the names of a model's embedding tables, for `Lora.save`; a PEFT LoRA adapter of a Qwen3 or a DistilBERT loads with `Lora.open` and runs merged.
+- `tools/distilbert_stsb.agc` takes an adapter folder as its last argument and fine-tunes with LoRA (`benchmarks/stsb/run.sh ours-lora`, against PEFT): 1.35 times PEFT's time per step, the same loss to 1.4e-7, the same memory (`benchmarks/README.md`). The speed goal of ml#137 (equal to or better than PyTorch) is not met: ml#236.
 
 ## [0.3.0] - 2026-11-25
 

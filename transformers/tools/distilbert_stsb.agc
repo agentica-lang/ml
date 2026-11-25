@@ -4,7 +4,7 @@
 ##
 ## ```sh
 ## agentica --max-steps 1000000000000 tools/distilbert_stsb.agc \
-##   MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY]]]]
+##   MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY [ADAPTER_DIR]]]]]
 ## ```
 ##
 ## The rules, the same on both sides: the first PAIRS pairs of TRAIN_JSONL (1000) in order, BATCH pairs a step (16),
@@ -12,6 +12,11 @@
 ## one batch of `2 BATCH` rows, padded to the longest of them rounded up to a multiple of PAD_TO (1: the longest);
 ## mean pooling, and the cosine loss of the pair against its score; AdamW (lr 2e-5, betas 0.9 and 0.999, eps 1e-8,
 ## weight decay WEIGHT_DECAY (0.01), none on a bias or a layer-norm weight), no warmup, no clipping, no dropout; `F32`.
+##
+## With ADAPTER_DIR the run is a LoRA fine-tune (ml#137): the model stays frozen and an adapter on `q_lin` and
+## `v_lin` of every layer is trained (r 8, alpha 16, no dropout, every tensor decayed, lr 2e-4). The new adapter is
+## saved into ADAPTER_DIR before the first step, in PEFT's files, and the peer starts from that folder, so both sides
+## train the same tensors. Spearman after the training is of the model with the adapter merged in.
 ##
 ## It prints JSON lines: `checks` (how many weights decay, a SHA-256 of their names and one of every token id, which
 ## `summary.py` compares with the peer's), `spearman` (of the cosine of the normalized embeddings against the scores
@@ -22,6 +27,7 @@
 import Data from "pkg/train/data"
 import DistilBert from "../distilbert"
 import Lift from "../lift"
+import Lora from "pkg/train/lora"
 import Optim from "pkg/train/optim"
 import Params from "pkg/train/params"
 import Sentence from "../sentence"
@@ -31,6 +37,11 @@ import WordPiece from "../tokenizer/wordpiece"
 
 MAX_LENGTH = 128
 LR = 0.00002
+
+## The LoRA run: the learning rate, and the adapter of PEFT's usual start.
+LORA_LR = 0.0002
+LORA = Lora.Config(targets: ["q_lin", "v_lin"], r: 8, alpha: 16.0)
+LORA_SEED = 1
 
 ## How many sentences an inference batch of the validation has.
 EMBED_BATCH = 32
@@ -72,8 +83,20 @@ struct Step
   new_shape: Bool
 end
 
+## What a run trains: the tensors `fit` gets, which of them decay, their names (as the peer's, for the checks), the
+## learning rate, every weight of the model inside a loss, and the model after the training.
+struct Trained
+  params: List[Tensor.Tensor]
+  decay: List[Bool]
+  names: List[String]
+  lr: Float
+  weights: Fn[List[Tensor.Tensor], Result[Map[String, Tensor.Tensor]]]
+  model: Fn[List[Tensor.Tensor], Result[DistilBert.DistilBert]]
+end
+
 struct Setup
   model: DistilBert.DistilBert
+  trained: Trained
   train: List[Pair]
   validation: List[Pair]
   batch: Int
@@ -94,7 +117,7 @@ private
 
 def run(args: List[String]) -> Result[Void]
   if args.size < 3
-    return error("usage: MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY]]]]")
+    return error("usage: MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY [ADAPTER_DIR]]]]]")
   end
 
   pairs = try number(args, 3, 1000)
@@ -114,8 +137,16 @@ def run(args: List[String]) -> Result[Void]
 
   train = (try tokenized(tok, args[1])).take(pairs)
   return error("#{args[1]} has #{train.size} pairs, fewer than #{pairs}") if train.size < pairs
+  chosen = case args.size > 7
+    true -> adapted(m, args[7])
+    _ -> whole(m)
+  end
+
+  trained = try chosen
+
   s = Setup(
     model: m,
+    trained: trained,
     train: train,
     validation: try tokenized(tok, args[2]),
     batch: batch,
@@ -125,9 +156,50 @@ def run(args: List[String]) -> Result[Void]
 
   puts(JSON.encode(checks(s)))
   puts(JSON.encode(Correlation(kind: "spearman", when: "before", value: try spearman(m, s.validation))))
-  trained = try fit(s)
-  puts(JSON.encode(Correlation(kind: "spearman", when: "after", value: try spearman(trained, s.validation))))
+  after = try fit(s)
+  puts(JSON.encode(Correlation(kind: "spearman", when: "after", value: try spearman(after, s.validation))))
   ok()
+end
+
+## The whole model trained: every weight, the biases and the layer-norm weights without decay.
+def whole(m: DistilBert.DistilBert) -> Result[Trained]
+  split = try Params.split(DistilBert.weights(m), ->(_name: String) { true })
+  decayed = split.names.select { |name: String| decays?(name) }
+  ok(
+    Trained(
+      params: split.trainable,
+      decay: split.names.map { |name: String| decays?(name) },
+      names: decayed.map { |name: String| name.slice(m.prefix.length, name.length - m.prefix.length) },
+      lr: LR,
+      weights: ->(ps: List[Tensor.Tensor]) { Params.join(split, ps) },
+      model: ->(ps: List[Tensor.Tensor]) { DistilBert.with_weights(m, try Params.join(split, ps)) },
+    ),
+  )
+end
+
+## A new LoRA adapter trained, the model frozen; the adapter is saved into `dir` as it starts.
+def adapted(m: DistilBert.DistilBert, dir: String) -> Result[Trained]
+  weights = DistilBert.weights(m)
+  adapter = try Lora.init(weights, LORA, LORA_SEED, Tensor.backend(m.words.table))
+  try Lora.save(dir, adapter, DistilBert.embeddings(m))
+  params = try Lora.params(adapter)
+  names = adapter.names.flat_map do |name: String|
+    layer = name.slice(m.prefix.length, name.length - m.prefix.length - ".weight".length)
+    ["#{layer}.lora_A.weight", "#{layer}.lora_B.weight"]
+  end
+
+  ok(
+    Trained(
+      params: params,
+      decay: params.map { |_p: Tensor.Tensor| true },
+      names: names,
+      lr: LORA_LR,
+      weights: ->(ps: List[Tensor.Tensor]) { Lora.applied(weights, try Lora.with_params(adapter, ps)) },
+      model: ->(ps: List[Tensor.Tensor]) {
+        DistilBert.with_weights(m, try Lora.merged(weights, try Lora.with_params(adapter, ps)))
+      },
+    ),
+  )
 end
 
 def number(args: List[String], i: Int, default: Int) -> Result[Int]
@@ -152,11 +224,11 @@ def tokenized(tok: WordPiece.WordPiece, path: String) -> Result[List[Pair]]
   ok(out)
 end
 
-## What both sides must agree on before a loss means anything: the weights that decay (their names without the
-## prefix of the file, sorted) and every token id, the training pairs first.
+## What both sides must agree on before a loss means anything: the tensors that decay (their names without the
+## prefix of the file, sorted; for an adapter, PEFT's names of `A` and `B`) and every token id, the training pairs
+## first.
 def checks(s: Setup) -> Checks
-  names = DistilBert.weights(s.model).keys.select { |name: String| decays?(name) }
-  bare = names.map { |name: String| name.slice(s.model.prefix.length, name.length - s.model.prefix.length) }.sort
+  bare = s.trained.names.sort
   ids = (s.train + s.validation).map { |p: Pair| "#{text(p.left)}\n#{text(p.right)}\n" }
   Checks(
     kind: "checks",
@@ -222,13 +294,9 @@ end
 
 ## The cosine loss of a batch: the mask is `ids != pad`, both sides go through the model as one batch, and each
 ## pair's two mean embeddings are compared with its score.
-def loss(
-  m: DistilBert.DistilBert,
-  split: Params.Split,
-  ps: List[Tensor.Tensor],
-  b: Data.Batch,
-) -> Result[Tensor.Tensor]
-  model = try DistilBert.with_weights(m, try Params.join(split, ps))
+def loss(s: Setup, ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
+  m = s.model
+  model = try DistilBert.with_weights(m, try s.trained.weights.call(ps))
   n = Tensor.shape(b.inputs)[0]
   seq = Tensor.shape(b.inputs)[2]
   width = m.config.dim
@@ -247,18 +315,16 @@ end
 ## "epoch" of one batch for `fit_batches`, so that its history is the loss of every step and `on_epoch` marks the
 ## end of each one.
 def fit(s: Setup) -> Result[DistilBert.DistilBert]
-  split = try Params.split(DistilBert.weights(s.model), ->(_name: String) { true })
-  decay = split.names.map { |name: String| decays?(name) }
   steps = (s.train.size + s.batch - 1) / s.batch
   ends: Channel[Int] = Channel.new(steps)
   builds: Channel[Float] = Channel.new(steps)
   started = Time.monotonic_ns()
   fit = try Train.fit_batches(
-    ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(s.model, split, ps, b) },
-    split.trainable,
+    ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(s, ps, b) },
+    s.trained.params,
     ->(e: Int, _i: Int) { timed_batch(s, e - 1, builds) },
     1,
-    Optim.Optimizer.AdamW(Optim.AdamW(lr: LR, weight_decay: s.weight_decay, decay: decay)),
+    Optim.Optimizer.AdamW(Optim.AdamW(lr: s.trained.lr, weight_decay: s.weight_decay, decay: s.trained.decay)),
     steps,
     some(->(_e: Train.Epoch) { _ = ends.send(Time.monotonic_ns(), 0) }),
   )
@@ -285,7 +351,7 @@ def fit(s: Setup) -> Result[DistilBert.DistilBert]
     last = done
   end
 
-  DistilBert.with_weights(s.model, try Params.join(split, fit.params))
+  s.trained.model.call(fit.params)
 end
 
 ## Spearman's correlation of the cosine of the two sentences of each pair with its score.

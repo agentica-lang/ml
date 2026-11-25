@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Compares two runs of the STS-B fine-tune (the JSON lines of `distilbert_stsb.agc` and `distilbert_stsb.py`):
 
-    python3 -I summary.py OURS.jsonl PEER.jsonl [TOLERANCE]
+    python3 -I summary.py OURS.jsonl PEER.jsonl TOLERANCE
 
-It prints the steps and the median ms per step of each side (the steps that are the first of their shape left out, on
-both sides), Spearman before and after, and the largest gap between the two loss curves. It exits 1, since a fast
-wrong answer does not count, when:
+It prints the steps, the median ms per step of each side (the steps that are the first of their shape left out, on
+both sides), the peak resident memory of each (the `memory` line `run.sh` adds), Spearman before and after, and the
+largest gap between the two loss curves. It exits 1, since a fast wrong answer does not count, when:
 
 - the two sides did not run with the same thread count, the same decayed weights or the same token ids (our thread
   count is the online CPUs, which `run.sh` gives ggml with `TENSOR_THREADS` and writes: by construction, not measured);
 - they differ in their steps or shapes;
-- a loss is not finite, or the two losses of a step differ by more than TOLERANCE (1.5e-7 fits the run of the README,
-  which says how it was set; another run needs its own);
+- a loss is not finite, or the two losses of a step differ by more than TOLERANCE (the argument: `run.sh` holds the one of each run and the README says how it
+  was set; a different run needs its own);
 - one of the four Spearman values is missing or not finite, or the two sides differ by more than 1e-4 (twenty swaps
   of two neighbours in the order of the 1500 cosines: see the README).
 
@@ -23,13 +23,12 @@ import math
 import statistics
 import sys
 
-TOLERANCE = 1.5e-7
 SPEARMAN_TOLERANCE = 1e-4
 
 
 def read(path):
     """The lines of a run by kind: the steps, Spearman by `when`, and the `checks` and `threads` lines."""
-    run = {"steps": [], "spearman": {}, "checks": None, "threads": None}
+    run = {"steps": [], "spearman": {}, "checks": None, "threads": None, "peak_kb": None}
     with open(path, encoding="utf-8") as f:
         for line in f:
             if not line.startswith("{"):
@@ -43,6 +42,8 @@ def read(path):
                 run["checks"] = {k: row[k] for k in ("decayed", "decayed_names", "token_ids")}
             elif row["kind"] == "threads":
                 run["threads"] = row["value"]
+            elif row["kind"] == "memory":
+                run["peak_kb"] = row["peak_kb"]
     return run
 
 
@@ -93,6 +94,9 @@ def compare(ours, peer, tolerance):
         f"last {shown(a[-1]['loss'])} / {shown(b[-1]['loss'])} (ours / PyTorch)",
         f"largest loss gap {gaps[worst]:.2e} at step {a[worst]['step']} (tolerance {tolerance:.1e})",
     ]
+    if ours["peak_kb"] and peer["peak_kb"]:
+        gb = [run["peak_kb"] * 1024 / 1e9 for run in (ours, peer)]  # GNU time counts in KiB
+        lines.append(f"peak memory: ours {gb[0]:.2f} GB, PyTorch {gb[1]:.2f} GB")
     same = all(gap <= tolerance for gap in gaps)
     for when in ("before", "after"):
         x, y = ours["spearman"].get(when), peer["spearman"].get(when)
@@ -106,7 +110,9 @@ def compare(ours, peer, tolerance):
 
 
 def main(argv):
-    tolerance = float(argv[3]) if len(argv) > 3 else TOLERANCE
+    if len(argv) != 4:
+        raise SystemExit(__doc__.split('\n')[2].strip())
+    tolerance = float(argv[3])
     lines, same = compare(read(argv[1]), read(argv[2]), tolerance)
     print("\n".join(lines))
     print("verdict: the two runs agree" if same else "verdict: the runs DIFFER")

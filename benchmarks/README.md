@@ -302,7 +302,7 @@ One epoch of a sentence-transformers DistilBERT (`sentence-transformers/msmarco-
 | | |
 |---|---|
 | Machine | the one above (Ryzen 5 3550H, 8 threads, 12 GB), the machine quiet: `run.sh` refuses to start a run at a load average above 1.0 |
-| Ours | agentica-lang/ml `8521904` plus this PR, Agentica 0.37.0, ggml `417a024b4fb6` (its CPU build has llamafile's sgemm off) |
+| Ours | agentica-lang/ml `c70c4c3` plus this PR, Agentica 0.37.0, ggml `417a024b4fb6` (its CPU build has llamafile's sgemm on, since ml#213) |
 | PyTorch | 2.6.0+cpu with transformers 4.57.6 and tokenizers 0.22.1, Python 3.13.5; autograd and `torch.optim.AdamW`, eager attention, no `torch.compile` |
 | Threads | 8 on both sides: ggml used every online CPU (since ml#222 `run.sh` sets `TENSOR_THREADS` to get the same), and the peer sets `torch.set_num_threads` to the CPUs of the process (`OMP_NUM_THREADS=8`) |
 | Model | revision `c598d92e340e`, `model.safetensors` (never the pickle), `F32` |
@@ -311,22 +311,39 @@ One epoch of a sentence-transformers DistilBERT (`sentence-transformers/msmarco-
 
 These are not the defaults of sentence-transformers' trainer, which shuffles, warms the learning rate up and clips the gradient: the rules are the smallest set both sides can follow exactly, so that the two loss curves can be compared number by number.
 
-| `PAD_TO` | batch shapes | ours, ms per step | PyTorch, ms per step | ours / PyTorch | the 63 steps, ours | the 63 steps, PyTorch | largest loss gap |
-|---|---|---|---|---|---|---|---|
-| 1 (the longest sentence) | 14 | 3032 | 1353 | 2.24 | 207 s | 90 s | 6.0e-8 |
-| 8 | 4 | 3365 | 1501 | 2.24 | 232 s | 104 s | 5.0e-8 |
+| `PAD_TO` | batch shapes | ours, ms per step | PyTorch, ms per step | ours / PyTorch | the 63 steps, ours | the 63 steps, PyTorch | largest loss gap | peak memory, ours / PyTorch |
+|---|---|---|---|---|---|---|---|---|
+| 1 (the longest sentence) | 14 | 2035 | 1363 | 1.49 | 177 s | 91 s | 1.9e-7 | 2.73 GB / 1.94 GB |
 
-Spearman of the cosine against the score on `validation` is 0.8150 before and 0.8340 after, the same on both sides in both runs. The loss goes from 0.037646 (step 1) to 0.029733 (step 63) on both sides; over the run it moves between 0.007 and 0.065 with the batch.
+Spearman of the cosine against the score on `validation` is 0.8150 before and 0.8340 after, the same on both sides. The loss goes from 0.037646 (step 1) to 0.029733 (step 63) on both sides; over the run it moves between 0.007 and 0.065 with the batch.
 
-We are 2.24 times slower than PyTorch, at both paddings. These numbers predate ml#213: llamafile's sgemm is on in ggml's CPU build now, and the thread default changed in ml#222 (`run.sh` sets `TENSOR_THREADS`), so a new run will differ. The first step of a shape costs about 0.9 s more than a warm one on our side (median 3898 ms against 3032 at `PAD_TO=1`: the trace and the compile), and PyTorch's is slower too (1585 ms against 1353). Padding to a multiple of 8 saves ten compiles and still loses on both sides: the longer rows cost more than the compiles. The time follows the length: 2793 ms at 12 tokens and 3494 ms at 17 on our side, 1189 ms and 1538 ms in PyTorch.
+We are 1.49 times slower than PyTorch (it was 2.24 times in the first run of this benchmark, ml#182, before ml#213 turned llamafile's sgemm on in ggml's CPU build and ml#222 set the threads). These full-model rows were run again in the same session as the LoRA rows below, on the same engine. The first step of a shape costs about 0.45 s more than a warm one on our side (median 2484 ms against 2035: the trace and the compile), and PyTorch's is slower too (1611 ms against 1363). Only `PAD_TO=1` was run again: the earlier `PAD_TO=8` row lost on both sides (the longer rows cost more than the ten compiles it saved) and is not repeated.
 
-Memory, the peak resident size of the process (GNU time): 3.55 GB for our whole run (2.74 GB for one step on the longest batch alone, 32 rows of 28 tokens), 1.90 GB for PyTorch.
+Memory is the peak resident size of the whole process (GNU time, the `memory` line of `run.sh`).
 
-Correctness comes first: `summary.py` exits 1 when the two runs did not use the same thread count, the same decayed weights (their count and a SHA-256 of their names) or the same token ids (a SHA-256 of all of them), when they do not have the same steps and shapes, when a loss is not finite or the two losses of a step differ by more than 1.5e-7, or when a Spearman value is missing or differs by more than 1e-4. Our thread count is not measured: ggml took the online CPUs (`TENSOR_THREADS`, which `run.sh` sets, gives the same since ml#222; `tensor/native/ggml.c`) and reports no count, so `run.sh` writes that number for our side and refuses a process kept to fewer CPUs.
+Correctness comes first: `summary.py` exits 1 when the two runs did not use the same thread count, the same decayed weights (their count and a SHA-256 of their names) or the same token ids (a SHA-256 of all of them), when they do not have the same steps and shapes, when a loss is not finite or the two losses of a step differ by more than 2.4e-7 (3e-7 for the LoRA runs), or when a Spearman value is missing or differs by more than 1e-4. Our thread count is not measured: ggml took the online CPUs (`TENSOR_THREADS`, which `run.sh` sets, gives the same since ml#222; `tensor/native/ggml.c`) and reports no count, so `run.sh` writes that number for our side and refuses a process kept to fewer CPUs.
 
 The 1e-4 for Spearman is room for rounding, since the two sides do not add in the same order (our cosine is a float64 dot product on the host, PyTorch's a float32 one) and two near-equal cosines can change places. With n = 1500 pairs, one swap of two neighbours in the order moves rho by 12 d / (n (n² - 1)), d being the gap of their ranks in the other list: about 1.8e-6 for a typical d of 500 and at most 5.3e-6. So 1e-4 is twenty swaps at the worst case, and far below a real difference: the training itself moves rho by 0.019.
 
-The 1.5e-7 is a guard for this run, not a proof. It comes from three measurements on this machine: PyTorch against itself at 8 and at 4 threads differs by up to 2.4e-8, ours against PyTorch by up to 6.0e-8, and PyTorch without the weight decay differs from PyTorch by 2.8e-7. So it is 2.5 times the gap of a right run and half the gap of the smallest mistake we tried: at lr 2e-5 a weight decay of 0.01 moves the weights very little in 63 steps. It is tied to these rules and this checkpoint, and a different run needs its own. The check with room is `run.sh smoke`: four made-up pairs (one of two 221-word sentences, which the limit of 128 tokens cuts) with a weight decay of 1, where the two sides agree to 3.7e-9 and a peer without the decay is 2.4e-6 away, which the smoke run requires to fail.
+The 2.4e-7 is a guard for this run, not a proof, and it has less room than it had. In the first run it was 1.5e-7: PyTorch against itself at 8 and at 4 threads differed by up to 2.4e-8, ours against PyTorch by 6.0e-8, and PyTorch without the weight decay by 2.8e-7. With llamafile's sgemm on, our sums run in another order and a right run is 1.94e-7 away, so the guard moved to 2.4e-7: 1.24 times the gap of a right run and 0.72 times that of a PyTorch without the weight decay (3.35e-7 against this run of ours; at lr 2e-5 a decay of 0.01 moves the weights very little in 63 steps). Both margins are thin, and the loss and the Spearman agree to seven digits either way. The guard was set from these single runs (one run of each, no repeats), so it cannot prove the decay rule: the real protection is the hash of the decayed names, which `summary.py` compares, and `run.sh smoke`. It is tied to these rules, this checkpoint and this engine, and a different run needs its own. The check with room is `run.sh smoke`: four made-up pairs (one of two 221-word sentences, which the limit of 128 tokens cuts) with a weight decay of 1, where the two sides agree to 1.9e-9 and a peer without the decay is 2.4e-6 away, which the smoke run requires to fail. The LoRA smoke run (two steps, the same decay of 1) agrees to 5.2e-8, but a LoRA peer without the decay is 3e-8 away there, inside the tolerance, so the smoke run does not require it to fail; for the LoRA run the check is the full-size one above (1.1e-6) and the hash of the decayed names.
+
+### LoRA fine-tune (ml#137), ours against PEFT
+
+The same run with a LoRA adapter instead of the full model: the model is frozen and an adapter on `q_lin` and `v_lin` of the 6 layers (12 weights, so 24 trained tensors, r 8, alpha 16, no dropout) is trained, with AdamW at lr 2e-4 (the usual 10 times the full rate), a weight decay of 0.01 on every adapter tensor, and the rest of the rules above. `run.sh ours-lora` makes the adapter with `Lora.init` (PEFT's start: `A` uniform, `B` zero) and saves it in PEFT's files (`Lora.save`); `run.sh peer-lora` loads that folder with `PeftModel.from_pretrained(is_trainable=True)` and trains it, so both sides start from the same tensors. After the training our model has the adapter merged in (`Lora.merged`) and PEFT's runs with it in the forward; the Spearman is the same.
+
+| | ours | PEFT (PyTorch) | ours / PEFT |
+|---|---|---|---|
+| ms per step, `PAD_TO=1` | 1022 | 758 | 1.35 |
+| the 63 steps | 70 s | 51 s | 1.38 |
+| peak memory | 0.96 GB | 0.94 GB | 1.02 |
+| largest loss gap | 1.4e-7 | | |
+| Spearman before / after | 0.8150 / 0.8326 | 0.8150 / 0.8326 | |
+
+The loss goes from 0.037646 to 0.025698 on both sides. Against the full fine-tune above, on the same engine and in the same session: our step is 2.0 times shorter (1022 ms against 2035) and PyTorch's 1.8 times (758 ms against 1363); our peak memory is 2.8 times smaller (0.96 GB against 2.73), PyTorch's 2.1 times (0.94 GB against 1.94). The adapter reaches 0.8326 Spearman against 0.8340 for the full model in 63 steps.
+
+The speed goal of ml#137 (from ml#50: training equal to or better than PyTorch) is not met: we are 1.35 times slower than PEFT on ggml CPU, and the work to close it is ml#236 (LoRA on XLA, and on the activations). The likely cost is how the adapter is trained here: in the training forward `Lora.applied` builds `W + (alpha / r) · B A` for each of the 12 weights, so the model's own forward runs on a merged weight, and the backward computes a gradient of the full `[out, in]` size for each merged weight before it gives `A` and `B` theirs. PEFT adds `(alpha / r) · (x Aᵀ) Bᵀ` to the output instead, which never forms a full-size gradient. We did not measure this split. Applying the adapter on the activations is a change in the model's forward and is left for a follow-up. The CPU training path ahead is XLA (ml#228), not more tuning of ggml, which is for inference and Vulkan. The memory is the same on both sides.
+
+The check of this run is the same as above, with a tolerance of 3e-7: a right run is 1.4e-7 away (the 4-pair smoke run, 5.2e-8) and a PEFT run without the weight decay is 1.1e-6 away, which `summary.py` reports as DIFFER. The runs: PEFT 0.21.2 with accelerate 1.15.0 and psutil 7.2.2 (pinned by `run.sh setup` into the shared `venv-torch`, which an older venv needs run again), and the load average at the start of the four runs was 0.80 (`ours-lora`), 0.71 (`peer-lora`), 0.69 (`ours`) and 0.77 (`peer`). It is one run per row, with about 10% of spread between runs, and ours ran first in each pair. The caveats: one epoch of 1000 pairs, no shuffle or warmup, no dropout (PEFT's `lora_dropout` is 0 here and ml#209 tracks dropout), the adapter starts from ours, and the learning rate of 2e-4 is a choice, not tuned.
 
 ## BERT (ml#78), ours against llama.cpp
 
@@ -488,15 +505,18 @@ python3 -I benchmarks/training/table.py results.jsonl
 python3 -I benchmarks/training/table_test.py           # the loss-curve verdict of table.py
 ```
 
-The STS-B fine-tune of ml#182 needs the PyTorch venv, `curl` and the ggml engine. The two runs take about 10 minutes together; run them one after the other with the machine quiet, and wait about 3 minutes between them: a run leaves the load average above the 1.0 at which `run.sh` refuses to start. The venv is the `venv-torch` of the training benchmarks, so `setup` changes it for both.
+The STS-B fine-tune of ml#182 needs the PyTorch venv, `curl` and the ggml engine. The two runs take about 10 minutes together (the LoRA pair about 6); run them one after the other with the machine quiet, and wait about 3 minutes between them: a run leaves the load average above the 1.0 at which `run.sh` refuses to start. The venv is the `venv-torch` of the training benchmarks, so `setup` changes it for both.
 
 ```sh
 sh benchmarks/stsb/run.sh setup                        # torch, transformers and pyarrow at pinned versions
 sh benchmarks/stsb/run.sh fetch                        # the checkpoint and STS-B, at pinned revisions, sha256 checked
-sh benchmarks/stsb/run.sh smoke                        # both sides on four pairs agree; without the decay they do not
+sh benchmarks/stsb/run.sh smoke                        # both sides on four pairs agree, LoRA too; without the decay they do not
 sh benchmarks/stsb/run.sh ours ours.jsonl              # PAD_TO=8 for the other row
 sh benchmarks/stsb/run.sh peer peer.jsonl
-python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl
+python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl 2.4e-7   # the tolerance of the full pair; `run.sh` holds both
+sh benchmarks/stsb/run.sh ours-lora ours-lora.jsonl    # run it before peer-lora: it writes the adapter the peer loads
+sh benchmarks/stsb/run.sh peer-lora peer-lora.jsonl
+python3 -I benchmarks/stsb/summary.py ours-lora.jsonl peer-lora.jsonl 3e-7   # and of the LoRA pair
 python3 -I benchmarks/stsb/summary_test.py             # the verdict of summary.py
 ```
 
