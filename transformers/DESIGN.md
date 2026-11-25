@@ -4,7 +4,7 @@ BERT, DistilBERT, Qwen3, Qwen2.5, ResNet, ViT and CLIP, from Hugging Face checkp
 from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
 with a KV cache (greedy or sampled), the tokenizers, and the weights by name
 for a fine-tune with `train/`. Qwen3.5 (text only) has its forward, its
-tokenizer, its chat template and generation; the 2B model follows (ml#150).
+tokenizer, its chat template and generation (ml#150).
 
 ## Generation
 
@@ -14,7 +14,11 @@ compiled steps in a one-slot channel (as `Asr.Model.plans`), and
 `Generate.generate(g, ids, max_new, stop, sampling)` decodes greedily, or by
 `sample.agc` (below); `start`, then `step` (the id with the largest logit) or
 `step_logits` per call, then `finish`, are the same by hand. `Generate.close(g)` ends the compiled steps, before
-`Qwen3.close_model`. Batch of one, one task at a time.
+`Qwen3.close_model`. Batch of one, one task at a time. `Generate.open(m, usable = 0)`
+is how many ids a step may answer (below, "The ids the tokenizer cannot decode"):
+the embedding of Qwen3 has 151,936 rows and its tokenizer 151,669 tokens, so a
+caller with a tokenizer opens with `tok.pieces.size` and the sampler never gives
+an id that `Bpe.decode` rejects. The default 0 is no mask, as in Hugging Face.
 
 - The cache of a layer is `[1, kv_heads, rows, head_dim]`: the keys already
   normalized and rotated, so a step never rotates the past. Rows are padded
@@ -129,10 +133,20 @@ cache; generation is `generate_qwen35.agc` (below).
 ### Qwen3.5 generation
 
 `generate_qwen35.agc` is `generate.agc` with a hybrid
-cache; the shared parts (the compiled plans, the head modes, the pick in the
-graph, the inputs) are in `stepping.agc`. `open(m, usable = 0)`, `step`,
-`step_logits`, `step_top`, `generate`, `finish`, `close` and `compiles` are the
-ones of `Generate`.
+cache. What does not depend on the model is in `stepping.agc`, which a model
+that keeps a cache (the next one is a mixture of experts) uses the same way: it
+writes its `Generator`, its `Cache`, its `stepped` (the graph of a step, with
+`Stepping.cached`, `widened` and `masked`) and its `step`, `step_logits` and
+`step_top`, and gives `Stepping.generate` a `Stepping.Decoder` (`decoder(g)` in
+each file: `usable`, `limit`, `empty`, and `pick`, `top` and `finish` as
+closures over its generator). `Stepping.generate` is the loop of `generate`
+(greedy or sampled, stop ids, the checks of `max_new` and the positions). The
+rest is `Plans` with `reaches` and `planned` (the compiled steps by shape),
+`Head` with `picked`, `top_candidates`, `chosen` and `ranked` (what a graph
+answers and how it is read), `inputs`, `check_ids`, `in_place?` and
+`usable_ids`. `open(m, usable = 0)`, `step`, `step_logits`, `step_top`,
+`generate`, `finish`, `close` and `compiles` are the ones of `Generate`, and so
+are the records `Stepping.Picked` and `Stepping.Candidates`.
 
 - A full-attention layer keeps `[1, kv_heads, rows, head_dim]` keys and values
   as Qwen3's layers do (`F16` on ggml), padded to the capacity, written in place
@@ -149,8 +163,9 @@ ones of `Generate`.
   the state is exact in every precision.
 - **The ids the tokenizer cannot decode.** The embedding of Qwen3.5 has 248,320
   rows and the tokenizer 248,070 tokens; the 250 rows after them have no text.
-  Hugging Face and `Generate` (Qwen3) answer them when their logit is the
-  largest or sampled. Here `Generator.usable` (`open(m, usable)`) is how many
+  Hugging Face answers them when their logit is the largest or sampled. Here
+  `Generator.usable` (`open(m, usable)`, the same in `Generate` of Qwen3, by
+  `Stepping.masked`) is how many
   ids a step may answer: the logits of the others get `Nn.MASKED` in the graph,
   `step_top` and the sampler's window stop at `usable`, and `step`, `generate`
   never return one. The default 0 is no mask, so the ids are Hugging Face's

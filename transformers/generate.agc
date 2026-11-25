@@ -40,6 +40,11 @@ import Stepping from "stepping"
 struct Generator
   model: Qwen3.Qwen3
   plans: Channel[Stepping.Plans]
+  ## How many ids a step may answer: the ids from `usable` on get a logit of `Nn.MASKED`. The embedding of a model can
+  ## have more rows than its tokenizer has tokens (Qwen3: 151,936 and 151,669); with the tokenizer's count here
+  ## (`tok.pieces.size`) the sampler cannot give an id that `Bpe.decode` rejects. `vocab_size` (the default of `open`)
+  ## is no mask, as in Hugging Face.
+  usable: Int
   ## Every step reads the whole capacity of the cache, not only the rows in use: `false` from `open`. The tests set it
   ## to have the logits of the other way of reading the same cache.
   whole: Bool
@@ -55,38 +60,19 @@ struct Cache
   length: Int
 end
 
-## `step`: the id with the largest logit after the last token fed (the first on a
-## tie), and the cache.
-struct Picked
-  id: Int
-  cache: Cache
-end
-
-## `generate`'s choice: the id, the cache after it and the state of the draws.
-struct Drawn
-  id: Int
-  cache: Cache
-  state: Int
-end
-
-## `step_top`: the ids of the largest logits and the logits, largest first, and the cache.
-struct Candidates
-  ids: List[Int]
-  logits: List[Float]
-  cache: Cache
-end
-
 ## `step_logits`: the logits after the last token fed, and the cache.
 struct Scored
   logits: List[Float]
   cache: Cache
 end
 
-## The generator of `m`.
-def open(m: Qwen3.Qwen3) -> Result[Generator]
+## The generator of `m`. `usable` is how many ids it may answer (see `Generator.usable`); the whole vocabulary when it
+## is 0.
+def open(m: Qwen3.Qwen3, usable: Int = 0) -> Result[Generator]
+  ids = try Stepping.usable_ids(usable, m.config.vocab_size)
   cell: Channel[Stepping.Plans] = Channel.new(1)
   try cell.send(Stepping.Plans(graphs: {}, compiles: 0), 1000)
-  ok(Generator(model: m, plans: cell, whole: false))
+  ok(Generator(model: m, plans: cell, usable: ids, whole: false))
 end
 
 ## How many steps `g` has compiled: a shape it has seen compiles no more.
@@ -122,14 +108,14 @@ def start() -> Cache = Cache(keys: [], values: [], length: 0)
 ## writes the new row into its tensors, which are the ones of the cache it gives,
 ## elsewhere they are closed. Use the one it gives; never step a cache twice or
 ## read one after it was stepped.
-def step(g: Generator, cache: Cache, ids: List[Int]) -> Result[Picked]
+def step(g: Generator, cache: Cache, ids: List[Int]) -> Result[Stepping.Picked[Cache]]
   s = try advance(g, cache, ids, Stepping.Head.Pick)
-  found = Stepping.chosen(s.head, g.model.config.vocab_size)
+  found = Stepping.chosen(s.head, g.usable)
   if not found.ok?
     finish(s.cache)
   end
 
-  ok(Picked(id: try found, cache: s.cache))
+  ok(Stepping.Picked(id: try found, cache: s.cache))
 end
 
 ## `step` with the logits of the last token fed, `[vocab_size]`, in place of the choice.
@@ -151,35 +137,21 @@ end
 ## `step_logits` for the `k` largest logits only: their ids and values, largest first, and the cache. The cut is in the
 ## graph (`Tensor.top_ids`), so `k` values and ids cross to the host and not `vocab_size` logits. Ids with equal logits
 ## at the edge of the `k` are not specified. A `-inf` logit among the `k` makes the step an error on ggml (its outputs
-## are checked to be finite).
-def step_top(g: Generator, cache: Cache, ids: List[Int], k: Int) -> Result[Candidates]
-  vocab = g.model.config.vocab_size
-  if k < 1 or k > vocab
+## are checked to be finite). `k` is at most the usable ids.
+def step_top(g: Generator, cache: Cache, ids: List[Int], k: Int) -> Result[Stepping.Candidates[Cache]]
+  if k < 1 or k > g.usable
     finish(cache)
-    return error("step_top needs k from 1 to #{vocab}, got #{k}")
+    return error("step_top needs k from 1 to #{g.usable}, got #{k}")
   end
 
   s = try advance(g, cache, ids, Stepping.Head.Top(k))
-  found: List[Stepping.Candidate] = []
-  for i in 0...k
-    case s.head[i]
-      Tensor.Values.Float(logit) ->
-        case s.head[k + i]
-          Tensor.Values.Float(id) -> found = found.push(Stepping.Candidate(id: id.to_i.unwrap_or(-1), logit: logit))
-          _ -> nil
-        end
-
-      _ -> nil
-    end
-  end
-
-  if found.size != k or found.any? { |c| c.id < 0 or c.id >= vocab }
+  found = Stepping.ranked(s.head, k, g.usable)
+  if not found.ok?
     finish(s.cache)
-    return error("step_top: the graph gave no ids, or ids outside the vocabulary")
   end
 
-  ordered = found.sort_by { |c| 0.0 - c.logit }
-  ok(Candidates(ids: ordered.map { |c| c.id }, logits: ordered.map { |c| c.logit }, cache: s.cache))
+  r = try found
+  ok(Stepping.Candidates(ids: r.ids, logits: r.logits, cache: s.cache))
 end
 
 ## Ends a sequence: closes the tensors of `cache`.
@@ -188,10 +160,9 @@ def finish(cache: Cache) -> Void
 end
 
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`).
-## Greedy (the choice runs in the graph) unless `sampling` says how to draw: then each step reads the largest logits
-## (cut in the graph) and `Sample.pick_top` draws among them, the same ids for the same seed (up to float noise). An
-## unusable `sampling` (`Sample.check`) is an error before the first step, also at temperature 0. The prompt and the new
-## ids must fit `max_position_embeddings`.
+## Greedy (the choice runs in the graph) unless `sampling` says how to draw (`Stepping.generate`): then each step reads
+## the largest logits and `Sample.pick_top` draws among them. The prompt and the new ids must fit
+## `max_position_embeddings`.
 def generate(
   g: Generator,
   ids: List[Int],
@@ -199,73 +170,7 @@ def generate(
   stop: List[Int] = [],
   sampling: Optional[Sample.Sampling] = none,
 ) -> Result[List[Int]]
-  return error("generate needs max_new of 0 or more, got #{max_new}") if max_new < 0
-  case sampling
-    some(s) ->
-      checked_sampling = Sample.check(s)
-      return error(checked_sampling.message) if not checked_sampling.ok?
-
-    none -> nil
-  end
-
-  limit = g.model.config.max_position_embeddings
-  if max_new > 0 and ids.size + max_new - 1 > limit
-    return error("generate needs at most #{limit} positions, a prompt of #{ids.size} and #{max_new} new ids need more")
-  end
-
-  cache = start()
-  out: List[Int] = []
-  feed = ids
-  state = 0
-  case sampling
-    some(s) -> state = Sample.start(s)
-    none -> nil
-  end
-
-  while out.size < max_new
-    s = chosen_next(g, cache, feed, sampling, state)
-    return error(s.message) if not s.ok?
-
-    picked = s.unwrap!
-    cache = picked.cache
-    state = picked.state
-    break if stop.include?(picked.id)
-    out = out.push(picked.id)
-    feed = [picked.id]
-  end
-
-  finish(cache)
-  ok(out)
-end
-
-## The id after `feed` and the cache, by the greedy step or, with `sampling`, by a draw among the largest logits (`state`
-## is the generator of the draws, which the answer carries on).
-def chosen_next(
-  g: Generator,
-  cache: Cache,
-  feed: List[Int],
-  sampling: Optional[Sample.Sampling],
-  state: Int,
-) -> Result[Drawn]
-  case sampling
-    some(s) ->
-      if s.temperature > 0.0
-        top = try step_top(g, cache, feed, Sample.window(s, g.model.config.vocab_size))
-        drawn = Sample.pick_top(top.ids, top.logits, s, state)
-        if not drawn.ok?
-          finish(top.cache)
-          return error(drawn.message)
-        end
-
-        d = drawn.unwrap!
-        return ok(Drawn(id: d.id, cache: top.cache, state: d.state))
-      end
-
-    none -> nil
-  end
-
-  p = try step(g, cache, feed)
-  ok(Drawn(id: p.id, cache: p.cache, state: state))
+  Stepping.generate(decoder(g), ids, max_new, stop, sampling)
 end
 
 private
@@ -288,9 +193,21 @@ struct Layer
   value: Tensor.Tensor
 end
 
+## What `Stepping.generate` needs of `g`.
+def decoder(g: Generator) -> Stepping.Decoder[Cache]
+  Stepping.Decoder(
+    usable: g.usable,
+    limit: g.model.config.max_position_embeddings,
+    empty: start(),
+    pick: ->(c: Cache, ids: List[Int]) { step(g, c, ids) },
+    top: ->(c: Cache, ids: List[Int], k: Int) { step_top(g, c, ids, k) },
+    finish: ->(c: Cache) { finish(c) },
+  )
+end
+
 def advance(g: Generator, cache: Cache, ids: List[Int], mode: Stepping.Head) -> Result[Advanced]
   m = g.model
-  bad = checked(m, cache, ids)
+  bad = Stepping.check_ids(m.config.max_position_embeddings, m.config.vocab_size, cache.length, ids)
   if not bad.ok?
     finish(cache)
     return error(bad.message)
@@ -314,7 +231,7 @@ def advance(g: Generator, cache: Cache, ids: List[Int], mode: Stepping.Head) -> 
 
   fed = made.unwrap!
   held = cache.keys + cache.values
-  in_place = written_in_place?(backend, cache, width, room)
+  in_place = Stepping.in_place?(backend, cache.keys, width, room)
   reach = room
   if in_place and not g.whole
     reach = Padded.reach(cache.length + n, room)
@@ -322,7 +239,7 @@ def advance(g: Generator, cache: Cache, ids: List[Int], mode: Stepping.Head) -> 
 
   outs = case backend
     Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, room, reach, mode, in_place)
-    _ -> eager_step(m, cache, fed, room, mode)
+    _ -> eager_step(m, g.usable, cache, fed, room, mode)
   end
 
   Lift.close(fed)
@@ -334,15 +251,6 @@ def advance(g: Generator, cache: Cache, ids: List[Int], mode: Stepping.Head) -> 
 
   s = try outs
   ok(Advanced(head: s.head, cache: s.cache.with(length: cache.length + n)))
-end
-
-## Whether a step writes its row into the tensors of `cache`: on `Ggml`, one token after a cache that already has the
-## capacity of the step.
-def written_in_place?(backend: Tensor.Backend, cache: Cache, width: Int, room: Int) -> Bool
-  case backend
-    Tensor.Backend.Ggml(_) -> width == 1 and not cache.keys.empty? and Tensor.shape(cache.keys[0])[2] == room
-    _ -> false
-  end
 end
 
 ## The graph of one step as a compiled function of its inputs on `Ggml`; `in_place` writes the new row into the cache's own
@@ -367,27 +275,14 @@ def compiled_step(
   end
 
   width = Tensor.shape(fed[0])[0]
-  behind: List[String] = []
-  near = Padded.reach(1, room)
-  while near < reach
-    behind = behind.push(Stepping.plan_key(width, rows, room, near, mode))
-    near = Padded.reach(near + 1, room)
-  end
-
-  ahead: List[String] = []
-  far = reach
-  while far < room
-    far = Padded.reach(far + 1, room)
-    ahead = ahead.push(Stepping.plan_key(width, rows, room, far, mode))
-  end
-
+  keys = Stepping.reaches(width, rows, room, reach, mode)
   plan = try Stepping.planned(
     g.plans,
-    Stepping.plan_key(width, rows, room, reach, mode),
-    ahead,
-    behind,
+    keys.key,
+    keys.ahead,
+    keys.behind,
     args.map { |t| Trace.spec_of(t) },
-    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), xs, room, reach, mode, in_place, true) },
+    ->(xs: List[Tensor.Tensor]) { stepped(Qwen3.traced(m), g.usable, xs, room, reach, mode, in_place, true) },
   )
 
   outs = try Trace.run(plan, args)
@@ -404,6 +299,7 @@ end
 ## The same graph, run now and in an arena that keeps the new cache alone.
 def eager_step(
   m: Qwen3.Qwen3,
+  usable: Int,
   cache: Cache,
   fed: List[Tensor.Tensor],
   room: Int,
@@ -411,7 +307,7 @@ def eager_step(
 ) -> Result[Advanced]
   layers = m.config.num_hidden_layers
   ran: Result[Advanced] = Native.arena do
-    outs = try stepped(m, fed + cache.keys + cache.values, room, room, mode)
+    outs = try stepped(m, usable, fed + cache.keys + cache.values, room, room, mode)
     ok(
       Advanced(
         head: try Tensor.to_list(outs[0]),
@@ -429,6 +325,7 @@ end
 ## the attention reads the first `reach` (every row the new tokens may see is among them).
 def stepped(
   m: Qwen3.Qwen3,
+  usable: Int,
   xs: List[Tensor.Tensor],
   room: Int,
   reach: Int,
@@ -457,8 +354,8 @@ def stepped(
 
     r = try layer(m.stack.blocks[i], h, slots.positions, mask, spread, old, in_place, reach)
     h = r.hidden
-    keys = keys.push(try cached(r.key, half))
-    values = values.push(try cached(r.value, half))
+    keys = keys.push(try Stepping.cached(r.key, half))
+    values = values.push(try Stepping.cached(r.value, half))
   end
 
   last = try Tensor.reshape(try Tensor.matmul(xs[2], try Tensor.reshape(h, [width, d])), [1, 1, d])
@@ -467,7 +364,7 @@ def stepped(
     none -> nil
   end
 
-  logits = try Tensor.reshape(try Nn.dense(m.head, last), [m.config.vocab_size])
+  logits = try Stepping.masked(try Tensor.reshape(try Nn.dense(m.head, last), [m.config.vocab_size]), usable)
   head = logits
   case mode
     Stepping.Head.Pick -> head = try Stepping.picked(logits)
@@ -476,12 +373,6 @@ def stepped(
   end
 
   ok([head] + keys + values)
-end
-
-## The cache tensor `t` as it is kept: `F16` on `Ggml` (`half`), when it is not already.
-def cached(t: Tensor.Tensor, half: Bool) -> Result[Tensor.Tensor]
-  return ok(t) if not half or Tensor.dtype(t) == Tensor.Dtype.F16
-  Tensor.to_dtype(t, Tensor.Dtype.F16)
 end
 
 ## One block over the new tokens `h` `[1, width, d]`, as `Nn.encoder_block` with
@@ -504,8 +395,8 @@ def layer(
     key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
     value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
   else
-    key = try Padded.written(try widened(old.map { |kv| kv.key }), heads.key, spread.unwrap!, 2)
-    value = try Padded.written(try widened(old.map { |kv| kv.value }), heads.value, spread.unwrap!, 2)
+    key = try Padded.written(try Stepping.widened(old.map { |kv| kv.key }), heads.key, spread.unwrap!, 2)
+    value = try Padded.written(try Stepping.widened(old.map { |kv| kv.value }), heads.value, spread.unwrap!, 2)
   end
 
   seen = try Nn.attend(
@@ -519,28 +410,4 @@ def layer(
   mid = try Tensor.add(h, seen)
   out = try Tensor.add(mid, try Nn.mlp(b.mlp, try Nn.layer_norm(b.norm2, mid)))
   ok(Layer(hidden: out, key: key, value: value))
-end
-
-## The old cache tensor `t` in the dtype of the new rows.
-def widened(t: Optional[Tensor.Tensor]) -> Result[Optional[Tensor.Tensor]]
-  case t
-    some(x) ->
-      return ok(t) if Tensor.dtype(x) == Tensor.Dtype.F32
-      ok(some(try Tensor.to_dtype(x, Tensor.Dtype.F32)))
-    none -> ok(t)
-  end
-end
-
-## An error unless `ids` may follow `cache`.
-def checked(m: Qwen3.Qwen3, cache: Cache, ids: List[Int]) -> Result[Void]
-  n = ids.size
-  limit = m.config.max_position_embeddings
-  return error("step needs ids") if n == 0
-  return error("step takes one id after the first call, got #{n}") if n > 1 and cache.length > 0
-  return error("step needs at most #{limit} tokens, got #{cache.length + n}") if cache.length + n > limit
-  for id in ids
-    return error("token id #{id} is outside 0...#{m.config.vocab_size}") if id < 0 or id >= m.config.vocab_size
-  end
-
-  ok()
 end

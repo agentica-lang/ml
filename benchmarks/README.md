@@ -1,6 +1,6 @@
 # Benchmarks
 
-Local runs against the Python and C++ stacks, never in CI, all on the one machine below: Whisper against whisper.cpp, training against PyTorch and JAX, a DistilBERT fine-tune against PyTorch and PEFT, BERT and Qwen3 against llama.cpp.
+Local runs against the Python and C++ stacks, never in CI, all on the one machine below: Whisper against whisper.cpp, training against PyTorch and JAX, a DistilBERT fine-tune against PyTorch and PEFT, BERT and Qwen3 against llama.cpp, Qwen3.5-0.8B alone.
 
 ## Whisper-tiny, ours against whisper.cpp
 
@@ -320,6 +320,22 @@ Ours is a loop over `Generate.step` (a script that is not in the repository; `be
 That is 13.8 and 12.4 tokens/s for ours with ml#180 and 14.2 and 12.6 for llama.cpp: ours needs 3% more time for a token at 128 and 1.3% more at 2048. When ml#174 was opened it was 84.5 against 70.0 ms and 90.6 against 77.1. At 128 the step of ml#180 is the graph of main (the cache has 256 rows and the step reads them all), and the two rows there differ by less than their ranges. At 2048 the capacity is 4096 rows: main reads all of them, ml#180 reads 2560 and llama.cpp 2304, and the per-kernel timer gives flash attention 8.9 ms of a token, from 13.9.
 
 Not measured again: the CPU rows, the prompt, the load, the peak memory and the half weights.
+
+## Qwen3.5-0.8B (ml#150), ours only
+
+`Qwen/Qwen3.5-0.8B` (revision and hash in `transformers/DESIGN.md`, `float32` weights), greedy generation, one sequence, `Generate` of `pkg/transformers/generate_qwen35`. Ours is `transformers/tools/bench_qwen35.agc`, timed as the Qwen3 tool is: the load, one warm-up pass that compiles the steps, then a prompt of 128 token ids in one step and 64 one-token steps after it. The model has 18 Gated DeltaNet layers and 6 full-attention layers, so only 6 layers keep a cache that grows. Same machine as above, one run per row (the CPU row twice: 74.9 and 75.6 tokens/s for the prompt, 7.93 and 7.61 for the tokens), the load average between 1.3 and 3 (other jobs of the machine were running); peak memory is `/usr/bin/time`'s maximum resident set. There is no llama.cpp row: it was not run for this model. The checks against Hugging Face run with Vulkan exact (fp16 off), so that row is the one that was checked.
+
+| Row | Prompt, 128 tokens | 64 tokens after it | Load | Peak memory |
+|---|---|---|---|---|
+| ours, ggml CPU | 75.2 tokens/s | 7.8 tokens/s | 2.7 s | 3.33 GB |
+| ours, ggml Vulkan, exact (fp16 off) | 169.8 | 8.7 | 2.7 s | 1.31 GB |
+| ours, ggml Vulkan, fp16 products | 238.8 | 8.7 | 2.6 s | 1.33 GB |
+
+Correctness: the greedy ids match Hugging Face's `generate` on six prompts of 5 to 375 tokens on both backends (`transformers/tools/generate_qwen35_check.agc`).
+
+```sh
+agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR cpu|vulkan
+```
 
 ## Half weights (ml#86)
 

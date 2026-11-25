@@ -319,6 +319,12 @@ def generating(dir: String, folder: String, backend: Tensor.Backend) -> Result[V
   try Test.eq(try Generate.generate(g, prompt, 0), [])
   try Test.eq(Generate.compiles(g), made)
   Generate.close(g)
+  # With `usable` the ids from it on are never answered: the first id of the greedy choice is cut off.
+  cut = [want[0], 1].max.unwrap!
+  few = try Generate.open(m, cut)
+  try Test.assert((try Generate.generate(few, prompt, 7)).all? { |id| id < cut }, "an id of #{cut} or more")
+  try Test.error?(Generate.open(m, m.config.vocab_size + 1))
+  Generate.close(few)
   ok()
 end
 
