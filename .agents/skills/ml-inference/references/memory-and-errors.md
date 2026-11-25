@@ -72,7 +72,7 @@ Every op answers a `Result`; read the message.
 | `X does not run eagerly on the ggml backend` (or XLA) | a lone op on a compiled-only backend | put the op in `Trace.eval` or `Trace.compile`, or call the model API |
 | an error about two backends | a tensor of another backend met yours | create every tensor on one backend; `Tensor.to_device` for ggml devices |
 | `RUNTIME-NATIVE-CLOSED` | a closed model or tensor was used | do not use it after closing; load again |
-| `PKG-SOURCE-CONFLICT` at `dependencies.tensor` | two tags or commits for one package | `override = true` on your dependency lines |
+| `PKG-SOURCE-CONFLICT` at `dependencies.tensor` | two tags or commits for one package (an ml package of another release) | the tags of one release for every ml package |
 | `PKG-LOCK-STALE` or `CHECK-IMPORT-PACKAGE` | the lock or `deps/` is behind `agentica.toml` | `agentica update`, then `agentica install` |
 | `PKG-AGENTICA-TOO-OLD` | the Agentica binary is older than a package asks | upgrade Agentica (0.38.0 or newer) |
 | `no tensor X in the checkpoint`, a shape error from `Qwen3.open` or `Asr.open` | the folder is another model, or another layout | check `config.json` and `Hub.names(c)` |

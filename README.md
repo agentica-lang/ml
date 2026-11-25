@@ -64,13 +64,16 @@ pins its own Agentica version (`AGENTICA_VERSION`), and CI runs `check`,
 `fmt --check` and `test` on each folder that has an `agentica.toml`, on that
 version.
 
-Outside the workspace a member is fetched at the `ref` it writes for the
-others.
+The members ask for each other by the tag of the same release
+(`tag = "tensor-0.4.0"`). Inside the workspace the tag is ignored and the
+folder is read. Outside it, an app that declares the packages it imports by
+the tags of one release gets one source for each package, so it needs no
+`override = true`:
 
 ```toml
 [dependencies]
-nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.3.0", subdir = "nn" }
-tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.3.0", subdir = "tensor" }
+nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.4.0", subdir = "nn" }
+tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.4.0", subdir = "tensor" }
 ```
 
 The libtorch backend ships **inside `tensor/`**, not as a `torch/` package,
