@@ -2,6 +2,12 @@
 
 All packages are released together at one version, each on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the first one and covers everything shipped so far (milestones 0.1.0 and 0.2.0).
 
+## [Unreleased]
+
+### vision
+
+- `Vision.Kernel` is `Image.Kernel`, re-exported: `Vision.Step.Resize(256, Vision.Kernel.Cubic)` needs no direct dependency on `image`.
+
 ## [0.5.0] - 2026-11-25
 
 - `tensor` has `conv2d` (stride, padding and groups), `max_pool2d` and `avg_pool2d` for `[N, C, H, W]` images (ml#83): on the reference, libtorch and ggml (a native kernel on the CPU and on Vulkan), with gradients on every backend. XLA has no lowering for them, as for `conv1d`. `nn` has `Conv2d`, `conv2d` and `global_avg_pool2d`.

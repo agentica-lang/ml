@@ -20,4 +20,4 @@ hub = { path = "../../hub", override = true }
 train = { path = "../../train", override = true }
 transformers = { path = "../../transformers", override = true }
 asr = { path = "../../asr", override = true }
-whisper = { git = "https://github.com/agentica-lang/ml", tag = "whisper-0.4.0", subdir = "whisper" }
+whisper = { git = "https://github.com/agentica-lang/ml", tag = "whisper-0.5.0", subdir = "whisper" }
