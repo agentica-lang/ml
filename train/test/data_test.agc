@@ -100,7 +100,8 @@ def test_a_failed_step_ends_the_prefetch_task() -> Result[Void]
   Test.assert(got.message.start_with?("epoch 1, batch 0: "), "got #{got.message}")
 end
 
-## Shuffled minibatches train the same with and without prefetch.
+## Shuffled minibatches train the same with and without prefetch. On ggml `fit` does not use the prefetch task (it
+## gathers the rows in its step), so there this compares the same path twice; on the other backends it compares the task.
 def test_fit_through_prefetch_matches_the_synchronous_run() -> Result[Void]
   for backend in try backends()
     d = try rows(backend)

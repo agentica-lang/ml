@@ -48,6 +48,62 @@ def test_a_shuffled_loader_on_ggml_trains_as_the_reference_and_keeps_its_dataset
   ok()
 end
 
+## Two `fit` runs on one backend over two datasets of one shape, with the same seed and weights, each follow the
+## reference on its own data: the constants a step holds are its run's dataset, never a stale one. Both datasets are
+## still readable afterwards, and the targets may be integers.
+def test_fits_over_datasets_of_one_shape_follow_the_reference_each() -> Result[Void]
+  first = [[1.0, 2.0, 3.0, 4.0, 5.0], [2.0, 4.0, 6.0, 8.0, 10.0]]
+  second = [[5.0, 3.0, 1.0, 4.0, 2.0], [16.0, 10.0, 4.0, 13.0, 7.0]]
+  want_first = try over(S.REF, first, false)
+  want_second = try over(S.REF, second, false)
+  try Test.assert(want_first != want_second, "the two datasets give one history")
+  for backend in try S.ggml_backends()
+    try S.expect_close(try over(backend, first, false), want_first, 0.000001, 0.00001, "first on #{backend}")
+    try S.expect_close(try over(backend, second, false), want_second, 0.000001, 0.00001, "second on #{backend}")
+    try S.expect_close(try over(backend, first, false), want_first, 0.000001, 0.00001, "first again on #{backend}")
+    try S.expect_close(try over(backend, first, true), want_first, 0.000001, 0.00001, "integer targets on #{backend}")
+  end
+
+  ok()
+end
+
+## `fit` over a shuffled loader of the rows `data` holds (`[inputs, targets]`) from the weight 0.5; with `labels` the
+## targets are integers (the loss converts them), and `xs` and `ys` are read back after the run.
+def over(backend: Tensor.Backend, data: List[List[Float]], labels: Bool) -> Result[List[Float]]
+  xs = try S.tensor(data[0], [5], Tensor.Dtype.F32, backend)
+  ys = try S.tensor(data[1], [5], Tensor.Dtype.F32, backend)
+  loss = &squares
+  if labels
+    ids = data[1].map { |y| Tensor.Values.Int(y.floor) }
+    ys = try Tensor.from_list(ids, [5], Tensor.Dtype.I32, backend)
+    loss = &squares_of_labels
+  end
+
+  w = try S.tensor([0.5], [1], Tensor.Dtype.F32, backend)
+  loader = Data.Loader(dataset: try Data.dataset(xs, ys), batch_size: 2, seed: 3)
+  got = try Train.fit(loss, [w], loader, Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.01)), 3)
+  try S.expect_close(try S.floats_of(xs), data[0], 0.0, 0.0, "the inputs after the fit")
+  if labels
+    values = (try Tensor.to_list(ys)).map { |v|
+      case v
+        Tensor.Values.Int(i) -> i.to_f
+        _ -> 0.0
+      end
+    }
+
+    try S.expect_close(values, data[1], 0.0, 0.0, "the labels after the fit")
+  else
+    try S.expect_close(try S.floats_of(ys), data[1], 0.0, 0.0, "the targets after the fit")
+  end
+
+  ok(got.history)
+end
+
+## `squares` with integer targets, converted to the dtype of the inputs.
+def squares_of_labels(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
+  squares(ps, Data.Batch(inputs: b.inputs, targets: try Tensor.to_dtype(b.targets, Tensor.dtype(b.inputs))))
+end
+
 def shuffled(backend: Tensor.Backend) -> Result[List[Float]]
   shuffled_over(backend, try S.tensor([1.0, 2.0, 3.0, 4.0, 5.0], [5], Tensor.Dtype.F32, backend))
 end
