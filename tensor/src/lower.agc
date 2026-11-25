@@ -61,6 +61,8 @@ RMS_NORM = 36
 SET_ROWS = 37
 TOP_K = 38
 CAST = 39
+ADAM_STEP = 40
+ADAM_PART = 41
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -376,6 +378,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
         end
 
       Types.Op.RmsNorm(eps) -> ints = [Float.to_bits32(eps)]
+      Types.Op.AdamPart(i) -> ints = [i]
       _ -> nil
     end
 
@@ -769,6 +772,8 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.GeluErf -> ok(GELU_ERF)
     Types.Op.LayerNorm(_) -> ok(NORM)
     Types.Op.RmsNorm(_) -> ok(RMS_NORM)
+    Types.Op.AdamStep -> ok(ADAM_STEP)
+    Types.Op.AdamPart(_) -> ok(ADAM_PART)
     Types.Op.SetRows -> ok(SET_ROWS)
     Types.Op.TopK(_) -> ok(TOP_K)
     Types.Op.Concat(_) -> ok(CONCAT)

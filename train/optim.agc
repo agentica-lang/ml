@@ -91,8 +91,9 @@ def init(optimizer: Optimizer, params: List[Tensor.Tensor]) -> Result[State]
   end
 end
 
-## `scalars` are the numbers of `step_scalars` as rank-0 tensors, for a step that is one compiled program of every
-## step count (`Train.fit`, `Train.stablehlo`): the step then reads them, where it otherwise holds them as constants.
+## `scalars` are the inputs of a step that is one compiled program of every step count, where it otherwise holds the
+## numbers as constants. `Train.fit` passes the tensors of `step_inputs` (Adam's and AdamW's are rank-1 tensors of 7
+## numbers, which `Tensor.adam_step` takes), and `Train.stablehlo` the numbers of `step_scalars` as rank-0 tensors.
 def step(
   state: State,
   params: List[Tensor.Tensor],
@@ -108,10 +109,10 @@ def step(
       try check_scalars(scalars, 1, "an SGD step takes one scalar")
       sgd(o, state, params, grads, scalars)
     Optimizer.Adam(o) ->
-      try check_scalars(scalars, 2, "an Adam step takes two scalars")
+      try check_adam_scalars(scalars, 1, 2, "an Adam step takes one input of 7 numbers, or two scalars")
       adam(o, none, state, params, grads, scalars)
     Optimizer.AdamW(o) ->
-      try check_scalars(scalars, 3, "an AdamW step takes three scalars")
+      try check_adam_scalars(scalars, 2, 3, "an AdamW step takes two inputs of 7 numbers, or three scalars")
       try check_decay(o, params.size)
       decays = o.decay
       if decays.empty?
@@ -139,6 +140,19 @@ def step_scalars(state: State) -> List[Float]
     Optimizer.Sgd(_) -> [learning_rate(state)]
     Optimizer.Adam(o) -> adam_scalars(o, state.steps)
     Optimizer.AdamW(o) -> adam_scalars(plain(o), state.steps).push(learning_rate(state) * o.weight_decay)
+  end
+end
+
+## The numbers of each input of the step that `Train.fit` compiles, one list per input: SGD's learning rate, and for
+## Adam the 7 numbers of `Tensor.adam_step` (the learning rate with its schedule, `beta1`, `beta2`, `eps`, the weight
+## decay, then the two bias corrections); AdamW has two, the second without decay, for the parameters that do not
+## decay. A one-number input is a rank-0 tensor, the other a rank-1 tensor.
+def step_inputs(state: State) -> List[List[Float]]
+  case state.optimizer
+    Optimizer.Sgd(_) -> [[learning_rate(state)]]
+    Optimizer.Adam(o) -> [adam_numbers(o, state.steps, 0.0)]
+    Optimizer.AdamW(o) ->
+      [adam_numbers(plain(o), state.steps, o.weight_decay), adam_numbers(plain(o), state.steps, 0.0)]
   end
 end
 
@@ -213,6 +227,19 @@ def sgd(
   ok(Step(state: state.with(steps: state.steps + 1, first: first), params: out))
 end
 
+def adam_numbers(o: Adam, steps: Int, decay: Float) -> List[Float]
+  lr = o.lr * rate_factor(o.schedule, steps)
+  [
+    lr,
+    o.beta1,
+    o.beta2,
+    o.eps,
+    decay,
+    1.0 / (1.0 - power(o.beta1, steps + 1)),
+    1.0 / (1.0 - power(o.beta2, steps + 1)),
+  ]
+end
+
 def adam_scalars(o: Adam, steps: Int) -> List[Float]
   correct1 = 1.0 / (1.0 - power(o.beta1, steps + 1))
   correct2 = 1.0 / (1.0 - power(o.beta2, steps + 1))
@@ -229,9 +256,62 @@ def decays?(decays: Optional[List[Bool]], i: Int) -> Bool
   end
 end
 
-## Adam's step, and AdamW's with `decays`: the flag of each parameter, which shrinks by `lr weight_decay` of itself
-## (the third number of the step's scalars) before the step.
+## Adam's step, and AdamW's with `decays`: the flag of each parameter, which shrinks by `lr weight_decay` of itself.
+## The update is `Tensor.adam_step` with the rows of `scalars` (`step_inputs`; without them, those of the optimizer's
+## state as constants), the row of a parameter that decays first. Rank-0 `scalars` (`Train.stablehlo`) are the older
+## composition of the same formula (`adam_of_scalars`), which the StableHLO goldens pin.
 def adam(
+  o: Adam,
+  decays: Optional[List[Bool]],
+  state: State,
+  params: List[Tensor.Tensor],
+  grads: List[Tensor.Tensor],
+  scalars: List[Tensor.Tensor],
+) -> Result[Step]
+  if !scalars.empty? and Tensor.shape(scalars[0]).empty?
+    return adam_of_scalars(o, decays, state, params, grads, scalars)
+  end
+
+  rows = scalars
+  if rows.empty?
+    rows = try number_rows(state, params)
+  end
+
+  first: List[Tensor.Tensor] = []
+  second: List[Tensor.Tensor] = []
+  out: List[Tensor.Tensor] = []
+  for i in 0...params.size
+    row = rows[0]
+    if !decays?(decays, i) and rows.size > 1
+      row = rows[1]
+    end
+
+    if Tensor.dtype(row) != Tensor.dtype(params[i])
+      row = try Tensor.to_dtype(row, Tensor.dtype(params[i]))
+    end
+
+    moved = try Tensor.adam_step(params[i], grads[i], state.first[i], state.second[i], row)
+    out = out.push(moved[0])
+    first = first.push(moved[1])
+    second = second.push(moved[2])
+  end
+
+  ok(Step(state: state.with(steps: state.steps + 1, first: first, second: second), params: out))
+end
+
+## `step_inputs` as constants on the backend and dtype of the first parameter.
+def number_rows(state: State, params: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  rows: List[Tensor.Tensor] = []
+  return ok(rows) if params.empty?
+  for numbers in step_inputs(state)
+    values = numbers.map { |x: Float| Tensor.Values.Float(x) }
+    rows = rows.push(try Tensor.from_list(values, [numbers.size], Tensor.dtype(params[0]), Tensor.backend(params[0])))
+  end
+
+  ok(rows)
+end
+
+def adam_of_scalars(
   o: Adam,
   decays: Optional[List[Bool]],
   state: State,
@@ -261,6 +341,21 @@ def adam(
   end
 
   ok(Step(state: state.with(steps: t, first: first, second: second), params: out))
+end
+
+# An Adam step reads none, `rows` rank-1 tensors of 7 numbers, or `n` rank-0 tensors.
+def check_adam_scalars(scalars: List[Tensor.Tensor], rows: Int, n: Int, rule: String) -> Result[Void]
+  return ok() if scalars.empty?
+  if Tensor.shape(scalars[0]) == [7]
+    return error("#{rule}, got #{scalars.size}") if scalars.size != rows
+    for s in scalars
+      return error("an input of an Adam step has shape [7], got #{Tensor.shape(s)}") if Tensor.shape(s) != [7]
+    end
+
+    return ok()
+  end
+
+  check_scalars(scalars, n, rule)
 end
 
 # A step reads none, or `n` rank-0 tensors; `rule` says how many ("an SGD step takes one scalar").

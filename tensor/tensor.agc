@@ -1095,6 +1095,43 @@ def rms_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   end
 end
 
+## The update kernel of Adam and AdamW, which `Optim` uses: call `Optim`, not this. From a weight `p`, its gradient `g`,
+## the first and second moments `m` and `v`, and `hyper`, a rank-1 tensor of 7 numbers (the learning rate, `beta1`,
+## `beta2`, `eps`, the weight decay, then `1 / (1 - beta1^t)` and `1 / (1 - beta2^t)`), it answers the new `[p, m, v]`:
+## `m = beta1 m + (1 - beta1) g`, `v = beta2 v + (1 - beta2) g^2`,
+## `p = p (1 - lr decay) - lr (m / (1 - beta1^t)) / (sqrt(v / (1 - beta2^t)) + eps)`. In a trace of `F32` tensors of
+## rank 3 or less it is one node, which ggml runs as `ggml_opt_step_adamw` on copies of the arguments (they stay
+## unchanged); every other case is the composition of the ops above.
+def adam_step(
+  p: Types.Tensor,
+  g: Types.Tensor,
+  m: Types.Tensor,
+  v: Types.Tensor,
+  hyper: Types.Tensor,
+) -> Result[List[Types.Tensor]]
+  for t in [g, m, v, hyper]
+    _ = try same_backend(p, t, "adam_step")
+    _ = try same_dtype(p, t, "adam_step")
+  end
+
+  _ = try float_only(p, "adam_step")
+  for t in [g, m, v]
+    _ = try same_shape(p, t, "adam_step")
+  end
+
+  return error("adam_step needs 7 hyper-parameters, got shape #{hyper.shape}") if hyper.shape != [7]
+  case p.backend
+    Types.Backend.Trace ->
+      if p.dtype == Types.Dtype.F32 and p.shape.size <= 3
+        stepped = Graph.adam_step([p, g, m, v, hyper], p)
+        return ok((0...3).map { |i| Graph.adam_part(stepped, i, p.shape) })
+      end
+
+      adam_composed(p, g, m, v, hyper)
+    _ -> adam_composed(p, g, m, v, hyper)
+  end
+end
+
 ## Derived: the user-facing `gelu` is the `tanh` approximation (§3.2).
 def gelu(x: Types.Tensor) -> Result[Types.Tensor] = gelu_tanh_approx(x)
 
@@ -1480,6 +1517,35 @@ def layer_norm_composed(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   eps_full = try full(x.shape, Types.Values.Float(eps), x.dtype, x.backend)
   denom = try sqrt(try add(try broadcast_to(var, x.shape), eps_full))
   div(centered, denom)
+end
+
+## Derived: `adam_step` from the ops of §3.1.
+def adam_composed(
+  p: Types.Tensor,
+  g: Types.Tensor,
+  m: Types.Tensor,
+  v: Types.Tensor,
+  hyper: Types.Tensor,
+) -> Result[List[Types.Tensor]]
+  one = try full(p.shape, Types.Values.Float(1.0), p.dtype, p.backend)
+  alpha = try hyper_at(hyper, 0, p)
+  beta1 = try hyper_at(hyper, 1, p)
+  beta2 = try hyper_at(hyper, 2, p)
+  eps = try hyper_at(hyper, 3, p)
+  decay = try hyper_at(hyper, 4, p)
+  correct1 = try hyper_at(hyper, 5, p)
+  correct2 = try hyper_at(hyper, 6, p)
+  first = try add(try mul(m, beta1), try mul(g, try sub(one, beta1)))
+  second = try add(try mul(v, beta2), try mul(try mul(g, g), try sub(one, beta2)))
+  denominator = try add(try sqrt(try mul(second, correct2)), eps)
+  step = try mul(alpha, try div(try mul(first, correct1), denominator))
+  keep = try sub(one, try mul(alpha, decay))
+  ok([try sub(try mul(p, keep), step), first, second])
+end
+
+## The number `i` of `hyper` as a tensor of `like`'s shape.
+def hyper_at(hyper: Types.Tensor, i: Int, like: Types.Tensor) -> Result[Types.Tensor]
+  broadcast_to(try reshape(try slice(hyper, [i], [i + 1]), []), like.shape)
 end
 
 ## The ops `rms_norm` stands for, from §3.1 only.

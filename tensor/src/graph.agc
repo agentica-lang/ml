@@ -18,6 +18,17 @@ def record(op: Types.Op, args: List[Types.Tensor], shape: List[Int], dtype: Type
   Types.Tensor(shape: shape, dtype: dtype, backend: Types.Backend.Trace, handle: Types.Handle.Traced(node))
 end
 
+## A traced `adam_step`: the new weight, first and second moments stacked on a new first axis, from the weight, its
+## gradient and moments, and the 7 numbers of the step.
+def adam_step(args: List[Types.Tensor], like: Types.Tensor) -> Types.Tensor
+  record(Types.Op.AdamStep, args, [3] + like.shape, like.dtype)
+end
+
+## One of the three tensors of a traced `adam_step`: `0` the weight, `1` the first moment, `2` the second.
+def adam_part(step: Types.Tensor, i: Int, shape: List[Int]) -> Types.Tensor
+  record(Types.Op.AdamPart(i), [step], shape, step.dtype)
+end
+
 ## The id of a traced tensor's node; `UNTRACED` for a tensor that is not traced.
 def id_of(t: Types.Tensor) -> Ref
   case t.handle

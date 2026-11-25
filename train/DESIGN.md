@@ -18,7 +18,8 @@ Optim.Schedule = Constant | WarmupLinear(warmup, total) | WarmupCosine(warmup, t
 Optim.init(optimizer, params) -> Result[State]
 Optim.step(state, params, grads, scalars = []) -> Result[Step { state, params }]
 Optim.learning_rate(state) -> Float             lr times the schedule at the step count
-Optim.step_scalars(state) -> List[Float]        SGD's learning rate, Adam's two numbers, or AdamW's three, for the next step
+Optim.step_inputs(state) -> List[List[Float]]   the inputs of the next step: SGD's rate, or Adam's 7 numbers (AdamW has two rows)
+Optim.step_scalars(state) -> List[Float]        the rank-0 form (StableHLO): SGD's rate, Adam's two numbers, or AdamW's three
 
 Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
 Data.load(path, inputs, targets, backend) -> Result[Dataset]  two named tensors of a safetensors file
@@ -120,9 +121,11 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   (`tensor/DESIGN.md` §12). Adam's bias corrections depend on the step count, so
   there they are rank-0 inputs after the moments (`Optim.step_scalars`: SGD's
   learning rate, or Adam's two numbers, passed as the `scalars` of
-  `Optim.step`) and not constants of one step; `fit` passes them the same way, so
-  a learning rate that changes at every step (a schedule, which starts at 0)
-  is not a new graph. The goldens in `test/fixtures/stablehlo/`
+  `Optim.step`) and not constants of one step; `fit` passes them as
+  `Optim.step_inputs` (Adam's 7 numbers in one rank-1 input, for `Tensor.adam_step`),
+  so a learning rate that changes at every step (a schedule, which starts at 0)
+  is not a new graph. The StableHLO form keeps the rank-0 scalars and Adam's
+  older composition, which its goldens pin: an `adam_step` node has no StableHLO. The goldens in `test/fixtures/stablehlo/`
   are three chained runs on IREE, which `fit` reproduces at steps 1 and 3.
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on

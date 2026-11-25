@@ -6,6 +6,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### tensor
 
+- `Tensor.adam_step(p, g, m, v, hyper)`, the update kernel of Adam and AdamW (call `Optim`, not this): one `ggml_opt_step_adamw` node on ggml, on copies of its arguments, a composition elsewhere.
 - `Trace.stablehlo(specs, f)` writes a traced function as a StableHLO module, for XLA and IREE (the ops of an MLP forward and of a training step); its goldens come from IREE (`make iree-goldens`, local only).
 - `gelu_erf` has a gradient, so a model with the exact GELU (BERT, DistilBERT) can be trained.
 - ggml: a decode step runs fewer kernels (the positions converted and checked once for every cache, a long-row `max` in pieces, SwiGLU as one kernel): Qwen3-0.6B decode on Vulkan is 7 to 11% faster.
@@ -24,6 +25,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### train
 
+- `Optim` takes the Adam update through `Tensor.adam_step`, so on ggml it is one kernel for each parameter (`Optim.step_inputs` gives the 7 numbers of the step as one input; `Optim.step` accepts them or the rank-0 scalars as before).
 - `Optim.AdamW`: Adam with decoupled weight decay, as PyTorch's `AdamW`, with a `decay` flag per parameter (biases and layer-norm weights do not decay in a fine-tune).
 - `Optim.Schedule` (`Constant`, `WarmupLinear`, `WarmupCosine`) for the `schedule:` of `Sgd`, `Adam` and `AdamW`: the learning rate follows the step count, as in Hugging Face's `Trainer` up to `total` (after it the factor stays 0). SGD's learning rate is now an input of the step (`Optim.step_scalars`), like Adam's.
 - **Breaking:** the StableHLO module of `Train.stablehlo` for SGD takes one more rank-0 argument after the moments, its learning rate (`Optim.step_scalars`); an SGD step of `Optim.step` takes one scalar or none.

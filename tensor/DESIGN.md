@@ -132,6 +132,17 @@ records each as one node, `layer_norm` or `rms_norm`, so that ggml can run it
 as one norm (a trace of a transformer step holds a dozen of them, each 10
 nodes composed); the gradient has a rule of its own, checked against a central
 difference.
+The same holds for the update of Adam: `adam_step(p, g, m, v, hyper)` is derived
+(`adam_composed`) and a trace of `F32` tensors of rank 3 or less records two
+kinds of node, `AdamStep` (the stack of the new weight and moments, on a new
+first axis) and one `AdamPart` per tensor of it. ggml runs `AdamStep` as
+`ggml_opt_step_adamw` (`hyper` is that op's 7 numbers), which updates its
+arguments in place: the lowering copies the weight and the moments into one
+stack and marks the copy of the weight as a parameter by hand (ggml only asserts
+that flag; no backward pass reads it), so the caller's tensors are never
+written. The three `AdamPart` outputs of a step share one finiteness check.
+It has no gradient. A StableHLO module does not take it (`Train.stablehlo`
+passes rank-0 scalars, which keep the older composition).
 Convolution/pooling: `conv1d, avg_pool1d` (stride and padding; no dilation or
 groups).
 Random: none (dropout is identity at inference).

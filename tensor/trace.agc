@@ -585,6 +585,8 @@ def vjp(t: Types.Tensor, n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Opti
     Types.Op.Stack(axis) -> part(stack_rule(ct, x.shape, axis, i))
     Types.Op.Gather -> part(gather_rule(n.args[0], n.args[1], ct))
     Types.Op.SetRows -> no_rule("set_rows")
+    Types.Op.AdamStep -> no_rule("adam_step")
+    Types.Op.AdamPart(_) -> no_rule("adam_part")
     Types.Op.TopK(_) -> no_rule("top_ids")
     Types.Op.ScatterAdd(_) -> scatter_add_rule(n, ct, i)
     Types.Op.ToDtype -> no_rule("to_dtype")
@@ -932,6 +934,9 @@ def compute(
     Types.Op.GeluErf -> Tensor.gelu_erf(args[0])
     Types.Op.LayerNorm(eps) -> Tensor.layer_norm(args[0], eps)
     Types.Op.RmsNorm(eps) -> Tensor.rms_norm(args[0], eps)
+    Types.Op.AdamStep -> Tensor.stack(try Tensor.adam_step(args[0], args[1], args[2], args[3], args[4]), 0)
+    Types.Op.AdamPart(i) ->
+      Tensor.reshape(try Tensor.slice(args[0], [i] + t.shape.map { |_| 0 }, [i + 1] + t.shape), t.shape)
     Types.Op.Eq -> Tensor.eq(args[0], args[1])
     Types.Op.Clamp(lo, hi) -> Tensor.clamp(args[0], lo, hi)
     Types.Op.Max(axes, keep_dims) -> Tensor.max(args[0], some(axes), keep_dims)

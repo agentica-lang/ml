@@ -191,7 +191,7 @@ end
 def shapes_of(batch: Data.Batch) -> String = JSON.encode([Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)])
 
 ## The step of `fit` traced and lowered once for batches shaped like `batch`: its arguments are the parameters, the
-## optimizer's first and second moments, the scalars of the step, then the batch's inputs and targets.
+## optimizer's first and second moments, the inputs of the step (`Optim.step_inputs`), then the batch's inputs and targets.
 def compile_step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   state: Optim.State,
@@ -201,8 +201,12 @@ def compile_step(
   return error("a step needs at least one parameter") if params.empty?
   n = params.size
   k = state.first.size
-  scalar = Trace.Spec(shape: [], dtype: Tensor.dtype(params[0]), backend: Tensor.backend(params[0]))
-  scalars = Optim.step_scalars(state).map { |_| scalar }
+  dtype = Tensor.dtype(params[0])
+  backend = Tensor.backend(params[0])
+  scalars = Optim.step_inputs(state).map { |numbers|
+    Trace.Spec(shape: input_shape(numbers), dtype: dtype, backend: backend)
+  }
+
   moments = (state.first + state.second).map { |t| Trace.spec_of(t) }
   specs = (
     params.map { |t| Trace.spec_of(t) } +
@@ -261,18 +265,25 @@ def traced_step(
   ok([value] + stepped.params + stepped.state.first + stepped.state.second)
 end
 
-## The numbers of `Optim.step_scalars` as rank-0 tensors of the dtype and backend of the first parameter: inputs of the
-## step, so that a learning rate that changes (a schedule) is not a new graph.
+## The numbers of `Optim.step_inputs` as tensors of the dtype and backend of the first parameter: inputs of the step,
+## so that a learning rate that changes (a schedule) is not a new graph.
 def scalar_inputs(state: Optim.State, params: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   out: List[Tensor.Tensor] = []
   return ok(out) if params.empty?
-  for v in Optim.step_scalars(state)
+  for numbers in Optim.step_inputs(state)
+    values = numbers.map { |x: Float| Tensor.Values.Float(x) }
     out = out.push(
-      try Tensor.from_list([Tensor.Values.Float(v)], [], Tensor.dtype(params[0]), Tensor.backend(params[0])),
+      try Tensor.from_list(values, input_shape(numbers), Tensor.dtype(params[0]), Tensor.backend(params[0])),
     )
   end
 
   ok(out)
+end
+
+## A single number is a rank-0 tensor, more are a rank-1 one.
+def input_shape(numbers: List[Float]) -> List[Int]
+  return [] if numbers.size == 1
+  [numbers.size]
 end
 
 def scalar(t: Tensor.Tensor) -> Result[Float]
