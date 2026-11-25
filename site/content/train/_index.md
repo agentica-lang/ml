@@ -58,9 +58,11 @@ Each loss takes a prediction and a target. It gives a rank-0 tensor (a single nu
 
 ## Optimizers
 
-`Optim.Optimizer` is `Sgd(Optim.Sgd(lr:, momentum: 0.0))` or `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))`. Adam's defaults are `lr` 0.001, `beta1` 0.9, `beta2` 0.999 and `eps` 1e-8.
+`Optim.Optimizer` is `Sgd(Optim.Sgd(lr:, momentum: 0.0))`, `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))` or `AdamW(Optim.AdamW(...))`. Adam's defaults are `lr` 0.001, `beta1` 0.9, `beta2` 0.999 and `eps` 1e-8.
 
-Both take a `schedule:` that moves the learning rate with the step count `t` (from 0). `lr` is the peak, and the rate of a step is `lr` times a factor:
+`AdamW(Optim.AdamW(lr:, weight_decay: 0.01, decay: []))` is Adam with decoupled weight decay, as PyTorch's `AdamW`: each step first shrinks a parameter by `lr * weight_decay` of itself, then takes Adam's step. It has Adam's fields and defaults. `decay` has one flag per parameter and says which ones decay; empty, all of them do. A fine-tune leaves the biases and the layer-norm weights out, which in PyTorch is two parameter groups.
+
+All three take a `schedule:` that moves the learning rate with the step count `t` (from 0). `lr` is the peak, and the rate of a step is `lr` times a factor:
 
 - `Optim.Schedule.Constant` (the default) is a factor of 1.
 - `Optim.Schedule.WarmupLinear(warmup, total)` rises from 0 to 1 over `warmup` steps, then falls in a straight line to 0 at step `total`.
@@ -74,7 +76,7 @@ adam = Optim.Optimizer.Adam(Optim.Adam(lr: 0.0001, schedule: Optim.Schedule.Warm
 
 The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, params)` makes the state, and `Optim.step(state, params, grads, scalars = [])` returns a new state and new parameters. `fit` does this for you.
 
-`Optim.step_scalars(state)` gives the numbers that the next step depends on: SGD's learning rate, or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` (its learning rate with the bias correction). `fit` gives them to the step as inputs, so a learning rate that changes at every step is not a new graph on ggml. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those numbers as inputs after the moments (`Trace.stablehlo` in the tensor page).
+`Optim.step_scalars(state)` gives the numbers that the next step depends on: SGD's learning rate, or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` (its learning rate with the bias correction); AdamW adds `lr * weight_decay`. `fit` gives them to the step as inputs, so a learning rate that changes at every step is not a new graph on ggml. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those numbers as inputs after the moments (`Trace.stablehlo` in the tensor page).
 
 `Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 
@@ -108,6 +110,17 @@ fit = try Train.fit(
 try SafetensorsWrite.write("last_block.safetensors", try Params.named(split, fit.params))
 ```
 
+With `AdamW`, the `decay` flags follow `split.names`, the order of `split.trainable`. A fine-tune decays every weight but the biases and the layer-norm weights, which is the rule of Hugging Face's `Trainer`:
+
+```agentica
+split = try Params.split(DistilBert.weights(m), ->(name: String) { true })
+norm = ->(name: String) { name.include?("LayerNorm") or name.include?("layer_norm") }
+decay = split.names.map { |name: String| !(name.end_with?(".bias") or norm.call(name)) }
+optimizer = Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.00002, weight_decay: 0.01, decay: decay))
+```
+
+A layer norm is named by its model: `LayerNorm` in BERT, and `embeddings.LayerNorm`, `sa_layer_norm` and `output_layer_norm` in DistilBERT.
+
 - `Params.split(weights, trainable)` answers a `Split`: `names` (the names `trainable` says yes to, sorted), `trainable` (their tensors, the list `fit` takes) and `frozen` (the other weights by name). A selection that matches no name is an error.
 - `Params.join(split, ps)` gives every weight by name again, with `ps` for the trainable ones. Inside the loss `ps` are traced and the frozen weights enter the trace as constants, so they get no gradient, and the optimizer keeps no state for them.
 - `Params.named(split, ps)` gives the trainable weights alone by name: what to save. `SafetensorsWrite.write` of the hub package writes them.
@@ -117,7 +130,7 @@ try SafetensorsWrite.write("last_block.safetensors", try Params.named(split, fit
 
 - Every step retraces the loss, so the trace cost is paid on each step. On the reference backend, one epoch of the 2-8-1 MLP of the XOR test, with four rows, costs about 75 000 VM steps.
 - The loss must return a float scalar. An op with no backward rule, listed on the [tensor page](../tensor/_index.md), makes `fit` fail.
-- On `Ggml`, the step is one compiled graph with at most 512 outputs: the loss, the new parameters and the optimizer's moments. That allows 170 parameters with Adam, 255 with momentum SGD and 511 with plain SGD.
+- On `Ggml`, the step is one compiled graph with at most 512 outputs: the loss, the new parameters and the optimizer's moments. That allows 170 parameters with Adam or AdamW, 255 with momentum SGD and 511 with plain SGD.
 - The losses and the optimizers use only ops that ggml supports, so a batch and its step run on `Ggml` when the dataset is on `Ggml`.
 
 ## How it works
