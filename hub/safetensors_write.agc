@@ -52,7 +52,7 @@ def header(names: List[String], tensors: Map[String, Tensor.Tensor], metadata: M
 
   text = "{" + fields.join(",") + "}"
   text = text + " " * ((8 - text.bytes.size % 8) % 8)
-  ok(Bytes.concat([try Binary.write_u64_le(text.bytes.size), text.bytes]))
+  ok(Bytes.concat([Binary.write_u64_le(text.bytes.size.to_uint64!), text.bytes]))
 end
 
 def fill(part: String, head: Bytes, tensors: List[Tensor.Tensor]) -> Result[Void]

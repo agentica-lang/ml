@@ -302,7 +302,7 @@ def append_file(t: Types.Tensor, path: String) -> Result[Void]
       stop = [at + APPEND_VALUES, values.size].min.unwrap!
       part: List[Bytes] = []
       for i in at...stop
-        part = part.push(Binary.write_f32_le(values[i]))
+        part = part.push(Binary.write_f32_le(values[i].to_float32))
       end
 
       try File.write_bytes(f, Bytes.concat(part))
@@ -1420,9 +1420,9 @@ private
 ## Element `i` of `b`, read as `format` says.
 def file_float(b: Bytes, i: Int, format: Types.FloatFormat) -> Float
   case format
-    Types.FloatFormat.F32 -> Float.from_bits32(u16(b, 4 * i).bit_or(u16(b, 4 * i + 2).shift_left(16)))
+    Types.FloatFormat.F32 -> Float32.from_bits(u16(b, 4 * i).bit_or(u16(b, 4 * i + 2).shift_left(16)).to_uint32!).to_f
     Types.FloatFormat.F16 -> half(u16(b, 2 * i))
-    Types.FloatFormat.BF16 -> Float.from_bits32(u16(b, 2 * i).shift_left(16))
+    Types.FloatFormat.BF16 -> Float32.from_bits(u16(b, 2 * i).shift_left(16).to_uint32!).to_f
     Types.FloatFormat.Q8_0 -> q8_0(b, i)
   end
 end
@@ -1448,13 +1448,13 @@ def half(bits: Int) -> Float
   mant = bits.bit_and(0x3FF)
   if exp == 0
     # Subnormal: mant * 2^-24.
-    m = mant.to_f * Float.from_bits((1023 - 24).shift_left(52))
+    m = mant.to_f * Float.from_bits((1023 - 24).shift_left(52).wrap_uint64)
     return -m if sign != 0
     return m
   end
 
-  return Float.from_bits(sign.bit_or(0x7FF0000000000000).bit_or(mant.shift_left(42))) if exp == 31
-  Float.from_bits(sign.bit_or((exp - 15 + 1023).shift_left(52)).bit_or(mant.shift_left(42)))
+  return Float.from_bits(sign.bit_or(0x7FF0000000000000).bit_or(mant.shift_left(42)).wrap_uint64) if exp == 31
+  Float.from_bits(sign.bit_or((exp - 15 + 1023).shift_left(52)).bit_or(mant.shift_left(42)).wrap_uint64)
 end
 
 ## One value across the dtype move of `to_dtype`.

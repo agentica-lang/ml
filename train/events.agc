@@ -20,7 +20,7 @@ def file_version(wall_time: Float) -> Bytes = Bytes.concat([double(1, wall_time)
 
 ## The data of the record of a scalar `value` (a float32 on the wire) of the series `tag`, at `step`.
 def scalar(wall_time: Float, step: Int, tag: String, value: Float) -> Bytes
-  entry = Bytes.concat([text(1, tag), key(2, FIXED_32), Binary.write_f32_le(value)])
+  entry = Bytes.concat([text(1, tag), key(2, FIXED_32), Binary.write_f32_le(value.to_float32)])
   summary = nested(1, entry)
   Bytes.concat([double(1, wall_time), key(2, VARINT), varint(step), nested(5, summary)])
 end
@@ -29,8 +29,8 @@ end
 ## little-endian.
 def record(data: Bytes) -> Result[Bytes]
   length = Binary.write_i64_le(data.size)
-  head = try Binary.write_u32_le(Crc32c.masked(Crc32c.checksum(length)))
-  tail = try Binary.write_u32_le(Crc32c.masked(Crc32c.checksum(data)))
+  head = Binary.write_u32_le(try Crc32c.masked(Crc32c.checksum(length)).to_uint32)
+  tail = Binary.write_u32_le(try Crc32c.masked(Crc32c.checksum(data)).to_uint32)
   ok(Bytes.concat([length, head, data, tail]))
 end
 
