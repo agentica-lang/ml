@@ -50,10 +50,10 @@ def main():
         model.generation_config.eos_token_id = None
         made = model.generate(ids[:1], do_sample=False, max_new_tokens=NEW, output_scores=True,
                               return_dict_in_generate=True, pad_token_id=0)
-    # the cache keeps the keys and values in F16 on ggml: a greedy choice must not hang on a gap below that noise
+    # a greedy choice must not hang on a gap below the noise of the sums
     for step in made.scores:
         top = step[0].topk(2).values
-        assert float(top[0] - top[1]) > 0.02, float(top[0] - top[1])
+        assert float(top[0] - top[1]) > 0.01, float(top[0] - top[1])
     weights = {}
     shapes = {}
     for name, p in model.state_dict().items():

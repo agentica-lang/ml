@@ -219,20 +219,12 @@ whole sequences, with no cache; generation is `generate_granite_moe.agc` (below)
 
 ### Granite MoE generation
 
-`generate_granite_moe.agc` is `generate.agc` with Granite's layer, on `stepping.agc` (`open(m, usable = 0)`, `step`,
-`step_logits`, `step_top`, `generate`, `finish`, `close` and `compiles` are the ones of `Generate`). The cache is the
-keys and values of every layer, `[1, kv_heads, rows, head_dim]` padded to a capacity (`F16` on ggml). The step is
-`GraniteMoe`'s layer with the multipliers and `Moe.moe`, over the new tokens only.
-
-- A prompt is padded to its capacity (8, 16, ...), and the padding rows go through the router and the experts too: the
-  mask keeps every real token off their keys, and `Moe.moe` treats each token alone, so they change nothing; they cost
-  the experts of up to twice the prompt. A decode step is one token (one `top_ids` and two `expert_matmul` nodes per
-  layer) in a compiled graph.
-- `GraniteMoe.times` and `GraniteMoe.scores` are the multiplier and the head with `logits_scaling` that the forward
-  and the steps share.
-- The `F16` cache moves a logit of Granite MoE by up to 0.19 (against 8.2e-5 with an `F32` cache, tried by hand): the
-  embedding multiplier of 12 makes the keys and values large. A greedy choice between two logits closer than that can
-  differ from Hugging Face's.
+`generate_granite_moe.agc` is `generate.agc` with Granite's layer, on `stepping.agc`: the API, the compiled steps, the
+padded prompt, the `usable` mask and the pick in the graph are those of [Qwen3.5 generation](#qwen35-generation) and
+`Generate`. The cache is the keys and values of every layer, `[1, kv_heads, rows, head_dim]`, padded to a capacity, in
+`F32` with no option: an `F16` cache moved the logits by up to 0.19, more than the gap of some greedy choices. A
+prompt's padding rows go through the router and the experts too, which changes no real token (the mask keeps them off,
+`Moe.moe` treats tokens alone). `GraniteMoe.times` and `GraniteMoe.scores` are what the forward and the steps share.
 
 ## BERT
 
@@ -468,18 +460,16 @@ error row per config field.
 - `test/granite_moe_test.agc` against `test/granite_moe_golden.py` (manual, Hugging Face's `GraniteMoeForCausalLM` in
   `float32`, `fixtures/granite_moe_golden.json`): a tiny random model (2 layers, hidden 16, 6 experts of which 2 are
   picked, the four multipliers set to values other than 1, tied head) written as a safetensors file under the official
-  names; the logits of every position of two rows match on the reference (1e-4) and on ggml CPU (1e-3); an untied head
-  is the file's; a config the model does not run and weights other than `F32` are errors.
-- `test/generate_granite_moe_test.agc` against the same golden (it adds a greedy `generate` of Hugging Face from a prompt
-  of 7 ids, 14 new ids and their logits): the cached steps (a padded prompt of 3 ids, then one id at a time) give the
-  logits of the whole forward on the reference and ggml, and the greedy generation crossing the capacities 8, 16 and 32
-  gives Hugging Face's ids and logits on ggml (CPU, and Vulkan when there is one; the tiny model's smallest gap between
-  the two largest logits of a step is 0.034).
+  names; the logits of every position of two rows match on the reference (1e-4) and on ggml CPU (1e-3); the cached steps
+  of `Generate` (a padded prompt of 3 ids, then one id at a time) give the logits of the whole forward, and a greedy
+  `generate` of 14 ids from a prompt of 7, crossing the capacities 8, 16 and 32, gives Hugging Face's ids and logits, on
+  the reference and on ggml; an untied head is the file's; a config the model does not run and weights other than `F32`
+  are errors.
 - `tools/generate_granite_moe_check.agc` against Hugging Face's greedy `generate` (`test/granite_moe_check_golden.py`,
   manual): 24 new ids for each of five prompts of 5 to 217 tokens of `ibm-granite/granite-3.1-1b-a400m-instruct`, equal on
   ggml CPU (the smallest gap between the two largest logits of a step is 0.115). It feeds the prompt and Hugging Face's
-  ids to `step_logits` and compares the five largest logits of each step: the largest gap is 0.19 with the `F16` cache.
-  About 18 tokens per second after the prompt, 5.6 GB at the peak.
+  ids to `step_logits` and compares the five largest logits of each step: F32 cache, 8.2e-5 from Hugging Face's. About 17
+  tokens per second after the prompt, 5.6 GB at the peak.
 - `tools/granite_moe_check.agc` against Hugging Face's `GraniteMoeForCausalLM` on `ibm-granite/granite-3.1-1b-a400m-instruct`
   (`test/granite_moe_check_golden.py`, manual: it loads the checkpoint in `bfloat16` and turns one layer at a time to
   `float32`, so it fits in 5 GB): five prompts of 5 to 217 tokens, the logits of the last position over the vocabulary

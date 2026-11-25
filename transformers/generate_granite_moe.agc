@@ -1,6 +1,6 @@
 ## Greedy or sampled generation with Granite MoE (`transformers/DESIGN.md`), the cache of `generate.agc`: the keys
 ## (already rotated) and the values of a layer `[1, kv_heads, rows, head_dim]`, padded to a capacity of 8, 16, 32 and so
-## on (`F16` on `Ggml`), the compiled steps by shape and the pick of the next id in the graph. A prompt is padded to its
+## on (`F32`, see `transformers/DESIGN.md`), the compiled steps by shape and the pick of the next id in the graph. A prompt is padded to its
 ## capacity and the padding rows go through the experts too, but no real token reads them (the mask hides them), and an
 ## expert's answer for a token does not depend on the other tokens. The block of a layer is `GraniteMoe`'s: the
 ## multipliers of the config, the attention scale, and `Moe.moe` in place of the MLP.
@@ -265,7 +265,7 @@ def compiled_step(
     keys.ahead,
     keys.behind,
     args.map { |t| Trace.spec_of(t) },
-    ->(xs: List[Tensor.Tensor]) { stepped(GraniteMoe.traced(m), g.usable, xs, room, reach, mode, in_place, true) },
+    ->(xs: List[Tensor.Tensor]) { stepped(GraniteMoe.traced(m), g.usable, xs, room, reach, mode, in_place) },
   )
 
   outs = try Trace.run(plan, args)
@@ -314,7 +314,6 @@ def stepped(
   reach: Int,
   mode: Stepping.Head,
   in_place: Bool = false,
-  half: Bool = false,
 ) -> Result[List[Tensor.Tensor]]
   layers = m.config.num_hidden_layers
   width = Tensor.shape(xs[0])[0]
@@ -341,8 +340,8 @@ def stepped(
 
     r = try layer(m, m.layers[i], h, slots.positions, mask, spread, old, in_place, reach)
     h = r.hidden
-    keys = keys.push(try Stepping.cached(r.key, half))
-    values = values.push(try Stepping.cached(r.value, half))
+    keys = keys.push(r.key)
+    values = values.push(r.value)
   end
 
   last = try Tensor.reshape(try Tensor.matmul(xs[2], try Tensor.reshape(h, [width, d])), [1, 1, d])
@@ -382,8 +381,8 @@ def layer(
     key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
     value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
   else
-    key = try Padded.written(try Stepping.widened(old.map { |kv| kv.key }), heads.key, spread.unwrap!, 2)
-    value = try Padded.written(try Stepping.widened(old.map { |kv| kv.value }), heads.value, spread.unwrap!, 2)
+    key = try Padded.written(old.map { |kv| kv.key }, heads.key, spread.unwrap!, 2)
+    value = try Padded.written(old.map { |kv| kv.value }, heads.value, spread.unwrap!, 2)
   end
 
   seen = try Nn.attend(
