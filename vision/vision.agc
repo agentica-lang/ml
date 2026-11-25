@@ -9,6 +9,8 @@ import Image from "pkg/image/image"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
+export Image.Kernel
+
 ## How a tensor lays out an image: `Hwc` is `[height, width, channels]`, as libvips keeps the pixels, and `Chw` is
 ## `[channels, height, width]`. A batch has a first axis `[n, ...]`.
 enum Layout
@@ -18,7 +20,7 @@ end
 
 ## One transform of `apply`. `Resize(n, kernel)` scales the shorter side to `n` and keeps the aspect ratio; the longer
 ## side is cut to a whole number, as torchvision does. `ResizeTo(width, height, kernel)` scales to exactly that size,
-## whatever the aspect ratio. The `kernel` (`Image.Kernel`: `Nearest`, `Linear`, `Cubic`, `Lanczos2`, `Lanczos3`) is the
+## whatever the aspect ratio. The `kernel` (`Vision.Kernel`: `Nearest`, `Linear`, `Cubic`, `Lanczos2`, `Lanczos3`) is the
 ## filter that libvips resizes with: the one of the model's image processor (bicubic is `Cubic`, bilinear `Linear`).
 ## `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an area of that size.
 ## `HorizontalFlip(p)` mirrors the image with probability `p` (`1.0` always).

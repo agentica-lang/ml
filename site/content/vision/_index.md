@@ -59,7 +59,7 @@ end
 | `RandomCrop(width, height)` | cuts the area at a random place |
 | `HorizontalFlip(p)` | mirrors the image with probability `p` |
 
-`kernel` is an `Image.Kernel` (`Nearest`, `Linear`, `Cubic`, `Lanczos2`, `Lanczos3`): the filter that libvips resizes with. Use the kernel of the model's image processor: Hugging Face's ResNet and CLIP processors resize with Pillow's bicubic (`Cubic`) and ViT's with its bilinear (`Linear`). With the kernel of the processor the pixels are at most one 8-bit level from Pillow's (0.0175 for ResNet, 0.0078 for ViT and 0.015 for CLIP, after normalizing): on the four drawn images of the tests 92% to 96% of the samples are Pillow's exactly, 4% to 8% are one level off and under 0.1% two levels off (see [the transformers page](../transformers/_index.md)).
+`kernel` is a `Vision.Kernel` (`Image.Kernel` of the `image` package, which `vision` re-exports; `Nearest`, `Linear`, `Cubic`, `Lanczos2`, `Lanczos3`): the filter that libvips resizes with. Use the kernel of the model's image processor: Hugging Face's ResNet and CLIP processors resize with Pillow's bicubic (`Cubic`) and ViT's with its bilinear (`Linear`). With the kernel of the processor the pixels are at most one 8-bit level from Pillow's (0.0175 for ResNet, 0.0078 for ViT and 0.015 for CLIP, after normalizing): on the four drawn images of the tests 92% to 96% of the samples are Pillow's exactly, 4% to 8% are one level off and under 0.1% two levels off (see [the transformers page](../transformers/_index.md)).
 
 The random steps draw from `seed`, so one seed gives one result. A crop larger than the image, a `Resize` below 1 or a `p` outside `0.0..1.0` is an `error`. The images that `apply` makes along the way are closed when it returns, but the one it gives stays open (see [image](https://www.agentica-lang.com/packages/image/) for the lifetime of an image).
 
@@ -73,7 +73,7 @@ A dataset of the whole folder feeds the loader of `train`, as in [the data loade
 
 ```agentica {mode="fragment"}
 folder = Vision.folder("photos").unwrap!
-steps = [Vision.Step.Resize(36, Image.Kernel.Lanczos3), Vision.Step.CenterCrop(32, 32)]
+steps = [Vision.Step.Resize(36, Vision.Kernel.Lanczos3), Vision.Step.CenterCrop(32, 32)]
 s = Vision.samples(folder, (0...folder.paths.size).to_a, steps, 0, backend).unwrap!
 dataset = Data.dataset(s.inputs, s.targets).unwrap!
 ```

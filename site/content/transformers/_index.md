@@ -80,10 +80,9 @@ end
 
 ## ResNet
 
-`ResNet.open(dir, backend)` loads `model.safetensors` and `config.json` of a `ResNetForImageClassification` (`microsoft/resnet-50`, `microsoft/resnet-18`). `ResNet.run(m, images)` takes the images as `F32` `[batch, 3, height, width]`, already normalized as the checkpoint's image processor does, and gives the logits `[batch, classes]`. `ResNet.top(m, logits, k)` gives the `k` best classes of each image as `Classify.Prediction(id, label, logit)`, best first, with the names of `config.json`. The [vision](../vision/_index.md) package makes the input: Hugging Face's image processor (`resample` 3, bicubic; `size` 224; `crop_pct` 0.875) of these checkpoints resizes the shorter side to 256 (224 over `crop_pct` 0.875), cuts the center 224 by 224, scales to `0..1` and normalizes with the ImageNet mean and std. `Vision.Step.Resize(256, Image.Kernel.Cubic)`, `CenterCrop(224, 224)` and `normalize` do the same up to two differences: the pixels are at most one 8-bit level (0.0175 normalized) from Pillow's, 95% of them exactly, and a crop with an odd gap between the sizes (half a pixel) rounds the offset to the even pixel, as torchvision does, where Hugging Face floors it, so the crop can sit one pixel apart. To classify an image:
+`ResNet.open(dir, backend)` loads `model.safetensors` and `config.json` of a `ResNetForImageClassification` (`microsoft/resnet-50`, `microsoft/resnet-18`). `ResNet.run(m, images)` takes the images as `F32` `[batch, 3, height, width]`, already normalized as the checkpoint's image processor does, and gives the logits `[batch, classes]`. `ResNet.top(m, logits, k)` gives the `k` best classes of each image as `Classify.Prediction(id, label, logit)`, best first, with the names of `config.json`. The [vision](../vision/_index.md) package makes the input: Hugging Face's image processor (`resample` 3, bicubic; `size` 224; `crop_pct` 0.875) of these checkpoints resizes the shorter side to 256 (224 over `crop_pct` 0.875), cuts the center 224 by 224, scales to `0..1` and normalizes with the ImageNet mean and std. `Vision.Step.Resize(256, Vision.Kernel.Cubic)`, `CenterCrop(224, 224)` and `normalize` do the same up to two differences: the pixels are at most one 8-bit level (0.0175 normalized) from Pillow's, 95% of them exactly, and a crop with an odd gap between the sizes (half a pixel) rounds the offset to the even pixel, as torchvision does, where Hugging Face floors it, so the crop can sit one pixel apart. To classify an image:
 
 ```agentica {mode="fragment"}
-import Image from "pkg/image/image"
 import ResNet from "pkg/transformers/resnet"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "pkg/vision/vision"
@@ -91,7 +90,7 @@ import Vision from "pkg/vision/vision"
 backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 m = ResNet.open("resnet-50", backend).unwrap!
 photo = Vision.Folder(classes: ["photo"], paths: ["cat.jpg"], labels: [0])
-steps = [Vision.Step.Resize(256, Image.Kernel.Cubic), Vision.Step.CenterCrop(224, 224)]
+steps = [Vision.Step.Resize(256, Vision.Kernel.Cubic), Vision.Step.CenterCrop(224, 224)]
 batch = Vision.samples(photo, [0], steps, 0, backend).unwrap!
 pixels = Vision.normalize(batch.inputs, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]).unwrap!
 logits = ResNet.run(m, pixels).unwrap!
@@ -108,10 +107,9 @@ end
 
 ## ViT
 
-`ViT.open(dir, backend)` loads `model.safetensors` and `config.json` of a `ViTForImageClassification` (`google/vit-base-patch16-224`). `ViT.run(m, images)` takes the images as `F32` `[batch, 3, 224, 224]`, already normalized as the checkpoint's image processor does, and gives the logits `[batch, classes]`. `ViT.top(m, logits, k)` gives the `k` best classes of each image as `Classify.Prediction(id, label, logit)`, best first, with the names of `config.json`. The [vision](../vision/_index.md) package makes the input: Hugging Face's image processor of this checkpoint stretches the whole image to 224 by 224 (no crop, no aspect ratio kept; `resample` bilinear), scales to `0..1` and normalizes with mean and std 0.5. `Vision.Step.ResizeTo(224, 224, Image.Kernel.Linear)` and `normalize` do the same: the pixels are one level (0.0078 normalized) from Pillow's at the most, 92% of them exactly (0.0235 with libvips' default Lanczos 3). To classify an image:
+`ViT.open(dir, backend)` loads `model.safetensors` and `config.json` of a `ViTForImageClassification` (`google/vit-base-patch16-224`). `ViT.run(m, images)` takes the images as `F32` `[batch, 3, 224, 224]`, already normalized as the checkpoint's image processor does, and gives the logits `[batch, classes]`. `ViT.top(m, logits, k)` gives the `k` best classes of each image as `Classify.Prediction(id, label, logit)`, best first, with the names of `config.json`. The [vision](../vision/_index.md) package makes the input: Hugging Face's image processor of this checkpoint stretches the whole image to 224 by 224 (no crop, no aspect ratio kept; `resample` bilinear), scales to `0..1` and normalizes with mean and std 0.5. `Vision.Step.ResizeTo(224, 224, Vision.Kernel.Linear)` and `normalize` do the same: the pixels are one level (0.0078 normalized) from Pillow's at the most, 92% of them exactly (0.0235 with libvips' default Lanczos 3). To classify an image:
 
 ```agentica {mode="fragment"}
-import Image from "pkg/image/image"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "pkg/vision/vision"
 import ViT from "pkg/transformers/vit"
@@ -119,7 +117,7 @@ import ViT from "pkg/transformers/vit"
 backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 m = ViT.open("vit-base-patch16-224", backend).unwrap!
 photo = Vision.Folder(classes: ["photo"], paths: ["cat.jpg"], labels: [0])
-batch = Vision.samples(photo, [0], [Vision.Step.ResizeTo(224, 224, Image.Kernel.Linear)], 0, backend).unwrap!
+batch = Vision.samples(photo, [0], [Vision.Step.ResizeTo(224, 224, Vision.Kernel.Linear)], 0, backend).unwrap!
 pixels = Vision.normalize(batch.inputs, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap!
 logits = ViT.run(m, pixels).unwrap!
 for p in ViT.top(m, logits, 5).unwrap![0]
@@ -135,12 +133,11 @@ end
 
 ## Zero-shot with CLIP
 
-`Clip.open(dir, backend)` loads `model.safetensors` and `config.json` of a `CLIPModel` (`laion/CLIP-ViT-B-32-laion2B-s34B-b79K`: LAION's ViT-B/32, with the architecture of OpenAI's but weights of its own; `openai/clip-vit-base-patch32` publishes no safetensors file). `Clip.image_embeds(m, images)` takes the images as `F32` `[batch, 3, 224, 224]`, normalized as the checkpoint's image processor does, and gives their embeddings `[batch, 512]`. `Clip.text_embeds(m, rows)` takes rows of ids from the tokenizer (`Clip.encode` of `pkg/transformers/tokenizer/clip`) and gives `[rows, 512]`. Neither is normalized, as `get_image_features` and `get_text_features` of Hugging Face give them. `Clip.logits(m, images, texts)` is the cosine of each image with each text times `exp(logit_scale)` (`m.scale`, 100 here), `[images, texts]`, and `Clip.probabilities` is the softmax of that over the texts: with a prompt for each class, the probability of each class. The [vision](../vision/_index.md) package makes the image input: Hugging Face's image processor of this checkpoint (`resample` 3, bicubic; `size` 224; `crop_size` 224) resizes the shorter side to 224, cuts the center 224 by 224, scales to `0..1` and normalizes with the mean `[0.48145466, 0.4578275, 0.40821073]` and the std `[0.26862954, 0.26130258, 0.27577711]`. `Vision.Step.Resize(224, Image.Kernel.Cubic)`, `CenterCrop(224, 224)` and `normalize` do the same up to the half-pixel rounding of the crop, as for ResNet; the pixels are one level (0.015) from Pillow's at the most, 96% of them exactly. To classify an image with no training on its classes:
+`Clip.open(dir, backend)` loads `model.safetensors` and `config.json` of a `CLIPModel` (`laion/CLIP-ViT-B-32-laion2B-s34B-b79K`: LAION's ViT-B/32, with the architecture of OpenAI's but weights of its own; `openai/clip-vit-base-patch32` publishes no safetensors file). `Clip.image_embeds(m, images)` takes the images as `F32` `[batch, 3, 224, 224]`, normalized as the checkpoint's image processor does, and gives their embeddings `[batch, 512]`. `Clip.text_embeds(m, rows)` takes rows of ids from the tokenizer (`Clip.encode` of `pkg/transformers/tokenizer/clip`) and gives `[rows, 512]`. Neither is normalized, as `get_image_features` and `get_text_features` of Hugging Face give them. `Clip.logits(m, images, texts)` is the cosine of each image with each text times `exp(logit_scale)` (`m.scale`, 100 here), `[images, texts]`, and `Clip.probabilities` is the softmax of that over the texts: with a prompt for each class, the probability of each class. The [vision](../vision/_index.md) package makes the image input: Hugging Face's image processor of this checkpoint (`resample` 3, bicubic; `size` 224; `crop_size` 224) resizes the shorter side to 224, cuts the center 224 by 224, scales to `0..1` and normalizes with the mean `[0.48145466, 0.4578275, 0.40821073]` and the std `[0.26862954, 0.26130258, 0.27577711]`. `Vision.Step.Resize(224, Vision.Kernel.Cubic)`, `CenterCrop(224, 224)` and `normalize` do the same up to the half-pixel rounding of the crop, as for ResNet; the pixels are one level (0.015) from Pillow's at the most, 96% of them exactly. To classify an image with no training on its classes:
 
 ```agentica {mode="fragment"}
 import Clip from "pkg/transformers/clip"
 import ClipTokenizer from "pkg/transformers/tokenizer/clip"
-import Image from "pkg/image/image"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "pkg/vision/vision"
 
@@ -150,7 +147,7 @@ tok = ClipTokenizer.open("clip-vit-b-32").unwrap!
 labels = ["a photo of a cat", "a photo of a dog", "a photo of a bird"]
 rows = labels.map { |l| ClipTokenizer.encode(tok, l).unwrap! }
 photo = Vision.Folder(classes: ["photo"], paths: ["pet.jpg"], labels: [0])
-steps = [Vision.Step.Resize(224, Image.Kernel.Cubic), Vision.Step.CenterCrop(224, 224)]
+steps = [Vision.Step.Resize(224, Vision.Kernel.Cubic), Vision.Step.CenterCrop(224, 224)]
 batch = Vision.samples(photo, [0], steps, 0, backend).unwrap!
 mean = [0.48145466, 0.4578275, 0.40821073]
 std = [0.26862954, 0.26130258, 0.27577711]

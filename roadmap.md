@@ -41,32 +41,19 @@ The numbers and the machine are in
 
 By milestone (`gh issue list -R agentica-lang/ml -m <version>`).
 
-- 0.6.0, models and formats: vision-language models
-  ([ml#84](https://github.com/agentica-lang/ml/issues/84)), Qwen3 on XLA
-  ([ml#243](https://github.com/agentica-lang/ml/issues/243)) and one model over
-  the devices of a machine
-  ([ml#250](https://github.com/agentica-lang/ml/issues/250)), Qwen3.5 text and
-  vision ([ml#150](https://github.com/agentica-lang/ml/issues/150),
-  [ml#151](https://github.com/agentica-lang/ml/issues/151)), the rest of GGUF
-  (Q4_K, Q6_K, safetensors to GGUF,
-  [ml#126](https://github.com/agentica-lang/ml/issues/126)), placement across
-  GPU and RAM ([ml#85](https://github.com/agentica-lang/ml/issues/85)), LoRA
-  speed against PEFT ([ml#236](https://github.com/agentica-lang/ml/issues/236)),
-  inference benchmarks
-  ([ml#173](https://github.com/agentica-lang/ml/issues/173)).
-- 0.7.0, backends: XLA on AWS Neuron
-  ([ml#241](https://github.com/agentica-lang/ml/issues/241)), CUDA
-  ([ml#89](https://github.com/agentica-lang/ml/issues/89)), the failing ggml-cuda
-  tensor tests ([ml#248](https://github.com/agentica-lang/ml/issues/248)) and XLA
-  on CUDA ([ml#249](https://github.com/agentica-lang/ml/issues/249)).
-- 0.8.0, serving: an LLM server, speculative decoding and a paged KV cache
-  ([ml#90](https://github.com/agentica-lang/ml/issues/90),
-  [ml#91](https://github.com/agentica-lang/ml/issues/91),
-  [ml#92](https://github.com/agentica-lang/ml/issues/92)).
-- 0.9.0, distributed: collectives, data-parallel training and distributed
-  inference ([ml#94](https://github.com/agentica-lang/ml/issues/94),
-  [ml#95](https://github.com/agentica-lang/ml/issues/95),
-  [ml#96](https://github.com/agentica-lang/ml/issues/96)).
+- 0.6.0, local LLMs: GGUF (Q4_K, Q6_K, safetensors to GGUF, [ml#126](https://github.com/agentica-lang/ml/issues/126)),
+  placement across GPU and RAM ([ml#85](https://github.com/agentica-lang/ml/issues/85)), Qwen3.5 text models ([ml#150](https://github.com/agentica-lang/ml/issues/150)) and
+  inference benchmarks ([ml#173](https://github.com/agentica-lang/ml/issues/173)).
+- 0.7.0, multimodal: vision-language models ([ml#84](https://github.com/agentica-lang/ml/issues/84)) and Qwen3.5 vision
+  ([ml#151](https://github.com/agentica-lang/ml/issues/151)).
+- 0.8.0, accelerators: CUDA ([ml#89](https://github.com/agentica-lang/ml/issues/89)), the failing ggml-cuda tensor tests
+  ([ml#248](https://github.com/agentica-lang/ml/issues/248)), XLA on CUDA ([ml#249](https://github.com/agentica-lang/ml/issues/249)), XLA on AWS Neuron ([ml#241](https://github.com/agentica-lang/ml/issues/241)), Qwen3 on XLA
+  ([ml#243](https://github.com/agentica-lang/ml/issues/243)), one model over the devices of a machine ([ml#250](https://github.com/agentica-lang/ml/issues/250)) and LoRA speed
+  against PEFT ([ml#236](https://github.com/agentica-lang/ml/issues/236)).
+- 0.9.0, serving: an LLM server, speculative decoding and a paged KV cache
+  ([ml#90](https://github.com/agentica-lang/ml/issues/90), [ml#91](https://github.com/agentica-lang/ml/issues/91), [ml#92](https://github.com/agentica-lang/ml/issues/92)).
+- 0.10.0, distributed: collectives, data-parallel training and distributed
+  inference ([ml#94](https://github.com/agentica-lang/ml/issues/94), [ml#95](https://github.com/agentica-lang/ml/issues/95), [ml#96](https://github.com/agentica-lang/ml/issues/96)).
 - No milestone: cheaper math
   ([ml#86](https://github.com/agentica-lang/ml/issues/86)), XLA on macOS and
   Windows ([ml#232](https://github.com/agentica-lang/ml/issues/232)), the last
