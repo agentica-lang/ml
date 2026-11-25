@@ -304,12 +304,14 @@ r: Result[Tensor] = case a.backend
   Backend.Torch(device) -> Torch.matmul(device, a, b)      # src/torch.agc
   Backend.Trace -> ok(Graph.record(Op.Matmul, [a, b], shape, a.dtype))   # §10
   Backend.Ggml(_) -> Ggml.compiled_only("matmul")          # src/ggml.agc
+  Backend.Xla(_) -> Xla.compiled_only("matmul")            # src/xla.agc
 end
 ```
 
-- The `case` is checked and exhaustive over all four variants, which is the
+- The `case` is checked and exhaustive over all five variants, which is the
   property this shape buys: two compute backends (`Reference`, `Torch`), the
-  `Trace` recorder (it records a node instead of computing, §10.1), and `Ggml`.
+  `Trace` recorder (it records a node instead of computing, §10.1), and the
+  compiled-only `Ggml` and `Xla`.
 - The `Torch` arm calls `src/torch.agc`, which calls the `compute
   def`s of `extern module "torch"` (`src/native.agc`). Both files live in this
   package, and they have to: the arm needs the module's signatures, and the
@@ -574,6 +576,25 @@ end
   `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are stored as `F32` (exact for
   them), `F64`, `I64` and a rank above 4 are refused, and `F16` and `Q8_0` are
   stored only as a half or quantized weight (§7).
+- **`Xla` is compiled-only too, on the CPU.** It runs a trace through XLA,
+  loaded at run time: `native/xla.c` opens the PJRT plugin with `dlopen` and
+  calls `GetPjrtApi`, so nothing of XLA is linked or built here. The plugin is
+  the pinned `xla-cpu-pjrt` wheel of PyPI (Linux x86_64 and aarch64; CI tests
+  x86_64 only), which
+  `tools/install_xla.agc` downloads, checks by its sha256 and keeps in the ml
+  cache; we do not redistribute it. `native/pjrt_c_api.h` is vendored
+  (openxla/xla@dd6381370d6f, PJRT 0.81, Apache-2.0, its notice inside), so the
+  module builds with no download and a missing plugin is an error at run time
+  that names the install step; this is the one header that breaks the rule
+  above that third parties enter only as submodules. A tensor is a PJRT
+  buffer; eagerly the backend creates tensors, reads them back and passes
+  `stop_grad` through, and every other primitive answers
+  `Xla.compiled_only(op)`. `Trace.compile` emits the function as StableHLO
+  (§12) and compiles it once; `Trace.run` runs it, with the constants after the
+  inputs. `evaluate` compiles for each call. Only `Device.Cpu` exists: the
+  device keeps the shape of the other backends, so a GPU plugin is not a
+  breaking change. No input is donated yet: a run makes new outputs. A run
+  holds its inputs only while it runs, and `Trace.close` frees the program.
 
 ## 8. Tensor lifetime
 
@@ -794,8 +815,8 @@ The price:
 - `Trace.stablehlo(specs, f)` traces `f` once, as `Trace.compile` does, and
   writes the traced outputs as one StableHLO module (`src/stablehlo.agc`), a
   second lowering of the graph beside the ggml one (§7). The text knows no
-  backend and no runtime, so XLA through PJRT and IREE can read it; a later
-  backend for either reuses it.
+  backend and no runtime, so XLA through PJRT and IREE can read it. `Xla` (§7)
+  compiles it.
 - The module is one `func.func public @main`. Its arguments are the inputs, in
   the order of `specs`, then the tensors lifted with `Trace.constant`, in the
   order of their nodes; `Module.constants` holds those tensors, so a run gives

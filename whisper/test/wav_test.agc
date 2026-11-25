@@ -12,7 +12,7 @@ def test_16khz_mono_pcm_decodes_to_floats() -> Result[Void]
 end
 
 def test_an_unknown_chunk_is_skipped() -> Result[Void]
-  junk = Bytes.concat(["JUNK".bytes, try Binary.write_u32_le(3), Bytes.from_list([1, 2, 3]).unwrap!])
+  junk = Bytes.concat(["JUNK".bytes, Binary.write_u32_le(3), Bytes.from_list([1, 2, 3]).unwrap!])
   wav = try wav_bytes([1_000])
   # An odd chunk takes a pad byte; the data still decodes after it.
   with_junk = Bytes.concat([wav.slice(0, 12), junk, Bytes.from_list([0]).unwrap!, wav.slice(12, wav.size - 12)])
@@ -60,29 +60,29 @@ end
 def wav_bytes(samples: List[Int], rate: Int = 16_000, channels: Int = 1) -> Result[Bytes]
   pcm: List[Bytes] = []
   for sample in samples
-    pcm = pcm.push(try Binary.write_i16_le(sample))
+    pcm = pcm.push(Binary.write_i16_le(try sample.to_int16))
   end
 
   body = Bytes.concat(pcm)
   fmt = Bytes.concat([
-    try Binary.write_u16_le(1),
-    try Binary.write_u16_le(channels),
-    try Binary.write_u32_le(rate),
-    try Binary.write_u32_le(rate * channels * 2),
-    try Binary.write_u16_le(channels * 2),
-    try Binary.write_u16_le(16),
+    Binary.write_u16_le(1),
+    Binary.write_u16_le(try channels.to_uint16),
+    Binary.write_u32_le(try rate.to_uint32),
+    Binary.write_u32_le(try (rate * channels * 2).to_uint32),
+    Binary.write_u16_le(try (channels * 2).to_uint16),
+    Binary.write_u16_le(16),
   ])
 
   ok(
     Bytes.concat([
       "RIFF".bytes,
-      try Binary.write_u32_le(36 + body.size),
+      Binary.write_u32_le(try (36 + body.size).to_uint32),
       "WAVE".bytes,
       "fmt ".bytes,
-      try Binary.write_u32_le(16),
+      Binary.write_u32_le(16),
       fmt,
       "data".bytes,
-      try Binary.write_u32_le(body.size),
+      Binary.write_u32_le(try body.size.to_uint32),
       body,
     ]),
   )

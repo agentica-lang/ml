@@ -55,7 +55,7 @@ def read(path: String) -> Result[Shards.Shard]
   size = (try File.stat(path)).size_bytes
   return error("#{size} bytes is too short for the header length") if size < 8
   File.open(path) do |f|
-    n = try Binary.read_u64_le(try Shards.read_exact(f, 8), 0)
+    n = try (try Binary.read_u64_le(try Shards.read_exact(f, 8), 0)).to_i
     return error("the header length #{n} is over the limit #{MAX_HEADER}") if n > MAX_HEADER
     return error("the header length #{n} is past the end of the file") if n > size - 8
     shard = try parse(try String.from_bytes(try Shards.read_exact(f, n)), size - 8 - n)

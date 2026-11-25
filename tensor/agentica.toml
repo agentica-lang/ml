@@ -1,5 +1,5 @@
 name = "tensor"
-agentica = "0.37.0"
+agentica = "0.38.0"
 
 # Every bare `end` is followed by an empty line (AGENTS.md).
 [style]
@@ -33,3 +33,12 @@ build = { sources = ["native/torch.c"], libs = ["torch", "torch_cpu", "c10", "st
 [native.ggml]
 optional = true
 build = { sources = ["native/ggml.c", "native/ggml_graph.c"], libs = ["tensor_ggml", "stdc++", "m", "pthread"] }
+
+# The XLA backend's native side: a thin C layer over the PJRT C API, declared by the `extern module "xla"` of
+# `src/xla_native.agc` and dispatched to from the `Backend.Xla(device)` arms of `tensor.agc` (`tensor/DESIGN.md` §7).
+# Nothing of XLA is linked: `native/xla.c` loads the plugin with `dlopen` at run time, from the ml cache where
+# `tools/install_xla.agc` puts it. `native/pjrt_c_api.h` is the API's header (openxla/xla@dd6381370d6f, PJRT 0.81,
+# Apache-2.0, its notice inside), vendored so the module builds with no download.
+[native.xla]
+optional = true
+build = { sources = ["native/xla.c"], libs = ["dl", "pthread"] }

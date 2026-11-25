@@ -54,7 +54,7 @@ end
 def scan(data: Bytes, offset: Int, format: Optional[Format]) -> Result[List[Float]]
   return error("a WAV has no data chunk") if offset + 8 > data.size
   id = data.slice(offset, 4)
-  size = try Binary.read_u32_le(data, offset + 4)
+  size = (try Binary.read_u32_le(data, offset + 4)).to_i
   start = offset + 8
   return error("a WAV chunk runs past its bytes") if start + size > data.size
   if id == "fmt ".bytes
@@ -76,13 +76,13 @@ end
 # 16 kHz 16-bit decodes.
 def read_format(data: Bytes, start: Int, size: Int) -> Result[Format]
   return error("a fmt chunk holds 16 bytes at least") if size < 16
-  format = try Binary.read_u16_le(data, start)
+  format = (try Binary.read_u16_le(data, start)).to_i
   return error("only PCM WAV decodes") if format != FORMAT_PCM
-  channels = try Binary.read_u16_le(data, start + 2)
+  channels = (try Binary.read_u16_le(data, start + 2)).to_i
   return error("only mono WAV decodes") if channels != CHANNELS_MONO
-  rate = try Binary.read_u32_le(data, start + 4)
+  rate = (try Binary.read_u32_le(data, start + 4)).to_i
   return error("only 16 kHz WAV decodes") if rate != RATE_HZ
-  bits = try Binary.read_u16_le(data, start + 14)
+  bits = (try Binary.read_u16_le(data, start + 14)).to_i
   return error("only 16-bit WAV decodes") if bits != BITS_PER_SAMPLE
   ok(Format(channels: channels, rate: rate, bits: bits))
 end

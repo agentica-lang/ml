@@ -158,7 +158,7 @@ def decode(b: Bytes, e: Entry) -> Result[List[Tensor.Values]]
   at = 0
   count = (e.stop - e.start) / WIDTHS[e.dtype]
   case e.dtype
-    "F64" -> ok((0...count).map { |i| Tensor.Values.Float(Float.from_bits(i64_at(b, at + 8 * i))) })
+    "F64" -> ok((0...count).map { |i| Tensor.Values.Float(Float.from_bits(i64_at(b, at + 8 * i).wrap_uint64)) })
     "I8" -> ok((0...count).map { |i| Tensor.Values.Int(signed(b[at + i], 8)) })
     "I16" -> ok((0...count).map { |i| Tensor.Values.Int(signed(u16(b, at + 2 * i), 16)) })
     "I32" -> ok((0...count).map { |i| Tensor.Values.Int(signed(u32(b, at + 4 * i), 32)) })

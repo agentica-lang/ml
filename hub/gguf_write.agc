@@ -112,8 +112,8 @@ def volume(shape: List[Int]) -> Int
 end
 
 def header_of(fields: List[Field], tensors: List[Out]) -> Result[Layout]
-  parts: List[Bytes] = ["GGUF".bytes, try Binary.write_u32_le(3), try Binary.write_u64_le(tensors.size)]
-  parts = parts.push(try Binary.write_u64_le(fields.size))
+  parts: List[Bytes] = ["GGUF".bytes, Binary.write_u32_le(3), Binary.write_u64_le(tensors.size.to_uint64!)]
+  parts = parts.push(Binary.write_u64_le(fields.size.to_uint64!))
   keys: Set[String] = Set.new([])
   for f in fields
     return error("the key #{f.key} appears twice") if keys.include?(f.key)
@@ -135,16 +135,16 @@ def header_of(fields: List[Field], tensors: List[Out]) -> Result[Layout]
 
     return error("the tensor #{t.name} has #{shape.size} dimensions (1 to 4)") if shape.size < 1 or shape.size > 4
     parts = parts.push(try string(t.name))
-    parts = parts.push(try Binary.write_u32_le(shape.size))
+    parts = parts.push(Binary.write_u32_le(shape.size.to_uint32!))
     for d in shape.reverse
       return error("the tensor #{t.name} has a dimension of #{d}") if d < 1
-      parts = parts.push(try Binary.write_u64_le(d))
+      parts = parts.push(Binary.write_u64_le(d.to_uint64!))
     end
 
     at = align(at)
     offsets = offsets.push(at)
-    parts = parts.push(try Binary.write_u32_le(ggml_type(t.format)))
-    parts = parts.push(try Binary.write_u64_le(at))
+    parts = parts.push(Binary.write_u32_le(ggml_type(t.format).to_uint32!))
+    parts = parts.push(Binary.write_u64_le(at.to_uint64!))
     at = at + volume(shape) * width(t.format)
   end
 
@@ -184,26 +184,26 @@ end
 def align(n: Int) -> Int = ((n + ALIGNMENT - 1) / ALIGNMENT) * ALIGNMENT
 
 ## A string: a length of 8 bytes, then the UTF-8.
-def string(s: String) -> Result[Bytes] = ok(Bytes.concat([try Binary.write_u64_le(s.bytes.size), s.bytes]))
+def string(s: String) -> Result[Bytes] = ok(Bytes.concat([Binary.write_u64_le(s.bytes.size.to_uint64!), s.bytes]))
 
 ## The type of a value and the value, as the parts that follow its key.
 def encoded(v: Meta) -> Result[List[Bytes]]
   case v
-    Meta.U32(n) -> ok([try Binary.write_u32_le(4), try Binary.write_u32_le(n)])
-    Meta.F32(x) -> ok([try Binary.write_u32_le(6), Binary.write_f32_le(x)])
-    Meta.Bool(b) -> ok([try Binary.write_u32_le(7), try Binary.write_u8(flag(b))])
-    Meta.Text(s) -> ok([try Binary.write_u32_le(8), try string(s)])
+    Meta.U32(n) -> ok([Binary.write_u32_le(4), Binary.write_u32_le(try n.to_uint32)])
+    Meta.F32(x) -> ok([Binary.write_u32_le(6), Binary.write_f32_le(x.to_float32)])
+    Meta.Bool(b) -> ok([Binary.write_u32_le(7), Binary.write_u8(flag(b).to_uint8!)])
+    Meta.Text(s) -> ok([Binary.write_u32_le(8), try string(s)])
     Meta.Texts(list) ->
-      parts: List[Bytes] = [try Binary.write_u32_le(9), try Binary.write_u32_le(8), try Binary.write_u64_le(list.size)]
+      parts: List[Bytes] = [Binary.write_u32_le(9), Binary.write_u32_le(8), Binary.write_u64_le(list.size.to_uint64!)]
       for s in list
         parts = parts.push(try string(s))
       end
 
       ok(parts)
     Meta.Ints(list) ->
-      parts: List[Bytes] = [try Binary.write_u32_le(9), try Binary.write_u32_le(5), try Binary.write_u64_le(list.size)]
+      parts: List[Bytes] = [Binary.write_u32_le(9), Binary.write_u32_le(5), Binary.write_u64_le(list.size.to_uint64!)]
       for n in list
-        parts = parts.push(try Binary.write_i32_le(n))
+        parts = parts.push(Binary.write_i32_le(try n.to_int32))
       end
 
       ok(parts)
