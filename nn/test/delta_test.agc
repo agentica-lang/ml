@@ -118,6 +118,41 @@ def test_one_token_at_a_time_gives_the_same_answers() -> Result[Void]
   S.expect_close(got, c.out, ABS, REL, "token by token")
 end
 
+## A prompt padded to a longer shape (rows of another value after the real ones, `Delta.padding`) answers and leaves the
+## state as the same prompt alone does, for a prompt shorter and longer than the taps of the convolution.
+def test_padding_leaves_the_answers_and_the_state_of_the_real_tokens() -> Result[Void]
+  for c in (try golden()).cases
+    p = try layer_of(c, S.REF)
+    x = try S.f32(c.x, [c.tokens, c.hidden])
+    for real in [2, 5, c.tokens]
+      alone = try Delta.gated_delta_net(
+        p,
+        try Tensor.slice(x, [0, 0], [real, c.hidden]),
+        try Delta.delta_start(p, S.REF),
+      )
+
+      rest = try Tensor.full([8, c.hidden], Tensor.Values.Float(3.0), Tensor.Dtype.F32, S.REF)
+      padded_x = try Tensor.concat([try Tensor.slice(x, [0, 0], [real, c.hidden]), rest], 0)
+      pad = try Delta.padding(real, real + 8, 4, S.REF)
+      padded = try Delta.gated_delta_net(p, padded_x, try Delta.delta_start(p, S.REF), some(pad))
+      head = try Tensor.slice(padded.out, [0, 0], [real, c.hidden])
+      what = "#{c.value_heads} value heads, #{real} real tokens"
+      try S.expect_close(try S.floats_of(head), try S.floats_of(alone.out), 0.000000001, 0.0, what)
+      try S.expect_close(try S.floats_of(padded.state.conv), try S.floats_of(alone.state.conv), 0.000000001, 0.0, what)
+      try S.expect_close(
+        try S.floats_of(padded.state.recurrent),
+        try S.floats_of(alone.state.recurrent),
+        0.000000001,
+        0.0,
+        what,
+      )
+    end
+  end
+
+  try Test.error?(Delta.padding(0, 4, 4, S.REF))
+  Test.error?(Delta.padding(5, 4, 4, S.REF))
+end
+
 def test_a_convolution_sees_only_the_past() -> Result[Void]
   x = try S.f32([1.0, 10.0, 2.0, 20.0, 3.0, 30.0], [3, 2])
   weight = try S.f32([1.0, 0.0, 0.0, 2.0, 0.5, 0.0, 0.0, 1.0], [2, 4])

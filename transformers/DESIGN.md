@@ -3,8 +3,8 @@
 BERT, DistilBERT, Qwen3, Qwen2.5, ResNet, ViT and CLIP, from Hugging Face checkpoints (Qwen3 also
 from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
 with a KV cache (greedy or sampled), the tokenizers, and the weights by name
-for a fine-tune with `train/`. Qwen3.5 (text only) has its forward; generation,
-the tokenizer and the 2B model follow (ml#150).
+for a fine-tune with `train/`. Qwen3.5 (text only) has its forward, its
+tokenizer, its chat template and generation; the 2B model follows (ml#150).
 
 ## Generation
 
@@ -96,7 +96,7 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 official `Qwen/Qwen3.5-*` repository: `config.json` and `model.safetensors` or
 its `.index.json`), `Qwen3_5.run(m, rows, last)`, `Qwen3_5.logits(m, ids, last)`
 and `Qwen3_5.close_model(m)`. The forward is over whole sequences, with no
-cache; the hybrid cache comes with generation.
+cache; generation is `generate_qwen35.agc` (below).
 
 - `config.json` is nested: the text model is `text_config` (`model_type`
   `qwen3_5_text`), the file is `qwen3_5`. The vision tower (`model.visual.*`)
@@ -125,6 +125,41 @@ cache; the hybrid cache comes with generation.
 - `graph` unrolls one forward per batch row, so a batch of N is N times the
   nodes of one row. There are no `weights`/`with_weights` yet, so a fine-tune
   with `train/` is not supported.
+
+### Qwen3.5 generation
+
+`generate_qwen35.agc` is `generate.agc` with a hybrid
+cache; the shared parts (the compiled plans, the head modes, the pick in the
+graph, the inputs) are in `stepping.agc`. `open(m, usable = 0)`, `step`,
+`step_logits`, `step_top`, `generate`, `finish`, `close` and `compiles` are the
+ones of `Generate`.
+
+- A full-attention layer keeps `[1, kv_heads, rows, head_dim]` keys and values
+  as Qwen3's layers do (`F16` on ggml), padded to the capacity, written in place
+  by a one-token step. A linear layer keeps the two `DeltaState` tensors in
+  `F32`: their size does not grow, and a step makes new ones (the old ones are
+  closed). A cache is the keys and values of the full layers then the two
+  states of each linear layer; the graph's inputs are the ids, the positions,
+  the one-hot of the last real token and the `Delta.Padding`.
+- A prompt is padded to the capacity (8, 16, ...): the full layers mask the
+  padding as before, the linear layers get `g` and `beta` of 0 on the padding
+  rows and the convolution state picked at the last real token
+  (`nn/DESIGN.md`). A decode step is one token with no padding: it gets no
+  `Padding`, so no lists are built on the host, there is no extra product and
+  the state is exact in every precision.
+- **The ids the tokenizer cannot decode.** The embedding of Qwen3.5 has 248,320
+  rows and the tokenizer 248,070 tokens; the 250 rows after them have no text.
+  Hugging Face and `Generate` (Qwen3) answer them when their logit is the
+  largest or sampled. Here `Generator.usable` (`open(m, usable)`) is how many
+  ids a step may answer: the logits of the others get `Nn.MASKED` in the graph,
+  `step_top` and the sampler's window stop at `usable`, and `step`, `generate`
+  never return one. The default 0 is no mask, so the ids are Hugging Face's
+  exactly; a caller that has a tokenizer opens with its count
+  (`Generate.open(m, tok.pieces.size)`, 248,070 for 0.8B). On the real
+  checkpoint the ids with and without it are the same on the prompts.
+- The reference backend runs a padded prompt and a decode step but is slow
+  (the delta rule is the recurrence in doubles): the generation test runs on
+  ggml, and the cached steps on both.
 
 `chat.agc`: `Chat.apply(model_type, messages, add_generation_prompt,
 enable_thinking)` is the ChatML text of `apply_chat_template` for the three
@@ -395,12 +430,34 @@ error row per config field.
   the sha256 of the template and of `tokenizer.json` asserted): 28
   conversations of the Qwen3.5 template (white space of every kind, one
   `</think>`, two, none, an unclosed `<think>`), 4 of them refused by it.
-- `tools/qwen35_check.agc` against Hugging Face's `Qwen3_5ForCausalLM`
-  (`test/qwen35_check_golden.py`, manual): `Qwen/Qwen3.5-0.8B` on five prompts
-  of 5 to 50 tokens, the logits of the last position over the vocabulary and the
-  five largest logits of every position, in `float32`. Largest gap of a logit:
-  2.0e-5 on ggml CPU; the top five ids are the same at every position. Vulkan
-  is not measured yet.
+- `test/generate_qwen35_test.agc` against the same golden (it adds a greedy
+  `generate` of Hugging Face from a prompt of 7 ids, 14 new ids and their
+  logits): the cached steps (a padded prompt of 3 ids, then one id at a time)
+  give the logits of the whole forward on the reference and ggml, and the
+  greedy generation crossing the capacities 8, 16 and 32 gives Hugging Face's
+  ids and logits on ggml. `usable` is tested on ggml.
+- `tools/generate_qwen35_check.agc` against Hugging Face's greedy `generate`
+  (`test/qwen35_check_golden.py`, manual): 24 new ids for each of six prompts
+  of `Qwen/Qwen3.5-0.8B` (5 to 375 tokens, the last one padded to 512 rows),
+  equal on ggml CPU and on Vulkan with `vulkan_fp16` off (the smallest gap
+  between the two largest logits of a step is 0.034), also with
+  `USABLE=248070`. It also feeds the prompt and Hugging Face's ids to
+  `step_logits` and compares the five largest logits of each step: the largest
+  gap is 2.2e-3 on CPU and 2.1e-3 on Vulkan, the cost of the `F16` KV cache.
+  About 9 tokens per second after the prompt on both, 3.9 GB at the peak on the
+  CPU and 1.3 GB on Vulkan.
+- `tools/qwen35_check.agc` on the same prompts (a prompt of more than 100
+  tokens at its last position only): largest gap of a logit 2.0e-5 on CPU and
+  5.5e-5 on Vulkan, the top five ids equal at every position checked.
+- The checkpoint of those checks:
+
+  | Checkpoint | Revision | `model.safetensors-00001-of-00001.safetensors` sha256 |
+  |---|---|---|
+  | `Qwen/Qwen3.5-0.8B` | `2fc06364715b967f1860aea9cf38778875588b17` | `04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696` |
+
+  `tokenizer.json` sha256: `5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42`;
+  `chat_template.jinja`: `273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80`; the committed
+  `test/fixtures/qwen35_golden.json` (a tiny random model, no checkpoint): `07665f66d6f3a7be24c30b3b59ee45436cf7fcce143242d604523804cae22865`.
 - `test/generate_test.agc` against the same peer: the logits of every step of
   a row of 20 ids (the prompt padded to a bucket, the cache growing to 16 and
   32 rows) match the peer's forward over the whole row on the reference (1e-9)

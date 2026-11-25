@@ -1,6 +1,7 @@
 ## Checks Qwen3.5 on a real checkpoint against Hugging Face's `Qwen3_5ForCausalLM` (`test/qwen35_check_golden.py`): for each
 ## prompt the logits of the last position over the whole vocabulary, and the five largest logits of every position, in
-## `float32` on ggml. Manual (it needs the checkpoint); run from `transformers/`:
+## `float32` on ggml (a prompt of more than 100 tokens at its last position only). Manual (it needs the checkpoint); run
+## from `transformers/`:
 ##
 ##   python -I test/qwen35_check_golden.py MODEL_DIR > GOLDEN.json
 ##   agentica tools/qwen35_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
@@ -14,6 +15,9 @@ import Tensor from "pkg/tensor/tensor"
 ## The gap that passes: `float32` through 24 layers, logits of about 10 to 30.
 ABS = 0.002
 REL = 0.0005
+
+## A prompt longer than this is checked at its last position only.
+LONG = 100
 
 struct Case
   ids: List[Int]
@@ -62,15 +66,18 @@ def checked(m: Qwen3_5.Qwen3_5, want: Golden) -> Result[Float]
   for i in 0...want.cases.size
     c = want.cases[i]
     started = Time.monotonic_ms
-    all = try Qwen3_5.run(m, [c.ids])
+    # Every position's logits as host floats is 250,000 values a token: past LONG tokens only the last one is read.
+    long = c.ids.size > LONG
+    all = try Qwen3_5.run(m, [c.ids], long)
     took = Time.monotonic_ms - started
     vocab = Tensor.shape(all)[2]
     read = floats(all)
     Lift.close([all])
     values = try read
-    last = values.drop((c.ids.size - 1) * vocab)
+    last = values.drop(values.size - vocab)
     worst = [worst, try compare("prompt #{i} last position", last, c.last)].max.unwrap!
     for at in 0...c.ids.size
+      next if long
       mine = top5(values.drop(at * vocab).take(vocab))
       if mine.sort != c.top5[at].sort
         return error("prompt #{i} position #{at}: top five #{mine}, expected #{c.top5[at]}")

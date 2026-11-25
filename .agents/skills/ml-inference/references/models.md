@@ -121,6 +121,9 @@ end
 - `Chat.apply(model_type, messages, add_generation_prompt, enable_thinking)`: the last argument is an `Optional[Bool]`;
   `some(false)` makes Qwen3 and Qwen3.5 answer with no `<think>` block (left at `none`, Qwen3 thinks and Qwen3.5 does not,
   as their templates do). `Chat.Message` roles are `system`, `user` and `assistant`.
+- Qwen3.5 (`Qwen/Qwen3.5-0.8B`, text only) is the same flow with `Qwen3_5.open`, `Chat.apply("qwen3_5", ...)` and
+  `pkg/transformers/generate_qwen35` (`Generate.open(m, 248070)`: the ids above the tokenizer's 248,070 tokens, which have
+  no text, are never answered; stop ids `[248046, 248044]`). `Qwen3_5` has no `weights`/`with_weights` (no fine-tune).
 - The same seed draws the same ids. `top_k: 0` (the default) draws among the 256 largest logits.
 - The first call of a new prompt length compiles graphs, which takes a moment; later calls compile nothing.
 - The prompt and the new ids must fit `max_position_embeddings` (40960). One prompt at a time: there is no batching.

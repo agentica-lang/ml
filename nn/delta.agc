@@ -49,6 +49,42 @@ struct Convolved
   state: Tensor.Tensor
 end
 
+## A call over padded tokens: only the first `real` of the `tokens` are tokens, the rest is padding that must leave the
+## state as the real ones left it (a compiled step has one shape for prompts of every length). `valid` is `[tokens]`,
+## 1.0 for a real token and 0.0 for padding: the padding has `g` and `beta` of 0, so the recurrent state passes through it
+## unchanged. `keep` is `[taps - 1, taps - 1 + tokens]`, the one-hot rows that select the `taps - 1` rows of the
+## convolution's input that end at the last real token.
+struct Padding
+  valid: Tensor.Tensor
+  keep: Tensor.Tensor
+end
+
+## The `Padding` of `tokens` rows of which the first `real` are tokens, for a convolution of `taps` taps.
+def padding(real: Int, tokens: Int, taps: Int, backend: Tensor.Backend) -> Result[Padding]
+  if real < 1 or real > tokens or taps < 2
+    return error("padding needs 1 <= real <= tokens and taps >= 2, got #{real}, #{tokens} and #{taps}")
+  end
+
+  valid: List[Tensor.Values] = []
+  for i in 0...tokens
+    valid = valid.push(Tensor.Values.Float(if_real(i < real)))
+  end
+
+  keep: List[Tensor.Values] = []
+  for j in 0...(taps - 1)
+    for c in 0...(taps - 1 + tokens)
+      keep = keep.push(Tensor.Values.Float(if_real(c == real + j)))
+    end
+  end
+
+  ok(
+    Padding(
+      valid: try Tensor.from_list(valid, [tokens], Tensor.Dtype.F32, backend),
+      keep: try Tensor.from_list(keep, [taps - 1, taps - 1 + tokens], Tensor.Dtype.F32, backend),
+    ),
+  )
+end
+
 ## An error unless the heads and widths of `p` are what the layer runs: `Tensor.gated_delta_rule` takes one width for the
 ## keys and the values.
 def check_layer(p: GatedDeltaNet) -> Result[Void]
@@ -80,8 +116,14 @@ end
 
 ## A depthwise convolution over time that sees the past only: `x` is `[tokens, channels]`, `weight` `[channels, taps]`
 ## and `state` the `taps - 1` rows before `x` (zeros at the start), so `out[t] = sum_j weight[:, j] * seen[t + j]`
-## over `seen = state ++ x`. The answer is `[tokens, channels]` and the new state, the last `taps - 1` rows of `seen`.
-def causal_conv1d(x: Tensor.Tensor, weight: Tensor.Tensor, state: Tensor.Tensor) -> Result[Convolved]
+## over `seen = state ++ x`. The answer is `[tokens, channels]` and the new state, the last `taps - 1` rows of `seen`, or
+## with `keep` (`Padding.keep`) the rows it selects.
+def causal_conv1d(
+  x: Tensor.Tensor,
+  weight: Tensor.Tensor,
+  state: Tensor.Tensor,
+  keep: Optional[Tensor.Tensor] = none,
+) -> Result[Convolved]
   xs = Tensor.shape(x)
   ws = Tensor.shape(weight)
   return error("causal_conv1d needs x [tokens, channels], got #{xs}") if xs.size != 2
@@ -104,7 +146,12 @@ def causal_conv1d(x: Tensor.Tensor, weight: Tensor.Tensor, state: Tensor.Tensor)
     total = try Tensor.add(total, try Tensor.mul(rows, try Tensor.broadcast_to(tap, [tokens, channels])))
   end
 
-  ok(Convolved(out: total, state: try Tensor.slice(seen, [tokens, 0], [tokens + taps - 1, channels])))
+  kept = case keep
+    some(k) -> Tensor.matmul(k, seen)
+    none -> Tensor.slice(seen, [tokens, 0], [tokens + taps - 1, channels])
+  end
+
+  ok(Convolved(out: total, state: try kept))
 end
 
 ## `weight * rms_norm(x) * silu(z)` over the last axis, both `[rows, width]`: the norm of the output of the layer, which
@@ -115,14 +162,20 @@ def gated_rms_norm(x: Tensor.Tensor, z: Tensor.Tensor, weight: Tensor.Tensor, ep
   Tensor.mul(normed, try Tensor.silu(z))
 end
 
-## The layer over `x` `[tokens, width]`, after the `state` of the tokens before it.
-def gated_delta_net(p: GatedDeltaNet, x: Tensor.Tensor, state: DeltaState) -> Result[DeltaOut]
+## The layer over `x` `[tokens, width]`, after the `state` of the tokens before it. With `padding` the rows of `x` after
+## its `real` ones are padding: their answers are not meaningful and the state is the one after the real rows.
+def gated_delta_net(
+  p: GatedDeltaNet,
+  x: Tensor.Tensor,
+  state: DeltaState,
+  padding: Optional[Padding] = none,
+) -> Result[DeltaOut]
   try check_layer(p)
   return error("gated_delta_net needs x [tokens, width], got #{Tensor.shape(x)}") if Tensor.shape(x).size != 2
   tokens = Tensor.shape(x)[0]
   keys = p.key_heads * p.key_dim
   values = p.value_heads * p.value_dim
-  mixed = try causal_conv1d(try Nn.dense(p.qkv, x), p.conv, state.conv)
+  mixed = try causal_conv1d(try Nn.dense(p.qkv, x), p.conv, state.conv, padding.map { |pad| pad.keep })
   active = try Tensor.silu(mixed.out)
   q = try Tensor.reshape(try Tensor.slice(active, [0, 0], [tokens, keys]), [tokens, p.key_heads, p.key_dim])
   k = try Tensor.reshape(try Tensor.slice(active, [0, keys], [tokens, 2 * keys]), [tokens, p.key_heads, p.key_dim])
@@ -138,6 +191,14 @@ def gated_delta_net(p: GatedDeltaNet, x: Tensor.Tensor, state: DeltaState) -> Re
   stretched = try Tensor.softplus(try Tensor.add(try Nn.dense(p.a, x), try Tensor.broadcast_to(p.dt_bias, per_head)))
 
   g = try Tensor.neg(try Tensor.mul(try Tensor.broadcast_to(try Tensor.exp(p.a_log), per_head), stretched))
+  case padding
+    some(pad) ->
+      live = try Tensor.broadcast_to(try Tensor.reshape(pad.valid, [tokens, 1]), per_head)
+      beta = try Tensor.mul(beta, live)
+      g = try Tensor.mul(g, live)
+    none -> nil
+  end
+
   r = try Tensor.gated_delta_rule(q, k, v, g, beta, state.recurrent)
   rows = [tokens * p.value_heads, p.value_dim]
   gated = try gated_rms_norm(
@@ -152,6 +213,11 @@ def gated_delta_net(p: GatedDeltaNet, x: Tensor.Tensor, state: DeltaState) -> Re
 end
 
 private
+
+def if_real(live: Bool) -> Float
+  return 1.0 if live
+  0.0
+end
 
 ## `x` `[tokens, heads, width]` with each head repeated `times` times in a row (`repeat_interleave` on the head axis),
 ## which is how Hugging Face gives the value heads their key heads (ggml's own broadcast is tiled instead).

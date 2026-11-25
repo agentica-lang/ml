@@ -5,6 +5,7 @@
 ## `transformers/`.
 
 import Generate from "../generate"
+import Stepping from "../stepping"
 import Ggml from "pkg/tensor/src/ggml"
 import Lift from "../lift"
 import Qwen3 from "../qwen3"
@@ -239,7 +240,7 @@ def test_the_pick_of_a_tie_is_the_first_index() -> Result[Void]
       0,
       ->(m: Int) { m },
       [scores],
-      ->(_: Int, xs: List[Tensor.Tensor]) { ok([try Generate.picked(xs[0])]) },
+      ->(_: Int, xs: List[Tensor.Tensor]) { ok([try Stepping.picked(xs[0])]) },
     )
 
     try Test.eq(try S.floats_of(got[0]), [1.0])
@@ -260,7 +261,7 @@ def test_the_pick_of_a_tie_in_a_long_row_is_the_first_index() -> Result[Void]
         0,
         ->(m: Int) { m },
         [scores],
-        ->(_: Int, xs: List[Tensor.Tensor]) { ok([try Generate.picked(xs[0])]) },
+        ->(_: Int, xs: List[Tensor.Tensor]) { ok([try Stepping.picked(xs[0])]) },
       )
 
       try Test.eq(try S.floats_of(got[0]), [tie[0].to_f])
