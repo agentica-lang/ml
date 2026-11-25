@@ -133,7 +133,7 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
   `output_layer_norm`; a `distilbert.` prefix or none), with the layer-norm
   `eps` of 1e-12 that Hugging Face has in its code. It is a file of its own,
   not optional fields of `Bert`: the config names differ and `Bert`'s struct
-  is public. It takes `Bert.padding_bias`, and `embed` pools and normalizes
+  is public. Both take `Nn.padding_bias`, and `embed` pools and normalizes
   in the same graph as the encoder.
 - `sentence.agc` holds what a sentence-embedding model adds to an encoder
   (`mean_pooled`, `normalized`, `cosine_similarity_loss`). A loss lives with

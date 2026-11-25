@@ -10,8 +10,19 @@ Python 3.13). Run it in a throwaway venv, from `transformers/`, with Python's is
 
     python -I test/distilbert_golden.py MODEL_DIR > GOLDEN.json
 
-MODEL_DIR holds `model.safetensors`, `config.json` and `tokenizer.json` of the checkpoint (revision
-c598d92e340e735b82e5b73d7db135209b57b4b0 was used). Only the safetensors file is read.
+MODEL_DIR holds `model.safetensors`, `config.json` and `tokenizer.json` of the checkpoint, fetched at the revision
+that was used and without its pickle:
+
+    from huggingface_hub import snapshot_download
+    snapshot_download(
+        "sentence-transformers/msmarco-distilbert-cos-v5",
+        revision="c598d92e340e735b82e5b73d7db135209b57b4b0",
+        allow_patterns=["model.safetensors", "config.json", "tokenizer.json"],
+        local_dir=MODEL_DIR,
+    )
+
+Only the safetensors file is read. With these versions the check passed with a largest gap of 7e-6 (ggml CPU and
+Vulkan), under its tolerance of 1e-4.
 """
 
 import json

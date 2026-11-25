@@ -43,7 +43,7 @@ end
 
 ## DistilBERT
 
-`DistilBert.open(dir, backend)` loads `model.safetensors` and `config.json` of a DistilBERT (`sentence-transformers/msmarco-distilbert-cos-v5`, `distilbert-base-uncased`): BERT's blocks with word and position embeddings only, no token types and no pooler. `DistilBert.run(m, encodings)` pads the encodings to the longest and gives the last hidden state `[batch, seq, dim]`. `DistilBert.embed(m, encodings, normalize)` gives one vector per sentence, `[batch, dim]`: the mean of its token vectors, and with `normalize: true` that mean over its length, which is what a sentence-transformers model with `Pooling` and `Normalize` modules answers.
+`DistilBert.open(dir, backend)` loads `model.safetensors` and `config.json` of a DistilBERT (`sentence-transformers/msmarco-distilbert-cos-v5`, `distilbert-base-uncased`): BERT's blocks with word and position embeddings only, no token types and no pooler. `DistilBert.run(m, encodings)` pads the encodings to the longest and gives the last hidden state `[batch, seq, dim]`. `DistilBert.embed(m, encodings, normalize)` gives one vector per sentence, `[batch, dim]`: the mean of its token vectors, and with `normalize: true` that mean over its length, which is what a sentence-transformers model with `Pooling` and `Normalize` modules answers. `msmarco-distilbert-cos-v5` lists `Normalize` in its `modules.json`, so its embeddings need `normalize: true`.
 
 ```agentica
 import DistilBert from "pkg/transformers/distilbert"
@@ -72,7 +72,7 @@ end
 
 `Sentence` (`pkg/transformers/sentence`) holds the pieces a sentence-embedding model adds to an encoder, each usable inside a trace:
 
-- `Sentence.mean_pooled(hidden, mask)` averages `[batch, seq, width]` over the tokens the `[batch, seq]` mask keeps.
+- `Sentence.mean_pooled(hidden, mask)` averages `[batch, seq, width]` over the tokens the `[batch, seq]` mask keeps. A row with no token gives zeros.
 - `Sentence.normalized(x)` gives each row of `[batch, width]` over its length. A row of zeros stays zeros.
 - `Sentence.cosine_similarity_loss(a, b, scores)` is the mean of `(cosine - score)^2` over pairs of rows (`Nn.cosine_similarity`) with `[batch]` scores: sentence-transformers' `CosineSimilarityLoss`.
 

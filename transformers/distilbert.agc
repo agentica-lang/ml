@@ -6,7 +6,6 @@
 ## It loads the checkpoint of a `DistilBertModel` (no prefix) and of a `DistilBertFor...` (`distilbert.` prefix,
 ## whose heads are ignored).
 
-import Bert from "bert"
 import Hub from "pkg/hub/hub"
 import Lift from "lift"
 import Load from "pkg/hub/load"
@@ -27,8 +26,8 @@ struct Config
   hidden_dim: Int
   vocab_size: Int
   max_position_embeddings: Int
-  activation: String
   model_type: String
+  activation: String = "gelu"
   pad_token_id: Int = 0
   sinusoidal_pos_embds: Bool = false
 end
@@ -221,12 +220,13 @@ def inputs(m: DistilBert, encodings: List[WordPiece.Encoding]) -> Result[Inputs]
 
   backend = Tensor.backend(m.words.table)
   shape = [encodings.size, seq]
-  ok(
-    Inputs(
-      ids: try Tensor.from_list(ids, shape, Tensor.Dtype.I32, backend),
-      keep: try Tensor.from_list(keep, shape, Tensor.Dtype.F32, backend),
-    ),
-  )
+  id_tensor = try Tensor.from_list(ids, shape, Tensor.Dtype.I32, backend)
+  case Tensor.from_list(keep, shape, Tensor.Dtype.F32, backend)
+    ok(mask) -> ok(Inputs(ids: id_tensor, keep: mask))
+    error(e) ->
+      Lift.close([id_tensor])
+      error(e)
+  end
 end
 
 ## The embeddings and the blocks, then the pooling.
@@ -237,7 +237,7 @@ def graph(m: DistilBert, ids: Tensor.Tensor, mask: Tensor.Tensor, pooling: Pooli
   width = m.config.dim
   words = try Tensor.reshape(try Nn.embedding(m.words, try Tensor.reshape(ids, [batch * seq])), [batch, seq, width])
   h = try Nn.layer_norm(m.norm, try Nn.positional(m.positions, words))
-  h = try Nn.encoder_stack(m.stack, h, some(try Bert.padding_bias(mask)))
+  h = try Nn.encoder_stack(m.stack, h, some(try Nn.padding_bias(mask)))
   case pooling
     Pooling.Hidden -> ok(h)
     Pooling.Mean -> Sentence.mean_pooled(h, mask)

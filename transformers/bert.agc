@@ -185,16 +185,6 @@ def close_model(m: Bert) -> Void
   Lift.close(tensors)
 end
 
-## The additive bias `[batch, 1, seq, seq]` of a `[batch, seq]` mask: `MASKED`
-## on the keys that are padding, 0.0 elsewhere.
-def padding_bias(mask: Tensor.Tensor) -> Result[Tensor.Tensor]
-  shape = Tensor.shape(mask)
-  ones = try Tensor.full(shape, Tensor.Values.Float(1.0), Tensor.Dtype.F32, Tensor.backend(mask))
-  scale = try Tensor.full(shape, Tensor.Values.Float(Nn.MASKED), Tensor.Dtype.F32, Tensor.backend(mask))
-  bias = try Tensor.mul(try Tensor.sub(ones, mask), scale)
-  Tensor.broadcast_to(try Tensor.reshape(bias, [shape[0], 1, 1, shape[1]]), [shape[0], 1, shape[1], shape[1]])
-end
-
 private
 
 ## The three input tensors of a batch: ids and type ids (`I32`) and the mask (`F32`).
@@ -330,7 +320,7 @@ def graph(
   words = try Tensor.reshape(try Nn.embedding(m.words, try Tensor.reshape(ids, flat)), [batch, seq, width])
   kinds = try Tensor.reshape(try Nn.embedding(m.types, try Tensor.reshape(type_ids, flat)), [batch, seq, width])
   h = try Nn.layer_norm(m.norm, try Nn.positional(m.positions, try Tensor.add(words, kinds)))
-  h = try Nn.encoder_stack(m.stack, h, some(try padding_bias(mask)))
+  h = try Nn.encoder_stack(m.stack, h, some(try Nn.padding_bias(mask)))
   return ok([h]) if not pool
   case m.pooler
     some(p) ->

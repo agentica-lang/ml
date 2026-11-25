@@ -17,6 +17,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### nn
 
 - `Nn.cosine_similarity`: the cosine of each pair of rows of two tensors, with a gradient.
+- `Nn.padding_bias`: the attention mask of a padded batch.
 - `Padded.reach` and `Padded.reached`: the rows of a padded cache that an attention reads, the rows in use rounded up to 256 or to an eighth of the capacity.
 
 ### train
