@@ -93,6 +93,19 @@ def test_only_a_gated_attention_has_a_gate() -> Result[Void]
   Test.error?(Nn.project(p.with(heads: 3), x, x))
 end
 
+## `attend` needs the gate of a gated attention, and takes none for another.
+def test_attend_wants_the_gate_exactly_when_the_attention_has_one() -> Result[Void]
+  g = try golden()
+  p = try attention_of(g)
+  x = try S.f32(g.x, [1, g.tokens, g.hidden])
+  heads = try Nn.project(p, x, x)
+  try Test.error?(Nn.attend(p, heads.query, heads.key, heads.value, none, true))
+  rows = g.heads * g.head_dim
+  plain = p.with(gate: false, query: try dense(g.q_proj.take(rows * g.hidden), rows, g.hidden))
+  try Test.error?(Nn.attend(plain, heads.query, heads.key, heads.value, none, true, heads.gate))
+  ok()
+end
+
 ## ggml (CPU) against the reference, node by node.
 def test_a_gated_attention_agrees_with_the_reference_on_ggml() -> Result[Void]
   try Tensor.vulkan_fp16(false)

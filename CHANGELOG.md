@@ -11,7 +11,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### nn
 
-- `Nn.Attention` has `gate` (ml#150): the query projection holds a gate per head, and `attend` scales the merged heads by its sigmoid, as Qwen3.5's full attention does. Matches Hugging Face's `Qwen3_5Attention` with rotary on part of each head.
+- `Nn.Attention` has `gate`: Qwen3.5's output-gated full attention (ml#150).
 - `Delta.gated_delta_net`, the linear attention layer of Qwen3.5 with its conv and recurrent state, in `pkg/nn/delta` (ml#150).
 
 ## [0.5.1] - 2026-11-25

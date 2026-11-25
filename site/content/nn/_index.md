@@ -37,8 +37,8 @@ The shapes are the ones the layers take. `dense` takes any rank. Attention needs
 | `Embedding` | `table` as `[rows, width]` | `embedding(p, ids)`; `positional(p, x)` adds the first rows of the table |
 | `Conv1d` | `weight` as `[out, in, kernel]`, `bias`, `stride`, `padding` | `conv1d(p, x)` |
 | `Conv2d` | `weight` as `[out, in / groups, kh, kw]`, `bias`, `stride`, `padding`, `groups` | `conv2d(p, x)` on `[batch, in, h, w]`; `global_avg_pool2d(x)` is the mean of each channel over `h` and `w`, `[batch, channels]`; `fold_batch_norm(conv, gamma, beta, mean, var, eps)` folds the inference batch norm that follows a convolution into its weight and bias |
-| `Attention` | four `Dense` projections, `heads`, and optional `kv_heads`, `rope`, `query_norm`, `key_norm`, and `gate` (Qwen3.5: `query` projects to a query and a gate per head, and `attend` multiplies the merged heads by the sigmoid of the gate) | `attention(p, queries, memory, mask?, causal?, positions?, memory_positions?)`, `self_attention(p, x, mask?, causal?)`; `project` and `attend`, the two halves of `attention` |
-| `Heads` | `query`, `key`, `value`: the heads that `project` returns; `query` is `[batch, heads, q, head]`, and `key` and `value` are `[batch, kv_heads, k, head]` (`kv_heads` is `heads` when none) | the input of `attend` |
+| `Attention` | four `Dense` projections, `heads`, and optional `kv_heads`, `rope`, `query_norm`, `key_norm` and `gate` (Qwen3.5, see below) | `attention(p, queries, memory, mask?, causal?, positions?, memory_positions?)`, `self_attention(p, x, mask?, causal?)`; `project` and `attend`, the two halves of `attention` |
+| `Heads` | `query`, `key`, `value` and, for a gated attention, `gate` (shaped as `query`): the heads that `project` returns; `query` is `[batch, heads, q, head]`, and `key` and `value` are `[batch, kv_heads, k, head]` (`kv_heads` is `heads` when none) | the input of `attend`, which takes the `gate` too |
 | `Mlp` | `up`, `down`, `activation`, optional `gate` | `mlp(p, x)`: `dense`, activation, `dense`; with a `gate`, `down(activation(gate(x)) * up(x))` |
 | `Delta.GatedDeltaNet` (`pkg/nn/delta`) | the linear attention layer of Qwen3.5: five `Dense` projections, a depthwise `conv`, `dt_bias`, `a_log`, `norm`, and the head counts and width | `Delta.gated_delta_net(p, x, state)` on one sequence `[tokens, width]`, after the `DeltaState` of the tokens before it (`delta_start(p, backend)` for the first call); inference only, no gradient |
 | `EncoderBlock` | two norms, attention, MLP, `norm_first` | `encoder_block(p, x, mask?, causal?)` |
@@ -56,6 +56,8 @@ An activation is a function applied to each value, such as `relu`. The `Activati
 `activate(activation, x)` applies one of them to a tensor. `mlp` uses it.
 
 `cosine_similarity(a, b)` gives the cosine of each pair of rows of two `[batch, width]` tensors, as `[batch]`, the values of PyTorch's `cosine_similarity`. A row of zeros has a cosine of 0, and `Trace` takes its gradient.
+
+With `gate: true` (the full attention of Qwen3.5) `query` projects to `2 * heads` heads, per head its query rows and then its gate rows, as the checkpoint stores `q_proj`. `project` returns the gate in `Heads.gate`, and `attend(..., gate)` multiplies the merged heads by its sigmoid before `output`; `attend` is an error for a gated attention without the gate and for any other attention with one. The norms of Qwen3.5 scale by `1 + weight`: a loader adds 1 to the weight.
 
 A causal mask stops each position from seeing the positions after it. `causal: true` applies it inside `attention`, and `causal_mask(size, dtype, backend)` builds the same additive mask for a caller that wants it. `padding_bias(mask)` turns the `[batch, seq]` mask of a padded batch (1.0 for a token, 0.0 for padding) into the additive mask `[batch, 1, seq, seq]` that keeps every query off the padding.
 

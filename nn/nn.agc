@@ -90,8 +90,8 @@ end
 ## projects the merged heads back. The head width is the width of `query`'s
 ## output over `heads`, so loaded weights may have a head width other than
 ## `width / heads` (Qwen3); `init_attention` makes only `width / heads`. `query_norm` and `key_norm` normalize each
-## head over its width (Qwen3), before `rope`. With `gate` (Qwen3.5) `query` projects to `2 * heads` heads: per head its
-## query and then its gate, and `attend` multiplies the merged heads by `sigmoid(gate)` before `output`.
+## head over its width (Qwen3), before `rope`. With `gate` (Qwen3.5) `query` projects to `2 * heads` heads: per head
+## its query and then its gate, and `attend` multiplies the merged heads by `sigmoid(gate)` before `output`.
 struct Attention
   query: Dense
   key: Dense
@@ -175,12 +175,6 @@ struct Heads
   key: Tensor.Tensor
   value: Tensor.Tensor
   gate: Optional[Tensor.Tensor] = none
-end
-
-## The query heads of a projection and, for a gated attention, their gates.
-struct Asked
-  query: Tensor.Tensor
-  gate: Optional[Tensor.Tensor]
 end
 
 ## The cosine of each pair of rows of `a` and `b` (`[batch, width]` both), as `[batch]`:
@@ -361,7 +355,8 @@ end
 ## `Tensor.attention` of `query` over `key` and `value` (the tensors of a
 ## `Heads`, or a cache of them), the heads merged and `p.output` applied:
 ## `[batch, q, width]`. `mask` and `causal` are as for `attention`; `gate` is the `gate` of the `Heads` of a gated
-## attention, whose sigmoid scales the merged heads before `p.output`.
+## attention (an error without it, and for any other attention), whose sigmoid scales the merged heads before
+## `p.output`.
 def attend(
   p: Attention,
   query: Tensor.Tensor,
@@ -371,6 +366,8 @@ def attend(
   causal: Bool = false,
   gate: Optional[Tensor.Tensor] = none,
 ) -> Result[Tensor.Tensor]
+  return error("a gated attention needs the gate of its heads") if p.gate and gate.none?
+  return error("a gate is for a gated attention: this one has no gate") if !p.gate and gate.some?
   context = try Tensor.attention(query, key, value, mask: mask, causal: causal)
   merged = try merge_heads(context)
   case gate
@@ -669,6 +666,12 @@ def init_decoder_stack(
 end
 
 private
+
+## The query heads of a projection and, for a gated attention, their gates.
+struct Asked
+  query: Tensor.Tensor
+  gate: Optional[Tensor.Tensor]
+end
 
 def init_final_norm(width: Int, backend: Tensor.Backend, options: BlockOptions) -> Result[Optional[LayerNorm]]
   return ok(none) if !options.norm_first
