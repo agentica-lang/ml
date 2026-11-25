@@ -53,6 +53,7 @@ end
 | Step | Does |
 |---|---|
 | `Resize(n)` | scales the shorter side to `n` and keeps the aspect ratio; the longer side is cut to a whole number, as torchvision does |
+| `ResizeTo(width, height)` | scales to exactly that size, whatever the aspect ratio (what the processor of ViT does) |
 | `CenterCrop(width, height)` | cuts the area at the center; when the gap is odd and falls between two pixels, the offset is the even one, as Python's `round` and torchvision do |
 | `RandomCrop(width, height)` | cuts the area at a random place |
 | `HorizontalFlip(p)` | mirrors the image with probability `p` |
@@ -78,7 +79,7 @@ dataset = Data.dataset(s.inputs, s.targets).unwrap!
 
 ## Limits
 
-- The `[n, 3, height, width]` layout is the one `Nn.conv2d` takes. [ResNet](../transformers/_index.md#resnet) classifies a batch of them after `normalize`.
+- The `[n, 3, height, width]` layout is the one `Nn.conv2d` takes. [ResNet](../transformers/_index.md#resnet) classifies a batch of them after `normalize`, and so does [ViT](../transformers/_index.md#vit).
 - `dtype: U8` is not for ggml, which cannot convert to `U8`.
 - The samples cross as little-endian `F32`. A big-endian machine is untested, and its pixels would be wrong.
 - The `U8` cast of `dtype: U8` is tested on the reference only, not on libtorch or XLA.

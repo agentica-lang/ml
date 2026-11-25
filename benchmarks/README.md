@@ -376,6 +376,21 @@ Loading takes 0.1 to 0.5 s on the CPU and 0.4 to 1.1 s on Vulkan. At batch 32 th
 agentica --max-steps 1000000000000 transformers/tools/bench_resnet.agc MODEL_DIR cpu|vulkan BATCH REPS forward|backward
 ```
 
+## ViT-B/16 (ml#83), ours only
+
+`google/vit-base-patch16-224` (revision and hash in `transformers/DESIGN.md`, `model.safetensors`, `float32`), one batch of 224 by 224 images of constant pixels. Ours is `transformers/tools/bench_vit.agc` on this PR's branch (Agentica 0.38.0), same machine as above, nothing else running (`--bench` slot): one warm-up run, then the median of 5 timed runs (3 at batch 32). "forward" is `ViT.run` (one graph), whose logits are read back. The weights are `F32` and Vulkan multiplies in exact `float32` (the tool calls `Tensor.vulkan_fp16(false)` first). There is no peer row: PyTorch was not run for this model.
+
+| Row | batch 1 | batch 32 |
+|---|---|---|
+| ViT-B/16, ggml CPU, forward | 376 ms (2.6 images/s) | 9403 ms (3.4) |
+| ViT-B/16, ggml Vulkan, forward | 186 ms (5.3) | 4289 ms (7.4) |
+
+Loading takes 0.25 to 0.27 s on both.
+
+```sh
+agentica --max-steps 1000000000000 transformers/tools/bench_vit.agc MODEL_DIR cpu|vulkan BATCH REPS
+```
+
 ## Run it
 
 You need the Hugging Face checkout of `openai/whisper-tiny`, openai/whisper's `whisper/assets/mel_filters.npz`, a whisper.cpp checkout (never modified), `cmake`, a C++ compiler, `/usr/bin/time` (GNU time), `agentica` 0.38.0 on `PATH`, libtorch, and the Vulkan headers and `glslc` for the Vulkan rows. Python needs only the system numpy: the scripts run with `python3 -I`, which ignores virtual environments and `PYTHONPATH`.

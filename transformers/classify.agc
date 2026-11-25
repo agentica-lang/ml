@@ -11,11 +11,7 @@ end
 
 ## The `k` best classes of each row of `logits` (`[batch, classes]`), best first, named by `id2label` (the id as text is
 ## the name of a class it does not list).
-def top(
-  id2label: Map[String, String],
-  logits: Tensor.Tensor,
-  k: Int,
-) -> Result[List[List[Prediction]]]
+def top(id2label: Map[String, String], logits: Tensor.Tensor, k: Int) -> Result[List[List[Prediction]]]
   shape = Tensor.shape(logits)
   return error("top needs logits of [batch, classes], got #{shape}") if shape.size != 2 or k < 1 or k > shape[1]
   values: List[Float] = []

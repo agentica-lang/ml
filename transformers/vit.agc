@@ -234,12 +234,15 @@ def specs_of(config: Config, classes: Int) -> List[Spec]
       end
     end
 
-    specs = specs + [
-      Spec(name: "#{n.up}.weight", shape: [config.intermediate_size, width]),
-      Spec(name: "#{n.up}.bias", shape: [config.intermediate_size]),
-      Spec(name: "#{n.down}.weight", shape: [width, config.intermediate_size]),
-      Spec(name: "#{n.down}.bias", shape: [width]),
-    ]
+    specs = (
+      specs +
+      [
+        Spec(name: "#{n.up}.weight", shape: [config.intermediate_size, width]),
+        Spec(name: "#{n.up}.bias", shape: [config.intermediate_size]),
+        Spec(name: "#{n.down}.weight", shape: [width, config.intermediate_size]),
+        Spec(name: "#{n.down}.bias", shape: [width]),
+      ]
+    )
   end
 
   specs

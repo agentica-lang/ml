@@ -25,6 +25,7 @@ curl -sIL "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/$rev/model.safetensors
 | DistilBERT | `distilbert/distilbert-base-uncased` | the same | `DistilBert.open` |
 | BERT | `google-bert/bert-base-uncased` | the same | `Bert.open` |
 | ResNet-50, ResNet-18 (image classification) | `microsoft/resnet-50`, `microsoft/resnet-18` | `model.safetensors`, `config.json` | `ResNet.open` (the batch norms fold into the convolutions at load; the input is `[batch, 3, 224, 224]` after `vision`'s `Resize(256)`, `CenterCrop(224)` and `normalize` with the ImageNet mean and std) |
+| ViT-B/16 (image classification) | `google/vit-base-patch16-224` | `model.safetensors`, `config.json` | `ViT.open` (the input is `[batch, 3, 224, 224]` after `vision`'s `ResizeTo(224, 224)` and `normalize` with mean and std 0.5) |
 | Whisper tiny | `openai/whisper-tiny` | the same | `Asr.open` (`speech.md`) |
 
 Only `.safetensors` is read, never `pytorch_model.bin`. A sharded model has `model.safetensors.index.json` beside its

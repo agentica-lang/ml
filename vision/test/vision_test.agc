@@ -78,6 +78,17 @@ def test_resize_keeps_the_aspect_ratio_and_crops_center_like_torchvision() -> Re
   Test.error?(Vision.apply(line, [Vision.Step.CenterCrop(10, 1)]))
 end
 
+def test_resize_to_stretches_to_the_size_whatever_the_aspect_ratio() -> Result[Void]
+  wide = try S.u8(List.repeat(1, 8 * 4), 8, 4, 1)
+  square = try Vision.apply(wide, [Vision.Step.ResizeTo(3, 3)])
+  try Test.eq([Image.width(square), Image.height(square)], [3, 3])
+  try Test.eq(try S.samples_of(square), List.repeat(1, 9))
+  same = try Vision.apply(wide, [Vision.Step.ResizeTo(8, 4)])
+  try Test.eq([Image.width(same), Image.height(same)], [8, 4])
+  try Test.error?(Vision.apply(wide, [Vision.Step.ResizeTo(0, 3)]))
+  Test.error?(Vision.apply(wide, [Vision.Step.ResizeTo(3, 0)]))
+end
+
 def test_random_steps_follow_the_seed() -> Result[Void]
   pixels = (0...64).to_a
   image = try S.u8(pixels, 8, 8, 1)

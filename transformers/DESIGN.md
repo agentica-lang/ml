@@ -1,6 +1,6 @@
 # transformers — design
 
-BERT, DistilBERT, Qwen3, Qwen2.5 and ResNet, from Hugging Face checkpoints (Qwen3 also
+BERT, DistilBERT, Qwen3, Qwen2.5, ResNet and ViT, from Hugging Face checkpoints (Qwen3 also
 from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
 with a KV cache (greedy or sampled), the tokenizers, and the weights by name
 for a fine-tune with `train/`. Qwen3.5 is planned (ml#150, ml#151).
@@ -272,6 +272,22 @@ best classes with their `id2label` names.
   `11a01bcc873444bb433140e5f30f3687356641ed923266d738eef1c3438f6d22` (18). `preprocessor_config.json` is the same
   file in both, sha256 `fd575b890da5a949493e1d1e7a70bfcb9e4b99fe444004d2dbfa253add254741`.
 
+## ViT
+
+`vit.agc` reads `ViTForImageClassification` checkpoints (`google/vit-base-patch16-224`): a patch embedding, a class token and learned positions, `Nn.EncoderStack` of pre-norm `Nn.EncoderBlock`s (`layernorm_before`, attention, `layernorm_after`, an MLP with the exact GELU, `hidden_act` `gelu`), the final `vit.layernorm`, and a linear head on the class token. The input is `[batch, 3, 224, 224]` in `F32`, already normalized as the checkpoint's image processor does; `vision/` makes it (`ResizeTo(224, 224)` and `normalize` with mean and std 0.5). `ViT.run` gives the logits `[batch, classes]` and `ViT.top(m, logits, k)` the `k` best classes with their `id2label` names (`Classify.top`, shared with ResNet).
+
+- The patch embedding is `Nn.conv2d` with stride and kernel `patch_size` (`[width, 3, 16, 16]`, as stored), its `[batch, width, 14, 14]` output reshaped to `[batch, width, 196]` and permuted to tokens: a reshape and a linear layer would be the same product, but they need an unfold of the image that the convolution already is. The class token is broadcast over the batch and concatenated first, and the position table `[1, 197, width]` is added: a different image size needs another table, so an input that is not `image_size` by `image_size` is an error (no interpolation).
+- `eps` of the layer norms is `layer_norm_eps` (1e-12). `qkv_bias` false drops the biases of the query, key and value. A `model_type` other than `vit` and an activation other than `gelu` are errors. The names and shapes of every tensor are checked against `config.json` before any is loaded, so a checkpoint that does not fit leaves nothing open.
+- `run` is one staged graph on ggml (`Lift.staged`), `forward` the same as plain `Tensor` calls, as ResNet's.
+- The image processor of the checkpoint (`preprocessor_config.json`: `size` 224, `resample` bilinear by default, `do_normalize` with mean and std 0.5) stretches the whole image to 224 by 224 with no crop and keeps no aspect ratio, which `Vision.Step.ResizeTo(224, 224)` does. `image` resizes with libvips' Lanczos 3 kernel, where Pillow's bilinear resize averages over the area it covers, so the pixels are up to 0.024 (normalized) apart.
+- The official checkpoint at a pinned revision, `model.safetensors` only (never a pickle, `pytorch_model.bin`, or the flax and TensorFlow files):
+
+  | Checkpoint | Revision | `model.safetensors` sha256 |
+  |---|---|---|
+  | `google/vit-base-patch16-224` | `3f49326eb077187dfe1c2a2bb15fbd74e6ab91e3` | `1cea07110a4a47edc51420b2dda6f3b8b58e7256e8f44b4ea6aa9696162ccb5d` |
+
+  `config.json` sha256: `abdf73cc4ce79495a83f32a8c9265daa7a1363f5a3efa4704c88a6e7f45ad19d`. `preprocessor_config.json` sha256: `90d1ae427c27d2b9dcb01f6a62ba96aa67aac2de1697c59cd212055b5035c4a2`.
+
 ## Tests
 
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
@@ -320,6 +336,8 @@ best classes with their `id2label` names.
   (ResNet-18) on CPU, 2.1e-5 on Vulkan; with the pixels of our own pipeline 0.16 (ResNet-50) and 0.065 (ResNet-18),
   from the pixels, which are up to 0.018 (normalized units) from Pillow's: libvips and Pillow resize with different
   kernels. The 224 by 224 crops that the processor made are committed as 8-bit PNGs too (`vision/test/fixtures/resnet/crops`, 113 KB: `pixel_values` is exactly those samples over 255, normalized), so the model alone runs from committed files on its checkpoint, with a tolerance of 1e-3. The golden is committed (`vision/test/fixtures/resnet/golden.json`) and never made in CI. The tolerances are about twice the gaps measured: 0.035 for the pixels and 0.32 for the logits after the pipeline. Vulkan runs with `Tensor.vulkan_fp16(false)`.
+- `test/vit_test.agc` against `test/vit_peer.py` (standard library, doubles): two tiny random ViTs (with and without the biases of the query, key and value) on the reference (1e-9) and on ggml (1e-4), plus the errors of a missing weight, an unsupported config and an input of another size.
+- `vision/test/vit_hf_test.agc` against Hugging Face (the golden script `vision/test/vit_golden.py` is manual: it needs `torch` 2.6.0, `transformers` 4.57.6 and `pillow` 11.3.0, in a venv, run with `python -I`; the test does nothing unless `VIT_MODEL` names the checkpoint folder): the four drawn images of the ResNet test through `ResizeTo(224, 224)`, `normalize` and the model in `float32` on ggml CPU and Vulkan. The 224 by 224 images that the processor made are committed as 8-bit PNGs (`vision/test/fixtures/vit/crops`, 100 KB: `pixel_values` is exactly those samples over 255, normalized), so the model alone runs from committed files: the best 10 logits are Hugging Face's within 1e-4 (the largest gap measured is 1.2e-5 on CPU and 9.6e-6 on Vulkan) and the top 5 are identical, in the same order. Through our own resize the pixels are 0.0235 from Hugging Face's and the logits 0.156, from the pixels; the logits of these images lie within 0.03 to 0.3 of each other, so the resize reorders them and the top 5 are the same five classes, not in the same order. The tolerances are about twice the gaps measured: 0.05 for the pixels, 0.32 for the pipeline. The golden is committed (`vision/test/fixtures/vit/golden.json`) and never made in CI. Vulkan runs with `Tensor.vulkan_fp16(false)`.
 - `test/bert_test.agc` against `test/bert_peer.py` (standard library, doubles):
   a tiny random BERT in both namings and a padded batch, on the reference and
   on ggml (CPU, and Vulkan where there is one).
