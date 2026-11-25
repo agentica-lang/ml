@@ -172,6 +172,31 @@ def test_the_adapted_model_gives_the_output_of_peft() -> Result[Void]
   S.expect_close(try S.floats_of(out), g.output, ABS, REL, "the output")
 end
 
+def test_merged_weights_are_the_applied_ones_on_every_backend() -> Result[Void]
+  g = try golden()
+  want = try Lora.applied((try setup(S.REF)).weights, (try setup(S.REF)).adapter)
+  for backend in try backends()
+    s = try setup(backend)
+    before = try bits(s.weights["first.weight"])
+    with = try Lora.merged(s.weights, s.adapter)
+    try Test.eq(with.keys.sort, s.weights.keys.sort)
+    for name in ADAPTED
+      try Test.eq(Tensor.backend(with[name]), backend)
+      try S.expect_close(try S.floats_of(with[name]), try S.floats_of(want[name]), ABS, REL, "#{name} on #{backend}")
+    end
+
+    try Test.eq(try bits(with["first.bias"]), try bits(s.weights["first.bias"]))
+    try Test.eq(try bits(s.weights["first.weight"]), before)
+  end
+
+  out = try model(
+    try Lora.merged((try setup(S.REF)).weights, (try setup(S.REF)).adapter),
+    (try setup(S.REF)).batch.inputs,
+  )
+
+  S.expect_close(try S.floats_of(out), g.output, ABS, REL, "the output of the merged model")
+end
+
 def test_the_gradients_of_a_and_b_are_those_of_peft() -> Result[Void]
   g = try golden()
   for backend in try backends()

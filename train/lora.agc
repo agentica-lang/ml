@@ -1,7 +1,7 @@
 ## LoRA (`train/DESIGN.md`): a weight `W` of a linear layer, `[out, in]`, stays frozen and two small matrices are
 ## trained beside it, `A` of `[r, in]` and `B` of `[out, r]`. The layer then computes with `W + (alpha / r) · B A`.
 ## `applied` builds that sum, so the model's own forward runs on it: inside a loss it is the training forward, and
-## outside it is the merge for inference. `B` starts at zero, so a new adapter changes nothing. `save` and `open`
+## `merged` computes it once for inference. `B` starts at zero, so a new adapter changes nothing. `save` and `open`
 ## keep an adapter in PEFT's files, so an adapter trained with PEFT runs here and one trained here loads in PEFT.
 
 import Hub from "pkg/hub/hub"
@@ -115,6 +115,25 @@ def applied(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map
     )
 
     out = out.put(name, try Tensor.add(w, try Tensor.matmul(scaled, a)))
+  end
+
+  ok(out)
+end
+
+## `weights` with the adapter merged in, for inference: the adapted weights are new tensors on their backend, each
+## `W + (alpha / r) · B A`, and the others are the tensors of `weights`. The sums run as one traced graph, so this
+## works on ggml too, which `applied` outside a loss does not. A model made from them runs at the cost of the model
+## alone.
+def merged(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map[String, Tensor.Tensor]]
+  sums = try Trace.eval_many(
+    adapter.a + adapter.b,
+    ->(ps: List[Tensor.Tensor]) { sums_of(weights, adapter, ps) },
+    false,
+  )
+
+  out = weights
+  for i in 0...adapter.names.size
+    out = out.put(adapter.names[i], sums[i])
   end
 
   ok(out)
@@ -312,6 +331,17 @@ def adapted_by(key: String) -> Result[String]
   end
 
   error("#{key} is not the lora_A or lora_B of a layer")
+end
+
+## The adapted weights of `applied`, in the order of `names`, with `ps` (every `A`, then every `B`) as the adapter.
+def sums_of(
+  weights: Map[String, Tensor.Tensor],
+  adapter: Adapter,
+  ps: List[Tensor.Tensor],
+) -> Result[List[Tensor.Tensor]]
+  count = adapter.names.size
+  with = try applied(weights, adapter.with(a: ps.take(count), b: ps.drop(count)))
+  ok(adapter.names.map { |name: String| with[name] })
 end
 
 ## The weights of `names` that `targets` take, sorted. Each target must take one.
