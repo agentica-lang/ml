@@ -10,7 +10,7 @@ longest of them rounded up to a multiple of PAD_TO (1: the longest); mean poolin
 and the mean squared gap of the cosine of a pair from its score; `torch.optim.AdamW` (lr 2e-5, betas 0.9 and 0.999, eps
 1e-8, weight decay WEIGHT_DECAY (0.01), none on a bias or a layer-norm weight: two parameter groups), no warmup, no
 clipping, no dropout (`eval()`, with gradients); float32; `torch.set_num_threads` of the CPUs of the process, which
-`run.sh` checks are every online CPU, as ggml takes them.
+`run.sh` checks are every online CPU, as it makes ggml take them (`TENSOR_THREADS`).
 
 It prints the JSON lines of the Agentica side: `checks` (how many weights decay, a SHA-256 of their names and one of
 every token id), `spearman` before and after, and one `step` per step with its loss, its wall time in ms (the batch,
