@@ -103,7 +103,8 @@ Lora.open(dir, backend) -> Result[Adapter]
   tensors, not from `target_modules`, and refuses what `applied` does not
   compute, each by name: another `peft_type`; DoRA, rsLoRA, aLoRA, QALoRA and
   BD-LoRA (`use_dora`, `use_rslora`, `alora_invocation_tokens`, `use_qalora`,
-  `use_bdlora`); `fan_in_fan_out`; a trained bias (`bias`, `lora_bias`);
+  `use_bdlora`) and the variants with a `*_config` (Arrow, KaSA,
+  MonteCLoRA, VeLoRA); `fan_in_fan_out`; a trained bias (`bias`, `lora_bias`);
   `modules_to_save`, `target_parameters` and `trainable_token_indices`;
   `layer_replication`; a rank or alpha pattern; `target_modules` as a regular
   expression; any tensor that is not a float `lora_A` or `lora_B` of a
@@ -119,7 +120,8 @@ Lora.open(dir, backend) -> Result[Adapter]
   adapter of one; without them it writes every weight as a linear layer's.
   `save` also refuses a rank that is not `config.r` and a weight that no
   target takes, since PEFT would not load them, and gives each file its name
-  when it is whole. The test reads files that PEFT wrote (checked in,
+  when it is whole (`Path.replace`, so a second save into a folder replaces
+  the first). The test reads files that PEFT wrote (checked in,
   1.7 kB: the one `.safetensors` in the repository, which `.gitattributes`
   notes), and `test/lora_golden.py check` loads what `save` wrote with PEFT
   (manual).

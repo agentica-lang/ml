@@ -147,6 +147,7 @@ def test_a_config_that_changes_the_math_is_refused() -> Result[Void]
       ["\"lora_alpha\": 4", "\"lora_alpha\": null", "lora_alpha is missing"],
       ["\"lora_alpha\": 4", "\"alpha\": 4", "lora_alpha is missing"],
       ["\"use_qalora\": false", "\"use_qalora\": true", "use_qalora"],
+      ["\"kasa_config\": null", "\"kasa_config\": {\"rank\": 1}", "kasa_config"],
       ["\"use_bdlora\": null", "\"use_bdlora\": {\"target_modules_bd_a\": [\"first\"]}", "use_bdlora"],
       ["\"alora_invocation_tokens\": null", "\"alora_invocation_tokens\": [1, 2]", "alora_invocation_tokens"],
       ["\"layer_replication\": null", "\"layer_replication\": [[0, 1], [0, 1]]", "layer_replication"],
@@ -167,6 +168,8 @@ def test_a_config_that_changes_the_math_is_refused() -> Result[Void]
     try S.expect_error(Lora.open(try folder(dir, "pattern", tensors, pattern), S.REF), "regular expression")
     absent = "#{config.slice(0, start)}\"target_modules\": null#{rest}"
     try S.expect_error(Lora.open(try folder(dir, "absent", tensors, absent), S.REF), "target_modules is missing")
+    bare = "#{config.slice(0, start)}\"target_modules\": []#{rest}"
+    try S.expect_error(Lora.open(try folder(dir, "bare", tensors, bare), S.REF), "names no layer")
     empty = config.replace("\"rank_pattern\": {}", "\"rank_pattern\": null")
     try Test.assert(empty != config, "PEFT's config has a rank_pattern")
     opened = Lora.open(try folder(dir, "empty", tensors, empty), S.REF)
@@ -201,6 +204,21 @@ def test_tensors_that_are_not_a_linear_adapter_are_refused() -> Result[Void]
     end
 
     S.expect_error(Lora.open("#{dir}/missing", S.REF), "adapter_config.json")
+  end
+end
+
+def test_a_second_save_into_a_folder_replaces_the_first() -> Result[Void]
+  with_folder do |dir|
+    first = try Lora.open(PEFT, S.REF)
+    try Lora.save("#{dir}/saved", first)
+    weights = {"only.weight": try Tensor.zeros([3, 5], Tensor.Dtype.F32, S.REF)}
+    second = try Lora.init(weights, Lora.Config(targets: ["only"], r: 3, alpha: 9.0), 4, S.REF)
+    try Lora.save("#{dir}/saved", second)
+    back = try Lora.open("#{dir}/saved", S.REF)
+    try Test.eq(back.config, second.config)
+    try Test.eq(back.names, ["only.weight"])
+    try S.expect_close(try S.floats_of(back.a[0]), try S.floats_of(second.a[0]), 0.000001, 0.0, "A of the second")
+    Test.eq(try Dir.list("#{dir}/saved"), [CONFIG, WEIGHTS])
   end
 end
 
@@ -244,5 +262,5 @@ def odd_files(dir: String) -> Result[Void]
     try S.expect_close(try S.floats_of(half.b[i]), try S.floats_of(made.b[i]), 0.001, 0.001, "B #{i} from F16")
   end
 
-  S.expect_error(Lora.open("#{dir}/integer", S.REF), "floats")
+  S.expect_error(Lora.open("#{dir}/integer", S.REF), "F32, F16 or BF16")
 end

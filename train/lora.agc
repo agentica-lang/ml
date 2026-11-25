@@ -158,14 +158,25 @@ def save(dir: String, adapter: Adapter, embeddings: List[String] = []) -> Result
 
   try Dir.mkdir(dir)
   try SafetensorsWrite.write("#{dir}/#{WEIGHTS}", tensors, {"format": "pt"})
-  try File.write_text("#{dir}/#{CONFIG}.part", JSON.encode(file))
-  Path.rename("#{dir}/#{CONFIG}.part", "#{dir}/#{CONFIG}")
+  part = "#{dir}/#{CONFIG}.part"
+  case File.write_text(part, JSON.encode(file))
+    ok(_) ->
+      placed = Path.replace(part, "#{dir}/#{CONFIG}")
+      if not placed.ok?
+        _ = Path.remove(part)
+      end
+
+      placed
+    error(e) ->
+      _ = Path.remove(part)
+      error("#{dir}/#{CONFIG}: #{e.message}")
+  end
 end
 
 ## The adapter of the folder `dir`, written by PEFT or by `save`, on `backend` (as `F32`: a half-float adapter is
 ## widened). Its `names` are the weights it adapts, from the names of its tensors. It reads a LoRA adapter of linear
-## layers alone, and an error names what is not computed here: another `peft_type`; DoRA, rsLoRA, aLoRA, QALoRA or
-## BD-LoRA; `fan_in_fan_out`; a trained bias; `modules_to_save`, `target_parameters` or `trainable_token_indices`;
+## layers alone, and an error names what is not computed here: another `peft_type`; DoRA, rsLoRA, aLoRA, QALoRA,
+## BD-LoRA or another variant (Arrow, KaSA, MonteCLoRA, VeLoRA); `fan_in_fan_out`; a trained bias; `modules_to_save`, `target_parameters` or `trainable_token_indices`;
 ## `layer_replication`; a rank or alpha pattern; `target_modules` as a regular expression; and the adapter of an
 ## `Embedding`. Which model the adapter is for (`base_model_name_or_path`) is not kept.
 def open(dir: String, backend: Tensor.Backend) -> Result[Adapter]
@@ -206,6 +217,10 @@ NOT_READ = [
   ["use_rslora", "the scale alpha / sqrt(r)"],
   ["use_qalora", "a QALoRA adapter"],
   ["use_bdlora", "a BD-LoRA adapter"],
+  ["arrow_config", "an Arrow adapter"],
+  ["kasa_config", "a KaSA adapter"],
+  ["monteclora_config", "a MonteCLoRA adapter"],
+  ["velora_config", "a VeLoRA adapter"],
   ["alora_invocation_tokens", "an aLoRA adapter"],
   ["fan_in_fan_out", "an adapter of transposed weights"],
   ["lora_bias", "an adapter with a bias on B"],
@@ -250,8 +265,10 @@ end
 def config(path: String) -> Result[Read]
   json = try JSON.parse(try File.read_text(path))
   for key in ["peft_type", "r", "lora_alpha", "target_modules"]
-    return error("#{key} is missing or null") if not set?(json, key)
+    return error("#{key} is missing or null") if JSON.encode(JSON.get(json, key).unwrap_or(JSON.null())) == "null"
   end
+
+  return error("target_modules is empty: the adapter names no layer") if not set?(json, "target_modules")
 
   kind = try JSON.string(try JSON.get(json, "peft_type"))
   return error("the adapter is #{kind}, not LORA") if kind != "LORA"
@@ -287,7 +304,7 @@ def pair(c: Hub.Checkpoint, layer: String, r: Int, backend: Tensor.Backend) -> R
   b = try Hub.tensor(c, "#{layer}.lora_B.weight", backend)
   for t in [a, b]
     if Tensor.dtype(t) != Tensor.Dtype.F32
-      return error("#{layer} holds #{Tensor.dtype(t)} values, and an adapter holds floats")
+      return error("#{layer} holds #{Tensor.dtype(t)} values: an adapter is read from F32, F16 or BF16")
     end
   end
 
