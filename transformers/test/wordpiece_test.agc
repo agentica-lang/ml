@@ -49,6 +49,7 @@ def test_the_truncation_of_the_file_cuts_one_text() -> Result[Void]
   padding = "\"padding\": {\"strategy\": \"BatchLongest\", \"pad_to_multiple_of\": null, \"pad_id\": 0}"
   tok = try WordPiece.parse(try S.replaced(limited, "\"padding\": null", padding))
   try Test.eq(tok.max_length, some(6))
+  try Test.eq(tok.pad_id, some(0))
   long = "hello world hello world hello"
   cut = try WordPiece.encode(tok, long)
   try Test.eq(cut.ids, [tok.cls, 13, 14, 13, 14, tok.sep])
@@ -63,6 +64,7 @@ def test_the_truncation_of_the_file_cuts_one_text() -> Result[Void]
   try Test.error?(WordPiece.encode(tok, long, none, true, some(2)))
   plain = try WordPiece.parse(text)
   try Test.eq(plain.max_length, none)
+  try Test.eq(plain.pad_id, none)
   try Test.eq((try WordPiece.encode(plain, long)).ids.size, 7)
   Test.eq((try WordPiece.encode(plain, long, none, true, some(4))).ids, [tok.cls, 13, 14, tok.sep])
 end

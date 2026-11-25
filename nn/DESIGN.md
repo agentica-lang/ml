@@ -44,6 +44,7 @@ Nn.encoder_block(p, x, mask?, causal?)
                                    pre-norm: h = x + attn(norm1(x)); h + mlp(norm2(h))
                                    post-norm: h = norm1(x + attn(x)); norm2(h + mlp(h))
 Nn.causal_mask(size, dtype, backend)   [size, size]: 0.0 on and below the diagonal, MASKED above
+Nn.padding_bias(mask)              [batch, seq] of 1.0/0.0 -> [batch, 1, seq, seq]: MASKED on padding keys
 Nn.decoder_block(p, x, memory)     x [batch, t, width] over memory [batch, s, width]:
                                    h = x + self_attn(norm1(x), causal);
                                    h = h + attn(cross, norm2(h), memory); h + mlp(norm3(h))

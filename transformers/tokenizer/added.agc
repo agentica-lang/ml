@@ -31,6 +31,7 @@ struct Setting
   direction: Optional[String]
   stride: Optional[Int]
   pad_to_multiple_of: Optional[Int]
+  pad_id: Optional[Int]
 end
 
 enum Part
