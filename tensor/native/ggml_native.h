@@ -250,6 +250,9 @@ an_term ggml_convert_file(an_env *env, ng_str src, int64_t src_offset, int64_t s
 /* How many graphs this process has compiled: the cache's misses. */
 an_term ggml_compiles(an_env *env);
 
+/* The threads of the CPU backend (opened if it is not): `TENSOR_THREADS`, else the physical cores. */
+an_term ggml_cpu_threads(an_env *env);
+
 /* Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
    Vulkan device this process opens. ggml reads it once, when it first
    enumerates its devices, so a different choice after any other call of
@@ -730,6 +733,12 @@ static an_term ggml_native_compiles(an_env *env, int argc, const an_term *argv) 
   return ggml_compiles(env);
 }
 
+static an_term ggml_native_cpu_threads(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  (void)argv;
+  return ggml_cpu_threads(env);
+}
+
 static an_term ggml_native_vulkan_fp16(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   bool a0;
@@ -761,6 +770,7 @@ static const an_function ggml_native_functions[] = {
   {"run", "(Lease, List[Float]) -> Result[Void]", ggml_native_run, AN_DIRTY},
   {"convert_file", "(String, Int, Int, Int, String, Int, Int) -> Result[Void]", ggml_native_convert_file, AN_DIRTY},
   {"compiles", "() -> Int", ggml_native_compiles, AN_DIRTY},
+  {"cpu_threads", "() -> Result[Int]", ggml_native_cpu_threads, AN_DIRTY},
   {"vulkan_fp16", "(Bool) -> Result[Void]", ggml_native_vulkan_fp16, AN_DIRTY},
 };
 
@@ -772,5 +782,5 @@ static const an_function ggml_native_functions[] = {
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
     {"Pin", sizeof(struct ggml_Pin_state), GGML_Pin_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 24, NULL, 0, ggml_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 25, NULL, 0, ggml_native_resources, 3, LOAD)
 #endif
