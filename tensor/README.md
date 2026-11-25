@@ -55,6 +55,10 @@ answers whether this machine has it, and the dispatch arm answers
   traced graph lowered to one ggml graph, with the structural cache.
 - `tools/build-engine.sh` — builds ggml (CPU, or CPU + Vulkan) into a cache
   shared by every worktree and prints its exports; CI runs it.
+- `tools/xla/` — what the manual `XLA plugin` workflow runs after it builds
+  the XLA PJRT CPU plugin: `smoke.c` loads the plugin and creates a client,
+  `collect-licenses.sh` gathers the licenses of what it links. The plugin
+  needs a CPU with AVX. No backend uses it yet.
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
 - `tools/bench-ggml.agc` — the step times in "The ggml backend".
 - `test/` — the unit tests of the reference backend, the libtorch conformance
@@ -265,7 +269,7 @@ traces the loss, its gradients and the update and runs them as one graph,
 retraced every step. Milliseconds per step, median of 18 steps, with `F32`
 `mul_mat`; before, the update ran as one more graph per parameter (seven
 graphs a step); the spike compiled its step once and ran it with no retrace
-(`spike/ggml-graph/README.md`, run B):
+([run B](https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md)):
 
 | batch | Vega iGPU, one graph | seven graphs | spike | ggml CPU, one graph | seven graphs |
 |---|---|---|---|---|---|

@@ -243,6 +243,10 @@ def traced(m: Qwen3) -> Qwen3
   )
 end
 
+## The names of the embedding tables among `weights(m)`: what `Lora.save` of `train` must not write as the adapter
+## of a linear layer.
+def embeddings(_m: Qwen3) -> List[String] = ["model.embed_tokens.weight"]
+
 ## The weights of `m` by their Hugging Face names (`model.layers.0.self_attn.q_proj.weight`), for training part of the
 ## model (`Params.split` of `train`). A tied head is the embedding table and has no name of its own.
 def weights(m: Qwen3) -> Map[String, Tensor.Tensor]

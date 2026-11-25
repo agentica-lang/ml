@@ -21,7 +21,6 @@ Milestones 0.1.0 to 0.3.0.
 | `asr/` | Whisper end to end: log-mel as one graph, tokenizer, greedy decoding with a padded KV cache, timestamps, language detection, translation, long audio read in 30 s windows that seek, the step and the pick on the device. It runs on the reference backend, libtorch and ggml (CPU and Vulkan), and its tokens equal Hugging Face's on the test clips (`asr/test/fixtures/transcribe_golden.json`) |
 | `transformers/` | BERT, Qwen3 and Qwen2.5 (forward, greedy generation and sampling with a KV cache, chat template) from Hugging Face checkpoints or GGUF, and the WordPiece and byte-level BPE tokenizers, matching Hugging Face on the test logits and ids; measured against llama.cpp in `benchmarks/` |
 | `whisper/` | the whisper.cpp binding, WAV reader, microphone capture, long-audio chunking |
-| `spike/` | the FFI boundary (`spike/m0/`) and ggml on Vulkan, measured (`spike/ggml-vulkan/`, `spike/ggml-graph/`) |
 | tooling and CI | per-package CI matrix, the ggml build cache, cchecker over the native C, whisper-tiny and Qwen3 against whisper.cpp and llama.cpp, and DistilBERT on STS-B against PyTorch and training against PyTorch and JAX, in [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md), the Hugo site |
 
 ## Needs optimization
