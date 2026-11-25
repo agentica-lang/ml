@@ -14,3 +14,4 @@ site/resources/
 
 # The IREE venv of `make iree-venv`.
 /.venv-iree/
+__pycache__/
