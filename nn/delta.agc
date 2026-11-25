@@ -10,6 +10,9 @@ import Tensor from "pkg/tensor/tensor"
 ## `conv` is the depthwise convolution over the `qkv` channels, `[channels, taps]` (a checkpoint has `[channels, 1,
 ## taps]`). `dt_bias` and `a_log` are per value head, `norm` is the weight of the gated RMS norm over a value head.
 ## Each key head serves `value_heads / key_heads` value heads.
+## The `eps` of the L2 normalization of the queries and the keys (Hugging Face's `l2norm`).
+L2_EPS = 0.000001
+
 struct GatedDeltaNet
   qkv: Nn.Dense
   z: Nn.Dense
@@ -46,8 +49,26 @@ struct Convolved
   state: Tensor.Tensor
 end
 
+## An error unless the heads and widths of `p` are what the layer runs: `Tensor.gated_delta_rule` takes one width for the
+## keys and the values.
+def check_layer(p: GatedDeltaNet) -> Result[Void]
+  return error("a layer needs key heads, got #{p.key_heads}") if p.key_heads < 1
+  return error("a layer needs value heads, got #{p.value_heads}") if p.value_heads < 1
+  if p.value_heads % p.key_heads != 0
+    return error("#{p.value_heads} value heads are not a multiple of #{p.key_heads} key heads")
+  end
+
+  if p.key_dim < 1 or p.key_dim != p.value_dim
+    return error("a layer needs one head width for keys and values, got #{p.key_dim} and #{p.value_dim}")
+  end
+
+  return error("conv needs [channels, taps], got #{Tensor.shape(p.conv)}") if Tensor.shape(p.conv).size != 2
+  ok()
+end
+
 ## The empty state of `p`: zeros, for the first call.
 def delta_start(p: GatedDeltaNet, backend: Tensor.Backend) -> Result[DeltaState]
+  try check_layer(p)
   shape = Tensor.shape(p.conv)
   ok(
     DeltaState(
@@ -96,13 +117,11 @@ end
 
 ## The layer over `x` `[tokens, width]`, after the `state` of the tokens before it.
 def gated_delta_net(p: GatedDeltaNet, x: Tensor.Tensor, state: DeltaState) -> Result[DeltaOut]
+  try check_layer(p)
+  return error("gated_delta_net needs x [tokens, width], got #{Tensor.shape(x)}") if Tensor.shape(x).size != 2
   tokens = Tensor.shape(x)[0]
   keys = p.key_heads * p.key_dim
   values = p.value_heads * p.value_dim
-  if p.value_heads % p.key_heads != 0
-    return error("#{p.value_heads} value heads are not a multiple of #{p.key_heads} key heads")
-  end
-
   mixed = try causal_conv1d(try Nn.dense(p.qkv, x), p.conv, state.conv)
   active = try Tensor.silu(mixed.out)
   q = try Tensor.reshape(try Tensor.slice(active, [0, 0], [tokens, keys]), [tokens, p.key_heads, p.key_dim])
@@ -112,8 +131,8 @@ def gated_delta_net(p: GatedDeltaNet, x: Tensor.Tensor, state: DeltaState) -> Re
     [tokens, p.value_heads, p.value_dim],
   )
 
-  q = try repeated(try Tensor.l2_norm(q, 0.000001), p.value_heads / p.key_heads)
-  k = try repeated(try Tensor.l2_norm(k, 0.000001), p.value_heads / p.key_heads)
+  q = try repeated(try Tensor.l2_norm(q, L2_EPS), p.value_heads / p.key_heads)
+  k = try repeated(try Tensor.l2_norm(k, L2_EPS), p.value_heads / p.key_heads)
   per_head = [tokens, p.value_heads]
   beta = try Tensor.sigmoid(try Nn.dense(p.b, x))
   stretched = try Tensor.softplus(try Tensor.add(try Nn.dense(p.a, x), try Tensor.broadcast_to(p.dt_bias, per_head)))

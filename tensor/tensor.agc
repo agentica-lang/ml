@@ -1453,11 +1453,12 @@ def silu(x: Types.Tensor) -> Result[Types.Tensor]
 end
 
 ## Derived: `softplus(x) = log(1 + exp(x))`, written as `max(x, 0) + log(1 + exp(-|x|))` so that a large `x` does not
-## overflow `exp`.
+## overflow `exp`. `|x|` is `2 relu(x) - x`, so that at `x = 0`, where the derivative of `relu` is taken as `0`, the
+## gradient is still `sigmoid(0)`.
 def softplus(x: Types.Tensor) -> Result[Types.Tensor]
   _ = try float_only(x, "softplus")
   above = try relu(x)
-  size = try add(above, try relu(try neg(x)))
+  size = try sub(try add(above, above), x)
   one = try ones(x.shape, x.dtype, x.backend)
   add(above, try log(try add(one, try exp(try neg(size)))))
 end

@@ -1,4 +1,4 @@
-## `Nn.gated_delta_net`, the linear attention layer of Qwen3.5, against Hugging Face's `Qwen3_5GatedDeltaNet`
+## `Delta.gated_delta_net`, the linear attention layer of Qwen3.5, against Hugging Face's `Qwen3_5GatedDeltaNet`
 ## (`delta_golden.py`, `fixtures/delta_golden.json`): the whole sequence on the reference, the same sequence in two calls
 ## that carry the state, and the layer on ggml (CPU) against the reference node by node. Run from `nn/`.
 
@@ -30,6 +30,11 @@ struct Case
   output: List[Float]
   x: List[Float]
   out: List[Float]
+  prefill: Int
+  prefill_out: List[Float]
+  decode_out: List[Float]
+  conv_state: List[Float]
+  recurrent_state: List[Float]
 end
 
 struct Golden
@@ -74,8 +79,8 @@ def test_the_layer_matches_hugging_face() -> Result[Void]
     x = try S.f32(c.x, [c.tokens, c.hidden])
     r = try Delta.gated_delta_net(p, x, try Delta.delta_start(p, S.REF))
     try Test.eq(Tensor.shape(r.out), [c.tokens, c.hidden])
-    try Test.eq(Tensor.shape(r.state.conv), [3, 2 * c.key_heads * c.width + c.value_heads * c.width])
-    try Test.eq(Tensor.shape(r.state.recurrent), [c.value_heads, c.width, c.width])
+    try Test.eq(Tensor.shape(r.state.conv), [3, 2 * c.key_heads * p.key_dim + c.value_heads * p.value_dim])
+    try Test.eq(Tensor.shape(r.state.recurrent), [c.value_heads, p.value_dim, p.key_dim])
     try S.expect_close(try S.floats_of(r.out), c.out, ABS, REL, "#{c.value_heads} value heads")
   end
 
@@ -184,4 +189,53 @@ def test_the_layer_agrees_with_the_reference_on_ggml() -> Result[Void]
     some(n) -> error("node #{n.node} (#{n.op} #{n.shape}) differs by #{n.max_abs}")
     none -> Test.assert(d.nodes > 40, "only #{d.nodes} nodes compared")
   end
+end
+
+## A prefill and then single-token steps, as a decode: Hugging Face's own cached run gives the same answers, and the
+## states it holds after them are ours in the other layout (`conv` `[channels, taps]` keeps one row more than ours and
+## is transposed; `recurrent` is `[heads, key, value]`).
+def test_prefill_then_decode_matches_the_cached_run_of_hugging_face() -> Result[Void]
+  for c in (try golden()).cases
+    p = try layer_of(c, S.REF)
+    x = try S.f32(c.x, [c.tokens, c.hidden])
+    first = try Delta.gated_delta_net(
+      p,
+      try Tensor.slice(x, [0, 0], [c.prefill, c.hidden]),
+      try Delta.delta_start(p, S.REF),
+    )
+
+    try S.expect_close(try S.floats_of(first.out), c.prefill_out, ABS, REL, "prefill")
+    state = first.state
+    got: List[Float] = []
+    for t in c.prefill...c.tokens
+      r = try Delta.gated_delta_net(p, try Tensor.slice(x, [t, 0], [t + 1, c.hidden]), state)
+      got = got + try S.floats_of(r.out)
+      state = r.state
+    end
+
+    try S.expect_close(got, c.decode_out, ABS, REL, "decode")
+    channels = 2 * c.key_heads * p.key_dim + c.value_heads * p.value_dim
+    cached = try S.f32(c.conv_state, [channels, 4])
+    kept = try Tensor.transpose(try Tensor.slice(cached, [0, 1], [channels, 4]))
+    try S.expect_close(try S.floats_of(state.conv), try S.floats_of(kept), ABS, REL, "conv state")
+    held = try S.f32(c.recurrent_state, [c.value_heads, p.key_dim, p.value_dim])
+    swapped = try Tensor.permute(held, [0, 2, 1])
+    try S.expect_close(try S.floats_of(state.recurrent), try S.floats_of(swapped), ABS, REL, "recurrent state")
+  end
+
+  ok()
+end
+
+def test_a_layer_that_the_rule_cannot_run_is_an_error() -> Result[Void]
+  c = (try golden()).cases[1]
+  p = try layer_of(c, S.REF)
+  x = try S.f32(c.x, [c.tokens, c.hidden])
+  start = try Delta.delta_start(p, S.REF)
+  try Test.error?(Delta.gated_delta_net(p.with(key_heads: 0), x, start))
+  try Test.error?(Delta.gated_delta_net(p.with(value_heads: 0), x, start))
+  try Test.error?(Delta.gated_delta_net(p.with(key_heads: 3), x, start))
+  try Test.error?(Delta.gated_delta_net(p.with(value_dim: 4), x, start))
+  try Test.error?(Delta.delta_start(p.with(key_dim: 4, value_dim: 8), S.REF))
+  try Test.error?(Delta.gated_delta_net(p.with(conv: try S.f32(c.conv, [c.hidden * 4 * 4])), x, start))
+  Test.error?(Delta.gated_delta_net(p, try Tensor.reshape(x, [1, c.tokens, c.hidden]), start))
 end
