@@ -354,6 +354,20 @@ def test_a_model_that_cannot_be_written_is_refused() -> Result[Void]
   end
 end
 
+## An added token whose id is also in the base vocabulary is written with the type of an added token, not NORMAL: here
+## `<think>` takes id 7, where the base vocabulary has `d`.
+def test_an_added_token_over_a_base_token_keeps_its_added_type() -> Result[Void]
+  with_peer do |dir|
+    tokens = "#{dir}/tiny/tokenizer.json"
+    try File.write_text(tokens, (try File.read_text(tokens)).replace("\"id\": 11", "\"id\": 7"))
+    out = "#{dir}/over.gguf"
+    try Qwen3Gguf.convert("#{dir}/tiny", out, Tensor.FloatFormat.F32)
+    h = (try Hub.open(out)).gguf.unwrap!
+    try Test.eq(try Gguf.ints(h, "tokenizer.ggml.token_type"), [1, 1, 1, 1, 1, 1, 1, 4, 1, 3, 3, 5, 5])
+    Test.eq((try Gguf.strings(h, "tokenizer.ggml.tokens"))[7], "<think>")
+  end
+end
+
 ## A config that does not fit the weights (a `vocab_size` too large, or no `head_dim`, which is then the hidden size over
 ## the heads), and merges whose ranks are not 0 to n-1, are errors.
 def test_a_config_or_tokenizer_that_does_not_fit_the_weights_is_refused() -> Result[Void]
