@@ -18,6 +18,8 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
+- `Clip` (ml#83): CLIP ViT-B/32 from `laion/CLIP-ViT-B-32-laion2B-s34B-b79K` (LAION's weights: OpenAI's checkpoint publishes no safetensors file): image and text embeddings, `logit_scale`, the scaled cosines and zero-shot probabilities, matching Hugging Face's. `tokenizer/clip` is CLIP's tokenizer (the slow `CLIPTokenizer`: `<|startoftext|>` and `<|endoftext|>`, `</w>` word ends, lowercase, 77 ids at most).
+- `Bpe.merge(ranks, symbols)` and `Bpe.byte_chars` are public (the merge loop of the Qwen tokenizer, for CLIP's), and `WordPiece.cleaned_chars` and `spaced_chinese` too.
 - `ViT` (ml#83): ViT-B/16 from the official `google/vit-base-patch16-224` checkpoint. Its logits match Hugging Face's, and the top-5 classes are the same. `ResNet.Prediction` is now `Classify.Prediction`, shared by both.
 - `ResNet` (ml#83): ResNet-18 and ResNet-50 from the official `microsoft/resnet-*` checkpoints, with the batch norms folded into the convolutions at load. Their logits and top-5 classes match Hugging Face's on images through `vision`'s resize, crop and normalize.
 
