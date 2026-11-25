@@ -396,6 +396,29 @@ def test_attention_runs_weights_with_a_head_width_of_its_own() -> Result[Void]
   Test.eq(Tensor.shape(try Nn.self_attention(p, x)), [1, 2, 4])
 end
 
+## `attend` needs the gate of a gated attention (`Attention.gate`, Qwen3.5) and takes none for another: a dropped gate
+## would change the output with no error. The values of a gated attention are the Qwen3.5 golden's of `transformers/`.
+def test_attend_wants_the_gate_exactly_when_the_attention_has_one() -> Result[Void]
+  dense = ->(i: Int, o: Int, seed: Int) { Nn.init_dense(i, o, seed, S.REF) }
+  gated = Nn.Attention(
+    query: try dense.call(4, 8, 1),
+    key: try dense.call(4, 2, 2),
+    value: try dense.call(4, 2, 3),
+    output: try dense.call(4, 4, 4),
+    heads: 2,
+    kv_heads: some(1),
+    gate: true,
+  )
+
+  x = try S.f32(Init.uniform_values(8, 1.0, 5), [1, 2, 4])
+  heads = try Nn.project(gated, x, x)
+  try Test.assert(heads.gate.some?, "a gated attention projects a gate")
+  try Test.error?(Nn.attend(gated, heads.query, heads.key, heads.value, none, true))
+  plain = gated.with(gate: false, query: try dense.call(4, 4, 1))
+  try Test.error?(Nn.attend(plain, heads.query, heads.key, heads.value, none, true, heads.gate))
+  ok()
+end
+
 def test_conv2d_adds_the_bias_per_output_channel_and_global_avg_pool2d_means_each_channel() -> Result[Void]
   # Two output channels of a 1x1 kernel over two input channels of a 2x2 image: 1 * a + 2 * b and -1 * a + 0.5 * b.
   weight = try S.f32([1.0, 2.0, -1.0, 0.5], [2, 2, 1, 1])

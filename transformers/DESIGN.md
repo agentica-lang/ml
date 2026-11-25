@@ -362,6 +362,17 @@ best classes with their `id2label` names.
 
 ## Tests
 
+A new op (`Tensor.gated_delta_rule`, `softplus`, `l2_norm`) gets its full tests
+in its core package (`tensor/`, `nn/`): a Python or Hugging Face peer, and ggml
+against the reference. A new architecture (a model that wires existing ops)
+gets one end-to-end golden of a tiny random model against Hugging Face (it
+catches the wiring: a norm `+1`, the projection order, the gate layout, the
+template defaults), a manual check on the real checkpoint (not committed; the
+command is in the header of its `tools/` file), and only the config refusals
+that prevent a silently wrong result. It gets no per-layer golden when the
+model golden exists, no node-by-node ggml test (the core covers it) and no
+error row per config field.
+
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and
@@ -371,7 +382,9 @@ best classes with their `id2label` names.
   random model (3 linear layers and 1 full layer, hidden 16, partial rotary
   half, tied head) written as a safetensors file under the official names; the
   logits of every position of two rows match on the reference (1e-4) and on
-  ggml CPU (1e-3), and the unsupported configs are errors.
+  ggml CPU (1e-3); an untied head is the file's; a mixture-of-experts config,
+  linear key and value widths that differ and weights other than `F32` are
+  errors.
 - `test/bpe_test.agc` on `fixtures/bpe_marks.json`, a tiny tokenizer with the
   split of Qwen3.5 (`test/tokenizer_golden.py marks`, `tokenizers` 0.23.3):
   the ids and text of `tokenizers` on the strings of the BPE test, 16 where a
