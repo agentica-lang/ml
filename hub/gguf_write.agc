@@ -44,7 +44,13 @@ def write(path: String, fields: List[Field], tensors: List[Out]) -> Result[Void]
   part = path + ".part"
   result = fill(part, header, tensors)
   case result
-    ok(_) -> Path.replace(part, path)
+    ok(_) ->
+      moved = Path.replace(part, path)
+      if !moved.ok?
+        _ = Path.remove(part)
+      end
+
+      moved
     error(e) ->
       _ = Path.remove(part)
       error("#{path}: #{e.message}")

@@ -781,7 +781,8 @@ The price:
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,
   then the step-dependent scalars (`Optim.step_scalars`: SGD's learning rate,
-  or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)`) as rank-0 tensors,
+  or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)`, and for AdamW
+  `lr weight_decay` after them) as rank-0 tensors,
   then the batch. One program is every step: the host computes the scalars
   from the step count and the schedule, as `fit` passes them on ggml, and
   feeds the outputs (the loss, the new parameters and moments) back in.
