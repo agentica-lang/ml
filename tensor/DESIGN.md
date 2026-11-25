@@ -465,23 +465,25 @@ end
   `get_rows_back`, with the same index check and the same 2^24 limit; its cost
   is `O(k width)` on the CPU, but the Vulkan shader runs one thread per cell
   of the answer and loops over all `k` indices, so there it is `O(rows k
-  width)`. On Vulkan in `F32` mode (the fp16 mode would round the updates in
-  the matmul: 1e5 becomes infinity), with `k` below the rows, up to 32768
-  and with room in the graph, the lowering instead gives each
+  width)`. On Vulkan in `F32` mode (the fp16 mode rounds the updates in the
+  matmul for a chunk of more than 8 columns, the most that ggml-Vulkan's
+  always-float mat-vec kernel takes: 1e5 becomes infinity), with `k` below the
+  rows, up to 32768 and with room in the graph, the lowering instead gives each
   update row the sum of the rows that name its index, by one matmul with the
   `k x k` mask of equal indices (`O(k^2 width)`, exact: it adds only the rows
   of one index), and writes those sums into zero rows with `set_rows` (the
   rows of one index write the same sum). The mask is made `kc` columns at a
   time, at most 2^24 cells each, so at most 64 chunks. Anything else keeps
   `get_rows_back`. `TENSOR_SCATTER_ADD=get_rows_back` keeps ggml's kernel, for
-  the benchmark (`tools/bench-scatter.agc`). In F32 on the Vega iGPU the gradient of a lookup over 1000 x 64
-  with 256 indices takes 6.3 ms (6.7 ms with `get_rows_back`), 10000 x 64 with
-  1024 indices 8.0 ms (57 ms), 50000 x 64 with 4096 indices 48 ms (959 ms) and
-  10000 x 64 with 8192 indices, near `k = rows`, 162 ms (389 ms); the CPU takes
-  0.7, 2.1, 7.6 and 4.4 ms, and a round trip of the updates and the answer
-  through the CPU would take 1.3, 3.7, 11 and 6.0 ms, so the masked matmul is a
-  stopgap, not the floor: with the sched executor of #85, placing `scatter_add`
-  on the CPU measured 11 ms against 45 ms at 50000 x 64 here; revisit then. The long-term fix is an
+  the benchmark (`tools/bench-scatter.agc`). In F32 on the Vega iGPU the
+  gradient of a lookup over 1000 x 64 with 256 indices takes 6.3 ms (6.7 ms
+  with `get_rows_back`), 10000 x 64 with 1024 indices 8.0 ms (57 ms), 50000 x
+  64 with 4096 indices 48 ms (959 ms) and 10000 x 64 with 8192 indices, near
+  `k = rows`, 162 ms (389 ms); the CPU takes 0.7, 2.1, 7.6 and 4.4 ms, and a
+  round trip of the updates and the answer through the CPU would take 1.3, 3.7,
+  11 and 6.0 ms, so the masked matmul is a stopgap, not the floor: with the
+  sched executor of #85, placing `scatter_add` on the CPU measured 11 ms
+  against 45 ms at 50000 x 64 here; revisit then. The long-term fix is an
   upstream Vulkan kernel for `GGML_OP_GET_ROWS_BACK` with one thread per
   (index, column), which would make this lowering unneeded),
   and
