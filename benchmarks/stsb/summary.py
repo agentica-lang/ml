@@ -3,8 +3,9 @@
 
     python3 -I summary.py OURS.jsonl PEER.jsonl [TOLERANCE]
 
-It prints the steps and the median ms per step of each side (the steps that are the first of their shape left out, on
-both sides), Spearman before and after, and the largest gap between the two loss curves. It exits 1, since a fast
+It prints the steps, the median ms per step of each side (the steps that are the first of their shape left out, on
+both sides), the peak resident memory of each (the `memory` line `run.sh` adds), Spearman before and after, and the
+largest gap between the two loss curves. It exits 1, since a fast
 wrong answer does not count, when:
 
 - the two sides did not run with the same thread count, the same decayed weights or the same token ids (our thread
@@ -29,7 +30,7 @@ SPEARMAN_TOLERANCE = 1e-4
 
 def read(path):
     """The lines of a run by kind: the steps, Spearman by `when`, and the `checks` and `threads` lines."""
-    run = {"steps": [], "spearman": {}, "checks": None, "threads": None}
+    run = {"steps": [], "spearman": {}, "checks": None, "threads": None, "peak_kb": None}
     with open(path, encoding="utf-8") as f:
         for line in f:
             if not line.startswith("{"):
@@ -43,6 +44,8 @@ def read(path):
                 run["checks"] = {k: row[k] for k in ("decayed", "decayed_names", "token_ids")}
             elif row["kind"] == "threads":
                 run["threads"] = row["value"]
+            elif row["kind"] == "memory":
+                run["peak_kb"] = row["peak_kb"]
     return run
 
 
@@ -93,6 +96,8 @@ def compare(ours, peer, tolerance):
         f"last {shown(a[-1]['loss'])} / {shown(b[-1]['loss'])} (ours / PyTorch)",
         f"largest loss gap {gaps[worst]:.2e} at step {a[worst]['step']} (tolerance {tolerance:.1e})",
     ]
+    if ours["peak_kb"] and peer["peak_kb"]:
+        lines.append(f"peak memory: ours {ours['peak_kb'] / 1e6:.2f} GB, PyTorch {peer['peak_kb'] / 1e6:.2f} GB")
     same = all(gap <= tolerance for gap in gaps)
     for when in ("before", "after"):
         x, y = ours["spearman"].get(when), peer["spearman"].get(when)

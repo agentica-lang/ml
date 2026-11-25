@@ -8,6 +8,8 @@
 #                                                they agree, and a peer without the decay does not
 #   sh benchmarks/stsb/run.sh ours [OUT]         the run in Agentica on ggml CPU, its lines into OUT (ours.jsonl)
 #   sh benchmarks/stsb/run.sh peer [OUT]         the run in PyTorch, its lines into OUT (peer.jsonl)
+#   sh benchmarks/stsb/run.sh ours-lora [OUT]    the LoRA run in Agentica (ml#137): it saves the adapter it starts from
+#   sh benchmarks/stsb/run.sh peer-lora [OUT]    the LoRA run with PEFT, from that adapter: run it after ours-lora
 #   python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl
 #
 # PAIRS (1000), BATCH (16) and PAD_TO (1) set the run on both sides. The threads are the online CPUs on both sides: ggml
@@ -30,6 +32,10 @@ data=$cache/hf/stsb
 pairs=${PAIRS:-1000}
 batch=${BATCH:-16}
 pad_to=${PAD_TO:-1}
+# Where `ours-lora` saves the adapter it starts from, which `peer-lora` loads.
+adapter=$cache/lora/stsb-adapter
+# The loss tolerance of the LoRA runs (see the README).
+lora_tolerance=1.5e-7
 online=$(getconf _NPROCESSORS_ONLN)
 allowed=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
 [ "$allowed" = "$online" ] ||
@@ -52,7 +58,7 @@ setup() {
     transformers==4.57.6 tokenizers==0.22.1 huggingface_hub==0.36.0 safetensors==0.6.2 regex==2025.9.18 \
     numpy==2.2.6 PyYAML==6.0.2 packaging==25.0 requests==2.32.5 tqdm==4.67.1 fsspec==2025.9.0 \
     typing_extensions==4.15.0 hf-xet==1.1.10 urllib3==2.5.0 idna==3.10 certifi==2025.8.3 charset-normalizer==3.4.3 \
-    pyarrow==26.0.0
+    pyarrow==26.0.0 peft==0.21.2 accelerate==1.15.0 psutil==7.2.2
   "$venv/bin/pip" check
   "$venv/bin/pip" freeze
 }
@@ -95,16 +101,26 @@ data() {
   "$py" -I "$here/stsb_jsonl.py" "$data/validation.parquet" "$data/validation.jsonl" >&2
 }
 
-# ours TRAIN VALIDATION PAIRS BATCH PAD_TO [WEIGHT_DECAY]: the Agentica side, with the ggml engine built
+# peak COMMAND...: the command, then a `memory` line with the peak resident size of its process (GNU time)
+peak() {
+  note=$(mktemp)
+  status=0
+  /usr/bin/time -o "$note" -f '{"kind": "memory", "peak_kb": %M}' "$@" || status=$?
+  grep '^{' "$note" || true
+  rm -f "$note"
+  return $status
+}
+
+# ours TRAIN VALIDATION PAIRS BATCH PAD_TO [WEIGHT_DECAY [ADAPTER_DIR]]: the Agentica side, with the ggml engine built
 ours() {
   exports=$(sh "$root/transformers/tools/build-engine.sh") || return 1
   echo "{\"kind\": \"threads\", \"value\": $online}"
   (cd "$root/transformers" && eval "$(printf '%s\n' "$exports" | grep '^export ')" &&
-    agentica --max-steps 1000000000000 tools/distilbert_stsb.agc "$model" "$@")
+    peak agentica --max-steps 1000000000000 tools/distilbert_stsb.agc "$model" "$@")
 }
 
 peer() {
-  HF_HUB_OFFLINE=1 "$py" -I "$here/distilbert_stsb.py" "$model" "$@"
+  HF_HUB_OFFLINE=1 peak "$py" -I "$here/distilbert_stsb.py" "$model" "$@"
 }
 
 # lines OUT SIDE ARGS...: the JSON lines of a run into OUT, its other lines to stderr; a run that fails leaves no OUT
@@ -149,6 +165,10 @@ case ${1:-} in
       exit 1
     fi
     grep '^largest' "$out/plain.txt" | sed 's/^/without the weight decay the peer DIFFERS, as it must: /'
+    echo "LoRA:"
+    lines "$out/ours-lora.jsonl" ours "$fixture" "$fixture" 4 2 1 1.0 "$out/adapter"
+    lines "$out/peer-lora.jsonl" peer "$fixture" "$fixture" 4 2 1 1.0 "$out/adapter"
+    python3 -I "$here/summary.py" "$out/ours-lora.jsonl" "$out/peer-lora.jsonl" "$lora_tolerance"
     ;;
   ours)
     quiet
@@ -160,8 +180,21 @@ case ${1:-} in
     data
     lines "${2:-peer.jsonl}" peer "$data/train.jsonl" "$data/validation.jsonl" "$pairs" "$batch" "$pad_to"
     ;;
+  ours-lora)
+    quiet
+    data
+    lines "${2:-ours-lora.jsonl}" ours "$data/train.jsonl" "$data/validation.jsonl" "$pairs" "$batch" "$pad_to" \
+      0.01 "$adapter"
+    ;;
+  peer-lora)
+    quiet
+    data
+    [ -f "$adapter/adapter_config.json" ] || { echo "run.sh: no adapter in $adapter: run ours-lora first" >&2; exit 1; }
+    lines "${2:-peer-lora.jsonl}" peer "$data/train.jsonl" "$data/validation.jsonl" "$pairs" "$batch" "$pad_to" \
+      0.01 "$adapter"
+    ;;
   *)
-    echo "usage: run.sh setup | fetch | smoke | ours [OUT] | peer [OUT]" >&2
+    echo "usage: run.sh setup | fetch | smoke | ours [OUT] | peer [OUT] | ours-lora [OUT] | peer-lora [OUT]" >&2
     exit 2
     ;;
 esac
