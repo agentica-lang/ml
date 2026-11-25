@@ -2,6 +2,7 @@
 
 import Optim from "../optim"
 import S from "support"
+import Tensor from "pkg/tensor/tensor"
 
 TOL = 0.000000000001
 
@@ -42,7 +43,7 @@ end
 
 ## AdamW shrinks the parameter by `lr weight_decay` first, then takes Adam's step: `[1, -1] (1 - 0.05)`, then the
 ## `0.05` and `-0.1 / 1.5` of the test above. A parameter with a false flag does not decay, which is Adam; the
-## scalars of the step are Adam's two and `lr weight_decay`.
+## inputs of the step are two rows of 7 numbers, the second without decay.
 def test_adamw_decays_the_parameter_then_takes_adams_step() -> Result[Void]
   o = Optim.AdamW(lr: 0.1, eps: 0.5, weight_decay: 0.5)
   once = try run(Optim.Optimizer.AdamW(o), [[0.5, -1.0]])
@@ -52,12 +53,13 @@ def test_adamw_decays_the_parameter_then_takes_adams_step() -> Result[Void]
   p = try S.tensor([1.0, -1.0], [2])
   g = try S.tensor([0.5, -1.0], [2])
   state = try Optim.init(Optim.Optimizer.AdamW(o), [p])
-  held = Optim.step_scalars(state)
-  try Test.eq(held.size, 3)
-  try S.expect_close([held[2]], [0.05], TOL, 0.0, "the decay scalar")
-  given = try Optim.step(state, [p], [g], held.map { |v| S.tensor([v], []).unwrap! })
-  try S.expect_close(try S.floats_of(given.params[0]), once, TOL, 0.0, "adamw with scalars")
-  try Test.error?(Optim.step(state, [p], [g], [try S.tensor([held[0]], []), try S.tensor([held[1]], [])]))
+  held = Optim.step_inputs(state)
+  try Test.eq(held.size, 2)
+  try S.expect_close([held[0][4], held[1][4]], [0.5, 0.0], TOL, 0.0, "the decay of each row")
+  rows = try tensors(held)
+  given = try Optim.step(state, [p], [g], rows)
+  try S.expect_close(try S.floats_of(given.params[0]), once, TOL, 0.0, "adamw with rows")
+  try Test.error?(Optim.step(state, [p], [g], rows.take(1)))
   try Test.error?(Optim.init(Optim.Optimizer.AdamW(o.with(decay: [true, false])), [p]))
   flagged = try Optim.init(Optim.Optimizer.AdamW(o.with(decay: [true])), [p])
   Test.error?(Optim.step(flagged, [p, p], [g, g]))
@@ -69,28 +71,40 @@ def test_a_gradient_per_parameter_is_required() -> Result[Void]
   Test.assert(!Optim.step(state, [p], []).ok?, "a missing gradient is an error")
 end
 
-## `scalars` carry what a step would hold as constants, so the step is the same; a wrong number or rank is an error.
-## SGD takes its learning rate, Adam its two numbers.
-def test_the_scalars_of_a_step_are_inputs_that_change_nothing() -> Result[Void]
+## The inputs of a step carry what it would hold as constants, so the step is the same; a wrong number or shape is an
+## error. SGD takes its learning rate as a rank-0 tensor, Adam one row of 7 numbers.
+def test_the_inputs_of_a_step_change_nothing() -> Result[Void]
   p = try S.tensor([1.0, -1.0], [2])
   g = try S.tensor([0.5, -1.0], [2])
   state = try Optim.init(Optim.Optimizer.Adam(Optim.Adam(lr: 0.1, eps: 0.5)), [p])
-  held = Optim.step_scalars(state)
-  given = try Optim.step(state, [p], [g], [try S.tensor([held[0]], []), try S.tensor([held[1]], [])])
+  held = Optim.step_inputs(state)
+  try Test.eq(held.size, 1)
+  try Test.eq(held[0].size, 7)
+  rows = try tensors(held)
+  given = try Optim.step(state, [p], [g], rows)
   baked = try Optim.step(state, [p], [g])
   try S.expect_close(try S.floats_of(given.params[0]), try S.floats_of(baked.params[0]), TOL, 0.0, "adam")
-  vectors = [try S.tensor([held[0]], [1]), try S.tensor([held[1]], [1])]
-  try Test.assert(!Optim.step(state, [p], [g], vectors).ok?, "an Adam scalar is rank 0")
-  try Test.assert(!Optim.step(state, [p], [g], vectors.take(1)).ok?, "an Adam step takes two scalars")
+  try Test.assert(!Optim.step(state, [p], [g], [try S.tensor([0.1], [])]).ok?, "an Adam input has shape [7]")
+  try Test.assert(!Optim.step(state, [p], [g], rows + rows).ok?, "an Adam step takes one input")
   sgd = try Optim.init(Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.1, momentum: 0.9)), [p])
-  rate = Optim.step_scalars(sgd)
-  try Test.eq(rate, [0.1])
-  given = try Optim.step(sgd, [p], [g], [try S.tensor(rate, [])])
+  rate = Optim.step_inputs(sgd)
+  try Test.eq(rate, [[0.1]])
+  given = try Optim.step(sgd, [p], [g], try tensors(rate))
   baked = try Optim.step(sgd, [p], [g])
   try S.expect_close(try S.floats_of(given.params[0]), try S.floats_of(baked.params[0]), TOL, 0.0, "sgd")
-  try Test.assert(!Optim.step(sgd, [p], [g], vectors.take(1)).ok?, "an SGD scalar is rank 0")
-  twice = [try S.tensor(rate, []), try S.tensor(rate, [])]
-  Test.assert(!Optim.step(sgd, [p], [g], twice).ok?, "an SGD step takes one scalar")
+  try Test.assert(!Optim.step(sgd, [p], [g], [try S.tensor([0.1], [1])]).ok?, "an SGD rate is rank 0")
+  twice = try tensors(rate + rate)
+  Test.assert(!Optim.step(sgd, [p], [g], twice).ok?, "an SGD step takes one input")
+end
+
+## The tensors of `step_inputs`: a rank-0 one for one number, else a rank-1 one.
+def tensors(rows: List[List[Float]]) -> Result[List[Tensor.Tensor]]
+  out: List[Tensor.Tensor] = []
+  for numbers in rows
+    out = out.push(try S.tensor(numbers, Optim.input_shape(numbers)))
+  end
+
+  ok(out)
 end
 
 ## The parameter `[1, -1]` after one step per gradient in `grads`.

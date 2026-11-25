@@ -84,7 +84,7 @@ def forward() -> Result[Case]
 end
 
 ## Three steps of Adam on the relu MLP, over the batch `ROWS` and `LABELS`. The arguments are the parameters, the two
-## moments, Adam's two scalars, then the batch.
+## moments, Adam's 7 numbers, then the batch.
 def fit_step() -> Result[Case]
   params = [
     try Tensor.floats(W1, [3, 5]),
@@ -111,9 +111,13 @@ def fit_step() -> Result[Case]
   base = params.size + moments.size
   sets: List[Map[String, List[Float]]] = []
   for step in 0...STEPS
-    scalars = Optim.step_scalars(state.with(steps: step))
     set: Map[String, List[Float]] = {}
-    sets = sets.push(set.put("#{base}", [scalars[0]]).put("#{base + 1}", [scalars[1]]))
+    rows = Optim.step_inputs(state.with(steps: step))
+    for r in 0...rows.size
+      set = set.put("#{base + r}", rows[r])
+    end
+
+    sets = sets.push(set)
   end
 
   carry: List[List[Int]] = []
@@ -121,7 +125,10 @@ def fit_step() -> Result[Case]
     carry = carry.push([i + 1, i])
   end
 
-  scalars = Optim.step_scalars(state).map { |x| Arg(dtype: "f32", shape: [], data: [x]) }
+  scalars = Optim.step_inputs(state).map { |numbers: List[Float]|
+    Arg(dtype: "f32", shape: Optim.input_shape(numbers), data: numbers)
+  }
+
   args = try wrap(params + moments) + scalars + try wrap(m.constants)
   ok(Case(name: "fit_step", text: m.text, plan: Plan(args: args, outputs: base + 1, carry: carry, sets: sets)))
 end

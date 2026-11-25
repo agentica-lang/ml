@@ -86,6 +86,26 @@ def test_an_op_without_an_emitter_is_an_error_naming_it() -> Result[Void]
   end
 end
 
+## A slice is `stablehlo.slice` with the start and end of each dimension.
+def test_a_slice_names_its_extents() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([2, 7], Tensor.Dtype.F32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.slice(xs[0], [1, 2], [2, 5])]) },
+  )
+
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<2x7xf32>) -> (tensor<1x3xf32>) {
+          %0 = stablehlo.slice %arg0 [1:2, 2:5] : (tensor<2x7xf32>) -> tensor<1x3xf32>
+          func.return %0 : tensor<1x3xf32>
+        }
+      }
+    MLIR
+  )
+end
+
 ## A product of an `F32` input by an `F16` weight would be a mixed-type `dot_general`, which StableHLO refuses.
 def test_a_mixed_dtype_matmul_is_an_error_naming_it() -> Result[Void]
   r = Trace.stablehlo(

@@ -797,15 +797,15 @@ The price:
   `gelu_tanh_approx`, `matmul` (`dot_general`, contracting `[1]` with `[0]`),
   `transpose`, `reshape`, `broadcast_to`, `sum`, `mean`, `max` (a `reduce` from
   `0` or `-inf`, then a `reshape` for `keep_dims`), `eq`, `lt`, `where`
-  (`select`), `arange` (`iota`), `full` and `stop_grad`. Any other op is an
+  (`select`), `arange` (`iota`), `slice`, `full` and `stop_grad`. Any other op is an
   error naming it. `Q8_0` has no MLIR element type; `Bool` is `i1`, `U8` is
   `ui8`.
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,
-  then the step-dependent scalars (`Optim.step_scalars`: SGD's learning rate,
-  or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)`, and for AdamW
-  `lr weight_decay` after them) as rank-0 tensors,
-  then the batch. One program is every step: the host computes the scalars
+  then the inputs of the step (`Optim.step_inputs`: SGD's learning rate as a
+  rank-0 tensor, Adam's 7 numbers as a rank-1 tensor, AdamW's two rows of
+  them), whose Adam update is the composition of `Tensor.adam_step` (no node),
+  then the batch. One program is every step: the host computes the numbers
   from the step count and the schedule, as `fit` passes them on ggml, and
   feeds the outputs (the loss, the new parameters and moments) back in.
 - **Goldens.** `train/test/fixtures/stablehlo/NAME.mlir` is the emitted text of

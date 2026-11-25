@@ -6,6 +6,7 @@
 
 import Cases from "../tools/stablehlo_cases"
 import Data from "../data"
+import Optim from "../optim"
 import S from "support"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
@@ -59,6 +60,16 @@ def test_the_fit_step_matches_iree_at_steps_one_and_three() -> Result[Void]
   ok()
 end
 
+## The inputs after the moments are those of `Optim.step_inputs`: an SGD rate is a rank-0 input, AdamW's two rows of 7
+## numbers are rank-1 ones.
+def test_the_step_inputs_of_each_optimizer_follow_the_moments() -> Result[Void]
+  sgd = try module_of(Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.1, momentum: 0.9)))
+  try Test.assert(sgd.text.include?("%arg4: tensor<3x5xf32>, %arg5: tensor<5xf32>"), "SGD velocity")
+  try Test.assert(sgd.text.include?("%arg8: tensor<f32>, %arg9: tensor<4x3xf32>"), "an SGD rate is rank 0")
+  decay = try module_of(Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.1)))
+  Test.assert(decay.text.include?("%arg12: tensor<7xf32>, %arg13: tensor<7xf32>, %arg14: tensor<4x3xf32>"), "AdamW rows")
+end
+
 # The golden of `name`, if it is the one IREE made for the text committed as `name.mlir`.
 def golden(name: String) -> Result[Golden]
   g = try JSON.decode(try File.read_text("#{FIXTURES}/#{name}.golden.json"), Golden)
@@ -68,6 +79,24 @@ def golden(name: String) -> Result[Golden]
   end
 
   ok(g)
+end
+
+# The fit step of the cases over `optimizer`.
+def module_of(optimizer: Optim.Optimizer) -> Result[Trace.Module]
+  params = [
+    try Tensor.floats(Cases.W1, [3, 5]),
+    try Tensor.floats(Cases.B1, [5]),
+    try Tensor.floats(Cases.W2_FIT, [5, Cases.CLASSES]),
+    try Tensor.floats(Cases.B2_FIT, [Cases.CLASSES]),
+  ]
+
+  ids = Cases.LABELS.map { |c| Tensor.Values.Int(c) }
+  batch = Data.Batch(
+    inputs: try Tensor.floats(Cases.ROWS, [4, 3]),
+    targets: try Tensor.from_list(ids, [4], Tensor.Dtype.I32, Tensor.Backend.Reference),
+  )
+
+  Train.stablehlo(&Cases.loss, params, batch, optimizer)
 end
 
 def tensors(args: List[Cases.Arg]) -> Result[List[Tensor.Tensor]]

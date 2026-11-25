@@ -88,8 +88,8 @@ def fit_batches(
 end
 
 ## The training step of `fit` as one StableHLO program (`Trace.stablehlo`): its arguments are the parameters, the
-## optimizer's first and second moments, then the `Optim.step_scalars` (SGD's rate, Adam's two numbers or AdamW's
-## three) as rank-0 tensors, so one program is every step. The batch is lifted as constants, which are the module's
+## optimizer's first and second moments, then the inputs of its step (`Optim.step_inputs`: SGD's rate as a rank-0
+## tensor, Adam's 7 numbers or AdamW's two rows of them as rank-1 tensors), so one program is every step. The batch is lifted as constants, which are the module's
 ## `constants`. It answers the loss, then the new parameters, first moments and second moments, as a step of `fit`
 ## does. The parameters share one dtype, which the scalars take.
 def stablehlo(
@@ -102,10 +102,14 @@ def stablehlo(
   state = try Optim.init(optimizer, params)
   n = params.size
   k = state.first.size
-  scalar = Trace.Spec(shape: [], dtype: Tensor.dtype(params[0]), backend: Tensor.backend(params[0]))
-  scalars = Optim.step_scalars(state).map { |_| scalar }
+  dtype = Tensor.dtype(params[0])
+  backend = Tensor.backend(params[0])
+  scalars = Optim.step_inputs(state).map { |numbers|
+    Trace.Spec(shape: Optim.input_shape(numbers), dtype: dtype, backend: backend)
+  }
+
   specs = (params + state.first + state.second).map { |t| Trace.spec_of(t) } + scalars
-  Trace.stablehlo(specs, ->(xs: List[Tensor.Tensor]) { traced_step(loss, state, batch, n, k, xs) })
+  Trace.stablehlo(specs, ->(xs: List[Tensor.Tensor]) { traced_step(loss, state, batch, n, k, xs, false) })
 end
 
 private
@@ -342,9 +346,9 @@ def step(
 end
 
 ## The traced step over `xs`, the `n` parameters then the optimizer's `k`
-## first and its second moments, then the scalars of its step when they are
-## inputs (`fit` and `stablehlo`): the loss, then the new parameters, first and second
-## moments.
+## first and its second moments, then the inputs of its step (`Optim.step_inputs`): the loss, then the new
+## parameters, first and second moments. `fused` is whether a trace may hold the Adam update as one node, which
+## `stablehlo` cannot emit.
 def traced_step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   state: Optim.State,
@@ -352,6 +356,7 @@ def traced_step(
   n: Int,
   k: Int,
   xs: List[Tensor.Tensor],
+  fused: Bool = true,
 ) -> Result[List[Tensor.Tensor]]
   # `Trace.constant` matters to `stablehlo`, where the batch is a constant of the program; in `fit` it is an
   # input already.
@@ -360,7 +365,7 @@ def traced_step(
   grads = try Trace.gradients(value, ps)
   moments = n + k + state.second.size
   held = state.with(first: xs.drop(n).take(k), second: xs.drop(n + k).take(state.second.size))
-  stepped = try Optim.step(held, ps, grads, xs.drop(moments))
+  stepped = try Optim.step(held, ps, grads, xs.drop(moments), fused)
   ok([value] + stepped.params + stepped.state.first + stepped.state.second)
 end
 
