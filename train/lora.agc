@@ -122,10 +122,11 @@ def applied(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map
 end
 
 ## `weights` with the adapter merged in, for inference: the adapted weights are new tensors on their backend, each
-## `W + (alpha / r) · B A`, and the others are the tensors of `weights`, shared and not copied. Nothing is closed:
-## the weights under the adapted ones stay the caller's. When it fails, the sums it made are freed. The sums run as traced graphs, `MERGED_AT_ONCE` weights
-## each, so this works on ggml too, which `applied` outside a loss does not. A model made from them runs at the cost
-## of the model alone. An adapted weight that is not on the adapter's backend is an error.
+## `W + (alpha / r) · B A`, and the others are the tensors of `weights`, shared and not copied. Nothing of the
+## caller's is closed: the weights under the adapted ones stay theirs. The sums run as traced graphs,
+## `MERGED_AT_ONCE` weights each, so this works on ggml too, which `applied` outside a loss does not. A model made
+## from them runs at the cost of the model alone. An adapted weight that is not on the adapter's backend is an
+## error, and when a graph fails the sums of the graphs before it are freed.
 def merged(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map[String, Tensor.Tensor]]
   out = weights
   at = 0

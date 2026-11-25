@@ -236,7 +236,8 @@ def test_merged_fails_as_a_whole_when_a_later_graph_fails() -> Result[Void]
   for backend in try backends()
     weights: Map[String, Tensor.Tensor] = {}
     for i in 0...300
-      weights = weights.put("layers.#{i}.proj.weight", try S.tensor([1.0, 2.0, 3.0, 4.0], [2, 2], Tensor.Dtype.F32, backend))
+      w = try S.tensor([1.0, 2.0, 3.0, 4.0], [2, 2], Tensor.Dtype.F32, backend)
+      weights = weights.put("layers.#{i}.proj.weight", w)
     end
 
     made = try Lora.init(weights, Lora.Config(targets: ["proj"], r: 1), 1, backend)
