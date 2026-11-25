@@ -86,6 +86,7 @@ end
 - Under prefetch, `take` gives the next batch of the stream. The `i` argument is not read, so take the batches in order.
 - A batch that fails to build reaches the caller as an error in its place. A crash of the task also reaches the caller as an error.
 - Native tensors made by the task belong to it. They stay usable until `stop`.
+- `fit` on `Ggml` does not use `prefetch`: a batch there is its row ids, and the gather runs inside the step. `Data.feed` and `fit_batches` still do.
 - Prefetch hides the time it takes to build a batch, and nothing more. The measured gain is on libtorch on the CPU, with 16 384 rows and batches of 2 048: 154 steps per second without prefetch and 232 with it. The step's own compute is not overlapped.
 
 ## Limits
@@ -94,4 +95,4 @@ end
 - A batch is one compiled graph per batch shape on `Ggml`, so a last partial batch costs a second graph.
 - A dataset must have fewer than 2 147 483 646 rows.
 - The shuffle runs as VM steps, `O(N)` for each epoch, and counts against `--max-steps` like any Agentica code.
-- `fit` traces the loss once for each batch shape, not on every step; the batch is an input of the compiled step.
+- `fit` traces the loss once for each batch shape, not on every step. On `Ggml` the compiled step takes the row ids of the batch as its input and gathers the dataset's tensors, which it holds as constants; elsewhere the batch's two tensors are the inputs.

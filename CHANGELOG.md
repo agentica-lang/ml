@@ -4,16 +4,20 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ## [Unreleased]
 
+### tensor
+
+- ggml: the CPU build uses llamafile's sgemm for the F32 matmul (`-DGGML_LLAMAFILE=ON` in `build-engine.sh`, so the cache entry is built once more): a training step of an MLP is 1.2 to 1.7 times faster on the CPU, and the prompt of Qwen3-0.6B 1.9 times.
+
 ### train
 
 - `Lora.merged`: the weights of a model with an adapter merged in, for inference, on any backend.
+- `Train.fit` on ggml gathers the rows of a batch inside the step instead of in a graph of its own, with the same batches: a step at batch 16 to 64 on Vulkan takes up to half the time (14 ms to 7 to 9 ms), and a CPU step 4 to 17 percent less. The loader's prefetch has nothing to do there, so `fit` starts no task.
 - `Lora.save` and `Lora.open` keep an adapter in PEFT's files (`adapter_config.json`, `adapter_model.safetensors`): an adapter trained with PEFT runs here, and one trained here loads in PEFT.
 
 ## [0.3.0] - 2026-11-25
 
 ### tensor
 
-- ggml: the CPU build uses llamafile's sgemm for the F32 matmul (`-DGGML_LLAMAFILE=ON` in `build-engine.sh`, so the cache entry is built once more): a training step of an MLP is 1.2 to 1.7 times faster on the CPU, and the prompt of Qwen3-0.6B 1.9 times.
 - **Breaking:** a function that you compile with `Trace.compile` and that calls `Optim.step` (or `Tensor.adam_step`) for Adam or AdamW on ggml now updates the first and second moments in place when nothing else reads them: the tensors you pass are consumed, and `Trace.run` gives them back with the new values (`Trace.donated` says which outputs). `Optim.step` itself, `Trace.eval` and `Trace.eval_many` still change none of their arguments.
 - `Tensor.adam_step(p, g, m, v, hyper)`, the update kernel of Adam and AdamW (call `Optim`, not this): one `ggml_opt_step_adamw` node on ggml, a composition elsewhere. In a function compiled by `Trace.compile` it updates the moments in place when nothing else reads them (`Trace.donated` says which outputs are inputs). It has no gradient: a gradient through the Adam update of `Optim.step` is an error.
 - `Trace.stablehlo(specs, f)` writes a traced function as a StableHLO module, for XLA and IREE (the ops of an MLP forward and of a training step, with `slice`; an `adam_step` is written as the ops it composes); its goldens come from IREE (`make iree-goldens`, local only).
