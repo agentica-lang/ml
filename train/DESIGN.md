@@ -51,7 +51,7 @@ Lora.init(weights, config, seed, backend) -> Result[Adapter { config, names, a, 
 Lora.params(adapter) -> Result[List[Tensor]]                  A then B of each adapted weight: what fit trains
 Lora.with_params(adapter, params) -> Result[Adapter]
 Lora.applied(weights, adapter) -> Result[Map[String, Tensor]] every weight, the adapted ones as W + (alpha / r) B A
-Lora.save(dir, adapter) -> Result[Void]                       PEFT's adapter_config.json and adapter_model.safetensors
+Lora.save(dir, adapter, embeddings = []) -> Result[Void]      PEFT's adapter_config.json and adapter_model.safetensors
 Lora.open(dir, backend) -> Result[Adapter]
 ```
 
@@ -99,19 +99,30 @@ Lora.open(dir, backend) -> Result[Adapter]
   `base_model.model.x.lora_A.weight` `[r, in]` and `...lora_B.weight`
   `[out, r]`, `F32`, with the `format: pt` metadata. The config holds the keys
   PEFT needs and the ones that change the math; PEFT fills the rest with its
-  defaults, and `Lora.open` ignores the rest. `open` takes the adapted weights
-  from the names of the tensors, not from `target_modules`, and refuses what
-  `applied` does not compute, each by name: another `peft_type`, DoRA,
-  rsLoRA, `fan_in_fan_out`, a trained bias (`bias`, `lora_bias`),
-  `modules_to_save`, a rank or alpha pattern, `target_modules` as a regular
-  expression, any tensor that is not a `lora_A` or `lora_B`, and the adapter
-  of an `Embedding` (`lora_embedding_A` and `B`, the transposed layout). A
-  `lora_dropout` is read and written back: it runs, and `params` refuses to
-  train it. The other way has one limit: an adapter here does not know which
-  of its weights is an `Embedding` in PyTorch, so `save` writes every one as
-  a linear layer's, and an adapter on an embedding table is not for PEFT.
-  The test reads files that PEFT wrote (checked in, 1.7 kB), and
-  `test/lora_golden.py check` loads what `save` wrote with PEFT (manual).
+  defaults. `Lora.open` takes the adapted weights from the names of the
+  tensors, not from `target_modules`, and refuses what `applied` does not
+  compute, each by name: another `peft_type`; DoRA, rsLoRA, aLoRA, QALoRA and
+  BD-LoRA (`use_dora`, `use_rslora`, `alora_invocation_tokens`, `use_qalora`,
+  `use_bdlora`); `fan_in_fan_out`; a trained bias (`bias`, `lora_bias`);
+  `modules_to_save`, `target_parameters` and `trainable_token_indices`;
+  `layer_replication`; a rank or alpha pattern; `target_modules` as a regular
+  expression; any tensor that is not a float `lora_A` or `lora_B` of a
+  layer; and the adapter of an `Embedding` (`lora_embedding_A` and `B`, the
+  transposed layout). The list is the keys of PEFT 0.21 that change the
+  math; a key set to null, false or empty is not set. A `lora_dropout` is
+  read and written back: it runs, and `params` refuses to train it. A
+  half-float adapter is widened to `F32`. `base_model_name_or_path` is not
+  kept: an adapter does not know its model, and `save` writes null.
+  The other way has one gap, closed by the caller: an adapter here does not
+  know which of its weights is an `Embedding` in PyTorch, so `save` takes
+  the names of the model's embedding tables (`embeddings`) and refuses an
+  adapter of one; without them it writes every weight as a linear layer's.
+  `save` also refuses a rank that is not `config.r` and a weight that no
+  target takes, since PEFT would not load them, and gives each file its name
+  when it is whole. The test reads files that PEFT wrote (checked in,
+  1.7 kB: the one `.safetensors` in the repository, which `.gitattributes`
+  notes), and `test/lora_golden.py check` loads what `save` wrote with PEFT
+  (manual).
 - **AdamW's decay is a flag per parameter, set by the caller.** PyTorch has
   parameter groups; here `decay: List[Bool]` follows the list of parameters,
   and a caller builds it from the names of a `Params.split`. The rule for a

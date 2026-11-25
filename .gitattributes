@@ -5,7 +5,8 @@
 *.md text eol=lf
 # Generated C headers are compared byte for byte (native-gen --check).
 *_native.h text eol=lf
-# Model weights are downloaded, never committed (whisper/README.md).
+# Model weights are downloaded, never committed (whisper/README.md). The exception is a test fixture of a few
+# hundred bytes that another library wrote (train/test/fixtures/lora_peft/, PEFT's adapter file).
 *.bin binary
 *.gguf binary
 *.safetensors binary

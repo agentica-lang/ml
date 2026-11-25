@@ -4,7 +4,8 @@ fixed rows, it prints the output of the adapted model, the loss, PEFT's gradient
 run of `torch.optim.AdamW` on the adapter alone (the loss of every step and the adapter at the end), in `float32`.
 
 It also saves that adapter as PEFT does, with a `lora_dropout` of 0.1 in its config, into `test/fixtures/lora_peft/`
-(`adapter_config.json` and `adapter_model.safetensors`), which `lora_peft_test.agc` reads. With `check DIR` it does
+(`adapter_config.json`, with its `target_modules` sorted so that the file is the same on every run, and
+`adapter_model.safetensors`), which `lora_peft_test.agc` reads. With `check DIR` it does
 the other way: it loads the adapter folder DIR, which `Lora.save` wrote from that same adapter
 (`agentica tools/lora_save.agc DIR`), with `PeftModel.from_pretrained` and compares the model's output.
 
@@ -76,6 +77,13 @@ def saved(start: list[torch.Tensor], inputs: torch.Tensor, output: torch.Tensor)
             raise SystemExit("the saved adapter does not give the output of the run")
     model.save_pretrained(SAVED)
     os.remove(f"{SAVED}/README.md")
+    # PEFT keeps the targets in a set, whose order changes from run to run: sorted, the file is the same every time.
+    path = f"{SAVED}/adapter_config.json"
+    with open(path, encoding="utf-8") as f:
+        config = json.load(f)
+    config["target_modules"] = sorted(config["target_modules"])
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(config, indent=2, sort_keys=True))
 
 
 def check(folder: str) -> None:
@@ -97,6 +105,8 @@ def check(folder: str) -> None:
 
 def main() -> None:
     if len(sys.argv) > 1:
+        if sys.argv[1:2] != ["check"] or len(sys.argv) != 3:
+            raise SystemExit("usage: lora_golden.py [check DIR]")
         check(sys.argv[2])
         return
     torch.manual_seed(137)

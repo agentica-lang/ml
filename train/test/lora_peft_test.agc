@@ -1,7 +1,8 @@
 ## `Lora.open` and `Lora.save` against PEFT's own files: `fixtures/lora_peft/` is the adapter of `lora_golden.py`
 ## as `PeftModel.save_pretrained` wrote it (peft 0.21.2), with a dropout in its config. The adapter read from it gives
 ## PEFT's output, `save` writes the same tensors under the same names and the same config values, what `save` wrote
-## reads back as it was, and what LoRA here does not compute is refused. The other way, PEFT loading what `save`
+## reads back as it was, and what LoRA here does not compute is refused (`lora_files.py` makes the files PEFT would
+## not write, with the standard library). The other way, PEFT loading what `save`
 ## wrote, is `lora_golden.py check` (manual: it needs torch and peft). Run from `train/`.
 
 import Hub from "pkg/hub/hub"
@@ -141,6 +142,16 @@ def test_a_config_that_changes_the_math_is_refused() -> Result[Void]
       ["\"rank_pattern\": {}", "\"rank_pattern\": {\"first\": 4}", "rank_pattern"],
       ["\"alpha_pattern\": {}", "\"alpha_pattern\": {\"first\": 8}", "alpha_pattern"],
       ["\"r\": 2", "\"r\": 3", "rank 3"],
+      ["\"r\": 2", "\"r\": 0", "at least 1"],
+      ["\"lora_alpha\": 4", "\"lora_alpha\": 0", "above 0"],
+      ["\"lora_alpha\": 4", "\"lora_alpha\": null", "lora_alpha is missing"],
+      ["\"lora_alpha\": 4", "\"alpha\": 4", "lora_alpha is missing"],
+      ["\"use_qalora\": false", "\"use_qalora\": true", "use_qalora"],
+      ["\"use_bdlora\": null", "\"use_bdlora\": {\"target_modules_bd_a\": [\"first\"]}", "use_bdlora"],
+      ["\"alora_invocation_tokens\": null", "\"alora_invocation_tokens\": [1, 2]", "alora_invocation_tokens"],
+      ["\"layer_replication\": null", "\"layer_replication\": [[0, 1], [0, 1]]", "layer_replication"],
+      ["\"target_parameters\": null", "\"target_parameters\": [\"first.weight\"]", "target_parameters"],
+      ["\"trainable_token_indices\": null", "\"trainable_token_indices\": [0, 1]", "trainable_token_indices"],
     ]
 
     for i in 0...changes.size
@@ -153,7 +164,13 @@ def test_a_config_that_changes_the_math_is_refused() -> Result[Void]
     stop = start + config.slice(start, config.length - start).index_of("]").unwrap! + 1
     rest = config.slice(stop, config.length - stop)
     pattern = "#{config.slice(0, start)}\"target_modules\": \"first|second\"#{rest}"
-    S.expect_error(Lora.open(try folder(dir, "pattern", tensors, pattern), S.REF), "regular expression")
+    try S.expect_error(Lora.open(try folder(dir, "pattern", tensors, pattern), S.REF), "regular expression")
+    absent = "#{config.slice(0, start)}\"target_modules\": null#{rest}"
+    try S.expect_error(Lora.open(try folder(dir, "absent", tensors, absent), S.REF), "target_modules is missing")
+    empty = config.replace("\"rank_pattern\": {}", "\"rank_pattern\": null")
+    try Test.assert(empty != config, "PEFT's config has a rank_pattern")
+    opened = Lora.open(try folder(dir, "empty", tensors, empty), S.REF)
+    Test.assert(opened.ok?, "a null rank_pattern is no pattern")
   end
 end
 
@@ -179,8 +196,53 @@ def test_tensors_that_are_not_a_linear_adapter_are_refused() -> Result[Void]
 
     wide = pair.put("#{p}first.lora_B.weight", try Tensor.zeros([4, 3], Tensor.Dtype.F32, S.REF))
     try S.expect_error(Lora.open(try folder(dir, "wide", wide, config), S.REF), "rank")
-    made = try Lora.open(PEFT, S.REF)
-    try S.expect_error(Lora.save("#{dir}/rank", made.with(config: made.config.with(r: 4))), "rank")
+    for key in ["#{p}lora_A.weight", "#{p}.lora_A.weight", "#{p}a..b.lora_A.weight", "first.lora_A.weight"]
+      try S.expect_error(Lora.open(try folder(dir, "key-#{key.length}", pair.put(key, a), config), S.REF), key)
+    end
+
     S.expect_error(Lora.open("#{dir}/missing", S.REF), "adapter_config.json")
   end
+end
+
+def test_save_refuses_what_peft_would_not_load() -> Result[Void]
+  with_folder do |dir|
+    made = try Lora.open(PEFT, S.REF)
+    try S.expect_error(Lora.save("#{dir}/rank", made.with(config: made.config.with(r: 4))), "rank 4")
+    narrow = made.with(b: made.b.set(0, try Tensor.zeros([4, 3], Tensor.Dtype.F32, S.REF)))
+    try S.expect_error(Lora.save("#{dir}/narrow", narrow), "first.weight")
+    try S.expect_error(Lora.save("#{dir}/table", made, ["second.weight"]), "embedding table")
+    try Test.assert(Lora.save("#{dir}/other", made, ["tokens.weight"]).ok?, "an embedding it does not adapt")
+    untaken = made.with(config: made.config.with(targets: ["first"]))
+    try S.expect_error(Lora.save("#{dir}/untaken", untaken), "second.weight")
+    for name in ["rank", "narrow", "table", "untaken"]
+      try Test.assert(!File.stat("#{dir}/#{name}/#{CONFIG}").ok?, "#{name} leaves no config")
+    end
+
+    Test.assert(!File.stat("#{dir}/other/#{CONFIG}.part").ok?, "the config has its name")
+  end
+end
+
+def test_a_half_float_adapter_is_widened_and_an_integer_one_refused() -> Result[Void]
+  p = try Process.spawn_captured("python3", ["-I", "test/lora_files.py"])
+  out = try Process.output(p, 30000)
+  code = try Process.wait(p, 30000)
+  return error("lora_files.py exited with #{code}: #{out.stderr}") if code != 0
+  dir = out.stdout.strip.split("\n").last
+  return error("lora_files.py printed no folder: #{dir}") if not dir.start_with?("/")
+  result = odd_files(dir)
+  _ = Path.remove(dir, 5000)
+  result
+end
+
+def odd_files(dir: String) -> Result[Void]
+  made = try Lora.open(PEFT, S.REF)
+  half = try Lora.open("#{dir}/half", S.REF)
+  try Test.eq(half.names, made.names)
+  for i in 0...made.names.size
+    try Test.eq(Tensor.dtype(half.a[i]), Tensor.Dtype.F32)
+    try S.expect_close(try S.floats_of(half.a[i]), try S.floats_of(made.a[i]), 0.001, 0.001, "A #{i} from F16")
+    try S.expect_close(try S.floats_of(half.b[i]), try S.floats_of(made.b[i]), 0.001, 0.001, "B #{i} from F16")
+  end
+
+  S.expect_error(Lora.open("#{dir}/integer", S.REF), "floats")
 end
