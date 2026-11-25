@@ -60,6 +60,8 @@ Each loss takes a prediction and a target. It gives a rank-0 tensor (a single nu
 
 `Optim.Optimizer` is `Sgd(Optim.Sgd(lr:, momentum: 0.0))` or `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))`. Adam's defaults are `lr` 0.001, `beta1` 0.9, `beta2` 0.999 and `eps` 1e-8.
 
+`AdamW(Optim.AdamW(lr:, weight_decay: 0.01, decay: []))` is Adam with decoupled weight decay, as PyTorch's `AdamW`: each step first shrinks a parameter by `lr * weight_decay` of itself, then takes Adam's step. It has Adam's fields and defaults. `decay` has one flag per parameter and says which ones decay; empty, all of them do. A fine-tune leaves the biases and the layer-norm weights out, which in PyTorch is two parameter groups.
+
 Both take a `schedule:` that moves the learning rate with the step count `t` (from 0). `lr` is the peak, and the rate of a step is `lr` times a factor:
 
 - `Optim.Schedule.Constant` (the default) is a factor of 1.
@@ -74,7 +76,7 @@ adam = Optim.Optimizer.Adam(Optim.Adam(lr: 0.0001, schedule: Optim.Schedule.Warm
 
 The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, params)` makes the state, and `Optim.step(state, params, grads, scalars = [])` returns a new state and new parameters. `fit` does this for you.
 
-`Optim.step_scalars(state)` gives the numbers that the next step depends on: SGD's learning rate, or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` (its learning rate with the bias correction). `fit` gives them to the step as inputs, so a learning rate that changes at every step is not a new graph on ggml. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those numbers as inputs after the moments (`Trace.stablehlo` in the tensor page).
+`Optim.step_scalars(state)` gives the numbers that the next step depends on: SGD's learning rate, or Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` (its learning rate with the bias correction); AdamW adds `lr * weight_decay`. `fit` gives them to the step as inputs, so a learning rate that changes at every step is not a new graph on ggml. `Train.stablehlo(loss, params, batch, optimizer)` writes the step of `fit` as one StableHLO program for every step, with those numbers as inputs after the moments (`Trace.stablehlo` in the tensor page).
 
 `Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 
@@ -117,7 +119,7 @@ try SafetensorsWrite.write("last_block.safetensors", try Params.named(split, fit
 
 - Every step retraces the loss, so the trace cost is paid on each step. On the reference backend, one epoch of the 2-8-1 MLP of the XOR test, with four rows, costs about 75 000 VM steps.
 - The loss must return a float scalar. An op with no backward rule, listed on the [tensor page](../tensor/_index.md), makes `fit` fail.
-- On `Ggml`, the step is one compiled graph with at most 512 outputs: the loss, the new parameters and the optimizer's moments. That allows 170 parameters with Adam, 255 with momentum SGD and 511 with plain SGD.
+- On `Ggml`, the step is one compiled graph with at most 512 outputs: the loss, the new parameters and the optimizer's moments. That allows 170 parameters with Adam or AdamW, 255 with momentum SGD and 511 with plain SGD.
 - The losses and the optimizers use only ops that ggml supports, so a batch and its step run on `Ggml` when the dataset is on `Ggml`.
 
 ## How it works
