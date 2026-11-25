@@ -15,6 +15,7 @@ import Lower from "src/lower"
 import Stablehlo from "src/stablehlo"
 import Tensor from "tensor"
 import Types from "src/types"
+import Xla from "src/xla"
 
 export Stablehlo.Module
 
@@ -56,6 +57,8 @@ struct Compiled
   program: Optional[Lower.Program]
   ## On ggml, the pin that keeps the graph in the cache (`close`).
   pin: Optional[GgmlRaw.Pin]
+  ## On XLA, the compiled program.
+  xla: Optional[Xla.Program]
 end
 
 ## One computed node of a traced function, run on two backends: where it is
@@ -155,6 +158,7 @@ def evaluate(
 ) -> Result[List[Types.Tensor]]
   case backend
     Types.Backend.Ggml(device) -> return Lower.evaluate(outs, env, device, keep)
+    Types.Backend.Xla(_) -> return xla_evaluate(outs, env)
     _ -> nil
   end
 
@@ -242,9 +246,14 @@ def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tenso
           backend: backend,
           program: some(Lower.pinned(p, held)),
           pin: some(held),
+          xla: none,
         ),
       )
-    _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none, pin: none))
+    Types.Backend.Xla(_) ->
+      m = try Stablehlo.emit(inputs, outs)
+      p = try Xla.compile(m.text, m.constants, outs)
+      ok(Compiled(specs: specs, inputs: [], outs: [], backend: backend, program: none, pin: none, xla: some(p)))
+    _ -> ok(Compiled(specs: specs, inputs: inputs, outs: outs, backend: backend, program: none, pin: none, xla: none))
   end
 end
 
@@ -311,6 +320,13 @@ def run(
   into: List[Optional[Types.Tensor]] = [],
 ) -> Result[List[Types.Tensor]]
   try matches(compiled.specs, args)
+  case compiled.xla
+    some(p) ->
+      return error("run: into needs a compiled ggml function") if !into.empty?
+      return Xla.execute(p, args)
+    none -> nil
+  end
+
   case compiled.program
     some(p) -> Lower.execute(p, args, "run", into)
     none ->
@@ -325,15 +341,26 @@ end
 def donated(compiled: Compiled) -> List[Bool]
   case compiled.program
     some(p) -> p.donates.map { |d| d >= 0 }
-    none -> compiled.outs.map { |_| false }
+    none ->
+      case compiled.xla
+        some(p) -> p.outs.map { |_| false }
+        none -> compiled.outs.map { |_| false }
+      end
   end
 end
 
 ## Ends the pin of `compiled` (its graph stays in the cache, evictable). The
 ## `Compiled` still runs: a run builds the graph again if the cache lost it.
+## On XLA it frees the compiled program instead, and a run afterwards is an
+## error.
 def close(compiled: Compiled) -> Void
   case compiled.pin
     some(p) -> Native.close(p)
+    none -> nil
+  end
+
+  case compiled.xla
+    some(x) -> Native.close(x.program)
     none -> nil
   end
 end
@@ -345,6 +372,18 @@ end
 ## constants are tensors somebody else still reads.
 def close_constants(compiled: Compiled) -> Void
   close(compiled)
+  case compiled.xla
+    some(p) ->
+      for t in p.constants
+        case t.handle
+          Types.Handle.Xla(h) -> Native.close(h)
+          _ -> nil
+        end
+      end
+
+    none -> nil
+  end
+
   case compiled.program
     some(program) ->
       for leaf in program.leaves
@@ -449,6 +488,22 @@ def diff(
 end
 
 private
+
+## `evaluate` on XLA: the graph as one StableHLO program, compiled for this call and run once. Its inputs are the
+## nodes of `env` that `outs` reach, in node order.
+def xla_evaluate(outs: List[Types.Tensor], env: Map[Ref, Types.Tensor]) -> Result[List[Types.Tensor]]
+  positions: Map[Ref, Int] = {}
+  for id in env.keys
+    positions = positions.put(id, positions.size)
+  end
+
+  inputs = (try Lower.walk(outs, positions)).select { |t| env.has_key?(Graph.id_of(t)) }
+  m = try Stablehlo.emit(inputs, outs)
+  p = try Xla.compile(m.text, m.constants, outs)
+  values = Xla.execute(p, inputs.map { |t| env[Graph.id_of(t)] })
+  Native.close(p.program)
+  values
+end
 
 ## A half or quantized weight (`F16` or `Q8_0` on ggml, `Tensor.from_file` with that `dtype`) is read-only:
 ## no gradient is taken for it, which an `F16` tensor of the other backends keeps.

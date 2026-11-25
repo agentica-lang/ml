@@ -55,10 +55,15 @@ answers whether this machine has it, and the dispatch arm answers
   traced graph lowered to one ggml graph, with the structural cache.
 - `tools/build-engine.sh` — builds ggml (CPU, or CPU + Vulkan) into a cache
   shared by every worktree and prints its exports; CI runs it.
+- `src/xla.agc`, `src/xla_native.agc`, `native/xla.c` — the XLA backend (CPU):
+  XLA's PJRT plugin loaded with `dlopen`, a `Trace.compile` emitted as
+  StableHLO and compiled once; see "The XLA backend" below.
+  `native/pjrt_c_api.h` is the PJRT header, vendored with its notice.
+- `tools/install_xla.agc` — downloads the pinned XLA plugin into the ml cache.
 - `tools/xla/` — what the manual `XLA plugin` workflow runs after it builds
   the XLA PJRT CPU plugin: `smoke.c` loads the plugin and creates a client,
   `collect-licenses.sh` gathers the licenses of what it links. The plugin
-  needs a CPU with AVX. No backend uses it yet.
+  needs a CPU with AVX.
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
 - `tools/bench-ggml.agc` — the step times in "The ggml backend".
 - `test/` — the unit tests of the reference backend, the libtorch conformance
@@ -284,6 +289,33 @@ ms in Agentica, and in that gap the iGPU drops to its lowest clock (200 MHz in
 `pp_dpm_sclk`), so the next graph runs slower; the spike ran its graph with no
 gap. That gap is the price of retracing, which keeps `Trace` the only API.
 
+## The XLA backend
+
+`Backend.Xla(Device.Cpu)` runs a traced function through XLA on the CPU. The
+native module (`native/xla.c`) builds with every install, links nothing of XLA,
+and loads XLA's PJRT plugin with `dlopen` at the first use. Install the plugin
+once, from `tensor/` (it needs `unzip`):
+
+```sh
+agentica tools/install_xla.agc
+```
+
+It downloads the pinned `xla-cpu-pjrt` 0.0.1 wheel of this machine from PyPI,
+checks its sha256 and extracts the plugin to
+`${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}/xla/<sha256>/`. The wheel exists
+for Linux x86_64 and aarch64 only (CI runs x86_64; aarch64 is untested); on any
+other system, and before the install,
+`Tensor.available(Backend.Xla(Device.Cpu))` is `false` and an op answers an
+error that names the install step. Only the CPU device exists.
+
+What runs: `Trace.compile` emits the function as StableHLO
+(`Trace.stablehlo`, `DESIGN.md` §12) and XLA compiles it once; `Trace.run`
+runs it. `Trace.eval`, `eval_many` and `value_and_grad` compile the graph for
+each call. The ops are the ones the StableHLO emitter covers (an MLP, its
+gradients and an SGD or Adam step written with them); any other is an error
+naming it. Eagerly, `Xla` only creates tensors, reads them back and passes
+`stop_grad` through, as `Ggml` does: every other op is an error naming the op.
+
 ## CI
 
 `.github/workflows/ci.yml` has one generic job per package folder. It runs
@@ -304,6 +336,9 @@ gap. That gap is the price of retracing, which keeps `Trace` the only API.
   workflow's engine step), so `native/ggml.c` compiles and the ggml CPU
   checks run there; `TENSOR_REQUIRE_GGML=1` makes a module that did not build
   fail them. Vulkan runs locally only: no hosted runner has a device.
+- The `xla` job installs the XLA plugin (cached by its sha256) and runs the XLA
+  tests with `TENSOR_REQUIRE_XLA=1`, in parallel with the packages, when
+  `tensor/`, `train/` or the workflow changes.
 
 ## Tolerances, and why
 

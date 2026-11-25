@@ -159,6 +159,7 @@ def data_of(t: Types.Tensor) -> Result[List[Float]]
       error("the reference backend cannot read a native handle (#{Types.backend_name(t.backend)})")
     Types.Handle.Traced(_) -> error("a traced tensor has no values: run it with Trace.eval")
     Types.Handle.Ggml(_) -> error("the reference backend cannot read a ggml handle (#{Types.backend_name(t.backend)})")
+    Types.Handle.Xla(_) -> error("the reference backend cannot read an XLA buffer (#{Types.backend_name(t.backend)})")
   end
 end
 
