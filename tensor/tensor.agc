@@ -1452,6 +1452,27 @@ def silu(x: Types.Tensor) -> Result[Types.Tensor]
   mul(x, x_sig)
 end
 
+## Derived: `softplus(x) = log(1 + exp(x))`, written as `max(x, 0) + log(1 + exp(-|x|))` so that a large `x` does not
+## overflow `exp`.
+def softplus(x: Types.Tensor) -> Result[Types.Tensor]
+  _ = try float_only(x, "softplus")
+  above = try relu(x)
+  size = try add(above, try relu(try neg(x)))
+  one = try ones(x.shape, x.dtype, x.backend)
+  add(above, try log(try add(one, try exp(try neg(size)))))
+end
+
+## Derived: `x` over its last axis divided by `sqrt(sum(x * x) + eps)`, the L2 normalization of the linear attention of
+## Qwen3.5 (`eps` inside the root: a row of zeros stays zeros).
+def l2_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
+  return error("l2_norm needs a finite eps > 0, got #{eps}") if !Types.is_finite(eps) or eps <= 0.0
+  return error("l2_norm needs rank >= 1, got #{x.shape}") if x.shape.size < 1
+  _ = try float_only(x, "l2_norm")
+  squares = try sum(try mul(x, x), some([x.shape.size - 1]), true)
+  floor = try full(squares.shape, Types.Values.Float(eps), x.dtype, x.backend)
+  div(x, try broadcast_to(try sqrt(try add(squares, floor)), x.shape))
+end
+
 ## Derived: the rank-1 product, literally `reshape` + `matmul`.
 def dot(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try same_backend(a, b, "dot")
