@@ -1,0 +1,64 @@
+[WARNING]: Found both group and host with same name: cuda
+
+PLAY [cuda] ********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [cuda]
+
+TASK [ansible.builtin.file] ****************************************************
+ok: [cuda] => (item=~/agc)
+ok: [cuda] => (item=~/logs)
+ok: [cuda] => (item=~/models)
+
+TASK [agentica 0.38.0] *********************************************************
+ok: [cuda]
+
+TASK [ansible.builtin.unarchive] ***********************************************
+skipping: [cuda]
+
+TASK [ml tree (origin/main + cuda.patch)] **************************************
+changed: [cuda]
+
+TASK [env file] ****************************************************************
+ok: [cuda]
+
+TASK [root cron safety line] ***************************************************
+ok: [cuda]
+
+TASK [qwen - ours (bench_qwen on ggml-cuda) and llama-bench on the same Q8_0 GGUF; ours f16 from the safetensors; prompt 128, 128 new, greedy] ***
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC POLL on cuda: jid=j776449929325.34350 started=1 finished=0
+ASYNC OK on cuda: jid=j776449929325.34350
+changed: [cuda]
+
+TASK [logs back to results/] ***************************************************
+changed: [cuda]
+
+PLAY RECAP *********************************************************************
+cuda                       : ok=8    changed=3    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0   
+

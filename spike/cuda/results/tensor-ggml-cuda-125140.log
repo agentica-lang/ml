@@ -1,0 +1,595 @@
+GPU 0: Tesla T4 (UUID: GPU-d28a47dd-c84e-5ddc-5d9e-5c797b2d97d8)
+== test/ggml_attention_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / attention agrees over grouped heads masks and the causal flag
+PASS /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / attention agrees for masks per head and the decode step
+PASS /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / attention agrees with minus infinity and refuses a hidden row
+PASS /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / rope agrees at ranks two and three and for a big base and late positions
+PASS /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / rope permute and batch matmul agree
+PASS /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / the backward of attention agrees
+timing: 7418 ms
+  7149 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_attention_test.agc (6 scenarios)
+slowest scenarios:
+  3272 ms /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / rope permute and batch matmul agree
+  2550 ms /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / attention agrees over grouped heads masks and the causal flag
+  712 ms /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / attention agrees for masks per head and the decode step
+  493 ms /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / the backward of attention agrees
+  82 ms /home/ubuntu/ml/tensor/test/ggml_attention_test.agc / attention agrees with minus infinity and refuses a hidden row
+6 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/ggml_compile_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / an mlp and its gradients match the reference on the cpu
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a graph not kept compiles on every call
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a retrace with new values compiles nothing
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / graphs that take turns keep their values
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / slice and gather match the reference
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / joins and whisper ops match the reference
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / the gradient of a lookup matches the reference
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / scatter add takes rank two indices and a rank two tail
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a scatter add with one index outside the rows is an error
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / scatter add on vulkan sums the rows of an index like the reference
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a scatter add index outside the rows is an error on vulkan
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a graph of many lookups fits its room
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / scatter add sums repeated indices and refuses one outside the rows
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a gather index outside the rows is an error
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a zero fill and another fill are two graphs
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a graph that failed a run runs again
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a value that is not finite is refused whether it is copied or not
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a node returned twice gives two equal outputs
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / an i32 graph converts in and out
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / the least recently used graph is evicted past 32
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / two tasks run graphs at once
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / what ggml does not lower is an error naming it
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / the refusals of ggml name their cause
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / vulkan matches the reference or says why not
+PASS /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a graph returns 512 outputs and refuses one more
+timing: 3131 ms
+  2810 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_compile_test.agc (25 scenarios)
+slowest scenarios:
+  1125 ms /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / scatter add on vulkan sums the rows of an index like the reference
+  328 ms /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / slice and gather match the reference
+  299 ms /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / a graph returns 512 outputs and refuses one more
+  277 ms /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / joins and whisper ops match the reference
+  202 ms /home/ubuntu/ml/tensor/test/ggml_compile_test.agc / an mlp and its gradients match the reference on the cpu
+25 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/ggml_fp16_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+FAIL /home/ubuntu/ml/tensor/test/ggml_fp16_test.agc / fp16 mul mat is the default and changes the gradients within its bound
+/home/ubuntu/ml/tensor/test/ggml_fp16_test.agc:37:3 [RUNTIME-TEST-ASSERTION] the largest gap 7.917614058673875e-7 is within F32's 1.5e-6: fp16 did not engage
+timing: 1638 ms
+  1334 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_fp16_test.agc (1 scenario)
+slowest scenarios:
+  1334 ms /home/ubuntu/ml/tensor/test/ggml_fp16_test.agc / fp16 mul mat is the default and changes the gradients within its bound
+0 passed, 1 failed, 0 skipped, 0 not executed, 0 file errors, seed 1027505909
+FAILED test/ggml_fp16_test.agc
+== test/ggml_half_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_half_test.agc / a half load converts each format
+PASS /home/ubuntu/ml/tensor/test/ggml_half_test.agc / a value beyond f16 is an error naming its element
+FAIL /home/ubuntu/ml/tensor/test/ggml_half_test.agc / a big half load puts every chunk where it belongs
+/home/ubuntu/ml/tensor/test/ggml_half_test.agc:218:11 [RUNTIME-TEST-ASSERTION] values are not equal; expected [-465920.0, 0.0, 465920.0, -93184.0, 372736.0, -186368.0, 279552.0, -279552.0, 186368.0, -372736.0, 93184.0, -465920.0, 0.0, 465920.0, -93184.0, 372736.0]; actual [-461312.0, 0.0, 461312.0, -93184.0, 372736.0, -186368.0, 281088.0, -281088.0, 186368.0, -372736.0, 93184.0, -461312.0, 0.0, 461312.0, -93184.0, 372736.0]
+PASS /home/ubuntu/ml/tensor/test/ggml_half_test.agc / the first bad value in file order is named on a threaded load
+PASS /home/ubuntu/ml/tensor/test/ggml_half_test.agc / only ggml holds a half weight
+PASS /home/ubuntu/ml/tensor/test/ggml_half_test.agc / a compiled graph reads a half weight as the f32 weight
+PASS /home/ubuntu/ml/tensor/test/ggml_half_test.agc / a half weight anywhere else is an error naming the op
+PASS /home/ubuntu/ml/tensor/test/ggml_half_test.agc / no gradient is taken for a half weight
+PASS /home/ubuntu/ml/tensor/test/ggml_half_test.agc / an f16 table still gathers on the reference
+timing: 2161 ms
+  1837 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_half_test.agc (9 scenarios)
+slowest scenarios:
+  588 ms /home/ubuntu/ml/tensor/test/ggml_half_test.agc / a half load converts each format
+  569 ms /home/ubuntu/ml/tensor/test/ggml_half_test.agc / a compiled graph reads a half weight as the f32 weight
+  485 ms /home/ubuntu/ml/tensor/test/ggml_half_test.agc / a big half load puts every chunk where it belongs
+  132 ms /home/ubuntu/ml/tensor/test/ggml_half_test.agc / a value beyond f16 is an error naming its element
+  43 ms /home/ubuntu/ml/tensor/test/ggml_half_test.agc / the first bad value in file order is named on a threaded load
+8 passed, 1 failed, 0 skipped, 0 not executed, 0 file errors, seed 224311128
+FAILED test/ggml_half_test.agc
+== test/ggml_kept_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / two functions of one graph read their own weights
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / a weight closed between runs is an error for every function that kept it
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / a kept leaf bound again reads the new tensor
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / an evicted graph keeps nothing
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / a cache written in place is bound by every run
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / a graph run again reads the tensors of its own run
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / an i32 tensor a run wrote is read from its device
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / a list with a leaf that cannot be kept keeps nothing
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / a run that did not resume reads no kept constant
+PASS /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / a set ends with the run that held its graph
+timing: 1112 ms
+  947 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_kept_test.agc (10 scenarios)
+slowest scenarios:
+  395 ms /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / a graph run again reads the tensors of its own run
+  309 ms /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / two functions of one graph read their own weights
+  125 ms /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / an evicted graph keeps nothing
+  40 ms /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / a set ends with the run that held its graph
+  25 ms /home/ubuntu/ml/tensor/test/ggml_kept_test.agc / an i32 tensor a run wrote is read from its device
+10 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/ggml_kv_half_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_kv_half_test.agc / an f16 cache is written in place and read by attention
+PASS /home/ubuntu/ml/tensor/test/ggml_kv_half_test.agc / an attention reads the first rows of an f16 cache
+PASS /home/ubuntu/ml/tensor/test/ggml_kv_half_test.agc / an f16 cache goes nowhere else
+timing: 357 ms
+  253 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_kv_half_test.agc (3 scenarios)
+slowest scenarios:
+  198 ms /home/ubuntu/ml/tensor/test/ggml_kv_half_test.agc / an f16 cache is written in place and read by attention
+  34 ms /home/ubuntu/ml/tensor/test/ggml_kv_half_test.agc / an attention reads the first rows of an f16 cache
+  21 ms /home/ubuntu/ml/tensor/test/ggml_kv_half_test.agc / an f16 cache goes nowhere else
+3 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/ggml_program_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a compiled function traces and compiles once
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / the reference backend runs a compiled function too
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / inputs that do not match the specs are errors
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a constant stays and an input changes
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a training step is one compiled function
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / tasks run one compiled function
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a closed constant is an error
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / close constants closes the constants of a function
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a pinned graph is never evicted
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / outputs are written into the tensors given
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / more pins than slots still compile and run
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a pin ends with its task
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a tensor closed after the bind still serves the run
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / an i32 output into a closed tensor does not crash
+PASS /home/ubuntu/ml/tensor/test/ggml_program_test.agc / into refuses what cannot take an output
+timing: 1926 ms
+  1782 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_program_test.agc (15 scenarios)
+slowest scenarios:
+  487 ms /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a pin ends with its task
+  358 ms /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a compiled function traces and compiles once
+  274 ms /home/ubuntu/ml/tensor/test/ggml_program_test.agc / more pins than slots still compile and run
+  263 ms /home/ubuntu/ml/tensor/test/ggml_program_test.agc / tasks run one compiled function
+  225 ms /home/ubuntu/ml/tensor/test/ggml_program_test.agc / a pinned graph is never evicted
+15 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/ggml_q8_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_q8_test.agc / a q8 0 file loads as f32 on every backend
+PASS /home/ubuntu/ml/tensor/test/ggml_q8_test.agc / a q8 0 weight keeps its blocks and serves linear and embedding
+PASS /home/ubuntu/ml/tensor/test/ggml_q8_test.agc / a q8 0 weight anywhere else is an error
+PASS /home/ubuntu/ml/tensor/test/ggml_q8_test.agc / only from file makes a q8 0 tensor
+timing: 931 ms
+  724 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_q8_test.agc (4 scenarios)
+slowest scenarios:
+  539 ms /home/ubuntu/ml/tensor/test/ggml_q8_test.agc / a q8 0 file loads as f32 on every backend
+  177 ms /home/ubuntu/ml/tensor/test/ggml_q8_test.agc / a q8 0 weight keeps its blocks and serves linear and embedding
+  6 ms /home/ubuntu/ml/tensor/test/ggml_q8_test.agc / a q8 0 weight anywhere else is an error
+  2 ms /home/ubuntu/ml/tensor/test/ggml_q8_test.agc / only from file makes a q8 0 tensor
+4 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/ggml_scatter_fp16_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_scatter_fp16_test.agc / scatter add keeps get rows back in fp16 mode
+timing: 984 ms
+  690 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_scatter_fp16_test.agc (1 scenario)
+slowest scenarios:
+  690 ms /home/ubuntu/ml/tensor/test/ggml_scatter_fp16_test.agc / scatter add keeps get rows back in fp16 mode
+1 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/ggml_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / floats uploads on the cpu backend and checks the count
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / the cpu module state is the one the dispatch answers
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / vulkan device zero round trips or says why not
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / two tasks upload and read back on vulkan at once
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / every op points at trace and bad storage is refused
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / to device copies and leaves the source readable
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / fp16 is the default and is fixed by the first ggml call
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / the other backends refuse a vulkan device
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / a fill past the list cap is made in c
+PASS /home/ubuntu/ml/tensor/test/ggml_test.agc / a tensor leaves its arena and closes once
+timing: 897 ms
+  621 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_test.agc (10 scenarios)
+slowest scenarios:
+  265 ms /home/ubuntu/ml/tensor/test/ggml_test.agc / floats uploads on the cpu backend and checks the count
+  231 ms /home/ubuntu/ml/tensor/test/ggml_test.agc / vulkan device zero round trips or says why not
+  45 ms /home/ubuntu/ml/tensor/test/ggml_test.agc / the cpu module state is the one the dispatch answers
+  40 ms /home/ubuntu/ml/tensor/test/ggml_test.agc / two tasks upload and read back on vulkan at once
+  11 ms /home/ubuntu/ml/tensor/test/ggml_test.agc / a fill past the list cap is made in c
+10 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/ggml_turns_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_turns_test.agc / a graph without fills takes turns with a larger one
+timing: 519 ms
+  365 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_turns_test.agc (1 scenario)
+slowest scenarios:
+  365 ms /home/ubuntu/ml/tensor/test/ggml_turns_test.agc / a graph without fills takes turns with a larger one
+1 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/ggml_views_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+FAIL /home/ubuntu/ml/tensor/test/ggml_views_test.agc / binary ops take a view first second and as a broadcast source
+/home/ubuntu/ml/tensor/test/ggml_views_test.agc:70:1 [RUNTIME-TEST-ERROR] a view broadcast to a bigger shape on Backend.Ggml(Device.Vulkan(0)): node <Ref 56> (broadcast_to [2, 4, 3, 5]) differs by 1.7430893638254887
+PASS /home/ubuntu/ml/tensor/test/ggml_views_test.agc / reductions products and gathers take a view
+PASS /home/ubuntu/ml/tensor/test/ggml_views_test.agc / concat norm rope and attention take a view
+PASS /home/ubuntu/ml/tensor/test/ggml_views_test.agc / a product takes a view of one head over a batch
+PASS /home/ubuntu/ml/tensor/test/ggml_views_test.agc / slices norms unary ops and a cache write take a view
+PASS /home/ubuntu/ml/tensor/test/ggml_views_test.agc / attention reads the heads as views and a mask of fills
+timing: 1911 ms
+  1641 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_views_test.agc (6 scenarios)
+slowest scenarios:
+  563 ms /home/ubuntu/ml/tensor/test/ggml_views_test.agc / binary ops take a view first second and as a broadcast source
+  353 ms /home/ubuntu/ml/tensor/test/ggml_views_test.agc / attention reads the heads as views and a mask of fills
+  215 ms /home/ubuntu/ml/tensor/test/ggml_views_test.agc / concat norm rope and attention take a view
+  190 ms /home/ubuntu/ml/tensor/test/ggml_views_test.agc / reductions products and gathers take a view
+  182 ms /home/ubuntu/ml/tensor/test/ggml_views_test.agc / a product takes a view of one head over a batch
+5 passed, 1 failed, 0 skipped, 0 not executed, 0 file errors, seed 1952310781
+FAILED test/ggml_views_test.agc
+== test/ggml_vulkan_mlp_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/ggml_vulkan_mlp_test.agc / the benchmark model agrees between cpu and vulkan
+timing: 1394 ms
+  1127 ms of scenarios /home/ubuntu/ml/tensor/test/ggml_vulkan_mlp_test.agc (1 scenario)
+slowest scenarios:
+  1127 ms /home/ubuntu/ml/tensor/test/ggml_vulkan_mlp_test.agc / the benchmark model agrees between cpu and vulkan
+1 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors
+== test/trace_parity_test.agc
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+PASS /home/ubuntu/ml/tensor/test/trace_parity_test.agc / traced and eager calls agree
+timing: 69 ms
+  30 ms of scenarios /home/ubuntu/ml/tensor/test/trace_parity_test.agc (1 scenario)
+slowest scenarios:
+  30 ms /home/ubuntu/ml/tensor/test/trace_parity_test.agc / traced and eager calls agree
+1 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors

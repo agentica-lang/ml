@@ -1,0 +1,38 @@
+[WARNING]: Found both group and host with same name: cuda
+
+PLAY [cuda] ********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [cuda]
+
+TASK [ansible.builtin.file] ****************************************************
+ok: [cuda] => (item=~/agc)
+ok: [cuda] => (item=~/logs)
+ok: [cuda] => (item=~/models)
+
+TASK [agentica 0.38.0] *********************************************************
+ok: [cuda]
+
+TASK [ansible.builtin.unarchive] ***********************************************
+skipping: [cuda]
+
+TASK [ml tree (origin/main + cuda.patch)] **************************************
+ok: [cuda]
+
+TASK [env file] ****************************************************************
+ok: [cuda]
+
+TASK [root cron safety line] ***************************************************
+ok: [cuda]
+
+TASK [gguf - the official Qwen Q8_0 GGUFs (owner's choice; the repos have no F16 file), sha256 checked] ***
+changed: [cuda] => (item={'name': 'Qwen3-1.7B', 'rev': '90862c4b9d2787eaed51d12237eafdfe7c5f6077', 'sha': '061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a'})
+changed: [cuda] => (item={'name': 'Qwen3-4B', 'rev': 'bc640142c66e1fdd12af0bd68f40445458f3869b', 'sha': '8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300'})
+changed: [cuda] => (item={'name': 'Qwen3-8B', 'rev': '7c41481f57cb95916b40956ab2f0b139b296d974', 'sha': '408b955510e196121c1c375201744783b5c9a43c7956d73fc78df54c66e883d6'})
+
+TASK [logs back to results/] ***************************************************
+changed: [cuda]
+
+PLAY RECAP *********************************************************************
+cuda                       : ok=8    changed=2    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0   
+

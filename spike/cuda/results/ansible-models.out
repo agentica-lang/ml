@@ -1,0 +1,44 @@
+[WARNING]: Found both group and host with same name: cuda
+
+PLAY [cuda] ********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [cuda]
+
+TASK [ansible.builtin.file] ****************************************************
+ok: [cuda] => (item=~/agc)
+ok: [cuda] => (item=~/logs)
+ok: [cuda] => (item=~/models)
+
+TASK [agentica 0.38.0] *********************************************************
+ok: [cuda]
+
+TASK [ansible.builtin.unarchive] ***********************************************
+skipping: [cuda]
+
+TASK [ml tree (origin/main + cuda.patch)] **************************************
+changed: [cuda]
+
+TASK [env file] ****************************************************************
+ok: [cuda]
+
+TASK [root cron safety line] ***************************************************
+ok: [cuda]
+
+TASK [models - the official safetensors at pinned revisions (no pickle)] *******
+ASYNC OK on cuda: jid=j77325500695.6573
+changed: [cuda] => (item={'name': 'Qwen3-1.7B', 'rev': '70d244cc86ccca08cf5af4e1e306ecf908b1ad5e', 'shards': 2})
+ASYNC OK on cuda: jid=j96605317577.6946
+changed: [cuda] => (item={'name': 'Qwen3-4B', 'rev': '1cfa9a7208912126459214e8b04321603b3df60c', 'shards': 3})
+ASYNC POLL on cuda: jid=j443999882110.7210 started=1 finished=0
+ASYNC POLL on cuda: jid=j443999882110.7210 started=1 finished=0
+ASYNC POLL on cuda: jid=j443999882110.7210 started=1 finished=0
+ASYNC OK on cuda: jid=j443999882110.7210
+changed: [cuda] => (item={'name': 'Qwen3-8B', 'rev': 'b968826d9c46dd6066d109eabc6255188de91218', 'shards': 5})
+
+TASK [logs back to results/] ***************************************************
+changed: [cuda]
+
+PLAY RECAP *********************************************************************
+cuda                       : ok=8    changed=3    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0   
+

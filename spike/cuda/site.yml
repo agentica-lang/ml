@@ -1,0 +1,187 @@
+# Spike ml#89 on the g4dn.xlarge (Tesla T4). .neuron/.venv/bin/ansible-playbook -i inventory.ini site.yml [--tags engine,test,...]
+# Setup always runs (idempotent); every measurement is a tag; logs come back to results/ at the end of each run.
+# TREE is a local worktree of origin/main (submodules) with cuda.patch committed on a local branch.
+- hosts: cuda
+  vars:
+    ver: "0.38.0"
+    pkg: "agentica-0.38.0-linux-x86_64"
+    sum: "e3452adc1c70423970284e29f90ea54b68900137da5d80f1650c243b568c5464"
+    here: "{{ playbook_dir }}"
+    tree: "{{ lookup('env', 'TREE') | default('/tmp/ml-cuda-tree', true) }}"
+    ggml_rev: 417a024b4fb6bc3116d41af7c067166a039bdf12
+    llama_tag: b12262
+    torch_ver: "2.6.0"
+    pjrt_ver: "0.12.0.1"
+    batches: "64 256 1024 4096"
+    env: >-
+      export PATH=/usr/local/cuda/bin:$HOME/agc/{{ pkg }}/bin:$PATH;
+      export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib:/usr/local/cuda/targets/x86_64-linux/lib;
+      export ENGINE_REV={{ ggml_rev }} JOBS=4;
+    models:
+      - { name: Qwen3-1.7B, rev: 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e, shards: 2 }
+      - { name: Qwen3-4B, rev: 1cfa9a7208912126459214e8b04321603b3df60c, shards: 3 }
+      - { name: Qwen3-8B, rev: b968826d9c46dd6066d109eabc6255188de91218, shards: 5 }
+  tasks:
+    - ansible.builtin.file: { path: "{{ item }}", state: directory }
+      loop: [~/agc, ~/logs, ~/models]
+      tags: always
+    - name: agentica {{ ver }}
+      ansible.builtin.get_url:
+        url: "https://github.com/agentica-lang/agentica/releases/download/{{ ver }}/{{ pkg }}.tar.gz"
+        dest: "~/agc/{{ pkg }}.tar.gz"
+        checksum: "sha256:{{ sum }}"
+      tags: always
+    - ansible.builtin.unarchive: { src: "~/agc/{{ pkg }}.tar.gz", dest: ~/agc, remote_src: true, creates: "~/agc/{{ pkg }}/bin/agentica" }
+      tags: always
+    - name: ml tree (origin/main + cuda.patch)
+      ansible.posix.synchronize:
+        src: "{{ tree }}/"
+        dest: ml/
+        rsync_opts: [--exclude=.git, --exclude=site/, --exclude=third_party/whisper.cpp/, --exclude=build-tensor-*/, --exclude=.agentica/]
+      tags: always
+    - name: env file
+      ansible.builtin.copy: { dest: ~/cuda.env, content: "{{ env }}\n" }
+      tags: always
+    - name: root cron safety line
+      become: true
+      ansible.builtin.cron:
+        name: power off at 22:00 Madrid
+        minute: "0"
+        hour: "20,21"
+        job: '[ "$(TZ=Europe/Madrid date +\%H)" = 22 ] && /usr/sbin/shutdown -h now'
+      tags: always
+
+    - name: engine - ggml with GGML_CUDA=ON for sm_75 (build-engine.sh cuda), then the packages
+      ansible.builtin.shell: |
+        . ~/cuda.env; cd ml
+        log=~/logs/engine-$(date +%H%M%S).log
+        { time sh tensor/tools/build-engine.sh cuda; } > $log 2>&1
+        sh tensor/tools/build-engine.sh cuda 2>/dev/null | grep '^export ' > ~/engine-cuda.env
+        sh tensor/tools/build-engine.sh cpu 2>/dev/null | grep '^export ' > ~/engine-cpu.env
+        . ~/engine-cuda.env
+        for p in tensor train hub transformers; do (cd $p && agentica install) >> $log 2>&1; done
+      async: 7200
+      poll: 30
+      tags: [never, engine]
+
+    - name: test - tensor's ggml tests, the CUDA device standing for Vulkan(0)
+      ansible.builtin.shell: |
+        . ~/cuda.env; . ~/engine-cuda.env; cd ml/tensor
+        log=~/logs/tensor-ggml-cuda-$(date +%H%M%S).log
+        nvidia-smi -L > $log
+        for t in test/ggml*_test.agc test/trace_parity_test.agc; do
+          echo "== $t" >> $log
+          TENSOR_REQUIRE_GGML=1 agentica --max-steps 100000000000 test --timing $t >> $log 2>&1 || echo "FAILED $t" >> $log
+        done
+      async: 3600
+      poll: 30
+      tags: [never, test]
+
+    - name: train - the MLP grid on ggml-cuda (bench_train ggml-vulkan = CUDA device 0)
+      ansible.builtin.shell: |
+        . ~/cuda.env; . ~/engine-cuda.env; cd ml/train
+        out=~/logs/train-ggml-cuda-$(date +%H%M%S).jsonl
+        for o in sgd adam; do for b in {{ batches }}; do for m in fit compiled; do
+          s=30; [ $b -ge 4096 ] && s=15
+          r=$(agentica --max-steps 100000000000 tools/bench_train.agc ggml-vulkan $m $o $b $s 2>>$out.err | tail -n 1)
+          echo "{\"stack\": \"ggml-cuda-$m\", \"opt\": \"$o\", \"batch\": $b, \"steps\": $s, \"loadavg\": $(cut -d' ' -f1 /proc/loadavg), \"result\": ${r:-null}}" >> $out
+        done; done; done
+      async: 7200
+      poll: 30
+      tags: [never, train]
+
+    - name: torch - venv with torch {{ torch_ver }} cu124, the same MLP rows on CUDA (eager and torch.compile)
+      ansible.builtin.shell: |
+        [ -x ~/venv-torch/bin/pip ] || python3 -m venv ~/venv-torch
+        ~/venv-torch/bin/pip install -q --only-binary :all: --index-url https://download.pytorch.org/whl/cu124 torch=={{ torch_ver }} > ~/logs/torch-pip.log 2>&1
+        ~/venv-torch/bin/pip freeze >> ~/logs/torch-pip.log
+        cd ml/benchmarks/training
+        out=~/logs/train-torch-cuda-$(date +%H%M%S).jsonl
+        for o in sgd adam; do for b in {{ batches }}; do for m in eager compile; do
+          s=30; [ $b -ge 4096 ] && s=15
+          r=$(TORCH_DEVICE=cuda OMP_NUM_THREADS=4 ~/venv-torch/bin/python -I bench_torch.py $m $o $b $s 2>>$out.err | tail -n 1)
+          echo "{\"stack\": \"pytorch-cuda-$m\", \"opt\": \"$o\", \"batch\": $b, \"steps\": $s, \"loadavg\": $(cut -d' ' -f1 /proc/loadavg), \"result\": ${r:-null}}" >> $out
+        done; done; done
+      async: 7200
+      poll: 30
+      tags: [never, torch]
+
+    - name: models - the official safetensors at pinned revisions (no pickle)
+      ansible.builtin.shell: |
+        d=~/models/{{ item.name }}; mkdir -p $d; cd $d
+        base=https://huggingface.co/Qwen/{{ item.name }}/resolve/{{ item.rev }}
+        files="config.json generation_config.json tokenizer.json tokenizer_config.json vocab.json merges.txt model.safetensors.index.json"
+        for i in $(seq 1 {{ item.shards }}); do files="$files model-0000$i-of-0000{{ item.shards }}.safetensors"; done
+        for f in $files; do [ -s $f ] || { curl -sSfL -o $f.part $base/$f && mv $f.part $f; }; done
+        echo "{{ item.name }} {{ item.rev }} $(du -sh . | cut -f1)" >> ~/logs/models.log
+      loop: "{{ models }}"
+      async: 3600
+      poll: 30
+      tags: [never, models]
+
+    - name: llama - llama.cpp {{ llama_tag }} with GGML_CUDA (sm_75), llama-bench
+      ansible.builtin.shell: |
+        . ~/cuda.env
+        log=~/logs/llama-build-$(date +%H%M%S).log
+        [ -d ~/llama.cpp ] || git clone -q --depth 1 --branch {{ llama_tag }} https://github.com/ggml-org/llama.cpp ~/llama.cpp
+        git -C ~/llama.cpp rev-parse HEAD > $log
+        cmake -S ~/llama.cpp -B ~/llama.cpp/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF >> $log 2>&1
+        { time cmake --build ~/llama.cpp/build --target llama-bench -j4; } >> $log 2>&1
+      async: 7200
+      poll: 30
+      tags: [never, llama]
+
+    - name: gguf - the official Qwen Q8_0 GGUFs (owner's choice; the repos have no F16 file), sha256 checked
+      ansible.builtin.get_url:
+        url: "https://huggingface.co/Qwen/{{ item.name }}-GGUF/resolve/{{ item.rev }}/{{ item.name }}-Q8_0.gguf"
+        dest: "~/models/{{ item.name }}-Q8_0.gguf"
+        checksum: "sha256:{{ item.sha }}"
+        timeout: 600
+      loop:
+        - { name: Qwen3-1.7B, rev: 90862c4b9d2787eaed51d12237eafdfe7c5f6077, sha: 061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a }
+        - { name: Qwen3-4B, rev: bc640142c66e1fdd12af0bd68f40445458f3869b, sha: 8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300 }
+        - { name: Qwen3-8B, rev: 7c41481f57cb95916b40956ab2f0b139b296d974, sha: 408b955510e196121c1c375201744783b5c9a43c7956d73fc78df54c66e883d6 }
+      tags: [never, gguf]
+
+    - name: qwen - ours (bench_qwen on ggml-cuda) and llama-bench on the same Q8_0 GGUF; ours f16 from the safetensors; prompt 128, 128 new, greedy
+      ansible.builtin.shell: |
+        . ~/cuda.env; . ~/engine-cuda.env; cd ml/transformers
+        out=~/logs/qwen-$(date +%H%M%S).log
+        ours() { echo "ours $1 $2 round $r $(WEIGHTS=$2 /usr/bin/time -f 'RSS_KB %M' agentica --max-steps 100000000000 tools/bench_qwen.agc $3 vulkan 2>&1 | grep -E 'RESULT|bench_qwen|RSS_KB' | tr '\n' ' ')" >> $out; }
+        for r in 1 2 3; do
+          for m in Qwen3-1.7B Qwen3-4B Qwen3-8B; do
+            case "{{ rows | default('ours llama') }}" in *ours*)
+              ours $m q8_0 ~/models/$m-Q8_0.gguf
+              [ $m = Qwen3-8B ] || ours $m f16 ~/models/$m;; esac
+            case "{{ rows | default('ours llama') }}" in *llama*)
+              echo "llama $m q8_0 round $r" >> $out
+              ~/llama.cpp/build/bin/llama-bench -m ~/models/$m-Q8_0.gguf -p 128 -n 128 -ngl 99 -r 1 -o csv >> $out 2>>$out.err;; esac
+          done
+        done
+      async: 7200
+      poll: 30
+      tags: [never, qwen]
+
+    - name: xla - the PJRT CUDA plugin wheel, tensor's XLA tests and the MLP rows
+      ansible.builtin.shell: |
+        . ~/cuda.env
+        [ -x ~/venv-pjrt/bin/pip ] || python3 -m venv ~/venv-pjrt
+        ~/venv-pjrt/bin/pip install -q --only-binary :all: --no-deps jax-cuda13-pjrt=={{ pjrt_ver }} > ~/logs/pjrt-pip.log 2>&1
+        ~/venv-pjrt/bin/pip freeze >> ~/logs/pjrt-pip.log
+        export AGENTICA_ML_XLA_PLUGIN=$(ls ~/venv-pjrt/lib/python3.12/site-packages/jax_plugins/xla_cuda13/xla_cuda_plugin.so)
+        echo "$AGENTICA_ML_XLA_PLUGIN" >> ~/logs/pjrt-pip.log
+        n=$(date +%H%M%S)
+        (cd ml/tensor && agentica install >/dev/null 2>&1; TENSOR_REQUIRE_XLA=1 agentica --max-steps 100000000000 test --timing test/xla_test.agc) > ~/logs/xla-test-cuda-$n.log 2>&1
+        cd ml/train; out=~/logs/train-xla-cuda-$n.jsonl
+        for o in sgd adam; do for b in {{ batches }}; do for m in fit compiled; do
+          s=30; [ $b -ge 4096 ] && s=15
+          r=$(agentica --max-steps 100000000000 tools/bench_train.agc xla-cpu $m $o $b $s 2>>$out.err | tail -n 1)
+          echo "{\"stack\": \"xla-cuda-$m\", \"opt\": \"$o\", \"batch\": $b, \"steps\": $s, \"loadavg\": $(cut -d' ' -f1 /proc/loadavg), \"result\": ${r:-null}}" >> $out
+        done; done; done
+      async: 7200
+      poll: 30
+      tags: [never, xla]
+
+    - name: logs back to results/
+      ansible.posix.synchronize: { mode: pull, src: logs/, dest: "{{ here }}/results/" }
+      tags: always

@@ -1,0 +1,141 @@
+diff --git a/benchmarks/training/bench_torch.py b/benchmarks/training/bench_torch.py
+index 87da144..863dc7c 100755
+--- a/benchmarks/training/bench_torch.py
++++ b/benchmarks/training/bench_torch.py
+@@ -24,6 +24,7 @@ CLASSES = 10
+ WARM = 3
+ LOSSES = 10
+ SGD_LR = 0.01
++DEVICE = os.environ.get("TORCH_DEVICE", "cpu")
+ ADAM = {"lr": 0.001, "betas": (0.9, 0.999), "eps": 1e-8}
+ 
+ 
+@@ -38,13 +39,13 @@ def init(dtype):
+         scale = 1.0 / SIZES[i] ** 0.5
+         w = (values(SIZES[i] * SIZES[i + 1], 10 + i) * scale).reshape(SIZES[i], SIZES[i + 1])
+         b = values(SIZES[i + 1], 20 + i) * 0.01
+-        params += [w.to(torch.float32).to(dtype).requires_grad_(), b.to(torch.float32).to(dtype).requires_grad_()]
++        params += [w.to(torch.float32).to(DEVICE, dtype).requires_grad_(), b.to(torch.float32).to(DEVICE, dtype).requires_grad_()]
+     return params
+ 
+ 
+ def batch(n, dtype):
+-    x = values(n * SIZES[0], 1).reshape(n, SIZES[0]).to(torch.float32).to(dtype)
+-    y = (torch.arange(n, dtype=torch.int64) * 7) % CLASSES
++    x = values(n * SIZES[0], 1).reshape(n, SIZES[0]).to(torch.float32).to(DEVICE, dtype)
++    y = ((torch.arange(n, dtype=torch.int64) * 7) % CLASSES).to(DEVICE)
+     return x, y
+ 
+ 
+@@ -60,7 +61,7 @@ def loss_fn(params, x, y):
+ 
+ def scalars(step):
+     b1, b2 = ADAM["betas"]
+-    return torch.tensor([ADAM["lr"] / (1.0 - b1**step), 1.0 / (1.0 - b2**step)], dtype=torch.float32)
++    return torch.tensor([ADAM["lr"] / (1.0 - b1**step), 1.0 / (1.0 - b2**step)], dtype=torch.float32, device=DEVICE)
+ 
+ 
+ def update_sgd(params, grads, first, second, scalars):
+diff --git a/tensor/native/ggml.c b/tensor/native/ggml.c
+index dd14cb1..69ca0fe 100644
+--- a/tensor/native/ggml.c
++++ b/tensor/native/ggml.c
+@@ -158,6 +158,7 @@ static ggml_backend_dev_t vulkan_device(size_t index, size_t *count) {
+ 
+   fix_precision();
+   reg = ggml_backend_reg_by_name("Vulkan");
++  if (reg == NULL) reg = ggml_backend_reg_by_name("CUDA");
+   n = reg == NULL ? 0 : ggml_backend_reg_dev_count(reg);
+   *count = 0;
+   for (i = 0; i < n; i++) {
+diff --git a/tensor/native/xla.c b/tensor/native/xla.c
+index 8f97c41..c5c43c8 100644
+--- a/tensor/native/xla.c
++++ b/tensor/native/xla.c
+@@ -307,6 +307,12 @@ static bool load_plugin(const char *path, char *why, size_t size) {
+     PJRT_Client_Create_Args cc = {
+         .struct_size = PJRT_Client_Create_Args_STRUCT_SIZE, .create_options = options, .num_options = 1};
+     err = a->PJRT_Client_Create(&cc);
++    if (err != NULL) { /* a GPU plugin refuses cpu_device_count: create without options */
++      PJRT_Error_Destroy_Args d = {.struct_size = PJRT_Error_Destroy_Args_STRUCT_SIZE, .error = err};
++      a->PJRT_Error_Destroy(&d);
++      cc.num_options = 0;
++      err = a->PJRT_Client_Create(&cc);
++    }
+     if (err == NULL) {
+       PJRT_Client_AddressableDevices_Args ad = {.struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE,
+                                                 .client = cc.client};
+diff --git a/tensor/src/xla.agc b/tensor/src/xla.agc
+index 84e8033..8adf8b8 100644
+--- a/tensor/src/xla.agc
++++ b/tensor/src/xla.agc
+@@ -96,7 +96,11 @@ end
+ def wheel_dir(w: Wheel) -> Result[String] = Path.join([try cache_dir(), w.sha256])
+ 
+ ## Where the plugin of this machine is once installed.
+-def plugin_path() -> Result[String] = Path.join([try wheel_dir(try wheel()), PLUGIN])
++def plugin_path() -> Result[String]
++  given = set_env("AGENTICA_ML_XLA_PLUGIN")
++  return ok(given) if !given.empty?
++  Path.join([try wheel_dir(try wheel()), PLUGIN])
++end
+ 
+ ## True when `device` can hold XLA tensors here: the module is built, the device is the CPU, and the plugin loads.
+ def available(device: Types.Device) -> Bool
+diff --git a/tensor/tools/build-engine.sh b/tensor/tools/build-engine.sh
+index 63f7fe4..4ca4300 100755
+--- a/tensor/tools/build-engine.sh
++++ b/tensor/tools/build-engine.sh
+@@ -52,9 +52,9 @@ set -eu
+ 
+ action=${1:-cpu}
+ case "$action" in
+-  cpu | vulkan) ;;
++  cpu | vulkan | cuda) ;;
+   *)
+-    echo "build-engine.sh: unknown argument '$action' (cpu or vulkan)" >&2
++    echo "build-engine.sh: unknown argument '$action' (cpu, vulkan or cuda)" >&2
+     exit 2
+     ;;
+ esac
+@@ -123,11 +123,15 @@ if [ "$action" = vulkan ]; then
+   export VULKAN_SDK PATH LD_LIBRARY_PATH
+   flags="$flags -DGGML_VULKAN=ON -DCMAKE_PREFIX_PATH=$sdk"
+   targets="$targets ggml-vulkan"
++elif [ "$action" = cuda ]; then
++  cuda=${CUDA_HOME:-/usr/local/cuda}
++  flags="$flags -DGGML_VULKAN=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS:-75} -DCMAKE_CUDA_COMPILER=$cuda/bin/nvcc"
++  targets="$targets ggml-cuda"
+ else
+   flags="$flags -DGGML_VULKAN=OFF"
+ fi
+ 
+-rev=$(git -C "$engine" rev-parse HEAD 2> /dev/null || true)
++rev=${ENGINE_REV:-$(git -C "$engine" rev-parse HEAD 2> /dev/null || true)}
+ [ -n "$rev" ] || {
+   echo "build-engine.sh: cannot read the ggml commit of third_party/ggml" >&2
+   exit 1
+@@ -191,6 +195,10 @@ archive() {
+ libs="$(archive ggml) $(archive ggml-cpu) $(archive ggml-base)"
+ if [ "$action" = vulkan ]; then
+   libs="$libs $(archive ggml-vulkan) $vulkan_lib"
++elif [ "$action" = cuda ]; then
++  libs="$libs $(archive ggml-cuda) $cuda/lib64/libcudart.so $cuda/lib64/libcublas.so $cuda/lib64/libcublasLt.so $cuda/lib64/stubs/libcuda.so"
++  # ggml-cuda links NCCL when cmake finds it (GGML_CUDA_NCCL=ON by default)
++  [ ! -f "$cuda/lib/libnccl.so" ] || libs="$libs $cuda/lib/libnccl.so"
+ fi
+ printf '/* ggml for the tensor/ native module: tools/build-engine.sh %s */\nGROUP ( %s )\n' "$action" "$libs" > "$tmp/libtensor_ggml.a"
+ 
+diff --git a/transformers/tools/bench_qwen.agc b/transformers/tools/bench_qwen.agc
+index e50db93..dae1264 100644
+--- a/transformers/tools/bench_qwen.agc
++++ b/transformers/tools/bench_qwen.agc
+@@ -13,7 +13,7 @@ import Load from "pkg/hub/load"
+ import Tensor from "pkg/tensor/tensor"
+ 
+ PROMPT = 128
+-NEW = 64
++NEW = 128
+ 
+ def main() -> Void
+   args = System.args

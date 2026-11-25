@@ -1,0 +1,179 @@
+[WARNING]: Found both group and host with same name: cuda
+
+PLAY [cuda] ********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [cuda]
+
+TASK [ansible.builtin.file] ****************************************************
+ok: [cuda] => (item=~/agc)
+ok: [cuda] => (item=~/logs)
+ok: [cuda] => (item=~/models)
+
+TASK [agentica 0.38.0] *********************************************************
+ok: [cuda]
+
+TASK [ansible.builtin.unarchive] ***********************************************
+skipping: [cuda]
+
+TASK [ml tree (origin/main + cuda.patch)] **************************************
+ok: [cuda]
+
+TASK [env file] ****************************************************************
+ok: [cuda]
+
+TASK [root cron safety line] ***************************************************
+ok: [cuda]
+
+TASK [engine - ggml with GGML_CUDA=ON for sm_75 (build-engine.sh cuda), then the packages] ***
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC POLL on cuda: jid=j716892029304.5557 started=1 finished=0
+ASYNC OK on cuda: jid=j716892029304.5557
+changed: [cuda]
+
+TASK [llama - llama.cpp b12262 with GGML_CUDA (sm_75), its convert venv, the GGUFs] ***
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC POLL on cuda: jid=j422173157381.12109 started=1 finished=0
+ASYNC OK on cuda: jid=j422173157381.12109
+changed: [cuda]
+
+TASK [logs back to results/] ***************************************************
+changed: [cuda]
+
+PLAY RECAP *********************************************************************
+cuda                       : ok=9    changed=3    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0   
+

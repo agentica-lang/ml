@@ -1,0 +1,704 @@
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:22.565193   19565 service.cc:155] XLA service 0x7d209c004880 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:22.565223   19565 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:22.565766   19565 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:22.565829   19565 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:23.117114   19565 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:23.231531   19583 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:25.775720   19615 service.cc:155] XLA service 0x78419044d8f0 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:25.775750   19615 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:25.776281   19615 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:25.776328   19615 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:26.332467   19615 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:26.450373   19633 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:28.948441   19664 service.cc:155] XLA service 0x7ce84844d8f0 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:28.948469   19664 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:28.948986   19664 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:28.949038   19664 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:29.559657   19664 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:29.674101   19682 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:32.313130   19713 service.cc:155] XLA service 0x734f34004a30 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:32.313159   19713 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:32.313743   19713 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:32.313804   19713 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:32.927215   19713 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:33.037770   19732 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:35.591612   19763 service.cc:155] XLA service 0x7117c444d8e0 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:35.591644   19763 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:35.592213   19763 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:35.592278   19763 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:36.482877   19763 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:36.603503   19779 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:39.206738   19812 service.cc:155] XLA service 0x77326844d850 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:39.206767   19812 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:39.207271   19812 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:39.207328   19812 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:40.104579   19812 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:40.214386   19830 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:42.770809   19863 service.cc:155] XLA service 0x7a7af4004880 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:42.770837   19863 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:42.771338   19863 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:42.771396   19863 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:44.985822   19863 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:45.102830   19882 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:47.916753   19932 service.cc:155] XLA service 0x74f184004900 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:47.916783   19932 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:47.917289   19932 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:47.917344   19932 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:50.102692   19932 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:50.220861   19949 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:52.845256   19985 service.cc:155] XLA service 0x7f3994004910 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:52.845286   19985 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:52.845847   19985 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:52.845905   19985 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:53.412564   19985 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:53.573027   20002 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:56.140629   20041 service.cc:155] XLA service 0x72b6c844d8f0 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:56.140672   20041 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:56.141180   20041 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:56.141231   20041 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:58:56.699555   20041 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:58:56.854749   20057 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:58:59.370963   20090 service.cc:155] XLA service 0x7308c40049a0 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:58:59.370992   20090 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:58:59.371529   20090 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:58:59.371587   20090 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:59:00.000504   20090 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:59:00.159510   20106 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:59:02.788297   20139 service.cc:155] XLA service 0x7a7234004880 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:59:02.788328   20139 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:59:02.788922   20139 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:59:02.788977   20139 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:59:03.410579   20139 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:59:03.565634   20155 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:59:06.110156   20190 service.cc:155] XLA service 0x723ca844d8e0 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:59:06.110184   20190 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:59:06.110767   20190 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:59:06.110822   20190 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:59:07.010185   20190 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:59:07.166644   20209 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:59:09.827310   20239 service.cc:155] XLA service 0x71cb9444d8e0 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:59:09.827339   20239 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:59:09.827911   20239 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:59:09.827975   20239 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:59:10.715856   20239 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:59:10.867039   20258 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:59:13.459389   20288 service.cc:155] XLA service 0x719e38004880 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:59:13.459438   20288 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:59:13.459979   20288 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:59:13.460038   20288 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:59:15.621261   20288 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:59:15.776875   20307 cuda_dnn.cc:478] Loaded cuDNN version 92302
+In file included from /home/ubuntu/ml/tensor/native/ggml.c:21:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from /home/ubuntu/ml/tensor/native/ggml_graph.c:36:
+/home/ubuntu/ml/tensor/native/ggml_shared.h:9:10: fatal error: ggml-backend.h: No such file or directory
+    9 | #include "ggml-backend.h"
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module ggml not built: the C compiler failed with status 1; the package runs without it
+In file included from /home/ubuntu/ml/tensor/native/torch.c:30:
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_pread’:
+/home/ubuntu/ml/tensor/native/float_file.h:145:11: warning: implicit declaration of function ‘pread’; did you mean ‘read’? [-Wimplicit-function-declaration]
+  145 |     got = pread(fd, p, len, (off_t)at);
+      |           ^~~~~
+      |           read
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_open_range’:
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  181 |   fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+      |                              ^~~~~~~~~
+      |                              FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:181:30: note: each undeclared identifier is reported only once for each function it appears in
+/home/ubuntu/ml/tensor/native/float_file.h: In function ‘ff_append’:
+/home/ubuntu/ml/tensor/native/float_file.h:248:41: error: ‘O_CLOEXEC’ undeclared (first use in this function); did you mean ‘FD_CLOEXEC’?
+  248 |   fd = open(name, O_WRONLY | O_APPEND | O_CLOEXEC | O_NONBLOCK);
+      |                                         ^~~~~~~~~
+      |                                         FD_CLOEXEC
+/home/ubuntu/ml/tensor/native/float_file.h:270:11: warning: implicit declaration of function ‘ftruncate’; did you mean ‘strncat’? [-Wimplicit-function-declaration]
+  270 |     cut = ftruncate(fd, info.st_size);
+      |           ^~~~~~~~~
+      |           strncat
+/home/ubuntu/ml/tensor/native/torch.c: At top level:
+/home/ubuntu/ml/tensor/native/torch.c:32:10: fatal error: torch/torch.h: No such file or directory
+   32 | #include <torch/torch.h>
+      |          ^~~~~~~~~~~~~~~
+compilation terminated.
+warning: native module torch not built: the C compiler failed with status 1; the package runs without it
+I1125 12:59:18.550267   20342 service.cc:155] XLA service 0x723ab444d850 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I1125 12:59:18.550298   20342 service.cc:171]   StreamExecutor [0]: Tesla T4, Compute Capability 7.5 (Driver: 13.2.0[595.112.7]; Runtime: 13.2.0; Toolkit: 13.0.0; DNN: 9.23.2)
+I1125 12:59:18.550896   20342 se_gpu_pjrt_client.cc:1336] Using BFC allocator.
+I1125 12:59:18.550965   20342 gpu_helpers.cc:167] XLA backend allocating 10.92GiB (11729371136 bytes) on device 0 for BFCAllocator.
+I1125 12:59:20.753717   20342 se_gpu_pjrt_compiler.cc:422] Found GPU target config and a PjRtClient with matching configuration. Performing a JIT compilation.
+I1125 12:59:20.908237   20363 cuda_dnn.cc:478] Loaded cuDNN version 92302

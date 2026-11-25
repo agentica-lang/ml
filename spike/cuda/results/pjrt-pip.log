@@ -1,0 +1,2 @@
+jax-cuda13-pjrt==0.12.0.1
+/home/ubuntu/venv-pjrt/lib/python3.12/site-packages/jax_plugins/xla_cuda13/xla_cuda_plugin.so
