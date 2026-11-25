@@ -9,6 +9,7 @@ Python's isolated mode:
     python -I test/chat35_golden.py QWEN35_DIR > test/fixtures/chat35_golden.json
 """
 
+import hashlib
 import json
 import sys
 
@@ -16,6 +17,12 @@ import transformers
 from transformers import AutoTokenizer
 
 assert transformers.__version__ == "5.22.2", transformers.__version__
+
+# The files of the official `Qwen/Qwen3.5-0.8B` repository that the golden is made from.
+SHA256 = {
+    "chat_template.jinja": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80",
+    "tokenizer.json": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+}
 
 
 def m(role, content):
@@ -38,6 +45,12 @@ CONVERSATIONS = [
     ([m("user", "Hi"), m("assistant", THINK)], False, None),
     ([m("user", "Hi"), m("assistant", THINK), m("user", "Again"), m("assistant", THINK)], False, None),
     ([m("user", "Hi"), m("assistant", "plain answer")], False, None),
+    ([m("user", "Hi"), m("assistant", "<think>x</think>")], False, None),
+    ([m("user", "Hi"), m("assistant", "a</think>b</think>c")], False, None),
+    ([m("user", "Hi"), m("assistant", "<think>\nnever closed")], False, None),
+    ([m("user", "\u3000Hi\u00a0"), m("assistant", "\u0085ok\u0085")], False, None),
+    ([m("system", "\u00a0Be brief.\u3000"), m("user", "Hi\u0085")], True, None),
+    ([m("user", "\x1cHi\x1f"), m("assistant", "\x1dok")], False, None),
     ([m("user", "Hi"), m("assistant", "\n\nanswer")], False, None),
     ([m("user", "Hi"), m("assistant", "plan\n\n</think>\n\n\nanswer")], False, None),
     ([m("user", "Hi"), m("assistant", "<think>\nstep\n</think>\n\nfirst"), m("assistant", "second")], False, None),
@@ -57,6 +70,10 @@ CONVERSATIONS = [
     ([m("assistant", "I speak first.")], True, True),
     ([], True, True),
 ]
+
+for name, digest in SHA256.items():
+    with open(f"{sys.argv[1]}/{name}", "rb") as f:
+        assert hashlib.sha256(f.read()).hexdigest() == digest, f"{name} is not the file of the golden"
 
 cases = []
 tok = AutoTokenizer.from_pretrained(sys.argv[1])

@@ -2,6 +2,8 @@
 ## `apply_chat_template` makes of the same messages, without tools (`test/chat_golden.py`).
 ## The text goes through the tokenizer, which knows `<|im_start|>` and `<|im_end|>`.
 
+import Unicode from "tokenizer/unicode"
+
 ## One turn: `role` is `system`, `user` or `assistant`.
 struct Message
   role: String
@@ -15,8 +17,10 @@ struct Reply
 end
 
 ## The prompt of `messages` for the model family of `model_type` (`qwen2`, `qwen3` or `qwen3_5`, the `model_type` of its
-## `config.json`). With `add_generation_prompt` it ends with the opening of the assistant's turn. `enable_thinking: false`
-## (Qwen3 only) opens it with an empty think block, so the model answers without thinking.
+## `config.json`). With `add_generation_prompt` it ends with the opening of the assistant's turn. `enable_thinking`
+## (Qwen3 and Qwen3.5) decides whether that turn opens with `<think>` (`some(true)`) or with an empty think block, so the
+## model answers without thinking (`some(false)`). Left at `none` it is what Hugging Face's template does when it is not
+## told: thinking for `qwen3`, no thinking for `qwen3_5` (whose template thinks only when the option is exactly true).
 ##
 ## `qwen2` puts "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." as the system turn when the first
 ## message is not one, and writes every message as it is (a `<think>` in one is text). `qwen3` puts none, and reads an
@@ -26,24 +30,27 @@ end
 ##
 ## `qwen3_5` (text only) trims every message, wants the system message first, puts a think block in every assistant
 ## message after the last user message (empty or not) and none in the earlier ones, and ends the prompt with
-## `<think>\n` under `enable_thinking: true` or with the empty think block under `false`. Hugging Face's template
-## answers `false` when it is not told (`enable_thinking` undefined), where this takes `true` by default as `qwen3`.
-## It is an error to have no user message (a tool answer is not one).
+## `<think>\n` under `some(true)` or with the empty think block otherwise. It is an error to have no user message (a tool
+## answer is not one).
 ##
-## Errors: no messages, a role other than the three, a `tool` role (tools are not supported), `enable_thinking: false`
-## for `qwen2`.
+## Errors: no messages, a role other than the three, a `tool` role (tools are not supported), `enable_thinking:
+## some(false)` for `qwen2`.
 def apply(
   model_type: String,
   messages: List[Message],
   add_generation_prompt: Bool = true,
-  enable_thinking: Bool = true,
+  enable_thinking: Optional[Bool] = none,
 ) -> Result[String]
   if model_type != "qwen2" and model_type != "qwen3" and model_type != "qwen3_5"
     return error("no chat template for model_type #{model_type}, only qwen2, qwen3 and qwen3_5")
   end
 
   return error("a conversation needs at least one message") if messages.empty?
-  return error("enable_thinking is an option of qwen3, not of qwen2") if model_type == "qwen2" and not enable_thinking
+  if model_type == "qwen2" and enable_thinking == some(false)
+    return error("enable_thinking is an option of qwen3 and qwen3_5, not of qwen2")
+  end
+
+  thinking = enable_thinking.unwrap_or(model_type != "qwen3_5")
 
   for m in messages
     return error("tools are not supported: a message with the role tool") if m.role == "tool"
@@ -53,7 +60,7 @@ def apply(
     end
   end
 
-  return qwen35(messages, add_generation_prompt, enable_thinking) if model_type == "qwen3_5"
+  return qwen35(messages, add_generation_prompt, thinking) if model_type == "qwen3_5"
 
   last_user = last_user_index(messages)
   text = ""
@@ -81,7 +88,7 @@ def apply(
 
   if add_generation_prompt
     text = text + "<|im_start|>assistant\n"
-    if not enable_thinking
+    if not thinking
       text = text + "<think>\n\n</think>\n\n"
     end
   end
@@ -92,7 +99,7 @@ end
 private
 
 ## The prompt of the Qwen3.5 template: no tools and no images.
-def qwen35(messages: List[Message], add_generation_prompt: Bool, enable_thinking: Bool) -> Result[String]
+def qwen35(messages: List[Message], add_generation_prompt: Bool, thinking: Bool) -> Result[String]
   query = -1
   for i in 0...messages.size
     if messages[i].role == "user" and not tool_text?(strip(messages[i].content))
@@ -123,7 +130,7 @@ def qwen35(messages: List[Message], add_generation_prompt: Bool, enable_thinking
 
   if add_generation_prompt
     text = text + "<|im_start|>assistant\n<think>\n"
-    if not enable_thinking
+    if not thinking
       text = text + "\n</think>\n\n"
     end
   end
@@ -131,8 +138,23 @@ def qwen35(messages: List[Message], add_generation_prompt: Bool, enable_thinking
   ok(text)
 end
 
-## Python's `str.strip()` on the ASCII white space.
-def strip(text: String) -> String = text.strip
+## Python's `str.strip()`, which jinja's `|trim` calls: White_Space and U+001C to U+001F off both ends.
+def strip(text: String) -> String
+  chars = Unicode.codepoints(text)
+  start = 0
+  stop = chars.size
+  while start < stop and blank?(chars[start])
+    start += 1
+  end
+
+  while stop > start and blank?(chars[stop - 1])
+    stop -= 1
+  end
+
+  Unicode.text_of(Unicode.span(chars, start, stop))
+end
+
+def blank?(c: Int) -> Bool = Unicode.space?(c) or (c >= 28 and c <= 31)
 
 def turn(role: String, content: String) -> String = "<|im_start|>#{role}\n#{content}<|im_end|>\n"
 

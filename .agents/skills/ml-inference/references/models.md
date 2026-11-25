@@ -107,7 +107,7 @@ def main() -> Void
   tok = Bpe.open("Qwen3-0.6B/tokenizer.json").unwrap!
   m = Qwen3.open("Qwen3-0.6B", backend).unwrap!
   messages = [Chat.Message(role: "user", content: "What is the capital of France? Answer in one sentence.")]
-  text = Chat.apply(m.config.model_type, messages, true, false).unwrap!
+  text = Chat.apply(m.config.model_type, messages, true, some(false)).unwrap!
   prompt = Bpe.encode(tok, text).unwrap!
   sampling = some(Sample.Sampling(temperature: 0.7, top_k: 40, top_p: 0.95, seed: 7))
   g = Generate.open(m).unwrap!
@@ -118,8 +118,9 @@ def main() -> Void
 end
 ```
 
-- `Chat.apply(model_type, messages, add_generation_prompt, enable_thinking)`: the last argument `false` makes Qwen3
-  answer with no `<think>` block. `Chat.Message` roles are `system`, `user` and `assistant`.
+- `Chat.apply(model_type, messages, add_generation_prompt, enable_thinking)`: the last argument is an `Optional[Bool]`;
+  `some(false)` makes Qwen3 and Qwen3.5 answer with no `<think>` block (left at `none`, Qwen3 thinks and Qwen3.5 does not,
+  as their templates do). `Chat.Message` roles are `system`, `user` and `assistant`.
 - The same seed draws the same ids. `top_k: 0` (the default) draws among the 256 largest logits.
 - The first call of a new prompt length compiles graphs, which takes a moment; later calls compile nothing.
 - The prompt and the new ids must fit `max_position_embeddings` (40960). One prompt at a time: there is no batching.

@@ -28,7 +28,11 @@ def test_the_split_of_qwen35_counts_marks_as_letters() -> Result[Void]
   plain = Bpe.split(chars).map { |w| Unicode.text_of(w) }
   with_marks = Bpe.split(chars, true).map { |w| Unicode.text_of(w) }
   try Test.eq(plain, ["a", "#{acute}b", " $#{acute}", "c"])
-  Test.eq(with_marks, ["a#{acute}b", " $", "#{acute}c"])
+  try Test.eq(with_marks, ["a#{acute}b", " $", "#{acute}c"])
+  text = try File.read_text("test/fixtures/bpe_marks.json")
+  try Test.ok?(Bpe.parse(text))
+  try Test.error?(Bpe.parse(try S.replaced(text, "[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]", "[^\\\\s\\\\p{L}\\\\p{N}]")))
+  Test.error?(Bpe.parse(try S.replaced(text, "[\\\\p{L}\\\\p{M}]+", "\\\\p{L}+")))
 end
 
 ## Qwen2.5's `tokenizer.json` writes a merge as "a b", Qwen3's as ["a", "b"]: both give the ids of `tokenizers`.
