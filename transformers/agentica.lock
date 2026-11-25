@@ -33,5 +33,5 @@ workspace = true
 name = "train"
 git = "https://github.com/agentica-lang/ml"
 subdir = "train"
-ref = "6bd87cc5ede1d113cd8c7b36f17ae94c2024ce98"
+ref = "a7c63668f9bd64a8d58861359d5d895e3d9db889"
 workspace = true
