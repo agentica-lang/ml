@@ -4,7 +4,7 @@
 ## and `src/xla_native.agc`, the `extern module` declarations whose resources
 ## the `Native`, `Ggml` and `Xla` arms of `Handle` name. Agentica resources are nominal to the block that declares them, so
 ## the backend's handle type has to be visible here for a `Tensor` to carry one
-## (`tensor/DESIGN.md` §2, §7; agentica-lang/agentica#1918 is the way out).
+## (`tensor/DESIGN.md` §1, §2, §7).
 ## Everything else about this module is unchanged: the reference backend
 ## (`src/reference.agc`) and the public API (`tensor.agc`) use it without an
 ## import cycle, and the public entry point stays `tensor.agc`, which

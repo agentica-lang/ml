@@ -132,7 +132,7 @@ end
 
 ## An embedding table, `F16` under `weights: F16` when big enough (`Q8_0` under `weights: Q8_0` when the file stores it
 ## so): the tokens of a model with its tied head, not a
-## positional table, which `Nn.positions` slices.
+## positional table, which `Nn.positional` slices.
 def embedding(
   c: Hub.Checkpoint,
   name: String,

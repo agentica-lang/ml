@@ -1,5 +1,6 @@
 ## Greedy generation with Qwen3 and a key-value cache (`transformers/DESIGN.md`),
-## the design of `asr/`'s decoder (`asr/asr.agc`, `ml#117` tracks sharing it):
+## the design of `asr/`'s decoder (`asr/asr.agc`); the cache helpers are shared
+## in `nn/kv.agc`:
 ##
 ## - The cache of a layer is `[1, kv_heads, rows, head_dim]`, the keys already
 ##   normalized and rotated, padded with zero rows to a capacity of 8, 16, 32
