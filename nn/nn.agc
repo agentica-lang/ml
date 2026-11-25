@@ -90,7 +90,8 @@ end
 ## projects the merged heads back. The head width is the width of `query`'s
 ## output over `heads`, so loaded weights may have a head width other than
 ## `width / heads` (Qwen3); `init_attention` makes only `width / heads`. `query_norm` and `key_norm` normalize each
-## head over its width (Qwen3), before `rope`.
+## head over its width (Qwen3), before `rope`. With `gate` (Qwen3.5) `query` projects to `2 * heads` heads: per head its
+## query and then its gate, and `attend` multiplies the merged heads by `sigmoid(gate)` before `output`.
 struct Attention
   query: Dense
   key: Dense
@@ -101,6 +102,7 @@ struct Attention
   rope: Optional[Rope] = none
   query_norm: Optional[LayerNorm] = none
   key_norm: Optional[LayerNorm] = none
+  gate: Bool = false
 end
 
 ## `dense -> activation -> dense`; with a `gate`, the gated form
@@ -166,11 +168,19 @@ end
 
 ## The heads of an attention before `Tensor.attention` reads them: `query`
 ## `[batch, heads, q, head]`, `key` and `value` `[batch, kv_heads, k, head]`,
-## with the query and key norms and the rotation applied.
+## with the query and key norms and the rotation applied. A gated attention (`Attention.gate`) also has the `gate`
+## `[batch, heads, q, head]`, for `attend`.
 struct Heads
   query: Tensor.Tensor
   key: Tensor.Tensor
   value: Tensor.Tensor
+  gate: Optional[Tensor.Tensor] = none
+end
+
+## The query heads of a projection and, for a gated attention, their gates.
+struct Asked
+  query: Tensor.Tensor
+  gate: Optional[Tensor.Tensor]
 end
 
 ## The cosine of each pair of rows of `a` and `b` (`[batch, width]` both), as `[batch]`:
@@ -329,7 +339,8 @@ def project(
   memory_positions: Optional[Tensor.Tensor] = none,
 ) -> Result[Heads]
   kv_heads = p.kv_heads.unwrap_or(p.heads)
-  q = try split_heads(try dense(p.query, queries), p.heads, p.query_norm)
+  asked = try query_heads(p, queries)
+  q = asked.query
   k = try split_heads(try dense(p.key, memory), kv_heads, p.key_norm)
   v = try split_heads(try dense(p.value, memory), kv_heads)
   case p.rope
@@ -344,12 +355,13 @@ def project(
     none -> nil
   end
 
-  ok(Heads(query: q, key: k, value: v))
+  ok(Heads(query: q, key: k, value: v, gate: asked.gate))
 end
 
 ## `Tensor.attention` of `query` over `key` and `value` (the tensors of a
 ## `Heads`, or a cache of them), the heads merged and `p.output` applied:
-## `[batch, q, width]`. `mask` and `causal` are as for `attention`.
+## `[batch, q, width]`. `mask` and `causal` are as for `attention`; `gate` is the `gate` of the `Heads` of a gated
+## attention, whose sigmoid scales the merged heads before `p.output`.
 def attend(
   p: Attention,
   query: Tensor.Tensor,
@@ -357,9 +369,16 @@ def attend(
   value: Tensor.Tensor,
   mask: Optional[Tensor.Tensor] = none,
   causal: Bool = false,
+  gate: Optional[Tensor.Tensor] = none,
 ) -> Result[Tensor.Tensor]
   context = try Tensor.attention(query, key, value, mask: mask, causal: causal)
-  dense(p.output, try merge_heads(context))
+  merged = try merge_heads(context)
+  case gate
+    some(g) -> merged = try Tensor.mul(merged, try Tensor.sigmoid(try merge_heads(g)))
+    none -> nil
+  end
+
+  dense(p.output, merged)
 end
 
 ## Attention of `queries` (`[batch, q, width]`) over `memory`
@@ -380,7 +399,7 @@ def attention(
   memory_positions: Optional[Tensor.Tensor] = none,
 ) -> Result[Tensor.Tensor]
   h = try project(p, queries, memory, positions, memory_positions)
-  attend(p, h.query, h.key, h.value, mask, causal)
+  attend(p, h.query, h.key, h.value, mask, causal, h.gate)
 end
 
 def self_attention(
@@ -671,6 +690,29 @@ def split_heads(x: Tensor.Tensor, heads: Int, norm: Optional[LayerNorm] = none) 
   return error("attention needs width #{shape[2]} divisible by #{heads} heads") if heads < 1 or shape[2] % heads != 0
   split = try Tensor.reshape(x, [shape[0], shape[1], heads, shape[2] / heads])
   Tensor.permute(try normalized(norm, split), [0, 2, 1, 3])
+end
+
+## The query heads of `queries`, and with `p.gate` their gates: the projection is `[batch, q, heads * 2 * head]`, per head
+## the query then the gate.
+def query_heads(p: Attention, queries: Tensor.Tensor) -> Result[Asked]
+  projected = try dense(p.query, queries)
+  return ok(Asked(query: try split_heads(projected, p.heads, p.query_norm), gate: none)) if !p.gate
+  shape = Tensor.shape(projected)
+  return error("attention needs a rank-3 input, got #{shape}") if shape.size != 3
+  if p.heads < 1 or shape[2] % (2 * p.heads) != 0
+    return error("a gated attention needs width #{shape[2]} divisible by 2 * #{p.heads} heads")
+  end
+
+  head = shape[2] / (2 * p.heads)
+  pairs = try Tensor.reshape(projected, [shape[0], shape[1], p.heads, 2 * head])
+  query = try Tensor.slice(pairs, [0, 0, 0, 0], [shape[0], shape[1], p.heads, head])
+  gate = try Tensor.slice(pairs, [0, 0, 0, head], [shape[0], shape[1], p.heads, 2 * head])
+  ok(
+    Asked(
+      query: try Tensor.permute(try normalized(p.query_norm, query), [0, 2, 1, 3]),
+      gate: some(try Tensor.permute(gate, [0, 2, 1, 3])),
+    ),
+  )
 end
 
 def merge_heads(x: Tensor.Tensor) -> Result[Tensor.Tensor]

@@ -17,7 +17,8 @@ struct Conv2d       { weight: [out, in / groups, kh, kw], bias: Optional [out], 
 enum   Activation   = Relu | Gelu | GeluErf | Silu
 struct Rope         { base: Float = 10000.0, neox: Bool = true, dims: Optional[Int] = none }
 struct Attention    { query, key, value, output: Dense, heads: Int, kv_heads: Optional[Int] = none,
-                      rope: Optional[Rope] = none, query_norm, key_norm: Optional[LayerNorm] = none }
+                      rope: Optional[Rope] = none, query_norm, key_norm: Optional[LayerNorm] = none,
+                      gate: Bool = false }
 struct Mlp          { up, down: Dense, activation: Activation, gate: Optional[Dense] = none }
 struct EncoderBlock { norm1: LayerNorm, attention: Attention, norm2: LayerNorm, mlp: Mlp,
                       norm_first: Bool = true }
@@ -39,9 +40,11 @@ Nn.positional(p, x)                x [seq, width] or [batch, seq, width] + table
 Nn.activate(a, x)
 Nn.attention(p, queries, memory, mask?, causal?, positions?, memory_positions?)
                                    [batch, q, width] over [batch, k, width]: project, then attend
-Nn.project(p, queries, memory, positions?, memory_positions?) -> Heads { query, key, value }
-                                   split by head, q/k norms, rope at `positions` (default 0...seq)
-Nn.attend(p, query, key, value, mask?, causal?)   Tensor.attention over heads or a cache, merged, output dense
+Nn.project(p, queries, memory, positions?, memory_positions?) -> Heads { query, key, value, gate? }
+                                   split by head, q/k norms, rope at `positions` (default 0...seq); with `gate`, the
+                                   query projection is [heads * 2 * head]: per head the query, then its gate
+Nn.attend(p, query, key, value, mask?, causal?, gate?)   Tensor.attention over heads or a cache, merged (times
+                                   sigmoid(gate) when given), output dense
 Nn.self_attention(p, x, mask?, causal?)
 Nn.mlp(p, x)                       down(act(up x)), or down(act(gate x) * up x) with a gate
 Nn.encoder_block(p, x, mask?, causal?)
