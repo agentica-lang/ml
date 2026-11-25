@@ -41,7 +41,8 @@ end
 
 ## What `generate` needs of a generator, `C` being its cache. `pick` and `top` feed `ids` after the tokens of the cache
 ## (a prompt when it is empty, one id after that), as `Generate.step` and `Generate.step_top`, and each makes the cache
-## it was given dead; `finish` ends a cache; `empty` is the cache of no tokens. `usable` is how many ids a step may
+## it was given dead (a failing `pick` or `top` has already closed the cache it was given: `generate` does not close it
+## again); `finish` ends a cache; `empty` is the cache of no tokens. `usable` is how many ids a step may
 ## answer and `limit` how many positions the model has.
 struct Decoder[C]
   usable: Int
@@ -287,10 +288,12 @@ def widened(t: Optional[Tensor.Tensor]) -> Result[Optional[Tensor.Tensor]]
 end
 
 ## `logits` `[vocab]` with the ids from `usable` on given a logit of `Nn.MASKED`, so that no step answers them: the
-## padded rows of an embedding, which its tokenizer cannot decode. `logits` as they are when `usable` is the vocabulary.
+## padded rows of an embedding, which its tokenizer cannot decode. `logits` are `F32` and are returned as they are when
+## `usable` is the vocabulary; any other dtype is an error then.
 def masked(logits: Tensor.Tensor, usable: Int) -> Result[Tensor.Tensor]
   vocab = Tensor.shape(logits)[0]
   return ok(logits) if usable >= vocab
+  return error("masked needs F32 logits, got #{Tensor.dtype(logits)}") if Tensor.dtype(logits) != Tensor.Dtype.F32
   backend = Tensor.backend(logits)
   ids = try Tensor.arange(0, vocab, 1, Tensor.Dtype.I32, backend)
   edge = try Tensor.full([vocab], Tensor.Values.Int(usable), Tensor.Dtype.I32, backend)

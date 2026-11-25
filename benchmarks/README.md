@@ -323,7 +323,7 @@ Not measured again: the CPU rows, the prompt, the load, the peak memory and the 
 
 ## Qwen3.5-0.8B (ml#150), ours only
 
-`Qwen/Qwen3.5-0.8B` (revision and hash in `transformers/DESIGN.md`, `float32` weights), greedy generation, one sequence, `Generate` of `pkg/transformers/generate_qwen35`. Ours is `transformers/tools/bench_qwen35.agc`, timed as the Qwen3 tool is: the load, one warm-up pass that compiles the steps, then a prompt of 128 token ids in one step and 64 one-token steps after it. The model has 18 Gated DeltaNet layers and 6 full-attention layers, so only 6 layers keep a cache that grows. Same machine as above, one run per row (the CPU row twice: 74.9 and 75.6 tokens/s for the prompt, 7.93 and 7.61 for the tokens), the load average between 1.3 and 3 (other jobs of the machine were running); peak memory is `/usr/bin/time`'s maximum resident set. There is no llama.cpp row: it was not run for this model. The checks against Hugging Face run with Vulkan exact (fp16 off), so that row is the one that was checked.
+`Qwen/Qwen3.5-0.8B` (revision and hash in `transformers/DESIGN.md`, `float32` weights), greedy generation, one sequence, `Generate` of `pkg/transformers/generate_qwen35`. Ours is `transformers/tools/bench_qwen35.agc`, measured with Agentica 0.39.0 on the code of ml#277 (on top of ml `c501dd3`), timed as the Qwen3 tool is: the load, one warm-up pass that compiles the steps, then a prompt of 128 token ids in one step and 64 one-token steps after it. The model has 18 Gated DeltaNet layers and 6 full-attention layers, so only 6 layers keep a cache that grows. Same machine as above, one run per row (the CPU row twice: 74.9 and 75.6 tokens/s for the prompt, 7.93 and 7.61 for the tokens), the load average between 1.3 and 3 (other jobs of the machine were running); peak memory is `/usr/bin/time`'s maximum resident set. There is no llama.cpp row: it was not run for this model. The checks against Hugging Face run with Vulkan exact (fp16 off), so that row is the one that was checked.
 
 | Row | Prompt, 128 tokens | 64 tokens after it | Load | Peak memory |
 |---|---|---|---|---|
@@ -334,7 +334,9 @@ Not measured again: the CPU rows, the prompt, the load, the peak memory and the 
 Correctness: the greedy ids match Hugging Face's `generate` on six prompts of 5 to 375 tokens on both backends (`transformers/tools/generate_qwen35_check.agc`).
 
 ```sh
-agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR cpu|vulkan
+agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR cpu                          # ggml CPU
+VULKAN_FP16=0 agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR vulkan   # Vulkan, exact
+VULKAN_FP16=1 agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR vulkan   # Vulkan, fp16 products
 ```
 
 ## Half weights (ml#86)

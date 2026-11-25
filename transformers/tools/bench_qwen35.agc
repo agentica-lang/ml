@@ -1,4 +1,4 @@
-## Times Qwen3.5 generation on ggml (`benchmarks/README.md`, "Qwen3.5"): the load, then one warm-up pass (which compiles
+## Times Qwen3.5 generation on ggml (`benchmarks/README.md`, "Qwen3.5-0.8B (ml#150), ours only"): the load, then one warm-up pass (which compiles
 ## the steps), then one timed pass: a prompt of 128 token ids in one step, and 64 one-token steps after it. Prints
 ## `RESULT load_ms prompt_tokens_per_s decode_tokens_per_s`. Run from `transformers/`:
 ##
@@ -41,15 +41,27 @@ def run(dir: String, backend: Tensor.Backend) -> Result[String]
   try Load.vulkan_fp16_from_env(true)
   m = try Qwen3_5.open(dir, backend)
   load = Time.monotonic_ms - started
-  g = try Generate.open(m)
+  opened = Generate.open(m)
+  if not opened.ok?
+    Qwen3_5.close_model(m)
+    return error(opened.message)
+  end
+
+  g = opened.unwrap!
   prompt = (0...PROMPT).map { |i| 1000 + (i * 7) % 5000 }
-  try pass(g, prompt)
-  timed = try pass(g, prompt)
+  ran = timed_pass(g, prompt)
   Generate.close(g)
   Qwen3_5.close_model(m)
+  timed = try ran
   prompt_rate = (PROMPT * 1000).to_f / timed[0].to_f
   decode_rate = (NEW * 1000).to_f / timed[1].to_f
   ok("RESULT #{load} #{prompt_rate} #{decode_rate}")
+end
+
+## The warm-up pass (which compiles the steps), then the timed one.
+def timed_pass(g: Generate.Generator, prompt: List[Int]) -> Result[List[Int]]
+  try pass(g, prompt)
+  pass(g, prompt)
 end
 
 ## The prompt in one step, then `NEW` steps of one token: the milliseconds of each part.
