@@ -551,6 +551,9 @@ def adam_donors(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List
 
     case n.op
       Types.Op.AdamPart(i) ->
+        # `Tensor.adam_step` makes one part node per index and step (`Graph.adam_part`), so a part listed once as
+        # an output
+        # is the only one; a part that is not an output leaves the list short and the step copies
         step = Graph.id_of(n.args[0])
         if i > 0 and listed.get(n.id, 0) == 1
           parts = parts.put(step, parts.get(step, []).push(i))

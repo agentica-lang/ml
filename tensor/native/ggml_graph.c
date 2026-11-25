@@ -126,7 +126,7 @@ struct port {
   ggml_backend_buffer_t own;
   struct ggml_tensor *conv; /* the bound tensor, converted to or from `own`; else NULL. Its memory is `held` */
   bool set;                               /* bound or prepared for the next run */
-  bool donated;                           /* a leaf a `set_rows` writes in place, or the output that is that leaf: no copy in or out */
+  bool donated;                           /* a leaf a `set_rows` writes in place or an `adam_step` moment, or the output that is that leaf: no copy in or out */
   bool kept;                              /* a leaf that stays bound after the run; `held->kept` counts it */
   bool wanted;                            /* inside `ggml_keep`: a leaf of the list it was given */
   struct tg_storage *held;                /* the memory of the bound tensor, kept until the run is over */
