@@ -37,8 +37,12 @@ struct Adam
 end
 
 ## Adam with decoupled weight decay (Loshchilov and Hutter), as PyTorch's `AdamW`: `p (1 - lr weight_decay)`, then
-## Adam's step from it. `decay` says which parameters decay, one flag per parameter (a fine-tune leaves the biases and
-## the layer-norm weights out); empty, all of them do.
+## Adam's step from it. `decay` says which parameters decay, one flag per parameter in the order of the parameters;
+## empty, all of them do. A fine-tune leaves the biases and the layer-norm weights out; with the names of a
+## `Params.split`, whose `trainable` list follows `names`:
+##
+##   norm = ->(name: String) { name.include?("LayerNorm") or name.include?("layer_norm") }
+##   decay = split.names.map { |name: String| !(name.end_with?(".bias") or norm.call(name)) }
 struct AdamW
   lr: Float = 0.001
   beta1: Float = 0.9
@@ -105,7 +109,7 @@ def step(
       sgd(o, state, params, grads, scalars)
     Optimizer.Adam(o) ->
       try check_scalars(scalars, 2, "an Adam step takes two scalars")
-      adam(o, [], state, params, grads, scalars)
+      adam(o, none, state, params, grads, scalars)
     Optimizer.AdamW(o) ->
       try check_scalars(scalars, 3, "an AdamW step takes three scalars")
       try check_decay(o, params.size)
@@ -114,7 +118,7 @@ def step(
         decays = List.repeat(true, params.size)
       end
 
-      adam(plain(o), decays, state, params, grads, scalars)
+      adam(plain(o), some(decays), state, params, grads, scalars)
   end
 end
 
@@ -218,10 +222,18 @@ end
 ## The Adam of the moments of `o`, without its decay.
 def plain(o: AdamW) -> Adam = Adam(lr: o.lr, beta1: o.beta1, beta2: o.beta2, eps: o.eps, schedule: o.schedule)
 
-## `decays` is empty for Adam; for AdamW it says which parameters decay, by the scalar 2 of the step.
+def decays?(decays: Optional[List[Bool]], i: Int) -> Bool
+  case decays
+    some(flags) -> flags[i]
+    none -> false
+  end
+end
+
+## Adam's step, and AdamW's with `decays`: the flag of each parameter, which shrinks by `lr weight_decay` of itself
+## (the third number of the step's scalars) before the step.
 def adam(
   o: Adam,
-  decays: List[Bool],
+  decays: Optional[List[Bool]],
   state: State,
   params: List[Tensor.Tensor],
   grads: List[Tensor.Tensor],
@@ -241,7 +253,7 @@ def adam(
     first = first.push(m)
     second = second.push(v)
     p = params[i]
-    if !decays.empty? and decays[i]
+    if decays?(decays, i)
       p = try Tensor.sub(p, try Tensor.mul(p, try factor(p, held, scalars, 2)))
     end
 

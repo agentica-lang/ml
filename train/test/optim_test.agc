@@ -58,7 +58,9 @@ def test_adamw_decays_the_parameter_then_takes_adams_step() -> Result[Void]
   given = try Optim.step(state, [p], [g], held.map { |v| S.tensor([v], []).unwrap! })
   try S.expect_close(try S.floats_of(given.params[0]), once, TOL, 0.0, "adamw with scalars")
   try Test.error?(Optim.step(state, [p], [g], [try S.tensor([held[0]], []), try S.tensor([held[1]], [])]))
-  Test.error?(Optim.init(Optim.Optimizer.AdamW(o.with(decay: [true, false])), [p]))
+  try Test.error?(Optim.init(Optim.Optimizer.AdamW(o.with(decay: [true, false])), [p]))
+  flagged = try Optim.init(Optim.Optimizer.AdamW(o.with(decay: [true])), [p])
+  Test.error?(Optim.step(flagged, [p, p], [g, g]))
 end
 
 def test_a_gradient_per_parameter_is_required() -> Result[Void]

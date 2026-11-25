@@ -63,6 +63,15 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   (`SafetensorsWrite.write(path, Params.named(split, fit.params))`) and put
   back with `Params.update`, which refuses a name the model lacks and another
   shape.
+- **AdamW's decay is a flag per parameter, set by the caller.** PyTorch has
+  parameter groups; here `decay: List[Bool]` follows the list of parameters,
+  and a caller builds it from the names of a `Params.split`. The rule for a
+  fine-tune (and for the DistilBERT run of the benchmarks and its PyTorch
+  peer) is Hugging Face `Trainer`'s: no decay on a bias and on a layer-norm
+  weight, which in DistilBERT are `embeddings.LayerNorm.*`,
+  `sa_layer_norm.*` and `output_layer_norm.*`. It is not
+  sentence-transformers' older `no_decay` list (`bias`, `LayerNorm.bias`,
+  `LayerNorm.weight`), which misses DistilBERT's norm names.
 - **The batch enters the trace as constants.** `fit` wraps `inputs` and
   `targets` in `Trace.constant`, so the loss function sees traced tensors
   everywhere and is written once, as it would be eagerly.

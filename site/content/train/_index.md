@@ -58,11 +58,11 @@ Each loss takes a prediction and a target. It gives a rank-0 tensor (a single nu
 
 ## Optimizers
 
-`Optim.Optimizer` is `Sgd(Optim.Sgd(lr:, momentum: 0.0))` or `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))`. Adam's defaults are `lr` 0.001, `beta1` 0.9, `beta2` 0.999 and `eps` 1e-8.
+`Optim.Optimizer` is `Sgd(Optim.Sgd(lr:, momentum: 0.0))`, `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))` or `AdamW(Optim.AdamW(...))`. Adam's defaults are `lr` 0.001, `beta1` 0.9, `beta2` 0.999 and `eps` 1e-8.
 
 `AdamW(Optim.AdamW(lr:, weight_decay: 0.01, decay: []))` is Adam with decoupled weight decay, as PyTorch's `AdamW`: each step first shrinks a parameter by `lr * weight_decay` of itself, then takes Adam's step. It has Adam's fields and defaults. `decay` has one flag per parameter and says which ones decay; empty, all of them do. A fine-tune leaves the biases and the layer-norm weights out, which in PyTorch is two parameter groups.
 
-Both take a `schedule:` that moves the learning rate with the step count `t` (from 0). `lr` is the peak, and the rate of a step is `lr` times a factor:
+All three take a `schedule:` that moves the learning rate with the step count `t` (from 0). `lr` is the peak, and the rate of a step is `lr` times a factor:
 
 - `Optim.Schedule.Constant` (the default) is a factor of 1.
 - `Optim.Schedule.WarmupLinear(warmup, total)` rises from 0 to 1 over `warmup` steps, then falls in a straight line to 0 at step `total`.
@@ -109,6 +109,17 @@ fit = try Train.fit(
 
 try SafetensorsWrite.write("last_block.safetensors", try Params.named(split, fit.params))
 ```
+
+With `AdamW`, the `decay` flags follow `split.names`, the order of `split.trainable`. A fine-tune decays every weight but the biases and the layer-norm weights, which is the rule of Hugging Face's `Trainer`:
+
+```agentica
+split = try Params.split(DistilBert.weights(m), ->(name: String) { true })
+norm = ->(name: String) { name.include?("LayerNorm") or name.include?("layer_norm") }
+decay = split.names.map { |name: String| !(name.end_with?(".bias") or norm.call(name)) }
+optimizer = Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.00002, weight_decay: 0.01, decay: decay))
+```
+
+A layer norm is named by its model: `LayerNorm` in BERT, and `embeddings.LayerNorm`, `sa_layer_norm` and `output_layer_norm` in DistilBERT.
 
 - `Params.split(weights, trainable)` answers a `Split`: `names` (the names `trainable` says yes to, sorted), `trainable` (their tensors, the list `fit` takes) and `frozen` (the other weights by name). A selection that matches no name is an error.
 - `Params.join(split, ps)` gives every weight by name again, with `ps` for the trainable ones. Inside the loss `ps` are traced and the frozen weights enter the trace as constants, so they get no gradient, and the optimizer keeps no state for them.

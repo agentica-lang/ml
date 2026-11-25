@@ -144,8 +144,8 @@ def fitted(s: Setup) -> Result[Measured]
   ok(Measured(first_ns: ns[0], steps_ns: ns.drop(1 + WARM), losses: fit.history))
 end
 
-## One `Trace.compile` of the loss, its gradients and the update, with the step scalars (SGD's rate, or Adam's two numbers) as inputs, then a `run`
-## per step.
+## One `Trace.compile` of the loss, its gradients and the update, with the step scalars (SGD's rate, Adam's two
+## numbers or AdamW's three) as inputs, then a `run` per step.
 def compiled(s: Setup) -> Result[Measured]
   started = Time.monotonic_ns()
   state = try Optim.init(s.optimizer, s.params)
