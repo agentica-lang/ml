@@ -1,9 +1,9 @@
 """Writes the images of `test/resnet_hf_test.agc` into the folder given as the argument: four images, bigger than the 256
-pixels of the shorter side that the model's image processor resizes to, so they go through `Resize(256)` and
+pixels of the shorter side that the model's image processor resizes to, so they go through `Resize(256, Cubic)` and
 `CenterCrop(224)` as photos do. They are drawn, not photographed (smooth colors and a few discs with soft edges), so
 they are small and have no license; what a model says of them is arbitrary, but the same for every implementation.
-Soft edges because libvips and Pillow resize with different kernels and differ most at sharp ones. Standard library
-only: `python3 -I test/resnet_images.py test/fixtures/resnet`.
+Soft edges because libvips and Pillow round a little differently (a few samples of a resized image are a level
+apart) and differ most at sharp ones. Standard library only: `python3 -I test/resnet_images.py test/fixtures/resnet`.
 """
 
 import math

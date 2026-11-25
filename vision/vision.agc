@@ -19,7 +19,8 @@ end
 ## One transform of `apply`. `Resize(n, kernel)` scales the shorter side to `n` and keeps the aspect ratio; the longer
 ## side is cut to a whole number, as torchvision does. `ResizeTo(width, height, kernel)` scales to exactly that size,
 ## whatever the aspect ratio. The `kernel` (`Image.Kernel`: `Nearest`, `Linear`, `Cubic`, `Lanczos2`, `Lanczos3`) is the
-## filter that libvips resizes with: the one of the model's image processor (bicubic is `Cubic`, bilinear `Linear`). `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an area of that size.
+## filter that libvips resizes with: the one of the model's image processor (bicubic is `Cubic`, bilinear `Linear`).
+## `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an area of that size.
 ## `HorizontalFlip(p)` mirrors the image with probability `p` (`1.0` always).
 enum Step
   Resize(Int, Image.Kernel)
@@ -223,9 +224,9 @@ def labelled(decoded: Result[Pixels], parts: List[Pixels], path: String) -> Resu
         p.bands != first.bands or
         p.pixel_format != first.pixel_format
       )
-        return error(
-          "#{path} is #{p.width}x#{p.height} with #{p.bands} bands of #{p.pixel_format}, not #{first.width}x#{first.height} with #{first.bands} of #{first.pixel_format}: end the steps with a crop",
-        )
+        size = "#{p.width}x#{p.height} with #{p.bands} bands of #{p.pixel_format}"
+        wanted = "#{first.width}x#{first.height} with #{first.bands} of #{first.pixel_format}"
+        return error("#{path} is #{size}, not #{wanted}: end the steps with a crop")
       end
 
       ok(p)

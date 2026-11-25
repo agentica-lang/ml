@@ -1,5 +1,5 @@
 ## CLIP and the image pipeline against Hugging Face (`clip_golden.py`): each image of `fixtures/resnet` goes through
-## `Resize(224)`, `CenterCrop(224)` and `normalize` (the CLIP mean and std), as the image processor of
+## `Resize(224, Cubic)`, `CenterCrop(224)` and `normalize` (the CLIP mean and std), as the image processor of
 ## `laion/CLIP-ViT-B-32-laion2B-s34B-b79K` does, and then through the vision tower in `float32` on ggml; the prompts
 ## go through the tokenizer and the text tower. The embeddings, the scaled cosines (`logits_per_image`) and their
 ## softmax over the prompts are compared with the golden, and the ids of each prompt are compared exactly. The pixels
@@ -86,13 +86,16 @@ def test_the_model_and_the_pipeline_match_hugging_face() -> Result[Void]
 
   pixels = try preprocessed("test/fixtures/resnet", names, backend)
   pixel = try Hf.pixel_gap(pixels, want.images)
-  return error("the pixels are #{pixel} from Hugging Face's, more than #{PIXEL_ABS}") if pixel > PIXEL_ABS
+  if pixel.largest > PIXEL_ABS
+    return error("the pixels are #{Hf.describe(pixel)} from Hugging Face's, more than #{PIXEL_ABS}")
+  end
+
   pipeline_embeds = try Clip.image_embeds(m, pixels)
   pipeline_logits = try Clip.logits(m, pipeline_embeds, texts)
   pipeline_gap = try Hf.matrix_gap("logits of the pipeline", pipeline_logits, want.logits, PIPELINE_ABS, 0.0)
   try same_best("the pipeline", pipeline_logits, want.logits)
   puts(
-    "clip: largest gap of the text embeddings #{text_gap}, of the image embeddings of the crops #{alone_gap}, of their logits #{logit_gap} and probabilities #{probability_gap}; of the pixels #{pixel} and of the logits after the pipeline #{pipeline_gap}",
+    "clip: largest gap of the text embeddings #{text_gap}, of the image embeddings of the crops #{alone_gap}, of their logits #{logit_gap} and probabilities #{probability_gap}; of the pixels #{Hf.describe(pixel)} and of the logits after the pipeline #{pipeline_gap}",
   )
 
   ok()

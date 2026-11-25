@@ -7,6 +7,10 @@ import Vision from "../vision"
 SIZE = 224
 GRID = 8
 
+## A value that is off by more than this is not Hugging Face's: the smallest level of any model here is 0.0078, and our
+## samples are the same bytes up to float rounding.
+LEVEL_FRACTION = 0.001
+
 struct Pixel
   name: String
   mean: List[Float]
@@ -17,6 +21,15 @@ struct Entry
   id: Int
   label: String
   logit: Float
+end
+
+## What `pixel_gap` measures, in normalized units: the largest gap, the mean gap and the share of the values (the
+## means and the grid points) that are not Hugging Face's at all. The pixels are 8-bit, so a gap is a whole number of
+## levels, and a level is `1 / 255 / std` (0.0175 for ResNet's red channel).
+struct PixelGap
+  largest: Float
+  mean: Float
+  differing: Float
 end
 
 ## `RESNET_DEVICE`-style choice: Vulkan when `name` is set to `vulkan`, the CPU otherwise.
@@ -43,11 +56,16 @@ def loaded(
   ok(batch.inputs)
 end
 
-## The largest gap of the mean of each channel and of the grid of `batch` from the golden.
-def pixel_gap(batch: Tensor.Tensor, golden: List[Pixel]) -> Result[Float]
+def describe(g: PixelGap) -> String = "#{g.largest} (mean #{g.mean}, #{g.differing * 100.0}% of the values differ)"
+
+## The gap of the mean of each channel and of the grid of `batch` from the golden.
+def pixel_gap(batch: Tensor.Tensor, golden: List[Pixel]) -> Result[PixelGap]
   values = try floats(batch)
   plane = SIZE * SIZE
   worst = 0.0
+  total = 0.0
+  count = 0
+  differing = 0
   for i in 0...golden.size
     for c in 0...3
       base = (i * 3 + c) * plane
@@ -56,26 +74,33 @@ def pixel_gap(batch: Tensor.Tensor, golden: List[Pixel]) -> Result[Float]
         sum = sum + v
       end
 
-      worst = [worst, (sum / plane.to_f - golden[i].mean[c]).abs].max.unwrap!
+      gaps = [(sum / plane.to_f - golden[i].mean[c]).abs]
       for y in 0...GRID
         for x in 0...GRID
           at = values[base + step(y) * SIZE + step(x)]
-          worst = [worst, (at - golden[i].grid[c][y][x]).abs].max.unwrap!
+          gaps = gaps.push((at - golden[i].grid[c][y][x]).abs)
+        end
+      end
+
+      for gap in gaps
+        worst = [worst, gap].max.unwrap!
+        total = total + gap
+        count = count + 1
+        if gap > LEVEL_FRACTION
+          differing = differing + 1
         end
       end
     end
   end
 
-  ok(worst)
+  ok(PixelGap(largest: worst, mean: total / count.to_f, differing: differing.to_f / count.to_f))
 end
 
 ## The pixel of the grid that Python's `round(i * (SIZE - 1) / (GRID - 1))` picks.
 def step(i: Int) -> Int = (2 * i * (SIZE - 1) + GRID - 1) / (2 * (GRID - 1))
 
 ## The largest gap of the best 10 logits of each image from the golden; an error when a logit is past the tolerance or
-## the best 5 class ids `best` are not Hugging Face's, in the same order. Without `ordered` they may be reordered by the
-## near-ties of the logits: each of ours is in Hugging Face's best 10, and each class of Hugging Face's best 10 that is
-## more than `abs` above its sixth is in ours.
+## the best 5 class ids `best` are not Hugging Face's, in the same order.
 def logit_gap(
   what: String,
   best: List[List[Int]],
@@ -83,7 +108,6 @@ def logit_gap(
   cases: List[List[Entry]],
   abs: Float,
   rel: Float,
-  ordered: Bool = true,
 ) -> Result[Float]
   values = try floats(logits)
   classes = Tensor.shape(logits)[1]
@@ -91,11 +115,7 @@ def logit_gap(
   for i in 0...cases.size
     ours = best[i]
     theirs = cases[i].take(5).map { |e| e.id }
-    if ordered
-      return error("#{what}, image #{i}: the top 5 is #{ours}, expected #{theirs}") if ours != theirs
-    else
-      try tied_top(what, i, ours, cases[i], abs)
-    end
+    return error("#{what}, image #{i}: the top 5 is #{ours}, expected #{theirs}") if ours != theirs
 
     for e in cases[i]
       got = values[i * classes + e.id]
@@ -107,24 +127,6 @@ def logit_gap(
   end
 
   ok(worst)
-end
-
-## `ours` (the best 5 ids) against the best 10 of Hugging Face, `want`, allowing for ties within `abs` of its sixth.
-def tied_top(what: String, image: Int, ours: List[Int], want: List[Entry], abs: Float) -> Result[Void]
-  sixth = want[5].logit
-  for id in ours
-    if !want.any? { |e| e.id == id }
-      return error("#{what}, image #{image}: class #{id} of the top 5 is not in Hugging Face's best 10")
-    end
-  end
-
-  for e in want
-    if e.logit > sixth + abs and !ours.include?(e.id)
-      return error("#{what}, image #{image}: class #{e.id} (#{e.logit}) is clearly in the top 5 and is not in #{ours}")
-    end
-  end
-
-  ok()
 end
 
 ## The largest gap of `t` (`[rows, columns]`) from `want`; an error when one is past the tolerance `abs` plus `rel` of
