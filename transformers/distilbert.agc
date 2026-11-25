@@ -38,6 +38,8 @@ struct DistilBert
   positions: Nn.Embedding
   norm: Nn.LayerNorm
   stack: Nn.EncoderStack
+  ## What the names of the checkpoint start with: `distilbert.` in a `DistilBertFor...` file, nothing otherwise.
+  prefix: String = ""
 end
 
 ## The model in `dir`, which holds `model.safetensors` and `config.json`.
@@ -89,6 +91,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[D
       positions: positions,
       norm: try Load.layer_norm(c, "#{e}LayerNorm", LAYER_NORM_EPS, backend),
       stack: Nn.EncoderStack(blocks: blocks),
+      prefix: prefix,
     ),
   )
 end
@@ -107,12 +110,7 @@ end
 ## which the caller closes; with `normalize`, each over its length (the `Normalize` module of the checkpoint).
 def embed(m: DistilBert, encodings: List[WordPiece.Encoding], normalize: Bool = false) -> Result[Tensor.Tensor]
   batch = try inputs(m, encodings)
-  pooling = Pooling.Mean
-  if normalize
-    pooling = Pooling.Normalized
-  end
-
-  out = through(m, batch, pooling)
+  out = through(m, batch, pooling_of(normalize))
   Lift.close([batch.ids, batch.keep])
   out
 end
@@ -121,6 +119,84 @@ end
 ## model: the last hidden state. `seq` may not pass `max_position_embeddings`.
 def forward(m: DistilBert, ids: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Tensor.Tensor]
   through(m, Inputs(ids: ids, keep: mask), Pooling.Hidden)
+end
+
+## The mean embedding `[batch, dim]` of `ids` and `mask` (as `forward` takes them), with `normalize` over its length:
+## the model as plain `Tensor` calls, not one staged graph. Inside a loss, with the traced weights of `with_weights`,
+## it is part of the trace, so `Train.fit` takes its gradient. Outside a trace it runs eagerly, which ggml refuses
+## ("does not run eagerly on the ggml backend"): `embed` is the call for inference.
+def pooled(m: DistilBert, ids: Tensor.Tensor, mask: Tensor.Tensor, normalize: Bool = false) -> Result[Tensor.Tensor]
+  try check_inputs(m, ids, mask)
+  graph(m, ids, mask, pooling_of(normalize))
+end
+
+## The weights of `m` by their names in the checkpoint (`transformer.layer.0.attention.q_lin.weight`, under
+## `distilbert.` when the file has it), for training the model or part of it (`Params.split` of `train`).
+def weights(m: DistilBert) -> Map[String, Tensor.Tensor]
+  e = "#{m.prefix}embeddings."
+  out = {"#{e}word_embeddings.weight": m.words.table, "#{e}position_embeddings.weight": m.positions.table}
+  out = norm_weights(out, "#{e}LayerNorm", m.norm)
+  for i in 0...m.stack.blocks.size
+    b = m.stack.blocks[i]
+    n = block_names("#{m.prefix}transformer.layer.#{i}.")
+    out = norm_weights(out, n.norm1, b.norm1)
+    out = dense_weights(out, n.query, b.attention.query)
+    out = dense_weights(out, n.key, b.attention.key)
+    out = dense_weights(out, n.value, b.attention.value)
+    out = dense_weights(out, n.output, b.attention.output)
+    out = norm_weights(out, n.norm2, b.norm2)
+    out = dense_weights(out, n.up, b.mlp.up)
+    out = dense_weights(out, n.down, b.mlp.down)
+  end
+
+  out
+end
+
+## `m` with the tensors of `weights` in place of its own: the names must be those of `weights(m)`, no more and no
+## fewer, each with the shape the model holds. Inside a loss the tensors are traced and `pooled` of the result is part
+## of the trace. The result shares the tensors of `weights`, with no copy: `close_model` of it closes them.
+def with_weights(m: DistilBert, weights: Map[String, Tensor.Tensor]) -> Result[DistilBert]
+  own = weights(m)
+  for name in weights.keys.sort
+    old = try own.get(name).to_result("the model has no weight #{name}")
+    if Tensor.shape(weights[name]) != Tensor.shape(old)
+      return error("#{name}: the model holds #{Tensor.shape(old)}, got #{Tensor.shape(weights[name])}")
+    end
+  end
+
+  for name in own.keys.sort
+    return error("the weights have no #{name}") if !weights.has_key?(name)
+  end
+
+  e = "#{m.prefix}embeddings."
+  blocks: List[Nn.EncoderBlock] = []
+  for i in 0...m.stack.blocks.size
+    b = m.stack.blocks[i]
+    n = block_names("#{m.prefix}transformer.layer.#{i}.")
+    a = b.attention
+    blocks = blocks.push(
+      b.with(
+        norm1: with_norm(weights, n.norm1, b.norm1),
+        attention: a.with(
+          query: with_dense(weights, n.query, a.query),
+          key: with_dense(weights, n.key, a.key),
+          value: with_dense(weights, n.value, a.value),
+          output: with_dense(weights, n.output, a.output),
+        ),
+        norm2: with_norm(weights, n.norm2, b.norm2),
+        mlp: b.mlp.with(up: with_dense(weights, n.up, b.mlp.up), down: with_dense(weights, n.down, b.mlp.down)),
+      ),
+    )
+  end
+
+  ok(
+    m.with(
+      words: Nn.Embedding(table: weights["#{e}word_embeddings.weight"]),
+      positions: Nn.Embedding(table: weights["#{e}position_embeddings.weight"]),
+      norm: with_norm(weights, "#{e}LayerNorm", m.norm),
+      stack: Nn.EncoderStack(blocks: blocks),
+    ),
+  )
 end
 
 ## Closes the weights of `m` now. Nothing may use `m` afterwards: a call that does is an error, never a read of freed
@@ -173,15 +249,40 @@ def block_names(p: String) -> Load.BlockNames
   )
 end
 
+def dense_weights(out: Map[String, Tensor.Tensor], name: String, d: Nn.Dense) -> Map[String, Tensor.Tensor]
+  named = out.put("#{name}.weight", d.w)
+  case d.b
+    some(b) -> named.put("#{name}.bias", b)
+    none -> named
+  end
+end
+
+def norm_weights(out: Map[String, Tensor.Tensor], name: String, n: Nn.LayerNorm) -> Map[String, Tensor.Tensor]
+  out.put("#{name}.weight", n.gamma).put("#{name}.bias", n.beta)
+end
+
+## `d` and `n` with the tensors of `weights`, whose names `with_weights` has checked.
+def with_dense(weights: Map[String, Tensor.Tensor], name: String, d: Nn.Dense) -> Nn.Dense
+  d.with(w: weights["#{name}.weight"], b: d.b.map { |_| weights["#{name}.bias"] })
+end
+
+def with_norm(weights: Map[String, Tensor.Tensor], name: String, n: Nn.LayerNorm) -> Nn.LayerNorm
+  n.with(gamma: weights["#{name}.weight"], beta: weights["#{name}.bias"])
+end
+
 def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]
   return error("#{name}: needs #{want}, got #{Tensor.shape(t)}") if Tensor.shape(t) != want
   ok()
 end
 
-## The model over `batch`, then `pooling`: one graph on ggml.
-def through(m: DistilBert, batch: Inputs, pooling: Pooling) -> Result[Tensor.Tensor]
-  shape = Tensor.shape(batch.ids)
-  if shape.size != 2 or Tensor.shape(batch.keep) != shape
+def pooling_of(normalize: Bool) -> Pooling
+  return Pooling.Normalized if normalize
+  Pooling.Mean
+end
+
+def check_inputs(m: DistilBert, ids: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Void]
+  shape = Tensor.shape(ids)
+  if shape.size != 2 or Tensor.shape(mask) != shape
     return error("the model needs ids and a mask of one [batch, seq] shape, got #{shape}")
   end
 
@@ -189,6 +290,12 @@ def through(m: DistilBert, batch: Inputs, pooling: Pooling) -> Result[Tensor.Ten
     return error("#{shape[1]} tokens pass max_position_embeddings #{m.config.max_position_embeddings}")
   end
 
+  ok()
+end
+
+## The model over `batch`, then `pooling`: one graph on ggml.
+def through(m: DistilBert, batch: Inputs, pooling: Pooling) -> Result[Tensor.Tensor]
+  try check_inputs(m, batch.ids, batch.keep)
   outs = try Lift.staged(
     m,
     ->(p: DistilBert) { traced(p) },

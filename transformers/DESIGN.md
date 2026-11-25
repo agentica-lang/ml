@@ -135,6 +135,13 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
   not optional fields of `Bert`: the config names differ and `Bert`'s struct
   is public. Both take `Nn.padding_bias`, and `embed` pools and normalizes
   in the same graph as the encoder.
+- `DistilBert.weights` and `with_weights` name the weights as the checkpoint
+  does, as `Qwen3`'s do, so a fine-tune is `Params.split`, a loss over
+  `with_weights(m, Params.join(split, ps))` and `Train.fit`. The model keeps
+  the `distilbert.` prefix of its file for that. `pooled` is the forward
+  without `Lift.staged`: `run`, `embed` and `forward` lift the weights as
+  constants and run one graph, which a loss must not do, since its weights
+  are the inputs of the trace.
 - `sentence.agc` holds what a sentence-embedding model adds to an encoder
   (`mean_pooled`, `normalized`, `cosine_similarity_loss`). A loss lives with
   its domain: the cosine itself is generic math in `nn/`
