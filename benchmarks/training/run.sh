@@ -9,11 +9,12 @@
 #   python3 -I benchmarks/training/table.py OUT          the tables and the loss-curve verdict
 #
 # The threads: THREADS must be the online CPUs (8 here) for PyTorch and libtorch, which take OMP_NUM_THREADS, which
-# run.sh sets. The XLA rows need the plugin (`agentica tools/install_xla.agc` in tensor/) and run on the thread pool
-# of the plugin (not checked here, as for JAX). ggml's CPU rows run on the physical cores (tensor/native/ggml.c; `TENSOR_THREADS=n` in the environment
+# run.sh sets. ggml's CPU rows run on the physical cores (tensor/native/ggml.c; `TENSOR_THREADS=n` in the environment
 # sets another count, for example the online CPUs), and JAX's CPU pool is XLA's own default (all the cores; its size
-# is not checked here). `run` refuses to start when the load average is above 1.0, and every line records the load
-# average at its start. The venvs are `venv-torch` and `venv-jax`, in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}.
+# is not checked here). The XLA rows need the plugin (`agentica tools/install_xla.agc` in tensor/); their threads are
+# not pinned: the plugin uses its default CPU pool, whose size is not checked here either. `run` refuses to start
+# when the load average is above 1.0, and every line records the load average at its start. The venvs are
+# `venv-torch` and `venv-jax`, in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)

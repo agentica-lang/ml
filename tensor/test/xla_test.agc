@@ -108,7 +108,7 @@ end
 
 ## A dtype that cannot hold the row count of the table needs no upper bound: U8 ids on 300 rows match the reference,
 ## a negative I8 id on 200 rows and a U8 id of 200 on 100 rows are still errors.
-def test_a_narrow_index_dtype_gathers_from_a_larger_table() -> Result[Void]
+def test_a_narrow_index_dtype_gathers_from_a_larger_table_and_checks_its_bounds() -> Result[Void]
   return ok() if !try present()
   rows = ->(xs: List[Tensor.Tensor]) { Tensor.gather(xs[0], xs[1]) }
   values = uniform(600, 41, 1.0)
