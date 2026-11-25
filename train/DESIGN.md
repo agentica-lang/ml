@@ -96,8 +96,11 @@ Lora.open(dir, backend) -> Result[Adapter]
   product, and its `r` is the first dimension of `A`, so an adapter read from
   a file has its own. `train` imports `nn` for the start of `A`
   (`Init.uniform`); it already reached it through `hub`. The adapter is
-  `F32` and so are the weights it is applied to (`init` and `applied` refuse
-  `F16` and `BF16` ones: open the model with `weights: F32`).
+  `F32` and so are the weights it is applied to (`init`, `applied` and
+  `merged` refuse `F16` and `BF16` ones: open the model with `weights: F32`).
+  `merged` adds 256 weights in a graph: a ggml graph answers at most 512
+  tensors, and a model has more linear layers than that only when it is
+  large, where fewer sums at once also hold less memory.
 - **An adapter is kept in PEFT's files.** `Lora.save` writes
   `adapter_config.json` and `adapter_model.safetensors` as
   `PeftModel.save_pretrained` does: the weight `x.weight` has

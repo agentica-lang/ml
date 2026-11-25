@@ -121,19 +121,27 @@ def applied(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map
 end
 
 ## `weights` with the adapter merged in, for inference: the adapted weights are new tensors on their backend, each
-## `W + (alpha / r) · B A`, and the others are the tensors of `weights`. The sums run as one traced graph, so this
-## works on ggml too, which `applied` outside a loss does not. A model made from them runs at the cost of the model
-## alone.
+## `W + (alpha / r) · B A`, and the others are the tensors of `weights`, shared and not copied. Nothing is closed:
+## the weights under the adapted ones stay the caller's. The sums run as traced graphs, `MERGED_AT_ONCE` weights
+## each, so this works on ggml too, which `applied` outside a loss does not. A model made from them runs at the cost
+## of the model alone. An adapted weight that is not on the adapter's backend is an error.
 def merged(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map[String, Tensor.Tensor]]
-  sums = try Trace.eval_many(
-    adapter.a + adapter.b,
-    ->(ps: List[Tensor.Tensor]) { sums_of(weights, adapter, ps) },
-    false,
-  )
-
   out = weights
-  for i in 0...adapter.names.size
-    out = out.put(adapter.names[i], sums[i])
+  at = 0
+  while at < adapter.names.size
+    part = adapter.with(
+      names: adapter.names.drop(at).take(MERGED_AT_ONCE),
+      a: adapter.a.drop(at).take(MERGED_AT_ONCE),
+      b: adapter.b.drop(at).take(MERGED_AT_ONCE),
+    )
+
+    under = try adapted_of(weights, part)
+    sums = try Trace.eval_many(part.a + part.b, ->(ps: List[Tensor.Tensor]) { sums_of(under, part, ps) }, false)
+    for i in 0...part.names.size
+      out = out.put(part.names[i], sums[i])
+    end
+
+    at = at + MERGED_AT_ONCE
   end
 
   ok(out)
@@ -223,6 +231,10 @@ def open(dir: String, backend: Tensor.Backend) -> Result[Adapter]
 end
 
 private
+
+## How many weights one graph of `merged` adds: a ggml graph answers at most 512 tensors, and fewer at once keep
+## fewer sums in memory before they are handed over.
+MERGED_AT_ONCE = 256
 
 CONFIG = "adapter_config.json"
 WEIGHTS = "adapter_model.safetensors"
@@ -349,6 +361,22 @@ def adapted_by(key: String) -> Result[String]
   end
 
   error("#{key} is not the lora_A or lora_B of a layer")
+end
+
+## The weights of `weights` that `adapter` adapts, each on the adapter's backend.
+def adapted_of(weights: Map[String, Tensor.Tensor], adapter: Adapter) -> Result[Map[String, Tensor.Tensor]]
+  out: Map[String, Tensor.Tensor] = {}
+  for i in 0...adapter.names.size
+    name = adapter.names[i]
+    w = try weights.get(name).to_result("the model has no weight #{name}")
+    if Tensor.backend(w) != Tensor.backend(adapter.a[i])
+      return error("#{name} is on #{Tensor.backend(w)} and its adapter on #{Tensor.backend(adapter.a[i])}")
+    end
+
+    out = out.put(name, w)
+  end
+
+  ok(out)
 end
 
 ## The adapted weights of `applied`, in the order of `names`, with `ps` (every `A`, then every `B`) as the adapter.
