@@ -199,7 +199,7 @@ One training step of an MLP classifier (784-512-512-10, relu, softmax cross-entr
 | | |
 |---|---|
 | Machine | the one above (Ryzen 5 3550H, 8 threads; Vega iGPU for the Vulkan rows), the machine quiet: each of the two holds of the run started at a load average under 1.0 (0.88 and 0.95), and every line records the load average at its start |
-| Ours | agentica-lang/ml `a1cdc89` plus ml#222 (run at `d30be87`; its review changed only the fallbacks and the cap of the thread count), Agentica 0.37.0, ggml `417a024b4fb6`; the Vulkan rows multiply in fp32 because the program calls `Tensor.vulkan_fp16(false)` before the first ggml call |
+| Ours | agentica-lang/ml `a1cdc89` plus ml#222 (run at `d30be87`, merged as `0811da343`; its review changed only the fallbacks and the cap of the thread count), Agentica 0.37.0, ggml `417a024b4fb6`; the Vulkan rows multiply in fp32 because the program calls `Tensor.vulkan_fp16(false)` before the first ggml call |
 | PyTorch | 2.6.0+cpu, Python 3.13.5; `eager` is autograd and `torch.optim` (the default foreach implementation, not `fused=True`), `compile` is `torch.compile` of the loss and of a functional update, with one extra `copy_` of each parameter after it |
 | JAX | 0.12.0.1 with jaxlib 0.12.0.1 (numpy 2.5.5, ml_dtypes 0.7.0, scipy 1.18.1, opt_einsum 3.4.0), CPU, one `jax.jit` of the whole step |
 | Threads | ggml's CPU rows run on 4 threads, the physical cores of the machine (the default since ml#222; `TENSOR_THREADS` sets it); PyTorch and libtorch use `OMP_NUM_THREADS=8`, the online CPUs (`run.sh` refuses any other count), and JAX uses XLA's default CPU pool (all the cores; its size was not checked) |
