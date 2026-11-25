@@ -126,12 +126,6 @@ def adapted(names: List[String], targets: List[String]) -> Result[List[String]]
     out = out + taken
   end
 
-  for name in out
-    if name.include?("embed")
-      return error("#{name} is an embedding: PEFT adapts it with lora_embedding_A and B, which LoRA here does not")
-    end
-  end
-
   ok(out.uniq.sort)
 end
 

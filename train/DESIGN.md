@@ -91,9 +91,7 @@ Lora.applied(weights, adapter) -> Result[Map[String, Tensor]] every weight, the 
   a file has its own. `train` imports `nn` for the start of `A`
   (`Init.uniform`); it already reached it through `hub`. The adapter is
   `F32` and so are the weights it is applied to (`init` and `applied` refuse
-  `F16` and `BF16` ones: open the model with `weights: F32`). Not adapted, and
-  refused: an embedding (PEFT's `lora_embedding_A` and `B` have another
-  layout) and, for PR B's loader, an adapter file with `fan_in_fan_out`.
+  `F16` and `BF16` ones: open the model with `weights: F32`).
 - **AdamW's decay is a flag per parameter, set by the caller.** PyTorch has
   parameter groups; here `decay: List[Bool]` follows the list of parameters,
   and a caller builds it from the names of a `Params.split`. The rule for a

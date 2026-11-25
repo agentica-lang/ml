@@ -229,8 +229,6 @@ def test_what_does_not_fit_is_an_error() -> Result[Void]
   try Test.assert(!Lora.init(s.weights, Lora.Config(targets: ["first"], alpha: 0.0), 1, S.REF).ok?, "alpha 0")
   vector = {"norm.weight": try Tensor.zeros([4], Tensor.Dtype.F32, S.REF)}
   try Test.assert(!Lora.init(vector, Lora.Config(targets: ["norm"]), 1, S.REF).ok?, "a rank-1 target")
-  table = {"model.embed_tokens.weight": try Tensor.zeros([4, 3], Tensor.Dtype.F32, S.REF)}
-  try Test.assert(!Lora.init(table, Lora.Config(targets: ["embed_tokens"]), 1, S.REF).ok?, "an embedding")
   half = try Tensor.zeros([2, 2], Tensor.Dtype.F16, S.REF)
   try Test.assert(!Lora.init({"layer.weight": half}, Lora.Config(targets: ["layer"]), 1, S.REF).ok?, "an F16 weight")
   try Test.assert(!Lora.applied(s.weights.put("first.weight", half), s.adapter).ok?, "an F16 weight to apply to")
