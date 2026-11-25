@@ -148,6 +148,8 @@ extern module "ggml"
   ) -> Result[Void]
   ## How many graphs this process has compiled: the cache's misses.
   compute def compiles() -> Int
+  ## The threads of the CPU backend (or the ones it will run on): `TENSOR_THREADS`, else the physical cores.
+  compute def cpu_threads() -> Result[Int]
   ## Chooses fp16 (`true`) or F32 (`false`, the default) `mul_mat` for every
   ## Vulkan device this process opens. ggml reads it once, when it first
   ## enumerates its devices, so a different choice after any other call of
