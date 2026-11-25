@@ -1,8 +1,9 @@
 ## The weights of a DistilBERT by name (`DistilBert.weights`, `DistilBert.with_weights`) and its forward inside a trace
 ## (`DistilBert.pooled`), on the tiny models of `distilbert_peer.py`: the names are the checkpoint's, a model rebuilt
 ## from its own weights gives the same embedding, the cosine loss of two scored pairs and its gradient for every
-## weight agree on the reference (in doubles) and ggml, and `Train.fit` with AdamW lowers the loss on ggml. libtorch
-## has no `batch_matmul`, which the gradient of an attention needs, so it is not run. Run from `transformers/`.
+## weight agree on the reference (in doubles) and ggml, the loss and the gradient of 14 values match the peer's
+## central difference, and `Train.fit` with AdamW lowers the loss on ggml. libtorch has no `batch_matmul`, which the
+## gradient of an attention needs, so it is not run (ml#203). Run from `transformers/`.
 
 import Data from "pkg/train/data"
 import DistilBert from "../distilbert"
@@ -24,7 +25,26 @@ SCORES = [0.8, 0.1]
 ABS = 0.00001
 REL = 0.001
 
+## The loss in doubles against the peer's, and a gradient against a central difference with a step of 1e-5.
+PEER_ABS = 0.000000000001
+PEER_REL = 0.000000001
+SLOPE_ABS = 0.00000001
+SLOPE_REL = 0.00001
+
 private
+
+## One value of the weight `name` and the slope of the loss for it, a central difference of the peer.
+struct Slope
+  name: String
+  at: Int
+  slope: Float
+end
+
+## What `expected.json` says of the loss of the pairs.
+struct Expected
+  loss: Float
+  slopes: List[Slope]
+end
 
 ## The loss and its gradient for every weight of `tiny` on `backend`, by name.
 struct Graded
@@ -53,13 +73,19 @@ def test_the_names_are_the_checkpoints_and_the_weights_go_back() -> Result[Void]
 
       try Test.eq(w.keys.sort, names)
       try Test.eq(w.size, 4 + 16 * m.config.n_layers)
-      back = try DistilBert.with_weights(m, w)
       flat = try ids(S.REF, [4, 5])
       mask = try S.f32(MASK, [4, 5])
-      try Test.eq(
-        try S.floats_of(try DistilBert.pooled(back, flat, mask, true)),
-        try S.floats_of(try DistilBert.pooled(m, flat, mask, true)),
-      )
+      own = try S.floats_of(try DistilBert.pooled(m, flat, mask, true))
+      scaled: Map[String, Tensor.Tensor] = {}
+      for name in w.keys
+        values = (try S.floats_of(w[name])).map { |x: Float| x * 1.5 }
+        scaled = scaled.put(name, try S.f32(values, Tensor.shape(w[name])))
+      end
+
+      other = try DistilBert.with_weights(m, scaled)
+      try Test.assert(own != try S.floats_of(try DistilBert.pooled(other, flat, mask, true)), "the weights were ignored")
+      back = try DistilBert.with_weights(other, w)
+      try Test.eq(try S.floats_of(try DistilBert.pooled(back, flat, mask, true)), own)
 
       norm = "#{m.prefix}embeddings.LayerNorm.weight"
       try S.expect_error(DistilBert.with_weights(m, w.delete(norm)), norm)
@@ -114,6 +140,34 @@ def graded(dir: String, backend: Tensor.Backend) -> Result[Graded]
   ok(Graded(split: split, value: (try S.floats_of(both.value))[0], grads: grads))
 end
 
+## The peer computes the loss in doubles with its own forward and takes its slope for one value of 14 weights
+## (tables, attention, norms, MLP) as a central difference: no code of `Trace` is in it. The key bias of an attention
+## has a gradient of zero, since a softmax does not change when every score of a row moves by the same amount; every
+## other weight has a gradient that is not zero.
+def test_the_loss_and_its_gradients_match_the_peers_central_difference() -> Result[Void]
+  with_peer do |dir|
+    peer = try JSON.decode(try File.read_text("#{dir}/expected.json"), Expected)
+    ours = try graded(dir, S.REF)
+    try S.expect_close([ours.value], [peer.loss], PEER_ABS, PEER_REL, "loss")
+    try Test.eq(peer.slopes.size, 14)
+    for s in peer.slopes
+      index = try ours.split.names.index(s.name).to_result("no weight #{s.name}")
+      try S.expect_close([ours.grads[index][s.at]], [s.slope], SLOPE_ABS, SLOPE_REL, "#{s.name}[#{s.at}]")
+    end
+
+    for i in 0...ours.grads.size
+      largest = ours.grads[i].map { |g: Float| g.abs }.max.unwrap!
+      if ours.split.names[i].end_with?(".k_lin.bias")
+        try Test.assert(largest < SLOPE_ABS, "#{ours.split.names[i]} has a gradient of #{largest}")
+      else
+        try Test.assert(largest > SLOPE_ABS, "#{ours.split.names[i]} has no gradient")
+      end
+    end
+
+    ok()
+  end
+end
+
 def test_the_loss_and_every_gradient_agree_on_the_backends() -> Result[Void]
   with_peer do |dir|
     want = try graded(dir, S.REF)
@@ -157,10 +211,7 @@ end
 ## On ggml CPU alone: tracing three steps of the model takes most of a test's step budget.
 def test_fit_with_adamw_lowers_the_loss() -> Result[Void]
   with_peer do |dir|
-    for backend in (try S.ggml_backends()).take(1)
-      try trains(dir, backend)
-    end
-
-    ok()
+    return ok() if (try S.ggml_backends()).empty?
+    trains(dir, S.GGML)
   end
 end

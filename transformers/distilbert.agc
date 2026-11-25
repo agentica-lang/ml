@@ -110,12 +110,7 @@ end
 ## which the caller closes; with `normalize`, each over its length (the `Normalize` module of the checkpoint).
 def embed(m: DistilBert, encodings: List[WordPiece.Encoding], normalize: Bool = false) -> Result[Tensor.Tensor]
   batch = try inputs(m, encodings)
-  pooling = Pooling.Mean
-  if normalize
-    pooling = Pooling.Normalized
-  end
-
-  out = through(m, batch, pooling)
+  out = through(m, batch, pooling_of(normalize))
   Lift.close([batch.ids, batch.keep])
   out
 end
@@ -128,11 +123,11 @@ end
 
 ## The mean embedding `[batch, dim]` of `ids` and `mask` (as `forward` takes them), with `normalize` over its length:
 ## the model as plain `Tensor` calls, not one staged graph. Inside a loss, with the traced weights of `with_weights`,
-## it is part of the trace, so `Train.fit` takes its gradient.
+## it is part of the trace, so `Train.fit` takes its gradient. Outside a trace it runs eagerly, which ggml refuses
+## ("does not run eagerly on the ggml backend"): `embed` is the call for inference.
 def pooled(m: DistilBert, ids: Tensor.Tensor, mask: Tensor.Tensor, normalize: Bool = false) -> Result[Tensor.Tensor]
   try check_inputs(m, ids, mask)
-  return graph(m, ids, mask, Pooling.Normalized) if normalize
-  graph(m, ids, mask, Pooling.Mean)
+  graph(m, ids, mask, pooling_of(normalize))
 end
 
 ## The weights of `m` by their names in the checkpoint (`transformer.layer.0.attention.q_lin.weight`, under
@@ -159,7 +154,7 @@ end
 
 ## `m` with the tensors of `weights` in place of its own: the names must be those of `weights(m)`, no more and no
 ## fewer, each with the shape the model holds. Inside a loss the tensors are traced and `pooled` of the result is part
-## of the trace.
+## of the trace. The result shares the tensors of `weights`, with no copy: `close_model` of it closes them.
 def with_weights(m: DistilBert, weights: Map[String, Tensor.Tensor]) -> Result[DistilBert]
   own = weights(m)
   for name in weights.keys.sort
@@ -278,6 +273,11 @@ end
 def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]
   return error("#{name}: needs #{want}, got #{Tensor.shape(t)}") if Tensor.shape(t) != want
   ok()
+end
+
+def pooling_of(normalize: Bool) -> Pooling
+  return Pooling.Normalized if normalize
+  Pooling.Mean
 end
 
 def check_inputs(m: DistilBert, ids: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Void]
