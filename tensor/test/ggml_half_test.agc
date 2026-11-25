@@ -7,6 +7,7 @@
 ## of 1/8, which F16 holds exactly. Without the ggml
 ## module the checks pass by asserting nothing, unless `TENSOR_REQUIRE_GGML` is set (CI sets it).
 
+import Files from "ggml_file_support"
 import Tensor from "../tensor"
 import Trace from "../trace"
 
@@ -71,12 +72,6 @@ def floats(t: Tensor.Tensor) -> Result[List[Float]]
   ok(out)
 end
 
-## The little-endian bytes of the F32 `x`.
-def f32_bytes(x: Float) -> List[Int]
-  bits = Float.to_bits32(x)
-  [bits % 256, (bits / 256) % 256, (bits / 65536) % 256, bits / 16777216]
-end
-
 ## 12 weights, each a multiple of 1/8: row `j` of the `[4, 3]` weight is `weights()[3 j...3 j + 3]`.
 def weights() -> List[Float]
   out: List[Float] = []
@@ -87,7 +82,9 @@ def weights() -> List[Float]
   out
 end
 
-def weight_bytes() -> Result[List[Bytes]] = ok([try Bytes.from_list(weights().flat_map { |x: Float| f32_bytes(x) })])
+def weight_bytes() -> Result[List[Bytes]]
+  ok([try Bytes.from_list(weights().flat_map { |x: Float| Files.f32_bytes(x) })])
+end
 
 def bytes_of(values: List[Int]) -> Result[List[Bytes]] = ok([try Bytes.from_list(values)])
 
@@ -196,7 +193,7 @@ end
 def scaled_blocks() -> Result[List[Bytes]]
   parts: List[Bytes] = []
   for b in 0...6
-    block = try Bytes.from_list(pattern().flat_map { |x: Float| f32_bytes(x * (b + 1).to_f) })
+    block = try Bytes.from_list(pattern().flat_map { |x: Float| Files.f32_bytes(x * (b + 1).to_f) })
     for _ in 0...14
       block = Bytes.concat([block, block])
     end
