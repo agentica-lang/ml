@@ -1,0 +1,66 @@
+name: Skills
+
+# The agent skills of .agents/skills/ml-* hold code that must work: tools/check-skills.sh checks every `agentica`
+# block of their Markdown files and runs the ones with an `output` block on the reference backend. ci.yml ignores
+# Markdown-only changes, so the skills have a workflow of their own. It also runs when a package changes, because
+# an API change can break an example.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.agents/skills/ml-*/**'
+      - 'tools/check-skills.sh'
+      - 'tools/skills/**'
+      - 'tensor/**'
+      - 'nn/**'
+      - 'hub/**'
+      - 'train/**'
+      - 'transformers/**'
+      - 'asr/**'
+      - 'whisper/**'
+      - '.github/workflows/skills.yml'
+  pull_request:
+    paths:
+      - '.agents/skills/ml-*/**'
+      - 'tools/check-skills.sh'
+      - 'tools/skills/**'
+      - 'tensor/**'
+      - 'nn/**'
+      - 'hub/**'
+      - 'train/**'
+      - 'transformers/**'
+      - 'asr/**'
+      - 'whisper/**'
+      - '.github/workflows/skills.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  skills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the pinned Agentica version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version sha256 _ < tensor/AGENTICA_VERSION
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Agentica release
+        uses: agentica-lang/setup-agentica@v1
+        with:
+          version: ${{ steps.pin.outputs.version }}
+          sha256: ${{ steps.pin.outputs.sha256 }}
+
+      - name: Check the examples of the skills
+        run: sh tools/check-skills.sh

@@ -1,0 +1,48 @@
+version = 1
+
+[[package]]
+name = "asr"
+path = "../../asr"
+override = true
+
+[[package]]
+name = "hub"
+path = "../../hub"
+override = true
+
+[[package]]
+name = "native-gen"
+git = "https://github.com/agentica-lang/packages"
+subdir = "native-gen"
+tag = "native-gen-0.5.0"
+commit = "32ebb6ea25d60e0f7a44e811c1f280db76c3e882"
+hash = "sha256:c1be453b21abab840feaa03242f0be32c1145fefe068dc131c8ce7c1b7b80652"
+override = true
+
+[[package]]
+name = "nn"
+path = "../../nn"
+override = true
+
+[[package]]
+name = "tensor"
+path = "../../tensor"
+override = true
+
+[[package]]
+name = "train"
+path = "../../train"
+override = true
+
+[[package]]
+name = "transformers"
+path = "../../transformers"
+override = true
+
+[[package]]
+name = "whisper"
+git = "https://github.com/agentica-lang/ml"
+subdir = "whisper"
+ref = "b1243ef610eae0664b63af2b42f4a013a4db8245"
+commit = "b1243ef610eae0664b63af2b42f4a013a4db8245"
+hash = "sha256:015c44d6fe705a33e19986be7a9150980e118d742714daf802b0f312c96af2d6"

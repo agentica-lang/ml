@@ -73,6 +73,13 @@ nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.3.0", subdir = "
 tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.3.0", subdir = "tensor" }
 ```
 
+## Agent skills
+
+Two skills in [`.agents/skills/`](.agents/skills/) guide an agent that uses the packages from an app: `ml-inference`
+(install by tag, backends, loading weights, Qwen3, DistilBERT, Whisper, memory and errors) and `ml-training` (`fit`,
+validation and checkpoints, LoRA and PEFT files, speed, checking against PyTorch). Their code blocks are programs:
+`make check-skills` checks them, and runs the ones with an output on the reference backend.
+
 The libtorch backend ships **inside `tensor/`**, not as a `torch/` package,
 because a native handle is a `resource` that is nominal to its `extern module`
 ([`tensor/DESIGN.md`](tensor/DESIGN.md) §1, §7). libtorch is `optional = true` and never vendored or downloaded

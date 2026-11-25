@@ -6,6 +6,10 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 - **Breaking:** ml needs Agentica 0.38.0.
 
+### Agent skills
+
+- `ml-inference` and `ml-training` (`.agents/skills/`): skills that guide an agent through running and training models with the packages. A CI workflow checks their code (`make check-skills`).
+
 ### tensor
 
 - `tools/build-torch.sh` finds Debian's `libtorch-dev` (system headers and multiarch libraries) when no libtorch release folder is found.

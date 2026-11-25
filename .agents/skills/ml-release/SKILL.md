@@ -72,11 +72,20 @@ Branch `release/<version>` off the merged `origin/main`. Change only:
 
 3. The `README.md` install snippet: `ref = "COMMIT"` becomes
    `tag = "<pkg>-X.Y.Z"` for each released package. Update the sentence that
-   says there are no releases yet.
+   says there are no releases yet. `site/content/_index.md` has the same
+   snippet.
+
+4. The tags that the two agent skills (`.agents/skills/ml-inference` and
+   `ml-training`) show in their install blocks: list them with
+   `rg 'tag = "' .agents/skills` and bump each `<pkg>-X.Y.Z` of a released
+   package. In `tools/skills/agentica.toml`, `whisper` is pinned by `ref`
+   because its last tag does not check on the Agentica of this repository:
+   when `whisper` is released, change that line to its tag and run
+   `agentica update` there. `make check-skills` must pass.
 
 Title the PR `Release <version>`; the body lists each package and its tag.
-CI skips Markdown-only changes, so this PR runs no CI. Its Pages check is the
-one that runs. Merge when it is green.
+CI skips Markdown-only changes, so this PR runs no CI. Its Pages check runs,
+and the Skills check when a skill changes. Merge when they are green.
 
 ## 4. Tags and GitHub Releases (owner's OK)
 

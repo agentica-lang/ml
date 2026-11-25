@@ -1,8 +1,9 @@
-.PHONY: help site site-serve site-tools cchecker cchecker-update-baseline iree-venv iree-goldens
+.PHONY: help site site-serve site-tools check-skills cchecker cchecker-update-baseline iree-venv iree-goldens
 
 help:
 	@echo "site       build the documentation site into site/public"
 	@echo "site-serve serve the site on localhost for a preview"
+	@echo "check-skills   check the code of the agent skills (.agents/skills/ml-*)"
 	@echo "cchecker   check the native C (locks, ownership, gcc -fanalyzer, clang-tidy) against cchecker-baseline.json"
 	@echo "cchecker-update-baseline   accept today's findings of cchecker"
 	@echo "iree-venv  make the venv with the pinned IREE compiler and runtime (.venv-iree/, local only)"
@@ -68,3 +69,8 @@ $(IREE_STAMP):
 iree-goldens: $(IREE_STAMP)
 	cd train && agentica tools/stablehlo_emit.agc ../$(STABLEHLO_FIXTURES) ../$(STABLEHLO_PLANS)
 	PATH="$(CURDIR)/$(IREE_VENV)/bin:$$PATH" $(IREE_VENV)/bin/python tools/iree_goldens.py $(STABLEHLO_PLANS) $(STABLEHLO_FIXTURES)
+
+# The code of the agent skills of .agents/skills/ml-*: every `agentica` block is checked, formatted and, with an
+# `output` block, run on the reference backend (tools/check-skills.sh). It needs the pinned `agentica` on PATH.
+check-skills:
+	sh tools/check-skills.sh

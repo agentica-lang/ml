@@ -1,0 +1,23 @@
+name = "skills-check"
+agentica = "0.38.0"
+
+# Every bare `end` is followed by an empty line, as in the packages.
+[style]
+blank_line_after_end = true
+
+# The packages as the skills tell an app to use them (an app writes their tags,
+# see the install section of each skill), read from the folders of this
+# repository. `override` is there for the same reason as in an app: the
+# manifests of the members pin each other by commit. `whisper` is not a member
+# and its engine is not built here: the examples import its WAV reader only,
+# from a commit of main (whisper-0.2.0 does not check on Agentica 0.38.0). A
+# release of whisper moves this line to its tag.
+[dependencies]
+tensor = { path = "../../tensor", override = true }
+nn = { path = "../../nn", override = true }
+hub = { path = "../../hub", override = true }
+train = { path = "../../train", override = true }
+transformers = { path = "../../transformers", override = true }
+asr = { path = "../../asr", override = true }
+whisper = { git = "https://github.com/agentica-lang/ml", ref = "b1243ef610eae0664b63af2b42f4a013a4db8245", subdir = "whisper" }
+native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.5.0", subdir = "native-gen", override = true }
