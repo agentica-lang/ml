@@ -2,7 +2,8 @@
 # The STS-B fine-tune of benchmarks/README.md (ml#182): a sentence-transformers DistilBERT trained on scored sentence
 # pairs, on the CPU, in Agentica ml and in PyTorch, with the same rules. Never in CI.
 #
-#   sh benchmarks/stsb/run.sh setup              the venv: torch, transformers and pyarrow at pinned versions
+#   sh benchmarks/stsb/run.sh setup              the venv: torch, transformers, pyarrow, peft, accelerate and psutil, pinned
+#                                                (an older venv-torch needs setup again for peft)
 #   sh benchmarks/stsb/run.sh fetch              the checkpoint and the two parquet files, at pinned revisions
 #   sh benchmarks/stsb/run.sh smoke              both sides on the 4 pairs of fixture.jsonl with a weight decay of 1:
 #                                                they agree, and a peer without the decay does not
@@ -10,7 +11,7 @@
 #   sh benchmarks/stsb/run.sh peer [OUT]         the run in PyTorch, its lines into OUT (peer.jsonl)
 #   sh benchmarks/stsb/run.sh ours-lora [OUT]    the LoRA run in Agentica (ml#137): it saves the adapter it starts from
 #   sh benchmarks/stsb/run.sh peer-lora [OUT]    the LoRA run with PEFT, from that adapter: run it after ours-lora
-#   python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl
+#   python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl 2.4e-7           (3e-7 for the two LoRA files)
 #
 # PAIRS (1000), BATCH (16) and PAD_TO (1) set the run on both sides. The threads are the online CPUs on both sides:
 # this script sets `TENSOR_THREADS` to them for ggml (its default is the physical cores, tensor/native/ggml.c), and
@@ -35,7 +36,10 @@ batch=${BATCH:-16}
 pad_to=${PAD_TO:-1}
 # Where `ours-lora` saves the adapter it starts from, which `peer-lora` loads.
 adapter=$cache/lora/stsb-adapter
-# The loss tolerance of the LoRA runs: the full run agrees to 1.4e-7 and a peer without the weight decay is 1.1e-6 away.
+# The loss tolerances of summary.py, one for each pair of runs (the README says how they were set): the full run
+# agrees to 1.94e-7 and a peer without the weight decay is 3.35e-7 away; the LoRA run agrees to 1.4e-7 and a peer
+# without the weight decay is 1.1e-6 away.
+full_tolerance=2.4e-7
 lora_tolerance=3e-7
 online=$(getconf _NPROCESSORS_ONLN)
 allowed=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
@@ -104,6 +108,7 @@ data() {
 
 # peak COMMAND...: the command, then a `memory` line with the peak resident size of its process (GNU time)
 peak() {
+  [ -x /usr/bin/time ] || { echo "run.sh: /usr/bin/time (GNU time) is missing: install the time package" >&2; return 1; }
   note=$(mktemp)
   status=0
   /usr/bin/time -o "$note" -f '{"kind": "memory", "peak_kb": %M}' "$@" || status=$?
@@ -141,6 +146,17 @@ lines() {
   mv "$to.lines" "$to"
 }
 
+# differs OURS PEER TOLERANCE OUT (OUT gets the report): summary.py of a peer without the weight decay must say the runs DIFFER by their losses
+differs() {
+  python3 -I "$here/summary.py" "$1" "$2" "$3" >"$4" || true
+  if ! { grep -q '^verdict: the runs DIFFER' "$4" && grep -q '^largest loss gap' "$4"; }; then
+    cat "$4" >&2
+    echo "run.sh: a peer without the weight decay must differ by its losses, and it does not" >&2
+    exit 1
+  fi
+  grep '^largest' "$4" | sed 's/^/without the weight decay the peer DIFFERS, as it must: /'
+}
+
 quiet() {
   load=$(cut -d' ' -f1 /proc/loadavg)
   awk -v l="$load" 'BEGIN { exit !(l > 1.0) }' &&
@@ -158,14 +174,8 @@ case ${1:-} in
     lines "$out/ours.jsonl" ours "$fixture" "$fixture" 4 2 1 1.0
     lines "$out/peer.jsonl" peer "$fixture" "$fixture" 4 2 1 1.0
     lines "$out/plain.jsonl" peer "$fixture" "$fixture" 4 2 1 0.0
-    python3 -I "$here/summary.py" "$out/ours.jsonl" "$out/peer.jsonl"
-    python3 -I "$here/summary.py" "$out/ours.jsonl" "$out/plain.jsonl" >"$out/plain.txt" || true
-    if ! { grep -q '^verdict: the runs DIFFER' "$out/plain.txt" && grep -q '^largest loss gap' "$out/plain.txt"; }; then
-      cat "$out/plain.txt" >&2
-      echo "run.sh: a peer without the weight decay must differ by its losses, and it does not" >&2
-      exit 1
-    fi
-    grep '^largest' "$out/plain.txt" | sed 's/^/without the weight decay the peer DIFFERS, as it must: /'
+    python3 -I "$here/summary.py" "$out/ours.jsonl" "$out/peer.jsonl" "$full_tolerance"
+    differs "$out/ours.jsonl" "$out/plain.jsonl" "$full_tolerance" "$out/plain.txt"
     echo "LoRA:"
     lines "$out/ours-lora.jsonl" ours "$fixture" "$fixture" 4 2 1 1.0 "$out/adapter"
     lines "$out/peer-lora.jsonl" peer "$fixture" "$fixture" 4 2 1 1.0 "$out/adapter"

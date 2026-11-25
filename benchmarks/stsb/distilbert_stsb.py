@@ -155,14 +155,16 @@ def main():
         named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
         # PEFT's names in the model, as in its file: no `base_model.model.` and no adapter name.
         decayed = [n.removeprefix("base_model.model.").replace(".default.", ".") for n, _ in named]
-        groups, lr = [{"params": [p for _, p in named], "weight_decay": weight_decay}], LORA_LR
+        groups = [{"params": [p for _, p in named], "weight_decay": weight_decay}]
+        lr = LORA_LR
     else:
         named = list(model.named_parameters())
         decayed = [n for n, _ in named if not no_decay(n)]
-        groups, lr = [
+        groups = [
             {"params": [p for n, p in named if not no_decay(n)], "weight_decay": weight_decay},
             {"params": [p for n, p in named if no_decay(n)], "weight_decay": 0.0},
-        ], LR
+        ]
+        lr = LR
     print(json.dumps(checks(decayed, train + validation)), flush=True)
     print(json.dumps({"kind": "spearman", "when": "before", "value": spearman(model, validation, pad)}), flush=True)
     optimizer = torch.optim.AdamW(groups, lr=lr, betas=(0.9, 0.999), eps=1e-8)

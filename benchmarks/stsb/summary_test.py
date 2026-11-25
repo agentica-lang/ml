@@ -15,6 +15,7 @@ import summary  # noqa: E402
 
 SHAPES = [(8, True), (8, False), (16, True)]
 LOSSES = [0.30, 0.20, 0.10]
+TOLERANCE = 2.4e-7  # run.sh's full_tolerance: a right run of the README is 1.94e-7 away, one without decay 3.35e-7
 
 
 def lines(
@@ -48,24 +49,24 @@ class Verdict(unittest.TestCase):
 
     def verdict(self, **changes):
         ours, peer = summary.read(self.run_of("ours")), summary.read(self.run_of("peer", **changes))
-        return summary.compare(ours, peer, summary.TOLERANCE)
+        return summary.compare(ours, peer, TOLERANCE)
 
     def test_the_gap_of_a_right_run_passes_the_shipped_tolerance(self):
-        report, same = self.verdict(losses=[0.30, 0.20 + 6e-8, 0.10])
+        report, same = self.verdict(losses=[0.30, 0.20 + 1.94e-7, 0.10])
         self.assertTrue(same, report)
-        self.assertIn("largest loss gap 6.00e-08 at step 2", report[4])
+        self.assertIn("largest loss gap 1.94e-07 at step 2", report[4])
         self.assertIn("ours 20.0", report[2])  # the median leaves the first step of each shape out
 
     def test_the_peak_memory_of_both_sides_is_reported_when_both_have_it(self):
         self.assertFalse(any("peak memory" in line for line in self.verdict()[0]))
         ours = summary.read(self.run_of("ours", peak_kb=2_500_000))
         peer = summary.read(self.run_of("peer", peak_kb=1_250_000))
-        report, same = summary.compare(ours, peer, summary.TOLERANCE)
+        report, same = summary.compare(ours, peer, TOLERANCE)
         self.assertTrue(same, report)
         self.assertIn("peak memory: ours 2.56 GB, PyTorch 1.28 GB", report)
 
     def test_the_gap_of_a_run_without_weight_decay_fails_it(self):
-        self.assertFalse(self.verdict(losses=[0.30, 0.20, 0.10 + 2.8e-7])[1])
+        self.assertFalse(self.verdict(losses=[0.30, 0.20, 0.10 + 3.35e-7])[1])
 
     def test_a_loss_that_is_not_finite_fails_at_any_step(self):
         for bad in (math.nan, math.inf):
@@ -96,11 +97,13 @@ class Verdict(unittest.TestCase):
     def test_the_command_exits_1_when_the_runs_differ(self):
         ours = self.run_of("ours")
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(summary.main(["summary.py", ours, self.run_of("peer")]), 0)
-            self.assertEqual(summary.main(["summary.py", ours, self.run_of("bad", losses=[0.30, math.nan, 0.10])]), 1)
+            self.assertEqual(summary.main(["summary.py", ours, self.run_of("peer"), str(TOLERANCE)]), 0)
+            self.assertEqual(summary.main(["summary.py", ours, self.run_of("bad", losses=[0.30, math.nan, 0.10]), str(TOLERANCE)]), 1)
             far = self.run_of("far", losses=[0.30, 0.21, 0.10])
             self.assertEqual(summary.main(["summary.py", ours, far, "0.1"]), 0)
         self.assertIn("verdict: the runs DIFFER", out.getvalue())
+        with self.assertRaises(SystemExit):  # the tolerance belongs to a run: there is no default
+            summary.main(["summary.py", ours, far])
 
 
 if __name__ == "__main__":

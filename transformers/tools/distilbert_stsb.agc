@@ -137,10 +137,12 @@ def run(args: List[String]) -> Result[Void]
 
   train = (try tokenized(tok, args[1])).take(pairs)
   return error("#{args[1]} has #{train.size} pairs, fewer than #{pairs}") if train.size < pairs
-  trained = try whole(m)
-  if args.size > 7
-    trained = try adapted(m, args[7])
+  chosen = case args.size > 7
+    true -> adapted(m, args[7])
+    _ -> whole(m)
   end
+
+  trained = try chosen
 
   s = Setup(
     model: m,

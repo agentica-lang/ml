@@ -21,7 +21,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### transformers
 
 - `Qwen3.embeddings` and `DistilBert.embeddings`: the names of a model's embedding tables, for `Lora.save`; a PEFT LoRA adapter of a Qwen3 or a DistilBERT loads with `Lora.open` and runs merged.
-- `tools/distilbert_stsb.agc` takes an adapter folder as its last argument and fine-tunes with LoRA (`benchmarks/stsb/run.sh ours-lora`, against PEFT): 1.35 times PEFT's time per step, the same loss to 1.4e-7, the same memory (`benchmarks/README.md`).
+- `tools/distilbert_stsb.agc` takes an adapter folder as its last argument and fine-tunes with LoRA (`benchmarks/stsb/run.sh ours-lora`, against PEFT): 1.35 times PEFT's time per step, the same loss to 1.4e-7, the same memory (`benchmarks/README.md`). The speed goal of ml#137 (equal to or better than PyTorch) is not met: ml#236.
 
 ## [0.3.0] - 2026-11-25
 
