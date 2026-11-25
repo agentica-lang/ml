@@ -1,11 +1,12 @@
 # Changelog
 
-Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the first one and covers everything shipped so far (milestones 0.1.0 and 0.2.0).
+All packages are released together at one version, each on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the first one and covers everything shipped so far (milestones 0.1.0 and 0.2.0).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-25
 
 - **Breaking:** ml needs Agentica 0.38.0.
 - Install by tag with no `override = true` (ml#240): the packages ask for each other by the tag of their own release (`tensor-0.4.0`), not by commit, so an app that declares `tensor` and `nn` by their 0.4.0 tags gets one source for each package.
+- `nn`, `hub` and `asr` are released at 0.4.0 with the others; they have no changes of their own beyond the lines above.
 
 ### Agent skills
 
@@ -30,6 +31,10 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 - `Qwen3.embeddings` and `DistilBert.embeddings`: the names of a model's embedding tables, for `Lora.save`; a PEFT LoRA adapter of a Qwen3 or a DistilBERT loads with `Lora.open` and runs merged.
 - `tools/distilbert_stsb.agc` takes an adapter folder as its last argument and fine-tunes with LoRA (`benchmarks/stsb/run.sh ours-lora`, against PEFT): 1.35 times PEFT's time per step, the same loss to 1.4e-7, the same memory (`benchmarks/README.md`). The speed goal of ml#137 (equal to or better than PyTorch) is not met: ml#236.
+
+### whisper
+
+- Checks on Agentica 0.38.0: the WAV reader and writer use the conversions of its checker. Uses `native-gen` 0.5.0, like `tensor`.
 
 ## [0.3.0] - 2026-11-25
 
