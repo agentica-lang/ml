@@ -1127,7 +1127,7 @@ def layer_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   _ = try float_only(x, "layer_norm")
   case x.backend
     Types.Backend.Trace ->
-      if eps > 3.4028234663852886e38 or Float.to_bits32(eps) == 0
+      if eps > 3.4028234663852886e38 or Float32.to_bits(eps.to_float32) == 0
         return error("layer_norm needs an eps that is neither above F32's range nor 0 in F32, got #{eps}")
       end
 
@@ -1145,7 +1145,7 @@ def rms_norm(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   _ = try float_only(x, "rms_norm")
   case x.backend
     Types.Backend.Trace ->
-      if eps > 3.4028234663852886e38 or Float.to_bits32(eps) == 0
+      if eps > 3.4028234663852886e38 or Float32.to_bits(eps.to_float32) == 0
         return error("rms_norm needs an eps that is neither above F32's range nor 0 in F32, got #{eps}")
       end
 

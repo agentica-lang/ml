@@ -4,6 +4,8 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ## [Unreleased]
 
+- **Breaking:** ml needs Agentica 0.38.0.
+
 ### tensor
 
 - `Backend.Xla(Device.Cpu)`: a traced function compiled and run by XLA on the CPU, through the PJRT plugin loaded at run time; `agentica tools/install_xla.agc` installs the plugin (Linux x86_64 and aarch64).

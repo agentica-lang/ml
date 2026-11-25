@@ -25,7 +25,7 @@ end
 
 ## The little-endian bytes of the F32 `x`.
 def f32_bytes(x: Float) -> List[Int]
-  bits = Float.to_bits32(x)
+  bits = Float32.to_bits(x.to_float32).to_i
   [bits % 256, (bits / 256) % 256, (bits / 65536) % 256, bits / 16777216]
 end
 

@@ -78,7 +78,7 @@ def parse(text: String) -> Result[Tokenizer]
 
   multilingual = eot != ENGLISH_EOT
   languages: List[Language] = []
-  for t in (file.added_tokens.sort_by { |a| a.id })
+  for t in file.added_tokens.sort_by { |a| a.id }
     if multilingual and t.id > sot and t.id < translate
       code = t.content.replace("<|", "").replace("|>", "")
       languages = languages.push(Language(code: code, id: t.id))
@@ -156,7 +156,7 @@ end
 
 ## The id of the language token of `code` (`es` is `<|es|>`).
 def language_id(tok: Tokenizer, code: String) -> Result[Int]
-  case (tok.languages.find { |l| l.code == code })
+  case tok.languages.find { |l| l.code == code }
     ok(l) -> ok(l.id)
     error(_) -> error("the tokenizer has no language #{code}")
   end

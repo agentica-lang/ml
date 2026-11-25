@@ -278,8 +278,8 @@ def parse(b: Bytes, size: Int) -> Result[Header]
 
   version = try Binary.read_u32_le(b, 4)
   return error("GGUF version #{version} is not supported (only 3)") if version != 3
-  tensor_count = try Binary.read_u64_le(b, 8)
-  value_count = try Binary.read_u64_le(b, 16)
+  tensor_count = try u64(b, 8, size)
+  value_count = try u64(b, 16, size)
   if count_bad?(tensor_count, size) or count_bad?(value_count, size)
     return error("#{tensor_count} tensors and #{value_count} key-values do not fit in the header")
   end
@@ -393,12 +393,12 @@ end
 
 def u32(b: Bytes, at: Int, size: Int) -> Result[Int]
   try need(b, at, 4, size)
-  Binary.read_u32_le(b, at)
+  ok((try Binary.read_u32_le(b, at)).to_i)
 end
 
 def u64(b: Bytes, at: Int, size: Int) -> Result[Int]
   try need(b, at, 8, size)
-  Binary.read_u64_le(b, at)
+  (try Binary.read_u64_le(b, at)).to_i
 end
 
 ## The string (a length of 8 bytes, then that many bytes of UTF-8) at `at`.
@@ -434,9 +434,9 @@ def scalar(b: Bytes, at: Int, width: Int, size: Int) -> Result[Read]
   n = 0
   case width
     1 -> n = b[at]
-    2 -> n = try Binary.read_u16_le(b, at)
-    4 -> n = try Binary.read_u32_le(b, at)
-    _ -> n = try Binary.read_u64_le(b, at)
+    2 -> n = (try Binary.read_u16_le(b, at)).to_i
+    4 -> n = (try Binary.read_u32_le(b, at)).to_i
+    _ -> n = try u64(b, at, size)
   end
 
   ok(Read(value: Value.Int(n), at: at + width))
@@ -446,9 +446,9 @@ def signed(b: Bytes, at: Int, width: Int, size: Int) -> Result[Read]
   try need(b, at, width, size)
   n = 0
   case width
-    1 -> n = try Binary.read_i8(b, at)
-    2 -> n = try Binary.read_i16_le(b, at)
-    4 -> n = try Binary.read_i32_le(b, at)
+    1 -> n = (try Binary.read_i8(b, at)).to_i
+    2 -> n = (try Binary.read_i16_le(b, at)).to_i
+    4 -> n = (try Binary.read_i32_le(b, at)).to_i
     _ -> n = try Binary.read_i64_le(b, at)
   end
 
@@ -459,7 +459,7 @@ def real(b: Bytes, at: Int, width: Int, size: Int) -> Result[Read]
   try need(b, at, width, size)
   x = 0.0
   if width == 4
-    x = try Binary.read_f32_le(b, at)
+    x = (try Binary.read_f32_le(b, at)).to_f
   else
     x = try Binary.read_f64_le(b, at)
   end

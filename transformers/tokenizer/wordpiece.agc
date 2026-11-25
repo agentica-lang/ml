@@ -192,7 +192,7 @@ def decode(tok: WordPiece, ids: List[Int], skip_special: Bool = true) -> Result[
   parts: List[String] = []
   for id in ids
     return error("no token has the id #{id}") if id < 0 or id >= tok.pieces.size
-    next if (skip_special and tok.added.any? { |a| a.id == id and a.special })
+    next if skip_special and tok.added.any? { |a| a.id == id and a.special }
 
     piece = tok.pieces[id]
     if not parts.empty?
