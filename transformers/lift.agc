@@ -6,6 +6,7 @@
 ## once, and the `*_parts` lists name every weight of a layer, for closing a
 ## model.
 
+import Delta from "pkg/nn/delta"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
@@ -63,6 +64,20 @@ def attention(a: Nn.Attention) -> Nn.Attention
   )
 end
 
+def delta(p: Delta.GatedDeltaNet) -> Delta.GatedDeltaNet
+  p.with(
+    qkv: dense(p.qkv),
+    z: dense(p.z),
+    b: dense(p.b),
+    a: dense(p.a),
+    conv: Trace.constant(p.conv),
+    dt_bias: Trace.constant(p.dt_bias),
+    a_log: Trace.constant(p.a_log),
+    norm: Trace.constant(p.norm),
+    output: dense(p.output),
+  )
+end
+
 def block(b: Nn.EncoderBlock) -> Nn.EncoderBlock
   b.with(norm1: norm(b.norm1), norm2: norm(b.norm2), attention: attention(b.attention), mlp: mlp(b.mlp))
 end
@@ -86,33 +101,39 @@ end
 
 def norm_parts(p: Nn.LayerNorm) -> List[Tensor.Tensor] = [p.gamma, p.beta]
 
-def block_parts(b: Nn.EncoderBlock) -> List[Tensor.Tensor]
-  a = b.attention
-  denses = [a.query, a.key, a.value, a.output, b.mlp.up, b.mlp.down]
-  case b.mlp.gate
-    some(g) -> denses = denses.push(g)
-    none -> nil
+def mlp_parts(p: Nn.Mlp) -> List[Tensor.Tensor]
+  out = dense_parts(p.up) + dense_parts(p.down)
+  case p.gate
+    some(g) -> out + dense_parts(g)
+    none -> out
   end
+end
 
-  norms = [b.norm1, b.norm2]
-  case a.query_norm
-    some(n) -> norms = norms.push(n)
-    none -> nil
-  end
-
-  case a.key_norm
-    some(n) -> norms = norms.push(n)
-    none -> nil
-  end
-
+def attention_parts(a: Nn.Attention) -> List[Tensor.Tensor]
   out: List[Tensor.Tensor] = []
-  for d in denses
+  for d in [a.query, a.key, a.value, a.output]
     out = out + dense_parts(d)
   end
 
-  for n in norms
-    out = out + norm_parts(n)
+  for n in [a.query_norm, a.key_norm]
+    case n
+      some(x) -> out = out + norm_parts(x)
+      none -> nil
+    end
   end
 
   out
+end
+
+def delta_parts(p: Delta.GatedDeltaNet) -> List[Tensor.Tensor]
+  out = [p.conv, p.dt_bias, p.a_log, p.norm]
+  for d in [p.qkv, p.z, p.b, p.a, p.output]
+    out = out + dense_parts(d)
+  end
+
+  out
+end
+
+def block_parts(b: Nn.EncoderBlock) -> List[Tensor.Tensor]
+  attention_parts(b.attention) + mlp_parts(b.mlp) + norm_parts(b.norm1) + norm_parts(b.norm2)
 end
