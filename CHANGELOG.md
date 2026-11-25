@@ -8,7 +8,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ### Agent skills
 
-- `ml-inference` and `ml-training` (`.agents/skills/`): skills that guide an agent through running and training models with the packages. A CI workflow checks their code (`make check-skills`).
+- `ml-inference` and `ml-training` (`.agents/skills/`): skills that guide an agent through running and training models with the packages.
 
 ### tensor
 

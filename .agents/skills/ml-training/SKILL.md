@@ -17,24 +17,16 @@ description: >-
 `train` fits a model to data. A model is a loss function of a parameter list and a batch: you write it as plain tensor
 code, `Train.fit` traces it, builds the gradients, compiles one step and runs it on every batch. Values never change, so
 `fit` returns new parameters. Install and backends are in `ml-inference` (read its `SKILL.md` and
-`references/backends.md` first when the packages are not installed yet).
+`references/backends.md` first when the packages are not installed yet). Copy both skills together.
 
 ## Install
 
-Same lines as `ml-inference`, with `train` added. `train` needs `tensor`, `nn` and `hub`; add `transformers` to
-fine-tune a Hugging Face model.
+Use the install block of `ml-inference` (its `SKILL.md`: `tensor`, `nn`, `hub`, and `transformers` to fine-tune a
+Hugging Face model) and add `train`:
 
 ```toml
-[dependencies]
-tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.4.0", subdir = "tensor", override = true }
-nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.4.0", subdir = "nn", override = true }
-hub = { git = "https://github.com/agentica-lang/ml", tag = "hub-0.4.0", subdir = "hub", override = true }
 train = { git = "https://github.com/agentica-lang/ml", tag = "train-0.4.0", subdir = "train", override = true }
-transformers = { git = "https://github.com/agentica-lang/ml", tag = "transformers-0.4.0", subdir = "transformers", override = true }
-native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.5.0", subdir = "native-gen", override = true }
 ```
-
-Then `agentica update` and `agentica install`.
 
 ## First fit
 
@@ -99,15 +91,16 @@ true
 
 - `loss(params, batch)` answers a float scalar `Result[Tensor]`. Inside it, `params` and the batch are traced; the loss is
   traced once for each batch shape, not on every step. Rebuild layers from the list: `Nn.Dense(w: ps[0], b: some(ps[1]))`.
-- Ops with no backward rule make `fit` fail with an error naming the op: `pow`, `clamp`, `to_dtype`, `batch_matmul`
-  (on libtorch), `conv1d`, `avg_pool1d`. Use the derived ops (`softmax`, `gelu`, `layer_norm`, `linear`).
+- An op with no backward rule on the path from the parameters to the loss makes `fit` fail with an error naming the op:
+  `pow`, `clamp`, `to_dtype`, `batch_matmul` (on libtorch), `conv1d`, `avg_pool1d`. Use the derived ops (`softmax`,
+  `gelu`, `layer_norm`, `linear`). An op off that path is fine, such as `to_dtype` on a padding mask.
 - Train a model loaded as `F32`. Half (`F16`) and quantized (`Q8_0`) weights have no gradient.
 - On ggml, one step is one graph with at most 512 outputs: the loss, the new parameters and the moments. That is 170
   parameters with Adam or AdamW, 255 with momentum SGD, 511 with plain SGD.
 - `fit` frees the parameters and moments that a step replaces. The `params` you give stay yours, and so do the trained
   ones it returns.
 - `fit` prints nothing. Use `on_epoch`, `metrics` or the returned `history`.
-- Tests that train need steps: `agentica test --max-steps 10000000`.
+- A test that trains can run out of steps (`RUNTIME-STEP-LIMIT`): see `ml-inference/references/memory-and-errors.md`.
 
 ## References
 

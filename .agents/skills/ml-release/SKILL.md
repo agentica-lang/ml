@@ -75,13 +75,19 @@ Branch `release/<version>` off the merged `origin/main`. Change only:
    says there are no releases yet. `site/content/_index.md` has the same
    snippet.
 
-4. The tags that the two agent skills (`.agents/skills/ml-inference` and
-   `ml-training`) show in their install blocks: list them with
-   `rg 'tag = "' .agents/skills` and bump each `<pkg>-X.Y.Z` of a released
-   package. In `tools/skills/agentica.toml`, `whisper` is pinned by `ref`
-   because its last tag does not check on the Agentica of this repository:
-   when `whisper` is released, change that line to its tag and run
-   `agentica update` there. `make check-skills` must pass.
+4. The tags and versions that the two agent skills (`.agents/skills/ml-inference`
+   and `ml-training`) show. List them with
+   `rg -e '-0\.[0-9]+\.[0-9]+' .agents/skills` (the install blocks, and the
+   `git clone --branch tensor-0.4.0` of `references/backends.md`) and bump
+   each `<pkg>-X.Y.Z` of a released package. `native-gen` is not an ml tag: it
+   comes from `agentica-lang/packages`, and moves only with the pin of the
+   packages (`rg native-gen tensor/agentica.toml`). Also list
+   `rg 'agentica = "' .agents/skills tools/skills`: those are the Agentica
+   version, and change only when the packages move to a new Agentica. In
+   `tools/skills/agentica.toml`, `whisper` is pinned by `ref` because its last
+   tag does not check on the Agentica of this repository: when `whisper` is
+   released, change that line to its tag and run `agentica update` there.
+   `make check-skills` must pass.
 
 Title the PR `Release <version>`; the body lists each package and its tag.
 CI skips Markdown-only changes, so this PR runs no CI. Its Pages check runs,
@@ -116,6 +122,10 @@ The notes are never `Unreleased` or empty. Never create a release on a tag push.
   `tag = "tensor-0.1.0", subdir = "tensor"` (the `agentica` version is the
   package's `AGENTICA_VERSION`). Run `agentica install`, then `agentica check`
   on a one-file program that imports it.
+- The install blocks of the skills work as written: in an empty folder, copy
+  the `toml` block of `ml-inference/SKILL.md` (and the `train` line of
+  `ml-training/SKILL.md`) into an `agentica.toml`, run `agentica update` and
+  `agentica install`, then `agentica check` on the first program of the skill.
 - The Pages run on `main` for the merge commit is green. If it did not run,
   start it with `gh workflow run pages.yml --ref main -R agentica-lang/ml`.
 - Each GitHub Release exists and is not a draft: `gh release view <tag>`.

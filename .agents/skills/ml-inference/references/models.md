@@ -3,13 +3,18 @@
 ## Get a checkpoint
 
 The packages read local files and download nothing. A model is a folder. Fetch the files you need from the Hugging
-Face Hub with `curl`, or with `huggingface-cli download REPO --local-dir DIR`:
+Face Hub with `curl`, or with `hf download REPO --revision REV --local-dir DIR`. Pin a revision (a commit of the repo,
+not `main`, which moves) and check the sha256 of the weights, which the Hub shows as the `X-Linked-ETag` of the file:
 
 ```sh
+rev=c1899de289a04d12100db370d81485cdf75e47ca     # a commit of Qwen/Qwen3-0.6B: see the repo's history
 mkdir -p Qwen3-0.6B && cd Qwen3-0.6B
 for f in model.safetensors config.json tokenizer.json tokenizer_config.json; do
-  curl -fL -O "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/$f"
+  curl -fL -O "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/$rev/$f"
 done
+
+echo "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b  model.safetensors" | sha256sum -c -
+curl -sIL "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/$rev/model.safetensors" | grep -i x-linked-etag   # for another model
 ```
 
 | Model | Hub repo | Files | Opened by |
@@ -58,7 +63,7 @@ end
 ```
 
 Float weights of 16 bits (`F16`, `BF16`) come back as `F32`. `Hub.tensors(c, backend)` reads them all as a map by name.
-Weights that a model keeps as half precision (`weights: Dtype.F16`) are in `memory-and-errors.md`.
+Half precision weights (`weights: Dtype.F16`) are in `memory-and-errors.md`.
 
 ## Generate text with Qwen3
 
@@ -116,8 +121,7 @@ end
 - The first call of a new prompt length compiles graphs, which takes a moment; later calls compile nothing.
 - The prompt and the new ids must fit `max_position_embeddings` (40960). One prompt at a time: there is no batching.
 - `Qwen3.run(m, [ids])` gives the logits of whole sequences, with no cache. It is for scoring, not for generating.
-- `weights: Dtype.F16` in `Qwen3.open(dir, backend, Tensor.Dtype.F16)` halves the memory and speeds up decoding on
-  Vulkan (see `memory-and-errors.md`).
+- `Qwen3.open(dir, backend, Tensor.Dtype.F16)` keeps half weights (`memory-and-errors.md`).
 
 ## Embed sentences with DistilBERT
 

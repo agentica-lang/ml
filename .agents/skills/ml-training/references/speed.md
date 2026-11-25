@@ -1,51 +1,42 @@
 # Speed: backend, batch size, compile, export
 
-The numbers are from `benchmarks/README.md` of the ml repository (one machine: Ryzen 5 3550H, 4 cores and 8 threads, a
-Vega 8 iGPU, Agentica 0.37 to 0.38). They tell what costs what; measure your own model.
+These are rules of thumb from the benchmarks of the ml repository
+(`https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md`: the machine, the methods and the tables). They
+tell what costs what; measure your own model.
 
 ## Pick a backend
 
 | Training | Backend | Why |
 |---|---|---|
 | a check against a known answer, a test | `Reference` | exact, slow |
-| an MLP-sized model on the CPU | `Backend.Xla(Device.Cpu)` | the CPU training path: 0.75 to 0.89 of PyTorch eager's time at batch 256 and up |
-| a model with a GPU (an iGPU counts) | `Backend.Ggml(Device.Vulkan(0))` | from batch 256 (Adam) or 1024 (SGD) it beats PyTorch eager on this machine: 0.45 to 0.90 of its time |
+| an MLP-sized model on the CPU | `Backend.Xla(Device.Cpu)` | the CPU training path; on one machine its step took about 0.75 to 0.89 of PyTorch eager's time from batch 256 (those rows ran later, on a quieter machine than the others, so the gap is not confirmed) |
+| a model with a GPU (an iGPU counts) | `Backend.Ggml(Device.Vulkan(0))` | beats PyTorch eager from about batch 256 (Adam) or 1024 (SGD) on the same machine |
 | DistilBERT, Qwen3 or another model of `transformers` | `Backend.Ggml(Device.Cpu)` or Vulkan | XLA runs only the ops of an MLP and its gradients (no layer norm, attention or embedding yet) |
 
-One Adam step of a 784-512-512-10 relu MLP with softmax cross-entropy, in ms (`Train.fit`, batch on the device):
+To train on XLA, install the plugin once (`ml-inference/references/backends.md`) and set `backend` to
+`Tensor.Backend.Xla(Tensor.Device.Cpu)` when you make the dataset and the parameters.
 
-| Batch | ggml CPU | ggml Vulkan | XLA CPU | PyTorch eager CPU |
-|---|---|---|---|---|
-| 64 | 9.1 | 9.0 | 4.1 | 5.5 |
-| 256 | 14.1 | 10.0 | 9.0 | 11.1 |
-| 1024 | 38.0 | 22.8 | 28.5 | 34.2 |
-| 4096 | 192.5 | 76.6 | 128.4 | 155.6 |
-
-Fine-tuning DistilBERT (66 M weights) on 1000 STS-B pairs, one epoch of 63 steps at batch 16 pairs, ggml CPU, against
-PyTorch with the same rules: full fine-tune 2035 ms per step against 1363 (1.49 times; 2.7 GB of memory against
-1.9 GB); LoRA (r 8 on `q_lin` and `v_lin`) 1022 ms against PEFT's 758 (1.35 times; 0.96 GB against 0.94 GB). The LoRA
-step is 2 times shorter and 2.8 times smaller in memory than the full one, and reaches nearly the same Spearman
-(0.8326 against 0.8340). The loss agrees with PyTorch's to 1.4e-7. LoRA on XLA and the activation-space adapter that
-would close the gap are ml#236.
+Fine-tuning DistilBERT (66 M weights) on ggml CPU takes about 1.5 times PyTorch's time per step, and a LoRA run about
+1.35 times PEFT's, with the same loss to 1e-7. A LoRA run needs about a third of the memory of a full fine-tune and each
+step takes half the time. LoRA on XLA, and applying the adapter on the activations, are
+[ml#236](https://github.com/agentica-lang/ml/issues/236).
 
 ## What costs what
 
-- **Batch size.** A step has a fixed cost: a few ms of dispatches on a GPU (about 2 ms on the iGPU). A batch of 64 is
-  slower than PyTorch on ggml (1.4 to 2.5 times); raise it to 256 or more on Vulkan, to 1024 on the ggml CPU.
-- **The first step of each shape compiles.** It takes 0.3 to 0.5 s on ggml and 0.24 to 0.56 s on XLA for an MLP, and
-  about 0.45 s more than a warm step for DistilBERT. `fit` compiles once per batch shape, so a last partial batch is a
-  second compile (use `drop_last: true`), and padded text batches should use few lengths. ggml keeps 32 graphs.
-- **`fit` over a compiled step.** On ggml and XLA the batch is gathered inside the step, so `fit` adds 0.2 to 1.4 ms
-  at batch 64 over a hand-compiled step, and 5 to 12 ms at batch 4096. Hand-compile only for a step `fit` cannot
-  express.
-- **Precision.** Vulkan multiplies in fp16 by default, which changes gradients by up to 10% at MLP sizes. Call
-  `Tensor.vulkan_fp16(false)` first when you compare against PyTorch (it is slower).
-- **Threads.** ggml CPU uses one thread per physical core. `TENSOR_THREADS=N` changes it; 8 against 4 made no
-  difference here.
+- **Batch size.** A step has a fixed cost: a few ms of dispatches on a GPU. A batch of 64 is slower than PyTorch on
+  ggml; raise it to 256 or more on Vulkan, to 1024 on the ggml CPU.
+- **The first step of each shape compiles.** It takes a fraction of a second for an MLP. `fit` compiles once per batch
+  shape, so a last partial batch is a second compile (use `drop_last: true`), and padded text batches should use few
+  lengths. ggml keeps 32 graphs.
+- **`fit` over a step you compile yourself.** On ggml and XLA the batch is gathered inside the step, so `fit` adds
+  little over a compiled step. Compile your own only for a step `fit` cannot express.
+- **Precision.** Vulkan fp16 changes gradients by up to 10% at MLP sizes: turn it off when you compare against PyTorch
+  (`ml-inference/references/backends.md`, Settings).
+- **Threads.** ggml CPU uses one thread per physical core (`TENSOR_THREADS=N` changes it; 8 against 4 made no
+  difference here).
 - **Prefetch.** `Loader.prefetch` hides the cost of building a batch on libtorch and the reference. On ggml and XLA the
   gather is inside the step and no prefetch task runs.
-- **Memory.** LoRA keeps gradients and moments only for `A` and `B`, so it needs a third of the memory of a full
-  fine-tune. Train in `F32`: half and quantized weights have no gradient.
+- **Memory.** LoRA keeps gradients and moments only for `A` and `B`. Train in `F32`.
 
 ## Compile a step yourself
 

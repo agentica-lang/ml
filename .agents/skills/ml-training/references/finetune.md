@@ -211,7 +211,6 @@ def token(ids: List[Int], k: Int, pad: Int) -> Int
   pad
 end
 
-## The ids `[pairs, 2, length]` padded with `pad`, and the scores `[pairs]`.
 def batch(rows: List[Pair], pad: Int, backend: Tensor.Backend) -> Result[Data.Batch]
   length = rows.reduce(1) do |acc: Int, p: Pair| [acc, p.left.size, p.right.size].max.unwrap! end
   ids: List[Tensor.Values] = []
@@ -228,7 +227,6 @@ def batch(rows: List[Pair], pad: Int, backend: Tensor.Backend) -> Result[Data.Ba
   ok(Data.Batch(inputs: inputs, targets: try Tensor.from_list(scores, [rows.size], Tensor.Dtype.F32, backend)))
 end
 
-## The cosine loss of a batch: both sides go through the model as one batch.
 def loss(m: DistilBert.DistilBert, weights: Map[String, Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
   model = try DistilBert.with_weights(m, weights)
   n = Tensor.shape(b.inputs)[0]

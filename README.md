@@ -73,13 +73,6 @@ nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.3.0", subdir = "
 tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.3.0", subdir = "tensor" }
 ```
 
-## Agent skills
-
-Two skills in [`.agents/skills/`](.agents/skills/) guide an agent that uses the packages from an app: `ml-inference`
-(install by tag, backends, loading weights, Qwen3, DistilBERT, Whisper, memory and errors) and `ml-training` (`fit`,
-validation and checkpoints, LoRA and PEFT files, speed, checking against PyTorch). Their code blocks are programs:
-`make check-skills` checks them, and runs the ones with an output on the reference backend.
-
 The libtorch backend ships **inside `tensor/`**, not as a `torch/` package,
 because a native handle is a `resource` that is nominal to its `extern module`
 ([`tensor/DESIGN.md`](tensor/DESIGN.md) §1, §7). libtorch is `optional = true` and never vendored or downloaded
@@ -87,6 +80,15 @@ by this repository: without it, everything still checks, formats and tests,
 and `Backend.Torch` answers `error("backend not available")`.
 [`tensor/README.md`](tensor/README.md) has the setup, the coverage table, the
 tolerances and the measured cost of the dependency.
+
+## Agent skills
+
+Two skills in [`.agents/skills/`](.agents/skills/) guide an agent that uses the packages from an app: `ml-inference`
+(install by tag, backends, loading weights, Qwen3, DistilBERT, Whisper, memory and errors) and `ml-training` (`fit`,
+validation and checkpoints, LoRA and PEFT files, speed, checking against PyTorch). To give them to an agent, copy both
+folders (`ml-inference` and `ml-training`; the second points to the first) into the `.agents/skills/` folder of your
+project. Their code blocks are programs: `make check-skills` checks them, and runs the ones with an output on the
+reference backend.
 
 ## Checking the native C
 

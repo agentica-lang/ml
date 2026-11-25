@@ -42,6 +42,14 @@ programs=$(find gen -name '*.agc' | wc -l)
   exit 1
 }
 
+# A block that the extraction skipped (indented, or with more on its fence line) would go unchecked.
+fences=$(cat "$root"/.agents/skills/ml-*/SKILL.md "$root"/.agents/skills/ml-*/references/*.md |
+  grep -c '^[[:space:]]*```agentica' || true)
+[ "$fences" -eq "$programs" ] || {
+  echo "check-skills: $fences agentica fences in the skills, but $programs programs extracted: a block that starts with a fence and agentica must have nothing else on its line" >&2
+  exit 1
+}
+
 agentica check gen
 
 # The formatter's layout is the one the examples show: print what it would change.
@@ -69,5 +77,10 @@ for out in gen/*.out; do
   }
   ran=$((ran + 1))
 done
+
+[ "$ran" -gt 0 ] || {
+  echo "check-skills: no program has an output block, so nothing ran" >&2
+  exit 1
+}
 
 echo "check-skills: $programs programs checked, $ran run on the reference backend"

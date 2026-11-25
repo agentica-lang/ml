@@ -1,7 +1,7 @@
 # Check a run against PyTorch
 
 A training run is right when a peer that you trust follows it step by step. The recipe the ml repository uses
-(`benchmarks/`): same start, same data, same optimizer, then compare the loss of every step.
+(`https://github.com/agentica-lang/ml/tree/main/benchmarks`): same start, same data, same optimizer, then compare the loss of every step.
 
 ## The rules of a fair comparison
 
@@ -13,7 +13,7 @@ A training run is right when a peer that you trust follows it step by step. The 
   1e-8) and `weight_decay` as PyTorch does. AdamW decays a weight by `lr * weight_decay` first, then steps: PyTorch's
   `AdamW`. Match the groups: no decay on biases and layer norms is two parameter groups in PyTorch. Schedules are those
   of Hugging Face's `Trainer`; there is no gradient clipping and no dropout in a step here.
-- **Same precision.** Train in `F32`. Call `Tensor.vulkan_fp16(false)` on Vulkan. On the CPU, ggml and PyTorch add in
+- **Same precision.** Train in `F32`. Turn Vulkan fp16 off (`ml-inference/references/backends.md`, Settings). On the CPU, ggml and PyTorch add in
   different orders, so expect float32 rounding, not equality.
 - **One step is one epoch of one batch** when you want a loss per step: `fit_batches(..., count: 1, epochs: steps)`
   gives a `history` entry for each step.
@@ -68,6 +68,11 @@ Note that `Nn.dense` expects a `[in, out]` weight unless `out_in: true` is set: 
 Hugging Face weight is `[out, in]`: load it with `Load.dense`, which sets `out_in`.
 
 ## The PyTorch peer
+
+Pin the peer, as `run.sh` in `https://github.com/agentica-lang/ml/tree/main/benchmarks/stsb` does: `torch==2.6.0` (the CPU build),
+`safetensors==0.6.2`, and for the Hugging Face and PEFT checks `transformers==4.57.6` and `peft==0.21.2`. The
+tolerances below were measured with these versions on one machine: another version, or another CPU that adds in
+another order, can move them.
 
 ```python
 import torch, torch.nn.functional as F
@@ -132,7 +137,7 @@ model = PeftModel.from_pretrained(base, "adapter")   # the folder Lora.save wrot
 - For the other way, save an adapter with `model.save_pretrained("adapter")` in PEFT, then `Lora.open("adapter",
   backend)` and `Lora.merged`. An adapter that this package cannot compute (DoRA, rsLoRA, a regular-expression
   `target_modules`, `modules_to_save`, an embedding adapter) is an error that names the feature, never a silent change.
-- A full run of this check is `benchmarks/stsb/run.sh ours-lora` and `peer-lora` in the ml repository: both sides start
-  from one adapter folder, and the 63 steps agree to 1.4e-7.
+- A full run of this check is `run.sh ours-lora` and `peer-lora` in `https://github.com/agentica-lang/ml/tree/main/benchmarks/stsb`:
+  both sides start from one adapter folder, and the 63 steps agree to 1.4e-7.
 
 Page: `https://www.agentica-lang.com/ml/train/`.

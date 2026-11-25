@@ -6,8 +6,8 @@ Two packages transcribe:
   ggml (CPU or Vulkan), libtorch or the reference backend. Its token ids equal Hugging Face's on the test clips. Use it
   by default.
 - `whisper`: a binding over whisper.cpp. It is faster (`asr` takes about 2 to 3 times as long on the CPU, see
-  `benchmarks/README.md` of the ml repository), but it needs the C++ engine built from a submodule and a ggml model file
-  (`tools/fetch-model.sh` of that package downloads one). Use it when speed matters more than setup.
+  `https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md`), but it needs the C++ engine built from a submodule and a ggml model file
+  (`whisper/tools/fetch-model.sh` in a clone of the ml repository downloads one). Use it when speed matters more than setup.
 
 ## Prepare the audio
 
@@ -52,10 +52,9 @@ end
   The segment times count from the start of the audio.
 - `Options.max_tokens` and `max_windows` bound a run that hallucinates; `t.truncated` says when `max_windows` stopped it.
 - Decoding is greedy. There is no beam search and no resampling.
-- Whisper-tiny on ggml CPU runs at a real-time factor of about 0.24 (4 seconds for 17 s of audio). Vulkan multiplies in
-  fp16 by default, which can change tokens: `Tensor.vulkan_fp16(false)` first when they must match Hugging Face.
-- `Asr.open(path, backend, Tensor.Dtype.F16)` keeps the big matrices as half weights on ggml: half the memory, about 9%
-  faster on Vulkan for whisper-medium, no gain on the CPU.
+- Whisper-tiny on ggml CPU runs at a real-time factor of about 0.24 (4 seconds for 17 s of audio). Vulkan fp16 can
+  change tokens (`backends.md`, Settings).
+- `Asr.open(path, backend, Tensor.Dtype.F16)` keeps half weights (`memory-and-errors.md`).
 
 ## whisper.cpp
 
@@ -72,7 +71,7 @@ def main() -> Void
 end
 ```
 
-`whisper` is a project of its own: it builds the pinned whisper.cpp with `tools/build-engine.sh` of its folder (clone the
+`whisper` is a project of its own: it builds the pinned whisper.cpp with `whisper/tools/build-engine.sh` (clone the
 ml repository at the tag, as `backends.md` does for ggml) and prints the exports to `eval`. One decode takes up to five
 minutes of audio, `Whisper.Options.language` `"auto"` detects the language, and `Stream.transcribe_stream` cuts longer
 audio into windows.

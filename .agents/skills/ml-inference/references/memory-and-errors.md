@@ -79,9 +79,9 @@ Every op answers a `Result`; read the message.
 | an error naming `model_type`, an activation, `rope_scaling` or `attention_bias` | the model is outside what is implemented | use a supported model (`models.md`) |
 | a value beyond 65504 for `F16` | the weight does not fit half precision | load as `F32` |
 | a ggml output "is not finite" | an op overflowed or divided by zero | check the inputs; `Trace.diff` finds the first node where two backends disagree |
-| `Tensor.vulkan_fp16` answers an error | it was called after the first ggml call | call it at the start of `main` |
-| `RUNTIME-STEP-LIMIT` in `agentica test` | the test ran out of steps | `agentica test --max-steps 10000000` |
-| greedy ids differ from Hugging Face on Vulkan | fp16 products | `Tensor.vulkan_fp16(false)` |
+| `Tensor.vulkan_fp16` answers an error | it was called after the first ggml call | call it at the start of `main` (`backends.md`, Settings) |
+| `RUNTIME-STEP-LIMIT` in `agentica test` | the test ran out of steps (1M per test file; a test that loads a model or trains needs more) | `agentica test --max-steps 10000000` |
+| greedy ids differ from Hugging Face on Vulkan | fp16 products | `Tensor.vulkan_fp16(false)` (`backends.md`, Settings) |
 
 When two backends disagree, `Trace.diff(args, backend_a, backend_b) do |xs| ... end` runs one traced function on both and
 names the first node whose output differs.

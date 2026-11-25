@@ -16,13 +16,15 @@ description: >-
 
 The ml packages are tensors and models for Agentica. The API is functional: a
 tensor never changes, and every op returns a new one. This skill runs a model
-from an app. Read `agentica-programming` first if the language is new to you.
+from an app. If the `agentica-programming` skill is available, read it first when the language is new to you.
 
 ## Install
 
 Write the packages in the `agentica.toml` of the app, then lock and fetch them.
-`override = true` is needed: the manifests of the packages pin each other by
-commit, and your tags must win.
+`override = true` is needed on the packages that other packages ask for
+(`tensor`, `nn`, `hub`, `train`): the manifests of the packages pin each other by
+commit, and your tags must win. The override lines go away with
+[ml#240](https://github.com/agentica-lang/ml/issues/240).
 
 ```toml
 name = "app"
@@ -32,10 +34,12 @@ agentica = "0.38.0"
 tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.4.0", subdir = "tensor", override = true }
 nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.4.0", subdir = "nn", override = true }
 hub = { git = "https://github.com/agentica-lang/ml", tag = "hub-0.4.0", subdir = "hub", override = true }
-transformers = { git = "https://github.com/agentica-lang/ml", tag = "transformers-0.4.0", subdir = "transformers", override = true }
-asr = { git = "https://github.com/agentica-lang/ml", tag = "asr-0.4.0", subdir = "asr", override = true }
-# only to read WAV files with the engine-free `pkg/whisper/wav`, or to use whisper.cpp:
+transformers = { git = "https://github.com/agentica-lang/ml", tag = "transformers-0.4.0", subdir = "transformers" }
+asr = { git = "https://github.com/agentica-lang/ml", tag = "asr-0.4.0", subdir = "asr" }
+# only to read WAV files with `pkg/whisper/wav` (it needs no C++ engine), or to use whisper.cpp:
 whisper = { git = "https://github.com/agentica-lang/ml", tag = "whisper-0.4.0", subdir = "whisper" }
+# only with whisper: its manifest asks for another native-gen than the ml packages do. It comes from
+# agentica-lang/packages, not from ml, so it has no ml tag.
 native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.5.0", subdir = "native-gen", override = true }
 ```
 
@@ -81,10 +85,8 @@ end
   Use the model calls, or put your ops in `Trace.eval` (`references/backends.md`).
 - A model holds native memory: close it (`Qwen3.close_model`, `Bert.close_model`, `Asr.close_model`), and close the
   tensors you are done with (`references/memory-and-errors.md`).
-- Vulkan multiplies in fp16 by default, so greedy ids can differ from Hugging Face's. Call
-  `Tensor.vulkan_fp16(false)` before the first ggml call when ids must match, and accept the slower product.
-- `agentica test` gives a test file 1M steps; a test that loads a model needs `agentica test --max-steps 10000000`
-  or more.
+- Vulkan multiplies in fp16 by default, so greedy ids can differ from Hugging Face's (`references/backends.md`,
+  Settings).
 
 ## References
 
@@ -95,7 +97,7 @@ Read only what the task needs.
 | `backends.md` | the five backends, building ggml, libtorch and the XLA plugin, picking one, `Trace.eval` and `Trace.compile` |
 | `models.md` | getting a checkpoint, Qwen3 generation and sampling, the chat template, DistilBERT and BERT embeddings, `Hub` |
 | `speech.md` | Whisper with `asr`: a WAV to text, timestamps, language, long audio; whisper.cpp |
-| `memory-and-errors.md` | tensors on the device, closing, reading back, half weights, and the errors you will meet |
+| `memory-and-errors.md` | tensors on the device, closing, reading back, half weights, and the errors you will meet (a table of messages) |
 
 The full API is on the site pages, one per package:
 `https://www.agentica-lang.com/ml/tensor/`, `.../nn/`, `.../hub/`,

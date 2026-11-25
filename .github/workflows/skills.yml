@@ -5,6 +5,7 @@ name: Skills
 # Markdown-only changes, so the skills have a workflow of their own. It also runs when a package changes, because
 # an API change can break an example.
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
