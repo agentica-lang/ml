@@ -18,6 +18,9 @@ def number?(cp: Int) -> Bool = in_ranges(Data.NUMBER, cp)
 ## A nonspacing mark (Mn): what removing accents removes.
 def mark?(cp: Int) -> Bool = in_ranges(Data.MARK_NONSPACING, cp)
 
+## Any mark (Mn, Mc or Me): `\p{M}`.
+def any_mark?(cp: Int) -> Bool = in_ranges(Data.MARK, cp)
+
 def punctuation?(cp: Int) -> Bool = in_ranges(Data.PUNCTUATION, cp)
 
 ## Control, format, unassigned and private use (the C categories).

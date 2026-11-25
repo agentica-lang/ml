@@ -11,6 +11,12 @@ writes `wordpiece.json`, `bpe.json` and `bpe_lines.json` (`bpe.json` with its me
 `tokenizer.json` form) and the goldens `wordpiece_golden.json` and
 `bpe_golden.json` (the ids of the strings below and their decoded text).
 
+    python -I test/tokenizer_golden.py marks test/fixtures
+
+writes `bpe_marks.json` and `bpe_marks_golden.json`: the same tiny tokenizer with the split of Qwen3.5 (a mark counts
+as a letter) and the ids of the strings below plus those of `MARK_TEXTS` (it needs `tokenizers` 0.23.3; the script
+stops on another version).
+
     python -I test/tokenizer_golden.py golden wordpiece TOKENIZER_JSON [N] > OUT.json
     python -I test/tokenizer_golden.py golden bpe TOKENIZER_JSON [N] > OUT.json
 
@@ -82,6 +88,17 @@ NATURAL = [
     "<html><body class=\"x\">Tom &amp; Jerry</body></html>",
     "tokenization of unbelievably uncharacteristically long words like pneumonoultramicroscopicsilicovolcanoconiosis",
 ]
+QWEN35_SPLIT = (
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*"
+    r"|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+
+# Strings where a mark (Mn, Mc, Me) decides the split: after a letter, after a space, after a symbol, alone, doubled.
+MARK_TEXTS = [
+    "a\u0301b", "\u0301\u0301x", "$\u0301a", " \u0301a", "e\u0301\u0903 x", "\u0903", "1\u0301", "a\u20dd b",
+    "हिन्दी भाषा", "ไทย ภาษา", "عَرَبِيّ", "שָׁלוֹם", "x.\u0301y", "\n\u0301a", "'s\u0301", "e\u0301\n\u0301",
+]
+
 WORDPIECE_PAIRS = [("hello", "world"), ("", "world"), ("hello", ""), ("don't", "playing [SEP] x")]
 
 BPE_TEXTS = [
@@ -179,12 +196,12 @@ def make_wordpiece(directory):
     tok.save(f"{directory}/wordpiece.json")
 
 
-def make_bpe(directory):
+def make_bpe(directory, name="bpe", split=QWEN_SPLIT):
     tok = Tokenizer(models.BPE())
     tok.normalizer = normalizers.NFC()
     tok.pre_tokenizer = pre_tokenizers.Sequence(
         [
-            pre_tokenizers.Split(Regex(QWEN_SPLIT), behavior="isolated", invert=False),
+            pre_tokenizers.Split(Regex(split), behavior="isolated", invert=False),
             pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
         ]
     )
@@ -204,7 +221,9 @@ def make_bpe(directory):
         [AddedToken(t, special=True, normalized=False) for t in ["<|endoftext|>", "<|im_start|>", "<|im_end|>"]]
     )
     tok.add_tokens([AddedToken("<think>", special=False, normalized=False)])
-    tok.save(f"{directory}/bpe.json")
+    tok.save(f"{directory}/{name}.json")
+    if name != "bpe":
+        return
     # Qwen2.5's tokenizer.json writes a merge as "a b" where Qwen3's writes ["a", "b"]; `tokenizers` reads both.
     with open(f"{directory}/bpe.json", encoding="utf-8") as f:
         written = json.load(f)
@@ -231,12 +250,12 @@ def fuzz(count, seed=7):
     return ["".join(rng.choice(FUZZ) for _ in range(rng.randint(0, 24))) for _ in range(count)]
 
 
-def golden(kind, path, count=0):
+def golden(kind, path, count=0, extra=()):
     tok = Tokenizer.from_file(path)
     if kind == "wordpiece":
         cases = [(t, None) for t in WORDPIECE_TEXTS + fuzz(count)] + list(WORDPIECE_PAIRS)
     else:
-        cases = [(t, None) for t in BPE_TEXTS + fuzz(count)]
+        cases = [(t, None) for t in BPE_TEXTS + list(extra) + fuzz(count)]
     encode = []
     for text, pair in cases:
         for special in ([True, False] if kind == "wordpiece" else [True]):
@@ -254,7 +273,16 @@ def golden(kind, path, count=0):
 
 
 def main():
-    if sys.argv[1] == "fixtures":
+    if sys.argv[1] == "marks":
+        import tokenizers
+
+        assert tokenizers.__version__ == "0.23.3", tokenizers.__version__
+        directory = sys.argv[2]
+        make_bpe(directory, "bpe_marks", QWEN35_SPLIT)
+        with open(f"{directory}/bpe_marks_golden.json", "w", encoding="utf-8") as f:
+            json.dump(golden("bpe", f"{directory}/bpe_marks.json", 60, MARK_TEXTS), f, ensure_ascii=False, indent=None)
+            f.write("\n")
+    elif sys.argv[1] == "fixtures":
         directory = sys.argv[2]
         make_wordpiece(directory)
         make_bpe(directory)

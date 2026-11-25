@@ -15,6 +15,26 @@ def test_encode_and_decode_agree_with_tokenizers() -> Result[Void]
   Test.assert(checked > 100, "only #{checked} cases ran")
 end
 
+## Qwen3.5 counts a mark as a letter in its split: `fixtures/bpe_marks.json` has that pattern, and its ids are those of
+## `tokenizers`, for strings where a mark decides the cut.
+def test_the_split_of_qwen35_counts_marks_as_letters() -> Result[Void]
+  tok = try Bpe.open("test/fixtures/bpe_marks.json")
+  try Test.assert(tok.marks, "the marks pattern was not read")
+  try Test.assert(not (try Bpe.open(FIXTURE)).marks, "the plain pattern reads marks")
+  checked = try Golden.bpe_of(tok, "test/fixtures/bpe_marks_golden.json")
+  try Test.assert(checked > 100, "only #{checked} cases ran")
+  acute = String.from_code(769)
+  chars = Unicode.codepoints("a#{acute}b $#{acute}c")
+  plain = Bpe.split(chars).map { |w| Unicode.text_of(w) }
+  with_marks = Bpe.split(chars, true).map { |w| Unicode.text_of(w) }
+  try Test.eq(plain, ["a", "#{acute}b", " $#{acute}", "c"])
+  try Test.eq(with_marks, ["a#{acute}b", " $", "#{acute}c"])
+  text = try File.read_text("test/fixtures/bpe_marks.json")
+  try Test.ok?(Bpe.parse(text))
+  try Test.error?(Bpe.parse(try S.replaced(text, "[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]", "[^\\\\s\\\\p{L}\\\\p{N}]")))
+  Test.error?(Bpe.parse(try S.replaced(text, "[\\\\p{L}\\\\p{M}]+", "\\\\p{L}+")))
+end
+
 ## Qwen2.5's `tokenizer.json` writes a merge as "a b", Qwen3's as ["a", "b"]: both give the ids of `tokenizers`.
 def test_merges_written_as_lines_are_read_too() -> Result[Void]
   checked = try Golden.bpe("test/fixtures/bpe_lines.json", "test/fixtures/bpe_golden.json")

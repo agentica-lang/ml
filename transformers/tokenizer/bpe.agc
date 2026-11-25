@@ -1,12 +1,13 @@
 ## Qwen's tokenizer: the `tokenizer.json` of a byte-level BPE model with an NFC
 ## normalizer and the GPT-4 style split (apostrophe endings, one digit at a
 ## time, a run of letters with one lead character, punctuation, new lines,
-## white space), which `Qwen/Qwen3-0.6B` ships. A file with another
+## white space), which `Qwen/Qwen3-0.6B` ships, or the one of `Qwen/Qwen3.5-0.8B`, where a mark counts as a
+## letter (`PATTERN_MARKS`). A file with another
 ## normalizer, split pattern or model is an error, not a silent difference.
 ##
 ## The split is Hugging Face's regular expression written by hand over
 ## `unicode.agc`'s tables (`PATTERN`, with `\s` as White_Space and `\p{L}`,
-## `\p{N}` as the L and N categories), alternative by alternative in its order.
+## `\p{N}` as the L and N categories, `\p{M}` as `Unicode.any_mark?`), alternative by alternative in its order.
 
 import Gguf from "pkg/hub/gguf"
 import Unicode from "unicode"
@@ -14,9 +15,14 @@ import Added from "added"
 import Source from "source"
 import Heap from "std/heap"
 
-## The split pattern of the Qwen family.
+## The split pattern of Qwen3 and Qwen2.5.
 PATTERN = (
   "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+)
+
+## The split pattern of Qwen3.5: a mark (`\p{M}`) is a letter in it.
+PATTERN_MARKS = (
+  "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
 )
 
 struct ByteLevelBpe
@@ -27,6 +33,8 @@ struct ByteLevelBpe
   ranks: Map[String, Int]
   added: List[Added.Added]
   nfc: Bool
+  ## The split of Qwen3.5 (`PATTERN_MARKS`): marks count as letters.
+  marks: Bool = false
 end
 
 ## The tokenizer in the `tokenizer.json` at `path`.
@@ -51,7 +59,7 @@ def parse(text: String) -> Result[ByteLevelBpe]
     none -> 0
   end
 
-  try check_pre_tokenizer(file.pre_tokenizer)
+  marks = try check_pre_tokenizer(file.pre_tokenizer)
   return error("the decoder is #{file.decoder.type}, not ByteLevel") if file.decoder.type != "ByteLevel"
   m = file.model
   return error("the model is #{m.type}, not BPE") if m.type != "BPE"
@@ -88,7 +96,7 @@ def parse(text: String) -> Result[ByteLevelBpe]
     ranks = ranks.put(pair[0] + " " + pair[1], i)
   end
 
-  ok(ByteLevelBpe(vocab: m.vocab, pieces: pieces, ranks: ranks, added: added, nfc: nfc))
+  ok(ByteLevelBpe(vocab: m.vocab, pieces: pieces, ranks: ranks, added: added, nfc: nfc, marks: marks))
 end
 
 ## The tokenizer in the GGUF at `path`: `from_gguf` of its header.
@@ -158,7 +166,7 @@ def encode(tok: ByteLevelBpe, text: String) -> Result[List[Int]]
           normal = Unicode.nfc(chars)
         end
 
-        for word in split(normal)
+        for word in split(normal, tok.marks)
           for symbol in merge(tok.ranks, byte_chars(word))
             case tok.vocab.get(symbol)
               some(id) -> out = out.push(id)
@@ -206,11 +214,11 @@ def decode(tok: ByteLevelBpe, ids: List[Int], skip_special: Bool = true) -> Resu
 end
 
 ## The pieces of `chars` that the pattern cuts, as code points.
-def split(chars: List[Int]) -> List[List[Int]]
+def split(chars: List[Int], marks: Bool = false) -> List[List[Int]]
   out: List[List[Int]] = []
   at = 0
   while at < chars.size
-    size = piece_size(chars, at)
+    size = piece_size(chars, at, marks)
     out = out.push(Unicode.span(chars, at, at + size))
     at += size
   end
@@ -398,15 +406,19 @@ def lines_shape?(text: String) -> Bool
   JSON.string(items[0]).ok?
 end
 
-## The pre-tokenizer must be the Qwen split (isolated, as written in
-## `PATTERN`) followed by byte-level mapping without its own split.
-def check_pre_tokenizer(p: PreJson) -> Result[Void]
+## The pre-tokenizer must be the Qwen split (isolated, as written in `PATTERN` or `PATTERN_MARKS`) followed by
+## byte-level mapping without its own split. Whether it is the one with marks.
+def check_pre_tokenizer(p: PreJson) -> Result[Bool]
   steps = p.pretokenizers
   ok_shape = p.type == "Sequence" and steps.size == 2 and steps[0].type == "Split" and steps[1].type == "ByteLevel"
   return error("the pre-tokenizer is not the Qwen split followed by ByteLevel") if not ok_shape
   split_step = steps[0]
   pattern = split_step.pattern.unwrap_or({}).get("Regex").unwrap_or("")
-  if pattern != PATTERN or split_step.behavior != some("Isolated") or split_step.invert != some(false)
+  if (
+    (pattern != PATTERN and pattern != PATTERN_MARKS) or
+    split_step.behavior != some("Isolated") or
+    split_step.invert != some(false)
+  )
     return error("the split pattern of the pre-tokenizer is not the Qwen one")
   end
 
@@ -414,7 +426,7 @@ def check_pre_tokenizer(p: PreJson) -> Result[Void]
     return error("the ByteLevel pre-tokenizer adds a prefix space or splits again, which is not supported")
   end
 
-  ok()
+  ok(pattern == PATTERN_MARKS)
 end
 
 def rank_of(ranks: Map[String, Int], left: String, right: String) -> Int = ranks.get(left + " " + right).unwrap_or(-1)
@@ -436,15 +448,15 @@ def newline?(c: Int) -> Bool = c == CR or c == LF
 
 ## The length of the piece that starts at `at`: the first alternative of the
 ## pattern that matches there (one always does).
-def piece_size(chars: List[Int], at: Int) -> Int
+def piece_size(chars: List[Int], at: Int, marks: Bool) -> Int
   c = chars[at]
   n = chars.size
   ending = contraction(chars, at)
   return ending if ending > 0
-  return letters(chars, at) if Unicode.letter?(c)
+  return letters(chars, at, marks) if word?(c, marks)
 
-  if not newline?(c) and not Unicode.number?(c) and at + 1 < n and Unicode.letter?(chars[at + 1])
-    return 1 + letters(chars, at + 1)
+  if not newline?(c) and not Unicode.number?(c) and at + 1 < n and word?(chars[at + 1], marks)
+    return 1 + letters(chars, at + 1, marks)
   end
 
   return 1 if Unicode.number?(c)
@@ -453,9 +465,9 @@ def piece_size(chars: List[Int], at: Int) -> Int
     start = at + 1
   end
 
-  if start < n and symbol?(chars[start])
+  if start < n and symbol?(chars[start], marks)
     stop = start
-    while stop < n and symbol?(chars[stop])
+    while stop < n and symbol?(chars[stop], marks)
       stop += 1
     end
 
@@ -485,17 +497,20 @@ def fold(c: Int) -> Int
   c
 end
 
-def letters(chars: List[Int], at: Int) -> Int
+## A letter, or a mark when `marks`.
+def word?(c: Int, marks: Bool) -> Bool = Unicode.letter?(c) or (marks and Unicode.any_mark?(c))
+
+def letters(chars: List[Int], at: Int, marks: Bool) -> Int
   stop = at
-  while stop < chars.size and Unicode.letter?(chars[stop])
+  while stop < chars.size and word?(chars[stop], marks)
     stop += 1
   end
 
   stop - at
 end
 
-## Not white space, a letter or a number.
-def symbol?(c: Int) -> Bool = not Unicode.space?(c) and not Unicode.letter?(c) and not Unicode.number?(c)
+## Not white space, a letter (or a mark when `marks`) or a number.
+def symbol?(c: Int, marks: Bool) -> Bool = not Unicode.space?(c) and not word?(c, marks) and not Unicode.number?(c)
 
 ## The white space alternatives at `at` (a white space character): up to the
 ## last new line of the run, else the run without its last character when
