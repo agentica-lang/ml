@@ -19,7 +19,7 @@ runs about 2 to 3 times slower than whisper.cpp on CPU and about 5 times
 slower on Vulkan. The numbers and the machine are in
 [`benchmarks/README.md`](benchmarks/README.md).
 
-Not yet: what the [roadmap](roadmap.md) lists, from training metrics and
+Not yet: what the [roadmap](roadmap.md) lists, from LoRA and inference
 benchmarks to CUDA.
 
 The tensor stack is designed in [`tensor/DESIGN.md`](tensor/DESIGN.md), with the
