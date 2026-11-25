@@ -7,7 +7,8 @@
 ## It needs the checkpoints, which are not in the repository, so it runs only when `RESNET_MODELS` names them: a list of
 ## folders (the revisions of `transformers/DESIGN.md`, each with `model.safetensors` and `config.json`) separated by
 ## `:`, and the folder name is the model's name in the golden. `RESNET_DEVICE=vulkan` runs on Vulkan, the CPU otherwise.
-## Run from `vision/`: `RESNET_MODELS=resnet-50:resnet-18 agentica test --max-steps 1000000000000 test/resnet_hf_test.agc`.
+## Run from `vision/`:
+## `RESNET_MODELS=resnet-50:resnet-18 agentica test --max-steps 1000000000000 test/resnet_hf_test.agc`.
 
 import ResNet from "pkg/transformers/resnet"
 import Tensor from "pkg/tensor/tensor"
@@ -19,9 +20,10 @@ GRID = 8
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
 
-## What passes, with about twice the gap measured (largest: 1.6e-5 for the model alone, 0.0175 for the pixels and 0.158
-## for the logits after the pipeline). The model alone is `float32` through up to 50 layers; the pipeline differs from
-## Hugging Face's in the resize (libvips and Pillow use different kernels), and the logits follow the pixels.
+## What passes. The pixels and the logits after the pipeline have about twice the gap measured (0.0175 and 0.158): the
+## pipeline differs from Hugging Face's in the resize (libvips and Pillow use different kernels), and the logits follow
+## the pixels. The model alone is `float32` through up to 50 layers and measured 1.6e-5 on CPU and 2.1e-5 on Vulkan; its
+## 1e-3 is looser on purpose, for the other machines and ggml builds (the sums of a convolution depend on the kernel).
 MODEL_ABS = 0.001
 MODEL_REL = 0.001
 PIXEL_ABS = 0.035
@@ -48,7 +50,11 @@ private
 
 def test_the_model_and_the_pipeline_match_hugging_face() -> Result[Void]
   listed = System.env("RESNET_MODELS")
-  return ok() if !listed.ok? or try listed == ""
+  if !listed.ok? or try listed == ""
+    puts("resnet_hf_test: skipped, RESNET_MODELS names no checkpoint folder")
+    return ok()
+  end
+
   device = Tensor.Device.Cpu
   chosen = System.env("RESNET_DEVICE")
   if chosen.ok? and try chosen == "vulkan"

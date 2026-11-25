@@ -372,17 +372,31 @@ end
 ## The convolution `{prefix}.convolution` of a kernel `kernel` by `kernel` and the batch norm `{prefix}.normalization`
 ## after it, as one convolution (`Nn.fold_batch_norm`), run as one graph on ggml. The checkpoint's tensors are closed.
 def conv_bn(c: Hub.Checkpoint, prefix: String, kernel: Int, stride: Int, backend: Tensor.Backend) -> Result[Nn.Conv2d]
-  weight = try Load.weight(c, "#{prefix}.convolution.weight", 4, backend)
   norm = "#{prefix}.normalization"
-  parts = [
-    weight,
-    try Load.weight(c, "#{norm}.weight", 1, backend),
-    try Load.weight(c, "#{norm}.bias", 1, backend),
-    try Load.weight(c, "#{norm}.running_mean", 1, backend),
-    try Load.weight(c, "#{norm}.running_var", 1, backend),
+  names = [
+    "#{prefix}.convolution.weight",
+    "#{norm}.weight",
+    "#{norm}.bias",
+    "#{norm}.running_mean",
+    "#{norm}.running_var",
   ]
 
-  conv = Nn.Conv2d(weight: weight, bias: none, stride: stride, padding: kernel / 2)
+  parts: List[Tensor.Tensor] = []
+  for i in 0...names.size
+    rank = 1
+    if i == 0
+      rank = 4
+    end
+
+    case Load.weight(c, names[i], rank, backend)
+      ok(t) -> parts = parts.push(t)
+      error(e) ->
+        Lift.close(parts)
+        return error(e)
+    end
+  end
+
+  conv = Nn.Conv2d(weight: parts[0], bias: none, stride: stride, padding: kernel / 2)
   folded = Lift.staged(
     BATCH_NORM_EPS,
     ->(eps: Float) { eps },
@@ -395,7 +409,8 @@ def conv_bn(c: Hub.Checkpoint, prefix: String, kernel: Int, stride: Int, backend
   ok(conv.with(weight: out[0], bias: some(out[1])))
 end
 
-## The weight and the bias of `conv` folded with the batch norm `xs` holds after the weight: `gamma`, `beta`, `mean`, `var`.
+## The weight and the bias of `conv` folded with the batch norm that `xs` holds after the weight: `gamma`, `beta`,
+## `mean`, `var`.
 def fold(conv: Nn.Conv2d, eps: Float, xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   folded = try Nn.fold_batch_norm(conv.with(weight: xs[0]), xs[1], xs[2], xs[3], xs[4], eps)
   ok([folded.weight, try folded.bias.to_result("the folded convolution has a bias")])

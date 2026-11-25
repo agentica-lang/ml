@@ -1,7 +1,8 @@
 ## Times ResNet on ggml: the forward of a batch of `BATCH` images of 224 by 224 (one warm-up run first, then the median
 ## of `REPS` runs), or with `backward` the forward and backward of the folded model: the forward, a loss (the mean
-## square of the logits) and the gradient of every weight and of the images, in one graph (no optimizer step). The model is the folded one that
-## `ResNet.open` loads, so the batch norms are inference ones. Manual; run from `transformers/`:
+## square of the logits) and the gradient of every weight and of the images, in one graph (no optimizer step). The
+## model is the folded one that `ResNet.open` loads, so the batch norms are inference ones. Manual; run from
+## `transformers/`:
 ##
 ##   agentica tools/bench_resnet.agc MODEL_DIR [cpu|vulkan] [BATCH] [REPS] [forward|backward]
 
