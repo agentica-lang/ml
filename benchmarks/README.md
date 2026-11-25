@@ -12,14 +12,14 @@ Both engines run the same weights (the Hugging Face `openai/whisper-tiny` checkp
 | Ours | agentica-lang/ml `0e0bb8b` plus the device pick of ml#81 for the two ggml rows and the medium table (Agentica 0.37.0), `ac1b402` and Agentica 0.36.0 for the libtorch row; ggml `v1.0.0` (the `third_party/ggml` submodule), libtorch 2.4.1 CPU |
 | whisper.cpp | `398997ed` (v1.9.4 plus 86 commits), its own ggml 0.24.0, built out of tree with `-DCMAKE_BUILD_TYPE=Release`, and `-DGGML_VULKAN=ON` for the Vulkan one |
 | Clips | `jfk.wav` from whisper.cpp (11 s, English) and `whisper/live/fixtures/es-hola.wav` (2.6 s, Spanish) |
-| Threads | 8 for ours on ggml CPU (it uses every online core), `-t 8` for whisper.cpp, libtorch's default |
+| Threads | ours on ggml CPU: every online core (8) in these rows, one per physical core (4) since ml#222; `-t 8` for whisper.cpp, libtorch's default |
 
 The real-time factor is the run time over the clip length, so lower is better. The load is the time from the file to a model ready to transcribe.
 
 | Row | RTF jfk | RTF es-hola | Load | Peak memory | Tokens against Hugging Face |
 |---|---|---|---|---|---|
-| ours, ggml CPU | 0.235 | 0.634 | 0.4 s | 0.50 GB | same |
-| ours, ggml Vulkan | 0.213 | 0.543 | 0.45 s | 0.35 GB | same |
+| ours, ggml CPU | 0.116 | 0.419 | 0.4 s | 0.50 GB | same |
+| ours, ggml Vulkan | 0.069 | 0.238 | 0.45 s | 0.35 GB | same |
 | ours, libtorch CPU | 0.619 | 1.987 | 0.3 s | 1.5 GB | same |
 | whisper.cpp CPU, F32 | 0.080 | 0.287 | 0.10 s | 0.22 GB | one more token on jfk |
 | whisper.cpp CPU, F32, no flash attention | 0.119 | 0.429 | 0.11 s | 0.29 GB | same |
@@ -28,7 +28,7 @@ The real-time factor is the run time over the clip length, so lower is better. T
 | whisper.cpp Vulkan, F32, no flash attention | 0.041 | 0.107 | 0.17 s | 0.16 GB | one more token on jfk |
 | whisper.cpp Vulkan, F16 (its default) | 0.038 | 0.106 | 0.13 s | 0.12 GB | one more token on jfk |
 
-The two ggml `ours` rows and the medium rows are from a later run (the cross-attention of `asr/` through `Tensor.attention`, ml#109), with `Options.timestamps` false. The libtorch row, the whisper.cpp rows and the load and memory columns are from earlier runs of the same machine.
+The two ggml `ours` rows are the `bench_whisper.sh` run of ml `e362042` (Agentica 0.37.0, F32 weights, `Options.timestamps` false, the median of 3 runs); the medium rows come from an earlier run. None of the whisper rows was timed again after ml#213 (llamafile's sgemm) and ml#222 (the thread default). The libtorch row, the whisper.cpp rows and the load and memory columns are from earlier runs of the same machine.
 
 Whisper's window is 30 s whatever the clip, so a short clip costs the same encoder time as a long one: that is why es-hola has the larger factor.
 
@@ -46,7 +46,7 @@ A 300 s clip (`jfk` six times with silence, four times, then 6 s of silence; 611
 | ours, ggml CPU | 34.6 s | 0.116 | 0.67 GB |
 | ours, ggml Vulkan | 46.6 s | 0.155 | 0.38 GB |
 
-whisper.cpp turns flash attention on by default; ours has none, so the "no flash attention" row is the like-for-like one on the CPU. On Vulkan it makes no difference. F16 is slower than F32 on this CPU (probably because it has no half-precision arithmetic) and faster on the iGPU only by a little.
+whisper.cpp turns flash attention on by default; ours has it since ml#161, so the default row is the like-for-like one. On Vulkan flash attention makes no difference. F16 is slower than F32 on this CPU (probably because it has no half-precision arithmetic) and faster on the iGPU only by a little.
 
 ### The tokens
 
@@ -54,17 +54,17 @@ The golden for the check is Hugging Face's `generate` on whisper-tiny (`asr/test
 
 ### Where the time goes
 
-The stages of `Asr.transcribe` on jfk, in milliseconds (`asr/tools/bench_transcribe.agc`, the `phase` lines; the profile is `AGENTICA_VM_TRACE=profile agentica tools/bench_transcribe.agc ... ggml en -1` in `asr/`). The decoder row is one step, with the pick on the device (below).
+The stages of `Asr.transcribe` on jfk, in milliseconds, measured before flash attention (ml#161) and the argmax change of the last section, and not timed again since (`asr/tools/bench_transcribe.agc`, the `phase` lines; the profile is `AGENTICA_VM_TRACE=profile agentica tools/bench_transcribe.agc ... ggml en -1` in `asr/`). The decoder row is one step, with the pick on the device (below).
 
 | Stage | ours ggml CPU | ours ggml Vulkan | whisper.cpp CPU F32, no flash | whisper.cpp Vulkan F32 |
 |---|---|---|---|---|
 | log-mel (one graph, upload included) | 35 | 95 | 14 | 19 |
 | encoder | 994 | 396 | 1054 | 158 |
 | cross-attention cache | 66 | 37 | | |
-| decoder step | 38.5 | 68.2 | 7 | 11 |
+| decoder step | 38.5 | 68.2 (about 22 after the argmax change) | 7 | 11 |
 
 - **The encoder is on par on the CPU** (994 ms against 1054 ms without flash attention, 662 ms with it): similar ggml CPU kernels (ggml v1.0.0 against 0.24.0). On Vulkan ours is 2.5 times slower (396 ms against 158 ms).
-- **The decoder is the gap**: a step is 38.5 ms on ggml CPU and 68.2 ms on Vulkan, against 7 and 11 ms for whisper.cpp.
+- **The decoder is the gap**: a step was 38.5 ms on ggml CPU and 68.2 ms on Vulkan (about 22 ms after the argmax change), against 7 and 11 ms for whisper.cpp.
 - **The log-mel is one graph of tensor ops** (the windowed DFT as a matmul, the mel filters as a second one) that `load` compiled, and its output stays on the device. It computes all 3000 frames, so its cost does not depend on the clip. Vulkan is slower than the CPU there because the matmul alone takes about 20 ms on this iGPU.
 - **The load is 0.3 to 0.45 s and peaks under 0.5 GB**: C reads each tensor's byte range into the backend's buffer (`Tensor.from_file`, ml#63), so no float is an Agentica value. whisper.cpp reads the file in 0.1 s.
 - On Vulkan a graph costs about 2 ms to dispatch (`note.md`), and a step has many small ones.
@@ -77,7 +77,7 @@ Whisper-tiny, jfk, ggml CPU and Vulkan. `asr/tools/bench_step.agc` loads the mod
 - **VM steps** (exact) and **where the time goes** (profile on, so the VM runs slower): `AGENTICA_VM_TRACE=profile AGENTICA_VM_TRACE_FILE=REPORT agentica tools/bench_step.agc MODEL_DIR WAV ggml en PASSES - pick`, once with PASSES 0 and once with 5, then `python3 -I benchmarks/step_profile.py BASE FULL 120` (120 is the steps the 5-pass run has more than the 0-pass run).
 - **Milliseconds**, with the profile off: `benchmarks/step_timers.sh apply` swaps the `System.Profile.measure` labels for `Time.monotonic_ns` timers (it edits the tree; `revert` undoes it) and `bench_step.agc` then prints `probe NAME NS` totals, again for PASSES 0 and 5; a section's ms per step is the difference over 120 steps. The same script makes `ggml_run` print its allocator and compute times when `TG_TIME` is set. The `ml.*` labels (in `Trace.eval_many`, `Lower.evaluate` and `Asr.step`) also count the encoder's and the cross-attention cache's evaluations, which the 0-pass run holds too, so the subtraction removes them.
 
-Agentica 0.37.0, ml `b59c68c` plus the pick, the means of those 120 steps (the wall time is the mean of the 96 timed ones):
+Agentica 0.37.0, ml `b59c68c` plus the pick, before the argmax change of the last section (which took the Vulkan step to about 22 ms), the means of those 120 steps (the wall time is the mean of the 96 timed ones):
 
 | Part of a step | VM steps | CPU, ms | Vulkan, ms |
 |---|---|---|---|
@@ -96,7 +96,7 @@ The sum and the wall time come from two processes, and the warm-up pass, which r
 - **The step is compiled once for each pair of cache rows and capacity** (`Trace.compile` and `Trace.run`): 5 graphs for the 24 steps of jfk (8, 16 and 32 rows), so tracing and planning above are those compilations spread over the steps. The encoder blocks share one compiled graph, with the weights as inputs.
 - **The pick and the timestamp rules run in the step's graph** (`Asr.step_pick`, `Asr.picked`, `Asr.scored`), so the 51,865 logits stay on the device and `[id, logprob]` is the only thing that crosses. Reading the logits instead costs 19 to 33 ms a step and 1.04 M VM steps. `Asr.step` and `Greedy.allowed` stay as the reference, and tests compare the graph with them rule by rule.
 - **Nothing big is uploaded.** The step feeds 8 bytes. The weights and both caches are bound where they are (`bind` makes no copy for an F32 tensor). Each step makes 9 fresh output tensors: the logits or the pick and 8 self-attention caches of `capacity x 384` floats (393 KB at capacity 32), allocated and written by the graph.
-- **The device part is what remains**: 39 ms on the CPU and 62 ms on Vulkan for a graph of about 1,400 ggml nodes, which is about 45 us a node on Vulkan, so the node count is the lever there (whisper.cpp's decoder step is 7 and 11 ms). The Agentica work around it is 3 to 6 ms.
+- **The device part is what remains**: 39 ms on the CPU and 62 ms on Vulkan (before the argmax change) for a graph of about 1,400 ggml nodes. The Agentica work around it is 3 to 6 ms.
 
 ## Whisper-medium, ours only
 
@@ -107,7 +107,7 @@ whisper-medium (the Hugging Face `openai/whisper-medium` checkpoint, 3.06 GB of 
 | ours, ggml CPU | 7.04 | 18.2 | 7.7 s | 4.0 GB | same as the medium output of whisper.cpp's server (`whisper/live/fixtures/server-*-medium.json`) |
 | ours, ggml Vulkan | 1.38 | 4.03 | 24 s | 0.49 GB | same |
 
-The Vulkan weights sit in the device's own buffers, which on this iGPU are system memory outside the process's resident set, so its row shows the process only. The encoder takes 22 s on the CPU and 5 s on Vulkan, and a decoder step about 2.0 s on the CPU and 0.34 s on Vulkan (one run, jfk). The Vulkan load is slower than the CPU's (24 s against 7.7 s); where that time goes was not profiled.
+The Vulkan weights sit in the device's own buffers, which on this iGPU are system memory outside the process's resident set, so its row shows the process only. The encoder takes 22 s on the CPU and 5 s on Vulkan, and a decoder step about 2.4 s on the CPU and 270 ms on Vulkan (the last section). The Vulkan load is slower than the CPU's (24 s against 7.7 s); where that time goes was not profiled.
 
 ## Training against PyTorch and JAX (ml#50)
 
@@ -325,7 +325,7 @@ Not measured again: the CPU rows, the prompt, the load, the peak memory and the 
 
 `WEIGHTS=f16` keeps the big matrices (rank 2, at least 100000 values) of the checkpoint as F16 weights on ggml (`Load`, hub/DESIGN.md); `VULKAN_FP16=1` lets Vulkan multiply in fp16 (since ml#148 that is the default and `VULKAN_FP16=0` the exact choice; `Tensor.vulkan_fp16`). The tools read both from the environment, and `bench_qwen.sh` and `bench_whisper.sh` have the rows: `ours-cpu-f16`, `ours-vulkan-f16` and `ours-vulkan-exact` for Qwen3, `agentica-ggml-cpu-f16`, `agentica-ggml-vulkan-f16` and `agentica-ggml-vulkan-exact` for whisper. The tokens of the Hugging Face goldens stay the same with F16 weights and exact products; fp16 products do not keep them (they also break them with F32 weights), so the checks run with `Tensor.vulkan_fp16(false)`.
 
-Qwen3-0.6B, `bench_qwen.sh` as above, 2 rounds, on ml `e362042`; the load average was 3.5 at the start and 2.6 at the end, and the llama.cpp rows ran between ours, so the numbers carry a few percent of noise:
+Qwen3-0.6B, `bench_qwen.sh` as above, 2 rounds, on ml `e362042`; the load average was 3.5 at the start and 2.6 at the end, and the llama.cpp rows ran between ours, so the numbers carry a few percent of noise. The whisper.cpp container held 1.96 GB of the 3 GB of VRAM, so the Vulkan rows with F32 weights are the spill case of the VRAM paragraph above; with the VRAM free (5 rounds, medians) ours on Vulkan gives 231.0 tokens/s for the prompt and 10.81 for the tokens with F32 weights, 242.0 and 16.36 with F16 weights, and 502.0 and 16.43 with F16 weights and `vulkan_fp16`:
 
 | Row | Prompt, 128 tokens | 64 tokens after it | Load | Peak memory |
 |---|---|---|---|---|

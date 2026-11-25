@@ -28,7 +28,7 @@ Milestones 0.1.0 to 0.4.0.
 Works, but not yet fast:
 
 - `asr/` on ggml: the tokens match, but whisper-tiny runs at a real-time factor
-  of 0.235 on jfk on the CPU against 0.08 for whisper.cpp, and 0.213 against
+  of 0.116 on jfk on the CPU against 0.08 for whisper.cpp, and 0.069 against
   0.041 on Vulkan; the decoder step is the gap.
 - LoRA fine-tuning: 1.35 times PEFT's time per step on the CPU
   ([ml#236](https://github.com/agentica-lang/ml/issues/236)).
@@ -69,7 +69,8 @@ By milestone (`gh issue list -R agentica-lang/ml -m <version>`).
   ([ml#86](https://github.com/agentica-lang/ml/issues/86)), XLA on macOS and
   Windows ([ml#232](https://github.com/agentica-lang/ml/issues/232)), the last
   ms of a Qwen3 decode step against llama.cpp
-  ([ml#181](https://github.com/agentica-lang/ml/issues/181)), dropout on
+  ([ml#181](https://github.com/agentica-lang/ml/issues/181)), one weight layout
+  for `Dense` ([ml#125](https://github.com/agentica-lang/ml/issues/125)), dropout on
   the LoRA path ([ml#209](https://github.com/agentica-lang/ml/issues/209)),
   `batch_matmul` on libtorch
   ([ml#203](https://github.com/agentica-lang/ml/issues/203)), the CPU gap of

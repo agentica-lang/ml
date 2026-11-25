@@ -320,8 +320,8 @@ whisper.cpp's `samples/jfk.wav`: detected and named language, transcribe and
 translate, with and without timestamps; and two clips of 73.5 s and 75.5 s
 made of them, jfk six times with gaps of silence and es-hola 24 times, read in
 three windows each). The token ids match exactly, and so do the text and the
-segments (their times within 1e-9). The language probability is within
-1e-5 (`CLOSE` in the tool). `test/transcribe_golden.py` wrote the golden once, by hand (it needs `torch`
+segments (their times within 1e-9). The language probability is checked within
+1e-5 (the tolerance `CLOSE` of the tool, not a measured gap). `test/transcribe_golden.py` wrote the golden once, by hand (it needs `torch`
 and `transformers`). The tests run neither: the checkpoint is not in git.
 
 Speed (real-time factors on every backend, against whisper.cpp, and the

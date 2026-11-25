@@ -16,8 +16,8 @@ backends, with Hugging Face's token ids on the test clips), `transformers/`
 whisper.cpp).
 
 Works, but slow: `asr/` on ggml. Its tokens match, but on the test clips it
-runs about 2 to 3 times slower than whisper.cpp on CPU and about 5 times
-slower on Vulkan. The numbers and the machine are in
+runs about 1.5 times slower than whisper.cpp on CPU and about 1.7 times
+slower on Vulkan (jfk). The numbers and the machine are in
 [`benchmarks/README.md`](benchmarks/README.md).
 
 Not yet: what the [roadmap](roadmap.md) lists, from vision models and more
