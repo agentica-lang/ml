@@ -380,7 +380,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
       Types.Op.Permute(axes) -> ints = axes
       Types.Op.Attention(scale) -> ints = [try bits(scale, n), flag(try flash_mask(n.args))]
       Types.Op.Rope(base, dims, neox, inverse) -> ints = [dims, flag(neox), try bits(base, n), flag(inverse)]
-      Types.Op.LayerNorm(eps) -> ints = [Float.to_bits32(eps)]
+      Types.Op.LayerNorm(eps) -> ints = [Float32.to_bits(eps.to_float32).to_i]
       Types.Op.SetRows -> ints = [flag(!donate)]
       Types.Op.TopK(k) -> ints = [k]
       Types.Op.ToDtype ->
@@ -388,7 +388,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
           ints = [flag(t.dtype == Types.Dtype.F16)]
         end
 
-      Types.Op.RmsNorm(eps) -> ints = [Float.to_bits32(eps)]
+      Types.Op.RmsNorm(eps) -> ints = [Float32.to_bits(eps.to_float32).to_i]
       Types.Op.AdamStep -> ints = [flag(donors.include?(n.id))]
       Types.Op.AdamPart(i) -> ints = [i]
       _ -> nil
@@ -485,7 +485,7 @@ def donations(
           return error("node #{n.id} (set_rows): its cache, node #{dst.id}, is also an output")
         end
 
-        if (output_ids.select { |id| id == n.id }.size > 1)
+        if output_ids.select { |id| id == n.id }.size > 1
           return error("node #{n.id} (set_rows) is listed twice as an output, and its result is the input itself")
         end
 
@@ -497,7 +497,7 @@ def donations(
             reads = m.args.drop(1)
           end
 
-          if (reads.any? { |a| Graph.id_of(a) == dst.id })
+          if reads.any? { |a| Graph.id_of(a) == dst.id }
             return error(
               "node #{m.id} (#{Types.op_name(m.op)}) reads node #{dst.id}, which node #{n.id} (set_rows) writes in place",
             )
@@ -597,7 +597,8 @@ def bits(x: Float, n: Types.Node) -> Result[Int]
     return error("node #{n.id} (#{Types.op_name(n.op)}): #{x} is not a float ggml holds")
   end
 
-  ok(Float.to_bits(x))
+  b = Float.to_bits(x)
+  ok(b.shift_right(32).to_i!.shift_left(32).bit_or(b.bit_and(4294967295).to_i!))
 end
 
 ## Whether flash attention may take the mask of an attention node: it reads the mask in F16, so the mask must be absent

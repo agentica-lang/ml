@@ -182,7 +182,7 @@ def nan_bfloat?(low: Int, high: Int) -> Bool = high % 128 == 127 and low >= 128 
 def f32_block() -> Result[Bytes]
   parts: List[Bytes] = []
   for i in 0...BLOCK
-    parts = parts.push(Binary.write_f32_le(i.to_f))
+    parts = parts.push(Binary.write_f32_le(i.to_float32))
   end
 
   ok(Bytes.concat(parts))
