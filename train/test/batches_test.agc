@@ -85,6 +85,38 @@ def test_the_batches_of_a_loader_from_a_function_are_fit() -> Result[Void]
   ok()
 end
 
+## The rows `fit` takes for each batch of a loader are the rows `Data.batch` cuts (shuffled with a last partial batch,
+## with `drop_last`, unshuffled): training over batches that `Data.batch` made, through `fit_batches`, ends where `fit`
+## ends, bit for bit. On ggml `fit` makes the ids and gathers in its step, so this is what keeps the two cuts together.
+def test_fit_takes_the_rows_data_batch_cuts() -> Result[Void]
+  for backend in try backends()
+    d = try rows(backend)
+    for loader in [
+      Data.Loader(dataset: d, batch_size: 3, seed: 4),
+      Data.Loader(dataset: d, batch_size: 3, seed: 9, drop_last: true),
+      Data.Loader(dataset: d, batch_size: 3, shuffle: false),
+    ]
+      start = try weights(backend)
+      want = try Train.fit_batches(
+        &linear,
+        start,
+        ->(e: Int, i: Int) { cut(loader, e, i) },
+        Data.count(loader),
+        adam(),
+        4,
+      )
+
+      got = try Train.fit(&linear, start, loader, adam(), 4)
+      try same(got, want, "on #{backend}, batch size #{loader.batch_size}, drop_last #{loader.drop_last}")
+    end
+  end
+
+  ok()
+end
+
+## Batch `i` of epoch `e` of `loader`, as `Data.batch` cuts it.
+def cut(loader: Data.Loader, e: Int, i: Int) -> Result[Data.Batch] = Data.batch(loader, Data.order(loader, e), i)
+
 ## Batch `i` of `ROWS`: the ids padded with 0 to the longest row of the batch, and the scores.
 def padded(backend: Tensor.Backend, i: Int) -> Result[Data.Batch]
   picked = ROWS.drop(2 * i).take(2)

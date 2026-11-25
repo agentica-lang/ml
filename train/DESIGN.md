@@ -272,7 +272,11 @@ Lora.open(dir, backend) -> Result[Adapter]
   channel as an error in its place; a crash of the task reaches the reader
   through a `Task.monitor` notice into the same channel. A feed is a
   sequential stream: under prefetch `take` gives the next batch and does not
-  read its index.
+  read its index. On ggml `fit` does not use it: a batch is its row ids (made
+  in the order `Data.order` gives, so the same batches), the step takes the
+  dataset's tensors as constants and gathers in its own graph, which saves a
+  graph run and the readback and re-upload of the batch (2 to 5 ms a step on
+  Vulkan at batch 16 to 64); `Data.feed` and `fit_batches` keep the prefetch.
 - **The prefetch task lives until `stop`.** A native tensor belongs to the
   task that made it and is freed when that task ends, and a tensor made
   directly from a freed one can no longer be used (the VM keeps one level of
