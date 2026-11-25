@@ -81,7 +81,9 @@ jobs=${JOBS:-$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)}
 
 # GGML_NATIVE=OFF pins the instruction set to AVX2/FMA/F16C, so every x86-64
 # AVX2 machine gets the same build; GGML_OPENMP=OFF keeps ggml's own threads.
-flags="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF"
+# GGML_LLAMAFILE=ON builds llamafile's sgemm, ggml's register-blocked F32 matmul for the CPU: it is off outside
+# llama.cpp, and without it an F32 matmul is a row of dot products (about 70 GFLOPS here against 100 to 140).
+flags="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_LLAMAFILE=ON -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF"
 targets="ggml ggml-base ggml-cpu"
 vulkan_lib=
 
