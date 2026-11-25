@@ -391,6 +391,23 @@ Loading takes 0.25 to 0.27 s on both.
 agentica --max-steps 1000000000000 transformers/tools/bench_vit.agc MODEL_DIR cpu|vulkan BATCH REPS
 ```
 
+## CLIP ViT-B/32 (ml#83), ours only
+
+`laion/CLIP-ViT-B-32-laion2B-s34B-b79K` (revision and hash in `transformers/DESIGN.md`, `model.safetensors`, `float32`). Ours is `transformers/tools/bench_clip.agc` on this PR's branch (Agentica 0.38.0), same machine as above, nothing else running (`--bench` slot): one warm-up run, then the median of 5 timed runs (3 at batch 32). "image embeddings" is `Clip.image_embeds` of a batch of 224 by 224 images of constant pixels; "text embeddings" is `Clip.text_embeds` of rows of 77 ids, the longest a prompt can be (a real prompt of 5 to 15 ids is much cheaper); each is one graph, and the embeddings are read back. The weights are `F32` and Vulkan multiplies in exact `float32` (the tool calls `Tensor.vulkan_fp16(false)` first). There is no peer row: PyTorch was not run for this model.
+
+| Row | batch 1 | batch 32 |
+|---|---|---|
+| CLIP ViT-B/32, ggml CPU, image embeddings | 97 ms (10.3 images/s) | 2360 ms (13.5) |
+| CLIP ViT-B/32, ggml CPU, text embeddings (77 ids) | 70 ms (14.2 texts/s) | 1814 ms (17.6) |
+| CLIP ViT-B/32, ggml Vulkan, image embeddings | 75 ms (13.3 images/s) | 1094 ms (29.2) |
+| CLIP ViT-B/32, ggml Vulkan, text embeddings (77 ids) | 69 ms (14.4 texts/s) | 806 ms (39.7) |
+
+Loading takes 0.45 to 0.47 s on both.
+
+```sh
+agentica --max-steps 1000000000000 transformers/tools/bench_clip.agc MODEL_DIR cpu|vulkan BATCH REPS image|text
+```
+
 ## Run it
 
 You need the Hugging Face checkout of `openai/whisper-tiny`, openai/whisper's `whisper/assets/mel_filters.npz`, a whisper.cpp checkout (never modified), `cmake`, a C++ compiler, `/usr/bin/time` (GNU time), `agentica` 0.38.0 on `PATH`, libtorch, and the Vulkan headers and `glslc` for the Vulkan rows. Python needs only the system numpy: the scripts run with `python3 -I`, which ignores virtual environments and `PYTHONPATH`.
