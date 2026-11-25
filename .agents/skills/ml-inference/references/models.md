@@ -7,7 +7,7 @@ Face Hub with `curl`, or with `hf download REPO --revision REV --local-dir DIR`.
 not `main`, which moves) and check the sha256 of the weights, which the Hub shows as the `X-Linked-ETag` of the file:
 
 ```sh
-rev=c1899de289a04d12100db370d81485cdf75e47ca     # a commit of Qwen/Qwen3-0.6B: see the repo's history
+rev=c1899de289a04d12100db370d81485cdf75e47ca     # a commit of Qwen/Qwen3-0.6B; for another repo, the `sha` of https://huggingface.co/api/models/<repo>
 mkdir -p Qwen3-0.6B && cd Qwen3-0.6B
 for f in model.safetensors config.json tokenizer.json tokenizer_config.json; do
   curl -fL -O "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/$rev/$f"
@@ -103,7 +103,7 @@ def main() -> Void
   backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
   tok = Bpe.open("Qwen3-0.6B/tokenizer.json").unwrap!
   m = Qwen3.open("Qwen3-0.6B", backend).unwrap!
-  messages = [Chat.Message(role: "user", content: "Name the capital of France in one word.")]
+  messages = [Chat.Message(role: "user", content: "What is the capital of France? Answer in one sentence.")]
   text = Chat.apply(m.config.model_type, messages, true, false).unwrap!
   prompt = Bpe.encode(tok, text).unwrap!
   sampling = some(Sample.Sampling(temperature: 0.7, top_k: 40, top_p: 0.95, seed: 7))

@@ -17,6 +17,12 @@ Whisper takes 16 kHz, mono, 16-bit PCM. The WAV reader refuses anything else and
 ffmpeg -i input.mp3 -ar 16000 -ac 1 -c:a pcm_s16le clip.wav
 ```
 
+For a first try, whisper.cpp ships a clip that is already in this format (JFK, 11 s, public domain):
+
+```sh
+curl -fL -o jfk.wav https://raw.githubusercontent.com/ggml-org/whisper.cpp/d1be6fde11ac6e0407606b4e42fe72d34add8037/samples/jfk.wav
+```
+
 ## Transcribe a WAV with `asr`
 
 Get `openai/whisper-tiny` (or `whisper-small`, `whisper-medium`) into a folder with `model.safetensors`,

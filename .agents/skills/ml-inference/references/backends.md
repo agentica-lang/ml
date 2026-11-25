@@ -20,6 +20,9 @@ Which to use:
 
 `Tensor.available(backend)` says whether a backend works on this machine. A native module that is not built prints
 `warning: native module ggml not built` when the program starts, and its ops answer `error("backend not available")`.
+The same goes for `warning: native module torch not built` when libtorch is absent: it comes with about 20 lines of
+compiler errors from `deps/tensor/native/torch.c` (and `ggml.c` for the ggml warning). They are expected and harmless
+when you do not use that backend.
 
 ## Build ggml (Linux x86_64)
 

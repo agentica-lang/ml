@@ -178,6 +178,7 @@ import Lora from "pkg/train/lora"
 import Optim from "pkg/train/optim"
 import Sentence from "pkg/transformers/sentence"
 import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
 import Train from "pkg/train/train"
 import WordPiece from "pkg/transformers/tokenizer/wordpiece"
 
@@ -193,6 +194,8 @@ def pairs(tok: WordPiece.WordPiece) -> Result[List[Pair]]
     ["A plane is taking off.", "An air plane is taking off.", "1.0"],
     ["A man plays a flute.", "A woman is slicing an onion.", "0.0"],
     ["Two dogs run in a field.", "Dogs are running outside.", "0.8"],
+    ["A girl is playing a guitar.", "A woman plays the guitar.", "0.85"],
+    ["A man is riding a horse.", "A cat is sleeping on a sofa.", "0.0"],
   ]
 
   out: List[Pair] = []
@@ -243,17 +246,48 @@ def loss(m: DistilBert.DistilBert, weights: Map[String, Tensor.Tensor], b: Data.
   Sentence.cosine_similarity_loss(left, right, b.targets)
 end
 
+def validated(
+  m: DistilBert.DistilBert,
+  weights: Map[String, Tensor.Tensor],
+  adapter: Lora.Adapter,
+  ps: List[Tensor.Tensor],
+  b: Data.Batch,
+) -> Result[Float]
+  n = ps.size
+  out = try Trace.eval(ps + [b.inputs, b.targets]) do |xs|
+    loss(
+      m,
+      try Lora.applied(weights, try Lora.with_params(adapter, xs.take(n))),
+      Data.Batch(inputs: xs[n], targets: xs[n + 1]),
+    )
+  end
+
+  case (try Tensor.to_list(out))[0]
+    Tensor.Values.Float(f) -> ok(f)
+    _ -> error("a loss is a float")
+  end
+end
+
 def main() -> Void
+  args = System.args()
+  if args.size != 1
+    puts("usage: app.agc MODEL_DIR")
+    System.exit(2)
+  end
+
   backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
-  dir = "msmarco-distilbert-cos-v5"
+  dir = args[0]
   tok = WordPiece.open("#{dir}/tokenizer.json").unwrap!
   m = DistilBert.open(dir, backend).unwrap!
-  rows = pairs(tok).unwrap!
   pad = m.config.pad_token_id
+  all = pairs(tok).unwrap!
+  rows = all.take(4)
+  held = batch(all.drop(4), pad, backend).unwrap!
 
   weights = DistilBert.weights(m)
   config = Lora.Config(targets: ["q_lin", "v_lin"], r: 8, alpha: 16.0)
   adapter = Lora.init(weights, config, 1, backend).unwrap!
+  puts("validation loss before: #{validated(m, weights, adapter, Lora.params(adapter).unwrap!, held).unwrap!}")
   fit = Train.fit_batches(
     ->(ps: List[Tensor.Tensor], b: Data.Batch) {
       loss(m, try Lora.applied(weights, try Lora.with_params(adapter, ps)), b)
@@ -266,6 +300,7 @@ def main() -> Void
     some(->(e: Train.Epoch) { puts("step #{e.epoch}: #{e.loss}") }),
   ).unwrap!
 
+  puts("validation loss after: #{validated(m, weights, adapter, fit.params, held).unwrap!}")
   trained = Lora.with_params(adapter, fit.params).unwrap!
   Lora.save("adapter", trained, DistilBert.embeddings(m)).unwrap!
   puts("saved adapter/adapter_config.json and adapter/adapter_model.safetensors")
@@ -277,11 +312,16 @@ end
   make `count` batches of an epoch and `batch(epoch, i)` answers batch `i`.
 - Pad each batch to the longest sentence, rounded up to a multiple of 8 when lengths vary: on ggml every new shape is a
   compile of about half a second.
-- Run it from the folder that holds the model. About 1.0 s per step at batch 16 pairs on a 4-core CPU.
+- Run it as `agentica app.agc msmarco-distilbert-cos-v5`. About 1.0 s per step at batch 16 pairs on a 4-core CPU.
+- `validated` is the check after the fit: the loss of the trained adapter on pairs it did not train on, as
+  `references/fit.md` does for a plain `fit`. Build the batch outside the trace: `Tensor.reshape` does not run eagerly
+  on ggml.
 - After training, the model with the adapter merged in is
   `DistilBert.with_weights(m, Lora.merged(weights, trained).unwrap!)`; `DistilBert.embed` then runs it at the cost of
   the model alone.
-- Load the saved adapter in PyTorch: `PeftModel.from_pretrained(base, "adapter")` (`verify.md`).
+- Load the saved adapter in PyTorch: `PeftModel.from_pretrained(base, "adapter")` (`verify.md`). The files do not say
+  which model the adapter is for (`base_model_name_or_path` in `adapter_config.json` is `null`), so give PEFT the base
+  model yourself.
 
 ## Use an adapter for Qwen3
 

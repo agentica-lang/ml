@@ -69,10 +69,16 @@ Hugging Face weight is `[out, in]`: load it with `Load.dense`, which sets `out_i
 
 ## The PyTorch peer
 
-Pin the peer, as `run.sh` in `https://github.com/agentica-lang/ml/tree/main/benchmarks/stsb` does: `torch==2.6.0` (the CPU build),
-`safetensors==0.6.2`, and for the Hugging Face and PEFT checks `transformers==4.57.6` and `peft==0.21.2`. The
-tolerances below were measured with these versions on one machine: another version, or another CPU that adds in
-another order, can move them.
+Pin the peer, as `run.sh` in `https://github.com/agentica-lang/ml/tree/main/benchmarks/stsb` does: `torch==2.6.0` (the
+CPU build), `safetensors==0.6.2`, and for the Hugging Face and PEFT checks `transformers==4.57.6` and `peft==0.21.2`.
+The tolerances below were measured with these versions on one machine: another version, or another CPU that adds in
+another order, can move them. The CPU build of torch is on PyTorch's own index, not on PyPI:
+
+```sh
+python3 -m venv venv && . venv/bin/activate
+pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu
+pip install safetensors==0.6.2 transformers==4.57.6 peft==0.21.2
+```
 
 ```python
 import torch, torch.nn.functional as F
@@ -131,6 +137,9 @@ from peft import PeftModel
 base = AutoModel.from_pretrained("msmarco-distilbert-cos-v5")
 model = PeftModel.from_pretrained(base, "adapter")   # the folder Lora.save wrote
 ```
+
+`adapter_config.json` has `base_model_name_or_path: null`: `Lora.save` does not know which model the adapter is for, so
+PEFT gets the base model from your code, as above.
 
 - Compare the sentence embeddings of the same sentences from PEFT's model and from `DistilBert.embed` on the model with
   `Lora.merged` weights.
