@@ -50,9 +50,14 @@ def loss(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
   Loss.cross_entropy(try logits(ps, b.inputs, &Tensor.relu), b.targets)
 end
 
-def optimizer() -> Optim.Optimizer = Optim.Optimizer.Adam(Optim.Adam(lr: 0.1))
+## The optimizer of the fit step `name`: Adam, or AdamW with a decay flag for each parameter (which uses both rows of
+## the step's inputs).
+def optimizer(name: String) -> Optim.Optimizer
+  return Optim.Optimizer.Adam(Optim.Adam(lr: 0.1)) if name == "fit_step"
+  Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.1, weight_decay: 0.1, decay: [true, false, true, false]))
+end
 
-def cases() -> Result[List[Case]] = ok([try forward(), try fit_step()])
+def cases() -> Result[List[Case]] = ok([try forward(), try fit_step("fit_step"), try fit_step("fit_step_adamw")])
 
 ## `x w1 + b1`, the activation, then `w2` and `b2`.
 def logits(
@@ -83,9 +88,9 @@ def forward() -> Result[Case]
   ok(Case(name: "mlp_forward", text: m.text, plan: Plan(args: try wrap(args), outputs: 1, carry: [], sets: [{}])))
 end
 
-## Three steps of Adam on the relu MLP, over the batch `ROWS` and `LABELS`. The arguments are the parameters, the two
-## moments, Adam's two scalars, then the batch.
-def fit_step() -> Result[Case]
+## Three steps of the optimizer of `name` on the relu MLP, over the batch `ROWS` and `LABELS`. The arguments are the
+## parameters, the two moments, the rows of the step's inputs (Adam's 7 numbers), then the batch.
+def fit_step(name: String) -> Result[Case]
   params = [
     try Tensor.floats(W1, [3, 5]),
     try Tensor.floats(B1, [5]),
@@ -106,14 +111,18 @@ def fit_step() -> Result[Case]
     targets: try Tensor.from_list(ids, [4], Tensor.Dtype.I32, Tensor.Backend.Reference),
   )
 
-  m = try Train.stablehlo(&loss, params, batch, optimizer())
-  state = try Optim.init(optimizer(), params)
+  m = try Train.stablehlo(&loss, params, batch, optimizer(name))
+  state = try Optim.init(optimizer(name), params)
   base = params.size + moments.size
   sets: List[Map[String, List[Float]]] = []
   for step in 0...STEPS
-    scalars = Optim.step_scalars(state.with(steps: step))
     set: Map[String, List[Float]] = {}
-    sets = sets.push(set.put("#{base}", [scalars[0]]).put("#{base + 1}", [scalars[1]]))
+    rows = Optim.step_inputs(state.with(steps: step))
+    for r in 0...rows.size
+      set = set.put("#{base + r}", rows[r])
+    end
+
+    sets = sets.push(set)
   end
 
   carry: List[List[Int]] = []
@@ -121,9 +130,12 @@ def fit_step() -> Result[Case]
     carry = carry.push([i + 1, i])
   end
 
-  scalars = Optim.step_scalars(state).map { |x| Arg(dtype: "f32", shape: [], data: [x]) }
+  scalars = Optim.step_inputs(state).map { |numbers: List[Float]|
+    Arg(dtype: "f32", shape: Optim.input_shape(numbers), data: numbers)
+  }
+
   args = try wrap(params + moments) + scalars + try wrap(m.constants)
-  ok(Case(name: "fit_step", text: m.text, plan: Plan(args: args, outputs: base + 1, carry: carry, sets: sets)))
+  ok(Case(name: name, text: m.text, plan: Plan(args: args, outputs: base + 1, carry: carry, sets: sets)))
 end
 
 def wrap(tensors: List[Tensor.Tensor]) -> Result[List[Arg]]

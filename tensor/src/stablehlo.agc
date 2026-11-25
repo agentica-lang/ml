@@ -93,6 +93,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Matmul -> matmul(n.args, a, sig)
     Types.Op.Transpose -> ok(["stablehlo.transpose #{a[0]}, dims = #{ints((0...t.shape.size).to_a.reverse)} : #{sig}"])
     Types.Op.Reshape -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
+    Types.Op.Slice(starts, ends) -> ok(["stablehlo.slice #{a[0]} #{extents(starts, ends)} : #{sig}"])
     Types.Op.BroadcastTo -> broadcast(t, n.args[0], a[0])
     Types.Op.Sum(axes, keep_dims) -> reduction(t, n.args[0], a[0], axes, keep_dims, "add", first)
     Types.Op.Mean(axes, keep_dims) -> mean(t, n.args[0], a[0], axes, keep_dims, first)
@@ -300,6 +301,11 @@ def element_type(dtype: Types.Dtype) -> Result[String]
     Types.Dtype.Bool -> ok("i1")
     Types.Dtype.Q8_0 -> error("StableHLO has no element type for Q8_0")
   end
+end
+
+# `[0:1, 2:5]`: the start and the end of each dimension.
+def extents(starts: List[Int], ends: List[Int]) -> String
+  "[#{(0...starts.size).map { |i| "#{starts[i]}:#{ends[i]}" }.join(", ")}]"
 end
 
 def ints(xs: List[Int]) -> String = "[#{xs.map { |x| x.to_s }.join(", ")}]"

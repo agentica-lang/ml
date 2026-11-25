@@ -6,6 +6,7 @@
 
 import Cases from "../tools/stablehlo_cases"
 import Data from "../data"
+import Optim from "../optim"
 import S from "support"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
@@ -44,19 +45,44 @@ def test_the_mlp_forward_matches_iree() -> Result[Void]
   S.expect_close(try S.floats_of(out), g.runs[0].outputs[0].data, ABS, REL, "logits")
 end
 
-## Step 1 and step 3 of `fit`, from the parameters and the batch the program ran on.
+## Step 1 and step 3 of `fit`, from the parameters and the batch the program ran on, for Adam and for AdamW.
 def test_the_fit_step_matches_iree_at_steps_one_and_three() -> Result[Void]
-  g = try golden("fit_step")
-  try Test.eq(g.runs.size, Cases.STEPS)
-  one = try fit(g, 1)
-  try expect_step(g, 0, one)
-  three = try fit(g, Cases.STEPS)
-  try expect_step(g, Cases.STEPS - 1, three)
-  for i in 0...Cases.STEPS
-    try S.expect_close([three.history[i]], g.runs[i].outputs[0].data, ABS, REL, "loss of step #{i + 1}")
+  for name in ["fit_step", "fit_step_adamw"]
+    g = try golden(name)
+    try Test.eq(g.runs.size, Cases.STEPS)
+    one = try fit(g, name, 1)
+    try expect_step(g, 0, one)
+    three = try fit(g, name, Cases.STEPS)
+    try expect_step(g, Cases.STEPS - 1, three)
+    for i in 0...Cases.STEPS
+      try S.expect_close([three.history[i]], g.runs[i].outputs[0].data, ABS, REL, "#{name}: loss of step #{i + 1}")
+    end
   end
 
   ok()
+end
+
+## An Adam step of `Optim.step` in a function of `Trace.stablehlo` is the ops of its composition: no node of its own.
+def test_an_adam_step_of_a_user_function_emits() -> Result[Void]
+  p = try Tensor.floats([1.0, -1.0], [2])
+  state = try Optim.init(Optim.Optimizer.Adam(Optim.Adam(lr: 0.1)), [p])
+  hyper = try Tensor.floats(Optim.step_inputs(state)[0], [7])
+  specs = [p, p, p, p, hyper].map { |t| Trace.spec_of(t) }
+  m = try Trace.stablehlo(specs, ->(xs: List[Tensor.Tensor]) { adam_of(state, xs) })
+  try Test.assert(m.text.include?("stablehlo.slice %arg4 [0:1]"), "the 7 numbers are read by slices")
+  try Test.assert(m.text.include?("stablehlo.sqrt"), "the composition has the square root")
+  Test.assert(m.text.include?("-> (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>)"), "the weight and the two moments")
+end
+
+## The inputs after the moments are those of `Optim.step_inputs`: an SGD rate is a rank-0 input, AdamW's two rows of 7
+## numbers are rank-1 ones.
+def test_the_step_inputs_of_each_optimizer_follow_the_moments() -> Result[Void]
+  sgd = try module_of(Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.1, momentum: 0.9)))
+  try Test.assert(sgd.text.include?("%arg4: tensor<3x5xf32>, %arg5: tensor<5xf32>"), "SGD velocity")
+  try Test.assert(sgd.text.include?("%arg8: tensor<f32>, %arg9: tensor<4x3xf32>"), "an SGD rate is rank 0")
+  decay = try module_of(Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.1)))
+  rows = "%arg12: tensor<7xf32>, %arg13: tensor<7xf32>, %arg14: tensor<4x3xf32>"
+  Test.assert(decay.text.include?(rows), "AdamW rows")
 end
 
 # The golden of `name`, if it is the one IREE made for the text committed as `name.mlir`.
@@ -70,6 +96,31 @@ def golden(name: String) -> Result[Golden]
   ok(g)
 end
 
+# The fit step of the cases over `optimizer`.
+def module_of(optimizer: Optim.Optimizer) -> Result[Trace.Module]
+  params = [
+    try Tensor.floats(Cases.W1, [3, 5]),
+    try Tensor.floats(Cases.B1, [5]),
+    try Tensor.floats(Cases.W2_FIT, [5, Cases.CLASSES]),
+    try Tensor.floats(Cases.B2_FIT, [Cases.CLASSES]),
+  ]
+
+  ids = Cases.LABELS.map { |c| Tensor.Values.Int(c) }
+  batch = Data.Batch(
+    inputs: try Tensor.floats(Cases.ROWS, [4, 3]),
+    targets: try Tensor.from_list(ids, [4], Tensor.Dtype.I32, Tensor.Backend.Reference),
+  )
+
+  Train.stablehlo(&Cases.loss, params, batch, optimizer)
+end
+
+# `xs` is the weight, its gradient, the two moments and the step's input.
+def adam_of(state: Optim.State, xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  held = state.with(first: [xs[2]], second: [xs[3]])
+  stepped = try Optim.step(held, [xs[0]], [xs[1]], [xs[4]])
+  ok(stepped.params + stepped.state.first + stepped.state.second)
+end
+
 def tensors(args: List[Cases.Arg]) -> Result[List[Tensor.Tensor]]
   out: List[Tensor.Tensor] = []
   for a in args
@@ -80,7 +131,7 @@ def tensors(args: List[Cases.Arg]) -> Result[List[Tensor.Tensor]]
 end
 
 ## `fit` for `epochs` full-batch epochs from the parameters and the batch of the golden's arguments.
-def fit(g: Golden, epochs: Int) -> Result[Train.Fit]
+def fit(g: Golden, name: String, epochs: Int) -> Result[Train.Fit]
   params = try tensors(g.args.take(4))
   labels = g.args[g.args.size - 1].data.map { |c| Tensor.Values.Int(c.floor) }
   data = try Data.dataset(
@@ -88,7 +139,8 @@ def fit(g: Golden, epochs: Int) -> Result[Train.Fit]
     try Tensor.from_list(labels, [4], Tensor.Dtype.I32, S.REF),
   )
 
-  Train.fit(&Cases.loss, params, Data.Loader(dataset: data, batch_size: 4, shuffle: false), Cases.optimizer(), epochs)
+  loader = Data.Loader(dataset: data, batch_size: 4, shuffle: false)
+  Train.fit(&Cases.loss, params, loader, Cases.optimizer(name), epochs)
 end
 
 ## The parameters `fit` ended with are the ones outputs `1..4` of run `step` hold.

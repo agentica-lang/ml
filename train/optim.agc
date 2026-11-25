@@ -92,8 +92,8 @@ def init(optimizer: Optimizer, params: List[Tensor.Tensor]) -> Result[State]
 end
 
 ## `scalars` are the inputs of a step that is one compiled program of every step count, where it otherwise holds the
-## numbers as constants. `Train.fit` passes the tensors of `step_inputs` (Adam's and AdamW's are rank-1 tensors of 7
-## numbers, which `Tensor.adam_step` takes), and `Train.stablehlo` the numbers of `step_scalars` as rank-0 tensors.
+## numbers as constants: the tensors of `step_inputs` (Adam's and AdamW's are rank-1 tensors of 7 numbers, which
+## `Tensor.adam_step` takes).
 def step(
   state: State,
   params: List[Tensor.Tensor],
@@ -109,10 +109,10 @@ def step(
       try check_scalars(scalars, 1, "an SGD step takes one scalar")
       sgd(o, state, params, grads, scalars)
     Optimizer.Adam(o) ->
-      try check_adam_scalars(scalars, 1, 2, "an Adam step takes one input of 7 numbers, or two scalars")
+      try check_adam_rows(scalars, 1, "an Adam step takes one input of 7 numbers")
       adam(o, none, state, params, grads, scalars)
     Optimizer.AdamW(o) ->
-      try check_adam_scalars(scalars, 2, 3, "an AdamW step takes two inputs of 7 numbers, or three scalars")
+      try check_adam_rows(scalars, 2, "an AdamW step takes two inputs of 7 numbers")
       try check_decay(o, params.size)
       decays = o.decay
       if decays.empty?
@@ -132,21 +132,10 @@ def learning_rate(state: State) -> Float
   end
 end
 
-## The numbers the next step of `state` depends on, as `step` reads them from its `scalars`: SGD's learning rate, and
-## Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` for the step count `t` (its learning rate, with the bias
-## correction). AdamW has Adam's two, then `lr weight_decay`.
-def step_scalars(state: State) -> List[Float]
-  case state.optimizer
-    Optimizer.Sgd(_) -> [learning_rate(state)]
-    Optimizer.Adam(o) -> adam_scalars(o, state.steps)
-    Optimizer.AdamW(o) -> adam_scalars(plain(o), state.steps).push(learning_rate(state) * o.weight_decay)
-  end
-end
-
-## The numbers of each input of the step that `Train.fit` compiles, one list per input: SGD's learning rate, and for
-## Adam the 7 numbers of `Tensor.adam_step` (the learning rate with its schedule, `beta1`, `beta2`, `eps`, the weight
-## decay, then the two bias corrections); AdamW has two, the second without decay, for the parameters that do not
-## decay. A one-number input is a rank-0 tensor, the other a rank-1 tensor.
+## The numbers of each input of the step that `Train.fit` and `Train.stablehlo` compile, one list per input: SGD's
+## learning rate, and for Adam the 7 numbers of `Tensor.adam_step` (the learning rate with its schedule, `beta1`,
+## `beta2`, `eps`, the weight decay, then the two bias corrections); AdamW has two, the second without decay, for the
+## parameters that do not decay. A one-number input is a rank-0 tensor, the other a rank-1 tensor.
 def step_inputs(state: State) -> List[List[Float]]
   case state.optimizer
     Optimizer.Sgd(_) -> [[learning_rate(state)]]
@@ -217,7 +206,6 @@ def sgd(
   grads: List[Tensor.Tensor],
   scalars: List[Tensor.Tensor],
 ) -> Result[Step]
-  held = step_scalars(state)
   first: List[Tensor.Tensor] = []
   out: List[Tensor.Tensor] = []
   for i in 0...params.size
@@ -227,7 +215,7 @@ def sgd(
       first = first.push(v)
     end
 
-    out = out.push(try Tensor.sub(params[i], try Tensor.mul(v, try factor(v, held, scalars, 0))))
+    out = out.push(try Tensor.sub(params[i], try Tensor.mul(v, try rate(v, state, scalars))))
   end
 
   ok(Step(state: state.with(steps: state.steps + 1, first: first), params: out))
@@ -246,12 +234,6 @@ def adam_numbers(o: Adam, steps: Int, decay: Float) -> List[Float]
   ]
 end
 
-def adam_scalars(o: Adam, steps: Int) -> List[Float]
-  correct1 = 1.0 / (1.0 - power(o.beta1, steps + 1))
-  correct2 = 1.0 / (1.0 - power(o.beta2, steps + 1))
-  [o.lr * rate_factor(o.schedule, steps) * correct1, correct2]
-end
-
 ## The Adam of the moments of `o`, without its decay.
 def plain(o: AdamW) -> Adam = Adam(lr: o.lr, beta1: o.beta1, beta2: o.beta2, eps: o.eps, schedule: o.schedule)
 
@@ -264,8 +246,7 @@ end
 
 ## Adam's step, and AdamW's with `decays`: the flag of each parameter, which shrinks by `lr weight_decay` of itself.
 ## The update is `Tensor.adam_step` with the rows of `scalars` (`step_inputs`; without them, those of the optimizer's
-## state as constants), the row of a parameter that decays first. Rank-0 `scalars` (`Train.stablehlo`) are the older
-## composition of the same formula (`adam_of_scalars`), which the StableHLO goldens pin.
+## state as constants), the row of a parameter that decays first.
 def adam(
   o: Adam,
   decays: Optional[List[Bool]],
@@ -274,10 +255,6 @@ def adam(
   grads: List[Tensor.Tensor],
   scalars: List[Tensor.Tensor],
 ) -> Result[Step]
-  if !scalars.empty? and Tensor.shape(scalars[0]).empty?
-    return adam_of_scalars(o, decays, state, params, grads, scalars)
-  end
-
   rows = scalars
   if rows.empty?
     rows = try number_rows(state, params)
@@ -317,51 +294,15 @@ def number_rows(state: State, params: List[Tensor.Tensor]) -> Result[List[Tensor
   ok(rows)
 end
 
-def adam_of_scalars(
-  o: Adam,
-  decays: Optional[List[Bool]],
-  state: State,
-  params: List[Tensor.Tensor],
-  grads: List[Tensor.Tensor],
-  scalars: List[Tensor.Tensor],
-) -> Result[Step]
-  t = state.steps + 1
-  held = step_scalars(state)
-  first: List[Tensor.Tensor] = []
-  second: List[Tensor.Tensor] = []
-  out: List[Tensor.Tensor] = []
-  for i in 0...params.size
-    g = grads[i]
-    m = try Tensor.add(try scale(state.first[i], o.beta1), try scale(g, 1.0 - o.beta1))
-    v = try Tensor.add(try scale(state.second[i], o.beta2), try scale(try Tensor.mul(g, g), 1.0 - o.beta2))
-    denom = try shift(try Tensor.sqrt(try Tensor.mul(v, try factor(v, held, scalars, 1))), o.eps)
-    delta = try Tensor.div(try Tensor.mul(m, try factor(m, held, scalars, 0)), denom)
-    first = first.push(m)
-    second = second.push(v)
-    p = params[i]
-    if decays?(decays, i)
-      p = try Tensor.sub(p, try Tensor.mul(p, try factor(p, held, scalars, 2)))
-    end
-
-    out = out.push(try Tensor.sub(p, delta))
-  end
-
-  ok(Step(state: state.with(steps: t, first: first, second: second), params: out))
-end
-
-# An Adam step reads none, `rows` rank-1 tensors of 7 numbers, or `n` rank-0 tensors.
-def check_adam_scalars(scalars: List[Tensor.Tensor], rows: Int, n: Int, rule: String) -> Result[Void]
+# An Adam step reads none, or `rows` rank-1 tensors of 7 numbers; `rule` says how many.
+def check_adam_rows(scalars: List[Tensor.Tensor], rows: Int, rule: String) -> Result[Void]
   return ok() if scalars.empty?
-  if Tensor.shape(scalars[0]) == [7]
-    return error("#{rule}, got #{scalars.size}") if scalars.size != rows
-    for s in scalars
-      return error("an input of an Adam step has shape [7], got #{Tensor.shape(s)}") if Tensor.shape(s) != [7]
-    end
-
-    return ok()
+  return error("#{rule}, got #{scalars.size}") if scalars.size != rows
+  for s in scalars
+    return error("an input of an Adam step has shape [7], got #{Tensor.shape(s)}") if Tensor.shape(s) != [7]
   end
 
-  check_scalars(scalars, n, rule)
+  ok()
 end
 
 # A step reads none, or `n` rank-0 tensors; `rule` says how many ("an SGD step takes one scalar").
@@ -375,10 +316,10 @@ def check_scalars(scalars: List[Tensor.Tensor], n: Int, rule: String) -> Result[
   ok()
 end
 
-# The scalar `i` of `held` as a tensor of `like`'s shape: a constant, or the input `scalars[i]` widened.
-def factor(like: Tensor.Tensor, held: List[Float], scalars: List[Tensor.Tensor], i: Int) -> Result[Tensor.Tensor]
-  return constant(like, held[i]) if scalars.empty?
-  s = scalars[i]
+# The learning rate of an SGD step as a tensor of `like`'s shape: a constant, or the input `scalars[0]` widened.
+def rate(like: Tensor.Tensor, state: State, scalars: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  return constant(like, learning_rate(state)) if scalars.empty?
+  s = scalars[0]
   if Tensor.dtype(s) != Tensor.dtype(like)
     s = try Tensor.to_dtype(s, Tensor.dtype(like))
   end
@@ -387,8 +328,6 @@ def factor(like: Tensor.Tensor, held: List[Float], scalars: List[Tensor.Tensor],
 end
 
 def scale(t: Tensor.Tensor, c: Float) -> Result[Tensor.Tensor] = Tensor.mul(t, try constant(t, c))
-
-def shift(t: Tensor.Tensor, c: Float) -> Result[Tensor.Tensor] = Tensor.add(t, try constant(t, c))
 
 def constant(t: Tensor.Tensor, c: Float) -> Result[Tensor.Tensor]
   Tensor.full(Tensor.shape(t), Tensor.Values.Float(c), Tensor.dtype(t), Tensor.backend(t))
