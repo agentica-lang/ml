@@ -5,11 +5,11 @@
 ## agentica tools/bench_train.agc BACKEND MODE OPTIMIZER BATCH [STEPS]
 ## ```
 ##
-## BACKEND is `ggml-cpu`, `ggml-vulkan` (matmul in fp32) or `torch-cpu`. MODE is `fit`, the steps of `Train.fit` (the
-## loader's batch included, compiled once per batch shape), or `compiled`, one `Trace.compile` of the whole step and a `run`
-## per step. OPTIMIZER is `sgd` (lr 0.01) or `adam` (lr 0.001). STEPS (30 by default) are timed after the first step,
-## which holds the compile, and three warm ones. The last line is one JSON object: `first_ms`, `median_ms`, `min_ms`,
-## `max_ms` and `losses`, the loss of each of the first ten steps.
+## BACKEND is `ggml-cpu`, `ggml-vulkan` (matmul in fp32), `torch-cpu` or `xla-cpu`. MODE is `fit`, the steps of
+## `Train.fit` (the loader's batch included, compiled once per batch shape), or `compiled`, one `Trace.compile` of the
+## whole step and a `run` per step. OPTIMIZER is `sgd` (lr 0.01) or `adam` (lr 0.001). STEPS (30 by default) are timed
+## after the first step, which holds the compile, and three warm ones. The last line is one JSON object: `first_ms`,
+## `median_ms`, `min_ms`, `max_ms` and `losses`, the loss of each of the first ten steps.
 ##
 ## The init and the batch are the closed forms of `benchmarks/training/` (`values`), the same in every stack.
 
@@ -102,7 +102,8 @@ def backend_of(name: String) -> Result[Tensor.Backend]
     "ggml-cpu" -> ok(Tensor.Backend.Ggml(Tensor.Device.Cpu))
     "ggml-vulkan" -> ok(Tensor.Backend.Ggml(Tensor.Device.Vulkan(0)))
     "torch-cpu" -> ok(Tensor.Backend.Torch(Tensor.Device.Cpu))
-    _ -> error("the backend is ggml-cpu, ggml-vulkan or torch-cpu, got #{name}")
+    "xla-cpu" -> ok(Tensor.Backend.Xla(Tensor.Device.Cpu))
+    _ -> error("the backend is ggml-cpu, ggml-vulkan, torch-cpu or xla-cpu, got #{name}")
   end
 end
 
