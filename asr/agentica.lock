@@ -26,5 +26,5 @@ workspace = true
 name = "tensor"
 git = "https://github.com/agentica-lang/ml"
 subdir = "tensor"
-ref = "f72667e03723cbbee63c34a8cd3ab3743de6f149"
+ref = "b2937efd15953180f4c14ab5479dddd3ad53634b"
 workspace = true

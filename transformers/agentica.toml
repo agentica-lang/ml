@@ -6,7 +6,7 @@ agentica = "0.37.0"
 blank_line_after_end = true
 
 [dependencies]
-tensor = { git = "https://github.com/agentica-lang/ml", ref = "f72667e03723cbbee63c34a8cd3ab3743de6f149", subdir = "tensor" }
+tensor = { git = "https://github.com/agentica-lang/ml", ref = "b2937efd15953180f4c14ab5479dddd3ad53634b", subdir = "tensor" }
 nn = { git = "https://github.com/agentica-lang/ml", ref = "2ca4098cf61afbce9984b6e1fc15ea17d1365ae5", subdir = "nn" }
 hub = { git = "https://github.com/agentica-lang/ml", ref = "ffb320b72e7690d3ae0b410e0ebb3283263f602b", subdir = "hub" }
 train = { git = "https://github.com/agentica-lang/ml", ref = "f27f1f246ef9f78cbbc697b69d691b76074cb885", subdir = "train" }
