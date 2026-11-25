@@ -14,6 +14,10 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 - `Train.fit` on ggml gathers the rows of a batch inside the step instead of in a graph of its own, with the same batches: a step at batch 16 to 64 on Vulkan takes up to half the time (14 ms to 7 to 9 ms), and a CPU step 4 to 17 percent less. The loader's prefetch has nothing to do there, so `fit` starts no task.
 - `Lora.save` and `Lora.open` keep an adapter in PEFT's files (`adapter_config.json`, `adapter_model.safetensors`): an adapter trained with PEFT runs here, and one trained here loads in PEFT.
 
+### transformers
+
+- `Qwen3.embeddings` and `DistilBert.embeddings`: the names of a model's embedding tables, for `Lora.save`; a PEFT LoRA adapter of a Qwen3 or a DistilBERT loads with `Lora.open` and runs merged.
+
 ## [0.3.0] - 2026-11-25
 
 ### tensor
