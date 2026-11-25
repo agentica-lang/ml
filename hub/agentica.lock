@@ -12,7 +12,7 @@ hash = "sha256:c1be453b21abab840feaa03242f0be32c1145fefe068dc131c8ce7c1b7b80652"
 name = "nn"
 git = "https://github.com/agentica-lang/ml"
 subdir = "nn"
-ref = "dde0eae2b520d05348af27b167f5af4cfd2a3571"
+ref = "ebf5b18a4277b58b4a2d8f126f629dab35ecc0d2"
 workspace = true
 
 [[package]]
