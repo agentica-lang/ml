@@ -1,5 +1,5 @@
-## `Tensor.top_ids`: the ids of the k largest of a vector, or of each row of a matrix. Descending on the reference, a set on ggml (`ggml_top_k` gives
-## no order), the same set, as the node of a trace.
+## `Tensor.top_ids`: the ids of the k largest of a vector, or of each row of a matrix. Descending on the reference,
+## a set on ggml (`ggml_top_k` gives no order), the same set, as the node of a trace.
 
 import Support from "support"
 import Tensor from "../tensor"

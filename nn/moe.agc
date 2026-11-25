@@ -19,6 +19,31 @@ struct Moe
   normalize: Bool = true
 end
 
+## The block over `x` `[..., width]` (any number of leading axes, as `Nn.dense` takes them), the same shape back.
+def moe(p: Moe, x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  try check(p)
+  shape = Tensor.shape(x)
+  return error("moe needs rank >= 2, got #{shape}") if shape.size < 2
+  width = shape[shape.size - 1]
+  if width != Tensor.shape(p.gate_up)[2]
+    return error("moe needs a width of #{Tensor.shape(p.gate_up)[2]}, got #{width}")
+  end
+
+  rows = shape.reduce(1) do |acc, d| acc * d end / width
+  flat = try Tensor.reshape(x, [rows, width])
+  routing = try route(p, flat)
+  inner = Tensor.shape(p.down)[2]
+  both = try Tensor.expert_matmul(p.gate_up, try Tensor.reshape(flat, [rows, 1, width]), routing.ids)
+  gate = try Tensor.slice(both, [0, 0, 0], [rows, p.top_k, inner])
+  value = try Tensor.slice(both, [0, 0, inner], [rows, p.top_k, 2 * inner])
+  hidden = try Tensor.mul(try Nn.activate(p.activation, gate), value)
+  answers = try Tensor.expert_matmul(p.down, hidden, routing.ids)
+  weighted = try Tensor.batch_matmul(try Tensor.reshape(routing.gates, [rows, 1, p.top_k]), answers)
+  Tensor.reshape(weighted, shape)
+end
+
+private
+
 ## What the router decided for `tokens` rows: the `ids` `I32 [tokens, top_k]` of their experts (in no order) and the
 ## `gates` `[tokens, top_k]` of the same places.
 struct Routing
@@ -52,31 +77,6 @@ def route(p: Moe, x: Tensor.Tensor) -> Result[Routing]
   total = try Tensor.sum(picked, some([1]), true)
   ok(Routing(ids: ids, gates: try Tensor.div(picked, try Tensor.broadcast_to(total, Tensor.shape(picked)))))
 end
-
-## The block over `x` `[..., width]` (any number of leading axes, as `Nn.dense` takes them), the same shape back.
-def moe(p: Moe, x: Tensor.Tensor) -> Result[Tensor.Tensor]
-  try check(p)
-  shape = Tensor.shape(x)
-  return error("moe needs rank >= 2, got #{shape}") if shape.size < 2
-  width = shape[shape.size - 1]
-  if width != Tensor.shape(p.gate_up)[2]
-    return error("moe needs a width of #{Tensor.shape(p.gate_up)[2]}, got #{width}")
-  end
-
-  rows = shape.reduce(1) do |acc, d| acc * d end / width
-  flat = try Tensor.reshape(x, [rows, width])
-  routing = try route(p, flat)
-  inner = Tensor.shape(p.down)[2]
-  both = try Tensor.expert_matmul(p.gate_up, try Tensor.reshape(flat, [rows, 1, width]), routing.ids)
-  gate = try Tensor.slice(both, [0, 0, 0], [rows, p.top_k, inner])
-  value = try Tensor.slice(both, [0, 0, inner], [rows, p.top_k, 2 * inner])
-  hidden = try Tensor.mul(try Nn.activate(p.activation, gate), value)
-  answers = try Tensor.expert_matmul(p.down, hidden, routing.ids)
-  weighted = try Tensor.batch_matmul(try Tensor.reshape(routing.gates, [rows, 1, p.top_k]), answers)
-  Tensor.reshape(weighted, shape)
-end
-
-private
 
 ## An error unless the router and the two stacked weights are about the same experts.
 def check(p: Moe) -> Result[Void]

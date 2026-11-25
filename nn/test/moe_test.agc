@@ -1,8 +1,8 @@
 ## `Moe.moe`, the mixture-of-experts block, against Hugging Face's `GraniteMoeMoE` and `Qwen3MoeSparseMoeBlock`
-## (`moe_golden.py`, `fixtures/moe_golden.json`): the five cases on the reference and on ggml (CPU), where
+## (`moe_golden.py`, `fixtures/moe_golden.json`): the seven cases on the reference and on ggml (CPU), where
 ## `ggml_mul_mat_id` runs the experts and `ggml_top_k` picks them in no order. The cases are 2 of 6 experts, 1 of 6, 6
-## of 6, a tie for the last place that does not change the answer, and the gates that do not add up to 1. Run from
-## `nn/`.
+## of 6, a tie for the last place that does not change the answer, the gates that do not add up to 1, one token, and 40
+## tokens (many more than experts). Run from `nn/`.
 
 import Moe from "../moe"
 import Nn from "../nn"
@@ -53,7 +53,7 @@ end
 
 def test_the_block_matches_hugging_face() -> Result[Void]
   cases = (try golden()).cases
-  try Test.eq(cases.size, 5)
+  try Test.eq(cases.size, 7)
   for c in cases
     out = try Moe.moe(try block_of(c, S.REF), try S.f32(c.x, [c.tokens, c.width]))
     try Test.eq(Tensor.shape(out), [c.tokens, c.width])

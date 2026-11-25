@@ -10,11 +10,18 @@ repository (or a throwaway one), from `tensor/`, with Python's isolated mode:
 """
 
 import json
+import random
 import sys
 
 import torch
 
 assert torch.__version__.startswith("2.6.0"), torch.__version__
+
+
+def random_ids(experts, tokens, uses, seed):
+    rng = random.Random(seed)
+    return [rng.sample(range(experts), uses) for _ in range(tokens)]
+
 
 CASES = [
     # experts, rows, inner, tokens, uses, one x for all the uses of a token, the ids
@@ -22,6 +29,9 @@ CASES = [
     (6, 4, 3, 2, 3, True, [[5, 1, 2], [2, 2, 0]]),
     (4, 2, 5, 2, 1, True, [[3], [0]]),
     (3, 3, 3, 2, 3, False, [[0, 1, 2], [2, 1, 0]]),
+    # one token, and many more tokens than experts
+    (6, 3, 4, 1, 2, False, [[4, 1]]),
+    (6, 4, 3, 40, 2, False, random_ids(6, 40, 2, 11)),
 ]
 
 

@@ -78,7 +78,7 @@ end
 
 def test_the_reference_matches_pytorch() -> Result[Void]
   cases = (try golden()).cases
-  try Test.eq(cases.size, 4)
+  try Test.eq(cases.size, 6)
   for c in cases
     x = try inputs_of(c, REF)
     out = try Tensor.expert_matmul(x.weights, x.x, x.ids)

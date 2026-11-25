@@ -4,9 +4,9 @@
 layout of `Moe.Moe`: the router `[experts, width]`, `gate_up` `[experts, 2 * inner, width]` (Granite's `input_linear`,
 or the gate and up projections of Qwen3 stacked) and `down` `[experts, width, inner]`.
 
-Five cases: Granite with 2 of 6 experts, 1 of 6 and 6 of 6, Granite with a tie (an expert that always wins, and two
+Seven cases: Granite with 2 of 6 experts, 1 of 6 and 6 of 6, Granite with a tie (an expert that always wins, and two
 experts with the same router row and the same weights that tie for the second place, so the answer does not depend
-on which one is picked), and Qwen3.
+on which one is picked), Qwen3, and Granite with 2 of 6 for one token and for 40 tokens (many more than experts).
 
 Manual, not run by the tests: it needs `torch` 2.6.0 and `transformers` 4.57.6 (the script stops on other versions).
 Run it in the venv of the repository (or a throwaway one), from `nn/`, with Python's isolated mode:
@@ -48,26 +48,27 @@ def seeded(model):
 
 
 def case(name, top_k, normalize, router, gate_up, down, x, out):
+    tokens = x.shape[0]
     return {
-        "name": name, "experts": EXPERTS, "width": WIDTH, "inner": INNER, "tokens": TOKENS, "top_k": top_k,
+        "name": name, "experts": EXPERTS, "width": WIDTH, "inner": INNER, "tokens": tokens, "top_k": top_k,
         "normalize": normalize, "router": flat(router), "gate_up": flat(gate_up), "down": flat(down), "x": flat(x),
         "out": flat(out),
     }
 
 
-def granite(name, top_k, tie=False):
+def granite(name, top_k, tie=False, tokens=TOKENS):
     config = GraniteMoeConfig(
         hidden_size=WIDTH, intermediate_size=INNER, num_local_experts=EXPERTS, num_experts_per_tok=top_k,
         hidden_act="silu",
     )
     model = GraniteMoeMoE(config).eval()
     seeded(model)
-    x = rounded(torch.randn(1, TOKENS, WIDTH))
+    x = rounded(torch.randn(1, tokens, WIDTH))
     with torch.no_grad():
         if tie:
             # expert 0 wins for every token (the first input is 1 and its router weight is large), experts 1 and 2 are
             # the same expert and tie for the second place
-            x[..., 0] = rounded(torch.rand(1, TOKENS) * 0.5 + 1.0)
+            x[..., 0] = rounded(torch.rand(1, tokens) * 0.5 + 1.0)
             router = model.router.layer.weight
             router[0] = 0.0
             router[0, 0] = 20.0
@@ -105,6 +106,8 @@ def main():
         granite("granite, 6 of 6", 6),
         granite("granite, a tie for the second place", 2, tie=True),
         qwen3("qwen3, gates that do not add up to 1", 2),
+        granite("granite, one token", 2, tokens=1),
+        granite("granite, 40 tokens", 2, tokens=40),
     ]
     json.dump({"cases": cases}, sys.stdout)
     sys.stdout.write("\n")
