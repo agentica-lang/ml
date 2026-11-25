@@ -15,6 +15,7 @@ import Nn from "pkg/nn/nn"
 import Sentence from "sentence"
 import Source from "tokenizer/source"
 import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
 import Weights from "weights"
 
 ## The fields of the `text_config` of `config.json` that the model reads.
@@ -140,8 +141,9 @@ end
 
 ## The embeddings `[batch, projection_dim]` of `rows`, the ids of `Clip.encode` of each text (start token, tokens, end
 ## token), not normalized (`get_text_features`). The rows are padded to the longest; the model is causal, so the
-## padding changes nothing, and the vector read is the one at each row's last id. No row may be empty or longer than
-## `max_position_embeddings`. The caller closes them (`close`).
+## padding changes nothing, and the vector read is the one at the first of the largest id of each row (the end token,
+## as Hugging Face reads it: a literal `<|endoftext|>` in the text ends the vector there). No row may be empty or
+## longer than `max_position_embeddings`. The caller closes them (`close`).
 def text_embeds(m: Clip, rows: List[List[Int]]) -> Result[Tensor.Tensor]
   return error("text_embeds needs at least one row") if rows.empty?
   seq = rows.map { |r| r.size }.max.unwrap!
@@ -149,26 +151,34 @@ def text_embeds(m: Clip, rows: List[List[Int]]) -> Result[Tensor.Tensor]
   return error("a row has #{seq} ids, the model reads #{limit} at most") if seq > limit
   return error("a row has no ids") if rows.any? { |r| r.empty? }
   ids: List[Tensor.Values] = []
-  last: List[Tensor.Values] = []
+  marked: List[Tensor.Values] = []
   for r in rows
+    at = first_largest(r)
     for i in 0...seq
       ids = ids.push(Tensor.Values.Int(padded(r, i)))
-      last = last.push(Tensor.Values.Float(pick(r.size, i)))
+      marked = marked.push(Tensor.Values.Float(pick(at, i)))
     end
   end
 
   backend = Tensor.backend(m.text.tokens.table)
   shape = [rows.size, seq]
   tokens = try Tensor.from_list(ids, shape, Tensor.Dtype.I32, backend)
-  marks = try Tensor.from_list(last, shape, Tensor.Dtype.F32, backend)
+  marks = Tensor.from_list(marked, shape, Tensor.Dtype.F32, backend)
+  case marks
+    ok(_) -> nil
+    error(e) ->
+      Lift.close([tokens])
+      return error(e)
+  end
+
   outs = Lift.staged(
     m,
     ->(p: Clip) { traced(p) },
-    [tokens, marks],
+    [tokens, try marks],
     ->(p: Clip, xs: List[Tensor.Tensor]) { ok([try text_forward(p, xs[0], xs[1])]) },
   )
 
-  Lift.close([tokens, marks])
+  Lift.close([tokens, try marks])
   ok((try outs)[0])
 end
 
@@ -227,7 +237,7 @@ def traced(m: Clip) -> Clip
   m.with(
     vision: v.with(
       patch: Lift.conv2d(v.patch),
-      class_embedding: Lift.constant(v.class_embedding),
+      class_embedding: Trace.constant(v.class_embedding),
       positions: Lift.embedding(v.positions),
       pre_norm: Lift.norm(v.pre_norm),
       stack: Lift.stack(v.stack),
@@ -302,9 +312,8 @@ end
 def scale_of(t: Map[String, Tensor.Tensor]) -> Result[Float]
   values = Tensor.to_list(Weights.at(t, "logit_scale"))
   Lift.close([Weights.at(t, "logit_scale")])
-  first = (try values).first
   return error("logit_scale is a number") if (try values).size != 1
-  case first
+  case (try values)[0]
     Tensor.Values.Float(f) -> ok(f)
     _ -> error("logit_scale is a float")
   end
@@ -365,7 +374,7 @@ def vision_forward(m: Clip, images: Tensor.Tensor) -> Result[Tensor.Tensor]
   Nn.dense(v.projection, try Nn.layer_norm(v.post_norm, first))
 end
 
-## The text tower as `Tensor` calls: `ids` (`I32`, `[batch, seq]`) and `marks` (`F32`, 1.0 at the last id of each row
+## The text tower as `Tensor` calls: `ids` (`I32`, `[batch, seq]`) and `marks` (`F32`, 1.0 at the id of each row that is read
 ## and 0.0 elsewhere), which `Sentence.mean_pooled` reads as the one token to take.
 def text_forward(m: Clip, ids: Tensor.Tensor, marks: Tensor.Tensor) -> Result[Tensor.Tensor]
   x = m.text
@@ -409,8 +418,20 @@ def padded(r: List[Int], i: Int) -> Int
   0
 end
 
-## 1.0 at the last of `size` ids, 0.0 elsewhere.
-def pick(size: Int, i: Int) -> Float
-  return 1.0 if i == size - 1
+## The index of the first of the largest id of `r`: the end token, which has the largest id of a vocabulary.
+def first_largest(r: List[Int]) -> Int
+  at = 0
+  for i in 1...r.size
+    if r[i] > r[at]
+      at = i
+    end
+  end
+
+  at
+end
+
+## 1.0 at `at`, 0.0 elsewhere.
+def pick(at: Int, i: Int) -> Float
+  return 1.0 if i == at
   0.0
 end

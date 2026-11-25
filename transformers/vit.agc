@@ -179,10 +179,7 @@ def traced(m: ViT) -> ViT
     patch: Lift.conv2d(m.patch),
     cls: Trace.constant(m.cls),
     positions: Trace.constant(m.positions),
-    stack: Nn.EncoderStack(
-      blocks: m.stack.blocks.map { |b| Lift.block(b) },
-      final_norm: m.stack.final_norm.map { |n| Lift.norm(n) },
-    ),
+    stack: Lift.stack(m.stack),
     classifier: Lift.dense(m.classifier),
   )
 end

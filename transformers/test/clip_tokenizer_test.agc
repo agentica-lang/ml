@@ -1,4 +1,4 @@
-## `tokenizer/clip.agc` against Hugging Face's slow `CLIPTokenizer` (`clip_tokenizer_golden.py`): the ids of 70 strings
+## `tokenizer/clip.agc` against Hugging Face's slow `CLIPTokenizer` (`clip_tokenizer_golden.py`): the ids of 66 strings
 ## with the tiny tokenizer of `fixtures/clip` (cleaning, case, contractions, digits, CJK, control characters, the
 ## special tokens, truncation at 77). Run from `transformers/`.
 
@@ -9,7 +9,7 @@ FIXTURE = "test/fixtures/clip"
 
 def test_the_ids_agree_with_clip_tokenizer() -> Result[Void]
   checked = try Golden.clip(FIXTURE, "#{FIXTURE}/golden.json")
-  Test.assert(checked > 60, "only #{checked} cases ran")
+  Test.eq(checked, 66)
 end
 
 def test_a_folder_that_is_not_a_tokenizer_and_a_short_limit_are_errors() -> Result[Void]

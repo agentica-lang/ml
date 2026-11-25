@@ -73,9 +73,9 @@ end
 def step(i: Int) -> Int = (2 * i * (SIZE - 1) + GRID - 1) / (2 * (GRID - 1))
 
 ## The largest gap of the best 10 logits of each image from the golden; an error when a logit is past the tolerance or
-## the best 5 class ids `best` are not Hugging Face's, in the same order. Without `ordered` they may be reordered by
-## the near-ties of the logits: each of ours is in Hugging Face's best 10, and each class of Hugging Face's best 10
-## that is more than `abs` above its sixth is in ours.
+## the best 5 class ids `best` are not Hugging Face's, in the same order. Without `ordered` they may be reordered by the
+## near-ties of the logits: each of ours is in Hugging Face's best 10, and each class of Hugging Face's best 10 that is
+## more than `abs` above its sixth is in ours.
 def logit_gap(
   what: String,
   best: List[List[Int]],

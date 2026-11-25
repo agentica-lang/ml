@@ -3,8 +3,8 @@
 
 Usage: python3 clip_peer.py. Writes into a new temporary folder, prints its path, and leaves the folder `clip`,
 `missing` (`clip` without a weight) and `expected.json`: the batch of `images` (`[2, 3, 8, 8]`), the `rows` of text ids
-(three rows of 2 to 5 ids, each ending with the end token) and, for them, `image_embeds` `[2, 6]`, `text_embeds`
-`[3, 6]`, `logits` `[2, 3]` (scaled cosines), `probabilities` `[2, 3]` and the `scale` (`exp(logit_scale)`).
+(four rows of 3 to 5 ids, each with the end token, the last one twice) and, for them, `image_embeds` `[2, 6]`, `text_embeds`
+`[4, 6]`, `logits` `[2, 4]` (scaled cosines), `probabilities` `[2, 4]` and the `scale` (`exp(logit_scale)`).
 """
 
 import json
@@ -21,7 +21,8 @@ PROJECTION = 6
 VOCAB, MAX_POSITIONS = 20, 6
 VISION = dict(hidden_size=8, intermediate_size=12, num_hidden_layers=2, num_attention_heads=2)
 TEXT = dict(hidden_size=6, intermediate_size=10, num_hidden_layers=2, num_attention_heads=3)
-ROWS = [[18, 3, 5, 19], [18, 7, 19], [18, 4, 9, 11, 19]]
+# The last row has the end token (19, the largest id) twice: the vector read is the one at the first.
+ROWS = [[18, 3, 5, 19], [18, 7, 19], [18, 4, 9, 11, 19], [18, 3, 19, 5, 19]]
 LOGIT_SCALE = 2.3
 
 
@@ -171,7 +172,8 @@ class Model:
         table, pos = self.values[e + "token_embedding.weight"], self.values[e + "position_embedding.weight"]
         xs = [[table[t * width + c] + pos[i * width + c] for c in range(width)] for i, t in enumerate(ids)]
         xs = self.encoder("text_model.", TEXT, xs, True)
-        return self.apply("text_projection", self.norm_of("text_model.final_layer_norm", xs[-1]))
+        at = ids.index(max(ids))
+        return self.apply("text_projection", self.norm_of("text_model.final_layer_norm", xs[at]))
 
 
 def unit(x):

@@ -1,6 +1,6 @@
 ## A tiny random CLIP that the Python peer `clip_peer.py` writes with Hugging Face's names: the embeddings of two
-## images and of three rows of text ids, their scaled cosines and the probabilities of each text match the peer's
-## forward in doubles, on the reference and on ggml. Run from `transformers/`.
+## images and of four rows of text ids (one with the end token twice), their scaled cosines and the probabilities of
+## each text match the peer's forward in doubles, on the reference and on ggml. Run from `transformers/`.
 
 import Clip from "../clip"
 import S from "support"
@@ -34,7 +34,8 @@ def test_a_checkpoint_the_model_cannot_read_is_an_error_that_names_why() -> Resu
     config = try File.read_text("#{dir}/clip/config.json")
     for wrong in [
       try S.replaced(config, "\"clip\"", "\"vit\""),
-      try S.replaced(config, "\"gelu\"", "\"quick_gelu\""),
+      try S.edited(config, "\"gelu\"", "\"quick_gelu\"", 0),
+      try S.edited(config, "\"gelu\"", "\"quick_gelu\"", 1),
       try S.replaced(config, "\"patch_size\": 4", "\"patch_size\": 3"),
       try S.replaced(config, "\"projection_dim\": 6", "\"projection_dim\": 7"),
     ]
@@ -81,7 +82,7 @@ def matches(dir: String, backend: Tensor.Backend, abs: Float, rel: Float) -> Res
   i = try Clip.image_embeds(m, images)
   t = try Clip.text_embeds(m, try rows(dir))
   try Test.eq(Tensor.shape(i), [2, 6])
-  try Test.eq(Tensor.shape(t), [3, 6])
+  try Test.eq(Tensor.shape(t), [4, 6])
   try S.expect_close(
     try S.floats_of(i),
     try floats_at(dir, "image_embeds"),

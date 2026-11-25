@@ -36,8 +36,6 @@ def close(ts: List[Tensor.Tensor]) -> Void
   end
 end
 
-def constant(t: Tensor.Tensor) -> Tensor.Tensor = Trace.constant(t)
-
 def stack(s: Nn.EncoderStack) -> Nn.EncoderStack
   s.with(blocks: s.blocks.map { |b| block(b) }, final_norm: s.final_norm.map { |n| norm(n) })
 end
