@@ -8,5 +8,5 @@ blank_line_after_end = true
 [dependencies]
 tensor = { git = "https://github.com/agentica-lang/ml", ref = "f72667e03723cbbee63c34a8cd3ab3743de6f149", subdir = "tensor" }
 nn = { git = "https://github.com/agentica-lang/ml", ref = "2ca4098cf61afbce9984b6e1fc15ea17d1365ae5", subdir = "nn" }
-hub = { git = "https://github.com/agentica-lang/ml", ref = "4872450f83bc6627ced157aee3971e06d9614283", subdir = "hub" }
+hub = { git = "https://github.com/agentica-lang/ml", ref = "ffb320b72e7690d3ae0b410e0ebb3283263f602b", subdir = "hub" }
 train = { git = "https://github.com/agentica-lang/ml", ref = "8b47f6f2887113e9556708c7280b515b4254faea", subdir = "train" }
