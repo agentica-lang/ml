@@ -4,7 +4,7 @@ version = 1
 name = "hub"
 git = "https://github.com/agentica-lang/ml"
 subdir = "hub"
-ref = "6fee41a46917c25daa2db5bd06e1dfff42aa5056"
+ref = "4872450f83bc6627ced157aee3971e06d9614283"
 workspace = true
 
 [[package]]
@@ -19,19 +19,19 @@ hash = "sha256:c1be453b21abab840feaa03242f0be32c1145fefe068dc131c8ce7c1b7b80652"
 name = "nn"
 git = "https://github.com/agentica-lang/ml"
 subdir = "nn"
-ref = "dde0eae2b520d05348af27b167f5af4cfd2a3571"
+ref = "ebf5b18a4277b58b4a2d8f126f629dab35ecc0d2"
 workspace = true
 
 [[package]]
 name = "tensor"
 git = "https://github.com/agentica-lang/ml"
 subdir = "tensor"
-ref = "aa58b5d32ca07cde8d3385319274dffad0b76b5f"
+ref = "52494e115fe6a43bd823de3331ce1b6265d9f98b"
 workspace = true
 
 [[package]]
 name = "train"
 git = "https://github.com/agentica-lang/ml"
 subdir = "train"
-ref = "ca213f855edfd8589b6b7f658c4e26b618f2f98a"
+ref = "8b47f6f2887113e9556708c7280b515b4254faea"
 workspace = true
