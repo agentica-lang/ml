@@ -58,6 +58,11 @@ Nn.decoder_block(p, x, memory)     x [batch, t, width] over memory [batch, s, wi
 Nn.encoder_stack(p, x, mask?, causal?) / decoder_stack(p, x, memory)
                                    the blocks in order, then final_norm
 
+Moe (`pkg/nn/moe`, the mixture of experts of Granite MoE):
+struct Moe          { router: Dense ([experts, width], out_in), gate_up: [experts, 2 * inner, width],
+                      down: [experts, width, inner], top_k: Int, activation: Activation, normalize: Bool = true }
+Moe.moe(p, x)                      x [..., width] -> the same shape: the gated MLPs of the picked experts, added by their gates
+
 Delta (`pkg/nn/delta`, the linear attention of Qwen3.5):
 Delta.gated_delta_net(p, x, state, padding?)  x [tokens, width] after a DeltaState -> DeltaOut { out, state }
 Delta.causal_conv1d(x, weight, state)  depthwise over time, the past only -> Convolved { out, state }
@@ -79,6 +84,16 @@ A compiled decode step has one shape for the prompts of a capacity, so a prompt 
 `beta` and `g`, so a padding row neither writes into the recurrent state nor decays it, and `keep` (`[taps - 1, taps - 1
 + tokens]`, one-hot) picks the convolution's state rows that end at the last real token, a product with a 0/1 matrix
 (exact). `test/delta_test.agc` checks the answers and both states against the same prompt unpadded.
+
+`Moe.moe` is the sparse block of Granite MoE (and Qwen3 MoE): the router `Dense` scores the experts, `Tensor.top_ids` picks
+`top_k` of them per token, and each pick is a gated MLP whose two projections are one stacked weight a checkpoint stores
+(`gate_up` holds the gate and then the value of each expert; Granite's `input_linear` is that, and Qwen3 MoE's separate
+projections are concatenated when loaded). The gates are the softmax over the picked scores (`normalize`, Granite), or
+the picked entries of the softmax over all the experts. They are found with a mask of the ids against the expert
+numbers, not a gather of integers, because ggml has no integer sum. The ids come back in no order on ggml, so
+the routing is not compared node by node; `test/moe_test.agc` compares the answers with Hugging Face's blocks (one token,
+40 tokens, and a tie for the last place between two experts that are the same expert: whichever is picked, the answer is
+the same). `normalize = false` (the gates of Qwen3 MoE) has no model in this repo yet: Hugging Face's block checks it.
 
 ```text
 Nn.init_dense / init_layer_norm / init_embedding / init_attention /

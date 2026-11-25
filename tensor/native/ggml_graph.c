@@ -92,6 +92,7 @@ enum {
   OP_MAX_POOL2D,  /* ints: kernel, stride, padding */
   OP_AVG_POOL2D,  /* ints: kernel, stride, padding */
   OP_GATED_DELTA_RULE, /* args: q, k, v [T, H, S], g, beta [T, H], the state [H, S, S]; the answers [T, H * S] then the state [S, H * S] */
+  OP_EXPERT_MATMUL, /* args: the weights [E, rows, inner], x [T, uses or 1, inner], the expert ids [T, uses] */
   OP_COUNT
 };
 
@@ -100,7 +101,7 @@ static const char *op_names[OP_COUNT] = {
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
   "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
   "norm", "rms_norm", "set_rows", "top_k", "cast", "adam_step", "adam_part", "conv2d", "max_pool2d", "avg_pool2d",
-  "gated_delta_rule",
+  "gated_delta_rule", "expert_matmul",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -1023,8 +1024,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT || op == OP_GATHER ||
       op == OP_SCATTER_ADD || op == OP_CONV1D || op == OP_CONV2D || op == OP_ROPE || op == OP_BATCH_MATMUL) {
     if (nargs != 2) return tg_error(env, "a binary op takes 2 args");
-  } else if (op == OP_WHERE || op == OP_SET_ROWS) {
-    if (nargs != 3) return tg_error(env, "where and set_rows take 3 args");
+  } else if (op == OP_WHERE || op == OP_SET_ROWS || op == OP_EXPERT_MATMUL) {
+    if (nargs != 3) return tg_error(env, "where, set_rows and expert_matmul take 3 args");
   } else if (op == OP_ATTENTION) {
     if (nargs != 3 && nargs != 4) return tg_error(env, "attention takes q, k, v and an optional mask");
   } else if (op == OP_CONCAT) {
@@ -1268,8 +1269,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       break;
     }
     case OP_TOP_K:
-      if (a->rank != 1 || nints != 1 || ints[0] < 1 || ints[0] > a->ne[0]) {
-        return tg_error(env, "top_k takes a vector and a k from 1 to its length");
+      if (a->rank < 1 || a->rank > 2 || nints != 1 || ints[0] < 1 || ints[0] > a->ne[0]) {
+        return tg_error(env, "top_k takes a vector or a matrix and a k from 1 to the length of a row");
       }
       if (a->ne[0] > 16777216) {
         return tg_error(env, "top_k of more than 2^24 values is not lowered to ggml: F32 ids are exact below that");
@@ -1329,6 +1330,24 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       /* ggml takes the gate and beta as [1, heads, tokens]: the scale of q is its own, 1 / sqrt(width) */
       t = ggml_gated_delta_net(p->ctx, operands[0], operands[1], operands[2], reshape(p, operands[3], ne_gate),
                                reshape(p, operands[4], ne_gate), operands[5], 1);
+      break;
+    }
+    case OP_EXPERT_MATMUL: {
+      struct ggml_tensor *weights, *inputs, *ids;
+
+      if (nints != 0 || a->rank != 3 || b->rank != 3 || c->rank != 2 || b->ne[0] != a->ne[0] || c->ne[1] != b->ne[2] ||
+          (b->ne[1] != c->ne[0] && b->ne[1] != 1)) {
+        return tg_error(env, "expert_matmul takes weights [experts, rows, inner], x [tokens, uses or 1, inner] and ids [tokens, uses]");
+      }
+      if (rank != 3 || n->ne[0] != a->ne[1] || n->ne[1] != c->ne[0] || n->ne[2] != c->ne[1]) {
+        return tg_error(env, "expert_matmul answers [tokens, uses, rows]");
+      }
+      weights = operand(p, a);
+      inputs = operand(p, b);
+      if (weights->type != GGML_TYPE_F32 || inputs->type != GGML_TYPE_F32) return tg_error(env, "expert_matmul takes F32 tensors");
+      /* the ids are F32 in this layer; an id outside the experts is counted by the guard and refused by `run` */
+      ids = ggml_reshape_2d(p->ctx, row_ids(p, c, a->ne[2], OP_EXPERT_MATMUL, &n->guard), c->ne[0], c->ne[1]);
+      t = ggml_mul_mat_id(p->ctx, weights, inputs, ids);
       break;
     }
     case OP_ADAM_STEP: {

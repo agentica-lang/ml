@@ -8,6 +8,7 @@ import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
 REF = Tensor.Backend.Reference
+CPU = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
 
 ## `t` as a `Trace` constant of `dtype`: the weights of a layer that is
@@ -186,6 +187,15 @@ def jitter_encoder_stack(p: Nn.EncoderStack, seed: Int) -> Result[Nn.EncoderStac
   end
 
   ok(Nn.EncoderStack(blocks: blocks, final_norm: try jitter_optional_norm(p.final_norm, seed + 99)))
+end
+
+## True when the ggml CPU backend is there; with `TENSOR_REQUIRE_GGML` set, a missing one is an error, never a pass.
+def ggml_present() -> Result[Bool]
+  try Tensor.vulkan_fp16(false)
+  return ok(true) if Tensor.available(CPU)
+  flag = System.env("TENSOR_REQUIRE_GGML")
+  return ok(false) if !flag.ok? or try flag == ""
+  error("ggml required but not built (TENSOR_REQUIRE_GGML is set)")
 end
 
 def f32(data: List[Float], shape: List[Int], backend: Tensor.Backend = REF) -> Result[Tensor.Tensor]

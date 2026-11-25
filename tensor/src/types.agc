@@ -135,6 +135,7 @@ enum Op
   SetRows
   TopK(Int)
   GatedDeltaRule
+  ExpertMatmul
   Eq
   Clamp(Float, Float)
   Max(List[Int], Bool)
@@ -421,6 +422,7 @@ def op_name(op: Op) -> String
     Op.SetRows -> "set_rows"
     Op.TopK(_) -> "top_k"
     Op.GatedDeltaRule -> "gated_delta_rule"
+    Op.ExpertMatmul -> "expert_matmul"
     Op.Eq -> "eq"
     Op.Clamp(_, _) -> "clamp"
     Op.Max(_, _) -> "max"
