@@ -6,11 +6,13 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- `Tensor.expert_matmul(weights, x, ids)`: the product of each token by the experts it was routed to (`F32`, no gradient; ggml `ggml_mul_mat_id`), and `Tensor.top_ids` takes a matrix: the ids of each row (ml#274).
 - `Tensor.gated_delta_rule`: the recurrence of Qwen3.5's linear attention (`F32`, no gradient; ggml `ggml_gated_delta_net`) (ml#150).
 - `Tensor.softplus` and `Tensor.l2_norm(x, eps)`, derived ops of that layer (ml#150).
 
 ### nn
 
+- `Moe.moe`, the mixture-of-experts block (router, top-k, gated experts), in `pkg/nn/moe` (ml#274).
 - `Nn.Attention` has `gate`: Qwen3.5's output-gated full attention (ml#150).
 - `Delta.gated_delta_net`, the linear attention layer of Qwen3.5 with its conv and recurrent state, in `pkg/nn/delta` (ml#150).
 - `Delta.padding`: a call over padded rows (a prompt padded to a compiled shape) leaves the state as the real tokens left it (ml#150).

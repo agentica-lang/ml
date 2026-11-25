@@ -980,16 +980,19 @@ def set_rows(cache: Types.Tensor, fresh: Types.Tensor, positions: Types.Tensor) 
   end
 end
 
-## The indices of the `k` largest elements of the float vector `x`, an `I32` `[k]`, from the largest down on every backend
-## but `Ggml`, where `ggml_top_k` gives them in no particular order. Among equal values the ones kept are not
-## specified. In a trace it is one node, which `Ggml` runs on the device: only `k` ids cross to the host, not the
-## whole vector. `x` has at most 2^24 elements (ids are exact in `F32` below that). No gradient.
+## The indices of the `k` largest elements of the float vector `x`, or of each row of the matrix `x`, an `I32` `[k]`
+## (`[rows, k]`), from the largest down on every backend but `Ggml`, where `ggml_top_k` gives them in no particular
+## order. Among equal values the ones kept are not specified. In a trace it is one node, which `Ggml` runs on the
+## device: only the ids cross to the host, not the whole vector. A row has at most 2^24 elements (ids are exact in `F32`
+## below that). No gradient.
 def top_ids(x: Types.Tensor, k: Int) -> Result[Types.Tensor]
   _ = try float_only(x, "top_ids")
-  return error("top_ids needs a vector, got #{x.shape}") if x.shape.size != 1
-  return error("top_ids needs k from 1 to #{x.shape[0]}, got #{k}") if k < 1 or k > x.shape[0]
+  return error("top_ids needs a vector or a matrix, got #{x.shape}") if x.shape.size < 1 or x.shape.size > 2
+  width = x.shape[x.shape.size - 1]
+  return error("top_ids needs k from 1 to #{width}, got #{k}") if k < 1 or k > width
+  shape = x.shape.set(x.shape.size - 1, k)
   case x.backend
-    Types.Backend.Trace -> ok(Graph.record(Types.Op.TopK(k), [x], [k], Types.Dtype.I32))
+    Types.Backend.Trace -> ok(Graph.record(Types.Op.TopK(k), [x], shape, Types.Dtype.I32))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("top_ids")
     Types.Backend.Xla(_) -> Xla.compiled_only("top_ids")
     _ ->
@@ -999,9 +1002,103 @@ def top_ids(x: Types.Tensor, k: Int) -> Result[Types.Tensor]
         scores = scores.push(try Types.value_to_float(v, x.dtype))
       end
 
-      largest = (0...scores.size).to_a.sort_by { |i| 0.0 - scores[i] }
-      from_list(largest.take(k).map { |i| Types.Values.Int(i) }, [k], Types.Dtype.I32, x.backend)
+      chosen: List[Types.Values] = []
+      for r in 0...(scores.size / width)
+        largest = (0...width).to_a.sort_by { |i| 0.0 - scores[r * width + i] }
+        chosen = chosen + largest.take(k).map { |i| Types.Values.Int(i) }
+      end
+
+      from_list(chosen, shape, Types.Dtype.I32, x.backend)
   end
+end
+
+## The product of each pair `(token, use)` with the expert that `ids` names: `out[t, u] = weights[ids[t, u]] x[t, u]`,
+## the core of a mixture of experts (ggml runs it as `ggml_mul_mat_id`).
+## - `weights`: `[experts, rows, inner]`, one `[rows, inner]` matrix per expert as a checkpoint stores it.
+## - `x`: `[tokens, uses, inner]`, or `[tokens, 1, inner]` for one input that every use of the token shares.
+## - `ids`: `I32 [tokens, uses]`, each in `0...experts` (an id outside is an `error`).
+## - The answer is `[tokens, uses, rows]`.
+## `F32` only. In a trace it is one node, which `Ggml` runs as `ggml_mul_mat_id` (CPU and Vulkan), with the weights
+## as they are, and the other backends that compute run a loop over the pairs; `XLA` has no lowering. No gradient.
+def expert_matmul(weights: Types.Tensor, x: Types.Tensor, ids: Types.Tensor) -> Result[Types.Tensor]
+  try check_expert_matmul(weights, x, ids)
+  out_shape = [ids.shape[0], ids.shape[1], weights.shape[1]]
+  case weights.backend
+    Types.Backend.Trace -> ok(Graph.record(Types.Op.ExpertMatmul, [weights, x, ids], out_shape, weights.dtype))
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("expert_matmul")
+    Types.Backend.Xla(_) -> Xla.compiled_only("expert_matmul")
+    _ -> expert_matmul_composed(weights, x, ids)
+  end
+end
+
+## An error unless the three tensors are what `expert_matmul` takes.
+def check_expert_matmul(weights: Types.Tensor, x: Types.Tensor, ids: Types.Tensor) -> Result[Void]
+  _ = try same_backend(weights, x, "expert_matmul")
+  _ = try same_backend(weights, ids, "expert_matmul")
+  _ = try same_dtype(weights, x, "expert_matmul")
+  if weights.dtype != Types.Dtype.F32
+    return error("expert_matmul needs F32 tensors, got #{Types.dtype_name(weights.dtype)}")
+  end
+
+  if weights.shape.size != 3 or !all_positive(weights.shape)
+    return error("expert_matmul needs weights of [experts, rows, inner], got #{weights.shape}")
+  end
+
+  if ids.dtype != Types.Dtype.I32 or ids.shape.size != 2 or !all_positive(ids.shape)
+    return error("expert_matmul needs ids of I32 [tokens, uses], got #{Types.dtype_name(ids.dtype)} #{ids.shape}")
+  end
+
+  tokens = ids.shape[0]
+  uses = ids.shape[1]
+  inner = weights.shape[2]
+  if x.shape.size != 3 or x.shape[0] != tokens or x.shape[2] != inner or (x.shape[1] != uses and x.shape[1] != 1)
+    return error("expert_matmul needs x of [#{tokens}, #{uses} or 1, #{inner}], got #{x.shape}")
+  end
+
+  ok()
+end
+
+## True when every extent of `shape` is at least 1.
+def all_positive(shape: List[Int]) -> Bool
+  for d in shape
+    return false if d < 1
+  end
+
+  true
+end
+
+## The loop `expert_matmul` stands for, over the ops of this module, on any backend that computes.
+def expert_matmul_composed(weights: Types.Tensor, x: Types.Tensor, ids: Types.Tensor) -> Result[Types.Tensor]
+  experts = weights.shape[0]
+  rows = weights.shape[1]
+  inner = weights.shape[2]
+  tokens = ids.shape[0]
+  uses = ids.shape[1]
+  picks: List[Int] = []
+  for v in try to_list(ids)
+    case v
+      Types.Values.Int(i) -> picks = picks.push(i)
+      _ -> return error("expert_matmul needs integer ids")
+    end
+  end
+
+  answers: List[Types.Tensor] = []
+  for t in 0...tokens
+    for u in 0...uses
+      e = picks[t * uses + u]
+      return error("expert_matmul needs ids from 0 to #{experts - 1}, got #{e}") if e < 0 or e >= experts
+      w = try reshape(try slice(weights, [e, 0, 0], [e + 1, rows, inner]), [rows, inner])
+      j = u
+      if x.shape[1] == 1
+        j = 0
+      end
+
+      v = try reshape(try slice(x, [t, j, 0], [t + 1, j + 1, inner]), [inner, 1])
+      answers = answers.push(try reshape(try matmul(w, v), [1, 1, rows]))
+    end
+  end
+
+  reshape(try concat(answers, 0), [tokens, uses, rows])
 end
 
 ## The gated delta rule over `tokens` steps, the recurrence of the linear attention of Qwen3.5 (`q` and `k` already

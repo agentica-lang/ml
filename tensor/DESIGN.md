@@ -128,10 +128,22 @@ clamped into the cache), and it is not checked for finite values. The cache
 must be `F32`. `Trace.eval` writes a copy and leaves the cache alone. The
 check is at lowering, naming the nodes, so a KV cache is not copied at every
 step of a generation. It has no gradient.
-`top_ids(x, k)` (the ids of the k largest of a float vector, I32 `[k]`) is a
-node `ggml_top_k` runs on the device, so a decoder can read back k logits and
-their ids and not the whole vocabulary; the ids are in no order on ggml, and
-the derived `top_k` stays on the host. It has no gradient.
+`top_ids(x, k)` (the ids of the k largest of a float vector, I32 `[k]`, or of
+each row of a matrix, `[rows, k]`) is a node `ggml_top_k` runs on the device,
+so a decoder can read back k logits and their ids and not the whole
+vocabulary, and a router picks the experts of every token in the graph; the ids
+are in no order on ggml, and the derived `top_k` stays on the host. It has no
+gradient.
+`expert_matmul(weights, x, ids)` (the core of a mixture of experts: for each
+token and each of its `uses`, the product of the expert `ids[t, u]` of
+`weights` `[experts, rows, inner]`, a checkpoint's layout, with `x[t, u]`, or
+`x[t, 0]` when `x` has one use) is one node, which ggml runs as
+`ggml_mul_mat_id` with the weights as they are (CPU and Vulkan). Every other
+backend that computes runs a loop over the pairs, which reads the ids on the
+host (slow, and the reference is the oracle). An id outside the experts is an
+error: the reference finds it at the call, ggml counts it as it does for a
+`gather` and `run` refuses the answer. `F32` only. XLA has no lowering. It has no
+gradient.
 `gated_delta_rule(q, k, v, g, beta, state)` (the linear attention of Qwen3.5: per head a `[width, width]` state that
 decays by `exp(g)` and learns `k (beta * (v - state k))^T` at every token; the answers are `state q / sqrt(width)`, so
 the op scales `q` and a caller does not) is one node, which ggml runs as `ggml_gated_delta_net` (CPU, and Vulkan for

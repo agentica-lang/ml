@@ -68,6 +68,7 @@ CONV2D = 42
 MAX_POOL2D = 43
 AVG_POOL2D = 44
 GATED_DELTA_RULE = 45
+EXPERT_MATMUL = 46
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -884,6 +885,7 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.SetRows -> ok(SET_ROWS)
     Types.Op.TopK(_) -> ok(TOP_K)
     Types.Op.GatedDeltaRule -> ok(GATED_DELTA_RULE)
+    Types.Op.ExpertMatmul -> ok(EXPERT_MATMUL)
     Types.Op.Concat(_) -> ok(CONCAT)
     Types.Op.Stack(_) -> ok(CONCAT)
     Types.Op.Conv1d(_, _) -> ok(CONV1D)
