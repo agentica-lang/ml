@@ -43,7 +43,7 @@ end
 ## To a tensor
 
 - `to_tensor(image, backend, dtype, layout)` makes the tensor of one image. With `dtype: F32` (the default) the samples of a `U8` image are scaled to `0..1` (a `U16` one by 65535, an `F32` one is kept). With `dtype: U8` they are the samples as they are, which needs a `U8` image and a backend that converts to `U8` (not ggml). `layout` is `Chw` (`[channels, height, width]`, the default) or `Hwc` (`[height, width, channels]`). The image keeps all its bands, alpha included. A pixel format that is not `U8`, `U16` or `F32` is an `error`.
-- The pixels become a tensor with `Tensor.from_bytes`: the backend reads the interleaved `F32` samples itself. A `U8` image goes through `F32` on the way, which is exact.
+- The pixels become a tensor with `Tensor.from_bytes`: the backend reads the interleaved samples itself. A `U8` image crosses as bytes (`FloatFormat.U8`), a quarter of the size of `F32` ones, and the backend widens them in C; the scale to `0..1` is then an op on the device. An `F32` image, or a `U16` one cast to `F32`, crosses as `F32`.
 - `normalize(x, mean, std, layout)` gives `(x - mean) / std` for each channel. `x` is `F32` of rank 3 or more with the channels in the last three axes of `Chw` or the last axis of `Hwc`, so one call normalizes a whole batch. `mean` and `std` have one value for each channel, and a `std` of 0 is an `error`.
 
 ## Transforms
@@ -75,7 +75,16 @@ s = Vision.samples(folder, (0...folder.paths.size).to_a, steps, 0, backend).unwr
 dataset = Data.dataset(s.inputs, s.targets).unwrap!
 ```
 
-`samples` of every row holds all the images as tensors, so it fits a dataset that fits in memory. For a larger one, or for new random crops each epoch, take `samples` of the rows of one batch inside a batch function of `Train.fit_batches`.
+`samples` of every row holds all the images as tensors, so it fits a dataset that fits in memory. For a larger one, or for new random crops each epoch, take `samples` of the rows of one batch inside a batch function of `Train.fit_batches`, and give it `prefetch: 2`: a task then decodes the next batches while the device runs the step.
+
+```agentica {mode="fragment"}
+batch = ->(epoch: Int, i: Int) {
+  s = try Vision.samples(folder, rows_of(order, i), steps, epoch, backend)
+  ok(Data.Batch(inputs: s.inputs, targets: s.targets))
+}
+
+fit = try Train.fit_batches(&loss, params, batch, batches, optimizer, epochs, prefetch: 2)
+```
 
 ## Limits
 
@@ -83,4 +92,4 @@ dataset = Data.dataset(s.inputs, s.targets).unwrap!
 - `dtype: U8` is not for ggml, which cannot convert to `U8`.
 - The samples cross as little-endian `F32`. A big-endian machine is untested, and its pixels would be wrong.
 - The `U8` cast of `dtype: U8` is tested on the reference only, not on libtorch or XLA.
-- Decoding is not on the prefetch task of the loader: `samples` runs in the task that calls it.
+- `samples` runs in the task that calls it. In `Train.fit_batches` that is the task of `prefetch` when you give one, and the step's own task when you do not.

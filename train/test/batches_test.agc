@@ -219,3 +219,31 @@ def test_a_batch_answered_twice_is_an_error_that_says_so() -> Result[Void]
 
   ok()
 end
+
+## `prefetch` builds the batches on a task that stays ahead of the steps: the same losses and weights, bit for bit, for
+## batches of two shapes too, and a batch that fails is the same error of the same step, with the task ended.
+def test_prefetch_builds_the_batches_on_a_task_and_trains_the_same() -> Result[Void]
+  for backend in try backends()
+    start = try weights(backend)
+    make = ->(_e: Int, i: Int) { padded(backend, i) }
+    want = try Train.fit_batches(&pooled, try scalars(backend), make, 3, adam(), 4)
+    for ahead in [1, 3]
+      got = try Train.fit_batches(&pooled, try scalars(backend), make, 3, adam(), 4, prefetch: ahead)
+      try same(got, want, "on #{backend}, prefetch #{ahead}")
+    end
+
+    broken = ->(e: Int, i: Int) {
+      return error("no rows") if e == 2 and i == 1
+      pair(backend, i)
+    }
+
+    case Train.fit_batches(&linear, start, broken, 2, adam(), 3, prefetch: 2)
+      ok(_) -> return error("a failed batch did not stop the fit on #{backend}")
+      error(e) -> try Test.eq(e.message, "epoch 2, batch 1: no rows")
+    end
+  end
+
+  Test.error?(
+    Train.fit_batches(&linear, try weights(S.REF), ->(_e: Int, i: Int) { pair(S.REF, i) }, 2, adam(), 1, prefetch: -1),
+  )
+end

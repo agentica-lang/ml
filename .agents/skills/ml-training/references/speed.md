@@ -35,7 +35,8 @@ step takes half the time. LoRA on XLA, and applying the adapter on the activatio
 - **Threads.** ggml CPU uses one thread per physical core (`TENSOR_THREADS=N` changes it; 8 against 4 made no
   difference here).
 - **Prefetch.** `Loader.prefetch` hides the cost of building a batch on libtorch and the reference. On ggml and XLA the
-  gather is inside the step and no prefetch task runs.
+  gather is inside the step and no prefetch task runs. A batch function that decodes images or tokenizes takes
+  `fit_batches(..., prefetch: 2)`, on every backend.
 - **Memory.** LoRA keeps gradients and moments only for `A` and `B`. Train in `F32`.
 
 ## Compile a step yourself

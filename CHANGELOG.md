@@ -11,10 +11,15 @@ All packages are released together at one version, each on its own tag, `<packag
 
 - The bias gradient of a convolution (a sum over the batch and the plane) runs on ggml at a batch above 1: the gradient of `broadcast_to` sums a leading and a trailing block of axes in two steps.
 - `Tensor.from_bytes(data, shape, format, backend)`: an `F32` tensor from bytes that are in memory, as `from_file` makes one from a range of a file. libtorch and ggml read the bytes in C, so no value becomes a list.
+- `FloatFormat.U8` for `Tensor.from_bytes` (ml#252): one byte for each value, widened to `0.0..255.0` by the backend, so the samples of a `U8` image cross at a quarter of the size of `F32` ones. `from_file` and `convert_file` refuse it.
 
 ### nn
 
 - `Nn.fold_batch_norm`: a convolution and the inference batch norm after it as one convolution.
+
+### train
+
+- `Train.fit_batches(..., prefetch: K)` (ml#252): a task calls the batch function for the next batches, `K` ahead, while the steps run, so decoding image files overlaps the device. `Data.ahead`, `Data.next` and `Data.finish` are the stream behind it.
 
 ### transformers
 
@@ -25,6 +30,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### vision
 
+- A `U8` image goes to the device as bytes (ml#252): no cast to `F32` on the host, a quarter of the memory, and the scale to `0..1` runs on the device. `Vision.samples` inside a `Train.fit_batches` batch function decodes on its `prefetch` task.
 - `Vision.Step.ResizeTo(width, height)`: a resize to exactly that size, without keeping the aspect ratio.
 - New package `vision` (ml#82): images for tensors, on the `image` package (libvips). It needs libvips.
 - `Vision.to_tensor`: the pixels of an image go straight into a tensor, as `F32` in `0..1` or as `U8`, in `Chw` or `Hwc`.

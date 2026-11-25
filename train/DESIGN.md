@@ -36,7 +36,7 @@ Metrics.scalar(run, name, step, value) -> Result[Void]
 Metrics.close(run) -> Result[Void]
 
 Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?, metrics?) -> Result[Fit { params, history }]
-Train.fit_batches(loss, params, batch: Fn[Int, Int, Result[Batch]], count, optimizer, epochs, on_epoch?, metrics?) -> Result[Fit]
+Train.fit_batches(loss, params, batch: Fn[Int, Int, Result[Batch]], count, optimizer, epochs, on_epoch?, metrics?, prefetch = 0) -> Result[Fit]
   loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
   on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
 Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Module]
@@ -227,7 +227,11 @@ Lora.open(dir, backend) -> Result[Adapter]
   otherwise `fit`, which runs on the same loop with the loader behind such a
   function. The step is compiled once per batch shape either way. A batch
   is two tensors; what else a loss needs it derives (a padding mask is `ids
-  != 0`).
+  != 0`). With `prefetch > 0` a task (`Data.ahead`) calls the function for
+  every batch of every epoch in order and sends the batches through the
+  same kind of bounded channel as a feed's, so a function that decodes image
+  files runs beside the device. The function runs on that task, which lives
+  until `Data.finish` (`fit_batches` calls it on every path).
 - **Metrics live in `train/`.** Only `fit` reports through them, and the logger
   needs no native code and no `tensor/` type, so a package of its own would be
   a `agentica.toml`, a lock, a version pin and a CI job for one consumer. It is
@@ -287,7 +291,7 @@ Lora.open(dir, backend) -> Result[Adapter]
   gives, so the same batches), the step takes the dataset's tensors as
   constants and gathers in its own graph, which saves a graph run and the
   readback and re-upload of the batch (on XLA, a compile per batch shape);
-  `Data.feed` and `fit_batches` keep the prefetch.
+  `Data.feed` keeps the prefetch.
 - **The prefetch task lives until `stop`.** A native tensor belongs to the
   task that made it and is freed when that task ends, and a tensor made
   directly from a freed one can no longer be used (the VM keeps one level of

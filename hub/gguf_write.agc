@@ -133,6 +133,7 @@ def header_of(fields: List[Field], tensors: List[Out]) -> Result[Layout]
       return error("the tensor #{t.name} is written as F32, F16 or BF16, not Q8_0")
     end
 
+    return error("the tensor #{t.name} is written as F32, F16 or BF16, not U8") if t.format == Tensor.FloatFormat.U8
     return error("the tensor #{t.name} has #{shape.size} dimensions (1 to 4)") if shape.size < 1 or shape.size > 4
     parts = parts.push(try string(t.name))
     parts = parts.push(Binary.write_u32_le(shape.size.to_uint32!))
@@ -165,6 +166,7 @@ def ggml_type(format: Tensor.FloatFormat) -> Int
     Tensor.FloatFormat.F16 -> 1
     Tensor.FloatFormat.BF16 -> 30
     Tensor.FloatFormat.Q8_0 -> 8
+    Tensor.FloatFormat.U8 -> 24
   end
 end
 

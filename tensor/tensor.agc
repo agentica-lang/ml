@@ -279,6 +279,7 @@ def from_file(
   dtype: Types.Dtype = Types.Dtype.F32,
 ) -> Result[Types.Tensor]
   n = try Types.volume(shape)
+  return error("from_file reads F32, F16, BF16 or Q8_0 files: U8 is for from_bytes") if format == Types.FloatFormat.U8
   if !Types.is_packed_dtype(dtype) and dtype != Types.Dtype.F32
     return error("from_file reads F32, F16 or Q8_0, got #{Types.dtype_name(dtype)}")
   end
@@ -326,8 +327,9 @@ end
 
 ## Creation: an `F32` tensor of `shape` from `data`, which holds exactly its values as `format` writes them (little
 ## endian, `F32` by default): what `from_file` makes of a range, for bytes that are in memory already, such as the
-## pixels of an image. The backend widens the bytes itself, so no value becomes a list. A `data` of another size is an
-## `error`.
+## pixels of an image. The backend widens the bytes itself, so no value becomes a list. `FloatFormat.U8` takes one byte
+## per value and gives it as `0.0..255.0`, so the samples of a `U8` image cross at a quarter of their `F32` size. A
+## `data` of another size is an `error`.
 def from_bytes(
   data: Bytes,
   shape: List[Int],
@@ -367,8 +369,13 @@ def convert_file(
   end
 
   return error("convert_file needs a count of 0 or more, got #{count}") if count < 0
-  if src_format == Types.FloatFormat.Q8_0 or dst_format == Types.FloatFormat.Q8_0
-    return error("convert_file converts F32, F16 and BF16 ranges, not Q8_0")
+  if (
+    src_format == Types.FloatFormat.Q8_0 or
+    dst_format == Types.FloatFormat.Q8_0 or
+    src_format == Types.FloatFormat.U8 or
+    dst_format == Types.FloatFormat.U8
+  )
+    return error("convert_file converts F32, F16 and BF16 ranges, not Q8_0 or U8")
   end
 
   Ggml.convert_file(src, src_offset, src_format, count, dst, dst_offset, dst_format)

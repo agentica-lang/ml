@@ -69,6 +69,11 @@ end
 ## so. `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `epoch` (from 1), for data that is not two
 ## tensors of one shape, such as sentences padded to the longest of each batch. Each batch may have its own shape; the
 ## step is compiled once per shape, so few distinct shapes keep the compiles few.
+##
+## With `prefetch > 0`, a task calls `batch` for every batch of every epoch, in order, staying at most `prefetch` ahead,
+## while the steps run: the decoding of image files (`Vision.samples`) overlaps the device. `batch` then runs on that
+## task, and `epochs * count` calls happen in order whatever the steps do; the task ends before `fit_batches` returns,
+## on every path. A batch that failed reaches the fit as the error of its step.
 def fit_batches(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],
@@ -78,14 +83,22 @@ def fit_batches(
   epochs: Int,
   on_epoch: Optional[Fn[Epoch, Void]] = none,
   metrics: Optional[Metrics.Run] = none,
+  prefetch: Int = 0,
 ) -> Result[Fit]
   return error("fit_batches needs at least one batch, got #{count}") if count < 1
-  batches = ->(e: Int) { ->(i: Int) { fresh(batch.call(e, i), e, i) } }
-  trained(
-    Run(loss: loss, batches: batches, count: count, epochs: epochs, on_epoch: on_epoch, metrics: metrics),
-    params,
-    optimizer,
-  )
+  return error("prefetch must be 0 or more, got #{prefetch}") if prefetch < 0
+  run_of = ->(batches: Fn[Int, Fn[Int, Result[Data.Batch]]]) {
+    Run(loss: loss, batches: batches, count: count, epochs: epochs, on_epoch: on_epoch, metrics: metrics)
+  }
+
+  if prefetch == 0
+    return trained(run_of.call(->(e: Int) { ->(i: Int) { fresh(batch.call(e, i), e, i) } }), params, optimizer)
+  end
+
+  stream = try Data.ahead(batch, count, epochs, prefetch)
+  result = trained(run_of.call(->(_e: Int) { ->(_i: Int) { Data.next(stream) } }), params, optimizer)
+  Data.finish(stream)
+  result
 end
 
 ## The training step of `fit` as one StableHLO program (`Trace.stablehlo`): its arguments are the parameters, the

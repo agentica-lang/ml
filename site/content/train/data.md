@@ -86,7 +86,7 @@ end
 - Under prefetch, `take` gives the next batch of the stream. The `i` argument is not read, so take the batches in order.
 - A batch that fails to build reaches the caller as an error in its place. A crash of the task also reaches the caller as an error.
 - Native tensors made by the task belong to it. They stay usable until `stop`.
-- `fit` on `Ggml` and `Xla` does not use `prefetch`: a batch there is its row ids, and the gather runs inside the step. `Data.feed` and `fit_batches` still do.
+- `fit` on `Ggml` and `Xla` does not use `prefetch`: a batch there is its row ids, and the gather runs inside the step. `Data.feed` does, and `fit_batches` takes its own `prefetch` for a batch function.
 - Prefetch hides the time it takes to build a batch, and nothing more. The step's own compute is not overlapped.
 
 ## Limits

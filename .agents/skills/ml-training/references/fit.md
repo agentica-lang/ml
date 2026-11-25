@@ -8,7 +8,7 @@
 | Optimizer | `Optim.Optimizer.Sgd(Optim.Sgd(lr:, momentum: 0.0))`, `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))`, `AdamW(Optim.AdamW(lr:, weight_decay: 0.01, decay: []))` |
 | Schedule | `schedule:` on any optimizer: `Optim.Schedule.Constant`, `WarmupLinear(warmup, total)`, `WarmupCosine(warmup, total)`. `lr` is the peak. |
 | Data | `Data.dataset(inputs, targets)` (the first dimension is the rows), `Data.Loader(dataset:, batch_size:, shuffle: true, seed: 0, drop_last: false, prefetch: 2)` |
-| Run | `Train.fit(loss, params, loader, optimizer, epochs, on_epoch, metrics)` and `Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics)` |
+| Run | `Train.fit(loss, params, loader, optimizer, epochs, on_epoch, metrics)` and `Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics, prefetch: 0)` |
 
 `Adam` defaults: `lr` 0.001, betas 0.9 and 0.999, `eps` 1e-8. `AdamW`'s `decay` has one flag per parameter (empty: all
 decay); a fine-tune leaves out biases and layer-norm weights. `fit` starts every run at step 0, so a resumed run starts
@@ -139,6 +139,8 @@ each batch. `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `ep
 - Each batch may have its own shape. On ggml and XLA the step is compiled once per shape, so pad to a few lengths (a
   multiple of 8, for one) when the lengths vary a lot.
 - The batch is two tensors. Derive the rest in the loss: a padding mask is `1 - to_dtype(eq(ids, pads), F32)`.
+- `prefetch: K` runs `batch` on a task that stays `K` batches ahead, so decoding image files (`Vision.samples`) overlaps the
+  step. The batches come in order, the same ones as without it.
 
 ```agentica
 import Data from "pkg/train/data"

@@ -136,7 +136,7 @@ MODULUS = 2147483647
 MULTIPLIER = 48271
 SUFFIXES = [".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif"]
 
-## An image as `F32` pixels, interleaved, with what makes them a tensor.
+## An image's samples, interleaved: one byte each for a `U8` image, little-endian `F32` for the others.
 struct Pixels
   data: Bytes
   width: Int
@@ -300,7 +300,7 @@ def crop_at(image: Image.Image, width: Int, height: Int, left: Int, top: Int) ->
   Image.crop(image, left, top, width, height)
 end
 
-## The pixels of `image` as `F32`, with the check that a tensor can be made of them.
+## The samples of `image`, with the check that a tensor can be made of them.
 def pixels_of(image: Image.Image) -> Result[Pixels]
   kind = Image.pixel_format(image)
   case kind
@@ -310,8 +310,12 @@ def pixels_of(image: Image.Image) -> Result[Pixels]
     _ -> return error("an image of #{kind} samples has no tensor: use U8, U16 or F32")
   end
 
-  as_float = try Image.cast(image, Image.Format.F32)
-  data = try Image.to_pixels(as_float)
+  samples = image
+  if kind != Image.Format.U8
+    samples = try Image.cast(image, Image.Format.F32)
+  end
+
+  data = try Image.to_pixels(samples)
   ok(
     Pixels(
       data: data,
@@ -350,10 +354,15 @@ def tensorize(
     return error("U8 tensors take U8 images, got #{first.pixel_format}")
   end
 
+  stored = Tensor.FloatFormat.F32
+  if first.pixel_format == Image.Format.U8
+    stored = Tensor.FloatFormat.U8
+  end
+
   raw = try Tensor.from_bytes(
     Bytes.concat(parts.map { |p| p.data }),
     [parts.size, first.height, first.width, first.bands],
-    Tensor.FloatFormat.F32,
+    stored,
     backend,
   )
 

@@ -105,3 +105,34 @@ def test_a_folder_of_images_trains_an_mlp() -> Result[Void]
     ok()
   end
 end
+
+## The images of the rows of batch `i`, two at a time, decoded where this runs and made a batch of rows of 24 values.
+def decoded_batch(f: Vision.Folder, backend: Tensor.Backend, i: Int) -> Result[Data.Batch]
+  s = try Vision.samples(f, [2 * i, 2 * i + 1], [], 0, backend)
+  ok(Data.Batch(inputs: try flat(s.inputs), targets: s.targets))
+end
+
+def fit_decoded(f: Vision.Folder, backend: Tensor.Backend, prefetch: Int) -> Result[Train.Fit]
+  up = try Nn.init_dense(24, 4, 1, backend)
+  down = try Nn.init_dense(4, 2, 2, backend)
+  params = [up.w, up.b.unwrap!, down.w, down.b.unwrap!]
+  decode = ->(_e: Int, i: Int) { decoded_batch(f, backend, i) }
+  adam = Optim.Optimizer.Adam(Optim.Adam(lr: 0.05))
+  Train.fit_batches(&loss, params, decode, f.paths.size / 2, adam, 5, prefetch: prefetch)
+end
+
+## Decoding the files on the prefetch task of `fit_batches` trains the same as decoding them in the step.
+def test_images_decoded_on_the_prefetch_task_train_the_same() -> Result[Void]
+  S.with_dir do |root|
+    try make_dataset(root)
+    f = try Vision.folder(root)
+    for backend in try S.backends()
+      want = try fit_decoded(f, backend, 0)
+      got = try fit_decoded(f, backend, 2)
+      try Test.eq(got.history, want.history)
+      try Test.assert(got.history[4] < got.history[0], "the loss did not fall on #{backend}")
+    end
+
+    ok()
+  end
+end

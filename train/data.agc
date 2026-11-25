@@ -141,23 +141,42 @@ def epoch(f: Feed, epoch: Int) -> Feed
   end
 end
 
+## The batches that `batch(epoch, i)` makes, `count` for each of `epochs` epochs in order, built by a task that stays at
+## most `prefetch` ahead (at least 1): what a feed does for a loader, for a batch that a function makes, such as the
+## decoding of image files. The task runs `batch`, so it overlaps whatever the caller does between `next` calls.
+## `finish` must follow, on every path.
+def ahead(batch: Fn[Int, Int, Result[Batch]], count: Int, epochs: Int, prefetch: Int) -> Result[Ahead]
+  return error("prefetch must be at least 1, got #{prefetch}") if prefetch < 1
+  batches: Channel[Result[Batch]] = Channel.new(prefetch)
+  producer = Task.spawn(&produce_made, Made(batch: batch, count: count, epochs: epochs, batches: batches))
+  Task.monitor(producer, batches) do |down| error("the prefetch task ended: #{down.code} #{down.message}") end
+  ok(Ahead(batches: batches, producer: producer))
+end
+
+## The next batch of `a`, in order. A batch whose tensors were freed (the task ended without `finish`) is an error.
+def next(a: Ahead) -> Result[Batch] = alive(try receive(a))
+
+## Ends the task of `a`, which frees the native tensors it made.
+def finish(a: Ahead) -> Void
+  a.batches.close
+  Task.cancel(a.producer)
+  _ = Task.await(a.producer)
+end
+
 ## Batch `i` of the current epoch. Under prefetch `i` is not read: the task
 ## gives the next batch of the stream, so take them in order. A batch whose
 ## tensors were freed (the task ended without `stop`) is an error.
 def take(f: Feed, i: Int) -> Result[Batch]
   case f.ahead
     none -> batch(f.loader, f.order, i)
-    some(a) -> alive(try receive(a))
+    some(a) -> next(a)
   end
 end
 
 ## Ends the prefetch task, which frees the native tensors it made.
 def stop(f: Feed) -> Void
   case f.ahead
-    some(a) ->
-      a.batches.close
-      Task.cancel(a.producer)
-      _ = Task.await(a.producer)
+    some(a) -> finish(a)
     none -> nil
   end
 end
@@ -193,6 +212,13 @@ struct Job
   batches: Channel[Result[Batch]]
 end
 
+struct Made
+  batch: Fn[Int, Int, Result[Batch]]
+  count: Int
+  epochs: Int
+  batches: Channel[Result[Batch]]
+end
+
 ## Waits for the next item; an error once the channel is closed and drained.
 ## A wait that timed out may have raced with the producer, which sends a batch
 ## and closes with its reason between the wait and the `closed?` check: the
@@ -217,14 +243,29 @@ end
 ## it: the consumer takes the batches built before, then that error. Then the
 ## task stays until `stop` cancels it, whether it failed or not: its tensors
 ## must outlive their use.
-def produce(job: Job) -> Result[Void]
-  case send_all(job)
-    error(e) -> job.batches.close(e)
+def produce(job: Job) -> Result[Void] = linger(send_all(job), job.batches)
+
+def produce_made(job: Made) -> Result[Void] = linger(send_made(job), job.batches)
+
+def linger(sent: Result[Void], batches: Channel[Result[Batch]]) -> Result[Void]
+  case sent
+    error(e) -> batches.close(e)
     ok(_) -> nil
   end
 
   while true
     Task.sleep(POLL_MS)
+  end
+
+  ok()
+end
+
+def send_made(job: Made) -> Result[Void]
+  for e in 1..job.epochs
+    for i in 0...job.count
+      b = try job.batch.call(e, i)
+      return ok() if !hand(job.batches, ok(b))
+    end
   end
 
   ok()
