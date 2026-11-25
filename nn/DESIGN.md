@@ -55,6 +55,22 @@ Nn.decoder_block(p, x, memory)     x [batch, t, width] over memory [batch, s, wi
 Nn.encoder_stack(p, x, mask?, causal?) / decoder_stack(p, x, memory)
                                    the blocks in order, then final_norm
 
+Delta (`pkg/nn/delta`, the linear attention of Qwen3.5):
+Delta.gated_delta_net(p, x, state)  x [tokens, width] after a DeltaState -> DeltaOut { out, state }
+Delta.causal_conv1d(x, weight, state)  depthwise over time, the past only -> Convolved { out, state }
+Delta.gated_rms_norm(x, z, weight, eps)  weight * rms_norm(x) * silu(z)
+Delta.delta_start(p, backend)      the zero DeltaState of a layer
+```
+
+The layer is for inference: a state is not a parameter and `gated_delta_rule` has no gradient, so nothing flows back
+through it. It takes one head width for keys and values (the rule's), and a value head count that is a multiple of
+the key head count. `DeltaState` is not Hugging Face's cache: `conv` is `[taps - 1, channels]`, the last `taps - 1`
+rows of the convolution's input in time order (Hugging Face keeps `[channels, taps]`, the last `taps` columns), and
+`recurrent` is `[value heads, value, key]` (Hugging Face's `[value heads, key, value]`, transposed). A loader reads the
+checkpoint's convolution `[channels, 1, taps]` as `[channels, taps]`; `test/delta_test.agc` checks both states against
+the cache of Hugging Face.
+
+```text
 Nn.init_dense / init_layer_norm / init_embedding / init_attention /
   init_mlp / init_encoder_block / init_decoder_block / init_encoder_stack /
   init_decoder_stack(..., seed, backend, options?) -> Result[layer]

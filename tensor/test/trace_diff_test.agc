@@ -230,6 +230,49 @@ def test_the_gradient_of_gelu_erf_on_ggml_matches_python_math() -> Result[Void]
   ok()
 end
 
+## `softplus` has the gradient `sigmoid(x)` everywhere, `0.5` at `0.0` included (where `relu` has a derivative of `0`), on
+## the reference and on ggml.
+def test_the_gradient_of_softplus_is_the_sigmoid() -> Result[Void]
+  points = [0.0, 1.5, -2.0, 30.0, -30.0]
+  slopes = [0.5, 0.8175744761936437, 0.11920292202211755, 1.0, 9.357622968840175e-14]
+  backends = [REF]
+  if try Support.ggml_present()
+    backends = backends.push(CPU)
+  end
+
+  for backend in backends
+    x = try Tensor.floats(points, [5], backend)
+    grads = try Trace.grad([x]) do |xs| Tensor.sum(try Tensor.softplus(xs[0])) end
+    got = try Support.floats_of(grads[0])
+    for j in 0...got.size
+      return error("on #{backend}: slope #{j}: #{got[j]} against #{slopes[j]}") if (got[j] - slopes[j]).abs > 0.000001
+    end
+  end
+
+  ok()
+end
+
+## `l2_norm` of `[3, 4]` weighed by `[1, 2]`: the gradient is `w / |x| - (w . x) x / |x|^3`.
+def test_the_gradient_of_l2_norm_matches_the_formula() -> Result[Void]
+  backends = [REF]
+  if try Support.ggml_present()
+    backends = backends.push(CPU)
+  end
+
+  for backend in backends
+    x = try Tensor.floats([3.0, 4.0], [1, 2], backend)
+    w = try Tensor.floats([1.0, 2.0], [1, 2], backend)
+    grads = try Trace.grad([x]) do |xs|
+      Tensor.sum(try Tensor.mul(try Tensor.l2_norm(xs[0], 0.000000000001), Trace.constant(w)))
+    end
+
+    got = try Support.floats_of(grads[0])
+    try Test.assert((got[0] + 0.064).abs < 0.000001 and (got[1] - 0.048).abs < 0.000001, "on #{backend}: #{got}")
+  end
+
+  ok()
+end
+
 ## The gradient of `sum(layer_norm(x) * w)` (`rms_norm` with `rms`) at a fixed `x` on `backend`.
 def normed_grad(backend: Tensor.Backend, rms: Bool) -> Result[Tensor.Tensor]
   data = [0.5, -1.0, 2.0, 0.3, 1.2, -0.7, 0.9, 0.1, -0.4, 1.7, -1.3, 0.6]

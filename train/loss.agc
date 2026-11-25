@@ -12,16 +12,10 @@ def mse(prediction: Tensor.Tensor, target: Tensor.Tensor) -> Result[Tensor.Tenso
 end
 
 ## Binary cross-entropy of `logits` against `targets` in `0..1`:
-## `softplus(z) - t z`, with the stable
-## `softplus(z) = relu(z) + log(1 + exp(-|z|))`. `|z|` is `2 relu(z) - z`,
-## so that at `z = 0`, where `relu`'s derivative is taken as `0`, the
-## gradient is still `sigmoid(0) - t`.
+## `softplus(z) - t z` (`Tensor.softplus`, stable for any `z`, with the gradient
+## `sigmoid(0) - t` at `z = 0`).
 def binary_cross_entropy(logits: Tensor.Tensor, targets: Tensor.Tensor) -> Result[Tensor.Tensor]
-  pos = try Tensor.relu(logits)
-  abs = try Tensor.sub(try Tensor.add(pos, pos), logits)
-  one = try Tensor.full(Tensor.shape(logits), Tensor.Values.Float(1.0), Tensor.dtype(logits), Tensor.backend(logits))
-  soft = try Tensor.add(pos, try Tensor.log(try Tensor.add(one, try Tensor.exp(try Tensor.neg(abs)))))
-  Tensor.mean(try Tensor.sub(soft, try Tensor.mul(logits, targets)))
+  Tensor.mean(try Tensor.sub(try Tensor.softplus(logits), try Tensor.mul(logits, targets)))
 end
 
 ## Softmax cross-entropy of `logits` (`[batch, classes]`) against the integer

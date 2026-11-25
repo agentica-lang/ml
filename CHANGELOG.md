@@ -7,6 +7,11 @@ All packages are released together at one version, each on its own tag, `<packag
 ### tensor
 
 - `Tensor.gated_delta_rule`: the recurrence of Qwen3.5's linear attention (`F32`, no gradient; ggml `ggml_gated_delta_net`) (ml#150).
+- `Tensor.softplus` and `Tensor.l2_norm(x, eps)`, derived ops of that layer (ml#150).
+
+### nn
+
+- `Delta.gated_delta_net`, the linear attention layer of Qwen3.5 with its conv and recurrent state, in `pkg/nn/delta` (ml#150).
 
 ## [0.5.1] - 2026-11-25
 

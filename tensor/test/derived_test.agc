@@ -185,3 +185,21 @@ def test_dropout_rejects_a_probability_outside_zero_to_one() -> Result[Void]
   try Test.error?(Tensor.dropout(t, 1.5))
   Test.error?(Tensor.dropout(t, -0.1))
 end
+
+## `log(1 + exp(x))` from Python's `math`, including a large `x` that would overflow `exp` in `F32`.
+def test_softplus_matches_the_hand_values() -> Result[Void]
+  t = try Support.f32([0.0, 1.0, -2.0, 30.0, -40.0, 200.0], [6])
+  want = [
+    0.6931471805599453, 1.3132616875182228, 0.12692801104297263, 30.000000000000093, 4.248354255291589e-18, 200.0,
+  ]
+
+  Support.expect_floats(try Tensor.softplus(t), want)
+end
+
+def test_l2_norm_scales_each_row_to_length_one() -> Result[Void]
+  t = try Support.f32([3.0, 4.0, 0.0, 0.0, 1.0, -1.0], [3, 2])
+  want = [0.6, 0.8, 0.0, 0.0, 0.7071067811865475, -0.7071067811865475]
+  try Support.expect_floats(try Tensor.l2_norm(t, 0.000000000001), want)
+  try Test.error?(Tensor.l2_norm(t, 0.0))
+  Test.error?(Tensor.l2_norm(try Support.f32([1.0], [1]), 0.0 - 1.0))
+end
