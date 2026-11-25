@@ -65,10 +65,19 @@ int main(int argc, char **argv) {
     struct llama_batch batch;
     int n = 0, i, k;
     char *p = line, *end;
+    size_t len = strlen(line);
 
+    if (len == MAX_IDS * 12 - 1 && line[len - 1] != '\n') {
+      fprintf(stderr, "llama_golden: a line is longer than %d bytes\n", MAX_IDS * 12 - 1);
+      return 1;
+    }
     while (n < MAX_IDS && (ids[n] = (llama_token)strtol(p, &end, 10), end != p)) {
       n++;
       p = end;
+    }
+    if (n == MAX_IDS && (strtol(p, &end, 10), end != p)) {
+      fprintf(stderr, "llama_golden: a case has more than %d ids\n", MAX_IDS);
+      return 1;
     }
     if (n == 0) continue;
     cp.n_ctx = (uint32_t)n;

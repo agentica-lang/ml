@@ -620,7 +620,14 @@ def relu_rule(x: Types.Tensor, ct: Types.Tensor) -> Result[Types.Tensor]
 end
 
 def matmul_rule(n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Types.Tensor]
-  return Tensor.matmul(ct, try Tensor.transpose(n.args[1])) if i == 0
+  if i == 0
+    if n.args[1].dtype == Types.Dtype.Q8_0
+      return error("the gradient of a product with a Q8_0 weight is not supported: the weight is for inference")
+    end
+
+    return Tensor.matmul(ct, try Tensor.transpose(n.args[1]))
+  end
+
   Tensor.matmul(try Tensor.transpose(n.args[0]), ct)
 end
 
