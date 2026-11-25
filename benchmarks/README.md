@@ -282,6 +282,35 @@ How the cells were run. Each cell is one process of one run, and the first pass 
 
 That choice biases the rerun cells: only cells whose first run was high were run again, and the second run is the one shown, so they look better than the cells that were not run again (six of the eight went down, two went up; four of the eight are Vulkan cells, which share the iGPU with the desktop). Three cells were over the line and were not run again: `ggml-vulkan-fit` Adam at 64, `pytorch-compile` Adam at 64 and `torch-cpu-fit` Adam at 4096 (1.15 to 1.16 times their minimum, marked `*`); the machine went back to the other jobs. Two rerun cells are still marked `*`, `ggml-vulkan-fit` SGD at 256 and `jax-jit` Adam at 64, and have no third run. The first step, which holds the compile, is in `results.jsonl` as `first_ms`: 0.3 to 0.5 s for JAX, 2.5 to 10 s for `torch.compile`, 0.02 to 1 s for ggml and libtorch (the large batches are the long ones).
 
+## Fine-tuning DistilBERT on STS-B, ours against PyTorch (ml#182)
+
+One epoch of a sentence-transformers DistilBERT (`sentence-transformers/msmarco-distilbert-cos-v5`, 66 M weights, all trained) on the first 1000 pairs of STS-B, on the CPU, in Agentica ml ([`distilbert_stsb.agc`](../transformers/tools/distilbert_stsb.agc), `Train.fit_batches` on `Backend.Ggml`) and in PyTorch ([`distilbert_stsb.py`](stsb/distilbert_stsb.py)), with the same rules. The unit is ms per step, the median of the steps that are not the first of their batch shape (on our side that step compiles a program; the same steps are left out on both sides). A step is building the batch, the forward, the gradients, the AdamW update and reading the loss back to the host.
+
+| | |
+|---|---|
+| Machine | the one above (Ryzen 5 3550H, 8 threads, 12 GB), the machine quiet: `run.sh` refuses to start a run at a load average above 1.0 |
+| Ours | agentica-lang/ml `8521904` plus this PR, Agentica 0.37.0, ggml `417a024b4fb6` (its CPU build has llamafile's sgemm off) |
+| PyTorch | 2.6.0+cpu with transformers 4.57.6 and tokenizers 0.22.1, Python 3.13.5; autograd and `torch.optim.AdamW`, eager attention, no `torch.compile` |
+| Threads | 8 on both sides: ggml uses every online CPU, and the peer sets `torch.set_num_threads` to the CPUs of the process (`OMP_NUM_THREADS=8`) |
+| Model | revision `c598d92e340e`, `model.safetensors` (never the pickle), `F32` |
+| Data | `sentence-transformers/stsb` at revision `ab7a5ac0e35a`: the first 1000 pairs of `train` in order, no shuffle, and the 1500 pairs of `validation` for Spearman; `run.sh fetch` checks the sha256 of every file |
+| Rules | batch 16 pairs (the last one 8), so 63 steps; WordPiece with a limit of 128 tokens; the two sentences of a batch go through the model as one batch of 32 rows, padded to its longest sentence rounded up to a multiple of `PAD_TO`; mean pooling; the cosine loss of sentence-transformers (the squared error of the cosine against the score); AdamW lr 2e-5, betas 0.9 and 0.999, eps 1e-8, weight decay 0.01 except on a bias or a layer-norm weight; no warmup, no clipping, no dropout |
+
+These are not the defaults of sentence-transformers' trainer, which shuffles, warms the learning rate up and clips the gradient: the rules are the smallest set both sides can follow exactly, so that the two loss curves can be compared number by number.
+
+| `PAD_TO` | batch shapes | ours, ms per step | PyTorch, ms per step | ours / PyTorch | the 63 steps, ours | the 63 steps, PyTorch | largest loss gap |
+|---|---|---|---|---|---|---|---|
+| 1 (the longest sentence) | 14 | 3032 | 1353 | 2.24 | 207 s | 90 s | 6.0e-8 |
+| 8 | 4 | 3365 | 1501 | 2.24 | 232 s | 104 s | 5.0e-8 |
+
+Spearman of the cosine against the score on `validation` is 0.8150 before and 0.8340 after, the same on both sides in both runs. The loss goes from 0.037646 (step 1) to 0.029733 (step 63) on both sides; over the run it moves between 0.007 and 0.065 with the batch.
+
+We are 2.24 times slower than PyTorch, at both paddings. This is before ml#192 turns llamafile's sgemm on in ggml's CPU build, so these numbers will move. The first step of a shape costs about 0.9 s more than a warm one on our side (median 3898 ms against 3032 at `PAD_TO=1`: the trace and the compile), and PyTorch's is slower too (1585 ms against 1353). Padding to a multiple of 8 saves ten compiles and still loses on both sides: the longer rows cost more than the compiles. The time follows the length: 2793 ms at 12 tokens and 3494 ms at 17 on our side, 1189 ms and 1538 ms in PyTorch.
+
+Memory, the peak resident size of the process (GNU time): 3.55 GB for our whole run (2.74 GB for one step on the longest batch alone, 32 rows of 28 tokens), 1.90 GB for PyTorch.
+
+Correctness comes first: `summary.py` exits 1 when the two runs do not have the same steps and shapes, or when their losses differ by more than 1.5e-7 at any step. The tolerance comes from three measurements on this machine: PyTorch against itself at 8 and at 4 threads differs by up to 2.4e-8, ours against PyTorch by up to 6.0e-8, and PyTorch without the weight decay differs from PyTorch by 2.8e-7. So 1.5e-7 is 2.5 times the gap of a right run and half the gap of the smallest mistake we tried; it is tied to these rules and this checkpoint, and a different run needs its own.
+
 ## BERT (ml#78), ours against llama.cpp
 
 `bert-base-uncased` (the Hugging Face checkpoint, `float32`), the forward over token ids, so the tokenizer is not in the time. Ours is `transformers/tools/bench_bert.agc` (a warm-up run, then the median of 5 runs, 3 for the batch of 8; each run traces and runs the whole graph) on ml `d14bfd6`'s `transformers/` (`bert.agc` before its memory fixes), same machine as above, load average under 2. llama.cpp (`4f5d1f64b`, build 2172, CPU only: this checkout has no Vulkan build) runs the GGUF that its own converter makes from the same weights (`convert_hf_to_gguf.py --outtype f32`), with `llama-bench -p 128,512 -n 0 -t 8 -r 5`. Every row is one sentence unless it says a batch.
@@ -441,6 +470,21 @@ sh benchmarks/training/run.sh run results.jsonl
 python3 -I benchmarks/training/table.py results.jsonl
 python3 -I benchmarks/training/table_test.py           # the loss-curve verdict of table.py
 ```
+
+The STS-B fine-tune of ml#182 needs the PyTorch venv, `curl` and the ggml engine. The two runs take about 10 minutes together; run them one after the other with the machine quiet:
+
+```sh
+sh benchmarks/stsb/run.sh setup                        # torch, transformers, pyarrow and their dependencies, pinned
+sh benchmarks/stsb/run.sh fetch                        # the checkpoint and STS-B, at pinned revisions, sha256 checked
+sh benchmarks/stsb/run.sh data                         # the parquet files as JSON lines
+sh benchmarks/stsb/run.sh smoke                        # both sides on three pairs: they run and agree
+sh benchmarks/stsb/run.sh ours ours.jsonl              # PAD_TO=8 for the other row
+sh benchmarks/stsb/run.sh peer peer.jsonl
+python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl
+python3 -I benchmarks/stsb/summary_test.py             # the verdict of summary.py
+```
+
+`pyarrow` alone reads the parquet files, not the `datasets` package, which would bring a dozen more dependencies for one `read_table`.
 
 ### The converter
 

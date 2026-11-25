@@ -5,7 +5,7 @@
 
 It prints the steps and the median ms per step of each side (the steps that are the first of their shape left out, on
 both sides), Spearman before and after, and the largest gap between the two loss curves. It exits 1 when the runs
-differ in their steps or shapes, or when that gap passes TOLERANCE (0.001: see the README for how it was set), since a
+differ in their steps or shapes, or when that gap passes TOLERANCE (1.5e-7: see the README for how it was set), since a
 fast wrong answer does not count. Standard library only.
 """
 
@@ -13,7 +13,7 @@ import json
 import statistics
 import sys
 
-TOLERANCE = 0.001
+TOLERANCE = 1.5e-7
 
 
 def read(path):
@@ -51,7 +51,7 @@ def compare(ours, peer, tolerance):
         f"ms per step (median): ours {median_ms(a):.1f}, PyTorch {median_ms(b):.1f}",
         f"loss: first {a[0]['loss']:.6f} / {b[0]['loss']:.6f}, "
         f"last {a[-1]['loss']:.6f} / {b[-1]['loss']:.6f} (ours / PyTorch)",
-        f"largest loss gap {gaps[worst]:.2e} at step {a[worst]['step']} (tolerance {tolerance:.0e})",
+        f"largest loss gap {gaps[worst]:.2e} at step {a[worst]['step']} (tolerance {tolerance:.1e})",
     ]
     for when in ("before", "after"):
         if when in sa and when in sb:
