@@ -133,9 +133,9 @@ def learning_rate(state: State) -> Float
 end
 
 ## The numbers of each input of the step that `Train.fit` and `Train.stablehlo` compile, one list per input: SGD's
-## learning rate, and for Adam the 7 numbers of `Tensor.adam_step` (the learning rate with its schedule, `beta1`, `beta2`, `eps`, the weight
-## decay, then the two bias corrections); AdamW has two, the second without decay, for the parameters that do not
-## decay. A one-number input is a rank-0 tensor, the other a rank-1 tensor.
+## learning rate, and for Adam the 7 numbers of `Tensor.adam_step` (the learning rate with its schedule, `beta1`,
+## `beta2`, `eps`, the weight decay, then the two bias corrections); AdamW has two, the second without decay, for the
+## parameters that do not decay. A one-number input is a rank-0 tensor, the other a rank-1 tensor.
 def step_inputs(state: State) -> List[List[Float]]
   case state.optimizer
     Optimizer.Sgd(_) -> [[learning_rate(state)]]

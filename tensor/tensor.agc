@@ -1101,11 +1101,10 @@ end
 ## `m = beta1 m + (1 - beta1) g`, `v = beta2 v + (1 - beta2) g^2`,
 ## `p = p (1 - lr decay) - lr (m / (1 - beta1^t)) / (sqrt(v / (1 - beta2^t)) + eps)`. In a trace of `F32` tensors of
 ## rank 3 or less it is one node, which ggml runs as `ggml_opt_step_adamw` on copies of the arguments (they stay
-## unchanged); every other case is the composition of the ops above (`Trace.stablehlo` writes that composition, as it has
-## no emitter for the node). In a function compiled by `Trace.compile`, the
-## moments `m` and `v` are updated in place, and their results are those very tensors (as the cache of a `set_rows`),
-## when they are inputs that nothing else reads and both results are outputs: they are consumed. `Trace.eval` and
-## `eval_many` never do.
+## unchanged); every other case is the composition of the ops above (`Trace.stablehlo` writes that composition, as it
+## has no emitter for the node). In a function compiled by `Trace.compile`, the moments `m` and `v` are updated in
+## place, and their results are those very tensors (as the cache of a `set_rows`), when they are inputs that nothing
+## else reads and both results are outputs: they are consumed. `Trace.eval` and `eval_many` never do.
 def adam_step(
   p: Types.Tensor,
   g: Types.Tensor,
@@ -1136,8 +1135,8 @@ def adam_step(
   end
 end
 
-## Derived: `adam_step` from the ops of §3.1, over the numbers of `adam_coefficients`, on every backend (a trace
-## records the ops, not the node): call `adam_step`; `Trace.stablehlo` calls this one.
+## Derived: `adam_step` from the ops of §3.1, over the numbers of `adam_coefficients`. It is not a user API: it is
+## public only for `Trace.stablehlo`, which writes an `adam_step` node as these ops. Call `adam_step`.
 def adam_composed(
   p: Types.Tensor,
   g: Types.Tensor,
