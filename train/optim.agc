@@ -36,9 +36,23 @@ struct Adam
   schedule: Schedule = Schedule.Constant
 end
 
+## Adam with decoupled weight decay (Loshchilov and Hutter), as PyTorch's `AdamW`: `p (1 - lr weight_decay)`, then
+## Adam's step from it. `decay` says which parameters decay, one flag per parameter (a fine-tune leaves the biases and
+## the layer-norm weights out); empty, all of them do.
+struct AdamW
+  lr: Float = 0.001
+  beta1: Float = 0.9
+  beta2: Float = 0.999
+  eps: Float = 0.00000001
+  weight_decay: Float = 0.01
+  decay: List[Bool] = []
+  schedule: Schedule = Schedule.Constant
+end
+
 enum Optimizer
   Sgd(Sgd)
   Adam(Adam)
+  AdamW(AdamW)
 end
 
 ## `first` is SGD's velocity or Adam's first moment, `second` Adam's second
@@ -66,6 +80,10 @@ def init(optimizer: Optimizer, params: List[Tensor.Tensor]) -> Result[State]
     Optimizer.Adam(o) ->
       try check_schedule(o.schedule)
       ok(State(optimizer: optimizer, steps: 0, first: try zeros_like(params), second: try zeros_like(params)))
+    Optimizer.AdamW(o) ->
+      try check_schedule(o.schedule)
+      try check_decay(o, params.size)
+      ok(State(optimizer: optimizer, steps: 0, first: try zeros_like(params), second: try zeros_like(params)))
   end
 end
 
@@ -87,7 +105,16 @@ def step(
       sgd(o, state, params, grads, scalars)
     Optimizer.Adam(o) ->
       try check_scalars(scalars, 2, "an Adam step takes two scalars")
-      adam(o, state, params, grads, scalars)
+      adam(o, [], state, params, grads, scalars)
+    Optimizer.AdamW(o) ->
+      try check_scalars(scalars, 3, "an AdamW step takes three scalars")
+      try check_decay(o, params.size)
+      decays = o.decay
+      if decays.empty?
+        decays = List.repeat(true, params.size)
+      end
+
+      adam(plain(o), decays, state, params, grads, scalars)
   end
 end
 
@@ -96,16 +123,18 @@ def learning_rate(state: State) -> Float
   case state.optimizer
     Optimizer.Sgd(o) -> o.lr * rate_factor(o.schedule, state.steps)
     Optimizer.Adam(o) -> o.lr * rate_factor(o.schedule, state.steps)
+    Optimizer.AdamW(o) -> o.lr * rate_factor(o.schedule, state.steps)
   end
 end
 
 ## The numbers the next step of `state` depends on, as `step` reads them from its `scalars`: SGD's learning rate, and
 ## Adam's `lr / (1 - beta1^t)` and `1 / (1 - beta2^t)` for the step count `t` (its learning rate, with the bias
-## correction).
+## correction). AdamW has Adam's two, then `lr weight_decay`.
 def step_scalars(state: State) -> List[Float]
   case state.optimizer
     Optimizer.Sgd(_) -> [learning_rate(state)]
     Optimizer.Adam(o) -> adam_scalars(o, state.steps)
+    Optimizer.AdamW(o) -> adam_scalars(plain(o), state.steps).push(learning_rate(state) * o.weight_decay)
   end
 end
 
@@ -118,6 +147,14 @@ def zeros_like(params: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   end
 
   ok(zeros)
+end
+
+def check_decay(o: AdamW, n: Int) -> Result[Void]
+  if !o.decay.empty? and o.decay.size != n
+    return error("AdamW needs one decay flag per parameter, got #{o.decay.size} for #{n}")
+  end
+
+  ok()
 end
 
 def check_schedule(s: Schedule) -> Result[Void]
@@ -178,15 +215,20 @@ def adam_scalars(o: Adam, steps: Int) -> List[Float]
   [o.lr * rate_factor(o.schedule, steps) * correct1, correct2]
 end
 
+## The Adam of the moments of `o`, without its decay.
+def plain(o: AdamW) -> Adam = Adam(lr: o.lr, beta1: o.beta1, beta2: o.beta2, eps: o.eps, schedule: o.schedule)
+
+## `decays` is empty for Adam; for AdamW it says which parameters decay, by the scalar 2 of the step.
 def adam(
   o: Adam,
+  decays: List[Bool],
   state: State,
   params: List[Tensor.Tensor],
   grads: List[Tensor.Tensor],
   scalars: List[Tensor.Tensor],
 ) -> Result[Step]
   t = state.steps + 1
-  held = adam_scalars(o, state.steps)
+  held = step_scalars(state)
   first: List[Tensor.Tensor] = []
   second: List[Tensor.Tensor] = []
   out: List[Tensor.Tensor] = []
@@ -198,7 +240,12 @@ def adam(
     delta = try Tensor.div(try Tensor.mul(m, try factor(m, held, scalars, 0)), denom)
     first = first.push(m)
     second = second.push(v)
-    out = out.push(try Tensor.sub(params[i], delta))
+    p = params[i]
+    if !decays.empty? and decays[i]
+      p = try Tensor.sub(p, try Tensor.mul(p, try factor(p, held, scalars, 2)))
+    end
+
+    out = out.push(try Tensor.sub(p, delta))
   end
 
   ok(Step(state: state.with(steps: t, first: first, second: second), params: out))

@@ -40,6 +40,27 @@ def test_adam_keeps_the_correction_on_later_steps() -> Result[Void]
   ok()
 end
 
+## AdamW shrinks the parameter by `lr weight_decay` first, then takes Adam's step: `[1, -1] (1 - 0.05)`, then the
+## `0.05` and `-0.1 / 1.5` of the test above. A parameter with a false flag does not decay, which is Adam; the
+## scalars of the step are Adam's two and `lr weight_decay`.
+def test_adamw_decays_the_parameter_then_takes_adams_step() -> Result[Void]
+  o = Optim.AdamW(lr: 0.1, eps: 0.5, weight_decay: 0.5)
+  once = try run(Optim.Optimizer.AdamW(o), [[0.5, -1.0]])
+  try S.expect_close(once, [0.95 - 0.05, -0.95 + 0.1 / 1.5], TOL, 0.0, "adamw step 1")
+  kept = try run(Optim.Optimizer.AdamW(o.with(decay: [false])), [[0.5, -1.0]])
+  try S.expect_close(kept, [0.95, -1.0 + 0.1 / 1.5], TOL, 0.0, "adamw without decay")
+  p = try S.tensor([1.0, -1.0], [2])
+  g = try S.tensor([0.5, -1.0], [2])
+  state = try Optim.init(Optim.Optimizer.AdamW(o), [p])
+  held = Optim.step_scalars(state)
+  try Test.eq(held.size, 3)
+  try S.expect_close([held[2]], [0.05], TOL, 0.0, "the decay scalar")
+  given = try Optim.step(state, [p], [g], held.map { |v| S.tensor([v], []).unwrap! })
+  try S.expect_close(try S.floats_of(given.params[0]), once, TOL, 0.0, "adamw with scalars")
+  try Test.error?(Optim.step(state, [p], [g], [try S.tensor([held[0]], []), try S.tensor([held[1]], [])]))
+  Test.error?(Optim.init(Optim.Optimizer.AdamW(o.with(decay: [true, false])), [p]))
+end
+
 def test_a_gradient_per_parameter_is_required() -> Result[Void]
   p = try S.tensor([1.0, -1.0], [2])
   state = try Optim.init(Optim.Optimizer.Sgd(Optim.Sgd(lr: 0.1)), [p])
