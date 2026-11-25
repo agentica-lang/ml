@@ -106,13 +106,55 @@ def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]
   ok()
 end
 
+## A dtype that cannot hold the row count of the table needs no upper bound: U8 ids on 300 rows match the reference,
+## and a negative I8 id on 200 rows is still an error.
+def test_a_narrow_index_dtype_gathers_from_a_larger_table() -> Result[Void]
+  return ok() if !try present()
+  rows = ->(xs: List[Tensor.Tensor]) { Tensor.gather(xs[0], xs[1]) }
+  values = uniform(600, 41, 1.0)
+  ids = [0, 255, 7].map { |i| Tensor.Values.Int(i) }
+  got = try Trace.eval([try floats(values, [300, 2], XLA), try Tensor.from_list(ids, [3], Tensor.Dtype.U8, XLA)], rows)
+
+  want = try Trace.eval(
+    [try floats(values, [300, 2], REF), try Tensor.from_list(ids, [3], Tensor.Dtype.U8, REF)],
+    rows,
+  )
+
+  try close([got], [want])
+  bad = try Tensor.from_list([Tensor.Values.Int(-1)], [1], Tensor.Dtype.I8, XLA)
+  r = Trace.eval([try floats(uniform(400, 42, 1.0), [200, 2], XLA), bad], rows)
+  Test.assert(!r.ok?, "gather at -1 of 200 rows ran on XLA")
+end
+
 def test_an_adam_step_consumes_the_moments_it_updates() -> Result[Void]
   return ok() if !try present()
   args = try adam_args(XLA)
   f = try Trace.compile(args.map { |t| Trace.spec_of(t) }, &adam)
   _ = try Trace.run(f, args)
   try Test.assert(Tensor.to_list(args[0]).ok?, "the parameter was consumed")
-  Test.assert(!Tensor.to_list(args[2]).ok?, "the first moment was not consumed")
+  try Test.assert(Tensor.to_list(args[1]).ok?, "the gradient was consumed")
+  try Test.assert(!Tensor.to_list(args[2]).ok?, "the first moment was not consumed")
+  Test.assert(!Tensor.to_list(args[3]).ok?, "the second moment was not consumed")
+end
+
+def test_adam_steps_that_consume_their_moments_keep_no_buffer_alive() -> Result[Void]
+  return ok() if !try present()
+  args = try adam_args(XLA)
+  f = try Trace.compile(args.map { |t| Trace.spec_of(t) }, &adam)
+  first = 0
+  for i in 0...20
+    outs = try Trace.run(f, args)
+    for t in [args[0], args[2], args[3]]
+      free(t)
+    end
+
+    args = [outs[0], args[1], outs[1], outs[2], args[4]]
+    if i == 0
+      first = Xla.buffers()
+    end
+  end
+
+  Test.assert(Xla.buffers() <= first, "#{Xla.buffers()} buffers are alive after the steps, #{first} after the first")
 end
 
 def test_an_eager_op_on_xla_is_an_error_naming_it() -> Result[Void]

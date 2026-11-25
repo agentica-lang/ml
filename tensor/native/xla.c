@@ -154,46 +154,70 @@ static void program_release(struct program *p) {
   free(p);
 }
 
-/* The cached program of `text` and `outputs` with one more count, moved to the front, or NULL. */
-static struct program *cache_find(const char *text, size_t len, size_t outputs) {
+/* The listed program of `text` and `outputs` under `cache_lock`, moved to the front, or NULL. */
+static struct program *cache_lookup(const char *text, size_t len, size_t outputs) {
   struct program **at, *p;
 
-  pthread_mutex_lock(&cache_lock);
   for (at = &cache_head; (p = *at) != NULL; at = &p->next) {
     if (p->len == len && p->outputs == outputs && memcmp(p->text, text, len) == 0) {
       *at = p->next;
       p->next = cache_head;
       cache_head = p;
-      __atomic_add_fetch(&p->refs, 1, __ATOMIC_RELAXED);
-      break;
+      return p;
     }
   }
+  return NULL;
+}
+
+/* The cached program of `text` and `outputs` with one more count, or NULL. */
+static struct program *cache_find(const char *text, size_t len, size_t outputs) {
+  struct program *p;
+
+  pthread_mutex_lock(&cache_lock);
+  p = cache_lookup(text, len, outputs);
+  if (p != NULL) __atomic_add_fetch(&p->refs, 1, __ATOMIC_RELAXED);
   pthread_mutex_unlock(&cache_lock);
   return p;
 }
 
-/* Lists `p` (which has its caller's count) in the cache, which takes one more count; when the cache is full, the
-   least recently used program that only the cache holds leaves it, and its count goes after the lock. */
-static void cache_add(struct program *p) {
-  struct program **at, **oldest = NULL, *gone = NULL;
+/* Lists `p` (which has its caller's count) in the cache, which takes one more count, and returns it; when another
+   task listed the same text first, `p` goes and the listed one comes back with one more count. While the cache is
+   over CACHE_SIZE, the least recently used programs that only the cache holds leave it; their counts go after the
+   lock. */
+static struct program *cache_add(struct program *p) {
+  struct program **at, **oldest, *listed, *gone = NULL;
 
-  __atomic_add_fetch(&p->refs, 1, __ATOMIC_RELAXED);
   pthread_mutex_lock(&cache_lock);
+  listed = cache_lookup(p->text, p->len, p->outputs);
+  if (listed != NULL) {
+    __atomic_add_fetch(&listed->refs, 1, __ATOMIC_RELAXED);
+    pthread_mutex_unlock(&cache_lock);
+    program_release(p);
+    return listed;
+  }
+  __atomic_add_fetch(&p->refs, 1, __ATOMIC_RELAXED);
   p->next = cache_head;
   cache_head = p;
   cache_count++;
-  if (cache_count > CACHE_SIZE) {
-    for (at = &cache_head; *at != NULL; at = &(*at)->next) {
-      if (__atomic_load_n(&(*at)->refs, __ATOMIC_ACQUIRE) == 1) oldest = at;
+  while (cache_count > CACHE_SIZE) {
+    oldest = NULL;
+    for (at = &p->next; (listed = *at) != NULL; at = &listed->next) {
+      if (__atomic_load_n(&listed->refs, __ATOMIC_ACQUIRE) == 1) oldest = at;
     }
-    if (oldest != NULL) {
-      gone = *oldest;
-      *oldest = gone->next;
-      cache_count--;
-    }
+    if (oldest == NULL) break;
+    listed = *oldest;
+    *oldest = listed->next;
+    listed->next = gone;
+    gone = listed;
+    cache_count--;
   }
   pthread_mutex_unlock(&cache_lock);
-  program_release(gone);
+  while (gone != NULL) {
+    listed = gone;
+    gone = gone->next;
+    program_release(listed);
+  }
+  return p;
 }
 
 CC_SHORT static void xla_Buffer_free(void *state) {
@@ -578,7 +602,7 @@ static struct program *compile_text(an_env *env, ng_str text, size_t outputs, an
 }
 
 an_term xla_compile(an_env *env, ng_str text, int64_t outputs, xla_list_Int donated) {
-  struct program *p, *raced;
+  struct program *p;
   int64_t *inputs, x;
   size_t n = 0;
   int code;
@@ -602,14 +626,7 @@ an_term xla_compile(an_env *env, ng_str text, int64_t outputs, xla_list_Int dona
     p->donated = inputs;
     p->ndonated = n;
     inputs = NULL;
-    /* Another task may have compiled the same text meanwhile: that one stays, this one goes. */
-    raced = cache_find(text.data, text.len, (size_t)outputs);
-    if (raced != NULL) {
-      program_release(p);
-      p = raced;
-    } else {
-      cache_add(p);
-    }
+    p = cache_add(p);
   }
   free(inputs);
   xla_Program_new(env, &term)->program = p;
@@ -671,7 +688,7 @@ an_term xla_execute(an_env *env, struct xla_Call_state *c) {
     free(kept);
     return failed(env, "out of memory");
   }
-  /* Only the inputs the program aliases to an output are given up; the plugin would take others too. */
+  /* PJRT gives up only the inputs aliased to an output (`tf.aliasing_output`); every other input is listed as kept. */
   for (i = 0; i < c->count; i++) {
     args[i] = c->args[i]->b;
     donated = false;

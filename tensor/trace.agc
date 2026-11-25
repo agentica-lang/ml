@@ -318,6 +318,8 @@ end
 ## On XLA the moments that an `adam_step` updates in place (as on ggml) are
 ## consumed: XLA writes the new moment over the old one, so the input tensor
 ## cannot be read after the run (free it), and the output is a new tensor.
+## They are consumed even when the run then fails its gather check (an index
+## outside the rows of its source).
 def run(
   compiled: Compiled,
   args: List[Types.Tensor],

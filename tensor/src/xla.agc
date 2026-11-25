@@ -210,9 +210,9 @@ def compile(
     _ = try handle_of(c)
   end
 
-  extra = 0
-  if checked
-    extra = 1
+  extra = case checked
+    true -> 1
+    _ -> 0
   end
 
   p = try Native.arena do XlaRaw.compile(text, outs.size + extra, donated) end

@@ -97,7 +97,9 @@ def emit(
           end
 
           next = next + lines.size
-          flags = flags.push("%#{next - 1}")
+          if !lines.empty?
+            flags = flags.push("%#{next - 1}")
+          end
         end
     end
   end
@@ -211,8 +213,9 @@ def adam(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int)
   l = put(l, "stablehlo.subtract #{one}, #{last(l)} : #{shape}")
   shrink = last(l)
   l = put(l, "stablehlo.multiply #{a[2]}, #{at[1]} : #{shape}")
+  mb = last(l)
   l = put(l, "stablehlo.multiply #{a[1]}, #{keep1} : #{shape}")
-  l = put(l, "stablehlo.add %#{first + l.defs.size - 2}, #{last(l)} : #{shape}")
+  l = put(l, "stablehlo.add #{mb}, #{last(l)} : #{shape}")
   m = last(l)
   l = put(l, "stablehlo.multiply #{a[3]}, #{at[2]} : #{shape}")
   vb = last(l)
@@ -263,27 +266,39 @@ def gather?(n: Types.Node) -> Bool
   end
 end
 
-# Whether one of the indices `name` (the tensor `idx`) is outside `[0, rows)`: an `i1`, the last line.
+# Whether one of the indices `name` (the tensor `idx`) is outside `[0, rows)`: an `i1`, the last line. No lines when
+# the dtype of `idx` cannot hold such an index: a compare needs its bound in that dtype.
 def outside(idx: Types.Tensor, name: String, rows: Int, first: Int) -> Result[List[String]]
   shape = try type_of(idx)
   flags = try tensor_type(idx.shape, Types.Dtype.Bool)
   kind = compare_type(idx.dtype)
-  lines = [
-    try splat(Types.Values.Int(0), idx.shape, idx.dtype),
-    try splat(Types.Values.Int(rows), idx.shape, idx.dtype),
-    "stablehlo.compare LT, #{name}, %#{first}, #{kind} : (#{shape}, #{shape}) -> #{flags}",
-    "stablehlo.compare GE, #{name}, %#{first + 1}, #{kind} : (#{shape}, #{shape}) -> #{flags}",
-    "stablehlo.or %#{first + 2}, %#{first + 3} : #{flags}",
-  ]
+  l = Lines(first: first, defs: [])
+  found: List[String] = []
+  if idx.dtype != Types.Dtype.U8
+    l = put(l, try splat(Types.Values.Int(0), idx.shape, idx.dtype))
+    l = put(l, "stablehlo.compare LT, #{name}, #{last(l)}, #{kind} : (#{shape}, #{shape}) -> #{flags}")
+    found = found.push(last(l))
+  end
 
-  return ok(lines) if idx.shape.empty?
+  if Types.check_int_range(rows, idx.dtype).ok?
+    l = put(l, try splat(Types.Values.Int(rows), idx.shape, idx.dtype))
+    l = put(l, "stablehlo.compare GE, #{name}, #{last(l)}, #{kind} : (#{shape}, #{shape}) -> #{flags}")
+    found = found.push(last(l))
+  end
+
+  return ok([]) if found.empty?
+  if found.size == 2
+    l = put(l, "stablehlo.or #{found[0]}, #{found[1]} : #{flags}")
+  end
+
+  return ok(l.defs) if idx.shape.empty?
+  any = last(l)
+  l = put(l, try splat(Types.Values.Bool(false), [], Types.Dtype.Bool))
   axes = ints((0...idx.shape.size).to_a)
   ok(
-    lines +
-    [
-      try splat(Types.Values.Bool(false), [], Types.Dtype.Bool),
-      "stablehlo.reduce(%#{first + 4} init: %#{first + 5}) applies stablehlo.or across dimensions = #{axes} : (#{flags}, tensor<i1>) -> tensor<i1>",
-    ],
+    l.defs.push(
+      "stablehlo.reduce(#{any} init: #{last(l)}) applies stablehlo.or across dimensions = #{axes} : (#{flags}, tensor<i1>) -> tensor<i1>",
+    ),
   )
 end
 

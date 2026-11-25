@@ -834,12 +834,13 @@ The price:
   `transpose`, `reshape`, `broadcast_to`, `sum`, `mean`, `max` (a `reduce` from
   `0` or `-inf`, then a `reshape` for `keep_dims`), `eq`, `lt`, `where`
   (`select`), `arange` (`iota`), `slice`, `full`, `stop_grad`, `gather` (a
-  `stablehlo.gather` of whole rows; XLA would clamp an index outside the
-  rows, so for `Xla` the program also answers a flag that one is, and the run
-  is then the error the reference gives) and
-  `adam_step` (the ops of its composed form over the 7 numbers, its three
-  results stacked; a part is a `slice`). Any other op is an error naming it. `Q8_0` has no MLIR element type; `Bool` is `i1`, `U8` is
-  `ui8`.
+  `stablehlo.gather` of whole rows; XLA would clamp an index outside the rows,
+  so for `Xla` the program also answers a flag that one is, and the run is then
+  the error the reference gives; a bound that the dtype of the indices cannot
+  hold, such as 0 for `U8`, is not compared) and `adam_step` (the ops of its
+  composed form over the 7 numbers, its three results stacked; a part is a
+  `slice`). Any other op is an error naming it. `Q8_0` has no MLIR element type;
+  `Bool` is `i1`, `U8` is `ui8`.
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,
   then the inputs of the step (`Optim.step_inputs`: SGD's learning rate as a
