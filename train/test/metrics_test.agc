@@ -24,6 +24,10 @@ def test_the_crc32c_of_the_standard_vectors() -> Result[Void]
   Test.eq(Crc32c.checksum("".bytes), 0)
 end
 
+def test_the_masked_crc32c_wraps_in_32_bits() -> Result[Void]
+  Test.eq(Crc32c.masked(Crc32c.checksum("123456789".bytes)), 0xC78AB0E5)
+end
+
 def test_the_jsonl_sink_round_trips() -> Result[Void]
   with_dir do |root|
     run = try Metrics.open(root, "a", Metrics.Sinks.Jsonl)

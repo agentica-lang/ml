@@ -15,6 +15,7 @@
 ## F32 holds its values exactly (`exact`), and an op this lowering does not
 ## know is an error naming it, before anything is compiled.
 
+import Binary from "std/binary"
 import Ggml from "ggml"
 import GgmlRaw from "ggml_native"
 import Graph from "graph"
@@ -616,11 +617,8 @@ def bits(x: Float, n: Types.Node) -> Result[Int]
     return error("node #{n.id} (#{Types.op_name(n.op)}): #{x} is not a float ggml holds")
   end
 
-  # A negative double has its bits above 2^63, where `to_i` fails: join the two halves into the signed Int.
-  b = Float.to_bits(x)
-  hi = b.shift_right(32).to_i!
-  lo = b.bit_and(4294967295).to_i!
-  ok(hi.shift_left(32).bit_or(lo))
+  # A negative double has its bits above 2^63, where `to_i` fails: the same eight bytes read as an `Int`.
+  Binary.read_i64_le(Binary.write_u64_le(Float.to_bits(x)), 0)
 end
 
 ## Whether flash attention may take the mask of an attention node: it reads the mask in F16, so the mask must be absent

@@ -27,11 +27,11 @@ end
 
 ## `data` as a TFRecord: its length as a u64, the masked CRC-32C of that, the data, and its masked CRC-32C. All are
 ## little-endian.
-def record(data: Bytes) -> Result[Bytes]
+def record(data: Bytes) -> Bytes
   length = Binary.write_i64_le(data.size)
-  head = Binary.write_u32_le(try Crc32c.masked(Crc32c.checksum(length)).to_uint32)
-  tail = Binary.write_u32_le(try Crc32c.masked(Crc32c.checksum(data)).to_uint32)
-  ok(Bytes.concat([length, head, data, tail]))
+  head = Binary.write_u32_le(Crc32c.masked(Crc32c.checksum(length)))
+  tail = Binary.write_u32_le(Crc32c.masked(Crc32c.checksum(data)))
+  Bytes.concat([length, head, data, tail])
 end
 
 private
