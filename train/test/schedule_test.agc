@@ -10,6 +10,7 @@ import Optim from "../optim"
 import S from "support"
 import Tensor from "pkg/tensor/tensor"
 import Train from "../train"
+import Xla from "pkg/tensor/src/xla"
 
 ## The reference computes in doubles and the peer in `F32`.
 ABS = 0.00001
@@ -160,9 +161,9 @@ def test_a_fit_with_a_schedule_follows_pytorch_on_the_reference() -> Result[Void
   follows(g, adam_cosine(), g.adam_cosine, S.REF)
 end
 
-def test_the_same_fits_on_libtorch_and_ggml() -> Result[Void]
+def test_the_same_fits_on_libtorch_ggml_and_xla() -> Result[Void]
   g = try golden()
-  backends = try S.ggml_backends()
+  backends = try S.compiled_backends()
   if Tensor.available(S.TORCH)
     backends = backends.push(S.TORCH)
   else
@@ -183,10 +184,10 @@ def test_a_schedule_does_not_compile_a_graph_for_each_step() -> Result[Void]
   g = try golden()
   for backend in [S.REF] + try S.ggml_backends()
     calls: Channel[Int] = Channel.new(16)
-    before = try Lower.compiles()
+    before = try ggml_compiles()
     try train_counting(g, adam_cosine(), backend, calls)
     try Test.assert(
-      try Lower.compiles() - before <= 1,
+      try ggml_compiles() - before <= 1,
       "the steps of a schedule compiled more than one graph on #{backend}",
     )
 
@@ -194,6 +195,30 @@ def test_a_schedule_does_not_compile_a_graph_for_each_step() -> Result[Void]
   end
 
   ok()
+end
+
+## On XLA too the schedule's steps are one program.
+def test_a_schedule_compiles_one_xla_program() -> Result[Void]
+  g = try golden()
+  for backend in try S.xla_backends()
+    calls: Channel[Int] = Channel.new(16)
+    before = Xla.compiles()
+    try train_counting(g, adam_cosine(), backend, calls)
+    try Test.assert(
+      Xla.compiles() - before <= 1,
+      "the steps of a schedule compiled #{Xla.compiles() - before} programs",
+    )
+
+    try Test.eq(try traced(calls), 1)
+  end
+
+  ok()
+end
+
+## The graphs ggml compiled, 0 without the module (the reference compiles none).
+def ggml_compiles() -> Result[Int]
+  return ok(0) if !Tensor.available(S.GGML)
+  Lower.compiles()
 end
 
 def traced(calls: Channel[Int]) -> Result[Int]

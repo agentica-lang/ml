@@ -66,8 +66,8 @@ def test_the_xor_run_on_libtorch_follows_the_reference() -> Result[Void]
   classifies(fit, S.TORCH)
 end
 
-def test_the_xor_run_on_ggml_follows_the_reference() -> Result[Void]
-  for backend in try S.ggml_backends()
+def test_the_xor_run_on_ggml_and_xla_follows_the_reference() -> Result[Void]
+  for backend in try S.compiled_backends()
     fit = try xor(backend)
     try S.expect_close(fit.history, HISTORY, 0.000001, 0.00001, "loss history on #{backend}")
     try classifies(fit, backend)
@@ -76,11 +76,11 @@ def test_the_xor_run_on_ggml_follows_the_reference() -> Result[Void]
   ok()
 end
 
-## A hundred parameters with Adam are 301 outputs of one ggml graph (the loss, the parameters and two moments
-## each): the step runs there and follows the reference.
-def test_a_step_of_a_hundred_parameters_runs_on_ggml() -> Result[Void]
+## A hundred parameters with Adam are 301 outputs of one ggml graph or XLA program (the loss, the parameters and two
+## moments each): the step runs there and follows the reference.
+def test_a_step_of_a_hundred_parameters_runs_on_ggml_and_xla() -> Result[Void]
   want = try many(S.REF)
-  for backend in try S.ggml_backends()
+  for backend in try S.compiled_backends()
     got = try many(backend)
     try S.expect_close(got.history, want.history, 0.000001, 0.00001, "loss history on #{backend}")
     for i in [0, 57, 99]

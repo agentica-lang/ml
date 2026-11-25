@@ -45,11 +45,26 @@ struct buffer {
   PJRT_Buffer *b;
 };
 
+/* A compiled program. The cache holds one count while it lists it, and each `Program` and `Call` one more. */
 struct program {
   int refs; /* atomic */
   PJRT_LoadedExecutable *exe;
   size_t outputs;
+  char *text; /* the key, with `len` bytes */
+  size_t len;
+  int64_t *donated; /* the inputs the program updates in place, `ndonated` of them */
+  size_t ndonated;
+  struct program *next; /* the cache's list, most recently used first, under `cache_lock` */
 };
+
+/* The programs compiled lately, by their text: a trace compiled again (`Trace.eval` per step, a `Trace.compile` after
+   `Trace.close`) finds its program here. At most CACHE_SIZE; the least recently used one that only the cache holds
+   goes first. */
+#define CACHE_SIZE 32
+CC_LOCK_LEVEL(2) CC_NO_SYSCALL_UNDER() static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct program *cache_head;
+static int cache_count;
+static int64_t compiled_count; /* atomic: for a test (`xla_compiles`) */
 
 struct xla_Buffer_state {
   struct buffer *buffer;
@@ -60,6 +75,7 @@ struct xla_Program_state {
 };
 
 struct xla_Call_state {
+  bool ran;
   struct program *program;
   struct buffer **args;
   size_t count, cap;
@@ -133,7 +149,51 @@ static void program_release(struct program *p) {
     char ignored[8];
     message_of(loaded(), err, ignored, sizeof ignored);
   }
+  free(p->text);
+  free(p->donated);
   free(p);
+}
+
+/* The cached program of `text` and `outputs` with one more count, moved to the front, or NULL. */
+static struct program *cache_find(const char *text, size_t len, size_t outputs) {
+  struct program **at, *p;
+
+  pthread_mutex_lock(&cache_lock);
+  for (at = &cache_head; (p = *at) != NULL; at = &p->next) {
+    if (p->len == len && p->outputs == outputs && memcmp(p->text, text, len) == 0) {
+      *at = p->next;
+      p->next = cache_head;
+      cache_head = p;
+      __atomic_add_fetch(&p->refs, 1, __ATOMIC_RELAXED);
+      break;
+    }
+  }
+  pthread_mutex_unlock(&cache_lock);
+  return p;
+}
+
+/* Lists `p` (which has its caller's count) in the cache, which takes one more count; when the cache is full, the
+   least recently used program that only the cache holds leaves it, and its count goes after the lock. */
+static void cache_add(struct program *p) {
+  struct program **at, **oldest = NULL, *gone = NULL;
+
+  __atomic_add_fetch(&p->refs, 1, __ATOMIC_RELAXED);
+  pthread_mutex_lock(&cache_lock);
+  p->next = cache_head;
+  cache_head = p;
+  cache_count++;
+  if (cache_count > CACHE_SIZE) {
+    for (at = &cache_head; *at != NULL; at = &(*at)->next) {
+      if (__atomic_load_n(&(*at)->refs, __ATOMIC_ACQUIRE) == 1) oldest = at;
+    }
+    if (oldest != NULL) {
+      gone = *oldest;
+      *oldest = gone->next;
+      cache_count--;
+    }
+  }
+  pthread_mutex_unlock(&cache_lock);
+  program_release(gone);
 }
 
 CC_SHORT static void xla_Buffer_free(void *state) {
@@ -449,18 +509,16 @@ an_term xla_readback(an_env *env, struct xla_Buffer_state *b) {
   return xla_result_list_Float_ok(env, xla_list_Float_end(env, &out));
 }
 
-an_term xla_compile(an_env *env, ng_str text, int64_t outputs) {
+/* A new program of `text` compiled by the plugin, or NULL with the error term in `failure`. */
+static struct program *compile_text(an_env *env, ng_str text, size_t outputs, an_term *failure) {
   /* xla.CompileOptionsProto { executable_build_options (3) { num_replicas (4): 1, num_partitions (5): 1 } }: the
      plugin aborts on an empty one. */
   static const char options[] = {0x1a, 0x04, 0x20, 0x01, 0x28, 0x01};
   const PJRT_Api *a = loaded();
-  struct xla_Program_state *state;
   struct program *p;
   size_t got;
   PJRT_Error *err;
-  an_term term;
 
-  if (a == NULL) return failed(env, "the XLA plugin is not loaded");
   PJRT_Program program = {.struct_size = PJRT_Program_STRUCT_SIZE,
                           .code = (char *)text.data,
                           .code_size = text.len,
@@ -472,9 +530,11 @@ an_term xla_compile(an_env *env, ng_str text, int64_t outputs) {
                                  .compile_options = options,
                                  .compile_options_size = sizeof options};
   err = a->PJRT_Client_Compile(&cc);
-  if (err != NULL) return pjrt_failed(env, err, "XLA did not compile the program");
-  p = (struct program *)malloc(sizeof *p);
-  if (p == NULL) {
+  if (err != NULL) return *failure = pjrt_failed(env, err, "XLA did not compile the program"), NULL;
+  p = (struct program *)calloc(1, sizeof *p);
+  if (p != NULL) p->text = (char *)malloc(text.len ? text.len : 1);
+  if (p == NULL || p->text == NULL) {
+    free(p);
     PJRT_LoadedExecutable_Destroy_Args d = {.struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE,
                                             .executable = cc.executable};
     err = a->PJRT_LoadedExecutable_Destroy(&d);
@@ -482,32 +542,81 @@ an_term xla_compile(an_env *env, ng_str text, int64_t outputs) {
       char ignored[8];
       message_of(a, err, ignored, sizeof ignored);
     }
-    return failed(env, "out of memory");
+    return *failure = failed(env, "out of memory"), NULL;
   }
   p->refs = 1;
   p->exe = cc.executable;
-  p->outputs = (size_t)outputs;
-  state = xla_Program_new(env, &term);
-  state->program = p;
+  p->outputs = outputs;
+  memcpy(p->text, text.data, text.len);
+  p->len = text.len;
+  __atomic_add_fetch(&compiled_count, 1, __ATOMIC_RELAXED);
   PJRT_LoadedExecutable_GetExecutable_Args ge = {.struct_size = PJRT_LoadedExecutable_GetExecutable_Args_STRUCT_SIZE,
                                                  .loaded_executable = cc.executable};
   err = a->PJRT_LoadedExecutable_GetExecutable(&ge);
-  if (err != NULL) return pjrt_failed(env, err, "XLA compiled a program it cannot describe");
-  PJRT_Executable_NumOutputs_Args no = {.struct_size = PJRT_Executable_NumOutputs_Args_STRUCT_SIZE,
-                                        .executable = ge.executable};
-  err = a->PJRT_Executable_NumOutputs(&no);
-  got = no.num_outputs;
-  PJRT_Executable_Destroy_Args ed = {.struct_size = PJRT_Executable_Destroy_Args_STRUCT_SIZE,
-                                     .executable = ge.executable};
-  PJRT_Error *dropped = a->PJRT_Executable_Destroy(&ed);
-  if (dropped != NULL) {
-    char ignored[8];
-    message_of(a, dropped, ignored, sizeof ignored);
+  if (err == NULL) {
+    PJRT_Executable_NumOutputs_Args no = {.struct_size = PJRT_Executable_NumOutputs_Args_STRUCT_SIZE,
+                                          .executable = ge.executable};
+    err = a->PJRT_Executable_NumOutputs(&no);
+    got = no.num_outputs;
+    PJRT_Executable_Destroy_Args ed = {.struct_size = PJRT_Executable_Destroy_Args_STRUCT_SIZE,
+                                       .executable = ge.executable};
+    PJRT_Error *dropped = a->PJRT_Executable_Destroy(&ed);
+    if (dropped != NULL) {
+      char ignored[8];
+      message_of(a, dropped, ignored, sizeof ignored);
+    }
   }
-  if (err != NULL) return pjrt_failed(env, err, "XLA compiled a program it cannot describe");
-  if (got != (size_t)outputs) return failed(env, "XLA compiled a program with another number of outputs");
+  if (err != NULL) {
+    program_release(p);
+    return *failure = pjrt_failed(env, err, "XLA compiled a program it cannot describe"), NULL;
+  }
+  if (got != outputs) {
+    program_release(p);
+    return *failure = failed(env, "XLA compiled a program with another number of outputs"), NULL;
+  }
+  return p;
+}
+
+an_term xla_compile(an_env *env, ng_str text, int64_t outputs, xla_list_Int donated) {
+  struct program *p, *raced;
+  int64_t *inputs, x;
+  size_t n = 0;
+  int code;
+  an_term term, failure;
+
+  if (loaded() == NULL) return failed(env, "the XLA plugin is not loaded");
+  inputs = (int64_t *)malloc((donated.len ? donated.len : 1) * sizeof *inputs);
+  if (inputs == NULL) return failed(env, "out of memory");
+  while ((code = xla_list_Int_next(env, &donated, &x)) == 1) inputs[n++] = x;
+  if (code < 0) {
+    free(inputs);
+    return an_void(env);
+  }
+  p = cache_find(text.data, text.len, (size_t)outputs);
+  if (p == NULL) {
+    p = compile_text(env, text, (size_t)outputs, &failure);
+    if (p == NULL) {
+      free(inputs);
+      return failure;
+    }
+    p->donated = inputs;
+    p->ndonated = n;
+    inputs = NULL;
+    /* Another task may have compiled the same text meanwhile: that one stays, this one goes. */
+    raced = cache_find(text.data, text.len, (size_t)outputs);
+    if (raced != NULL) {
+      program_release(p);
+      p = raced;
+    } else {
+      cache_add(p);
+    }
+  }
+  free(inputs);
+  xla_Program_new(env, &term)->program = p;
   return xla_result_Program_ok(env, term);
 }
+
+an_term xla_compiles(an_env *env) { return an_int(env, __atomic_load_n(&compiled_count, __ATOMIC_RELAXED)); }
 
 an_term xla_call(an_env *env, struct xla_Program_state *p) {
   struct xla_Call_state *state;
@@ -526,7 +635,7 @@ an_term xla_arg(an_env *env, struct xla_Call_state *c, struct xla_Buffer_state *
   size_t cap;
 
   if (b->buffer == NULL) return failed(env, "an argument of a run is a closed buffer");
-  if (c->program == NULL) return failed(env, "an argument of a call that ran already");
+  if (c->ran) return failed(env, "an argument of a call that ran already");
   if (c->count == c->cap) {
     cap = c->cap ? c->cap * 2 : 8;
     grown = (struct buffer **)realloc(c->args, cap * sizeof *grown);
@@ -545,23 +654,35 @@ an_term xla_execute(an_env *env, struct xla_Call_state *c) {
   PJRT_Event *done[1] = {NULL};
   PJRT_Error *err;
   xla_list_Buffer_builder list;
-  size_t i, n;
-  bool short_of_memory = false;
+  int64_t *kept;
+  size_t i, j, n, nkept = 0;
+  bool short_of_memory = false, donated;
   an_term term;
 
-  if (c->program == NULL) return failed(env, "a call runs once, of a compiled program");
+  if (c->ran) return failed(env, "a call runs once");
+  if (c->program == NULL) return failed(env, "the program of the call is closed");
   n = c->program->outputs;
   args = (PJRT_Buffer **)malloc((c->count ? c->count : 1) * sizeof *args);
   outs = (PJRT_Buffer **)calloc(n ? n : 1, sizeof *outs);
-  if (args == NULL || outs == NULL) {
+  kept = (int64_t *)malloc((c->count ? c->count : 1) * sizeof *kept);
+  if (args == NULL || outs == NULL || kept == NULL) {
     free(args);
     free(outs);
+    free(kept);
     return failed(env, "out of memory");
   }
-  for (i = 0; i < c->count; i++) args[i] = c->args[i]->b;
+  /* Only the inputs the program aliases to an output are given up; the plugin would take others too. */
+  for (i = 0; i < c->count; i++) {
+    args[i] = c->args[i]->b;
+    donated = false;
+    for (j = 0; j < c->program->ndonated; j++) donated = donated || c->program->donated[j] == (int64_t)i;
+    if (!donated) kept[nkept++] = (int64_t)i;
+  }
   PJRT_Buffer *const *arg_lists[1] = {args};
   PJRT_Buffer **out_lists[1] = {outs};
-  PJRT_ExecuteOptions options = {.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE};
+  PJRT_ExecuteOptions options = {.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
+                                 .non_donatable_input_indices = kept,
+                                 .num_non_donatable_input_indices = nkept};
   PJRT_LoadedExecutable_Execute_Args ex = {.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE,
                                            .executable = c->program->exe,
                                            .options = &options,
@@ -572,8 +693,10 @@ an_term xla_execute(an_env *env, struct xla_Call_state *c) {
                                            .device_complete_events = done};
   err = a->PJRT_LoadedExecutable_Execute(&ex);
   free(args);
+  free(kept);
   if (err == NULL) err = await_event(done[0]);
   call_clear(c);
+  c->ran = true;
   xla_list_Buffer_begin(env, &list, n);
   for (i = 0; i < n; i++) {
     struct buffer *b;

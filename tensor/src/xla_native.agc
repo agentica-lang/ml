@@ -28,8 +28,10 @@ extern module "xla"
   compute def filled(shape: List[Int], value: Float, dtype: Int) -> Result[Buffer]
   ## Host readback: the row-major values as doubles, which the caller tags with the tensor's dtype.
   compute def readback(b: Buffer) -> Result[List[Float]]
-  ## The StableHLO module `text` compiled for one CPU device; it must return `outputs` tensors.
-  compute def compile(text: String, outputs: Int) -> Result[Program]
+  ## The StableHLO module `text` compiled for one CPU device; it must return `outputs` tensors. `donated` are the
+  ## inputs the text aliases to an output (`tf.aliasing_output`): a run gives up those buffers, and keeps the others.
+  ## A program of the same text compiled lately comes from the cache of the process (32 programs), compiled once.
+  compute def compile(text: String, outputs: Int, donated: List[Int]) -> Result[Program]
   ## The arguments of one run of a program, collected by `arg`: it holds each buffer until it is freed, so a buffer
   ## closed meanwhile is still there for the run.
   resource Call
@@ -42,4 +44,6 @@ extern module "xla"
   compute def execute(c: Call) -> Result[List[Buffer]]
   ## How many buffers are alive in the process, for a test.
   def buffers() -> Int
+  ## How many programs the process has compiled (the misses of the cache), for a test.
+  def compiles() -> Int
 end

@@ -36,7 +36,7 @@ end
 ## its step count (from 1); `fit` does not close the run. A metric that
 ## `Metrics.scalar` refuses (a loss that is not finite, for one) stops `fit`
 ## with an error that names the epoch and the batch. The parameters and the optimizer state that a step replaces are
-## freed at once on libtorch and ggml, except `params` themselves, which stay the caller's, as the trained ones of the
+## freed at once on libtorch, ggml and XLA, except `params` themselves, which stay the caller's, as the trained ones of the
 ## result are.
 def fit(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
@@ -147,13 +147,16 @@ struct Taken
   programs: Map[String, Trace.Compiled]
 end
 
-## Whether `fit` gathers the rows of a batch inside the step: on ggml, where a gather in its own graph costs a launch and
-## a readback of the batch, when the dataset lives where the parameters do.
+## Whether `fit` gathers the rows of a batch inside the step: on ggml and XLA, where a gather in its own graph costs a
+## launch (on XLA a compile per batch shape) and a readback of the batch, when the dataset lives where the parameters
+## do.
 def gathers_in_graph?(data: Data.Loader, params: List[Tensor.Tensor]) -> Bool
   return false if params.empty?
   backend = Tensor.backend(params[0])
   case backend
     Tensor.Backend.Ggml(_) ->
+      Tensor.backend(data.dataset.inputs) == backend and Tensor.backend(data.dataset.targets) == backend
+    Tensor.Backend.Xla(_) ->
       Tensor.backend(data.dataset.inputs) == backend and Tensor.backend(data.dataset.targets) == backend
     _ -> false
   end

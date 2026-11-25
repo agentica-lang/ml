@@ -175,11 +175,12 @@ end
 ## True when a tensor of `b` was freed (`release`, `free`): the batch can no longer be read.
 def freed?(b: Batch) -> Bool = closed?(b.inputs) or closed?(b.targets)
 
-## Frees the native memory of `t` now on libtorch and ggml; the reference has none. Nothing may read `t` afterwards.
+## Frees the native memory of `t` now on libtorch, ggml and XLA; the reference has none. Nothing may read `t` afterwards.
 def free(t: Tensor.Tensor) -> Void
   case t.handle
     Tensor.Handle.Native(h) -> Native.close(h)
     Tensor.Handle.Ggml(h) -> Native.close(h)
+    Tensor.Handle.Xla(h) -> Native.close(h)
     _ -> nil
   end
 end
@@ -260,6 +261,7 @@ def closed?(t: Tensor.Tensor) -> Bool
   case t.handle
     Tensor.Handle.Native(h) -> Native.closed?(h)
     Tensor.Handle.Ggml(h) -> Native.closed?(h)
+    Tensor.Handle.Xla(h) -> Native.closed?(h)
     _ -> false
   end
 end

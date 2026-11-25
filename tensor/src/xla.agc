@@ -32,6 +32,9 @@ struct Program
   program: XlaRaw.Program
   constants: List[Types.Tensor]
   outs: List[Types.Tensor]
+  ## The StableHLO text and the inputs it updates in place: a run after `Trace.close` compiles it again.
+  text: String
+  donated: List[Int]
 end
 
 ## The pinned plugins, one per machine (Linux only). `tools/install_xla.agc` downloads one, and `plugin_path` finds
@@ -189,24 +192,44 @@ def handle_of(t: Types.Tensor) -> Result[XlaRaw.Buffer]
   end
 end
 
-## The StableHLO `text` compiled, for outputs like the traced `outs`; `constants` must be XLA tensors.
-def compile(text: String, constants: List[Types.Tensor], outs: List[Types.Tensor]) -> Result[Program]
+## The StableHLO `text` compiled, for outputs like the traced `outs`; `constants` must be XLA tensors, and `donated`
+## are the inputs the text aliases to an output. The program comes from the cache of the process when the same text
+## was compiled lately.
+def compile(
+  text: String,
+  constants: List[Types.Tensor],
+  outs: List[Types.Tensor],
+  donated: List[Int],
+) -> Result[Program]
   _ = try usable("compile")
   for c in constants
     _ = try handle_of(c)
   end
 
-  p = try Native.arena do XlaRaw.compile(text, outs.size) end
-  ok(Program(program: p, constants: constants, outs: outs))
+  p = try Native.arena do XlaRaw.compile(text, outs.size, donated) end
+  ok(Program(program: p, constants: constants, outs: outs, text: text, donated: donated))
 end
 
 ## One run of `p` over `args` (the inputs, checked by the caller): a new tensor per output.
+## A run after `Trace.close` takes the program from the cache, or compiles it again.
 def execute(p: Program, args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
-  return error("run: the compiled XLA function is closed (Trace.close)") if Native.closed?(p.program)
+  if Native.closed?(p.program)
+    again = try compile(p.text, p.constants, p.outs, p.donated)
+    values = execute(again, args)
+    Native.close(again.program)
+    return values
+  end
+
   buffers = try Native.arena do run_call(p.program, args + p.constants) end
 
   return error("the run gave #{buffers.size} outputs, the program has #{p.outs.size}") if buffers.size != p.outs.size
   ok((0...buffers.size).map { |i| tensor_of(p.outs[i].shape, p.outs[i].dtype, buffers[i]) })
+end
+
+## How many programs the process has compiled, the misses of its cache, for a test; 0 without the module.
+def compiles() -> Int
+  return 0 if !loaded?()
+  XlaRaw.compiles()
 end
 
 ## How many XLA buffers are alive in the process, for a test; 0 without the module.

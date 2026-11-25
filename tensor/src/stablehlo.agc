@@ -15,20 +15,42 @@ import Types from "types"
 struct Module
   text: String
   constants: List[Types.Tensor]
+  ## The positions of the inputs the program updates in place (`emit` with `donate`), each aliased to its output.
+  donated: List[Int] = []
 end
 
 ## The module of the traced tensors `outs` over the input nodes `inputs` (traced `Input` tensors, in argument order).
-def emit(inputs: List[Types.Tensor], outs: List[Types.Tensor]) -> Result[Module]
+## With `donate`, the moments an `adam_step` updates in place (`Lower.adam_moments`) are aliased to their outputs
+## (`tf.aliasing_output`), so XLA writes the new moment over the old one: a run consumes those inputs.
+def emit(inputs: List[Types.Tensor], outs: List[Types.Tensor], donate: Bool = false) -> Result[Module]
   return error("a StableHLO program needs at least one output") if outs.empty?
   positions: Map[Ref, Int] = {}
   names: Map[Ref, String] = {}
-  params: List[String] = []
   for i in 0...inputs.size
     id = Graph.id_of(inputs[i])
     positions = positions.put(id, i)
     names = names.put(id, "%arg#{i}")
+  end
+
+  aliased: Map[Int, Int] = {}
+  if donate
+    moments = try Lower.adam_moments(outs, positions)
+    for j in 0...moments.size
+      if moments[j] >= 0
+        aliased = aliased.put(moments[j], j)
+      end
+    end
+  end
+
+  params: List[String] = []
+  for i in 0...inputs.size
     shown = try type_of(inputs[i])
-    params = params.push("%arg#{i}: #{shown}")
+    attr = ""
+    if aliased.has_key?(i)
+      attr = " {tf.aliasing_output = #{aliased[i]} : i32}"
+    end
+
+    params = params.push("%arg#{i}: #{shown}#{attr}")
   end
 
   constants: List[Types.Tensor] = []
@@ -67,10 +89,16 @@ def emit(inputs: List[Types.Tensor], outs: List[Types.Tensor]) -> Result[Module]
     ["    func.return #{results.join(", ")} : #{types.join(", ")}", "  }", "}", ""]
   ).join("\n")
 
-  ok(Module(text: text, constants: constants))
+  ok(Module(text: text, constants: constants, donated: aliased.keys.sort))
 end
 
 private
+
+# The lines of an op that takes several, the first named `%first`.
+struct Lines
+  first: Int
+  defs: List[String]
+end
 
 # One text per SSA value of the node `t`, the first named `%first`; none means the node is its first argument.
 def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Result[List[String]]
@@ -102,9 +130,103 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Eq -> ok(["stablehlo.compare EQ, #{a[0]}, #{a[1]}, #{compare_type(n.args[0].dtype)} : #{sig}"])
     Types.Op.Where -> ok(["stablehlo.select #{a[0]}, #{a[1]}, #{a[2]} : #{try type_of(n.args[0])}, #{out}"])
     Types.Op.Arange(start, _, step) -> arange(t, start, step, first)
+    Types.Op.Gather -> gather(t, n.args, a, sig)
+    Types.Op.AdamStep -> adam(t, n.args, a, first)
+    Types.Op.AdamPart(i) -> adam_part(t, n.args[0], a[0], i, first)
     _ -> error("StableHLO has no emitter for #{Types.op_name(n.op)} yet")
   end
 end
+
+# Rows of the source at the indices: one row slice per index, the indices' axes first, as `Reference.gather` answers.
+# An index outside the rows is clamped, as XLA does.
+def gather(t: Types.Tensor, args: List[Types.Tensor], a: List[String], sig: String) -> Result[List[String]]
+  k = args[1].shape.size
+  rest = args[0].shape.drop(1)
+  fields = ["collapsed_slice_dims = [0]", "start_index_map = [0]", "index_vector_dim = #{k}"]
+  if !rest.empty?
+    fields = ["offset_dims = #{ints((0...rest.size).to_a.map { |i| k + i })}"] + fields
+  end
+
+  sizes = ([1] + rest).map { |d| d.to_s }.join(", ")
+  attrs = "dimension_numbers = #stablehlo.gather<#{fields.join(", ")}>, slice_sizes = array<i64: #{sizes}>"
+  ok(["\"stablehlo.gather\"(#{a[0]}, #{a[1]}) {#{attrs}, indices_are_sorted = false} : #{sig}"])
+end
+
+# `adam_step` over `[p, g, m, v, hyper]`: the new `[p, m, v]` stacked on a new first axis, from the ops of
+# `Tensor.adam_composed` over the 7 numbers of `hyper` (`lr, beta1, beta2, eps, decay, correct1, correct2`).
+def adam(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
+  shape = try type_of(args[0])
+  scalar = try tensor_type([], args[0].dtype)
+  row = try tensor_type([1], args[0].dtype)
+  hyper = try type_of(args[4])
+  l = Lines(first: first, defs: [])
+  at: List[String] = []
+  for i in 0...7
+    l = put(l, "stablehlo.slice #{a[4]} #{extents([i], [i + 1])} : (#{hyper}) -> #{row}")
+    l = put(l, "stablehlo.reshape #{last(l)} : (#{row}) -> #{scalar}")
+    l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = [] : (#{scalar}) -> #{shape}")
+    at = at.push(last(l))
+  end
+
+  l = put(l, try fill(1.0, args[0]))
+  one = last(l)
+  l = put(l, "stablehlo.subtract #{one}, #{at[1]} : #{shape}")
+  keep1 = last(l)
+  l = put(l, "stablehlo.subtract #{one}, #{at[2]} : #{shape}")
+  keep2 = last(l)
+  l = put(l, "stablehlo.multiply #{at[0]}, #{at[4]} : #{shape}")
+  l = put(l, "stablehlo.subtract #{one}, #{last(l)} : #{shape}")
+  shrink = last(l)
+  l = put(l, "stablehlo.multiply #{a[2]}, #{at[1]} : #{shape}")
+  l = put(l, "stablehlo.multiply #{a[1]}, #{keep1} : #{shape}")
+  l = put(l, "stablehlo.add %#{first + l.defs.size - 2}, #{last(l)} : #{shape}")
+  m = last(l)
+  l = put(l, "stablehlo.multiply #{a[3]}, #{at[2]} : #{shape}")
+  vb = last(l)
+  l = put(l, "stablehlo.multiply #{a[1]}, #{a[1]} : #{shape}")
+  l = put(l, "stablehlo.multiply #{last(l)}, #{keep2} : #{shape}")
+  l = put(l, "stablehlo.add #{vb}, #{last(l)} : #{shape}")
+  v = last(l)
+  l = put(l, "stablehlo.multiply #{v}, #{at[6]} : #{shape}")
+  l = put(l, "stablehlo.sqrt #{last(l)} : #{shape}")
+  l = put(l, "stablehlo.add #{last(l)}, #{at[3]} : #{shape}")
+  denominator = last(l)
+  l = put(l, "stablehlo.multiply #{m}, #{at[5]} : #{shape}")
+  l = put(l, "stablehlo.divide #{last(l)}, #{denominator} : #{shape}")
+  l = put(l, "stablehlo.multiply #{at[0]}, #{last(l)} : #{shape}")
+  step = last(l)
+  l = put(l, "stablehlo.multiply #{a[0]}, #{shrink} : #{shape}")
+  l = put(l, "stablehlo.subtract #{last(l)}, #{step} : #{shape}")
+  p = last(l)
+  layer = try tensor_type([1] + args[0].shape, args[0].dtype)
+  rows: List[String] = []
+  for x in [p, m, v]
+    l = put(l, "stablehlo.reshape #{x} : (#{shape}) -> #{layer}")
+    rows = rows.push(last(l))
+  end
+
+  l = put(
+    l,
+    "stablehlo.concatenate #{rows.join(", ")}, dim = 0 : (#{[layer, layer, layer].join(", ")}) -> #{try type_of(t)}",
+  )
+
+  ok(l.defs)
+end
+
+# Part `i` of an `adam_step`: its layer `i` of the stacked result.
+def adam_part(t: Types.Tensor, stacked: Types.Tensor, name: String, i: Int, first: Int) -> Result[List[String]]
+  layer = try tensor_type([1] + t.shape, t.dtype)
+  window = extents([i] + t.shape.map { |_| 0 }, [i + 1] + t.shape)
+  ok([
+    "stablehlo.slice #{name} #{window} : (#{try type_of(stacked)}) -> #{layer}",
+    "stablehlo.reshape %#{first} : (#{layer}) -> #{try type_of(t)}",
+  ])
+end
+
+def put(l: Lines, text: String) -> Lines = l.with(defs: l.defs.push(text))
+
+# The name of the last line of `l`.
+def last(l: Lines) -> String = "%#{l.first + l.defs.size - 1}"
 
 def matmul(args: List[Types.Tensor], a: List[String], sig: String) -> Result[List[String]]
   if args[0].dtype != args[1].dtype
