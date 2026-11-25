@@ -1,4 +1,4 @@
-## `Generate35` (`generate_qwen35.agc`) against Hugging Face's `Qwen3_5ForCausalLM` on the tiny random model of
+## `Generate` of `generate_qwen35.agc` against Hugging Face's `Qwen3_5ForCausalLM` on the tiny random model of
 ## `qwen35_golden.py` (`fixtures/qwen35_golden.json`): the logits of a prompt fed in one padded step and then one token at
 ## a time equal those of the whole forward (the cache and the states are right, and the padding changes nothing), and a
 ## greedy generation from a prompt of 7 ids, 14 new ones, crossing the capacities 8, 16 and 32, gives Hugging Face's ids

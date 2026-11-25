@@ -6,9 +6,6 @@ import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 import Lift from "lift"
 
-## How long a call waits for the plans, which are held for a few VM steps.
-PLANS_WAIT_MS = 50
-
 ## The compiled steps by shape, and how many compiles made them.
 struct Plans
   graphs: Map[String, Trace.Compiled]
@@ -107,14 +104,6 @@ def take_plans(plans: Channel[Plans]) -> Optional[Plans]
   none
 end
 
-def head_key(mode: Head) -> String
-  case mode
-    Head.Logits -> "logits"
-    Head.Pick -> "pick"
-    Head.Top(k) -> "top #{k}"
-  end
-end
-
 ## The id the pick found, an error for none (a NaN in the logits: no score equals the maximum).
 def chosen(head: List[Tensor.Values], vocab: Int) -> Result[Int]
   case head[0]
@@ -164,4 +153,17 @@ def inputs(ids: List[Int], length: Int, width: Int, room: Int, backend: Tensor.B
   end
 
   ok(made)
+end
+
+private
+
+## How long a call waits for the plans, which are held for a few VM steps.
+PLANS_WAIT_MS = 50
+
+def head_key(mode: Head) -> String
+  case mode
+    Head.Logits -> "logits"
+    Head.Pick -> "pick"
+    Head.Top(k) -> "top #{k}"
+  end
 end

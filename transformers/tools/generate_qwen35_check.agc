@@ -6,7 +6,8 @@
 ##   python -I test/qwen35_check_golden.py MODEL_DIR > GOLDEN.json
 ##   agentica tools/generate_qwen35_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
 ##
-## `USABLE=248070` opens the generator with the tokenizer's token count (`Generator.usable`): the ids must be the same.
+## `USABLE=248070` (the token count of 0.8B's tokenizer, `tok.pieces.size`) opens the generator with it
+## (`Generator.usable`): the ids must be the same. `VULKAN_FP16=0` is the default of the check.
 
 import Generate from "../generate_qwen35"
 import Qwen3_5 from "../qwen3_5"
@@ -21,6 +22,8 @@ struct Case
   ids: List[Int]
   generated: List[Int]
   gaps: List[Float]
+  step_top_ids: List[List[Int]]
+  step_top_logits: List[List[Float]]
 end
 
 struct Golden
@@ -63,6 +66,7 @@ def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Void]
 end
 
 def checked(g: Generate.Generator, want: Golden) -> Result[Void]
+  worst = 0.0
   for i in 0...want.cases.size
     c = want.cases[i]
     started = Time.monotonic_ms
@@ -84,6 +88,7 @@ def checked(g: Generate.Generator, want: Golden) -> Result[Void]
       per = (steps * 1000).to_f / (warm - prompt).to_f
     end
 
+    worst = [worst, try logits_gap(g, c)].max.unwrap!
     puts(
       "prompt #{i}: #{c.ids.size} prompt tokens, #{again.size} new, smallest gap of HF #{c.gaps.min.unwrap!}; " +
       "first call #{cold} ms, then prompt and one token #{prompt} ms, #{again.size} tokens #{warm} ms, " +
@@ -91,7 +96,29 @@ def checked(g: Generate.Generator, want: Golden) -> Result[Void]
     )
   end
 
+  puts("largest gap of a step's logit from Hugging Face's, at its five largest: #{worst}")
   ok()
+end
+
+## The largest gap, over the steps of `c`, between our logits at the five ids Hugging Face found largest and its own: the
+## prompt and then the ids it generated are fed to `step_logits`.
+def logits_gap(g: Generate.Generator, c: Case) -> Result[Float]
+  cache = Generate.start()
+  feed = c.ids
+  worst = 0.0
+  for i in 0...c.generated.size
+    s = try Generate.step_logits(g, cache, feed)
+    cache = s.cache
+    for k in 0...c.step_top_ids[i].size
+      gap = (s.logits[c.step_top_ids[i][k]] - c.step_top_logits[i][k]).abs
+      worst = [worst, gap].max.unwrap!
+    end
+
+    feed = [c.generated[i]]
+  end
+
+  Generate.finish(cache)
+  ok(worst)
 end
 
 ## The peak and the current resident memory of the process.

@@ -7,7 +7,7 @@
 ## A compiled step has one shape for the prompts of one capacity, so a prompt is padded to the capacity and the
 ## padding must change nothing: a full layer masks it (positions of `room` name no row), and a linear layer is given a
 ## `Delta.Padding` (`g` and `beta` of 0 on the padding rows, the convolution's rows picked at the last real token). Every
-## later step is one token. The rest is as `generate.agc` (the plans, the pick in the graph, the reach of a decode step).
+## later step is one token, which has no padding and no `Padding`. The rest is as `generate.agc` (the plans, the pick in the graph, the reach of a decode step).
 ##
 ## Batch of one. A `Generator` belongs to one task at a time, and `close` ends it before `Qwen3_5.close_model` frees the
 ## weights its graphs read.
@@ -28,7 +28,7 @@ struct Generator
   plans: Channel[Stepping.Plans]
   ## How many ids a step may answer: the ids from `usable` to the end of the vocabulary get no chance (a logit of
   ## `Nn.MASKED`). The embedding of Qwen3.5 has 248,320 rows and its tokenizer 248,070 tokens: with the tokenizer's
-  ## count here the sampler cannot give an id that `Bpe.decode` rejects. `vocab_size` (the default of `open`) is no
+  ## count here (`tok.pieces.size`) the sampler cannot give an id that `Bpe.decode` rejects. `vocab_size` (the default of `open`) is no
   ## mask, as in Hugging Face.
   usable: Int
   ## Every step reads the whole capacity of the cache, not only the rows in use: `false` from `open`.
@@ -334,8 +334,8 @@ def advance(g: Generator, cache: Cache, ids: List[Int], mode: Stepping.Head) -> 
   ok(Advanced(head: s.head, cache: s.cache.with(length: cache.length + n)))
 end
 
-## The inputs of a step: the ids, their positions, the one-hot of the last real token (`Stepping.inputs`) and the
-## `Delta.Padding` of the linear layers.
+## The inputs of a step: the ids, their positions, the one-hot of the last real token (`Stepping.inputs`) and, for a
+## prompt (more than one row), the `Delta.Padding` of the linear layers.
 def fed_inputs(
   m: Qwen3_5.Qwen3_5,
   ids: List[Int],
@@ -345,6 +345,7 @@ def fed_inputs(
   backend: Tensor.Backend,
 ) -> Result[List[Tensor.Tensor]]
   base = try Stepping.inputs(ids, length, width, room, backend)
+  return ok(base) if width == 1
   padded = Delta.padding(ids.size, width, m.config.linear_conv_kernel_dim, backend)
   if not padded.ok?
     Lift.close(base)
@@ -449,7 +450,7 @@ def eager_step(
 end
 
 ## The step: `xs` are the ids `[width]`, their positions, the one-hot `[1, width]` of the row whose prediction is
-## wanted, the `valid` and `keep` of the padding, and the cache (the keys then the values of the full layers, then the
+## wanted, for a prompt (`width` above 1) the `valid` and `keep` of the padding, and the cache (the keys then the values of the full layers, then the
 ## two states of each linear layer). The outputs are the head (the logits `[vocab_size]`, the choice `[1]` or the
 ## candidates), then the keys, the values and the states of the new cache, which has `room` rows of keys, of which the
 ## attention reads the first `reach`.
@@ -469,7 +470,14 @@ def stepped(
   slots = Padded.Slots(positions: xs[1], capacity: room)
   h = try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d])
   mask = try Padded.padded_mask(slots.with(capacity: reach), Tensor.dtype(h))
-  padding = Delta.Padding(valid: xs[3], keep: xs[4])
+  # A prompt is the only step with padding, and the only one without a cache.
+  padding: Optional[Delta.Padding] = none
+  lead = 3
+  if width > 1
+    padding = some(Delta.Padding(valid: xs[3], keep: xs[4]))
+    lead = 5
+  end
+
   spread: Optional[Tensor.Tensor] = none
   if not in_place
     spread = some(try Padded.spread_of(slots, Tensor.dtype(h)))
@@ -484,12 +492,12 @@ def stepped(
     old_key: Optional[Tensor.Tensor] = none
     old_value: Optional[Tensor.Tensor] = none
     old_state: Optional[Delta.DeltaState] = none
-    if xs.size > 5
+    if xs.size > lead
       if full?(l)
-        old_key = some(xs[5 + full_at])
-        old_value = some(xs[5 + full + full_at])
+        old_key = some(xs[lead + full_at])
+        old_value = some(xs[lead + full + full_at])
       else
-        base = 5 + 2 * full + 2 * linear_at
+        base = lead + 2 * full + 2 * linear_at
         old_state = some(Delta.DeltaState(conv: xs[base], recurrent: xs[base + 1]))
       end
     end
@@ -556,7 +564,7 @@ def layer(
   old_key: Optional[Tensor.Tensor],
   old_value: Optional[Tensor.Tensor],
   old_state: Optional[Delta.DeltaState],
-  padding: Delta.Padding,
+  padding: Optional[Delta.Padding],
   in_place: Bool,
   reach: Int,
 ) -> Result[Layer]
@@ -573,7 +581,7 @@ def layer(
         state = some(try Delta.delta_start(p, Tensor.backend(h)))
       end
 
-      r = try Delta.gated_delta_net(p, try Tensor.reshape(x, [shape[1], shape[2]]), state.unwrap!, some(padding))
+      r = try Delta.gated_delta_net(p, try Tensor.reshape(x, [shape[1], shape[2]]), state.unwrap!, padding)
       mixed = try Tensor.reshape(r.out, shape)
       states = [r.state.conv, r.state.recurrent]
     Qwen3_5.Mixer.Full(a) ->

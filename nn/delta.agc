@@ -146,13 +146,12 @@ def causal_conv1d(
     total = try Tensor.add(total, try Tensor.mul(rows, try Tensor.broadcast_to(tap, [tokens, channels])))
   end
 
-  kept = try Tensor.slice(seen, [tokens, 0], [tokens + taps - 1, channels])
-  case keep
-    some(k) -> kept = try Tensor.matmul(k, seen)
-    none -> nil
+  kept = case keep
+    some(k) -> Tensor.matmul(k, seen)
+    none -> Tensor.slice(seen, [tokens, 0], [tokens + taps - 1, channels])
   end
 
-  ok(Convolved(out: total, state: kept))
+  ok(Convolved(out: total, state: try kept))
 end
 
 ## `weight * rms_norm(x) * silu(z)` over the last axis, both `[rows, width]`: the norm of the output of the layer, which
