@@ -10,19 +10,19 @@ written over `tensor`, `nn` and `hub` (Via B). The contract is
 
 ## Done
 
-Milestones 0.1.0 and 0.2.0, released as 0.2.0.
+Milestones 0.1.0 to 0.3.0.
 
 | Piece | What is in |
 |---|---|
-| `tensor/` | the API, 49 backend primitives and the derived ops over them, the pure Agentica reference backend (the oracle), the libtorch CPU backend (47 of the 49), the ggml backend on CPU and Vulkan (a traced graph compiles to one ggml graph, with a structural cache; `Trace.compile` and `Trace.run`), tracing, `value_and_grad` and backward rules for most ops, `Trace.diff`, attention primitives (grouped heads, causal, rope, flash attention on ggml), `set_rows` KV writes, F16 and Q8_0 weights, F16 KV cache, Vulkan fp16 on by default, property tests (packed operands fail closed) |
+| `tensor/` | the API, 49 backend primitives and the derived ops over them, the pure Agentica reference backend (the oracle), the libtorch CPU backend (47 of the 49), the ggml backend on CPU and Vulkan (a traced graph compiles to one ggml graph, with a structural cache; `Trace.compile` and `Trace.run`), tracing, `value_and_grad` and backward rules for most ops, `Trace.diff`, attention primitives (grouped heads, causal, rope, flash attention on ggml), `set_rows` KV writes, F16 and Q8_0 weights, F16 KV cache, Vulkan fp16 on by default, property tests (packed operands fail closed), the embedding gradient (`scatter_add`) on Vulkan by a matmul |
 | `nn/` | dense, layer norm, embeddings, convolution, attention (grouped-query, rotary), MLP, encoder and decoder blocks and stacks (pre or post norm), the shared padded KV cache helpers, seeded initializers |
-| `train/` | `mse`, binary and softmax cross-entropy, SGD, Adam, `Train.fit`, a data loader (seeded shuffle, background prefetch) |
+| `train/` | `mse`, binary and softmax cross-entropy, SGD, Adam and AdamW (one kernel per parameter on ggml), learning-rate schedules, `Train.fit` and `Train.fit_batches`, freezing layers (`Params.split`), metrics as JSONL and TensorBoard, a data loader (seeded shuffle, background prefetch) |
 | `hub/` | safetensors (one file or sharded), `nn` layers loaded by name, float weights read by the backend from the file (`Tensor.from_file`), GGUF read (F32, F16, BF16, Q8_0, the tokenizer from its metadata) and a GGUF writer for F32, F16 and BF16 |
 | `asr/` | Whisper end to end: log-mel as one graph, tokenizer, greedy decoding with a padded KV cache, timestamps, language detection, translation, long audio read in 30 s windows that seek, the step and the pick on the device. It runs on the reference backend, libtorch and ggml (CPU and Vulkan), and its tokens equal Hugging Face's on the test clips (`asr/test/fixtures/transcribe_golden.json`) |
 | `transformers/` | BERT, Qwen3 and Qwen2.5 (forward, greedy generation and sampling with a KV cache, chat template) from Hugging Face checkpoints or GGUF, and the WordPiece and byte-level BPE tokenizers, matching Hugging Face on the test logits and ids; measured against llama.cpp in `benchmarks/` |
 | `whisper/` | the whisper.cpp binding, WAV reader, microphone capture, long-audio chunking |
 | `spike/` | the FFI boundary (`spike/m0/`) and ggml on Vulkan, measured (`spike/ggml-vulkan/`, `spike/ggml-graph/`) |
-| tooling and CI | per-package CI matrix, the ggml build cache, cchecker over the native C, whisper-tiny and Qwen3 against whisper.cpp and llama.cpp in [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md), the Hugo site |
+| tooling and CI | per-package CI matrix, the ggml build cache, cchecker over the native C, whisper-tiny and Qwen3 against whisper.cpp and llama.cpp, and DistilBERT on STS-B against PyTorch and training against PyTorch and JAX, in [`benchmarks/`](https://github.com/agentica-lang/ml/blob/main/benchmarks/README.md), the Hugo site |
 
 ## Needs optimization
 
@@ -36,10 +36,6 @@ The numbers and the machine are in
 
 By milestone (`gh issue list -R agentica-lang/ml -m <version>`).
 
-- 0.3.0, training: [ml#136](https://github.com/agentica-lang/ml/issues/136)
-  freezing layers, [ml#102](https://github.com/agentica-lang/ml/issues/102) the
-  embedding gradient on Vulkan, and the minors of the GGUF and property-test
-  reviews.
 - 0.4.0: inference benchmarks
   ([ml#173](https://github.com/agentica-lang/ml/issues/173)), Qwen3.5 text and
   vision ([ml#150](https://github.com/agentica-lang/ml/issues/150),
@@ -64,6 +60,6 @@ By milestone (`gh issue list -R agentica-lang/ml -m <version>`).
   [ml#95](https://github.com/agentica-lang/ml/issues/95),
   [ml#96](https://github.com/agentica-lang/ml/issues/96)).
 - No milestone: backward rules for `pow`, `clamp`, `batch_matmul`, float
-  `to_dtype`, `conv1d` and `avg_pool1d`; learning-rate schedules; downloading
+  `to_dtype`, `conv1d` and `avg_pool1d`; downloading
   checkpoints from Hugging Face; a non-required CI job that builds libtorch
   and runs the comparison with the reference.

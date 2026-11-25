@@ -14,7 +14,7 @@ enableGitInfo = true
 [module.hugoVersion]
   min = "0.167.0"
 
-# No version: the packages have no releases yet.
+# No version: each package is released on its own tag (see the changelog in the repository).
 [params]
   description = "Machine learning for Agentica: tensors, training and inference, in a functional style."
   repo = "https://github.com/agentica-lang/ml"
