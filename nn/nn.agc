@@ -365,6 +365,17 @@ def causal_mask(size: Int, dtype: Tensor.Dtype, backend: Tensor.Backend) -> Resu
   Tensor.where(try Tensor.lt(rows, cols), blocked, try Tensor.zeros(square, dtype, backend))
 end
 
+## The additive bias `[batch, 1, seq, seq]` of a `[batch, seq]` mask (1.0 for a token, 0.0 for padding): `MASKED` on
+## the keys that are padding, 0.0 elsewhere, for the `mask` of an attention over a padded batch.
+def padding_bias(mask: Tensor.Tensor) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(mask)
+  return error("padding_bias needs a [batch, seq] mask, got #{shape}") if shape.size != 2
+  ones = try Tensor.full(shape, Tensor.Values.Float(1.0), Tensor.dtype(mask), Tensor.backend(mask))
+  scale = try Tensor.full(shape, Tensor.Values.Float(MASKED), Tensor.dtype(mask), Tensor.backend(mask))
+  bias = try Tensor.mul(try Tensor.sub(ones, mask), scale)
+  Tensor.broadcast_to(try Tensor.reshape(bias, [shape[0], 1, 1, shape[1]]), [shape[0], 1, shape[1], shape[1]])
+end
+
 ## `x` (`[batch, t, width]`) attends to itself causally and then to `memory`,
 ## the encoder output (`[batch, s, width]`; `s` may differ from `t`).
 def decoder_block(p: DecoderBlock, x: Tensor.Tensor, memory: Tensor.Tensor) -> Result[Tensor.Tensor]

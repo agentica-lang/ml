@@ -12,12 +12,12 @@ hash = "sha256:c1be453b21abab840feaa03242f0be32c1145fefe068dc131c8ce7c1b7b80652"
 name = "nn"
 git = "https://github.com/agentica-lang/ml"
 subdir = "nn"
-ref = "49ca1c77e11c1e70e695f5e332592bb7db53f025"
+ref = "dde0eae2b520d05348af27b167f5af4cfd2a3571"
 workspace = true
 
 [[package]]
 name = "tensor"
 git = "https://github.com/agentica-lang/ml"
 subdir = "tensor"
-ref = "3185826fd76079adad69f5158822c88b3e89cd5d"
+ref = "aa58b5d32ca07cde8d3385319274dffad0b76b5f"
 workspace = true
