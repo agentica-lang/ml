@@ -17,7 +17,9 @@ SHAPES = [(8, True), (8, False), (16, True)]
 LOSSES = [0.30, 0.20, 0.10]
 
 
-def lines(losses=LOSSES, shapes=SHAPES, spearman=(0.5, 0.6), threads=8, token_ids="aa", decayed=38, names="dd"):
+def lines(
+    losses=LOSSES, shapes=SHAPES, spearman=(0.5, 0.6), threads=8, token_ids="aa", decayed=38, names="dd", peak_kb=None
+):
     """The JSON lines of a run, as a tool prints them."""
     out = [
         {"kind": "threads", "value": threads},
@@ -28,6 +30,8 @@ def lines(losses=LOSSES, shapes=SHAPES, spearman=(0.5, 0.6), threads=8, token_id
         {"kind": "step", "step": i + 1, "loss": loss, "ms": 10.0 * (i + 1), "length": shape[0], "new_shape": shape[1]}
         for i, (loss, shape) in enumerate(zip(losses, shapes))
     ]
+    if peak_kb:
+        out.append({"kind": "memory", "peak_kb": peak_kb})
     return out
 
 
@@ -51,6 +55,14 @@ class Verdict(unittest.TestCase):
         self.assertTrue(same, report)
         self.assertIn("largest loss gap 6.00e-08 at step 2", report[4])
         self.assertIn("ours 20.0", report[2])  # the median leaves the first step of each shape out
+
+    def test_the_peak_memory_of_both_sides_is_reported_when_both_have_it(self):
+        self.assertFalse(any("peak memory" in line for line in self.verdict()[0]))
+        ours = summary.read(self.run_of("ours", peak_kb=2_500_000))
+        peer = summary.read(self.run_of("peer", peak_kb=1_250_000))
+        report, same = summary.compare(ours, peer, summary.TOLERANCE)
+        self.assertTrue(same, report)
+        self.assertIn("peak memory: ours 2.56 GB, PyTorch 1.28 GB", report)
 
     def test_the_gap_of_a_run_without_weight_decay_fails_it(self):
         self.assertFalse(self.verdict(losses=[0.30, 0.20, 0.10 + 2.8e-7])[1])

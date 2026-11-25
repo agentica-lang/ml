@@ -97,7 +97,8 @@ def compare(ours, peer, tolerance):
         f"largest loss gap {gaps[worst]:.2e} at step {a[worst]['step']} (tolerance {tolerance:.1e})",
     ]
     if ours["peak_kb"] and peer["peak_kb"]:
-        lines.append(f"peak memory: ours {ours['peak_kb'] / 1e6:.2f} GB, PyTorch {peer['peak_kb'] / 1e6:.2f} GB")
+        gb = [run["peak_kb"] * 1024 / 1e9 for run in (ours, peer)]  # GNU time counts in KiB
+        lines.append(f"peak memory: ours {gb[0]:.2f} GB, PyTorch {gb[1]:.2f} GB")
     same = all(gap <= tolerance for gap in gaps)
     for when in ("before", "after"):
         x, y = ours["spearman"].get(when), peer["spearman"].get(when)
