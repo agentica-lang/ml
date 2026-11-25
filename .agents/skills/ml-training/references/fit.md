@@ -139,7 +139,7 @@ each batch. `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `ep
 - Each batch may have its own shape. On ggml and XLA the step is compiled once per shape, so pad to a few lengths (a
   multiple of 8, for one) when the lengths vary a lot.
 - The batch is two tensors. Derive the rest in the loss: a padding mask is `1 - to_dtype(eq(ids, pads), F32)`.
-- `prefetch: K` runs `batch` on a task that stays `K` batches ahead, so decoding image files (`Vision.samples`) overlaps the
+- `prefetch: K` runs `batch` on a task that builds up to `K + 1` batches ahead, so decoding image files (`Vision.samples`) overlaps the
   step. The batches come in order, the same ones as without it.
 
 ```agentica

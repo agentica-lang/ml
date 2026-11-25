@@ -144,7 +144,7 @@ def header_of(fields: List[Field], tensors: List[Out]) -> Result[Layout]
 
     at = align(at)
     offsets = offsets.push(at)
-    parts = parts.push(Binary.write_u32_le(ggml_type(t.format).to_uint32!))
+    parts = parts.push(Binary.write_u32_le((try ggml_type(t.format)).to_uint32!))
     parts = parts.push(Binary.write_u64_le(at.to_uint64!))
     at = at + volume(shape) * width(t.format)
   end
@@ -160,13 +160,13 @@ def header_of(fields: List[Field], tensors: List[Out]) -> Result[Layout]
 end
 
 ## The type number of ggml of a float format.
-def ggml_type(format: Tensor.FloatFormat) -> Int
+def ggml_type(format: Tensor.FloatFormat) -> Result[Int]
   case format
-    Tensor.FloatFormat.F32 -> 0
-    Tensor.FloatFormat.F16 -> 1
-    Tensor.FloatFormat.BF16 -> 30
-    Tensor.FloatFormat.Q8_0 -> 8
-    Tensor.FloatFormat.U8 -> 24
+    Tensor.FloatFormat.F32 -> ok(0)
+    Tensor.FloatFormat.F16 -> ok(1)
+    Tensor.FloatFormat.BF16 -> ok(30)
+    Tensor.FloatFormat.Q8_0 -> ok(8)
+    Tensor.FloatFormat.U8 -> error("U8 is a format of from_bytes, not of a GGUF file")
   end
 end
 

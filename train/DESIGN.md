@@ -281,8 +281,9 @@ Lora.open(dir, backend) -> Result[Adapter]
   partial batch is kept unless `drop_last`.
 - **Prefetch is a task and a bounded channel.** With `prefetch = K > 0`,
   `Data.feed` starts a task that builds the batches of every epoch in order and
-  sends them through a channel of capacity `K`, so it stays at most `K` batches
-  ahead and builds the next while `fit` steps. A failed batch goes through the
+  sends them through a channel of capacity `K`, so up to `K + 1` batches are
+  built ahead (the `K` in the channel and the one the task holds) while `fit`
+  steps. A failed batch goes through the
   channel as an error in its place; a crash of the task reaches the reader
   through a `Task.monitor` notice into the same channel. A feed is a
   sequential stream: under prefetch `take` gives the next batch and does not

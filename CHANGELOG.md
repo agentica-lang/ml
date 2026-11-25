@@ -11,7 +11,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 - The bias gradient of a convolution (a sum over the batch and the plane) runs on ggml at a batch above 1: the gradient of `broadcast_to` sums a leading and a trailing block of axes in two steps.
 - `Tensor.from_bytes(data, shape, format, backend)`: an `F32` tensor from bytes that are in memory, as `from_file` makes one from a range of a file. libtorch and ggml read the bytes in C, so no value becomes a list.
-- `FloatFormat.U8` for `Tensor.from_bytes` (ml#252): one byte for each value, widened to `0.0..255.0` by the backend, so the samples of a `U8` image cross at a quarter of the size of `F32` ones. `from_file` and `convert_file` refuse it.
+- `FloatFormat.U8` for `Tensor.from_bytes` (ml#252): one byte for each value: the samples of a `U8` image cross into the backend as bytes, a quarter of the size of `F32` ones, and the backend widens them to `0.0..255.0` as an `F32` tensor. `from_file` and `convert_file` refuse it.
 
 ### nn
 
@@ -30,7 +30,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### vision
 
-- A `U8` image goes to the device as bytes (ml#252): no cast to `F32` on the host, a quarter of the memory, and the scale to `0..1` runs on the device. `Vision.samples` inside a `Train.fit_batches` batch function decodes on its `prefetch` task.
+- A `U8` image is handed to the backend as bytes (ml#252), not cast to `F32` in the image library first: a quarter of the memory up to the backend, which widens it to `F32`; the scale to `0..1` runs on the device. `Vision.samples` inside a `Train.fit_batches` batch function decodes on its `prefetch` task.
 - `Vision.Step.ResizeTo(width, height)`: a resize to exactly that size, without keeping the aspect ratio.
 - New package `vision` (ml#82): images for tensors, on the `image` package (libvips). It needs libvips.
 - `Vision.to_tensor`: the pixels of an image go straight into a tensor, as `F32` in `0..1` or as `U8`, in `Chw` or `Hwc`.

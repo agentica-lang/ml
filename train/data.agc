@@ -142,7 +142,7 @@ def epoch(f: Feed, epoch: Int) -> Feed
 end
 
 ## The batches that `batch(epoch, i)` makes, `count` for each of `epochs` epochs in order, built by a task that stays at
-## most `prefetch` ahead (at least 1): what a feed does for a loader, for a batch that a function makes, such as the
+## most `prefetch + 1` ahead (`prefetch` at least 1): what a feed does for a loader, for a batch that a function makes, such as the
 ## decoding of image files. The task runs `batch`, so it overlaps whatever the caller does between `next` calls.
 ## `finish` must follow, on every path.
 def ahead(batch: Fn[Int, Int, Result[Batch]], count: Int, epochs: Int, prefetch: Int) -> Result[Ahead]

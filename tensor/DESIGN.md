@@ -230,8 +230,10 @@ Tensor.backend(t) -> Backend                      # no native call
 - `from_bytes` is `from_file` for bytes that are in memory (the pixels of an
   image): libtorch and ggml widen them in C, the reference and XLA decode them
   in Agentica, and the result is always `F32`. `FloatFormat.U8` (code 4 of
-  `float_file.h`) is its own: one byte per value, widened to `0..255`, so the
-  samples of an image cross as bytes and no host copy of them as `F32` exists.
+  `float_file.h`) is its own: one byte per value, widened to `0..255`: the
+  samples of an image cross into the backend as bytes (a quarter of the size),
+  and the backend widens them to an `F32` host buffer and uploads that, so the
+  device holds `F32`.
   The file readers and `convert_file` refuse it.
 - `from_file` is how weights load: the backend reads the byte range
   itself (`native/float_file.h`: `pread` into the tensor's own memory, F16

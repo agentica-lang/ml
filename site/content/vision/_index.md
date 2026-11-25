@@ -43,7 +43,7 @@ end
 ## To a tensor
 
 - `to_tensor(image, backend, dtype, layout)` makes the tensor of one image. With `dtype: F32` (the default) the samples of a `U8` image are scaled to `0..1` (a `U16` one by 65535, an `F32` one is kept). With `dtype: U8` they are the samples as they are, which needs a `U8` image and a backend that converts to `U8` (not ggml). `layout` is `Chw` (`[channels, height, width]`, the default) or `Hwc` (`[height, width, channels]`). The image keeps all its bands, alpha included. A pixel format that is not `U8`, `U16` or `F32` is an `error`.
-- The pixels become a tensor with `Tensor.from_bytes`: the backend reads the interleaved samples itself. A `U8` image crosses as bytes (`FloatFormat.U8`), a quarter of the size of `F32` ones, and the backend widens them in C; the scale to `0..1` is then an op on the device. An `F32` image, or a `U16` one cast to `F32`, crosses as `F32`.
+- The pixels become a tensor with `Tensor.from_bytes`: the backend reads the interleaved samples itself. A `U8` image crosses into the backend as bytes (`FloatFormat.U8`), a quarter of the size of `F32` ones, and the backend widens them to `F32` in C and uploads that; the scale to `0..1` is then an op on the device. An `F32` image, or a `U16` one cast to `F32`, crosses as `F32`.
 - `normalize(x, mean, std, layout)` gives `(x - mean) / std` for each channel. `x` is `F32` of rank 3 or more with the channels in the last three axes of `Chw` or the last axis of `Hwc`, so one call normalizes a whole batch. `mean` and `std` have one value for each channel, and a `std` of 0 is an `error`.
 
 ## Transforms

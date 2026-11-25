@@ -70,7 +70,7 @@ end
 ## tensors of one shape, such as sentences padded to the longest of each batch. Each batch may have its own shape; the
 ## step is compiled once per shape, so few distinct shapes keep the compiles few.
 ##
-## With `prefetch > 0`, a task calls `batch` for every batch of every epoch, in order, staying at most `prefetch` ahead,
+## With `prefetch > 0`, a task calls `batch` for every batch of every epoch, in order, building up to `prefetch + 1` ahead,
 ## while the steps run: the decoding of image files (`Vision.samples`) overlaps the device. `batch` then runs on that
 ## task, and `epochs * count` calls happen in order whatever the steps do; the task ends before `fit_batches` returns,
 ## on every path. A batch that failed reaches the fit as the error of its step.

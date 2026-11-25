@@ -328,7 +328,7 @@ end
 ## Creation: an `F32` tensor of `shape` from `data`, which holds exactly its values as `format` writes them (little
 ## endian, `F32` by default): what `from_file` makes of a range, for bytes that are in memory already, such as the
 ## pixels of an image. The backend widens the bytes itself, so no value becomes a list. `FloatFormat.U8` takes one byte
-## per value and gives it as `0.0..255.0`, so the samples of a `U8` image cross at a quarter of their `F32` size. A
+## per value and gives it as `0.0..255.0`, so the samples of a `U8` image cross into the backend as bytes, a quarter of their `F32` size, and the backend widens them to `F32`. A
 ## `data` of another size is an `error`.
 def from_bytes(
   data: Bytes,

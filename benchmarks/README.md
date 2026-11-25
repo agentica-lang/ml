@@ -421,7 +421,7 @@ The same ResNet-50 and CLIP checkpoints, now fed by real files: 32 JPEG files of
 
 On Vulkan the prefetch hides three quarters of the decoding: a step takes 1263 ms against 1559 (the model alone takes 1153). On the CPU the decoder and ggml's threads share the cores, so the gain is smaller (ResNet-50) or none (CLIP, 2635 against 2647). The "device" column of a run moves with the machine (the same CPU row was 3850 ms in the run before this PR's code, and 4890 in this one), so read the columns of one run against each other. Decoding costs about 11 ms an image, resize included.
 
-The `U8` samples of a `U8` image reach the device as bytes now instead of being cast to `F32` on the host first. Against the code before this PR (same bench, "sync" rows, a separate run: 384, 339, 338 and 365 ms of idle in the order above), the idle time is 327, 289, 366 and 355 ms: the cast was a small part of the decode, and the gain is the memory: a batch of 32 crops crosses as 4.8 MB, not 19.3 MB.
+The `U8` samples of a `U8` image are handed to the backend as bytes now instead of being cast to `F32` by the image library first (the backend widens them to `F32` before it uploads them). Against the code before this PR (same bench, "sync" rows, a separate run: 384, 339, 338 and 365 ms of idle in the order above), the idle time is 327, 289, 366 and 355 ms: the cast was a small part of the decode, and the gain is memory: a batch of 32 crops is 4.8 MB of bytes up to the backend, not 19.3 MB.
 
 ```sh
 PREFETCH_MODEL=resnet|clip PREFETCH_DIR=MODEL_DIR PREFETCH_DEVICE=cpu|vulkan PREFETCH_MODE=device|sync|prefetch PREFETCH_OUT=out.txt \
