@@ -10,9 +10,10 @@ description: >-
 
 # ml release
 
-ml is one repository with one folder per package. Each package releases on
-its own tag, `<pkg>-X.Y.Z` (for example `tensor-0.1.0`), with no `v` prefix.
-The tag goes on the merge commit of the release PR.
+ml is one repository with one folder per package. Each package has one tag,
+`<pkg>-X.Y.Z` (for example `tensor-0.1.0`), with no `v` prefix, and all the
+members are tagged at the same version. The tags go on the merge commit of the
+release PR.
 
 Tags, tag pushes and GitHub Releases are outward-facing. Do none of them
 until the owner says yes for those exact tags.
@@ -36,8 +37,10 @@ Stop and report if one fails:
 - The packages that ask for each other release together, at one version:
   every member (`tensor`, `nn`, `hub`, `train`, `transformers`, `asr`) is
   tagged `<pkg>-X.Y.Z` on the same merge commit, because the members ask for
-  each other by that tag (step 3.3), not by commit. A package left out leaves
-  the tags of the others asking for a tag that does not exist. `whisper`
+  each other by that tag (step 3, first bullet), not by commit. A package left
+  out leaves the tags of the others asking for a tag that does not exist, so a
+  patch to one member means retagging all members at the new version (the cost
+  of the tag scheme). `whisper`
   asks for no member and may move alone, but its `native-gen` tag must be the
   one of `tensor` (`rg native-gen */agentica.toml`).
 - The owner gave an explicit OK for the tags, with the packages and versions.
@@ -97,8 +100,8 @@ Branch `release/<version>` off the merged `origin/main`. Change only:
    pass.
 
 Title the PR `Release <version>`; the body lists each package and its tag.
-CI skips Markdown-only changes, so this PR runs no CI. Its Pages check runs,
-and the Skills check when a skill changes. Merge when they are green.
+This PR changes manifests and locks, so CI runs, with the Pages check and the
+Skills check when a skill changes. Merge when they are green.
 
 ## 4. Tags and GitHub Releases (owner's OK)
 
@@ -131,7 +134,7 @@ The notes are never `Unreleased` or empty. Never create a release on a tag push.
   `AGENTICA_VERSION`). Run `agentica update`, `agentica install`, then
   `agentica check` on a one-file program that imports both. A
   `PKG-SOURCE-CONFLICT` here means a member manifest names another tag than
-  the release (step 3.1): stop, do not add an `override`.
+  the release (step 3, first bullet): stop, do not add an `override`.
 - The install blocks of the skills work exactly as written, with no edit and
   no `override`: in an empty folder, copy the `toml` block of
   `ml-inference/SKILL.md` (and the `train` line of `ml-training/SKILL.md`)
