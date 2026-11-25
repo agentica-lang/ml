@@ -1,7 +1,9 @@
 """Prints what Hugging Face's `GraniteMoeForCausalLM` (`ibm-granite/granite-3.1-1b-a400m-instruct`) answers on a few
 prompts, for `tools/granite_moe_check.agc` to compare: per prompt, the input ids (the check does not need our
 tokenizer), the logits of the last position over the whole vocabulary and, for every position, the ids of the five
-largest logits, in `float32`.
+largest logits, in `float32`, and the ids that greedy `generate` adds (at most 24, stopping at the end id `<|end_of_text|>`,
+which it keeps) with, for each step, the gap between the two largest logits and the five largest logits and their ids.
+`tools/granite_moe_check.agc` compares the first, `tools/generate_granite_moe_check.agc` the second.
 
 The `float32` model is 5.3 GB, more than a 12 GB machine shared with other work may give. So the checkpoint is loaded in
 `bfloat16` (2.7 GB, the way it is stored: every weight is exactly a `float32` number) and each decoder layer, with the
@@ -28,6 +30,8 @@ from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast
 assert torch.__version__.startswith("2.6.0"), torch.__version__
 assert transformers.__version__ == "4.57.6", transformers.__version__
 
+NEW = 24
+END = 0
 PROMPTS = [
     "The capital of France is",
     "def fibonacci(n):\n    ",
@@ -55,10 +59,17 @@ def main():
         with torch.no_grad():
             logits = model(ids).logits[0]
         assert logits.dtype == torch.float32, logits.dtype
+        with torch.no_grad():
+            made = model.generate(ids, do_sample=False, repetition_penalty=1.0, max_new_tokens=NEW, eos_token_id=END,
+                                  pad_token_id=END, output_scores=True, return_dict_in_generate=True)
         cases.append({
             "ids": ids[0].tolist(),
             "last": logits[-1].tolist(),
             "top5": logits.topk(5, dim=-1).indices.tolist(),
+            "generated": made.sequences[0, ids.shape[1]:].tolist(),
+            "gaps": [float(t[0] - t[1]) for t in (step[0].topk(2).values for step in made.scores)],
+            "step_top_ids": [step[0].topk(5).indices.tolist() for step in made.scores],
+            "step_top_logits": [step[0].topk(5).values.tolist() for step in made.scores],
         })
     json.dump({"cases": cases}, sys.stdout)
     sys.stdout.write("\n")

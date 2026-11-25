@@ -224,7 +224,7 @@ end
 
 ## Granite MoE
 
-`GraniteMoe.open(dir, backend, weights)` loads IBM Granite MoE (`granitemoe`, the 1B-A400M model `ibm-granite/granite-3.1-1b-a400m-instruct`) from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory, 5.3 GB for the 1B-A400M model). `GraniteMoe.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache; there is no generation, tokenizer or chat template for it yet, so a caller passes token ids.
+`GraniteMoe.open(dir, backend, weights)` loads IBM Granite MoE (`granitemoe`, the 1B-A400M model `ibm-granite/granite-3.1-1b-a400m-instruct`) from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory, 5.3 GB for the 1B-A400M model). `GraniteMoe.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache; `Generate` of `pkg/transformers/generate_granite_moe` generates with a KV cache, as in [Generation](#generation). There is no tokenizer or chat template for it yet, so a caller passes token ids.
 
 ```agentica
 import GraniteMoe from "pkg/transformers/granite_moe"
@@ -240,6 +240,7 @@ end
 - Each block is attention (grouped-query, rotary positions with `rope_theta`, the scores scaled by `attention_multiplier`) and a mixture of experts (`Moe.moe` of [nn](../nn/_index.md)): the router picks `num_experts_per_tok` of `num_local_experts` experts for each token, and their gated MLPs are added with the softmax of the picked scores as gates. The embeddings are multiplied by `embedding_multiplier`, each of the two branches of a block by `residual_multiplier` before it is added, and the logits are divided by `logits_scaling`. The head is the embedding table when `tie_word_embeddings` is true, else `lm_head.weight`.
 - Only `F32` weights are loaded, and the model cannot be fine-tuned with `train/`. The experts of a layer are two stacked tensors, so the model needs about 6 GB of memory on the CPU.
 - Against Hugging Face's `GraniteMoeForCausalLM` in `float32` on the real checkpoint, over five prompts of 5 to 217 tokens, the largest gap of a logit is 3.7e-5 on ggml CPU and 9.3e-5 on Vulkan with `vulkan_fp16` off, and the five largest logits of every position are the same ids. With `vulkan_fp16` on (the default on Vulkan) the largest gap is 0.34, and the fifth largest id of two positions differs. Call `Tensor.vulkan_fp16(false)` before the first ggml call for exact logits. A tiny random model is tested on the reference and ggml.
+- Against Hugging Face's greedy `generate` for the same checkpoint in `float32`, the 24 new ids of each of five prompts (5 to 217 tokens) are equal on ggml CPU, at about 17 tokens per second after the prompt and 5.6 GB at the peak. The KV cache is `F32`; a step's logits are 8.2e-5 from Hugging Face's.
 - A `model_type` other than `granitemoe`, an activation other than `silu`, `attention_bias: true` and `rope_scaling` are errors.
 
 ## Generation

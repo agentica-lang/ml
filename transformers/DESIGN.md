@@ -5,7 +5,7 @@ from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
 with a KV cache (greedy or sampled), the tokenizers, and the weights by name
 for a fine-tune with `train/`. Qwen3.5 (text only) has its forward, its
 tokenizer, its chat template and generation (ml#150).
-Granite MoE (`granitemoe`) has its forward over whole sequences (ml#274).
+Granite MoE (`granitemoe`) has its forward and generation (ml#274).
 
 ## Generation
 
@@ -202,7 +202,7 @@ Qwen2.5 writes a merge as `"a b"`, where Qwen3's writes `["a", "b"]`;
 `granite_moe.agc`: `GraniteMoe.open(dir, backend, weights = F32)` (the folder of an official
 `ibm-granite/granite-3.*-a*-instruct` repository: `config.json` and `model.safetensors` or its `.index.json`),
 `GraniteMoe.run(m, rows, last)`, `GraniteMoe.logits(m, ids, last)` and `GraniteMoe.close_model(m)`. The forward is over
-whole sequences, with no cache; generation comes with the shared stepping code of ml#150 and is not here.
+whole sequences, with no cache; generation is `generate_granite_moe.agc` (below).
 
 - A layer is `Nn.Attention` (GQA, `Rope(base: rope_theta)`, no norms on the heads, no biases) and `Moe.Moe`
   (`nn/DESIGN.md`), under pre-norm RMS norms. `block_sparse_moe.router.layer.weight`, `input_linear.weight` (`[experts,
@@ -216,6 +216,15 @@ whole sequences, with no cache; generation comes with the shared stepping code o
   run are errors, and so are `weights` other than `F32`, as `expert_matmul` is `F32` only.
 - The batch goes through one graph (the block takes `[batch, seq, width]`; `Moe.moe` folds the tokens). The weights
   are 5.3 GB in `F32`: the real check runs at a peak of 5.6 GB on the CPU.
+
+### Granite MoE generation
+
+`generate_granite_moe.agc` is `generate.agc` with Granite's layer, on `stepping.agc`: the API, the compiled steps, the
+padded prompt, the `usable` mask and the pick in the graph are those of [Qwen3.5 generation](#qwen35-generation) and
+`Generate`. The cache is the keys and values of every layer, `[1, kv_heads, rows, head_dim]`, padded to a capacity, in
+`F32` with no option: an `F16` cache moved the logits by up to 0.19, more than the gap of some greedy choices. A
+prompt's padding rows go through the router and the experts too, which changes no real token (the mask keeps them off,
+`Moe.moe` treats tokens alone). `GraniteMoe.times` and `GraniteMoe.scores` are what the forward and the steps share.
 
 ## BERT
 
@@ -451,8 +460,16 @@ error row per config field.
 - `test/granite_moe_test.agc` against `test/granite_moe_golden.py` (manual, Hugging Face's `GraniteMoeForCausalLM` in
   `float32`, `fixtures/granite_moe_golden.json`): a tiny random model (2 layers, hidden 16, 6 experts of which 2 are
   picked, the four multipliers set to values other than 1, tied head) written as a safetensors file under the official
-  names; the logits of every position of two rows match on the reference (1e-4) and on ggml CPU (1e-3); an untied head
-  is the file's; a config the model does not run and weights other than `F32` are errors.
+  names; the logits of every position of two rows match on the reference (1e-4) and on ggml CPU (1e-3); the cached steps
+  of `Generate` (a padded prompt of 3 ids, then one id at a time) give the logits of the whole forward, and a greedy
+  `generate` of 14 ids from a prompt of 7, crossing the capacities 8, 16 and 32, gives Hugging Face's ids and logits, on
+  the reference and on ggml; an untied head is the file's; a config the model does not run and weights other than `F32`
+  are errors.
+- `tools/generate_granite_moe_check.agc` against Hugging Face's greedy `generate` (`test/granite_moe_check_golden.py`,
+  manual): 24 new ids for each of five prompts of 5 to 217 tokens of `ibm-granite/granite-3.1-1b-a400m-instruct`, equal on
+  ggml CPU (the smallest gap between the two largest logits of a step is 0.115). It feeds the prompt and Hugging Face's
+  ids to `step_logits` and compares the five largest logits of each step: F32 cache, 8.2e-5 from Hugging Face's. About 17
+  tokens per second after the prompt, 5.6 GB at the peak.
 - `tools/granite_moe_check.agc` against Hugging Face's `GraniteMoeForCausalLM` on `ibm-granite/granite-3.1-1b-a400m-instruct`
   (`test/granite_moe_check_golden.py`, manual: it loads the checkpoint in `bfloat16` and turns one layer at a time to
   `float32`, so it fits in 5 GB): five prompts of 5 to 217 tokens, the logits of the last position over the vocabulary
