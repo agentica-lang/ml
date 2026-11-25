@@ -27,6 +27,8 @@ Data.Loader { dataset, batch_size, shuffle = true, seed = 0, drop_last = false, 
 Data.size(dataset) / Data.count(loader) / Data.order(loader, epoch) / Data.batch(loader, rows, i)
 Data.feed(loader, epochs) -> Result[Feed]; Data.epoch(feed, e); Data.take(feed, i); Data.stop(feed)
 Data.release(batch)                                          frees its native tensors
+Data.free(tensor)                                            frees one tensor's native memory now
+Data.freed?(batch) -> Bool                                   a tensor of the batch was freed
 Data.Batch { inputs, targets, index? }
 
 Metrics.open(root, name, sinks = Both) -> Result[Run]   ROOT/NAME/metrics.jsonl, events.out.tfevents.*
@@ -34,6 +36,7 @@ Metrics.scalar(run, name, step, value) -> Result[Void]
 Metrics.close(run) -> Result[Void]
 
 Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?, metrics?) -> Result[Fit { params, history }]
+Train.fit_batches(loss, params, batch: Fn[Int, Int, Result[Batch]], count, optimizer, epochs, on_epoch?, metrics?) -> Result[Fit]
   loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
   on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
 Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Module]
@@ -127,11 +130,34 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   is not a new graph. The StableHLO form keeps the rank-0 scalars and Adam's
   older composition, which its goldens pin: an `adam_step` node has no StableHLO. The goldens in `test/fixtures/stablehlo/`
   are three chained runs on IREE, which `fit` reproduces at steps 1 and 3.
+- **Adam's moments are updated where they lie.** A step on ggml runs Adam's
+  update as `Tensor.adam_step`, and in the compiled step of `fit` its first and
+  second moments are inputs that nothing else reads, so the lowering updates
+  them in place: the step's results for them are the very tensors it was given
+  (`Trace.donated`), and `run` does not free the old moment that is the new one
+  (`Stepped.kept`). The parameters are never written (the loss reads them), so
+  the caller's weights need no copy on the first step; the moments are the
+  run's own zeros. A non-finite moment is not checked where it is written: it
+  reaches the new parameter through the update, which is checked.
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on
   libtorch and only the new state, parameters and loss leave it
   (`tensor/DESIGN.md` §8). The previous parameters and state were made
-  before the arena, so it does not free them: they wait for the GC.
+  before the arena, so it does not free them: `fit` closes them itself once
+  the step has replaced them, and the last moments when it returns. The GC
+  does not count native memory, so waiting for it let a run of a large model
+  hold several copies of its weights. The caller's `params` are never
+  closed, and neither are the trained ones of the result.
+  `tools/fit_memory.agc STEPS` under `/usr/bin/time -v` shows it: the peak
+  of a fit of one 64 MB parameter does not grow with the step count.
+- **`fit_batches` takes a function, not a second kind of loader.** A loader
+  cuts two tensors of one shape; sentences padded to the longest of each
+  batch have a shape per batch, which no tensor holds. `fit_batches(loss,
+  params, batch, count, ...)` asks `batch(epoch, i)` for each batch and is
+  otherwise `fit`, which runs on the same loop with the loader behind such a
+  function. The step is compiled once per batch shape either way. A batch
+  is two tensors; what else a loss needs it derives (a padding mask is `ids
+  != 0`).
 - **Metrics live in `train/`.** Only `fit` reports through them, and the logger
   needs no native code and no `tensor/` type, so a package of its own would be
   a `agentica.toml`, a lock, a version pin and a CI job for one consumer. It is

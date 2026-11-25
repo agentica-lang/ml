@@ -1522,8 +1522,7 @@ def layer_norm_composed(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   div(centered, denom)
 end
 
-## Derived: `adam_step` from the ops of §3.1. A computing backend holds `hyper`, which is read once into constants of
-## the shape of `p`, as for the one-node form; a trace slices it, which costs nothing when it runs.
+## Derived: `adam_step` from the ops of §3.1, over the numbers of `adam_coefficients`.
 def adam_composed(
   p: Types.Tensor,
   g: Types.Tensor,
@@ -1531,34 +1530,64 @@ def adam_composed(
   v: Types.Tensor,
   hyper: Types.Tensor,
 ) -> Result[List[Types.Tensor]]
-  numbers: List[Types.Values] = []
-  case p.backend
-    Types.Backend.Trace -> nil
-    _ -> numbers = try to_list(hyper)
-  end
-
-  one = try full(p.shape, Types.Values.Float(1.0), p.dtype, p.backend)
-  alpha = try hyper_at(hyper, numbers, 0, p)
-  beta1 = try hyper_at(hyper, numbers, 1, p)
-  beta2 = try hyper_at(hyper, numbers, 2, p)
-  eps = try hyper_at(hyper, numbers, 3, p)
-  decay = try hyper_at(hyper, numbers, 4, p)
-  correct1 = try hyper_at(hyper, numbers, 5, p)
-  correct2 = try hyper_at(hyper, numbers, 6, p)
-  first = try add(try mul(m, beta1), try mul(g, try sub(one, beta1)))
-  second = try add(try mul(v, beta2), try mul(try mul(g, g), try sub(one, beta2)))
-  denominator = try add(try sqrt(try mul(second, correct2)), eps)
-  step = try mul(alpha, try div(try mul(first, correct1), denominator))
-  keep = try sub(one, try mul(alpha, decay))
-  ok([try sub(try mul(p, keep), step), first, second])
+  c = try adam_coefficients(hyper, p)
+  first = try add(try mul(m, c[1]), try mul(g, c[2]))
+  second = try add(try mul(v, c[3]), try mul(try mul(g, g), c[4]))
+  denominator = try add(try sqrt(try mul(second, c[8])), c[5])
+  step = try mul(c[0], try div(try mul(first, c[7]), denominator))
+  ok([try sub(try mul(p, c[6]), step), first, second])
 end
 
-## The number `i` of `hyper` as a tensor of `like`'s shape: a constant from `numbers` when they were read, else a
-## slice of the traced `hyper`.
-def hyper_at(hyper: Types.Tensor, numbers: List[Types.Values], i: Int, like: Types.Tensor) -> Result[Types.Tensor]
-  return broadcast_to(try reshape(try slice(hyper, [i], [i + 1]), []), like.shape) if numbers.empty?
+## `[lr, beta1, 1 - beta1, beta2, 1 - beta2, eps, 1 - lr decay, correct1, correct2]` as tensors of the shape of `p`.
+## A computing backend holds `hyper`: its 7 numbers are read once and the constants are made on the host, as the
+## one-node form reads them; a trace slices `hyper`, which costs nothing when it runs.
+def adam_coefficients(hyper: Types.Tensor, p: Types.Tensor) -> Result[List[Types.Tensor]]
+  case p.backend
+    Types.Backend.Trace ->
+      at: List[Types.Tensor] = []
+      for i in 0...7
+        at = at.push(try hyper_at(hyper, i, p))
+      end
 
-  full(like.shape, numbers[i], like.dtype, like.backend)
+      one = try full(p.shape, Types.Values.Float(1.0), p.dtype, p.backend)
+      ok([
+        at[0],
+        at[1],
+        try sub(one, at[1]),
+        at[2],
+        try sub(one, at[2]),
+        at[3],
+        try sub(one, try mul(at[0], at[4])),
+        at[5],
+        at[6],
+      ])
+    _ ->
+      x = try host_floats(hyper)
+      numbers = [x[0], x[1], 1.0 - x[1], x[2], 1.0 - x[2], x[3], 1.0 - x[0] * x[4], x[5], x[6]]
+      out: List[Types.Tensor] = []
+      for n in numbers
+        out = out.push(try full(p.shape, Types.Values.Float(n), p.dtype, p.backend))
+      end
+
+      ok(out)
+  end
+end
+
+## The number `i` of the traced `hyper` as a tensor of `like`'s shape.
+def hyper_at(hyper: Types.Tensor, i: Int, like: Types.Tensor) -> Result[Types.Tensor]
+  broadcast_to(try reshape(try slice(hyper, [i], [i + 1]), []), like.shape)
+end
+
+def host_floats(t: Types.Tensor) -> Result[List[Float]]
+  out: List[Float] = []
+  for v in try to_list(t)
+    case v
+      Types.Values.Float(f) -> out = out.push(f)
+      _ -> return error("adam_step takes float hyper-parameters")
+    end
+  end
+
+  ok(out)
 end
 
 ## The ops `rms_norm` stands for, from §3.1 only.

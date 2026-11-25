@@ -26,6 +26,9 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### train
 
 - `Optim` takes the Adam update through `Tensor.adam_step`, so on ggml it is one kernel for each parameter (`Optim.step_inputs` gives the 7 numbers of the step as one input; `Optim.step` accepts them or the rank-0 scalars as before).
+- `Train.fit_batches` trains over batches that a function makes, each with its own shape (sentences padded to the longest of the batch).
+- `Train.fit` frees the parameters and the optimizer state a step replaces at once on libtorch and ggml, where they waited for the GC: a large model no longer holds several copies of its weights.
+- `Data.free(tensor)` frees the native memory of one tensor now, and `Data.freed?(batch)` says whether a batch was freed.
 - `Optim.AdamW`: Adam with decoupled weight decay, as PyTorch's `AdamW`, with a `decay` flag per parameter (biases and layer-norm weights do not decay in a fine-tune).
 - `Optim.Schedule` (`Constant`, `WarmupLinear`, `WarmupCosine`) for the `schedule:` of `Sgd`, `Adam` and `AdamW`: the learning rate follows the step count, as in Hugging Face's `Trainer` up to `total` (after it the factor stays 0). SGD's learning rate is now an input of the step (`Optim.step_scalars`), like Adam's.
 - **Breaking:** the StableHLO module of `Train.stablehlo` for SGD takes one more rank-0 argument after the moments, its learning rate (`Optim.step_scalars`); an SGD step of `Optim.step` takes one scalar or none.
@@ -42,6 +45,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### transformers
 
 - ggml: a decode step reads the rows of the cache in use, not its whole capacity: Qwen3-0.6B decode on Vulkan at 2048 rows is 5% faster.
+- `DistilBert.weights`, `with_weights` and `pooled`: the weights of a DistilBERT by name and its forward inside a trace, so `Train.fit` fine-tunes it.
 - `DistilBert`: DistilBERT from a Hugging Face checkpoint, with the mean pooling and the normalization of a sentence-transformers model (`embed`).
 - `Sentence`: `mean_pooled`, `normalized` and `cosine_similarity_loss`, the pieces of a sentence-embedding model.
 - `WordPiece` reads a `tokenizer.json` that sets `truncation` or batch padding (sentence-transformers' checkpoints), and `WordPiece.encode` takes a `max_length`; `pad_id` is the pad id of the file.

@@ -35,7 +35,9 @@ end
 ## every step writes `train/loss`, `train/lr` and `train/step_ms` to that run at
 ## its step count (from 1); `fit` does not close the run. A metric that
 ## `Metrics.scalar` refuses (a loss that is not finite, for one) stops `fit`
-## with an error that names the epoch and the batch.
+## with an error that names the epoch and the batch. The parameters and the optimizer state that a step replaces are
+## freed at once on libtorch and ggml, except `params` themselves, which stay the caller's, as the trained ones of the
+## result are.
 def fit(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],
@@ -45,15 +47,44 @@ def fit(
   on_epoch: Optional[Fn[Epoch, Void]] = none,
   metrics: Optional[Metrics.Run] = none,
 ) -> Result[Fit]
-  state = try Optim.init(optimizer, params)
   feed = try Data.feed(data, epochs)
-  ran = run(Run(loss: loss, feed: feed, epochs: epochs, on_epoch: on_epoch, metrics: metrics), state, params)
-  for key in ran.programs.keys
-    Trace.close(ran.programs[key])
-  end
+  batches = ->(e: Int) {
+    current = Data.epoch(feed, e)
+    ->(i: Int) { Data.take(current, i) }
+  }
+
+  result = trained(
+    Run(loss: loss, batches: batches, count: Data.count(data), epochs: epochs, on_epoch: on_epoch, metrics: metrics),
+    params,
+    optimizer,
+  )
 
   Data.stop(feed)
-  ran.result
+  result
+end
+
+## `fit` over batches that a function makes. The function makes new tensors on every call: `fit_batches` frees a batch
+## after its step (`Data.release`), so a batch kept and answered again (a cache, a second epoch) is an error that says
+## so. `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `epoch` (from 1), for data that is not two
+## tensors of one shape, such as sentences padded to the longest of each batch. Each batch may have its own shape; the
+## step is compiled once per shape, so few distinct shapes keep the compiles few.
+def fit_batches(
+  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  params: List[Tensor.Tensor],
+  batch: Fn[Int, Int, Result[Data.Batch]],
+  count: Int,
+  optimizer: Optim.Optimizer,
+  epochs: Int,
+  on_epoch: Optional[Fn[Epoch, Void]] = none,
+  metrics: Optional[Metrics.Run] = none,
+) -> Result[Fit]
+  return error("fit_batches needs at least one batch, got #{count}") if count < 1
+  batches = ->(e: Int) { ->(i: Int) { fresh(batch.call(e, i), e, i) } }
+  trained(
+    Run(loss: loss, batches: batches, count: count, epochs: epochs, on_epoch: on_epoch, metrics: metrics),
+    params,
+    optimizer,
+  )
 end
 
 ## The training step of `fit` as one StableHLO program (`Trace.stablehlo`): its arguments are the parameters, the
@@ -79,17 +110,22 @@ end
 
 private
 
+## `batches` gives the batches of an epoch (from 1), each by its index below `count`.
 struct Run
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]]
-  feed: Data.Feed
+  batches: Fn[Int, Fn[Int, Result[Data.Batch]]]
+  count: Int
   epochs: Int
   on_epoch: Optional[Fn[Epoch, Void]]
   metrics: Optional[Metrics.Run]
 end
 
+## `kept` says, for each moment (the first ones, then the second), whether the step updated it where it lay, so that
+## the new one is the old tensor and must not be freed with it.
 struct Stepped
   step: Optim.Step
   loss: Float
+  kept: List[Bool]
 end
 
 ## What `run` answers: the fit or its error, and the compiled steps to close, one per batch shape seen.
@@ -104,37 +140,66 @@ struct Taken
   programs: Map[String, Trace.Compiled]
 end
 
+## The batch a function made, or an error when its tensors are freed already: a batch answered twice.
+def fresh(made: Result[Data.Batch], e: Int, i: Int) -> Result[Data.Batch]
+  b = try made
+  return error("batch(#{e}, #{i}) returned tensors that are already freed: make new ones") if Data.freed?(b)
+  ok(b)
+end
+
+## The run, then its compiled steps closed.
+def trained(r: Run, params: List[Tensor.Tensor], optimizer: Optim.Optimizer) -> Result[Fit]
+  ran = run(r, try Optim.init(optimizer, params), params)
+  for key in ran.programs.keys
+    Trace.close(ran.programs[key])
+  end
+
+  ran.result
+end
+
+## The tensors of `held` are the run's own: the moments always, and the parameters once a step has made them
+## (`owned`). They are freed when a step replaces them and when the run stops on an error.
 def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
   state = start
   current = params
+  owned = false
   history: List[Float] = []
   programs: Map[String, Trace.Compiled] = {}
-  batches = Data.count(r.feed.loader)
   for e in 1..r.epochs
-    feed = Data.epoch(r.feed, e)
+    take = r.batches.call(e)
     total = 0.0
-    for i in 0...batches
+    for i in 0...r.count
       started = Time.monotonic_ns()
-      grown = take_step(r, feed, i, state, current, programs)
+      grown = take_step(r, take, i, state, current, programs)
       programs = grown.programs
       stepped = grown.stepped
-      return Ran(result: error("epoch #{e}, batch #{i}: #{stepped.message}"), programs: programs) if !stepped.ok?
+      if !stepped.ok?
+        release(state, current, owned)
+        return Ran(result: error("epoch #{e}, batch #{i}: #{stepped.message}"), programs: programs)
+      end
 
       done = stepped.unwrap!
+      rate = Optim.learning_rate(state)
+      release_replaced(state, done.kept, current, owned)
+      state = done.step.state
+      current = done.step.params
+      owned = true
       case r.metrics
         some(m) ->
           ms = (Time.monotonic_ns() - started).to_f / 1000000.0
-          logged = log_step(m, done, Optim.learning_rate(state), ms)
-          return Ran(result: error("epoch #{e}, batch #{i}: #{logged.message}"), programs: programs) if !logged.ok?
+          logged = log_step(m, done, rate, ms)
+          if !logged.ok?
+            release(state, current, owned)
+            return Ran(result: error("epoch #{e}, batch #{i}: #{logged.message}"), programs: programs)
+          end
+
         none -> nil
       end
 
-      state = done.step.state
-      current = done.step.params
       total = total + done.loss
     end
 
-    mean = total / batches.to_f
+    mean = total / r.count.to_f
     history = history.push(mean)
     case r.on_epoch
       some(f) -> f.call(Epoch(epoch: e, loss: mean))
@@ -142,7 +207,38 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
     end
   end
 
+  release(state, [], false)
   Ran(result: ok(Fit(params: current, history: history)), programs: programs)
+end
+
+## Frees what a step replaced: the moments of `state` that the step did not update in place (`kept`), and `params`
+## when the run owns them.
+def release_replaced(state: Optim.State, kept: List[Bool], params: List[Tensor.Tensor], owned: Bool) -> Void
+  moments = state.first + state.second
+  for i in 0...moments.size
+    if !kept[i]
+      Data.free(moments[i])
+    end
+  end
+
+  if owned
+    for t in params
+      Data.free(t)
+    end
+  end
+end
+
+## Frees the moments of `state`, and `params` when the run owns them.
+def release(state: Optim.State, params: List[Tensor.Tensor], owned: Bool) -> Void
+  for t in state.first + state.second
+    Data.free(t)
+  end
+
+  if owned
+    for t in params
+      Data.free(t)
+    end
+  end
 end
 
 def log_step(m: Metrics.Run, done: Stepped, lr: Float, ms: Float) -> Result[Void]
@@ -154,13 +250,13 @@ end
 
 def take_step(
   r: Run,
-  feed: Data.Feed,
+  take: Fn[Int, Result[Data.Batch]],
   i: Int,
   state: Optim.State,
   params: List[Tensor.Tensor],
   programs: Map[String, Trace.Compiled],
 ) -> Taken
-  case Data.take(feed, i)
+  case take.call(i)
     error(e) -> Taken(stepped: error(e), programs: programs)
     ok(batch) ->
       key = shapes_of(batch)
@@ -191,7 +287,9 @@ end
 def shapes_of(batch: Data.Batch) -> String = JSON.encode([Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)])
 
 ## The step of `fit` traced and lowered once for batches shaped like `batch`: its arguments are the parameters, the
-## optimizer's first and second moments, the inputs of the step (`Optim.step_inputs`), then the batch's inputs and targets.
+## optimizer's first and second moments, the inputs of the step (`Optim.step_inputs`), then the batch's inputs and
+## targets. The function keeps `state` for its optimizer and for how many moments it has, never for its tensors, which
+## are arguments: `run` frees them after the step, except the moments the step updated in place.
 def compile_step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   state: Optim.State,
@@ -238,7 +336,8 @@ def step(
     args = params + state.first + state.second + try scalar_inputs(state, params) + [batch.inputs, batch.targets]
     outs = try Trace.run(program, args)
     moved = state.with(steps: state.steps + 1, first: outs.drop(1 + n).take(k), second: outs.drop(1 + n + k))
-    ok(Stepped(step: Optim.Step(state: moved, params: outs.drop(1).take(n)), loss: try scalar(outs[0])))
+    kept = Trace.donated(program).drop(1 + n)
+    ok(Stepped(step: Optim.Step(state: moved, params: outs.drop(1).take(n)), loss: try scalar(outs[0]), kept: kept))
   end
 end
 
