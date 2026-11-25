@@ -35,6 +35,9 @@ struct Program
   ## The StableHLO text and the inputs it updates in place: a run after `Trace.close` compiles it again.
   text: String
   donated: List[Int]
+  ## The program answers one more output, true when an index of a `gather` is outside its rows
+  ## (`Stablehlo.Module.checked`).
+  checked: Bool
 end
 
 ## The pinned plugins, one per machine (Linux only). `tools/install_xla.agc` downloads one, and `plugin_path` finds
@@ -200,27 +203,47 @@ def compile(
   constants: List[Types.Tensor],
   outs: List[Types.Tensor],
   donated: List[Int],
+  checked: Bool,
 ) -> Result[Program]
   _ = try usable("compile")
   for c in constants
     _ = try handle_of(c)
   end
 
-  p = try Native.arena do XlaRaw.compile(text, outs.size, donated) end
-  ok(Program(program: p, constants: constants, outs: outs, text: text, donated: donated))
+  extra = 0
+  if checked
+    extra = 1
+  end
+
+  p = try Native.arena do XlaRaw.compile(text, outs.size + extra, donated) end
+  ok(Program(program: p, constants: constants, outs: outs, text: text, donated: donated, checked: checked))
 end
 
 ## One run of `p` over `args` (the inputs, checked by the caller): a new tensor per output.
 ## A run after `Trace.close` takes the program from the cache, or compiles it again.
 def execute(p: Program, args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
   if Native.closed?(p.program)
-    again = try compile(p.text, p.constants, p.outs, p.donated)
+    again = try compile(p.text, p.constants, p.outs, p.donated, p.checked)
     values = execute(again, args)
     Native.close(again.program)
     return values
   end
 
   buffers = try Native.arena do run_call(p.program, args + p.constants) end
+  if p.checked and !buffers.empty?
+    flag = buffers.last
+    buffers = buffers.take(buffers.size - 1)
+    read = XlaRaw.readback(flag)
+    Native.close(flag)
+    if !read.ok? or read.unwrap! != [0.0]
+      for b in buffers
+        Native.close(b)
+      end
+
+      return error("gather: an index is outside the rows of its source") if read.ok?
+      return error("run: #{read.message}")
+    end
+  end
 
   return error("the run gave #{buffers.size} outputs, the program has #{p.outs.size}") if buffers.size != p.outs.size
   ok((0...buffers.size).map { |i| tensor_of(p.outs[i].shape, p.outs[i].dtype, buffers[i]) })

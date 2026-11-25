@@ -17,12 +17,22 @@ struct Module
   constants: List[Types.Tensor]
   ## The positions of the inputs the program updates in place (`emit` with `donate`), each aliased to its output.
   donated: List[Int] = []
+  ## True when the program returns one more output after the traced ones (`emit` with `checked`): an `i1` that is
+  ## true when an index of a `gather` is outside the rows of its source.
+  checked: Bool = false
 end
 
 ## The module of the traced tensors `outs` over the input nodes `inputs` (traced `Input` tensors, in argument order).
 ## With `donate`, the moments an `adam_step` updates in place (`Lower.adam_moments`) are aliased to their outputs
-## (`tf.aliasing_output`), so XLA writes the new moment over the old one: a run consumes those inputs.
-def emit(inputs: List[Types.Tensor], outs: List[Types.Tensor], donate: Bool = false) -> Result[Module]
+## (`tf.aliasing_output`), so XLA writes the new moment over the old one: a run consumes those inputs. With `checked`,
+## a program with a `gather` also answers whether one of its indices is outside the rows (`Module.checked`), which
+## XLA would clamp: the caller makes that the error the other backends give.
+def emit(
+  inputs: List[Types.Tensor],
+  outs: List[Types.Tensor],
+  donate: Bool = false,
+  checked: Bool = false,
+) -> Result[Module]
   return error("a StableHLO program needs at least one output") if outs.empty?
   positions: Map[Ref, Int] = {}
   names: Map[Ref, String] = {}
@@ -55,6 +65,7 @@ def emit(inputs: List[Types.Tensor], outs: List[Types.Tensor], donate: Bool = fa
 
   constants: List[Types.Tensor] = []
   body: List[String] = []
+  flags: List[String] = []
   next = 0
   for t in try Lower.walk(outs, positions)
     n = try Graph.node_of(t)
@@ -78,18 +89,40 @@ def emit(inputs: List[Types.Tensor], outs: List[Types.Tensor], donate: Bool = fa
         else
           names = names.put(n.id, "%#{next - 1}")
         end
+
+        if checked and gather?(n)
+          lines = try outside(n.args[1], names[Graph.id_of(n.args[1])], n.args[0].shape[0], next)
+          for i in 0...lines.size
+            body = body.push("    %#{next + i} = #{lines[i]}")
+          end
+
+          next = next + lines.size
+          flags = flags.push("%#{next - 1}")
+        end
     end
   end
 
   results = outs.map { |o| names[Graph.id_of(o)] }
   types = try types_of(outs)
+  if !flags.empty?
+    flag = flags[0]
+    for f in flags.drop(1)
+      body = body.push("    %#{next} = stablehlo.or #{flag}, #{f} : tensor<i1>")
+      flag = "%#{next}"
+      next = next + 1
+    end
+
+    results = results.push(flag)
+    types = types.push("tensor<i1>")
+  end
+
   text = (
     ["module {", "  func.func public @main(#{params.join(", ")}) -> (#{types.join(", ")}) {"] +
     body +
     ["    func.return #{results.join(", ")} : #{types.join(", ")}", "  }", "}", ""]
   ).join("\n")
 
-  ok(Module(text: text, constants: constants, donated: aliased.keys.sort))
+  ok(Module(text: text, constants: constants, donated: aliased.keys.sort, checked: !flags.empty?))
 end
 
 private
@@ -221,6 +254,37 @@ def adam_part(t: Types.Tensor, stacked: Types.Tensor, name: String, i: Int, firs
     "stablehlo.slice #{name} #{window} : (#{try type_of(stacked)}) -> #{layer}",
     "stablehlo.reshape %#{first} : (#{layer}) -> #{try type_of(t)}",
   ])
+end
+
+def gather?(n: Types.Node) -> Bool
+  case n.op
+    Types.Op.Gather -> true
+    _ -> false
+  end
+end
+
+# Whether one of the indices `name` (the tensor `idx`) is outside `[0, rows)`: an `i1`, the last line.
+def outside(idx: Types.Tensor, name: String, rows: Int, first: Int) -> Result[List[String]]
+  shape = try type_of(idx)
+  flags = try tensor_type(idx.shape, Types.Dtype.Bool)
+  kind = compare_type(idx.dtype)
+  lines = [
+    try splat(Types.Values.Int(0), idx.shape, idx.dtype),
+    try splat(Types.Values.Int(rows), idx.shape, idx.dtype),
+    "stablehlo.compare LT, #{name}, %#{first}, #{kind} : (#{shape}, #{shape}) -> #{flags}",
+    "stablehlo.compare GE, #{name}, %#{first + 1}, #{kind} : (#{shape}, #{shape}) -> #{flags}",
+    "stablehlo.or %#{first + 2}, %#{first + 3} : #{flags}",
+  ]
+
+  return ok(lines) if idx.shape.empty?
+  axes = ints((0...idx.shape.size).to_a)
+  ok(
+    lines +
+    [
+      try splat(Types.Values.Bool(false), [], Types.Dtype.Bool),
+      "stablehlo.reduce(%#{first + 4} init: %#{first + 5}) applies stablehlo.or across dimensions = #{axes} : (#{flags}, tensor<i1>) -> tensor<i1>",
+    ],
+  )
 end
 
 def put(l: Lines, text: String) -> Lines = l.with(defs: l.defs.push(text))

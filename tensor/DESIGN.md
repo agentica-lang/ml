@@ -834,7 +834,9 @@ The price:
   `transpose`, `reshape`, `broadcast_to`, `sum`, `mean`, `max` (a `reduce` from
   `0` or `-inf`, then a `reshape` for `keep_dims`), `eq`, `lt`, `where`
   (`select`), `arange` (`iota`), `slice`, `full`, `stop_grad`, `gather` (a
-  `stablehlo.gather` of whole rows; XLA clamps an index outside the rows) and
+  `stablehlo.gather` of whole rows; XLA would clamp an index outside the
+  rows, so for `Xla` the program also answers a flag that one is, and the run
+  is then the error the reference gives) and
   `adam_step` (the ops of its composed form over the 7 numbers, its three
   results stacked; a part is a `slice`). Any other op is an error naming it. `Q8_0` has no MLIR element type; `Bool` is `i1`, `U8` is
   `ui8`.

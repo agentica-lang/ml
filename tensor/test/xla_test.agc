@@ -93,6 +93,19 @@ def test_gather_and_adam_step_compiled_by_xla_match_the_reference() -> Result[Vo
   close(got, want)
 end
 
+## An index outside the rows is an error, as on the reference, not a clamped row.
+def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]
+  return ok() if !try present()
+  table = try floats(uniform(15, 31, 1.0), [5, 3], XLA)
+  for bad in [[1, 5], [-1, 0]]
+    r = Trace.eval([table, try labels(bad, XLA)], ->(xs: List[Tensor.Tensor]) { Tensor.gather(xs[0], xs[1]) })
+    try Test.assert(!r.ok?, "gather at #{bad} of 5 rows ran on XLA")
+    try Test.assert(r.message.include?("outside the rows"), r.message)
+  end
+
+  ok()
+end
+
 def test_an_adam_step_consumes_the_moments_it_updates() -> Result[Void]
   return ok() if !try present()
   args = try adam_args(XLA)
