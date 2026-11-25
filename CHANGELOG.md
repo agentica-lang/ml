@@ -11,6 +11,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 - ggml: a decode step runs fewer kernels (the positions converted and checked once for every cache, a long-row `max` in pieces, SwiGLU as one kernel): Qwen3-0.6B decode on Vulkan is 7 to 11% faster.
 - ggml: a `Trace.compile` function keeps its constants bound to its graph between runs and binds only its inputs; the graph that ran last keeps its allocation.
 - ggml: an `attention` reads a `slice` of an `F16` cache that starts at its first element where it is, with no copy.
+- ggml: `scatter_add` (the gradient of an embedding lookup) on Vulkan in F32 mode adds the rows of an index with a matmul by a mask instead of `get_rows_back`, whose Vulkan kernel costs rows x k x width; `tools/bench-scatter.agc` times it.
 - ggml: a graph returns up to 512 outputs (it was 256), so a training step takes 170 parameters with Adam.
 - `Tensor.append_file` appends the values of an `F32` tensor to a file, written by C on libtorch and ggml.
 
@@ -32,6 +33,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### hub
 
 - `SafetensorsWrite.write` writes `F32` tensors by name to a safetensors file, and `Hub.tensors` reads every tensor of a checkpoint.
+- The GGUF writer refuses a layer name that is not a number, removes its `.part` file when the rename fails, and `Tensor.convert_file` reports a failed close.
 
 ### transformers
 
@@ -40,6 +42,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 - `Sentence`: `mean_pooled`, `normalized` and `cosine_similarity_loss`, the pieces of a sentence-embedding model.
 - `WordPiece` reads a `tokenizer.json` that sets `truncation` or batch padding (sentence-transformers' checkpoints), and `WordPiece.encode` takes a `max_length`; `pad_id` is the pad id of the file.
 - `Qwen3.weights` and `Qwen3.with_weights`: the weights of a model by their Hugging Face names, for training part of it.
+- `Qwen3Gguf.convert` checks every weight's shape against the config (a missing `head_dim` is the hidden size over the heads), refuses merge ranks that are not 0 to n-1, types an added token of the base vocabulary as llama.cpp does, always writes `add_bos_token` and `add_eos_token`, and reads `chat_template.jinja`.
 
 ## [0.2.0] - 2026-11-24
 

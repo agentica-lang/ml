@@ -123,11 +123,16 @@ static void ggml_TensorHandle_free(void *state) {
 static bool want_fp16 = true; /* written under the device lock, read by `tg_fp16` without it: atomically */
 static bool chosen = false;
 static bool precision_fixed = false;
+static bool masked_scatter = true; /* TENSOR_SCATTER_ADD is not `get_rows_back`; read once, in `fix_precision` */
 
 static void fix_precision(void) {
+  const char *scatter;
+
   if (precision_fixed) return;
   /* This runs on a compute-pool thread, under the device lock, before ggml
-     reads the variable; nothing else of this module reads the environment. */
+     reads the variable; the environment is read here and nowhere else of this module. */
+  scatter = getenv("TENSOR_SCATTER_ADD");
+  if (scatter != NULL && strcmp(scatter, "get_rows_back") == 0) __atomic_store_n(&masked_scatter, false, __ATOMIC_RELAXED);
   if (!chosen && getenv("GGML_VK_DISABLE_F16") != NULL) __atomic_store_n(&want_fp16, false, __ATOMIC_RELAXED);
   if (want_fp16) unsetenv("GGML_VK_DISABLE_F16");
   else setenv("GGML_VK_DISABLE_F16", "1", 1);
@@ -215,6 +220,8 @@ ggml_backend_t tg_backend(int64_t device, char *why, size_t len) {
 }
 
 /* Read once a device is open, when the choice is fixed: it never changes after the first registry call. */
+bool tg_masked_scatter(void) { return __atomic_load_n(&masked_scatter, __ATOMIC_RELAXED); }
+
 bool tg_fp16(void) { return __atomic_load_n(&want_fp16, __ATOMIC_RELAXED); }
 
 an_term ggml_vulkan_fp16(an_env *env, bool enabled) {
@@ -424,6 +431,25 @@ struct load_source {
    is kept (rounded), a larger finite one is an error naming its element, and an infinity passes through. */
 #define HALF_MAX 65504.0f
 
+/* Whether every float of a chunk is one F16 can hold (an infinity passes through); else `why` names the first that is
+   not, at element `first` + its place. */
+static bool half_range_ok(const float *values, int64_t first, int64_t n, char *why, size_t why_len) {
+  unsigned bad = 0;
+  int64_t i;
+
+  /* no branch, so that the compiler can vectorize the scan; only a chunk that has a bad value is searched */
+  for (i = 0; i < n; i++) bad |= (unsigned)(fabsf(values[i]) > HALF_MAX) & (unsigned)(fabsf(values[i]) < INFINITY);
+  if (bad == 0) return true;
+  for (i = 0; i < n; i++) {
+    if (fabsf(values[i]) > HALF_MAX && fabsf(values[i]) < INFINITY) {
+      snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)values[i],
+               (long long)first + (long long)i);
+      return false;
+    }
+  }
+  return true;
+}
+
 struct half_sink {
   ggml_fp16_t *half;
 };
@@ -431,20 +457,8 @@ struct half_sink {
 /* Threads call it at once, each for its own `first` and `n`: it writes only that part of `half`. */
 static bool half_chunk(void *ctx, const float *values, int64_t first, int64_t n, char *why, size_t why_len) {
   struct half_sink *sink = (struct half_sink *)ctx;
-  unsigned bad = 0;
-  int64_t i;
 
-  /* no branch, so that the compiler can vectorize the scan; only a chunk that has a bad value is searched */
-  for (i = 0; i < n; i++) bad |= (unsigned)(fabsf(values[i]) > HALF_MAX) & (unsigned)(fabsf(values[i]) < INFINITY);
-  if (bad != 0) {
-    for (i = 0; i < n; i++) {
-      if (fabsf(values[i]) > HALF_MAX && fabsf(values[i]) < INFINITY) {
-        snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)values[i],
-                 (long long)first + (long long)i);
-        return false;
-      }
-    }
-  }
+  if (!half_range_ok(values, first, n, why, why_len)) return false;
   ggml_fp32_to_fp16_row(values, sink->half + first, n);
   return true;
 }
@@ -574,17 +588,7 @@ static bool convert_chunk(void *ctx, const float *values, int64_t first, int64_t
     if (!ok) snprintf(why, why_len, "the file could not be written (no space left?)");
     return ok;
   }
-  if (sink->format == FF_F16) {
-    int64_t i;
-
-    for (i = 0; i < n; i++) {
-      if (fabsf(values[i]) > HALF_MAX && fabsf(values[i]) < INFINITY) {
-        snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)",
-                 (double)values[i], (long long)first + (long long)i);
-        return false;
-      }
-    }
-  }
+  if (sink->format == FF_F16 && !half_range_ok(values, first, n, why, why_len)) return false;
   out = (uint16_t *)calloc((size_t)n + 1, width);
   if (out == NULL) {
     snprintf(why, why_len, "out of memory");
@@ -667,7 +671,10 @@ an_term ggml_convert_file(an_env *env, ng_str src, int64_t src_offset, int64_t s
     ok = ff_each(src.data, src.len, src_offset, count, src_format, convert_chunk, &sink, half_threads(), why,
                  sizeof why);
   }
-  close(fd);
+  if (close(fd) != 0 && ok) {
+    snprintf(why, sizeof why, "%s could not be written: %s", name, strerror(errno));
+    ok = false;
+  }
   if (!ok) return tg_error(env, why);
   return ggml_result_Void_ok(env, an_void(env));
 }

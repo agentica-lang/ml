@@ -145,6 +145,15 @@ def gguf_name(name: String) -> Result[String]
 
   parts = name.split(".")
   if parts.size > 3 and parts[0] == "model" and parts[1] == "layers"
+    case parts[2].to_i
+      ok(n) ->
+        if n < 0 or "#{n}" != parts[2]
+          return error("the layer #{parts[2]} of #{name} is not a number without a sign or leading zeros")
+        end
+
+      error(_) -> return error("the layer #{parts[2]} of #{name} is not a number")
+    end
+
     rest = parts.drop(3).join(".")
     for block in BLOCK_NAMES.keys
       return ok("blk.#{parts[2]}.#{block}") if BLOCK_NAMES[block] == rest
@@ -154,11 +163,18 @@ def gguf_name(name: String) -> Result[String]
   error("the tensor #{name} has no GGUF name here (only qwen3)")
 end
 
-## The string, integer or float under `key`. A key that is missing, or of another type, is an error naming it.
+## The string, boolean, integer or float under `key`. A key that is missing, or of another type, is an error naming it.
 def string(h: Header, key: String) -> Result[String]
   case try value(h, key)
     Value.Text(s) -> ok(s)
     _ -> error("#{h.path}: #{key} is not a string")
+  end
+end
+
+def bool(h: Header, key: String) -> Result[Bool]
+  case try value(h, key)
+    Value.Bool(b) -> ok(b)
+    _ -> error("#{h.path}: #{key} is not a boolean")
   end
 end
 

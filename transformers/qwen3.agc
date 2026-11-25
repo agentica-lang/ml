@@ -116,6 +116,16 @@ def gguf_config(c: Hub.Checkpoint) -> Result[Config]
   )
 end
 
+## `config` with its `head_dim` filled in when `config.json` leaves it out: the hidden size over the heads.
+def with_head_dim(config: Config) -> Result[Config]
+  return ok(config) if config.head_dim != 0
+  if config.num_attention_heads < 1 or config.hidden_size % config.num_attention_heads != 0
+    return error("hidden_size #{config.hidden_size} is not a multiple of #{config.num_attention_heads} heads")
+  end
+
+  ok(config.with(head_dim: config.hidden_size / config.num_attention_heads))
+end
+
 ## An error when `config` is a model this file does not run: another type, activation, attention bias, rope scaling or
 ## sliding window, or head counts that do not divide.
 def check_config(config: Config) -> Result[Void]
@@ -369,15 +379,6 @@ def with_norm(
     some(p) -> ok(some(p.with(gamma: try named(weights, "#{prefix}.weight"))))
     none -> ok(none)
   end
-end
-
-def with_head_dim(config: Config) -> Result[Config]
-  return ok(config) if config.head_dim != 0
-  if config.num_attention_heads < 1 or config.hidden_size % config.num_attention_heads != 0
-    return error("hidden_size #{config.hidden_size} is not a multiple of #{config.num_attention_heads} heads")
-  end
-
-  ok(config.with(head_dim: config.hidden_size / config.num_attention_heads))
 end
 
 def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]
