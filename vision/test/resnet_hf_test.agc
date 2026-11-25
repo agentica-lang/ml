@@ -1,5 +1,5 @@
 ## ResNet and the image pipeline against Hugging Face (`resnet_golden.py`): each image of `fixtures/resnet` goes through
-## `Resize(256)`, `CenterCrop(224)` and `normalize`, as the image processor of `microsoft/resnet-*` does, and then
+## `Resize(256, Cubic)`, `CenterCrop(224)` and `normalize`, as the image processor of `microsoft/resnet-*` does, and then
 ## through the model in `float32` on ggml. The pixels are compared with the golden (the mean of each channel and a grid
 ## of 8 by 8), the best 10 logits and the top-5 classes too. The 8-bit crops that Hugging Face's processor made
 ## (`fixtures/resnet/crops`) go through the model alone, which is the strict check.
@@ -11,6 +11,7 @@
 ## `RESNET_MODELS=resnet-50:resnet-18 agentica test --max-steps 1000000000000 test/resnet_hf_test.agc`.
 
 import Hf from "hf"
+import Image from "pkg/image/image"
 import ResNet from "pkg/transformers/resnet"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "../vision"
@@ -19,14 +20,15 @@ SHORTER = 256
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
 
-## What passes. The pixels and the logits after the pipeline have about twice the gap measured (0.0175 and 0.158): the
-## pipeline differs from Hugging Face's in the resize (libvips and Pillow use different kernels), and the logits follow
-## the pixels. The model alone is `float32` through up to 50 layers and measured 1.6e-5 on CPU and 2.1e-5 on Vulkan; its
+## What passes. The pixels and the logits after the pipeline have about twice the gap measured, with the `Cubic` kernel
+## of the processor's `resample` 3 (0.0175 for the pixels, 0.092 for the logits of ResNet-50 and 0.048 for ResNet-18, on
+## CPU and Vulkan; the resize of libvips with its default Lanczos 3 gave the same pixels gap and 0.16 and 0.065 for the
+## logits). The pixels are at most one 8-bit level (1 / 255 / 0.224) from Hugging Face's, and the logits follow them. The model alone is `float32` through up to 50 layers and measured 1.6e-5 on CPU and 2.1e-5 on Vulkan; its
 ## 1e-3 is looser on purpose, for the other machines and ggml builds (the sums of a convolution depend on the kernel).
 MODEL_ABS = 0.001
 MODEL_REL = 0.001
 PIXEL_ABS = 0.035
-PIPELINE_ABS = 0.32
+PIPELINE_ABS = 0.2
 
 struct Golden
   images: List[Hf.Pixel]
@@ -64,17 +66,20 @@ def check(dir: String, want: Golden, backend: Tensor.Backend) -> Result[String]
 
   pixels = try preprocessed("test/fixtures/resnet", names, backend)
   pixel = try Hf.pixel_gap(pixels, want.images)
-  return error("the pixels are #{pixel} from Hugging Face's, more than #{PIXEL_ABS}") if pixel > PIXEL_ABS
+  if pixel.largest > PIXEL_ABS
+    return error("the pixels are #{Hf.describe(pixel)} from Hugging Face's, more than #{PIXEL_ABS}")
+  end
+
   logits = try ResNet.run(m, pixels)
   pipeline = try Hf.logit_gap("pipeline", try best_ids(m, logits), logits, cases, PIPELINE_ABS, 0.0)
   ok(
-    "#{name}: largest gap of the logits of the model alone #{alone}, of the pixels #{pixel}, of the logits after the pipeline #{pipeline}",
+    "#{name}: largest gap of the logits of the model alone #{alone}, of the pixels #{Hf.describe(pixel)}, of the logits after the pipeline #{pipeline}",
   )
 end
 
 ## The images as the image processor of the checkpoints makes them: normalized `[n, 3, 224, 224]`.
 def preprocessed(dir: String, names: List[String], backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  steps = [Vision.Step.Resize(SHORTER), Vision.Step.CenterCrop(Hf.SIZE, Hf.SIZE)]
+  steps = [Vision.Step.Resize(SHORTER, Image.Kernel.Cubic), Vision.Step.CenterCrop(Hf.SIZE, Hf.SIZE)]
   Vision.normalize(try Hf.loaded(dir, names, steps, backend), MEAN, STD)
 end
 

@@ -1,5 +1,5 @@
 ## CLIP and the image pipeline against Hugging Face (`clip_golden.py`): each image of `fixtures/resnet` goes through
-## `Resize(224)`, `CenterCrop(224)` and `normalize` (the CLIP mean and std), as the image processor of
+## `Resize(224, Cubic)`, `CenterCrop(224)` and `normalize` (the CLIP mean and std), as the image processor of
 ## `laion/CLIP-ViT-B-32-laion2B-s34B-b79K` does, and then through the vision tower in `float32` on ggml; the prompts
 ## go through the tokenizer and the text tower. The embeddings, the scaled cosines (`logits_per_image`) and their
 ## softmax over the prompts are compared with the golden, and the ids of each prompt are compared exactly. The pixels
@@ -14,6 +14,7 @@
 import Clip from "pkg/transformers/clip"
 import ClipTokenizer from "pkg/transformers/tokenizer/clip"
 import Hf from "hf"
+import Image from "pkg/image/image"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "../vision"
 
@@ -23,15 +24,15 @@ SHORTER = 224
 
 ## What passes. The model alone is `float32` through 12 blocks and measured, on CPU and Vulkan, 5e-6 (text) and 2e-5
 ## (image) for an embedding, 4e-5 for a logit (the scale of 100 multiplies the gap of the cosine) and 2e-6 for a
-## probability; the tolerances leave room for other ggml builds. Through our own pipeline (libvips resizes with another
-## kernel than Pillow) the pixels measured 0.015 and the logits 0.43, from the pixels; those tolerances are about twice
-## that.
+## probability; the tolerances leave room for other ggml builds. Through our own pipeline, with the `Cubic` kernel of
+## the processor's `resample` 3, the pixels measured 0.015 and the logits 0.21 (0.015 and 0.43 with libvips' Lanczos 3),
+## from the pixels, on CPU and Vulkan; those tolerances are about twice that.
 MODEL_ABS = 0.0001
 MODEL_REL = 0.0
 LOGIT_ABS = 0.001
 PROBABILITY_ABS = 0.0001
 PIXEL_ABS = 0.03
-PIPELINE_ABS = 0.9
+PIPELINE_ABS = 0.43
 
 struct Text
   text: String
@@ -85,13 +86,16 @@ def test_the_model_and_the_pipeline_match_hugging_face() -> Result[Void]
 
   pixels = try preprocessed("test/fixtures/resnet", names, backend)
   pixel = try Hf.pixel_gap(pixels, want.images)
-  return error("the pixels are #{pixel} from Hugging Face's, more than #{PIXEL_ABS}") if pixel > PIXEL_ABS
+  if pixel.largest > PIXEL_ABS
+    return error("the pixels are #{Hf.describe(pixel)} from Hugging Face's, more than #{PIXEL_ABS}")
+  end
+
   pipeline_embeds = try Clip.image_embeds(m, pixels)
   pipeline_logits = try Clip.logits(m, pipeline_embeds, texts)
   pipeline_gap = try Hf.matrix_gap("logits of the pipeline", pipeline_logits, want.logits, PIPELINE_ABS, 0.0)
   try same_best("the pipeline", pipeline_logits, want.logits)
   puts(
-    "clip: largest gap of the text embeddings #{text_gap}, of the image embeddings of the crops #{alone_gap}, of their logits #{logit_gap} and probabilities #{probability_gap}; of the pixels #{pixel} and of the logits after the pipeline #{pipeline_gap}",
+    "clip: largest gap of the text embeddings #{text_gap}, of the image embeddings of the crops #{alone_gap}, of their logits #{logit_gap} and probabilities #{probability_gap}; of the pixels #{Hf.describe(pixel)} and of the logits after the pipeline #{pipeline_gap}",
   )
 
   ok()
@@ -111,7 +115,7 @@ end
 
 ## The images as the image processor of the checkpoint makes them: normalized `[n, 3, 224, 224]`.
 def preprocessed(dir: String, names: List[String], backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  steps = [Vision.Step.Resize(SHORTER), Vision.Step.CenterCrop(Hf.SIZE, Hf.SIZE)]
+  steps = [Vision.Step.Resize(SHORTER, Image.Kernel.Cubic), Vision.Step.CenterCrop(Hf.SIZE, Hf.SIZE)]
   Vision.normalize(try Hf.loaded(dir, names, steps, backend), MEAN, STD)
 end
 

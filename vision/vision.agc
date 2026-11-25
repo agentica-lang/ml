@@ -16,13 +16,15 @@ enum Layout
   Chw
 end
 
-## One transform of `apply`. `Resize(n)` scales the shorter side to `n` and keeps the aspect ratio; the longer side is
-## cut to a whole number, as torchvision does. `ResizeTo(width, height)` scales to exactly that size, whatever the
-## aspect ratio. `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an area of that size.
+## One transform of `apply`. `Resize(n, kernel)` scales the shorter side to `n` and keeps the aspect ratio; the longer
+## side is cut to a whole number, as torchvision does. `ResizeTo(width, height, kernel)` scales to exactly that size,
+## whatever the aspect ratio. The `kernel` (`Image.Kernel`: `Nearest`, `Linear`, `Cubic`, `Lanczos2`, `Lanczos3`) is the
+## filter that libvips resizes with: the one of the model's image processor (bicubic is `Cubic`, bilinear `Linear`).
+## `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an area of that size.
 ## `HorizontalFlip(p)` mirrors the image with probability `p` (`1.0` always).
 enum Step
-  Resize(Int)
-  ResizeTo(Int, Int)
+  Resize(Int, Image.Kernel)
+  ResizeTo(Int, Int, Image.Kernel)
   CenterCrop(Int, Int)
   RandomCrop(Int, Int)
   HorizontalFlip(Float)
@@ -222,9 +224,9 @@ def labelled(decoded: Result[Pixels], parts: List[Pixels], path: String) -> Resu
         p.bands != first.bands or
         p.pixel_format != first.pixel_format
       )
-        return error(
-          "#{path} is #{p.width}x#{p.height} with #{p.bands} bands of #{p.pixel_format}, not #{first.width}x#{first.height} with #{first.bands} of #{first.pixel_format}: end the steps with a crop",
-        )
+        size = "#{p.width}x#{p.height} with #{p.bands} bands of #{p.pixel_format}"
+        wanted = "#{first.width}x#{first.height} with #{first.bands} of #{first.pixel_format}"
+        return error("#{path} is #{size}, not #{wanted}: end the steps with a crop")
       end
 
       ok(p)
@@ -237,8 +239,8 @@ def transformed(image: Image.Image, steps: List[Step], seed: Int) -> Result[Imag
   state = start(seed)
   for step in steps
     case step
-      Step.Resize(shorter) -> current = try resize_shorter(current, shorter)
-      Step.ResizeTo(width, height) -> current = try resize_to(current, width, height)
+      Step.Resize(shorter, kernel) -> current = try resize_shorter(current, shorter, kernel)
+      Step.ResizeTo(width, height, kernel) -> current = try resize_to(current, width, height, kernel)
       Step.CenterCrop(width, height) ->
         left = centered(Image.width(current), width)
         current = try crop_at(current, width, height, left, centered(Image.height(current), height))
@@ -263,7 +265,7 @@ def transformed(image: Image.Image, steps: List[Step], seed: Int) -> Result[Imag
 end
 
 ## The size of the shorter side is `shorter`; the other one is cut to a whole number, and is at least 1.
-def resize_shorter(image: Image.Image, shorter: Int) -> Result[Image.Image]
+def resize_shorter(image: Image.Image, shorter: Int, kernel: Image.Kernel) -> Result[Image.Image]
   return error("Resize needs a side of 1 or more, got #{shorter}") if shorter < 1
   w = Image.width(image)
   h = Image.height(image)
@@ -275,13 +277,13 @@ def resize_shorter(image: Image.Image, shorter: Int) -> Result[Image.Image]
   end
 
   return ok(image) if width == w and height == h
-  Image.resize(image, width, height)
+  Image.resize(image, width, height, kernel)
 end
 
-def resize_to(image: Image.Image, width: Int, height: Int) -> Result[Image.Image]
+def resize_to(image: Image.Image, width: Int, height: Int, kernel: Image.Kernel) -> Result[Image.Image]
   return error("ResizeTo needs sides of 1 or more, got #{width}x#{height}") if width < 1 or height < 1
   return ok(image) if width == Image.width(image) and height == Image.height(image)
-  Image.resize(image, width, height)
+  Image.resize(image, width, height, kernel)
 end
 
 ## The offset that centers `size` in `length`, rounded to the even one when it falls between two, as Python rounds

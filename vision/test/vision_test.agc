@@ -6,6 +6,8 @@ import S from "support"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "../vision"
 
+LANCZOS = Image.Kernel.Lanczos3
+
 private
 
 ## 3 by 2 pixels of 3 bands: red 10 20 30, 40 50 60, 70 80 90 on the first row and the same plus 100 on the second.
@@ -61,12 +63,12 @@ end
 
 def test_resize_keeps_the_aspect_ratio_and_crops_center_like_torchvision() -> Result[Void]
   wide = try S.u8(List.repeat(1, 8 * 4), 8, 4, 1)
-  small = try Vision.apply(wide, [Vision.Step.Resize(2)])
+  small = try Vision.apply(wide, [Vision.Step.Resize(2, LANCZOS)])
   try Test.eq([Image.width(small), Image.height(small)], [4, 2])
   tall = try S.u8(List.repeat(1, 3 * 5), 3, 5, 1)
-  cut = try Vision.apply(tall, [Vision.Step.Resize(2)])
+  cut = try Vision.apply(tall, [Vision.Step.Resize(2, LANCZOS)])
   try Test.eq([Image.width(cut), Image.height(cut)], [2, 3])
-  try Test.error?(Vision.apply(wide, [Vision.Step.Resize(0)]))
+  try Test.error?(Vision.apply(wide, [Vision.Step.Resize(0, LANCZOS)]))
   line = try S.u8([0, 1, 2, 3, 4, 5, 6, 7, 8], 9, 1, 1)
   # The gaps 1, 3 and 5 fall on a half: Python rounds them to the even offset, 0, 2 and 2.
   five = try Vision.apply(try S.u8([0, 1, 2, 3, 4], 5, 1, 1), [Vision.Step.CenterCrop(4, 1)])
@@ -80,15 +82,38 @@ end
 
 def test_resize_to_stretches_to_the_size_whatever_the_aspect_ratio() -> Result[Void]
   wide = try S.u8(List.repeat(1, 8 * 4), 8, 4, 1)
-  square = try Vision.apply(wide, [Vision.Step.ResizeTo(3, 3)])
+  square = try Vision.apply(wide, [Vision.Step.ResizeTo(3, 3, LANCZOS)])
   try Test.eq([Image.width(square), Image.height(square)], [3, 3])
   try Test.eq(try S.samples_of(square), List.repeat(1, 9))
-  same = try Vision.apply(wide, [Vision.Step.ResizeTo(8, 4)])
+  same = try Vision.apply(wide, [Vision.Step.ResizeTo(8, 4, LANCZOS)])
   try Test.eq([Image.width(same), Image.height(same)], [8, 4])
-  slim = try Vision.apply(wide, [Vision.Step.ResizeTo(5, 2)])
+  slim = try Vision.apply(wide, [Vision.Step.ResizeTo(5, 2, LANCZOS)])
   try Test.eq([Image.width(slim), Image.height(slim)], [5, 2])
-  try Test.error?(Vision.apply(wide, [Vision.Step.ResizeTo(0, 3)]))
-  Test.error?(Vision.apply(wide, [Vision.Step.ResizeTo(3, 0)]))
+  try Test.error?(Vision.apply(wide, [Vision.Step.ResizeTo(0, 3, LANCZOS)]))
+  Test.error?(Vision.apply(wide, [Vision.Step.ResizeTo(3, 0, LANCZOS)]))
+end
+
+## The kernel reaches libvips: a ramp of 8 samples cut to 3 gives other samples with each kernel, and `Nearest` gives
+## samples that the ramp already had.
+def test_the_kernel_of_a_resize_changes_the_samples() -> Result[Void]
+  ramp = try S.u8([0, 10, 40, 90, 160, 200, 230, 250], 8, 1, 1)
+  seen: Set[String] = Set.new([])
+  for kernel in [
+    Image.Kernel.Nearest,
+    Image.Kernel.Linear,
+    Image.Kernel.Cubic,
+    Image.Kernel.Lanczos2,
+    Image.Kernel.Lanczos3,
+  ]
+    out = try S.samples_of(try Vision.apply(ramp, [Vision.Step.ResizeTo(3, 1, kernel)]))
+    try Test.eq(out.size, 3)
+    seen = seen.add("#{out}")
+    if kernel == Image.Kernel.Nearest
+      try Test.assert(out.all? { |v| [0, 10, 40, 90, 160, 200, 230, 250].include?(v) }, "nearest made #{out}")
+    end
+  end
+
+  Test.assert(seen.size >= 4, "the kernels gave #{seen.size} different results of 5")
 end
 
 def test_random_steps_follow_the_seed() -> Result[Void]
@@ -192,7 +217,7 @@ def test_images_that_differ_or_have_alpha_are_an_error_that_names_the_path() -> 
     mixed = Vision.samples(f, [0, 1], [], 0)
     try Test.error?(mixed)
     try Test.assert(mixed.message.include?("a/small.png"), "the error names no path: #{mixed.message}")
-    alike = try Vision.samples(f, [0, 1], [Vision.Step.Resize(2), Vision.Step.CenterCrop(2, 2)], 0)
+    alike = try Vision.samples(f, [0, 1], [Vision.Step.Resize(2, LANCZOS), Vision.Step.CenterCrop(2, 2)], 0)
     try Test.eq(Tensor.shape(alike.inputs), [2, 3, 2, 2])
     try Image.save(try S.u8(List.repeat(9, 16), 2, 2, 4), "#{root}/a/alpha.png")
     withalpha = Vision.samples(try Vision.folder(root), [0], [], 0)
