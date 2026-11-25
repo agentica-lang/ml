@@ -6,7 +6,7 @@
 ## ```
 ##
 ## BACKEND is `ggml-cpu`, `ggml-vulkan` (matmul in fp32) or `torch-cpu`. MODE is `fit`, the steps of `Train.fit` (the
-## loader's batch included, traced again each step), or `compiled`, one `Trace.compile` of the whole step and a `run`
+## loader's batch included, compiled once per batch shape), or `compiled`, one `Trace.compile` of the whole step and a `run`
 ## per step. OPTIMIZER is `sgd` (lr 0.01) or `adam` (lr 0.001). STEPS (30 by default) are timed after the first step,
 ## which holds the compile, and three warm ones. The last line is one JSON object: `first_ms`, `median_ms`, `min_ms`,
 ## `max_ms` and `losses`, the loss of each of the first ten steps.

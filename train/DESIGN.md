@@ -72,9 +72,13 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   `sa_layer_norm.*` and `output_layer_norm.*`. It is not
   sentence-transformers' older `no_decay` list (`bias`, `LayerNorm.bias`,
   `LayerNorm.weight`), which misses DistilBERT's norm names.
-- **The batch enters the trace as constants.** `fit` wraps `inputs` and
-  `targets` in `Trace.constant`, so the loss function sees traced tensors
-  everywhere and is written once, as it would be eagerly.
+- **The batch enters the trace as inputs.** `fit` compiles the step once for
+  each batch shape (`Trace.compile`: the parameters, the optimizer state, the
+  step's scalars, then `inputs` and `targets` are its arguments) and runs it
+  on every batch of that shape, so the loss function sees traced tensors
+  everywhere and is written once, as it would be eagerly, and a step pays no
+  tracing or planning. A smaller last batch is a second compiled step; the
+  compiled steps are closed when `fit` returns.
 - **Optimizers are pure.** `step` takes the state, the parameters and the
   gradients and answers new ones; nothing mutates. Updates are `Tensor.*`
   calls, with scalars as `Tensor.full` of the parameter's shape (`tensor/` ops
