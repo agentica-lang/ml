@@ -5,8 +5,10 @@ name: XLA plugin
 # licenses of what it links. No official prebuilt of the plugin comes with a
 # license, so this is where ours comes from.
 # It runs by hand only, once per XLA commit we pin: the build takes hours.
-# A run that hits the time limit saves the Bazel disk cache, so running the
-# workflow again for the same commit resumes it.
+# A run that does not finish (time limit, failure, cancel) uploads its Bazel
+# disk cache as an artifact kept 3 days; a new run given that run's id in
+# `resume_run_id` starts from it. The cache of GitHub Actions is not used, so
+# this workflow never evicts what ci.yml caches.
 # Nothing is published: no release, no tag.
 on:
   workflow_dispatch:
@@ -15,9 +17,15 @@ on:
         description: The openxla/xla commit to build (full SHA)
         required: true
         default: c9276de87e15b0c7fe9066385f1d5e998c17de8e
+      resume_run_id:
+        description: Run id of an unfinished run of this workflow, to start from its Bazel disk cache (optional)
+        required: false
+        default: ''
 
+# actions: read lets a run download the disk cache artifact of an earlier run.
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.xla_commit }}
@@ -25,40 +33,57 @@ concurrency:
 
 env:
   XLA_COMMIT: ${{ inputs.xla_commit }}
+  RESUME_RUN_ID: ${{ inputs.resume_run_id }}
   XLA_TARGET: //xla/pjrt/c:pjrt_c_api_cpu_plugin.so
   # Bazelisk reads XLA's .bazelversion and downloads that Bazel.
   BAZELISK_VERSION: v1.30.0
   BAZELISK_SHA256: a248ae2b2b62b5baebb748f6fba7203bff1a27e5d01b55399a8406744cb539e8
-  # The Bazel disk cache is cut to this size before it is saved: a repository
-  # holds 10 GB of caches (compressed), and ci.yml keeps its own there.
-  DISK_CACHE_MAX_MB: 8000
+  # Bazelisk checks the Bazel it downloads against this: the sha256 of
+  # bazel-8.8.2-linux-x86_64, the version in XLA's .bazelversion at the default
+  # commit. A commit with another Bazel version needs its value here.
+  BAZELISK_VERIFY_SHA256: bf463ba0f5f782e8fe31071bd2b821c2f6a27f03e5bb62f0879e88cbf3656e04
 
 jobs:
   build:
     name: pjrt_c_api_cpu_plugin.so (linux x86_64)
     runs-on: ubuntu-latest
-    # The GitHub limit. The build step stops itself earlier, so the cache is
-    # still saved.
+    # The GitHub limit. The build step stops itself earlier, so the disk
+    # cache is still uploaded.
     timeout-minutes: 360
     steps:
-      - name: Check the commit
+      - name: Check the inputs
         shell: bash
         run: |
           set -euo pipefail
+          echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
           [[ "$XLA_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
             echo "xla_commit must be a full 40-character SHA" >&2
             exit 1
           }
+          [[ "$RESUME_RUN_ID" =~ ^[0-9]*$ ]] || {
+            echo "resume_run_id must be a run id (digits)" >&2
+            exit 1
+          }
 
       # The runner starts with about 14 GB free; the Bazel output tree of XLA
-      # and LLVM needs more.
+      # and LLVM needs more. Bazel's output and the disk cache go where there
+      # is more room: /mnt, when the runner has that disk, or the home folder.
       - name: Free disk space
         shell: bash
         run: |
           set -euo pipefail
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
             /usr/share/swift /opt/hostedtoolcache
-          df -h /
+          df -h / /mnt || true
+          work=$HOME/xla-work
+          if [ -d /mnt ] && [ "$(df --output=avail /mnt | tail -1)" -gt "$(df --output=avail / | tail -1)" ]; then
+            work=/mnt/xla-work
+            sudo mkdir -p "$work"
+            sudo chown "$(id -u):$(id -g)" "$work"
+          fi
+          mkdir -p "$work/disk-cache" "$work/bazel"
+          echo "XLA_WORK=$work" >> "$GITHUB_ENV"
+          echo "Bazel output and disk cache: $work"
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -94,62 +119,57 @@ jobs:
         run: |
           set -euo pipefail
           [ "$(git rev-parse HEAD)" = "$XLA_COMMIT" ]
+          # Only a commit of XLA's main is built. The checkout is shallow at
+          # the commit, so this fetches the commits of main without their files.
+          git fetch -q --filter=tree:0 origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$XLA_COMMIT" origin/main || {
+            echo "$XLA_COMMIT is not a commit of openxla/xla main" >&2
+            exit 1
+          }
           [ "$(bazel --version)" = "bazel $(cat .bazelversion)" ]
           python3 configure.py --backend=CPU
           cat >> xla_configure.bazelrc <<EOF
+          startup --output_user_root=$XLA_WORK/bazel
           build --compilation_mode=opt
           build --config=avx_linux
           build --strip=always
           build --jobs=4
           build --local_ram_resources=12288
-          build --disk_cache=$HOME/xla-disk-cache
+          build --disk_cache=$XLA_WORK/disk-cache
           build --verbose_failures
           EOF
           cat xla_configure.bazelrc
 
-      # Each run saves under its own key (a cache key is written once); a
-      # later run for the same commit restores the newest one.
-      - uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: env.RESUME_RUN_ID != ''
         with:
-          path: ~/xla-disk-cache
-          key: xla-plugin-${{ env.XLA_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: xla-plugin-${{ env.XLA_COMMIT }}-
+          name: xla-disk-cache-${{ env.XLA_COMMIT }}
+          run-id: ${{ env.RESUME_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: ${{ env.XLA_WORK }}/resume
 
-      # SIGINT after 310 minutes lets Bazel stop cleanly, with time left to
-      # save the cache inside the 360 minutes of the job.
+      - name: Unpack the disk cache of the earlier run
+        if: env.RESUME_RUN_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --zstd -xf "$XLA_WORK/resume/disk-cache.tar.zst" -C "$XLA_WORK"
+          rm -rf "$XLA_WORK/resume"
+          du -sh "$XLA_WORK/disk-cache"
+
+      # SIGINT at minute 290 of the job lets Bazel stop cleanly, with time
+      # left to upload the disk cache inside the 360 minutes.
       - name: Build the plugin
         id: build
         working-directory: xla
-        timeout-minutes: 320
+        timeout-minutes: 300
         shell: bash
         run: |
           set -euo pipefail
-          timeout --signal=INT --kill-after=300 310m bazel build "$XLA_TARGET"
-          df -h /
-
-      - name: Cut the disk cache to size
-        if: always() && steps.build.conclusion != 'skipped'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/xla-disk-cache
-          cd ~/xla-disk-cache
-          total=$(du -sk . | cut -f1)
-          echo "disk cache: $((total / 1024)) MB"
-          # Oldest first: Bazel touches an entry when it uses it.
-          find . -type f -printf '%T@ %k %p\n' | sort -n | while read -r _ kb path; do
-            if [ "$total" -gt $((DISK_CACHE_MAX_MB * 1024)) ]; then
-              rm -f "$path"
-              total=$((total - kb))
-            fi
-          done
-          du -sm .
-
-      - uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        if: always() && steps.build.conclusion != 'skipped'
-        with:
-          path: ~/xla-disk-cache
-          key: xla-plugin-${{ env.XLA_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          left=$((290 * 60 - ($(date +%s) - JOB_START)))
+          [ "$left" -gt 0 ]
+          timeout --signal=INT --kill-after=300 "${left}s" bazel build "$XLA_TARGET"
+          df -h
 
       - name: Collect the plugin and its header
         shell: bash
@@ -160,7 +180,20 @@ jobs:
           chmod u+w out/pjrt_c_api_cpu_plugin.so
           strip --strip-unneeded out/pjrt_c_api_cpu_plugin.so
           cp xla/xla/pjrt/c/pjrt_c_api.h out/
-          nm -D --defined-only out/pjrt_c_api_cpu_plugin.so | grep -q ' GetPjrtApi'
+          exported=$(nm -D --defined-only out/pjrt_c_api_cpu_plugin.so)
+          grep -q ' GetPjrtApi' <<< "$exported"
+          # The plugin may need only glibc: anything else would have to ship
+          # with it.
+          needed=$(readelf -d out/pjrt_c_api_cpu_plugin.so | awk '/NEEDED/ { gsub(/[\[\]]/, "", $NF); print $NF }')
+          while read -r lib; do
+            case "$lib" in
+              libc.so.6 | libm.so.6 | libdl.so.2 | libpthread.so.0 | librt.so.1 | ld-linux-x86-64.so.2) ;;
+              *) echo "the plugin needs $lib, which is not part of glibc" >&2; exit 1 ;;
+            esac
+          done <<< "$needed"
+          symbols=$(objdump -T out/pjrt_c_api_cpu_plugin.so)
+          glibc=$(grep -o 'GLIBC_[0-9.]*' <<< "$symbols" | sort -u -V | tail -1)
+          [ -n "$glibc" ]
           major=$(awk '$1 == "#define" && $2 == "PJRT_API_MAJOR" { print $3 }' out/pjrt_c_api.h)
           minor=$(awk '$1 == "#define" && $2 == "PJRT_API_MINOR" { print $3 }' out/pjrt_c_api.h)
           [ -n "$major" ] && [ -n "$minor" ]
@@ -168,7 +201,8 @@ jobs:
             echo "xla_commit: $XLA_COMMIT"
             echo "pjrt_api_version: $major.$minor"
             echo "target: $XLA_TARGET"
-            echo "platform: linux x86_64"
+            echo "platform: linux x86_64, needs a CPU with AVX (--config=avx_linux)"
+            echo "glibc: needs ${glibc#GLIBC_} or newer"
             echo "bazel: $(cat xla/.bazelversion)"
             echo "built_by: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "ml_commit: $GITHUB_SHA"
@@ -177,7 +211,7 @@ jobs:
             sed 's/^/  /' xla/xla_configure.bazelrc
             echo
             echo "shared libraries the plugin needs:"
-            readelf -d out/pjrt_c_api_cpu_plugin.so | awk '/NEEDED/ { print "  " $NF }'
+            sed 's/^/  /' <<< "$needed"
           } > out/BUILD-INFO.txt
           cat out/BUILD-INFO.txt
           ls -l out
@@ -197,7 +231,7 @@ jobs:
         id: licenses
         continue-on-error: true
         shell: bash
-        run: sh ml/tensor/tools/xla/collect-licenses.sh xla out
+        run: bash ml/tensor/tools/xla/collect-licenses.sh xla out
 
       - name: Write the checksums
         shell: bash
@@ -206,6 +240,7 @@ jobs:
           cd out
           find . -type f ! -name sha256sums.txt -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum > sha256sums.txt
           cat sha256sums.txt
+          df -h
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -220,3 +255,25 @@ jobs:
         run: |
           echo "collect-licenses.sh failed: see its step and licenses/MISSING.txt in the artifact" >&2
           exit 1
+
+      # Last, and only when the job did not succeed: the next run starts from
+      # this with resume_run_id. One file uploads faster than the many small
+      # ones of the cache.
+      - name: Pack the disk cache
+        id: pack
+        if: always() && steps.build.conclusion != 'skipped' && job.status != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h
+          tar --zstd --remove-files -cf "$XLA_WORK/disk-cache.tar.zst" -C "$XLA_WORK" disk-cache
+          ls -l "$XLA_WORK/disk-cache.tar.zst"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.pack.outcome == 'success'
+        with:
+          name: xla-disk-cache-${{ env.XLA_COMMIT }}
+          path: ${{ env.XLA_WORK }}/disk-cache.tar.zst
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error

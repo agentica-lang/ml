@@ -46,6 +46,7 @@ int main(int argc, char **argv) {
   int major = api->pjrt_api_version.major_version;
   int minor = api->pjrt_api_version.minor_version;
   printf("PJRT API %d.%d\n", major, minor);
+  // An exact match: the workflow builds the plugin from this same header.
   if (major != PJRT_API_MAJOR || minor != PJRT_API_MINOR) {
     fprintf(stderr, "smoke: the header says %d.%d\n", PJRT_API_MAJOR, PJRT_API_MINOR);
     return 1;

@@ -57,8 +57,8 @@ answers whether this machine has it, and the dispatch arm answers
   shared by every worktree and prints its exports; CI runs it.
 - `tools/xla/` — what the manual `XLA plugin` workflow runs after it builds
   the XLA PJRT CPU plugin: `smoke.c` loads the plugin and creates a client,
-  `collect-licenses.sh` gathers the licenses of what it links. No backend
-  uses the plugin yet.
+  `collect-licenses.sh` gathers the licenses of what it links. The plugin
+  needs a CPU with AVX. No backend uses it yet.
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
 - `tools/bench-ggml.agc` — the step times in "The ggml backend".
 - `test/` — the unit tests of the reference backend, the libtorch conformance
