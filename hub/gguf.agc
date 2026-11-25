@@ -145,6 +145,7 @@ def gguf_name(name: String) -> Result[String]
 
   parts = name.split(".")
   if parts.size > 3 and parts[0] == "model" and parts[1] == "layers"
+    return error("the layer #{parts[2]} of #{name} is not a number") if !parts[2].to_i.ok?
     rest = parts.drop(3).join(".")
     for block in BLOCK_NAMES.keys
       return ok("blk.#{parts[2]}.#{block}") if BLOCK_NAMES[block] == rest

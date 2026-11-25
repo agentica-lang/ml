@@ -161,6 +161,24 @@ def test_a_bad_range_or_value_is_an_error() -> Result[Void]
   end
 end
 
+## A NaN stays a NaN in F32 (the bytes are copied), F16 and BF16, whatever its sign.
+def test_a_nan_stays_a_nan() -> Result[Void]
+  return ok() if !try devices()
+  with_files([0, 0, 192, 127, 0, 0, 192, 255]) do |src, dst|
+    try Test.eq(try convert(src, 0, F32, 2, dst, F32), [0, 0, 192, 127, 0, 0, 192, 255])
+    half = try convert(src, 0, F32, 2, dst, F16)
+    try Test.assert(nan_half?(half[0], half[1]) and nan_half?(half[2], half[3]), "F16 gave #{half}")
+    brain = try convert(src, 0, F32, 2, dst, BF16)
+    Test.assert(nan_bfloat?(brain[0], brain[1]) and nan_bfloat?(brain[2], brain[3]), "BF16 gave #{brain}")
+  end
+end
+
+## Whether the F16 of the bytes `low` and `high` is a NaN: all exponent bits and some mantissa bit.
+def nan_half?(low: Int, high: Int) -> Bool = high % 128 >= 124 and (high % 4 != 0 or low != 0)
+
+## The same for a BF16.
+def nan_bfloat?(low: Int, high: Int) -> Bool = high % 128 == 127 and low >= 128 and low % 128 != 0
+
 def f32_block() -> Result[Bytes]
   parts: List[Bytes] = []
   for i in 0...BLOCK

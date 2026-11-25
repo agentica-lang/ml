@@ -139,8 +139,10 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
 tokenizer as `tokenizer.ggml.*` (tokens by id with the types of llama.cpp's
 converter, padding ids up to `vocab_size`, the merges by rank), the eos, bos
 and padding ids, the chat template, and the weights as `F32`, `F16` or
-`BF16` (a norm stays `F32`). A tied model writes no `output.weight`, which
-llama.cpp and `Qwen3.open` read as tied. `tools/to_gguf.agc` runs it:
+`BF16` (a norm stays `F32`). Every weight's shape is checked against the config
+(a missing `head_dim` is the hidden size over the heads) and the ranks of the
+merges must be 0 to n-1. A tied model writes no `output.weight`, which
+llama.cpp (it falls back to `token_embd.weight`) and `Qwen3.open` read as tied. `tools/to_gguf.agc` runs it:
 Qwen3-0.6B writes in 4 s as `F16` and 22 s as `F32` on the CPU of the
 benchmark machine.
 

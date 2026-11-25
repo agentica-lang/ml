@@ -113,8 +113,8 @@ def test_the_file_is_what_an_independent_reader_finds() -> Result[Void]
   end
 end
 
-## What the reader of `gguf.agc` finds: the key-values, the arrays and every tensor, an F32 one equal to its source
-## and a rounded one equal to the source loaded from the F16 or BF16 file it was written as.
+## What the reader of `gguf.agc` finds: the key-values, the arrays, the shapes, and every F32 tensor equal to its source
+## (the rounded ones are compared with their source, byte by byte, by `gguf_verify.py`).
 def test_the_reader_finds_what_was_written() -> Result[Void]
   S.with_fixtures("gguf_write") do |dir|
     c = try Hub.open("#{dir}/src.safetensors")

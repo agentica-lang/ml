@@ -424,6 +424,25 @@ struct load_source {
    is kept (rounded), a larger finite one is an error naming its element, and an infinity passes through. */
 #define HALF_MAX 65504.0f
 
+/* Whether every float of a chunk is one F16 can hold (an infinity passes through); else `why` names the first that is
+   not, at element `first` + its place. */
+static bool half_range_ok(const float *values, int64_t first, int64_t n, char *why, size_t why_len) {
+  unsigned bad = 0;
+  int64_t i;
+
+  /* no branch, so that the compiler can vectorize the scan; only a chunk that has a bad value is searched */
+  for (i = 0; i < n; i++) bad |= (unsigned)(fabsf(values[i]) > HALF_MAX) & (unsigned)(fabsf(values[i]) < INFINITY);
+  if (bad == 0) return true;
+  for (i = 0; i < n; i++) {
+    if (fabsf(values[i]) > HALF_MAX && fabsf(values[i]) < INFINITY) {
+      snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)values[i],
+               (long long)first + (long long)i);
+      return false;
+    }
+  }
+  return true;
+}
+
 struct half_sink {
   ggml_fp16_t *half;
 };
@@ -431,20 +450,8 @@ struct half_sink {
 /* Threads call it at once, each for its own `first` and `n`: it writes only that part of `half`. */
 static bool half_chunk(void *ctx, const float *values, int64_t first, int64_t n, char *why, size_t why_len) {
   struct half_sink *sink = (struct half_sink *)ctx;
-  unsigned bad = 0;
-  int64_t i;
 
-  /* no branch, so that the compiler can vectorize the scan; only a chunk that has a bad value is searched */
-  for (i = 0; i < n; i++) bad |= (unsigned)(fabsf(values[i]) > HALF_MAX) & (unsigned)(fabsf(values[i]) < INFINITY);
-  if (bad != 0) {
-    for (i = 0; i < n; i++) {
-      if (fabsf(values[i]) > HALF_MAX && fabsf(values[i]) < INFINITY) {
-        snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)", (double)values[i],
-                 (long long)first + (long long)i);
-        return false;
-      }
-    }
-  }
+  if (!half_range_ok(values, first, n, why, why_len)) return false;
   ggml_fp32_to_fp16_row(values, sink->half + first, n);
   return true;
 }
@@ -574,17 +581,7 @@ static bool convert_chunk(void *ctx, const float *values, int64_t first, int64_t
     if (!ok) snprintf(why, why_len, "the file could not be written (no space left?)");
     return ok;
   }
-  if (sink->format == FF_F16) {
-    int64_t i;
-
-    for (i = 0; i < n; i++) {
-      if (fabsf(values[i]) > HALF_MAX && fabsf(values[i]) < INFINITY) {
-        snprintf(why, why_len, "the value %g at element %lld is outside what F16 holds (up to 65504)",
-                 (double)values[i], (long long)first + (long long)i);
-        return false;
-      }
-    }
-  }
+  if (sink->format == FF_F16 && !half_range_ok(values, first, n, why, why_len)) return false;
   out = (uint16_t *)calloc((size_t)n + 1, width);
   if (out == NULL) {
     snprintf(why, why_len, "out of memory");
@@ -667,7 +664,10 @@ an_term ggml_convert_file(an_env *env, ng_str src, int64_t src_offset, int64_t s
     ok = ff_each(src.data, src.len, src_offset, count, src_format, convert_chunk, &sink, half_threads(), why,
                  sizeof why);
   }
-  close(fd);
+  if (close(fd) != 0 && ok) {
+    snprintf(why, sizeof why, "%s could not be written: %s", name, strerror(errno));
+    ok = false;
+  }
   if (!ok) return tg_error(env, why);
   return ggml_result_Void_ok(env, an_void(env));
 }

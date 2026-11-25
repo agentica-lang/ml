@@ -40,7 +40,7 @@ end
 ## Writes the model of `dir` (`config.json`, `model.safetensors` or its index, `tokenizer.json` and, if there is one,
 ## `tokenizer_config.json`) to the GGUF file `out`. `format` is that of the matrices.
 def convert(dir: String, out: String, format: Tensor.FloatFormat) -> Result[Void]
-  config = try Qwen3.read_config(dir)
+  config = try Qwen3.with_head_dim(try Qwen3.read_config(dir))
   try Qwen3.check_config(config)
   return error("the model type is #{config.model_type}: only qwen3 is written") if config.model_type != "qwen3"
   c = try Qwen3.checkpoint(dir)
@@ -97,16 +97,16 @@ def tokenizer_fields(dir: String, config: Qwen3.Config, tok: Bpe.ByteLevelBpe) -
   tokens: List[String] = []
   types: List[Int] = []
   for id in 0...config.vocab_size
-    if id < tok.pieces.size and tok.pieces[id] != ""
-      tokens = tokens.push(tok.pieces[id])
-      types = types.push(NORMAL)
-    elsif added.key?(id)
+    if added.key?(id)
       tokens = tokens.push(added[id].content)
       if control?(added[id])
         types = types.push(CONTROL)
       else
         types = types.push(USER_DEFINED)
       end
+    elsif id < tok.pieces.size and tok.pieces[id] != ""
+      tokens = tokens.push(tok.pieces[id])
+      types = types.push(NORMAL)
     else
       tokens = tokens.push("[PAD#{id}]")
       types = types.push(UNUSED)
@@ -116,6 +116,10 @@ def tokenizer_fields(dir: String, config: Qwen3.Config, tok: Bpe.ByteLevelBpe) -
   merges: List[String] = List.repeat("", tok.ranks.size)
   for pair in tok.ranks.keys
     rank = tok.ranks[pair]
+    if rank < 0 or rank >= merges.size
+      return error("the merge #{pair.inspect} has the rank #{rank}, but the ranks are 0 to #{merges.size - 1}")
+    end
+
     return error("the merge #{pair.inspect} has the rank #{rank} twice") if merges[rank] != ""
     merges = merges.set(rank, pair)
   end
@@ -143,9 +147,11 @@ def ids_fields(dir: String, tok: Bpe.ByteLevelBpe) -> Result[List[GgufWrite.Fiel
     fields = fields.push(key("tokenizer.ggml.bos_token_id", GgufWrite.Meta.U32(ids.bos_token_id.unwrap!)))
   end
 
+  template: Optional[String] = none
   settings = "#{dir}/tokenizer_config.json"
   if Path.real(settings).ok?
     text = try Source.within(settings, JSON.decode(try Source.read_text(settings), TokenizerConfig))
+    template = text.chat_template
     if text.pad_token.some?
       found = tok.added.find { |a| a.content == text.pad_token.unwrap! }
       case found
@@ -153,12 +159,17 @@ def ids_fields(dir: String, tok: Bpe.ByteLevelBpe) -> Result[List[GgufWrite.Fiel
         error(_) -> return error("the pad token #{text.pad_token.unwrap!} is not an added token")
       end
     end
+  end
 
-    fields = fields.push(key("tokenizer.ggml.add_bos_token", GgufWrite.Meta.Bool(false)))
-    fields = fields.push(key("tokenizer.ggml.add_eos_token", GgufWrite.Meta.Bool(false)))
-    if text.chat_template.some?
-      fields = fields.push(key("tokenizer.chat_template", GgufWrite.Meta.Text(text.chat_template.unwrap!)))
-    end
+  fields = fields.push(key("tokenizer.ggml.add_bos_token", GgufWrite.Meta.Bool(false)))
+  fields = fields.push(key("tokenizer.ggml.add_eos_token", GgufWrite.Meta.Bool(false)))
+  file = "#{dir}/chat_template.jinja"
+  if !template.some? and Path.real(file).ok?
+    template = some(try Source.read_text(file))
+  end
+
+  if template.some?
+    fields = fields.push(key("tokenizer.chat_template", GgufWrite.Meta.Text(template.unwrap!)))
   end
 
   ok(fields)
@@ -193,6 +204,9 @@ def tensors(c: Hub.Checkpoint, config: Qwen3.Config, format: Tensor.FloatFormat)
   out: List[GgufWrite.Out] = []
   for name in names
     source = try Hub.source(c, name)
+    want = try shape_of(name, config)
+    return error("#{name} has the shape #{source.shape}, but the config needs #{want}") if source.shape != want
+
     kind = format
     if source.shape.size == 1
       kind = Tensor.FloatFormat.F32
@@ -202,4 +216,29 @@ def tensors(c: Hub.Checkpoint, config: Qwen3.Config, format: Tensor.FloatFormat)
   end
 
   ok(out)
+end
+
+## The shape the config gives the weight `name` of a `qwen3` checkpoint.
+def shape_of(name: String, config: Qwen3.Config) -> Result[List[Int]]
+  hidden = config.hidden_size
+  heads = config.num_attention_heads * config.head_dim
+  kv_heads = config.num_key_value_heads * config.head_dim
+  parts = name.split(".")
+  return ok([config.vocab_size, hidden]) if name == "model.embed_tokens.weight" or name == "lm_head.weight"
+  return ok([hidden]) if name == "model.norm.weight"
+  return error("the weight #{name} has no shape here") if parts.size != 6 and parts.size != 5
+  case parts.drop(3).join(".")
+    "input_layernorm.weight" -> ok([hidden])
+    "post_attention_layernorm.weight" -> ok([hidden])
+    "self_attn.q_proj.weight" -> ok([heads, hidden])
+    "self_attn.k_proj.weight" -> ok([kv_heads, hidden])
+    "self_attn.v_proj.weight" -> ok([kv_heads, hidden])
+    "self_attn.o_proj.weight" -> ok([hidden, heads])
+    "self_attn.q_norm.weight" -> ok([config.head_dim])
+    "self_attn.k_norm.weight" -> ok([config.head_dim])
+    "mlp.gate_proj.weight" -> ok([config.intermediate_size, hidden])
+    "mlp.up_proj.weight" -> ok([config.intermediate_size, hidden])
+    "mlp.down_proj.weight" -> ok([hidden, config.intermediate_size])
+    _ -> error("the weight #{name} has no shape here")
+  end
 end

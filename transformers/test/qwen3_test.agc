@@ -354,6 +354,26 @@ def test_a_model_that_cannot_be_written_is_refused() -> Result[Void]
   end
 end
 
+## A config that does not fit the weights (a `vocab_size` too large, or no `head_dim`, which is then the hidden size over
+## the heads), and merges whose ranks are not 0 to n-1, are errors.
+def test_a_config_or_tokenizer_that_does_not_fit_the_weights_is_refused() -> Result[Void]
+  with_peer do |dir|
+    out = "#{dir}/fit.gguf"
+    config = "#{dir}/tiny/config.json"
+    text = try File.read_text(config)
+    try File.write_text(config, text.replace("\"vocab_size\": 13", "\"vocab_size\": 14"))
+    try S.expect_error(Qwen3Gguf.convert("#{dir}/tiny", out, Tensor.FloatFormat.F32), "needs [14,")
+    try Test.eq(Path.real(out).ok?, false)
+    try File.write_text(config, text.replace("\"head_dim\": 4,", ""))
+    try S.expect_error(Qwen3Gguf.convert("#{dir}/tiny", out, Tensor.FloatFormat.F32), "needs [8, 8]")
+    try File.write_text(config, text)
+    tokens = "#{dir}/tiny/tokenizer.json"
+    merges = try File.read_text(tokens)
+    try File.write_text(tokens, merges.replace("[\"ab\", \"c\"]", "[\"a\", \"b\"]"))
+    S.expect_error(Qwen3Gguf.convert("#{dir}/tiny", "#{dir}/ranks.gguf", Tensor.FloatFormat.F32), "ranks")
+  end
+end
+
 private
 
 def format_of(name: String) -> Result[Tensor.FloatFormat]
