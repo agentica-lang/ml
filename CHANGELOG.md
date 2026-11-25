@@ -4,6 +4,8 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-25
+
 ### tensor
 
 - **Breaking:** a function that you compile with `Trace.compile` and that calls `Optim.step` (or `Tensor.adam_step`) for Adam or AdamW on ggml now updates the first and second moments in place when nothing else reads them: the tensors you pass are consumed, and `Trace.run` gives them back with the new values (`Trace.donated` says which outputs). `Optim.step` itself, `Trace.eval` and `Trace.eval_many` still change none of their arguments.
@@ -44,6 +46,10 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 - `SafetensorsWrite.write` writes `F32` tensors by name to a safetensors file, and `Hub.tensors` reads every tensor of a checkpoint.
 - The GGUF writer refuses a layer name that is not a number, removes its `.part` file when the rename fails, and `Tensor.convert_file` reports a failed close.
+
+### asr
+
+- Pins `tensor`, `nn` and `hub` at the commits of this release, so it installs from git with the code it calls.
 
 ### transformers
 

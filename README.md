@@ -19,7 +19,7 @@ runs about 2 to 3 times slower than whisper.cpp on CPU and about 5 times
 slower on Vulkan. The numbers and the machine are in
 [`benchmarks/README.md`](benchmarks/README.md).
 
-Not yet: what the [roadmap](roadmap.md) lists, from training metrics and
+Not yet: what the [roadmap](roadmap.md) lists, from LoRA and inference
 benchmarks to CUDA.
 
 The tensor stack is designed in [`tensor/DESIGN.md`](tensor/DESIGN.md), with the
@@ -30,8 +30,8 @@ order of work in [`roadmap.md`](roadmap.md) and the original design in
 
 One repository, one folder per package, each with its own `agentica.toml`, so
 an app installs only what it needs (for example inference without training).
-Each package is released on its own tag, `<package>-X.Y.Z`; the first release
-is 0.2.0 (see [`CHANGELOG.md`](CHANGELOG.md)). A project pins a member by its
+Each package is released on its own tag, `<package>-X.Y.Z`; the releases are
+listed in [`CHANGELOG.md`](CHANGELOG.md). A project pins a member by its
 tag. The API is not stable yet, so expect changes between versions.
 
 | Folder | What | Needs |
@@ -69,8 +69,8 @@ others.
 
 ```toml
 [dependencies]
-nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.2.0", subdir = "nn" }
-tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.2.0", subdir = "tensor" }
+nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.3.0", subdir = "nn" }
+tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.3.0", subdir = "tensor" }
 ```
 
 The libtorch backend ships **inside `tensor/`**, not as a `torch/` package,
