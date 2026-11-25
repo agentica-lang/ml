@@ -139,6 +139,26 @@ def avg_pool1d_output_shape(shape: List[Int], kernel: Int, stride: Int, padding:
   out.push(windowed_length(shape[shape.size - 1], kernel, stride, padding))
 end
 
+## The `[N, out_channels, H_out, W_out]` a `conv2d` leaves, with a kernel of `kh` by `kw`.
+def conv2d_output_shape(shape: List[Int], out_channels: Int, kh: Int, kw: Int, stride: Int, padding: Int) -> List[Int]
+  [
+    shape[0],
+    out_channels,
+    windowed_length(shape[2], kh, stride, padding),
+    windowed_length(shape[3], kw, stride, padding),
+  ]
+end
+
+## The `[N, C, H_out, W_out]` a `max_pool2d` or `avg_pool2d` leaves.
+def pool2d_output_shape(shape: List[Int], kernel: Int, stride: Int, padding: Int) -> List[Int]
+  [
+    shape[0],
+    shape[1],
+    windowed_length(shape[2], kernel, stride, padding),
+    windowed_length(shape[3], kernel, stride, padding),
+  ]
+end
+
 ## `rows` followed by the part of `updates` past the rank of `indices`: the
 ## shape a `scatter_add` leaves.
 def scattered_shape(rows: Int, indices: List[Int], updates: List[Int]) -> List[Int]

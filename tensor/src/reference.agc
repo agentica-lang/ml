@@ -1421,7 +1421,112 @@ def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> R
   ok(make(shape, input.dtype, out))
 end
 
+## Convolution over the last two axes, an explicit loop over batch, output channel, position, input channel of the
+## group and kernel tap. `input` is `[N, C_in, H, W]` and `weight` is `[C_out, C_in / groups, KH, KW]`: the output
+## channels split into `groups` runs, and run `g` reads the `C_in / groups` input channels from `g * C_in / groups`.
+## The window moves by `stride` with `padding` zeros on each side. The wrapper has validated the shapes.
+def conv2d(input: Types.Tensor, weight: Types.Tensor, stride: Int, padding: Int, groups: Int) -> Result[Types.Tensor]
+  n = input.shape[0]
+  in_channels = input.shape[1]
+  h = input.shape[2]
+  w = input.shape[3]
+  out_channels = weight.shape[0]
+  per_group = weight.shape[1]
+  kh = weight.shape[2]
+  kw = weight.shape[3]
+  out_per_group = out_channels / groups
+  out_h = (h + 2 * padding - kh) / stride + 1
+  out_w = (w + 2 * padding - kw) / stride + 1
+  xs = try data_of(input)
+  ws = try data_of(weight)
+  out: List[Float] = []
+  for bn in 0...n
+    for co in 0...out_channels
+      first = (co / out_per_group) * per_group
+      for oy in 0...out_h
+        for ox in 0...out_w
+          acc = 0.0
+          for ci in 0...per_group
+            for ky in 0...kh
+              y = oy * stride + ky - padding
+              if y >= 0 and y < h
+                for kx in 0...kw
+                  x = ox * stride + kx - padding
+                  if x >= 0 and x < w
+                    xv = xs[((bn * in_channels + first + ci) * h + y) * w + x]
+                    acc = acc + xv * ws[((co * per_group + ci) * kh + ky) * kw + kx]
+                  end
+                end
+              end
+            end
+          end
+
+          out = out.push(acc)
+        end
+      end
+    end
+  end
+
+  ok(make([n, out_channels, out_h, out_w], input.dtype, out))
+end
+
+## The maximum over each window of `kernel` by `kernel` positions; a padded position is never read.
+def max_pool2d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> Result[Types.Tensor]
+  pool2d(input, kernel, stride, padding, true)
+end
+
+## The mean over each window of `kernel` by `kernel` positions, dividing by `kernel * kernel` whatever the padding.
+def avg_pool2d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> Result[Types.Tensor]
+  pool2d(input, kernel, stride, padding, false)
+end
+
 private
+
+## The windows of a `[N, C, H, W]` input, in the order of `max_pool2d` (`maximum`) or `avg_pool2d`. Every window of
+## a validated call holds at least one position of the input.
+def pool2d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int, maximum: Bool) -> Result[Types.Tensor]
+  planes = input.shape[0] * input.shape[1]
+  h = input.shape[2]
+  w = input.shape[3]
+  out_h = (h + 2 * padding - kernel) / stride + 1
+  out_w = (w + 2 * padding - kernel) / stride + 1
+  xs = try data_of(input)
+  out: List[Float] = []
+  for plane in 0...planes
+    for oy in 0...out_h
+      for ox in 0...out_w
+        acc = 0.0
+        seen = false
+        for ky in 0...kernel
+          y = oy * stride + ky - padding
+          if y >= 0 and y < h
+            for kx in 0...kernel
+              x = ox * stride + kx - padding
+              if x >= 0 and x < w
+                v = xs[(plane * h + y) * w + x]
+                if !maximum
+                  acc = acc + v
+                elsif !seen or v > acc
+                  acc = v
+                end
+
+                seen = true
+              end
+            end
+          end
+        end
+
+        if !maximum
+          acc = acc / (kernel * kernel).to_f
+        end
+
+        out = out.push(acc)
+      end
+    end
+  end
+
+  ok(make([input.shape[0], input.shape[1], out_h, out_w], input.dtype, out))
+end
 
 ## Element `i` of `b`, read as `format` says.
 def file_float(b: Bytes, i: Int, format: Types.FloatFormat) -> Float

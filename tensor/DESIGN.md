@@ -91,7 +91,7 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
 is **derived**: pure Agentica code over primitives, shared by all backends
 and therefore tested once.
 
-### 3.1 Primitives (the backend contract, 49 ops)
+### 3.1 Primitives (the backend contract, 52 ops)
 
 Creation: `zeros, ones, empty, full, like, arange, scalar_to_tensor`.
 Elementwise: `add, sub, mul, div, neg, exp, log, sqrt, pow, relu, sigmoid,
@@ -161,7 +161,8 @@ gradient through the Adam update of `Optim.step` is an error). A StableHLO
 module has no node for it: `Trace.stablehlo` writes the composition of ops that
 `adam_step` is on the other backends.
 Convolution/pooling: `conv1d, avg_pool1d` (stride and padding; no dilation or
-groups).
+groups), and over `[N, C, H, W]` `conv2d` (stride, padding and groups, one value
+for both axes), `max_pool2d` and `avg_pool2d` (a square window; no dilation).
 Random: none (dropout is identity at inference).
 Movement: `to_dtype, to_device, copy, contiguous`.
 
@@ -494,7 +495,10 @@ end
   `squeeze`, `unsqueeze`, `broadcast_to`, `sum`, `mean` and `max` over a leading
   or trailing block of axes, `stop_grad`, `copy`, `contiguous`, `arange`,
   `slice`, `concat` and `stack` on any axis, `conv1d` (an `F32` im2col and one
-  matmul; ggml's own `conv_1d` makes the im2col `F16`), `gelu_erf`, `gather`
+  matmul; ggml's own `conv_1d` makes the im2col `F16`), `conv2d` (ggml's direct
+  `F32` kernel, on the CPU and on Vulkan; `groups` above 1 run one convolution
+  for each group of channels), `max_pool2d` and `avg_pool2d` (`ggml_pool_2d`),
+  `gelu_erf`, `gather`
   (ggml's `get_rows` over the source as rows, its indices clamped to them; an
   index outside the rows is an error after the run, counted in the graph; a
   source of more than 2^24 rows is an error), `scatter_add` (ggml's
@@ -796,6 +800,18 @@ The price:
   mask `dscores` summed over the batch and head axes it broadcast. Each is checked against a
   central difference, with grouped heads, a mask per head and the causal flag,
   and on ggml against the reference node by node (`test/ggml_attention_test.agc`).
+- `conv2d`, `max_pool2d` and `avg_pool2d` (`src/windows.agc`): every step is an
+  op of §3.1 on at most four axes, so every backend runs them. The gradient of
+  the input of a convolution is a convolution of `ct` spread with zeros by the
+  stride and padded by `kernel - 1 - padding`, with the weight flipped and its
+  channel axes swapped; the gradient of the weight is a convolution of the
+  input, its batch and channel axes swapped, with the spread `ct` as the
+  weight (a padding of the kernel or more is an error). `avg_pool2d` is that
+  convolution on every plane with a kernel of `1 / kernel^2`. `max_pool2d`
+  sends `ct` to the first position of a window that holds the maximum, in
+  row-major order as libtorch does (not the even split of `max`), by taking
+  each of the `kernel * kernel` offsets of the windows in turn. Each is checked
+  against a Python peer on every backend (`test/conv2d_test.agc`).
 - Still open: rules for `pow`, `clamp`, `batch_matmul`, `to_dtype` between
   float dtypes (a precision cast), `conv1d` and `avg_pool1d`; the rule of
   `where`'s condition for gradients of gradients; and how an

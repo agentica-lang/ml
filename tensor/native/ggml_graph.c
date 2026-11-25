@@ -88,6 +88,9 @@ enum {
   OP_CAST,        /* ints: 1 for F16, 0 for F32; a node that already has the type is passed through */
   OP_ADAM_STEP,   /* args: p, grad, m, v, the 7 numbers of ggml's AdamW; ints: 1 to update m and v in place; the node is its new p */
   OP_ADAM_PART,   /* args: an adam_step; ints: 0, 1 or 2, the new p, m or v of it */
+  OP_CONV2D,      /* ints: stride, padding, groups */
+  OP_MAX_POOL2D,  /* ints: kernel, stride, padding */
+  OP_AVG_POOL2D,  /* ints: kernel, stride, padding */
   OP_COUNT
 };
 
@@ -95,7 +98,7 @@ static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
   "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
-  "norm", "rms_norm", "set_rows", "top_k", "cast", "adam_step", "adam_part",
+  "norm", "rms_norm", "set_rows", "top_k", "cast", "adam_step", "adam_part", "conv2d", "max_pool2d", "avg_pool2d",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -915,6 +918,28 @@ static struct ggml_tensor *conv1d(struct entry *p, const struct gnode *input, co
   return t;
 }
 
+/* `input` ([B, C, H, W] row-major) convolved with `weight` ([O, C / groups, KH, KW]) by ggml's direct kernel, which
+   computes in F32 on the CPU and on Vulkan. Each of the `groups` runs of output channels reads its own run of input
+   channels, and the answers join along the channels. */
+static struct ggml_tensor *conv2d(struct entry *p, const struct gnode *input, const struct gnode *weight, int stride,
+                                  int padding, int groups) {
+  struct ggml_tensor *x = dense(p, input), *w = dense(p, weight), *out = NULL;
+  int64_t in_per = x->ne[2] / groups, out_per = w->ne[3] / groups;
+  int g;
+
+  if (groups == 1) return ggml_conv_2d_direct(p->ctx, w, x, stride, stride, padding, padding, 1, 1);
+  for (g = 0; g < groups; g++) {
+    struct ggml_tensor *xg = ggml_cont(p->ctx, ggml_view_4d(p->ctx, x, x->ne[0], x->ne[1], in_per, x->ne[3], x->nb[1],
+                                                           x->nb[2], x->nb[3], (size_t)(g * in_per) * x->nb[2]));
+    struct ggml_tensor *wg = ggml_view_4d(p->ctx, w, w->ne[0], w->ne[1], w->ne[2], out_per, w->nb[1], w->nb[2],
+                                          w->nb[3], (size_t)(g * out_per) * w->nb[3]);
+    struct ggml_tensor *y = ggml_conv_2d_direct(p->ctx, wg, xg, stride, stride, padding, padding, 1, 1);
+
+    out = out == NULL ? y : ggml_concat(p->ctx, out, y, 2);
+  }
+  return out;
+}
+
 /* Reads up to `max` ints; -2 when there are more, -1 when the cursor failed
    (the error is raised already), 0 when done. */
 static int read_ints(an_env *env, ggml_list_Int *list, int64_t *out, int max, int *n) {
@@ -994,7 +1019,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   if (nargs > 1) b = &p->nodes[args[1]];
   if (nargs > 2) c = &p->nodes[args[2]];
   if ((op >= OP_ADD && op <= OP_DIV) || op == OP_MATMUL || op == OP_EQ || op == OP_LT || op == OP_GATHER ||
-      op == OP_SCATTER_ADD || op == OP_CONV1D || op == OP_ROPE || op == OP_BATCH_MATMUL) {
+      op == OP_SCATTER_ADD || op == OP_CONV1D || op == OP_CONV2D || op == OP_ROPE || op == OP_BATCH_MATMUL) {
     if (nargs != 2) return tg_error(env, "a binary op takes 2 args");
   } else if (op == OP_WHERE || op == OP_SET_ROWS) {
     if (nargs != 3) return tg_error(env, "where and set_rows take 3 args");
@@ -1408,6 +1433,25 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
         return tg_error(env, "conv1d takes an input [C, L] or [B, C, L] and a weight [O, C, K]");
       }
       t = conv1d(p, a, b, (int)ints[0], (int)ints[1]);
+      break;
+    case OP_CONV2D:
+      if (nints != 3 || ints[0] < 1 || ints[1] < 0 || ints[2] < 1) {
+        return tg_error(env, "conv2d takes a stride >= 1, a padding >= 0 and groups >= 1");
+      }
+      if (a->rank != 4 || b->rank != 4 || b->ne[2] * ints[2] != a->ne[2] || b->ne[3] % ints[2] != 0) {
+        return tg_error(env, "conv2d takes an input [B, C, H, W] and a weight [O, C / groups, KH, KW]");
+      }
+      if (!room(p, 6 * (size_t)ints[2])) return tg_error(env, "conv2d: the groups lower to more ggml tensors than the graph has room for");
+      t = conv2d(p, a, b, (int)ints[0], (int)ints[1], (int)ints[2]);
+      break;
+    case OP_MAX_POOL2D:
+    case OP_AVG_POOL2D:
+      if (nints != 3 || ints[0] < 1 || ints[1] < 1 || ints[2] < 0 || ints[2] > ints[0] / 2) {
+        return tg_error(env, "a 2-D pool takes a kernel >= 1, a stride >= 1 and a padding of at most half the kernel");
+      }
+      if (a->rank != 4) return tg_error(env, "a 2-D pool takes an input [B, C, H, W]");
+      t = ggml_pool_2d(p->ctx, dense(p, a), op == OP_MAX_POOL2D ? GGML_OP_POOL_MAX : GGML_OP_POOL_AVG, (int)ints[0],
+                       (int)ints[0], (int)ints[1], (int)ints[1], (float)ints[2], (float)ints[2]);
       break;
   }
   if (t == NULL) {

@@ -235,6 +235,22 @@ extern module "torch"
   ## `padding` zeros on each side and a divisor of `kernel`.
   ## @fresh
   compute def avg_pool1d(input: TensorHandle, kernel: Int, stride: Int, padding: Int) -> Result[TensorHandle]
+  ## The cross-correlation of the `[N, C, H, W]` `input` with `weight` over the last two axes, moved by `stride` with
+  ## `padding` zeros on each side, in `groups` groups of channels.
+  ## @fresh
+  compute def conv2d(
+    input: TensorHandle,
+    weight: TensorHandle,
+    stride: Int,
+    padding: Int,
+    groups: Int,
+  ) -> Result[TensorHandle]
+  ## The maximum over each window of `kernel` by `kernel` positions of the `[N, C, H, W]` `input`, moved by `stride`.
+  ## @fresh
+  compute def max_pool2d(input: TensorHandle, kernel: Int, stride: Int, padding: Int) -> Result[TensorHandle]
+  ## The mean over each window of `kernel` by `kernel` positions, with a divisor of `kernel * kernel`.
+  ## @fresh
+  compute def avg_pool2d(input: TensorHandle, kernel: Int, stride: Int, padding: Int) -> Result[TensorHandle]
   ## Host readback: the row-major values as storage doubles, which the caller
   ## tags with the tensor's dtype. `I64` values past 2^53 lose precision.
   compute def readback(a: TensorHandle) -> Result[List[Float]]

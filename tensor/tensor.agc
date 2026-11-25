@@ -53,11 +53,12 @@
 ##   `trace.agc` derives the gradient graph and runs it (`tensor/DESIGN.md`
 ##   §10). Every op records; one with no backward rule yet makes
 ##   `gradients` answer an error naming it.
+## - `conv2d`, `max_pool2d` and `avg_pool2d` take `[N, C, H, W]` and one stride and padding for both axes.
 ## - `conv1d`/`avg_pool1d` take only what `tensor/DESIGN.md` §3.1 admits
 ##   (stride and padding 1-D, no dilation and no groups); the wrapper
 ##   validates their window arithmetic before dispatch, so both backends
 ##   accept and refuse the same shapes.
-## - The 49 names of §3.1 all exist below. `Reference` computes all of them;
+## - The 52 names of §3.1 all exist below. `Reference` computes all of them;
 ##   the `Torch` arm computes everything but `batch_matmul` and
 ##   `to_device`, and answers
 ##   `error("<op> is not implemented on the torch backend yet")` for those,
@@ -1126,6 +1127,75 @@ def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int = 1, padding: Int =
   end
 end
 
+## Convolution over the last two axes: `input` is `[N, C_in, H, W]`, `weight` is `[C_out, C_in / groups, KH, KW]`,
+## and the window moves by `stride` with `padding` zeros on each side, on both axes. The answer is `[N, C_out, H_out,
+## W_out]`, where `H_out = (H + 2*padding - KH) / stride + 1` and `W_out` likewise. With `groups` above 1 the
+## channels split into that many groups, and each group of output channels reads its own group of input channels.
+## No dilation.
+def conv2d(
+  input: Types.Tensor,
+  weight: Types.Tensor,
+  stride: Int = 1,
+  padding: Int = 0,
+  groups: Int = 1,
+) -> Result[Types.Tensor]
+  _ = try same_backend(input, weight, "conv2d")
+  _ = try same_dtype(input, weight, "conv2d")
+  _ = try float_only(input, "conv2d")
+  _ = try float_only(weight, "conv2d")
+  return error("conv2d needs a rank-4 input, got #{input.shape}") if input.shape.size != 4
+  return error("conv2d needs a rank-4 weight, got #{weight.shape}") if weight.shape.size != 4
+  _ = try check_window(stride, padding, "conv2d")
+  return error("conv2d needs groups >= 1, got #{groups}") if groups < 1
+  channels = input.shape[1]
+  if channels % groups != 0 or weight.shape[0] % groups != 0
+    return error(
+      "conv2d needs groups #{groups} to divide the #{channels} input and #{weight.shape[0]} output channels",
+    )
+  end
+
+  if weight.shape[1] != channels / groups
+    return error("conv2d needs #{channels / groups} input channels per group, got #{weight.shape[1]}")
+  end
+
+  _ = try check_window_fits(input.shape[2], weight.shape[2], padding, "conv2d")
+  _ = try check_window_fits(input.shape[3], weight.shape[3], padding, "conv2d")
+  case input.backend
+    Types.Backend.Reference -> Reference.conv2d(input, weight, stride, padding, groups)
+    Types.Backend.Torch(device) -> Torch.conv2d(device, input, weight, stride, padding, groups)
+    Types.Backend.Trace -> ok(Graph.conv2d(input, weight, stride, padding, groups))
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("conv2d")
+    Types.Backend.Xla(_) -> Xla.compiled_only("conv2d")
+  end
+end
+
+## The maximum over each square window of `kernel` by `kernel` positions of `input` (`[N, C, H, W]`), moved by
+## `stride`; the zeros of `padding` never win (a padded position is skipped). The answer is `[N, C, H_out, W_out]`.
+## Padding stops at half the kernel, as in `avg_pool1d`.
+def max_pool2d(input: Types.Tensor, kernel: Int, stride: Int = 1, padding: Int = 0) -> Result[Types.Tensor]
+  _ = try check_pool2d(input, kernel, stride, padding, "max_pool2d")
+  case input.backend
+    Types.Backend.Reference -> Reference.max_pool2d(input, kernel, stride, padding)
+    Types.Backend.Torch(device) -> Torch.max_pool2d(device, input, kernel, stride, padding)
+    Types.Backend.Trace -> ok(Graph.max_pool2d(input, kernel, stride, padding))
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("max_pool2d")
+    Types.Backend.Xla(_) -> Xla.compiled_only("max_pool2d")
+  end
+end
+
+## The mean over each square window of `kernel` by `kernel` positions of `input` (`[N, C, H, W]`), moved by `stride`,
+## with `padding` zeros on each side; the divisor is always `kernel * kernel`, as in `avg_pool1d`.
+def avg_pool2d(input: Types.Tensor, kernel: Int, stride: Int = 1, padding: Int = 0) -> Result[Types.Tensor]
+  _ = try check_pool2d(input, kernel, stride, padding, "avg_pool2d")
+  case input.backend
+    Types.Backend.Reference -> Reference.avg_pool2d(input, kernel, stride, padding)
+    Types.Backend.Torch(device) -> Torch.avg_pool2d(device, input, kernel, stride, padding)
+    Types.Backend.Trace -> ok(Graph.avg_pool2d(input, kernel, stride, padding))
+    Types.Backend.Ggml(_) -> Ggml.compiled_only("avg_pool2d")
+    Types.Backend.Xla(_) -> Xla.compiled_only("avg_pool2d")
+  end
+end
+
 ## Derived: `softmax` over `axis` with max-subtraction, from §3.1 only. The
 ## maximum is a `stop_grad` constant: it cancels out of the value, so it
 ## needs no gradient.
@@ -1757,6 +1827,20 @@ def check_window_fits(length: Int, kernel: Int, padding: Int, op: String) -> Res
   end
 
   ok(true)
+end
+
+## What `max_pool2d` and `avg_pool2d` share: a float `[N, C, H, W]` input and a window that fits it.
+def check_pool2d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int, op: String) -> Result[Bool]
+  _ = try float_only(input, op)
+  return error("#{op} needs a rank-4 input, got #{input.shape}") if input.shape.size != 4
+  return error("#{op} needs kernel >= 1, got #{kernel}") if kernel < 1
+  _ = try check_window(stride, padding, op)
+  if padding > kernel / 2
+    return error("#{op} needs padding <= #{kernel / 2} for a kernel of #{kernel}, got #{padding}")
+  end
+
+  _ = try check_window_fits(input.shape[2], kernel, padding, op)
+  check_window_fits(input.shape[3], kernel, padding, op)
 end
 
 ## `Q8_0` is a dtype of weights read by `from_file`: no other op makes a tensor of it.

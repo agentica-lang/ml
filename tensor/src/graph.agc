@@ -178,6 +178,24 @@ def avg_pool1d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> T
   record(Types.Op.AvgPool1d(kernel, stride, padding), [input], shape, input.dtype)
 end
 
+## A traced `conv2d` of `input` by `weight` (`[C_out, C_in / groups, KH, KW]`).
+def conv2d(input: Types.Tensor, weight: Types.Tensor, stride: Int, padding: Int, groups: Int) -> Types.Tensor
+  shape = Shapes.conv2d_output_shape(input.shape, weight.shape[0], weight.shape[2], weight.shape[3], stride, padding)
+  record(Types.Op.Conv2d(stride, padding, groups), [input, weight], shape, input.dtype)
+end
+
+## A traced `max_pool2d`.
+def max_pool2d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> Types.Tensor
+  shape = Shapes.pool2d_output_shape(input.shape, kernel, stride, padding)
+  record(Types.Op.MaxPool2d(kernel, stride, padding), [input], shape, input.dtype)
+end
+
+## A traced `avg_pool2d`.
+def avg_pool2d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int) -> Types.Tensor
+  shape = Shapes.pool2d_output_shape(input.shape, kernel, stride, padding)
+  record(Types.Op.AvgPool2d(kernel, stride, padding), [input], shape, input.dtype)
+end
+
 ## A traced `permute`: the axes of `t` in the order `axes` names.
 def permute(t: Types.Tensor, axes: List[Int]) -> Types.Tensor
   record(Types.Op.Permute(axes), [t], Types.permuted_shape(t.shape, axes), t.dtype)

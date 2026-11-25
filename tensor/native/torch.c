@@ -1306,6 +1306,81 @@ an_term torch_avg_pool1d(an_env *env, struct torch_TensorHandle_state *input, in
   }
 }
 
+/* The same window rules as `conv1d` over the two last axes, for a rank-4 input: libtorch's own `conv2d` would take a
+   rank-3 input as unbatched. The wrapper has validated the shapes; this is the backstop. */
+an_term torch_conv2d(an_env *env, struct torch_TensorHandle_state *input, struct torch_TensorHandle_state *weight,
+                     int64_t stride, int64_t padding, int64_t groups) {
+  const torch::Tensor &x = *input->value;
+  const torch::Tensor &w = *weight->value;
+  an_term failure;
+
+  if (x.dim() != 4) return error_text(env, "conv2d needs a rank-4 input, got " + shape_text(x));
+  if (w.dim() != 4) return error_text(env, "conv2d needs a rank-4 weight, got " + shape_text(w));
+  if (!check_window(env, x, w.size(2), stride, padding, "conv2d", x.size(2), &failure)) return failure;
+  if (!check_window(env, x, w.size(3), stride, padding, "conv2d", x.size(3), &failure)) return failure;
+  if (groups < 1 || x.size(1) % groups != 0 || w.size(0) % groups != 0 || w.size(1) != x.size(1) / groups) {
+    return error_text(env, "conv2d needs groups to divide the channels of " + shape_text(x) + " and " + shape_text(w) +
+                             ", got " + std::to_string(groups));
+  }
+  if (x.scalar_type() != w.scalar_type()) {
+    return error_text(env, "conv2d needs one dtype, got " + scalar_type_name(x.scalar_type()) + " and " +
+                             scalar_type_name(w.scalar_type()));
+  }
+
+  try {
+    return ok_tensor(env, torch::conv2d(x, w, torch::Tensor(), {stride}, {padding}, {1}, groups));
+  } catch (...) {
+    return failed(env, "conv2d");
+  }
+}
+
+/* The checks of `avg_pool1d` for a pooling window over the two last axes of a rank-4 input. */
+static bool check_pool2d(an_env *env, const torch::Tensor &x, int64_t kernel, int64_t stride, int64_t padding,
+                         const char *op, an_term *failure) {
+  if (x.dim() != 4) {
+    *failure = error_text(env, std::string(op) + " needs a rank-4 input, got " + shape_text(x));
+    return false;
+  }
+  if (kernel < 1) {
+    *failure = error_text(env, std::string(op) + " needs kernel >= 1, got " + std::to_string(kernel));
+    return false;
+  }
+  if (!check_window(env, x, kernel, stride, padding, op, x.size(2), failure)) return false;
+  if (!check_window(env, x, kernel, stride, padding, op, x.size(3), failure)) return false;
+  if (padding > kernel / 2) {
+    *failure = error_text(env, std::string(op) + " needs padding <= " + std::to_string(kernel / 2) + " for a kernel of " +
+                                     std::to_string(kernel) + ", got " + std::to_string(padding));
+    return false;
+  }
+  return true;
+}
+
+an_term torch_max_pool2d(an_env *env, struct torch_TensorHandle_state *input, int64_t kernel, int64_t stride,
+                         int64_t padding) {
+  const torch::Tensor &x = *input->value;
+  an_term failure;
+
+  if (!check_pool2d(env, x, kernel, stride, padding, "max_pool2d", &failure)) return failure;
+  try {
+    return ok_tensor(env, torch::max_pool2d(x, {kernel}, {stride}, {padding}));
+  } catch (...) {
+    return failed(env, "max_pool2d");
+  }
+}
+
+an_term torch_avg_pool2d(an_env *env, struct torch_TensorHandle_state *input, int64_t kernel, int64_t stride,
+                         int64_t padding) {
+  const torch::Tensor &x = *input->value;
+  an_term failure;
+
+  if (!check_pool2d(env, x, kernel, stride, padding, "avg_pool2d", &failure)) return failure;
+  try {
+    return ok_tensor(env, torch::avg_pool2d(x, {kernel}, {stride}, {padding}));
+  } catch (...) {
+    return failed(env, "avg_pool2d");
+  }
+}
+
 an_term torch_readback(an_env *env, struct torch_TensorHandle_state *a) {
   try {
     torch::Tensor flat = a->value->contiguous();
