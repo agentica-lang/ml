@@ -116,4 +116,4 @@ def start_events(dir: String) -> Result[File.Handle]
   ok(f)
 end
 
-def write_record(f: File.Handle, data: Bytes) -> Result[Void] = File.write_bytes(f, try Events.record(data))
+def write_record(f: File.Handle, data: Bytes) -> Result[Void] = File.write_bytes(f, Events.record(data))

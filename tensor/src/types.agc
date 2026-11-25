@@ -343,10 +343,10 @@ end
 ## `i` fits the width of the int `dtype` (callers check the class first).
 def check_int_range(i: Int, dtype: Dtype) -> Result[Int]
   case dtype
-    Dtype.I8 -> return error("I8 holds -128..127, got #{i}") if i < -128 or i > 127
-    Dtype.I16 -> return error("I16 holds -32768..32767, got #{i}") if i < -32768 or i > 32767
-    Dtype.I32 -> return error("I32 holds -2147483648..2147483647, got #{i}") if i < -2147483648 or i > 2147483647
-    Dtype.U8 -> return error("U8 holds 0..255, got #{i}") if i < 0 or i > 255
+    Dtype.I8 -> return error("I8 holds -128..127, got #{i}") if !i.to_int8.ok?
+    Dtype.I16 -> return error("I16 holds -32768..32767, got #{i}") if !i.to_int16.ok?
+    Dtype.I32 -> return error("I32 holds -2147483648..2147483647, got #{i}") if !i.to_int32.ok?
+    Dtype.U8 -> return error("U8 holds 0..255, got #{i}") if !i.to_uint8.ok?
     _ -> return ok(i)
   end
 

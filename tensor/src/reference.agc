@@ -1542,13 +1542,7 @@ end
 ## Value `i` of Q8_0 blocks (34 bytes of 32 values: a binary16 scale, 32 signed bytes): the scale times the byte.
 def q8_0(b: Bytes, i: Int) -> Float
   at = (i / 32) * 34
-  byte = b[at + 2 + i % 32]
-  q = byte
-  if byte > 127
-    q = byte - 256
-  end
-
-  half(u16(b, at)) * q.to_f
+  half(u16(b, at)) * b[at + 2 + i % 32].wrap_int8.to_f
 end
 
 def u16(b: Bytes, at: Int) -> Int = b[at].bit_or(b[at + 1].shift_left(8))
