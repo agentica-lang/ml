@@ -351,9 +351,16 @@ end
 
 ## Ends the pin of `compiled` (its graph stays in the cache, evictable). The
 ## `Compiled` still runs: a run builds the graph again if the cache lost it.
+## On XLA it frees the compiled program instead, and a run afterwards is an
+## error.
 def close(compiled: Compiled) -> Void
   case compiled.pin
     some(p) -> Native.close(p)
+    none -> nil
+  end
+
+  case compiled.xla
+    some(x) -> Native.close(x.program)
     none -> nil
   end
 end
@@ -493,7 +500,9 @@ def xla_evaluate(outs: List[Types.Tensor], env: Map[Ref, Types.Tensor]) -> Resul
   inputs = (try Lower.walk(outs, positions)).select { |t| env.has_key?(Graph.id_of(t)) }
   m = try Stablehlo.emit(inputs, outs)
   p = try Xla.compile(m.text, m.constants, outs)
-  Xla.execute(p, inputs.map { |t| env[Graph.id_of(t)] })
+  values = Xla.execute(p, inputs.map { |t| env[Graph.id_of(t)] })
+  Native.close(p.program)
+  values
 end
 
 ## A half or quantized weight (`F16` or `Q8_0` on ggml, `Tensor.from_file` with that `dtype`) is read-only:

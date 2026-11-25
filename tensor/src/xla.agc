@@ -158,8 +158,10 @@ end
 
 ## Host readback: the row-major values tagged with `t`'s dtype.
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
+  read = XlaRaw.readback(try handle_of(t))
+  return error("to_list: #{read.message}") if !read.ok?
   out: List[Types.Values] = []
-  for x in try XlaRaw.readback(try handle_of(t))
+  for x in read.unwrap!
     out = out.push(try Types.float_to_value(x, t.dtype))
   end
 
@@ -177,10 +179,12 @@ def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
   ok(t)
 end
 
-## The XLA handle of `t`.
+## The XLA handle of `t`, which must not be closed.
 def handle_of(t: Types.Tensor) -> Result[XlaRaw.Buffer]
   case t.handle
-    Types.Handle.Xla(h) -> ok(h)
+    Types.Handle.Xla(h) ->
+      return error("the XLA tensor is closed") if Native.closed?(h)
+      ok(h)
     _ -> error("a #{Types.backend_name(t.backend)} tensor has no XLA buffer")
   end
 end
@@ -198,10 +202,17 @@ end
 
 ## One run of `p` over `args` (the inputs, checked by the caller): a new tensor per output.
 def execute(p: Program, args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
+  return error("run: the compiled XLA function is closed (Trace.close)") if Native.closed?(p.program)
   buffers = try Native.arena do run_call(p.program, args + p.constants) end
 
   return error("the run gave #{buffers.size} outputs, the program has #{p.outs.size}") if buffers.size != p.outs.size
   ok((0...buffers.size).map { |i| tensor_of(p.outs[i].shape, p.outs[i].dtype, buffers[i]) })
+end
+
+## How many XLA buffers are alive in the process, for a test; 0 without the module.
+def buffers() -> Int
+  return 0 if !loaded?()
+  XlaRaw.buffers()
 end
 
 ## The plugin loaded, or an error that says how to install it.

@@ -572,7 +572,8 @@ end
 - **`Xla` is compiled-only too, on the CPU.** It runs a trace through XLA,
   loaded at run time: `native/xla.c` opens the PJRT plugin with `dlopen` and
   calls `GetPjrtApi`, so nothing of XLA is linked or built here. The plugin is
-  the pinned `xla-cpu-pjrt` wheel of PyPI (Linux x86_64 and aarch64), which
+  the pinned `xla-cpu-pjrt` wheel of PyPI (Linux x86_64 and aarch64; CI tests
+  x86_64 only), which
   `tools/install_xla.agc` downloads, checks by its sha256 and keeps in the ml
   cache; we do not redistribute it. `native/pjrt_c_api.h` is vendored
   (openxla/xla@dd6381370d6f, PJRT 0.81, Apache-2.0, its notice inside), so the
@@ -585,7 +586,8 @@ end
   (§12) and compiles it once; `Trace.run` runs it, with the constants after the
   inputs. `evaluate` compiles for each call. Only `Device.Cpu` exists: the
   device keeps the shape of the other backends, so a GPU plugin is not a
-  breaking change. No input is donated yet: a run makes new outputs.
+  breaking change. No input is donated yet: a run makes new outputs. A run
+  holds its inputs only while it runs, and `Trace.close` frees the program.
 
 ## 8. Tensor lifetime
 

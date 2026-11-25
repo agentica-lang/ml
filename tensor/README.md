@@ -303,7 +303,8 @@ agentica tools/install_xla.agc
 It downloads the pinned `xla-cpu-pjrt` 0.0.1 wheel of this machine from PyPI,
 checks its sha256 and extracts the plugin to
 `${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}/xla/<sha256>/`. The wheel exists
-for Linux x86_64 and aarch64 only; on any other system, and before the install,
+for Linux x86_64 and aarch64 only (CI runs x86_64; aarch64 is untested); on any
+other system, and before the install,
 `Tensor.available(Backend.Xla(Device.Cpu))` is `false` and an op answers an
 error that names the install step. Only the CPU device exists.
 

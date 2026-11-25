@@ -31,7 +31,7 @@ def install() -> Result[String]
   return ok(plugin) if File.stat(plugin).ok?
   cache = try Xla.cache_dir()
   try Dir.mkdir(cache)
-  whl = try Path.join([cache, "#{w.sha256}.whl"])
+  whl = try Path.join([cache, "#{w.sha256}-#{System.pid()}.whl"])
   try fetch(w, whl)
   part = try Path.join([cache, "#{w.sha256}.part-#{System.pid()}"])
   extracted = unzip(whl, part)
@@ -68,6 +68,9 @@ def unzip(whl: String, dest: String) -> Result[Void]
   out = Process.output(p, TIMEOUT_MS)
   code = Process.wait(p, TIMEOUT_MS)
   Process.close(p)
-  return ok() if code.ok? and try code == 0
-  error((try out).stderr.strip)
+  case code
+    ok(0) -> ok()
+    ok(_) -> error((try out).stderr.strip)
+    error(e) -> error(e.message)
+  end
 end

@@ -37,6 +37,8 @@ static const PJRT_Api *api; /* atomic */
 static PJRT_Client *client;
 static PJRT_Device *device;
 static char *opened_path;
+static const PJRT_Api *initialized; /* the plugin whose Plugin_Initialize ran, under `open_lock` */
+static int64_t live_buffers; /* atomic: for a test (`xla_buffers`) */
 
 struct buffer {
   int refs; /* atomic */
@@ -108,6 +110,18 @@ static void buffer_release(struct buffer *b) {
     message_of(loaded(), err, ignored, sizeof ignored);
   }
   free(b);
+  __atomic_sub_fetch(&live_buffers, 1, __ATOMIC_RELAXED);
+}
+
+/* A new buffer of one count over `pb`, or NULL. */
+static struct buffer *buffer_new(PJRT_Buffer *pb) {
+  struct buffer *b = (struct buffer *)malloc(sizeof *b);
+
+  if (b == NULL) return NULL;
+  b->refs = 1;
+  b->b = pb;
+  __atomic_add_fetch(&live_buffers, 1, __ATOMIC_RELAXED);
+  return b;
 }
 
 static void program_release(struct program *p) {
@@ -136,15 +150,18 @@ CC_SHORT static void xla_Program_free(void *state) {
   self->program = NULL;
 }
 
-CC_SHORT static void xla_Call_free(void *state) {
-  struct xla_Call_state *self = (struct xla_Call_state *)state;
+/* Lets go of what `c` holds: a call runs once, and the outputs of its run keep it as their origin, so it must hold
+   nothing after the run. */
+static void call_clear(struct xla_Call_state *c) {
   size_t i;
 
-  for (i = 0; i < self->count; i++) buffer_release(self->args[i]);
-  free(self->args);
-  program_release(self->program);
-  memset(self, 0, sizeof *self);
+  for (i = 0; i < c->count; i++) buffer_release(c->args[i]);
+  free(c->args);
+  program_release(c->program);
+  memset(c, 0, sizeof *c);
 }
+
+CC_SHORT static void xla_Call_free(void *state) { call_clear((struct xla_Call_state *)state); }
 #define XLA_Buffer_FREE xla_Buffer_free
 #define XLA_Program_FREE xla_Program_free
 #define XLA_Call_FREE xla_Call_free
@@ -161,11 +178,19 @@ an_term xla_arch(an_env *env) {
 
 /* Loads the plugin and makes the client; a message in `why` on failure, which leaves nothing loaded. */
 static bool load_plugin(const char *path, char *why, size_t size) {
-  void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+  void *lib;
   const PJRT_Api *(*get_api)(void);
   const PJRT_Api *a;
-  PJRT_Error *err;
+  PJRT_Error *err = NULL;
 
+#if defined(__x86_64__)
+  /* The plugin is built for AVX: loading it on a CPU without would end the process (SIGILL). */
+  if (!__builtin_cpu_supports("avx")) {
+    snprintf(why, size, "the XLA plugin needs a CPU with AVX");
+    return false;
+  }
+#endif
+  lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (lib == NULL) {
     snprintf(why, size, "cannot load the XLA plugin %s: %s", path, dlerror());
     return false;
@@ -182,8 +207,12 @@ static bool load_plugin(const char *path, char *why, size_t size) {
     dlclose(lib);
     return false;
   }
-  PJRT_Plugin_Initialize_Args init = {.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE};
-  err = a->PJRT_Plugin_Initialize(&init);
+  /* A failure after this keeps the library open (dlopen counts it), so a later try finds it initialized. */
+  if (initialized != a) {
+    PJRT_Plugin_Initialize_Args init = {.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE};
+    err = a->PJRT_Plugin_Initialize(&init);
+    if (err == NULL) initialized = a;
+  }
   if (err == NULL) {
     PJRT_NamedValue options[1] = {{.struct_size = PJRT_NamedValue_STRUCT_SIZE,
                                    .name = "cpu_device_count",
@@ -198,15 +227,21 @@ static bool load_plugin(const char *path, char *why, size_t size) {
       PJRT_Client_AddressableDevices_Args ad = {.struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE,
                                                 .client = cc.client};
       err = a->PJRT_Client_AddressableDevices(&ad);
-      if (err == NULL && ad.num_addressable_devices < 1) {
-        snprintf(why, size, "the XLA plugin %s has no device", path);
-        return false;
-      }
-      if (err == NULL) {
+      if (err == NULL && ad.num_addressable_devices > 0) {
         client = cc.client;
         device = ad.addressable_devices[0];
         __atomic_store_n(&api, a, __ATOMIC_RELEASE);
         return true;
+      }
+      PJRT_Client_Destroy_Args cd = {.struct_size = PJRT_Client_Destroy_Args_STRUCT_SIZE, .client = cc.client};
+      PJRT_Error *dropped = a->PJRT_Client_Destroy(&cd);
+      if (dropped != NULL) {
+        char ignored[8];
+        message_of(a, dropped, ignored, sizeof ignored);
+      }
+      if (err == NULL) {
+        snprintf(why, size, "the XLA plugin %s has no device", path);
+        return false;
       }
     }
   }
@@ -317,7 +352,7 @@ static an_term put(an_env *env, const void *bytes, int dtype, const int64_t *dim
     }
     return pjrt_failed(env, err, "the upload failed");
   }
-  b = (struct buffer *)malloc(sizeof *b);
+  b = buffer_new(args.buffer);
   if (b == NULL) {
     PJRT_Buffer_Destroy_Args d = {.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE, .buffer = args.buffer};
     PJRT_Error *ignored = a->PJRT_Buffer_Destroy(&d);
@@ -327,8 +362,6 @@ static an_term put(an_env *env, const void *bytes, int dtype, const int64_t *dim
     }
     return failed(env, "out of memory");
   }
-  b->refs = 1;
-  b->b = args.buffer;
   state = xla_Buffer_new(env, &term);
   state->buffer = b;
   return xla_result_Buffer_ok(env, term);
@@ -387,7 +420,7 @@ an_term xla_readback(an_env *env, struct xla_Buffer_state *b) {
   PJRT_Error *err;
   xla_list_Float_builder out;
 
-  if (b->buffer == NULL) return failed(env, "readback of a buffer that was never made");
+  if (b->buffer == NULL) return failed(env, "readback of a closed buffer");
   PJRT_Buffer_ElementType_Args et = {.struct_size = PJRT_Buffer_ElementType_Args_STRUCT_SIZE, .buffer = b->buffer->b};
   err = a->PJRT_Buffer_ElementType(&et);
   if (err != NULL) return pjrt_failed(env, err, "readback");
@@ -490,13 +523,16 @@ an_term xla_call(an_env *env, struct xla_Program_state *p) {
 
 an_term xla_arg(an_env *env, struct xla_Call_state *c, struct xla_Buffer_state *b) {
   struct buffer **grown;
+  size_t cap;
 
-  if (b->buffer == NULL) return failed(env, "an argument of a run is a buffer that was never made");
+  if (b->buffer == NULL) return failed(env, "an argument of a run is a closed buffer");
+  if (c->program == NULL) return failed(env, "an argument of a call that ran already");
   if (c->count == c->cap) {
-    c->cap = c->cap ? c->cap * 2 : 8;
-    grown = (struct buffer **)realloc(c->args, c->cap * sizeof *grown);
+    cap = c->cap ? c->cap * 2 : 8;
+    grown = (struct buffer **)realloc(c->args, cap * sizeof *grown);
     if (grown == NULL) return failed(env, "out of memory");
     c->args = grown;
+    c->cap = cap;
   }
   __atomic_add_fetch(&b->buffer->refs, 1, __ATOMIC_RELAXED);
   c->args[c->count++] = b->buffer;
@@ -513,7 +549,7 @@ an_term xla_execute(an_env *env, struct xla_Call_state *c) {
   bool short_of_memory = false;
   an_term term;
 
-  if (c->program == NULL) return failed(env, "a run of a program that was never compiled");
+  if (c->program == NULL) return failed(env, "a call runs once, of a compiled program");
   n = c->program->outputs;
   args = (PJRT_Buffer **)malloc((c->count ? c->count : 1) * sizeof *args);
   outs = (PJRT_Buffer **)calloc(n ? n : 1, sizeof *outs);
@@ -537,12 +573,13 @@ an_term xla_execute(an_env *env, struct xla_Call_state *c) {
   err = a->PJRT_LoadedExecutable_Execute(&ex);
   free(args);
   if (err == NULL) err = await_event(done[0]);
+  call_clear(c);
   xla_list_Buffer_begin(env, &list, n);
   for (i = 0; i < n; i++) {
     struct buffer *b;
 
     if (outs[i] == NULL) continue;
-    b = (struct buffer *)malloc(sizeof *b);
+    b = buffer_new(outs[i]);
     if (b == NULL) {
       PJRT_Buffer_Destroy_Args d = {.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE, .buffer = outs[i]};
       PJRT_Error *ignored = a->PJRT_Buffer_Destroy(&d);
@@ -553,8 +590,6 @@ an_term xla_execute(an_env *env, struct xla_Call_state *c) {
       short_of_memory = true;
       continue;
     }
-    b->refs = 1;
-    b->b = outs[i];
     xla_Buffer_new(env, &term)->buffer = b;
     xla_list_Buffer_push(env, &list, term);
   }
@@ -563,5 +598,7 @@ an_term xla_execute(an_env *env, struct xla_Call_state *c) {
   if (short_of_memory) return failed(env, "out of memory");
   return xla_result_list_Buffer_ok(env, xla_list_Buffer_end(env, &list));
 }
+
+an_term xla_buffers(an_env *env) { return an_int(env, __atomic_load_n(&live_buffers, __ATOMIC_RELAXED)); }
 
 XLA_NATIVE_MODULE(NULL)

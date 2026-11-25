@@ -19,7 +19,8 @@ extern module "xla"
   ## The machine this module was built for: `x86_64`, `aarch64` or `other`. It loads no plugin.
   def arch() -> String
   ## Loads the plugin at `path` and makes its client, once for the process; a later call with the same path does
-  ## nothing, and with another path is an error. A failure leaves nothing loaded, so a later call may try again.
+  ## nothing, and with another path is an error. A failure leaves no client, so a later call may try again. On
+  ## x86_64 a CPU without AVX is an error, before anything loads.
   compute def open(path: String) -> Result[Void]
   ## A buffer of the row-major `shape` and the dtype `dtype` holding `data`, one value per element.
   compute def upload(shape: List[Int], data: List[Float], dtype: Int) -> Result[Buffer]
@@ -36,6 +37,9 @@ extern module "xla"
   def call(p: Program) -> Call
   ## Appends `b` as the next argument of `c`.
   def arg(c: Call, b: Buffer) -> Result[Void]
-  ## Runs the program of `c` over its arguments, which must be all of them, in order: a new buffer per output.
+  ## Runs the program of `c` over its arguments, which must be all of them, in order: a new buffer per output. The
+  ## call runs once: after the run it holds no buffer and no program, whatever the outputs keep it for.
   compute def execute(c: Call) -> Result[List[Buffer]]
+  ## How many buffers are alive in the process, for a test.
+  def buffers() -> Int
 end

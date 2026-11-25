@@ -139,7 +139,8 @@ an_term xla_result_list_Buffer_ok(an_env *env, an_term value);
 an_term xla_arch(an_env *env);
 
 /* Loads the plugin at `path` and makes its client, once for the process; a later call with the same path does
-   nothing, and with another path is an error. A failure leaves nothing loaded, so a later call may try again. */
+   nothing, and with another path is an error. A failure leaves no client, so a later call may try again. On
+   x86_64 a CPU without AVX is an error, before anything loads. */
 an_term xla_open(an_env *env, ng_str path);
 
 /* A buffer of the row-major `shape` and the dtype `dtype` holding `data`, one value per element. */
@@ -160,8 +161,12 @@ an_term xla_call(an_env *env, struct xla_Program_state *p);
 /* Appends `b` as the next argument of `c`. */
 an_term xla_arg(an_env *env, struct xla_Call_state *c, struct xla_Buffer_state *b);
 
-/* Runs the program of `c` over its arguments, which must be all of them, in order: a new buffer per output. */
+/* Runs the program of `c` over its arguments, which must be all of them, in order: a new buffer per output. The
+   call runs once: after the run it holds no buffer and no program, whatever the outputs keep it for. */
 an_term xla_execute(an_env *env, struct xla_Call_state *c);
+
+/* How many buffers are alive in the process, for a test. */
+an_term xla_buffers(an_env *env);
 
 #ifdef __cplusplus
 }
@@ -452,6 +457,12 @@ static an_term xla_native_execute(an_env *env, int argc, const an_term *argv) {
   return xla_execute(env, a0);
 }
 
+static an_term xla_native_buffers(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  (void)argv;
+  return xla_buffers(env);
+}
+
 static const an_function xla_native_functions[] = {
   {"arch", "() -> String", xla_native_arch, AN_SHORT},
   {"open", "(String) -> Result[Void]", xla_native_open, AN_DIRTY},
@@ -462,6 +473,7 @@ static const an_function xla_native_functions[] = {
   {"call", "(Program) -> Call", xla_native_call, AN_SHORT},
   {"arg", "(Call, Buffer) -> Result[Void]", xla_native_arg, AN_SHORT},
   {"execute", "(Call) -> Result[List[Buffer]]", xla_native_execute, AN_DIRTY},
+  {"buffers", "() -> Int", xla_native_buffers, AN_SHORT},
 };
 
 /* Ends the module's one .c file: the tables and agentica_native_init. LOAD is NULL or a const char *(*)(void)
@@ -472,5 +484,5 @@ static const an_function xla_native_functions[] = {
     {"Program", sizeof(struct xla_Program_state), XLA_Program_FREE}, \
     {"Call", sizeof(struct xla_Call_state), XLA_Call_FREE}, \
   }; \
-  AN_MODULE_TABLES("xla", xla_native_functions, 9, NULL, 0, xla_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("xla", xla_native_functions, 10, NULL, 0, xla_native_resources, 3, LOAD)
 #endif

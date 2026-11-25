@@ -92,7 +92,7 @@ On `Ggml`, a direct call to an op is an eager call: it runs the op right away. E
 agentica tools/install_xla.agc
 ```
 
-It downloads the pinned `xla-cpu-pjrt` wheel from PyPI, checks its sha256 and keeps the plugin in `~/.cache/agentica-ml/xla/` (or under `AGENTICA_ML_CACHE`). PyPI has the plugin for Linux on x86_64 and aarch64 only. On any other system, and before the install, `Tensor.available(Backend.Xla(Device.Cpu))` is `false` and an op answers an error that names the install step.
+It downloads the pinned `xla-cpu-pjrt` wheel from PyPI, checks its sha256 and keeps the plugin in `~/.cache/agentica-ml/xla/` (or under `AGENTICA_ML_CACHE`). PyPI has the plugin for Linux on x86_64 and aarch64 only, and CI tests x86_64 only. On x86_64 the plugin needs a CPU with AVX. On any other system, and before the install, `Tensor.available(Backend.Xla(Device.Cpu))` is `false` and an op answers an error that names the install step.
 
 The ggml CPU backend runs a graph on one thread per physical core of the machine, not per hardware thread: its threads wait for each other by spinning, so a second thread on a core adds stalls when the machine is busy. On Linux the cores are the ones this process may use (a cpuset limits them; a CPU quota does not). Set the environment variable `TENSOR_THREADS` to a positive integer, at most 512 (ggml's limit), to choose the number; any other value leaves the default.
 

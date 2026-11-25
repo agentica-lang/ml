@@ -6,6 +6,7 @@
 
 import Tensor from "../tensor"
 import Trace from "../trace"
+import Xla from "../src/xla"
 
 XLA = Tensor.Backend.Xla(Tensor.Device.Cpu)
 REF = Tensor.Backend.Reference
@@ -39,6 +40,39 @@ def test_value_and_grad_on_xla_matches_the_reference() -> Result[Void]
   close([got.value] + got.grads, [want.value] + want.grads)
 end
 
+## Steps that close what they replace keep the number of live buffers flat: a run keeps nothing of its inputs.
+def test_steps_that_close_old_tensors_keep_no_buffer_alive() -> Result[Void]
+  return ok() if !try present()
+  a = try mlp_args(XLA)
+  params = a.drop(1)
+  fixed = [try floats([0.5], [], XLA), a[0], try labels([0, 3, 1, 2, 3, 0], XLA)]
+  step = try Trace.compile((params + fixed).map { |t| Trace.spec_of(t) }, &sgd_step)
+  first = 0
+  for i in 0...20
+    outs = try Trace.run(step, params + fixed)
+    for t in [outs[0]] + params
+      free(t)
+    end
+
+    params = outs.drop(1)
+    if i == 0
+      first = Xla.buffers()
+    end
+  end
+
+  Test.eq(Xla.buffers(), first)
+end
+
+## `Trace.close` frees the compiled program: a run afterwards is an error.
+def test_a_closed_xla_function_does_not_run() -> Result[Void]
+  return ok() if !try present()
+  args = try mlp_args(XLA)
+  f = try Trace.compile(args.map { |t| Trace.spec_of(t) }, ->(xs: List[Tensor.Tensor]) { ok([try forward(xs)]) })
+  try Trace.run(f, args)
+  Trace.close(f)
+  Test.assert(!Trace.run(f, args).ok?, "a closed XLA function ran")
+end
+
 def test_an_eager_op_on_xla_is_an_error_naming_it() -> Result[Void]
   return ok() if !try present()
   a = try floats([1.0, 2.0], [2], XLA)
@@ -67,6 +101,13 @@ def test_a_device_other_than_the_cpu_is_an_error() -> Result[Void]
   try Test.assert(!r.ok?, "XLA made a tensor on Vulkan")
   try Test.assert(r.message.include?("the XLA backend runs on the CPU only"), r.message)
   Test.assert(!Tensor.available(Tensor.Backend.Xla(Tensor.Device.Vulkan(0))), "XLA says it has a Vulkan device")
+end
+
+def free(t: Tensor.Tensor) -> Void
+  case t.handle
+    Tensor.Handle.Xla(h) -> Native.close(h)
+    _ -> nil
+  end
 end
 
 ## True when the plugin is there; with `TENSOR_REQUIRE_XLA` set, a missing one is an error, never a pass.
