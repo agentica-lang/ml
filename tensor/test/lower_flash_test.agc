@@ -74,3 +74,15 @@ def test_other_masks_keep_the_products() -> Result[Void]
   try Test.eq(try flash_flag(shapes) do |x| Tensor.attention(x[0], x[1], x[2], some(x[3]), none, false) end, 0)
   Test.eq(try flash_flag(shapes) do |x| Tensor.attention(x[0], x[1], x[2], some(x[3]), none, true) end, 0)
 end
+
+## The node takes the scale as the signed Int of its 64 bits: a negative double is above 2^63 as a UInt64.
+def test_the_scale_of_an_attention_node_keeps_its_sign_bit() -> Result[Void]
+  inputs = [[1, 2, 4, 8], [1, 2, 4, 8], [1, 2, 4, 8]].map { |s| Graph.record(Types.Op.Input, [], s, Types.Dtype.F32) }
+  out = try Tensor.attention(inputs[0], inputs[1], inputs[2], none, some(-0.125), false)
+  p = try Lower.program([out], inputs, Tensor.Device.Cpu)
+  for l in p.nodes
+    return Test.eq(l.ints[0], -4629700416936869888) if l.op == Lower.ATTENTION
+  end
+
+  error("the program has no attention node")
+end

@@ -436,7 +436,7 @@ def scalar(b: Bytes, at: Int, width: Int, size: Int) -> Result[Read]
     1 -> n = b[at]
     2 -> n = (try Binary.read_u16_le(b, at)).to_i
     4 -> n = (try Binary.read_u32_le(b, at)).to_i
-    _ -> n = try (try Binary.read_u64_le(b, at)).to_i
+    _ -> n = try u64(b, at, size)
   end
 
   ok(Read(value: Value.Int(n), at: at + width))

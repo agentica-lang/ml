@@ -597,8 +597,11 @@ def bits(x: Float, n: Types.Node) -> Result[Int]
     return error("node #{n.id} (#{Types.op_name(n.op)}): #{x} is not a float ggml holds")
   end
 
+  # A negative double has its bits above 2^63, where `to_i` fails: join the two halves into the signed Int.
   b = Float.to_bits(x)
-  ok(b.shift_right(32).to_i!.shift_left(32).bit_or(b.bit_and(4294967295).to_i!))
+  hi = b.shift_right(32).to_i!
+  lo = b.bit_and(4294967295).to_i!
+  ok(hi.shift_left(32).bit_or(lo))
 end
 
 ## Whether flash attention may take the mask of an attention node: it reads the mask in F16, so the mask must be absent
