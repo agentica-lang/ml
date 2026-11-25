@@ -16,10 +16,9 @@ Optim.Optimizer = Sgd(Sgd { lr, momentum = 0, schedule = Constant }) | Adam(Adam
                 | AdamW(AdamW { Adam's fields, weight_decay = 0.01, decay: List[Bool] = [] })
 Optim.Schedule = Constant | WarmupLinear(warmup, total) | WarmupCosine(warmup, total)
 Optim.init(optimizer, params) -> Result[State]
-Optim.step(state, params, grads, scalars = []) -> Result[Step { state, params }]
+Optim.step(state, params, grads, scalars = []) -> Result[Step { state, params }]   scalars: tensors of step_inputs, or none
 Optim.learning_rate(state) -> Float             lr times the schedule at the step count
 Optim.step_inputs(state) -> List[List[Float]]   the inputs of the next step: SGD's rate, or Adam's 7 numbers (AdamW has two rows)
-Optim.step_scalars(state) -> List[Float]        the rank-0 form (StableHLO): SGD's rate, Adam's two numbers, or AdamW's three
 
 Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
 Data.load(path, inputs, targets, backend) -> Result[Dataset]  two named tensors of a safetensors file
@@ -122,13 +121,13 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
 - **A step is one program of every step.** `Train.stablehlo` traces the same
   step as `fit` (`traced_step`) and writes it as StableHLO
   (`tensor/DESIGN.md` §12). Adam's bias corrections depend on the step count, so
-  there they are rank-0 inputs after the moments (`Optim.step_scalars`: SGD's
-  learning rate, or Adam's two numbers, passed as the `scalars` of
-  `Optim.step`) and not constants of one step; `fit` passes them as
-  `Optim.step_inputs` (Adam's 7 numbers in one rank-1 input, for `Tensor.adam_step`),
+  they are inputs after the moments and not constants of one step: the
+  `Optim.step_inputs` (SGD's rate as a rank-0 input, Adam's 7 numbers in one
+  rank-1 input), passed as the `scalars` of `Optim.step`, as `fit` passes them;
   so a learning rate that changes at every step (a schedule, which starts at 0)
-  is not a new graph. The StableHLO form keeps the rank-0 scalars and Adam's
-  older composition, which its goldens pin: an `adam_step` node has no StableHLO. The goldens in `test/fixtures/stablehlo/`
+  is not a new graph. An `adam_step` node has no StableHLO: `Trace.stablehlo`
+  writes it as the composition of ops that `Tensor.adam_step` is on every other
+  backend, one formula. The goldens in `test/fixtures/stablehlo/`
   are three chained runs on IREE, which `fit` reproduces at steps 1 and 3.
 - **Adam's moments are updated where they lie.** A step on ggml runs Adam's
   update as `Tensor.adam_step`, and in the compiled step of `fit` its first and
