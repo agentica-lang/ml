@@ -1,0 +1,222 @@
+name: XLA plugin
+
+# Builds the XLA PJRT CPU plugin (pjrt_c_api_cpu_plugin.so) from openxla/xla
+# at a pinned commit and uploads it as an artifact, with its header and the
+# licenses of what it links. No official prebuilt of the plugin comes with a
+# license, so this is where ours comes from.
+# It runs by hand only, once per XLA commit we pin: the build takes hours.
+# A run that hits the time limit saves the Bazel disk cache, so running the
+# workflow again for the same commit resumes it.
+# Nothing is published: no release, no tag.
+on:
+  workflow_dispatch:
+    inputs:
+      xla_commit:
+        description: The openxla/xla commit to build (full SHA)
+        required: true
+        default: c9276de87e15b0c7fe9066385f1d5e998c17de8e
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.xla_commit }}
+  cancel-in-progress: false
+
+env:
+  XLA_COMMIT: ${{ inputs.xla_commit }}
+  XLA_TARGET: //xla/pjrt/c:pjrt_c_api_cpu_plugin.so
+  # Bazelisk reads XLA's .bazelversion and downloads that Bazel.
+  BAZELISK_VERSION: v1.30.0
+  BAZELISK_SHA256: a248ae2b2b62b5baebb748f6fba7203bff1a27e5d01b55399a8406744cb539e8
+  # The Bazel disk cache is cut to this size before it is saved: a repository
+  # holds 10 GB of caches (compressed), and ci.yml keeps its own there.
+  DISK_CACHE_MAX_MB: 8000
+
+jobs:
+  build:
+    name: pjrt_c_api_cpu_plugin.so (linux x86_64)
+    runs-on: ubuntu-latest
+    # The GitHub limit. The build step stops itself earlier, so the cache is
+    # still saved.
+    timeout-minutes: 360
+    steps:
+      - name: Check the commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$XLA_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "xla_commit must be a full 40-character SHA" >&2
+            exit 1
+          }
+
+      # The runner starts with about 14 GB free; the Bazel output tree of XLA
+      # and LLVM needs more.
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift /opt/hostedtoolcache
+          df -h /
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: ml
+          persist-credentials: false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: openxla/xla
+          ref: ${{ env.XLA_COMMIT }}
+          path: xla
+          persist-credentials: false
+
+      - name: Install Bazelisk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bin/bazel" \
+            "https://github.com/bazelbuild/bazelisk/releases/download/$BAZELISK_VERSION/bazelisk-linux-amd64"
+          echo "$BAZELISK_SHA256  $RUNNER_TEMP/bin/bazel" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bin/bazel"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # XLA's configure step writes xla_configure.bazelrc, which its .bazelrc
+      # imports. On Linux the CPU build is hermetic: Bazel downloads the Clang,
+      # libc++ and sysroot that XLA pins (rules_ml_toolchain), so no compiler
+      # of the runner is used. Our flags go in the same file, so the build and
+      # the queries after it share one configuration.
+      - name: Configure XLA for CPU
+        working-directory: xla
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$XLA_COMMIT" ]
+          [ "$(bazel --version)" = "bazel $(cat .bazelversion)" ]
+          python3 configure.py --backend=CPU
+          cat >> xla_configure.bazelrc <<EOF
+          build --compilation_mode=opt
+          build --config=avx_linux
+          build --strip=always
+          build --jobs=4
+          build --local_ram_resources=12288
+          build --disk_cache=$HOME/xla-disk-cache
+          build --verbose_failures
+          EOF
+          cat xla_configure.bazelrc
+
+      # Each run saves under its own key (a cache key is written once); a
+      # later run for the same commit restores the newest one.
+      - uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/xla-disk-cache
+          key: xla-plugin-${{ env.XLA_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: xla-plugin-${{ env.XLA_COMMIT }}-
+
+      # SIGINT after 310 minutes lets Bazel stop cleanly, with time left to
+      # save the cache inside the 360 minutes of the job.
+      - name: Build the plugin
+        id: build
+        working-directory: xla
+        timeout-minutes: 320
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=INT --kill-after=300 310m bazel build "$XLA_TARGET"
+          df -h /
+
+      - name: Cut the disk cache to size
+        if: always() && steps.build.conclusion != 'skipped'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/xla-disk-cache
+          cd ~/xla-disk-cache
+          total=$(du -sk . | cut -f1)
+          echo "disk cache: $((total / 1024)) MB"
+          # Oldest first: Bazel touches an entry when it uses it.
+          find . -type f -printf '%T@ %k %p\n' | sort -n | while read -r _ kb path; do
+            if [ "$total" -gt $((DISK_CACHE_MAX_MB * 1024)) ]; then
+              rm -f "$path"
+              total=$((total - kb))
+            fi
+          done
+          du -sm .
+
+      - uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        if: always() && steps.build.conclusion != 'skipped'
+        with:
+          path: ~/xla-disk-cache
+          key: xla-plugin-${{ env.XLA_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Collect the plugin and its header
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir out
+          cp xla/bazel-bin/xla/pjrt/c/pjrt_c_api_cpu_plugin.so out/
+          chmod u+w out/pjrt_c_api_cpu_plugin.so
+          strip --strip-unneeded out/pjrt_c_api_cpu_plugin.so
+          cp xla/xla/pjrt/c/pjrt_c_api.h out/
+          nm -D --defined-only out/pjrt_c_api_cpu_plugin.so | grep -q ' GetPjrtApi'
+          major=$(awk '$1 == "#define" && $2 == "PJRT_API_MAJOR" { print $3 }' out/pjrt_c_api.h)
+          minor=$(awk '$1 == "#define" && $2 == "PJRT_API_MINOR" { print $3 }' out/pjrt_c_api.h)
+          [ -n "$major" ] && [ -n "$minor" ]
+          {
+            echo "xla_commit: $XLA_COMMIT"
+            echo "pjrt_api_version: $major.$minor"
+            echo "target: $XLA_TARGET"
+            echo "platform: linux x86_64"
+            echo "bazel: $(cat xla/.bazelversion)"
+            echo "built_by: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "ml_commit: $GITHUB_SHA"
+            echo
+            echo "xla_configure.bazelrc:"
+            sed 's/^/  /' xla/xla_configure.bazelrc
+            echo
+            echo "shared libraries the plugin needs:"
+            readelf -d out/pjrt_c_api_cpu_plugin.so | awk '/NEEDED/ { print "  " $NF }'
+          } > out/BUILD-INFO.txt
+          cat out/BUILD-INFO.txt
+          ls -l out
+
+      # The smoke program checks the version the plugin reports against the
+      # header, then creates and destroys a CPU client.
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -Wall -Wextra -Werror -I out ml/tensor/tools/xla/smoke.c -ldl -o "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke" "$PWD/out/pjrt_c_api_cpu_plugin.so"
+
+      # A missing license does not stop the upload: the last step fails the
+      # job, and the artifact shows what was found.
+      - name: Collect the licenses
+        id: licenses
+        continue-on-error: true
+        shell: bash
+        run: sh ml/tensor/tools/xla/collect-licenses.sh xla out
+
+      - name: Write the checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd out
+          find . -type f ! -name sha256sums.txt -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum > sha256sums.txt
+          cat sha256sums.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: xla-pjrt-cpu-plugin-linux-x86_64-${{ env.XLA_COMMIT }}
+          path: out
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Fail when a license is missing
+        if: steps.licenses.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "collect-licenses.sh failed: see its step and licenses/MISSING.txt in the artifact" >&2
+          exit 1
