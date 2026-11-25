@@ -4,7 +4,7 @@
 ##
 ## `TOL` is 1.5e-6, set on the Vega iGPU of this repository's maintainer
 ## (AMD Raven, RADV), about twice the 6e-7 the spike measured there
-## (spike/ggml-graph/README.md). Another device may round differently:
+## (https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md). Another device may round differently:
 ## `TENSOR_VULKAN_TOL` overrides it.
 ##
 ## Local only: without a Vulkan device it passes and says so on stderr.

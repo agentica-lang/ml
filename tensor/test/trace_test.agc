@@ -1,7 +1,6 @@
 ## Tracing and gradients (`trace.agc`): every backward rule against a central
-## difference of the traced function itself, as the M0 spike checked its
-## hand-written backward, then a 2-layer MLP loss, the graph's sharing and the
-## trace-time errors.
+## difference of the traced function itself, then a 2-layer MLP loss, the graph's
+## sharing and the trace-time errors.
 
 import Conform from "torch_support"
 import Support from "support"

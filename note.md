@@ -14,7 +14,7 @@ contrato del tensor, en `tensor/DESIGN.md`.
   pide batching de grafo.
 - AVX512 no es alcanzable aquí: el techo real es AVX2.
 - **Un paso compilado a un grafo ggml sí sirve en la iGPU** (spike
-  ggml-graph, MLP 784→512→512→10, SGD). Con `mul_mat` F32 (el default):
+  ggml-graph, https://github.com/agentica-lang/ml/blob/bb056e75b3004706cffb7c851fa94b5e8a3b9253/spike/ggml-graph/README.md, MLP 784→512→512→10, SGD). Con `mul_mat` F32 (el default):
   4.5–4.6 / 7.2–7.3 / 18.9 / 68 ms por paso a batch 64 / 256 / 1024 / 4096.
   Contra el mejor libtorch C++ en CPU de cada corrida (4 u 8 hilos; máquina
   ociosa / cargada) gana **1.2–1.5× a 256, 1.5–2.2× a 1024 y 1.8–2.1× a
