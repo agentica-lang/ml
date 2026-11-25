@@ -7,7 +7,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 ### tensor
 
 - ggml: the CPU build uses llamafile's sgemm for the F32 matmul (`-DGGML_LLAMAFILE=ON` in `build-engine.sh`, so the cache entry is built once more): a training step of an MLP is 1.2 to 1.7 times faster on the CPU, and the prompt of Qwen3-0.6B 1.9 times.
-- ggml: the CPU backend runs on one thread per physical core instead of one per hardware thread (4 instead of 8 on a 4-core machine with SMT), which ends the stalls of 25 to 320 ms in a few steps out of a hundred when the machine is busy. `TENSOR_THREADS` sets the number.
+- ggml: the CPU backend runs on one thread per physical core instead of one per hardware thread (4 instead of 8 on a 4-core machine with SMT). The median step is the same within noise (about 5 percent less at batch 4096), and the slowest step of a run is shorter (up to 62 ms against up to 123 ms at batch 64 to 1024). `TENSOR_THREADS` sets the number.
 
 ### train
 
