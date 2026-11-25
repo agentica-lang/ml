@@ -23,6 +23,15 @@
 # `CC` carries the rpath because the build table has no flag of its own: a
 # `libtorch.so` linked without it needs `LD_LIBRARY_PATH` at run time.
 #
+# The last candidate is a system package (Debian's `libtorch-dev`): headers in
+# `/usr/include/torch`, `/usr/include/ATen` and so on, libraries in the
+# multiarch folder (`/usr/lib/x86_64-linux-gnu`). The compiler and the linker
+# already search those folders, so for it the script prints only
+#
+#   export CPLUS_INCLUDE_PATH="/usr/include/torch/csrc/api/include:..."
+#
+# (never `/usr/include` itself: it breaks g++'s own `#include_next`).
+#
 # Without libtorch this script exits 1 with what it looked for, and says so
 # loudly: the module stays unbuilt (it is `optional` in `agentica.toml`), and
 # the package still checks and tests, with the conformance suite asserting the
@@ -43,10 +52,24 @@ for candidate in "${TORCH_DIR:-}" \
   fi
 done
 
+system_api=/usr/include/torch/csrc/api/include
+if [ -z "${torch_dir:-}" ]; then
+  multiarch=$(gcc -print-multiarch 2>/dev/null || true)
+  for libdir in "/usr/lib/$multiarch" /usr/lib64 /usr/lib; do
+    if [ -f "$system_api/torch/torch.h" ] && [ -f "$libdir/libtorch.so" ]; then
+      echo "export CC=\"g++\""
+      echo "export CPLUS_INCLUDE_PATH=\"$system_api\${CPLUS_INCLUDE_PATH:+:\$CPLUS_INCLUDE_PATH}\""
+      exit 0
+    fi
+  done
+fi
+
 if [ -z "${torch_dir:-}" ]; then
   echo "build-torch.sh: no libtorch found; set TORCH_DIR to a CPU libtorch release" >&2
   echo "  (looked at TORCH_DIR, /opt/libtorch, /usr/local/libtorch, /usr/lib/libtorch," >&2
-  echo "   $HOME/opt/libtorch and $HOME/libtorch, wanting include/torch/csrc/api/include/torch/torch.h)" >&2
+  echo "   $HOME/opt/libtorch and $HOME/libtorch, wanting include/torch/csrc/api/include/torch/torch.h;" >&2
+  echo "   and a system install, wanting $system_api/torch/torch.h and a libtorch.so, as Debian's libtorch-dev has)" >&2
+  echo "  on Debian: apt install libtorch-dev" >&2
   echo "  a CPU release: https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-2.4.1%2Bcpu.zip" >&2
   echo "  without it the native 'torch' module stays unbuilt and the conformance tests assert the absent state instead of comparing" >&2
   exit 1

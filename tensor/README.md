@@ -10,7 +10,9 @@ compiled graph. The contract is [`DESIGN.md`](DESIGN.md).
 libtorch is a **system dependency**, never vendored and never downloaded by
 this repository: `tools/build-torch.sh` finds it through `TORCH_DIR`, or in
 `/opt/libtorch`, `/usr/local/libtorch`, `/usr/lib/libtorch`, `$HOME/opt/libtorch`
-or `$HOME/libtorch`, and the module is
+or `$HOME/libtorch`, or last as a system package (Debian's `libtorch-dev`, with
+its headers in `/usr/include/torch` and its libraries in the multiarch
+folder), and the module is
 `optional = true` in `agentica.toml`, so a checkout without libtorch still
 checks, formats and tests. `Tensor.available(Tensor.Backend.Torch(Tensor.Device.Cpu))`
 answers whether this machine has it, and the dispatch arm answers
