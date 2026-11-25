@@ -183,7 +183,7 @@ struct entry {
   struct ggml_tensor *fill_store; /* one F32 per fill; each fill is a view */
   int64_t fill_count;
   struct port outs[MAX_OUTPUTS];
-  struct ggml_tensor *checks; /* the sum of 0 * output per output (NaN unless finite), then the guards */
+  struct ggml_tensor *checks; /* the sum of each output (inf or NaN unless finite), then the guards */
   int64_t output_count, guard_count;
   struct ggml_tensor **inner; /* what the shared allocator places: valid while the device's plan is this graph's */
   int64_t inner_count;

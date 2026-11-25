@@ -8,6 +8,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 
 - ggml: the CPU build uses llamafile's sgemm for the F32 matmul (`-DGGML_LLAMAFILE=ON` in `build-engine.sh`, so the cache entry is built once more): a training step of an MLP is 1.2 to 1.7 times faster on the CPU, and the prompt of Qwen3-0.6B 1.9 times.
 - ggml: the CPU backend runs on one thread per physical core instead of one per hardware thread (4 instead of 8 on a 4-core machine with SMT). The median step is about the same at batch 1024 and 4096 (3 to 9 percent less at 1024) and up to 20 percent slower in some small-batch `fit` cells (Adam, batch 64: 9.1 ms against 7.4 ms); the slowest step of a run is shorter (62 ms at most, against up to 123 ms). `TENSOR_THREADS` sets the number (up to 512, ggml's limit).
+- ggml: an output of a compiled graph that an op makes is written where the caller holds it, with no copy, and its finiteness check is one row sum instead of a scaled copy: a step at batch 64 takes 7 to 9 percent less on the CPU and on Vulkan, and at batch 1024 3 to 4 percent less on Vulkan and the same on the CPU. A finite output whose row sum overflows `F32` is refused too.
 
 ### train
 
