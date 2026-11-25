@@ -111,12 +111,29 @@ def loss(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
 end
 
 def train(g: Golden, optimizer: Optim.Optimizer, backend: Tensor.Backend) -> Result[Train.Fit]
+  calls: Channel[Int] = Channel.new(16)
+  train_counting(g, optimizer, backend, calls)
+end
+
+## `train`, with a note in `calls` each time `fit` traces the loss.
+def train_counting(
+  g: Golden,
+  optimizer: Optim.Optimizer,
+  backend: Tensor.Backend,
+  calls: Channel[Int],
+) -> Result[Train.Fit]
   rows = try Data.dataset(
     try S.tensor(g.inputs, [8, 3], Tensor.Dtype.F32, backend),
     try S.tensor(g.targets, [8, 2], Tensor.Dtype.F32, backend),
   )
 
-  Train.fit(&loss, try weights(g, backend), Data.Loader(dataset: rows, batch_size: 2, shuffle: false), optimizer, 3)
+  counted = ->(ps: List[Tensor.Tensor], b: Data.Batch) { noted(calls, ps, b) }
+  Train.fit(counted, try weights(g, backend), Data.Loader(dataset: rows, batch_size: 2, shuffle: false), optimizer, 3)
+end
+
+def noted(calls: Channel[Int], ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
+  try calls.send(1, 0)
+  loss(ps, b)
 end
 
 def follows(g: Golden, optimizer: Optim.Optimizer, want: Run, backend: Tensor.Backend) -> Result[Void]
@@ -161,14 +178,31 @@ def test_the_same_fits_on_libtorch_and_ggml() -> Result[Void]
 end
 
 ## The learning rate is an input of the step: a run of schedules that starts at 0 (a zero constant lowers differently)
-## and changes at every step compiles at most the one graph of the batch shape.
+## and changes at every step traces the loss once and compiles at most the one graph of the batch shape.
 def test_a_schedule_does_not_compile_a_graph_for_each_step() -> Result[Void]
   g = try golden()
-  for backend in try S.ggml_backends()
+  for backend in [S.REF] + try S.ggml_backends()
+    calls: Channel[Int] = Channel.new(16)
     before = try Lower.compiles()
-    try train(g, adam_cosine(), backend)
-    try Test.assert(try Lower.compiles() - before <= 1, "the steps of a schedule compiled more than one graph")
+    try train_counting(g, adam_cosine(), backend, calls)
+    try Test.assert(
+      try Lower.compiles() - before <= 1,
+      "the steps of a schedule compiled more than one graph on #{backend}",
+    )
+
+    try Test.eq(try traced(calls), 1)
   end
 
   ok()
+end
+
+def traced(calls: Channel[Int]) -> Result[Int]
+  n = 0
+  for _ in 0...16
+    if calls.recv(0).ok?
+      n = n + 1
+    end
+  end
+
+  ok(n)
 end

@@ -3,11 +3,11 @@
 ## (`train/DESIGN.md`).
 ##
 ## A model is a loss function of a parameter list and a batch. `fit` traces
-## one training step on every batch, with the parameters and the optimizer
-## state as inputs and the batch as constants: the loss, its gradients and the
+## one training step per batch shape (`Trace.compile`), with the parameters,
+## the optimizer state and the batch as inputs: the loss, its gradients and the
 ## optimizer's update, run as one evaluation on the parameters' backend (one
-## compiled graph on `Ggml`). The batches come from a `Data.Loader`
-## (`data.agc`).
+## compiled graph on `Ggml`) on every batch of that shape. The batches come
+## from a `Data.Loader` (`data.agc`).
 
 import Data from "data"
 import Metrics from "metrics"
@@ -47,9 +47,13 @@ def fit(
 ) -> Result[Fit]
   state = try Optim.init(optimizer, params)
   feed = try Data.feed(data, epochs)
-  result = run(Run(loss: loss, feed: feed, epochs: epochs, on_epoch: on_epoch, metrics: metrics), state, params)
+  ran = run(Run(loss: loss, feed: feed, epochs: epochs, on_epoch: on_epoch, metrics: metrics), state, params)
+  for key in ran.programs.keys
+    Trace.close(ran.programs[key])
+  end
+
   Data.stop(feed)
-  result
+  ran.result
 end
 
 ## The training step of `fit` as one StableHLO program (`Trace.stablehlo`): its arguments are the parameters, the
@@ -88,24 +92,40 @@ struct Stepped
   loss: Float
 end
 
-def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Result[Fit]
+## What `run` answers: the fit or its error, and the compiled steps to close, one per batch shape seen.
+struct Ran
+  result: Result[Fit]
+  programs: Map[String, Trace.Compiled]
+end
+
+## What `take_step` answers: the step or its error, and the compiled steps, with this batch's shape added when it was new.
+struct Taken
+  stepped: Result[Stepped]
+  programs: Map[String, Trace.Compiled]
+end
+
+def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
   state = start
   current = params
   history: List[Float] = []
+  programs: Map[String, Trace.Compiled] = {}
   batches = Data.count(r.feed.loader)
   for e in 1..r.epochs
     feed = Data.epoch(r.feed, e)
     total = 0.0
     for i in 0...batches
       started = Time.monotonic_ns()
-      stepped = take_step(r.loss, feed, i, state, current)
-      return error("epoch #{e}, batch #{i}: #{stepped.message}") if !stepped.ok?
+      grown = take_step(r, feed, i, state, current, programs)
+      programs = grown.programs
+      stepped = grown.stepped
+      return Ran(result: error("epoch #{e}, batch #{i}: #{stepped.message}"), programs: programs) if !stepped.ok?
+
       done = stepped.unwrap!
       case r.metrics
         some(m) ->
           ms = (Time.monotonic_ns() - started).to_f / 1000000.0
           logged = log_step(m, done, Optim.learning_rate(state), ms)
-          return error("epoch #{e}, batch #{i}: #{logged.message}") if !logged.ok?
+          return Ran(result: error("epoch #{e}, batch #{i}: #{logged.message}"), programs: programs) if !logged.ok?
         none -> nil
       end
 
@@ -122,7 +142,7 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Result[Fit]
     end
   end
 
-  ok(Fit(params: current, history: history))
+  Ran(result: ok(Fit(params: current, history: history)), programs: programs)
 end
 
 def log_step(m: Metrics.Run, done: Stepped, lr: Float, ms: Float) -> Result[Void]
@@ -133,22 +153,77 @@ def log_step(m: Metrics.Run, done: Stepped, lr: Float, ms: Float) -> Result[Void
 end
 
 def take_step(
-  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  r: Run,
   feed: Data.Feed,
   i: Int,
   state: Optim.State,
   params: List[Tensor.Tensor],
-) -> Result[Stepped]
-  batch = try Data.take(feed, i)
-  done = step(loss, state, params, batch)
-  Data.release(batch)
-  done
+  programs: Map[String, Trace.Compiled],
+) -> Taken
+  case Data.take(feed, i)
+    error(e) -> Taken(stepped: error(e), programs: programs)
+    ok(batch) ->
+      key = shapes_of(batch)
+      taken = case compiled_for(r.loss, state, params, batch, key, programs)
+        ok(grown) -> Taken(stepped: step(grown[key], state, params, batch), programs: grown)
+        error(e) -> Taken(stepped: error(e), programs: programs)
+      end
+
+      Data.release(batch)
+      taken
+  end
+end
+
+## `programs` with the step of `batch`'s shape (`key`), compiled now when no batch of that shape came before.
+def compiled_for(
+  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  state: Optim.State,
+  params: List[Tensor.Tensor],
+  batch: Data.Batch,
+  key: String,
+  programs: Map[String, Trace.Compiled],
+) -> Result[Map[String, Trace.Compiled]]
+  return ok(programs) if programs.key?(key)
+  ok(programs.put(key, try compile_step(loss, state, params, batch)))
+end
+
+## The batch's shapes and dtypes: the steps of two batches that agree on them are one compiled graph.
+def shapes_of(batch: Data.Batch) -> String = JSON.encode([Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)])
+
+## The step of `fit` traced and lowered once for batches shaped like `batch`: its arguments are the parameters, the
+## optimizer's first and second moments, the scalars of the step, then the batch's inputs and targets.
+def compile_step(
+  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  state: Optim.State,
+  params: List[Tensor.Tensor],
+  batch: Data.Batch,
+) -> Result[Trace.Compiled]
+  return error("a step needs at least one parameter") if params.empty?
+  n = params.size
+  k = state.first.size
+  scalar = Trace.Spec(shape: [], dtype: Tensor.dtype(params[0]), backend: Tensor.backend(params[0]))
+  scalars = Optim.step_scalars(state).map { |_| scalar }
+  moments = (state.first + state.second).map { |t| Trace.spec_of(t) }
+  specs = (
+    params.map { |t| Trace.spec_of(t) } +
+    moments +
+    scalars +
+    [Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)]
+  )
+
+  Trace.compile(
+    specs,
+    ->(xs: List[Tensor.Tensor]) {
+      data = xs.drop(xs.size - 2)
+      traced_step(loss, state, Data.Batch(inputs: data[0], targets: data[1]), n, k, xs.take(xs.size - 2))
+    },
+  )
 end
 
 ## One step in its own native arena: only the new state, parameters and the
 ## loss outlive it (`tensor/DESIGN.md` §8).
 def step(
-  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  program: Trace.Compiled,
   state: Optim.State,
   params: List[Tensor.Tensor],
   batch: Data.Batch,
@@ -156,11 +231,8 @@ def step(
   Native.arena do
     n = params.size
     k = state.first.size
-    outs = try Trace.eval_many(
-      params + state.first + state.second + try scalar_inputs(state, params),
-      ->(xs: List[Tensor.Tensor]) { traced_step(loss, state, batch, n, k, xs) },
-    )
-
+    args = params + state.first + state.second + try scalar_inputs(state, params) + [batch.inputs, batch.targets]
+    outs = try Trace.run(program, args)
     moved = state.with(steps: state.steps + 1, first: outs.drop(1 + n).take(k), second: outs.drop(1 + n + k))
     ok(Stepped(step: Optim.Step(state: moved, params: outs.drop(1).take(n)), loss: try scalar(outs[0])))
   end
@@ -178,6 +250,8 @@ def traced_step(
   k: Int,
   xs: List[Tensor.Tensor],
 ) -> Result[List[Tensor.Tensor]]
+  # `Trace.constant` matters to `stablehlo`, where the batch is a constant of the program; in `fit` it is an
+  # input already.
   ps = xs.take(n)
   value = try loss.call(ps, Data.Batch(inputs: Trace.constant(batch.inputs), targets: Trace.constant(batch.targets)))
   grads = try Trace.gradients(value, ps)

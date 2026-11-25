@@ -85,7 +85,7 @@ The optimizers are pure. Nothing is updated in place. `Optim.init(optimizer, par
 `Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).
 
 - `loss` has the type `Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]]`. It gets the parameters and a batch, and it returns a float scalar.
-- Inside `loss`, the batch `inputs` and `targets` are traced constants, so the loss is written once, as plain code.
+- Inside `loss`, the batch `inputs` and `targets` are traced inputs, so the loss is written once, as plain code. `fit` traces and compiles the step once for each batch shape (a smaller last batch is a second one) and runs it on every batch of that shape.
 - `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1) and `loss`. `fit` prints nothing.
 - `metrics` is optional. It is an open [`Metrics.Run`](metrics.md) that gets `train/loss`, `train/lr` and `train/step_ms` for every step. A value it refuses, such as a loss that is not finite, stops `fit` too.
 - A failed step stops `fit` with an error that names the epoch and the batch, for example `epoch 1, batch 0: ...`.
@@ -128,7 +128,7 @@ A layer norm is named by its model: `LayerNorm` in BERT, and `embeddings.LayerNo
 
 ## Limits
 
-- Every step retraces the loss, so the trace cost is paid on each step. On the reference backend, one epoch of the 2-8-1 MLP of the XOR test, with four rows, costs about 75 000 VM steps.
+- The loss is traced once for each batch shape, not on every step. A backend that does not compile (the reference, libtorch) still evaluates the traced graph node by node on every step.
 - The loss must return a float scalar. An op with no backward rule, listed on the [tensor page](../tensor/_index.md), makes `fit` fail.
 - On `Ggml`, the step is one compiled graph with at most 512 outputs: the loss, the new parameters and the optimizer's moments. That allows 170 parameters with Adam or AdamW, 255 with momentum SGD and 511 with plain SGD.
 - The losses and the optimizers use only ops that ggml supports, so a batch and its step run on `Ggml` when the dataset is on `Ggml`.
@@ -137,4 +137,4 @@ A layer norm is named by its model: `LayerNorm` in BERT, and `embeddings.LayerNo
 
 A model here is a loss function of a parameter list and a batch. `Train.fit` traces that function, and an optimizer updates the parameters from its gradients.
 
-Each step is one traced evaluation. `fit` traces the loss, its gradients and the optimizer update, and runs them together. So the value, the gradients and the new parameters come from one run of the graph.
+Each step is one compiled evaluation. `fit` traces the loss, its gradients and the optimizer update once for each batch shape (`Trace.compile`), and runs them together on every batch of that shape. So the value, the gradients and the new parameters come from one run of the graph.

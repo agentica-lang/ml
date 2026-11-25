@@ -72,9 +72,15 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   `sa_layer_norm.*` and `output_layer_norm.*`. It is not
   sentence-transformers' older `no_decay` list (`bias`, `LayerNorm.bias`,
   `LayerNorm.weight`), which misses DistilBERT's norm names.
-- **The batch enters the trace as constants.** `fit` wraps `inputs` and
-  `targets` in `Trace.constant`, so the loss function sees traced tensors
-  everywhere and is written once, as it would be eagerly.
+- **The batch enters the trace as inputs.** `fit` compiles the step once for
+  each batch shape (`Trace.compile`: the parameters, the optimizer state, the
+  step's scalars, then `inputs` and `targets` are its arguments) and runs it
+  on every batch of that shape, so the loss function sees traced tensors
+  everywhere and is written once, as it would be eagerly, and a step pays no
+  tracing or planning. A smaller last batch is a second compiled step; the
+  compiled steps are closed when `fit` returns. The native constants of
+  `loss` (frozen weights, masks) are built when it is traced, so they now live
+  for the whole fit, once for each shape, and not for one step.
 - **Optimizers are pure.** `step` takes the state, the parameters and the
   gradients and answers new ones; nothing mutates. Updates are `Tensor.*`
   calls, with scalars as `Tensor.full` of the parameter's shape (`tensor/` ops
@@ -83,10 +89,10 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   squaring. SGD's momentum is PyTorch's form (`v = m v + g`, `p -= lr v`).
 - **A step is one traced evaluation.** `fit` traces the loss, its gradients
   (`Trace.gradients`) and `Optim.step` over the parameters and the optimizer
-  state, and runs them with one `Trace.eval_many`: on `Ggml` one compiled
-  graph, which the structural cache compiles once per batch shape (a last
-  partial batch is a second graph). The step count stays on the host, so
-  the learning rate and Adam's bias correction are scalar inputs, set per run. A ggml graph has at most 512
+  state, and compiles them (`Trace.compile`) once for each batch shape: on
+  `Ggml` one graph, a last partial batch being a second one. The step count
+  stays on the host, so the learning rate and Adam's bias correction are
+  scalar inputs, set for every step, and a schedule is not a new graph. A ggml graph has at most 512
   outputs, the loss and the new tensors, so a step on `Ggml` takes at most 170
   parameters with Adam, 255 with momentum SGD and 511 with plain SGD.
 - **Binary cross-entropy is built from ops that have backward rules.** It is
