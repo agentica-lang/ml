@@ -163,7 +163,7 @@ On `Ggml`, `Trace.eval`, `eval_many`, `grad` and `value_and_grad` compile the wh
 
 - The program is one `@main` that takes the inputs, then the constants, and returns the tensors `f` answered. Shapes are static.
 - It covers the ops of an MLP forward and of a training step: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `sqrt`, `tanh`, `relu`, `gelu_tanh_approx`, `matmul`, `transpose`, `reshape`, `broadcast_to`, `sum`, `mean`, `max`, `eq`, `lt`, `where`, `arange`, `full` and `stop_grad`. Another op is an `error` that names it.
-- `Train.stablehlo(loss, params, batch, optimizer)` gives the step of `fit` as one program: the arguments are the parameters, the optimizer's moments, Adam's two scalars of the step (`Optim.step_scalars(state)`), then the batch; the results are the loss, the new parameters and the new moments. Feed the results back in, with the scalars of the next step, to train.
+- `Train.stablehlo(loss, params, batch, optimizer)` gives the step of `fit` as one program: the arguments are the parameters, the optimizer's moments, the scalars of the step (`Optim.step_scalars(state)`: SGD's learning rate, or Adam's two numbers), then the batch; the results are the loss, the new parameters and the new moments. Feed the results back in, with the scalars of the next step, to train.
 - The repository checks the text against snapshots, and the reference backend against the outputs IREE gave for the same text (`make iree-goldens` makes them; IREE is not needed to run the tests).
 
 ## Dtypes and fp16
