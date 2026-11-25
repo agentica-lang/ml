@@ -86,7 +86,7 @@ On `Ggml`, a direct call to an op is an eager call: it runs the op right away. E
 
 `Tensor.to_device(t, Device.Vulkan(0))` moves a ggml tensor to another ggml device.
 
-`Xla` works like `Ggml`: eager calls only create and read tensors, and every other op is an error that names it. `Trace.compile` turns the function into StableHLO and XLA compiles it once, and `Trace.run` runs it. `Trace.eval`, `eval_many` and `value_and_grad` compile for each call. XLA comes as a plugin that the package loads when it first needs it and never links. Install it once, from the `tensor` folder (it needs `unzip`):
+`Xla` works like `Ggml`: eager calls only create and read tensors, and every other op is an error that names it. `Trace.compile` turns the function into StableHLO and XLA compiles it once, and `Trace.run` runs it. `Trace.eval`, `eval_many` and `value_and_grad` compile for each call, and a cache of the last 32 programs makes a function traced again compile once. As on ggml, the moments that `adam_step` updates in place are written over: on XLA the run consumes them, so read the new ones it returns. XLA comes as a plugin that the package loads when it first needs it and never links. Install it once, from the `tensor` folder (it needs `unzip`):
 
 ```sh
 agentica tools/install_xla.agc
@@ -192,7 +192,7 @@ On `Ggml`, `Trace.eval`, `eval_many`, `grad` and `value_and_grad` compile the wh
 - Rank: ggml holds tensors of rank 4 at most.
 - Positions: on ggml, the `positions` of `rope` are any integer dtype but `I64`, which is refused. ggml turns by an angle it makes in `F32`, so at positions in the thousands it is a few 1e-4 off the reference.
 - Gather: on ggml, the source of a `gather`, the answer of a `scatter_add` and the cache of a `set_rows` and the vector of a `top_ids` hold at most 2^24 rows, because its integer indices are exact in `F32` only below that.
-- Non-finite values: `exp`, `log`, `sqrt`, `pow`, `sigmoid`, `tanh` and `gelu_tanh_approx` refuse `NaN` and infinite inputs, except that `exp(-inf)` is `0`. A ggml output that is not finite is an error, except the cache that `set_rows` writes in place and the first moment that `adam_step` writes in place, which are not checked (the second moment is, and the new weight).
+- Non-finite values: `exp`, `log`, `sqrt`, `pow`, `sigmoid`, `tanh` and `gelu_tanh_approx` refuse `NaN` and infinite inputs, except that `exp(-inf)` is `0`. A ggml output that is not finite, or whose sum overflows `F32` (`exp(80)` over 10 000 values), is an error, except the cache that `set_rows` writes in place and the first moment that `adam_step` writes in place, which are not checked (the second moment is, and the new weight).
 - Integers: an integer overflow is an error, never a wrap-around. On libtorch, readback of `I64` past 2^53 loses precision.
 - Speed: `Reference` is for checks. On one machine, a 64 x 64 matmul took about 6.6 ms on `Reference` and 33 µs on libtorch (`tensor/README.md`).
 

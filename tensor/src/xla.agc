@@ -32,6 +32,12 @@ struct Program
   program: XlaRaw.Program
   constants: List[Types.Tensor]
   outs: List[Types.Tensor]
+  ## The StableHLO text and the inputs it updates in place: a run after `Trace.close` compiles it again.
+  text: String
+  donated: List[Int]
+  ## The program answers one more output, true when an index of a `gather` is outside its rows
+  ## (`Stablehlo.Module.checked`).
+  checked: Bool
 end
 
 ## The pinned plugins, one per machine (Linux only). `tools/install_xla.agc` downloads one, and `plugin_path` finds
@@ -189,24 +195,64 @@ def handle_of(t: Types.Tensor) -> Result[XlaRaw.Buffer]
   end
 end
 
-## The StableHLO `text` compiled, for outputs like the traced `outs`; `constants` must be XLA tensors.
-def compile(text: String, constants: List[Types.Tensor], outs: List[Types.Tensor]) -> Result[Program]
+## The StableHLO `text` compiled, for outputs like the traced `outs`; `constants` must be XLA tensors, and `donated`
+## are the inputs the text aliases to an output. The program comes from the cache of the process when the same text
+## was compiled lately.
+def compile(
+  text: String,
+  constants: List[Types.Tensor],
+  outs: List[Types.Tensor],
+  donated: List[Int],
+  checked: Bool,
+) -> Result[Program]
   _ = try usable("compile")
   for c in constants
     _ = try handle_of(c)
   end
 
-  p = try Native.arena do XlaRaw.compile(text, outs.size) end
-  ok(Program(program: p, constants: constants, outs: outs))
+  extra = case checked
+    true -> 1
+    _ -> 0
+  end
+
+  p = try Native.arena do XlaRaw.compile(text, outs.size + extra, donated) end
+  ok(Program(program: p, constants: constants, outs: outs, text: text, donated: donated, checked: checked))
 end
 
 ## One run of `p` over `args` (the inputs, checked by the caller): a new tensor per output.
+## A run after `Trace.close` takes the program from the cache, or compiles it again.
 def execute(p: Program, args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
-  return error("run: the compiled XLA function is closed (Trace.close)") if Native.closed?(p.program)
+  if Native.closed?(p.program)
+    again = try compile(p.text, p.constants, p.outs, p.donated, p.checked)
+    values = execute(again, args)
+    Native.close(again.program)
+    return values
+  end
+
   buffers = try Native.arena do run_call(p.program, args + p.constants) end
+  if p.checked and !buffers.empty?
+    flag = buffers.last
+    buffers = buffers.take(buffers.size - 1)
+    read = XlaRaw.readback(flag)
+    Native.close(flag)
+    if !read.ok? or read.unwrap! != [0.0]
+      for b in buffers
+        Native.close(b)
+      end
+
+      return error("gather: an index is outside the rows of its source") if read.ok?
+      return error("run: #{read.message}")
+    end
+  end
 
   return error("the run gave #{buffers.size} outputs, the program has #{p.outs.size}") if buffers.size != p.outs.size
   ok((0...buffers.size).map { |i| tensor_of(p.outs[i].shape, p.outs[i].dtype, buffers[i]) })
+end
+
+## How many programs the process has compiled, the misses of its cache, for a test; 0 without the module.
+def compiles() -> Int
+  return 0 if !loaded?()
+  XlaRaw.compiles()
 end
 
 ## How many XLA buffers are alive in the process, for a test; 0 without the module.

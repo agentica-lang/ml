@@ -6,6 +6,7 @@ REF = Tensor.Backend.Reference
 TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
 GGML = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+XLA = Tensor.Backend.Xla(Tensor.Device.Cpu)
 
 ## The ggml backends this machine has: its CPU backend when the module is
 ## built, and Vulkan device 0 when ggml sees one. With `TENSOR_REQUIRE_GGML`
@@ -21,6 +22,21 @@ def ggml_backends() -> Result[List[Tensor.Backend]]
   return ok([GGML, VULKAN]) if Tensor.available(VULKAN)
   ok([GGML])
 end
+
+## XLA when its plugin is installed (`tensor/tools/install_xla.agc`). With `TENSOR_REQUIRE_XLA` set to anything but ""
+## (the `xla` job of CI sets it) a missing plugin is an error.
+def xla_backends() -> Result[List[Tensor.Backend]]
+  return ok([XLA]) if Tensor.available(XLA)
+  flag = System.env("TENSOR_REQUIRE_XLA")
+  if flag.ok? and try flag != ""
+    return error("the XLA backend is required but not available (TENSOR_REQUIRE_XLA is set)")
+  end
+
+  ok([])
+end
+
+## The backends that run a step as one compiled program: ggml's and XLA.
+def compiled_backends() -> Result[List[Tensor.Backend]] = ok(try ggml_backends() + try xla_backends())
 
 def tensor(
   data: List[Float],

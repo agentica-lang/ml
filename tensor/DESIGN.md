@@ -393,7 +393,11 @@ end
   tensor alive. Only an `I32` leaf or output is copied, converted through a
   buffer of the graph's own when the run starts (`bind` touches no device); a
   small `I32` tensor made by `from_list` keeps its values on the host for that,
-  until a run writes it. A cached graph owns its fills and its finiteness
+  until a run writes it. An `F32` output that is a contiguous result of an op
+  is that op's own memory, bound to the caller's tensor, with no copy (an
+  `adam_step`'s weight and moments are views of the copy it updates, which is
+  bound); a leaf, a view at an offset or a reshaped view, a half and a node
+  returned twice are copied. A cached graph owns its fills and its finiteness
   checks; the intermediates live in one allocator per device that every graph
   shares, planned again only when another graph ran last: the graph that ran
   last keeps its allocation, and only the views of its leaves and outputs
@@ -540,7 +544,10 @@ end
   exact only when both branches are finite): enough for an MLP and softmax
   cross-entropy with their gradients, for a training step and its batch, and for
   Whisper's forward (`asr/`). An output that holds an infinity or a NaN is an
-  error. A graph has at most 512 outputs.
+  error, and so is a finite one whose sum overflows `F32` (the check is the
+  sum of its rows; the CPU adds in double and Vulkan in `F32`, so the edge
+  differs: `exp(80)` over 10 000 values fires on both). A graph has at most
+  512 outputs.
 - Vulkan computes `mul_mat` in fp16 by default (the owner's decision, ml#148):
   ggml reads `GGML_VK_DISABLE_F16` once per process, when it first enumerates
   its devices, and the C layer sets it (only when exact `F32` was asked for)
@@ -584,10 +591,18 @@ end
   `stop_grad` through, and every other primitive answers
   `Xla.compiled_only(op)`. `Trace.compile` emits the function as StableHLO
   (§12) and compiles it once; `Trace.run` runs it, with the constants after the
-  inputs. `evaluate` compiles for each call. Only `Device.Cpu` exists: the
-  device keeps the shape of the other backends, so a GPU plugin is not a
-  breaking change. No input is donated yet: a run makes new outputs. A run
-  holds its inputs only while it runs, and `Trace.close` frees the program.
+  inputs. Only `Device.Cpu` exists: the device keeps the shape of the other
+  backends, so a GPU plugin is not a breaking change. A compiled program goes
+  in a cache of the process keyed by its text (32 programs, the least recently
+  used one that nobody holds leaves first), so `evaluate`, which compiles for
+  each call, compiles a retraced function once, and `Trace.close` lets go of
+  the program as it ends a ggml pin: a run afterwards finds it in the cache or
+  compiles it again. The moments that an `adam_step` updates in place (the
+  rule of ggml's `adam_donors`) are aliased to their outputs
+  (`tf.aliasing_output`), so XLA writes them over the old ones: the run
+  consumes those inputs and answers new tensors (`Trace.donated` is false), and
+  every other input is kept. A run holds its inputs only while it runs.
+  `Train.fit` runs on XLA as on ggml, the batch gathered in the step.
 
 ## 8. Tensor lifetime
 
@@ -825,9 +840,14 @@ The price:
   `gelu_tanh_approx`, `matmul` (`dot_general`, contracting `[1]` with `[0]`),
   `transpose`, `reshape`, `broadcast_to`, `sum`, `mean`, `max` (a `reduce` from
   `0` or `-inf`, then a `reshape` for `keep_dims`), `eq`, `lt`, `where`
-  (`select`), `arange` (`iota`), `slice`, `full` and `stop_grad`. Any other op is an
-  error naming it. `Q8_0` has no MLIR element type; `Bool` is `i1`, `U8` is
-  `ui8`.
+  (`select`), `arange` (`iota`), `slice`, `full`, `stop_grad`, `gather` (a
+  `stablehlo.gather` of whole rows; XLA would clamp an index outside the rows,
+  so for `Xla` the program also answers a flag that one is, and the run is then
+  the error the reference gives; a bound that the dtype of the indices cannot
+  hold, such as 0 for `U8`, is not compared) and `adam_step` (the ops of its
+  composed form over the 7 numbers, its three results stacked; a part is a
+  `slice`). Any other op is an error naming it. `Q8_0` has no MLIR element type;
+  `Bool` is `i1`, `U8` is `ui8`.
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,
   then the inputs of the step (`Optim.step_inputs`: SGD's learning rate as a

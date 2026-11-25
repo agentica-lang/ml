@@ -101,7 +101,7 @@ fit = try Train.fit_batches(&loss, params, ->(_epoch: Int, i: Int) { padded(sent
 - A batch is two tensors. What else the loss needs it derives from them: a padding mask is `1 - to_dtype(eq(ids, zeros), F32)`.
 - An error of the function stops the run and names the epoch and the batch.
 
-`fit` and `fit_batches` free the parameters and the optimizer state that a step replaces, at once, on libtorch and ggml. The `params` given stay the caller's and are never freed; the trained ones of the result are the caller's too.
+`fit` and `fit_batches` free the parameters and the optimizer state that a step replaces, at once, on libtorch, ggml and XLA. The `params` given stay the caller's and are never freed; the trained ones of the result are the caller's too.
 
 Parameters are a plain `List[Tensor.Tensor]`, the list that `Trace` takes. The loss rebuilds the layer structs from that list, for example `Nn.Dense(w: ps[0], b: some(ps[1]))`.
 
@@ -187,6 +187,7 @@ LoRA trains without dropout: `Lora.params` refuses an adapter whose `dropout` is
 - The loss must return a float scalar. An op with no backward rule, listed on the [tensor page](../tensor/_index.md), makes `fit` fail.
 - On `Ggml`, the step is one compiled graph with at most 512 outputs: the loss, the new parameters and the optimizer's moments. That allows 170 parameters with Adam or AdamW, 255 with momentum SGD and 511 with plain SGD.
 - The losses and the optimizers use only ops that ggml supports, so a batch and its step run on `Ggml` when the dataset is on `Ggml`.
+- On `Xla` (`Backend.Xla(Device.Cpu)`, see the tensor page for the plugin) the step is one XLA program, compiled once per batch shape, and the batch is gathered in it when the dataset is on `Xla` too.
 
 ## How it works
 
