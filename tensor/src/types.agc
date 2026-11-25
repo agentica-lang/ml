@@ -134,6 +134,7 @@ enum Op
   AdamPart(Int)
   SetRows
   TopK(Int)
+  GatedDeltaRule
   Eq
   Clamp(Float, Float)
   Max(List[Int], Bool)
@@ -168,6 +169,13 @@ struct Node
   id: Ref
   op: Op
   args: List[Tensor]
+end
+
+## The two results of `gated_delta_rule`: the answers `[tokens, heads, width]` and the state after the last token
+## `[heads, width, width]`.
+struct DeltaRule
+  out: Tensor
+  state: Tensor
 end
 
 ## The two results of `top_k`: `values` descending, `indices` their positions.
@@ -412,6 +420,7 @@ def op_name(op: Op) -> String
     Op.AdamPart(_) -> "adam_part"
     Op.SetRows -> "set_rows"
     Op.TopK(_) -> "top_k"
+    Op.GatedDeltaRule -> "gated_delta_rule"
     Op.Eq -> "eq"
     Op.Clamp(_, _) -> "clamp"
     Op.Max(_, _) -> "max"

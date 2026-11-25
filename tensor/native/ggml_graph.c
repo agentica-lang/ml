@@ -91,6 +91,7 @@ enum {
   OP_CONV2D,      /* ints: stride, padding, groups */
   OP_MAX_POOL2D,  /* ints: kernel, stride, padding */
   OP_AVG_POOL2D,  /* ints: kernel, stride, padding */
+  OP_GATED_DELTA_RULE, /* args: q, k, v [T, H, S], g, beta [T, H], the state [H, S, S]; the answers [T, H * S] then the state [S, H * S] */
   OP_COUNT
 };
 
@@ -99,6 +100,7 @@ static const char *op_names[OP_COUNT] = {
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
   "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
   "norm", "rms_norm", "set_rows", "top_k", "cast", "adam_step", "adam_part", "conv2d", "max_pool2d", "avg_pool2d",
+  "gated_delta_rule",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -1027,6 +1029,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
     if (nargs != 3 && nargs != 4) return tg_error(env, "attention takes q, k, v and an optional mask");
   } else if (op == OP_CONCAT) {
     if (nargs < 1) return tg_error(env, "concat takes at least 1 arg");
+  } else if (op == OP_GATED_DELTA_RULE) {
+    if (nargs != 6) return tg_error(env, "gated_delta_rule takes q, k, v, g, beta and the state");
   } else if (op == OP_ADAM_STEP) {
     if (nargs != 5) return tg_error(env, "adam_step takes p, grad, m, v and the hyper-parameters");
   } else if (op > OP_FULL && op != OP_ARANGE && nargs != 1) {
@@ -1293,6 +1297,38 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       memcpy(&eps, &bits, sizeof eps);
       if (!(eps > 0.0f)) return tg_error(env, "an rms norm takes an eps above 0");
       t = ggml_rms_norm(p->ctx, dense(p, a), eps);
+      break;
+    }
+    case OP_GATED_DELTA_RULE: {
+      const struct gnode *g = &p->nodes[args[3]], *beta = &p->nodes[args[4]], *state = &p->nodes[args[5]];
+      const int64_t width = a->ne[0], heads = a->ne[1], tokens = a->ne[2];
+      int64_t ne_gate[4] = {1, heads, tokens, 1};
+      struct ggml_tensor *operands[6];
+
+      if (nints != 0 || a->rank != 3 || b->rank != 3 || c->rank != 3 || memcmp(b->ne, a->ne, sizeof a->ne) != 0 || memcmp(c->ne, a->ne, sizeof a->ne) != 0) {
+        return tg_error(env, "gated_delta_rule takes q, k and v of one shape [tokens, heads, width]");
+      }
+      if (g->rank != 2 || beta->rank != 2 || g->ne[0] != heads || g->ne[1] != tokens || beta->ne[0] != heads || beta->ne[1] != tokens) {
+        return tg_error(env, "gated_delta_rule takes g and beta of [tokens, heads]");
+      }
+      if (state->rank != 3 || state->ne[0] != width || state->ne[1] != width || state->ne[2] != heads) {
+        return tg_error(env, "gated_delta_rule takes a state of [heads, width, width]");
+      }
+      if (rank != 2 || n->ne[0] != width * heads || n->ne[1] != tokens + width) {
+        return tg_error(env, "gated_delta_rule answers [tokens + width, heads * width]");
+      }
+      operands[0] = dense(p, a);
+      operands[1] = dense(p, b);
+      operands[2] = dense(p, c);
+      operands[3] = dense(p, g);
+      operands[4] = dense(p, beta);
+      operands[5] = dense(p, state);
+      for (i = 0; i < 6; i++) {
+        if (operands[i]->type != GGML_TYPE_F32) return tg_error(env, "gated_delta_rule takes F32 tensors");
+      }
+      /* ggml takes the gate and beta as [1, heads, tokens]: the scale of q is its own, 1 / sqrt(width) */
+      t = ggml_gated_delta_net(p->ctx, operands[0], operands[1], operands[2], reshape(p, operands[3], ne_gate),
+                               reshape(p, operands[4], ne_gate), operands[5], 1);
       break;
     }
     case OP_ADAM_STEP: {
