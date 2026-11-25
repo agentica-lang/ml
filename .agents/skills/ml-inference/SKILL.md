@@ -5,7 +5,7 @@ description: >-
   packages (tensor, nn, hub, transformers, asr, whisper): install them by tag,
   pick a backend (reference, ggml on CPU or Vulkan, libtorch, XLA), load
   safetensors weights from a folder, generate text with Qwen3, embed sentences
-  with DistilBERT or BERT, classify images with ResNet, and transcribe audio
+  with DistilBERT or BERT, classify images with ResNet or ViT, and transcribe audio
   with Whisper. Use when an
   Agentica task runs a model or tensor code, or fixes an error of these
   packages. Not for training or fine-tuning (use ml-training), not for work on
@@ -45,7 +45,7 @@ agentica install   # writes deps/
 ```
 
 Keep only the lines the app needs: `tensor` and `nn` for tensor code, add
-`hub` for weights, `transformers` for Qwen3, BERT and ResNet models (the input of ResNet is made by the `vision` package: `Resize(256)`, `CenterCrop(224)`, `normalize`), `asr` for Whisper
+`hub` for weights, `transformers` for Qwen3, BERT, ResNet and ViT models (the input of ResNet and ViT is made by the `vision` package, with the steps of `references/models.md`), `asr` for Whisper
 (`whisper` only for the WAV reader or whisper.cpp). The tags
 are released per package: list them with
 `git ls-remote --tags https://github.com/agentica-lang/ml 'tensor-*'`.

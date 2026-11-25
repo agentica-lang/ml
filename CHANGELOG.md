@@ -18,10 +18,12 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
+- `ViT` (ml#83): ViT-B/16 from the official `google/vit-base-patch16-224` checkpoint. Its logits match Hugging Face's, and the top-5 classes are the same. `ResNet.Prediction` is now `Classify.Prediction`, shared by both.
 - `ResNet` (ml#83): ResNet-18 and ResNet-50 from the official `microsoft/resnet-*` checkpoints, with the batch norms folded into the convolutions at load. Their logits and top-5 classes match Hugging Face's on images through `vision`'s resize, crop and normalize.
 
 ### vision
 
+- `Vision.Step.ResizeTo(width, height)`: a resize to exactly that size, without keeping the aspect ratio.
 - New package `vision` (ml#82): images for tensors, on the `image` package (libvips). It needs libvips.
 - `Vision.to_tensor`: the pixels of an image go straight into a tensor, as `F32` in `0..1` or as `U8`, in `Chw` or `Hwc`.
 - `Vision.apply`: `Resize` (shorter side), `CenterCrop`, `RandomCrop` and `HorizontalFlip`, with a seed.

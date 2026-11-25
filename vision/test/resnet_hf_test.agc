@@ -10,13 +10,12 @@
 ## Run from `vision/`:
 ## `RESNET_MODELS=resnet-50:resnet-18 agentica test --max-steps 1000000000000 test/resnet_hf_test.agc`.
 
+import Hf from "hf"
 import ResNet from "pkg/transformers/resnet"
 import Tensor from "pkg/tensor/tensor"
 import Vision from "../vision"
 
-SIZE = 224
 SHORTER = 256
-GRID = 8
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
 
@@ -29,21 +28,9 @@ MODEL_REL = 0.001
 PIXEL_ABS = 0.035
 PIPELINE_ABS = 0.32
 
-struct Pixel
-  name: String
-  mean: List[Float]
-  grid: List[List[List[Float]]]
-end
-
-struct Entry
-  id: Int
-  label: String
-  logit: Float
-end
-
 struct Golden
-  images: List[Pixel]
-  models: Map[String, List[List[Entry]]]
+  images: List[Hf.Pixel]
+  models: Map[String, List[List[Hf.Entry]]]
 end
 
 private
@@ -55,14 +42,7 @@ def test_the_model_and_the_pipeline_match_hugging_face() -> Result[Void]
     return ok()
   end
 
-  device = Tensor.Device.Cpu
-  chosen = System.env("RESNET_DEVICE")
-  if chosen.ok? and try chosen == "vulkan"
-    device = Tensor.Device.Vulkan(0)
-  end
-
-  try Tensor.vulkan_fp16(false)
-  backend = Tensor.Backend.Ggml(device)
+  backend = try Hf.device_named("RESNET_DEVICE")
   return error("RESNET_MODELS is set and ggml is not built") if !Tensor.available(backend)
   want = try JSON.decode(try File.read_text("test/fixtures/resnet/golden.json"), Golden)
   for dir in (try listed).split(":")
@@ -78,110 +58,27 @@ def check(dir: String, want: Golden, backend: Tensor.Backend) -> Result[String]
   cases = try want.models.get(name).to_result("the golden has no model #{name}")
   m = try ResNet.open(dir, backend)
   names = want.images.map { |g| g.name }
-  crops = try loaded("test/fixtures/resnet/crops", names, [], backend)
-  alone = try logit_gap(
-    "model alone",
-    m,
-    try ResNet.run(m, try Vision.normalize(crops, MEAN, STD)),
-    cases,
-    MODEL_ABS,
-    MODEL_REL,
-  )
+  crops = try Hf.loaded("test/fixtures/resnet/crops", names, [], backend)
+  alone_logits = try ResNet.run(m, try Vision.normalize(crops, MEAN, STD))
+  alone = try Hf.logit_gap("model alone", try best_ids(m, alone_logits), alone_logits, cases, MODEL_ABS, MODEL_REL)
 
   pixels = try preprocessed("test/fixtures/resnet", names, backend)
-  pixel = try pixel_gap(pixels, want.images)
+  pixel = try Hf.pixel_gap(pixels, want.images)
   return error("the pixels are #{pixel} from Hugging Face's, more than #{PIXEL_ABS}") if pixel > PIXEL_ABS
-  pipeline = try logit_gap("pipeline", m, try ResNet.run(m, pixels), cases, PIPELINE_ABS, 0.0)
+  logits = try ResNet.run(m, pixels)
+  pipeline = try Hf.logit_gap("pipeline", try best_ids(m, logits), logits, cases, PIPELINE_ABS, 0.0)
   ok(
     "#{name}: largest gap of the logits of the model alone #{alone}, of the pixels #{pixel}, of the logits after the pipeline #{pipeline}",
   )
 end
 
-## The images `names` of `dir` after `steps`, as one `[n, 3, h, w]` batch in `0..1`.
-def loaded(
-  dir: String,
-  names: List[String],
-  steps: List[Vision.Step],
-  backend: Tensor.Backend,
-) -> Result[Tensor.Tensor]
-  set = Vision.Folder(classes: ["images"], paths: names.map { |n| "#{dir}/#{n}" }, labels: names.map { |_| 0 })
-  batch = try Vision.samples(set, (0...names.size).to_a, steps, 0, backend)
-  ok(batch.inputs)
-end
-
 ## The images as the image processor of the checkpoints makes them: normalized `[n, 3, 224, 224]`.
 def preprocessed(dir: String, names: List[String], backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  steps = [Vision.Step.Resize(SHORTER), Vision.Step.CenterCrop(SIZE, SIZE)]
-  Vision.normalize(try loaded(dir, names, steps, backend), MEAN, STD)
+  steps = [Vision.Step.Resize(SHORTER), Vision.Step.CenterCrop(Hf.SIZE, Hf.SIZE)]
+  Vision.normalize(try Hf.loaded(dir, names, steps, backend), MEAN, STD)
 end
 
-## The largest gap of the mean of each channel and of the grid of `batch` from the golden.
-def pixel_gap(batch: Tensor.Tensor, golden: List[Pixel]) -> Result[Float]
-  values = try floats(batch)
-  plane = SIZE * SIZE
-  worst = 0.0
-  for i in 0...golden.size
-    for c in 0...3
-      base = (i * 3 + c) * plane
-      sum = 0.0
-      for v in values.drop(base).take(plane)
-        sum = sum + v
-      end
-
-      worst = [worst, (sum / plane.to_f - golden[i].mean[c]).abs].max.unwrap!
-      for y in 0...GRID
-        for x in 0...GRID
-          at = values[base + step(y) * SIZE + step(x)]
-          worst = [worst, (at - golden[i].grid[c][y][x]).abs].max.unwrap!
-        end
-      end
-    end
-  end
-
-  ok(worst)
-end
-
-## The pixel of the grid that Python's `round(i * (SIZE - 1) / (GRID - 1))` picks.
-def step(i: Int) -> Int = (2 * i * (SIZE - 1) + GRID - 1) / (2 * (GRID - 1))
-
-## The largest gap of the best 10 logits of each image from the golden; an error when a logit is past the tolerance or
-## the best 5 classes are not the same, in the same order.
-def logit_gap(
-  what: String,
-  m: ResNet.ResNet,
-  logits: Tensor.Tensor,
-  cases: List[List[Entry]],
-  abs: Float,
-  rel: Float,
-) -> Result[Float]
-  values = try floats(logits)
-  classes = Tensor.shape(logits)[1]
-  best = try ResNet.top(m, logits, 5)
-  worst = 0.0
-  for i in 0...cases.size
-    ours = best[i].map { |p| p.id }
-    theirs = cases[i].take(5).map { |e| e.id }
-    return error("#{what}, image #{i}: the top 5 is #{ours}, expected #{theirs}") if ours != theirs
-    for e in cases[i]
-      got = values[i * classes + e.id]
-      gap = (got - e.logit).abs
-      return error("#{what}, image #{i}, class #{e.id}: #{got}, expected #{e.logit}") if gap > abs + rel * e.logit.abs
-
-      worst = [worst, gap].max.unwrap!
-    end
-  end
-
-  ok(worst)
-end
-
-def floats(t: Tensor.Tensor) -> Result[List[Float]]
-  out: List[Float] = []
-  for v in try Tensor.to_list(t)
-    case v
-      Tensor.Values.Float(f) -> out = out.push(f)
-      _ -> return error("a float tensor holds Float values")
-    end
-  end
-
-  ok(out)
+## The ids of the best 5 classes of each image.
+def best_ids(m: ResNet.ResNet, logits: Tensor.Tensor) -> Result[List[List[Int]]]
+  ok((try ResNet.top(m, logits, 5)).map { |row| row.map { |p| p.id } })
 end

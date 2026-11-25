@@ -6,6 +6,7 @@
 ## inference: the folded weights are not the checkpoint's. The input is `[batch, 3, height, width]` of `F32`, already
 ## normalized as the checkpoint's image processor does (`ImageNet` mean and std): `Vision` of `vision/` makes it.
 
+import Classify from "classify"
 import Hub from "pkg/hub/hub"
 import Lift from "lift"
 import Load from "pkg/hub/load"
@@ -42,13 +43,6 @@ struct ResNet
   stem: Nn.Conv2d
   stages: List[List[Layer]]
   classifier: Nn.Dense
-end
-
-## A class of an image: its index, its name and its logit.
-struct Prediction
-  id: Int
-  label: String
-  logit: Float
 end
 
 ## A convolution to load: its name in the checkpoint, its kernel and its stride.
@@ -154,28 +148,8 @@ def forward(m: ResNet, images: Tensor.Tensor) -> Result[Tensor.Tensor]
 end
 
 ## The `k` best classes of each row of `logits` (`[batch, classes]`), best first, with the names of `config.json`.
-def top(m: ResNet, logits: Tensor.Tensor, k: Int) -> Result[List[List[Prediction]]]
-  shape = Tensor.shape(logits)
-  return error("top needs logits of [batch, classes], got #{shape}") if shape.size != 2 or k < 1 or k > shape[1]
-  values: List[Float] = []
-  for v in try Tensor.to_list(logits)
-    case v
-      Tensor.Values.Float(f) -> values = values.push(f)
-      _ -> return error("the logits are floats")
-    end
-  end
-
-  out: List[List[Prediction]] = []
-  for row in 0...shape[0]
-    ids = (0...shape[1]).to_a.sort_by { |i| -values[row * shape[1] + i] }.take(k)
-    out = out.push(
-      ids.map { |i|
-        Prediction(id: i, label: m.config.id2label.get("#{i}").unwrap_or("#{i}"), logit: values[row * shape[1] + i])
-      },
-    )
-  end
-
-  ok(out)
+def top(m: ResNet, logits: Tensor.Tensor, k: Int) -> Result[List[List[Classify.Prediction]]]
+  Classify.top(m.config.id2label, logits, k)
 end
 
 ## Closes the logits of `run`.
