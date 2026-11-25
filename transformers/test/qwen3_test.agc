@@ -354,6 +354,33 @@ def test_a_model_that_cannot_be_written_is_refused() -> Result[Void]
   end
 end
 
+## The chat template is the one of `tokenizer_config.json`, else `chat_template.jinja`, and `add_bos_token` and
+## `add_eos_token` are the file's booleans, else false.
+def test_the_template_and_the_bos_and_eos_flags_come_from_the_tokenizer_config_or_its_file() -> Result[Void]
+  with_peer do |dir|
+    try File.write_text("#{dir}/tiny/chat_template.jinja", "FROM THE FILE")
+    out = "#{dir}/template.gguf"
+    try Qwen3Gguf.convert("#{dir}/tiny", out, Tensor.FloatFormat.F32)
+    h = (try Hub.open(out)).gguf.unwrap!
+    try Test.eq(
+      try Gguf.string(h, "tokenizer.chat_template"),
+      "{% for m in messages %}<|im_start|>{{ m.content }}{% endfor %}",
+    )
+
+    try Test.eq(try Gguf.bool(h, "tokenizer.ggml.add_bos_token"), false)
+    try File.write_text(
+      "#{dir}/tiny/tokenizer_config.json",
+      "{\"pad_token\": \"<|endoftext|>\", \"add_bos_token\": true, \"add_eos_token\": false}",
+    )
+
+    try Qwen3Gguf.convert("#{dir}/tiny", out, Tensor.FloatFormat.F32)
+    h = (try Hub.open(out)).gguf.unwrap!
+    try Test.eq(try Gguf.string(h, "tokenizer.chat_template"), "FROM THE FILE")
+    try Test.eq(try Gguf.bool(h, "tokenizer.ggml.add_bos_token"), true)
+    Test.eq(try Gguf.bool(h, "tokenizer.ggml.add_eos_token"), false)
+  end
+end
+
 ## An added token whose id is also in the base vocabulary is written with the type of an added token, not NORMAL: here
 ## `<think>` takes id 7, where the base vocabulary has `d`.
 def test_an_added_token_over_a_base_token_keeps_its_added_type() -> Result[Void]

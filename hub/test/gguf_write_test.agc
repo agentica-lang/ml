@@ -140,6 +140,16 @@ def test_the_reader_finds_what_was_written() -> Result[Void]
   end
 end
 
+## The layer of a Hugging Face name is a plain number: no sign, no leading zero, no text.
+def test_a_layer_that_is_not_a_plain_number_has_no_gguf_name() -> Result[Void]
+  try Test.eq(try Gguf.gguf_name("model.layers.12.input_layernorm.weight"), "blk.12.attn_norm.weight")
+  for layer in ["x", "-1", "+3", "007", ""]
+    try S.expect_error(Gguf.gguf_name("model.layers.#{layer}.input_layernorm.weight"), "not a number")
+  end
+
+  ok()
+end
+
 def test_a_value_beyond_f16_a_bad_shape_or_a_name_twice_is_refused() -> Result[Void]
   S.with_fixtures("gguf_write") do |dir|
     c = try Hub.open("#{dir}/src.safetensors")
@@ -156,6 +166,9 @@ def test_a_value_beyond_f16_a_bad_shape_or_a_name_twice_is_refused() -> Result[V
     try S.expect_error(GgufWrite.write(path, [], [reshaped(a, [0, 6])]), "dimension of 0")
     quantized = GgufWrite.Out(name: a.name, source: a.source, format: Tensor.FloatFormat.Q8_0)
     try S.expect_error(GgufWrite.write(path, [], [quantized]), "not Q8_0")
+    try Dir.mkdir_private("#{dir}/target", 5000)
+    try Test.error?(GgufWrite.write("#{dir}/target", [], [a]))
+    try Test.eq(Path.real("#{dir}/target.part").ok?, false)
     try S.expect_error(Hub.source(c, "n"), "not F32, F16 or BF16")
     S.expect_error(Hub.source(c, "missing"), "no tensor missing")
   end

@@ -29,6 +29,8 @@ FILE_TYPES = {"F32": 0, "F16": 1, "BF16": 32}
 struct TokenizerConfig
   chat_template: Optional[String]
   pad_token: Optional[String]
+  add_bos_token: Optional[Bool]
+  add_eos_token: Optional[Bool]
 end
 
 ## The fields of `config.json` that the config of the model does not have.
@@ -37,8 +39,8 @@ struct Ids
   eos_token_id: Optional[Int]
 end
 
-## Writes the model of `dir` (`config.json`, `model.safetensors` or its index, `tokenizer.json` and, if there is one,
-## `tokenizer_config.json`) to the GGUF file `out`. `format` is that of the matrices.
+## Writes the model of `dir` (`config.json`, `model.safetensors` or its index, `tokenizer.json` and, if there are any,
+## `tokenizer_config.json` and `chat_template.jinja`) to the GGUF file `out`. `format` is that of the matrices.
 def convert(dir: String, out: String, format: Tensor.FloatFormat) -> Result[Void]
   config = try Qwen3.with_head_dim(try Qwen3.read_config(dir))
   try Qwen3.check_config(config)
@@ -79,7 +81,7 @@ def config_fields(config: Qwen3.Config, format: Tensor.FloatFormat) -> List[Gguf
   ]
 end
 
-## Whether llama.cpp's converter calls an added token control: it is special, or written `<|...|>`.
+## Whether an added token is a control one: it is special, or written `<|...|>` as Qwen3's are.
 def control?(a: Added.Added) -> Bool = a.special or (a.content.start_with?("<|") and a.content.end_with?("|>"))
 
 ## The tokens of ids 0 to `vocab_size`, their types, and the merges by rank.
@@ -148,10 +150,14 @@ def ids_fields(dir: String, tok: Bpe.ByteLevelBpe) -> Result[List[GgufWrite.Fiel
   end
 
   template: Optional[String] = none
+  add_bos = false
+  add_eos = false
   settings = "#{dir}/tokenizer_config.json"
   if Path.real(settings).ok?
     text = try Source.within(settings, JSON.decode(try Source.read_text(settings), TokenizerConfig))
     template = text.chat_template
+    add_bos = text.add_bos_token.some? and text.add_bos_token.unwrap!
+    add_eos = text.add_eos_token.some? and text.add_eos_token.unwrap!
     if text.pad_token.some?
       found = tok.added.find { |a| a.content == text.pad_token.unwrap! }
       case found
@@ -161,8 +167,8 @@ def ids_fields(dir: String, tok: Bpe.ByteLevelBpe) -> Result[List[GgufWrite.Fiel
     end
   end
 
-  fields = fields.push(key("tokenizer.ggml.add_bos_token", GgufWrite.Meta.Bool(false)))
-  fields = fields.push(key("tokenizer.ggml.add_eos_token", GgufWrite.Meta.Bool(false)))
+  fields = fields.push(key("tokenizer.ggml.add_bos_token", GgufWrite.Meta.Bool(add_bos)))
+  fields = fields.push(key("tokenizer.ggml.add_eos_token", GgufWrite.Meta.Bool(add_eos)))
   file = "#{dir}/chat_template.jinja"
   if !template.some? and Path.real(file).ok?
     template = some(try Source.read_text(file))

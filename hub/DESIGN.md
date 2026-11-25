@@ -162,7 +162,9 @@ format to write (`F32`, `F16` or `BF16`). The header is built in Agentica and
 written first; each tensor is then converted straight from its source range
 into its place by `Tensor.convert_file`, aligned to 32 as llama.cpp does, so
 no value goes through a list. The file is written as `path.part` and renamed
-when whole (and removed when the rename fails). `Gguf.gguf_name` is the other way of `Gguf.shard`'s name map.
+when whole (and removed when the rename fails). `Gguf.gguf_name` is the other
+way of `Gguf.shard`'s name map; its layer is a number with no sign and no
+leading zero.
 `transformers/qwen3_gguf.agc` and `transformers/tools/to_gguf.agc` use it to
 write a Qwen3 folder: against llama.cpp's own converter, the F16 and F32 files
 of Qwen3-0.6B have every shared key-value and all 310 tensors byte for byte
