@@ -69,6 +69,17 @@ def unmerged(
   Qwen3.logits(try Qwen3.with_weights(m, with), Trace.constant(ids))
 end
 
+## The logits of `rows` from `m` with `adapter` merged in; the merged weights and the logits are closed.
+def merged_logits(m: Qwen3.Qwen3, adapter: Lora.Adapter, rows: List[List[Int]]) -> Result[List[Float]]
+  with = try Lora.merged(Qwen3.weights(m), adapter)
+  made = adapter.names.map { |name: String| with[name] }
+  logits = Qwen3.run(try Qwen3.with_weights(m, with), rows)
+  Lift.close(made)
+  out = S.floats_of(try logits)
+  Lift.close([try logits])
+  out
+end
+
 def test_a_qwen3_with_a_peft_adapter_gives_the_logits_of_peft() -> Result[Void]
   g = try golden()
   try Test.assert(g.qwen.moved > 1.0, "the adapter of the peer moves the logits")
@@ -78,8 +89,7 @@ def test_a_qwen3_with_a_peft_adapter_gives_the_logits_of_peft() -> Result[Void]
       adapter = try Lora.open("test/fixtures/lora_qwen", backend)
       try Test.eq(adapter.names.size, 4)
       try Test.eq(adapter.names[0], "model.layers.0.self_attn.q_proj.weight")
-      merged = try Qwen3.with_weights(m, try Lora.merged(Qwen3.weights(m), adapter))
-      got = try S.floats_of(try Qwen3.run(merged, g.qwen.ids))
+      got = try merged_logits(m, adapter, g.qwen.ids)
       try S.expect_close(got, g.qwen.logits, ABS, REL, "merged on #{backend}")
       try S.expect_close(got, g.qwen.merged, ABS, REL, "merged against PEFT's merge on #{backend}")
       ids = try tokens(g.qwen.ids, backend)
@@ -160,24 +170,21 @@ def trains_an_adapter(dir: String, out: String, backend: Tensor.Backend) -> Resu
   try Lora.save(out, trained, Qwen3.embeddings(m))
   back = try Lora.open(out, backend)
   try Test.eq(back.names, trained.names)
-  want = try Qwen3.run(try Qwen3.with_weights(m, try Lora.merged(weights, trained)), g.qwen.ids)
-  got = try Qwen3.run(try Qwen3.with_weights(m, try Lora.merged(weights, back)), g.qwen.ids)
-  try S.expect_close(
-    try S.floats_of(got),
-    try S.floats_of(want),
-    0.000001,
-    0.000001,
-    "the saved adapter on #{backend}",
-  )
-
+  want = try merged_logits(m, trained, g.qwen.ids)
+  got = try merged_logits(m, back, g.qwen.ids)
+  try S.expect_close(got, want, 0.000001, 0.000001, "the saved adapter on #{backend}")
   plain = try Qwen3.run(m, g.qwen.ids)
-  Test.assert(try S.floats_of(plain) != try S.floats_of(want), "the trained adapter changes the logits")
+  changed = try S.floats_of(plain) != want
+  Lift.close([plain])
+  Test.assert(changed, "the trained adapter changes the logits")
 end
 
 def test_a_fit_of_an_adapter_lowers_the_loss_and_is_saved_for_peft() -> Result[Void]
   with_qwen do |dir|
+    count = 0
     for backend in try backends()
-      try trains_an_adapter(dir, "#{dir}/adapter-#{(try backends()).index(backend).unwrap_or(0)}", backend)
+      try trains_an_adapter(dir, "#{dir}/adapter-#{count}", backend)
+      count = count + 1
     end
 
     ok()
@@ -188,6 +195,10 @@ def test_an_adapter_of_an_embedding_table_is_not_saved() -> Result[Void]
   with_qwen do |dir|
     m = try Qwen3.open("#{dir}/untied", S.REF)
     try Test.eq(Qwen3.embeddings(m), ["model.embed_tokens.weight"])
+    tied = try Qwen3.open("#{dir}/tiny", S.REF)
+    try Test.assert(tied.config.tie_word_embeddings, "tiny has a tied head")
+    try Test.assert(Qwen3.embeddings(tied).all? { |name: String| Qwen3.weights(tied).key?(name) }, "a tied table")
+    try Test.assert(!Qwen3.weights(tied).key?("lm_head.weight"), "a tied head has no weight of its own")
     adapter = try Lora.init(Qwen3.weights(m), Lora.Config(targets: ["embed_tokens"], r: 2), 1, S.REF)
     try S.expect_error(Lora.save("#{dir}/table", adapter, Qwen3.embeddings(m)), "embedding table")
     ok()

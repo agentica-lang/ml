@@ -149,7 +149,7 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
   names of its embedding tables, which `Lora.save` refuses to write as the
   adapter of a linear layer (PEFT keeps those in another layout). The test
   reads adapters that PEFT wrote for the tiny models of the
-  standard-library peers (`test/lora_golden.py`, manual; 14 kB of fixtures).
+  standard-library peers (`test/lora_golden.py`, manual).
 - `sentence.agc` holds what a sentence-embedding model adds to an encoder
   (`mean_pooled`, `normalized`, `cosine_similarity_loss`). A loss lives with
   its domain: the cosine itself is generic math in `nn/`

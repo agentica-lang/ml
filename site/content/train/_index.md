@@ -177,6 +177,8 @@ adapter = try Lora.open("adapter", backend)
 - `Lora.save(dir, adapter, embeddings = [])` writes `adapter_config.json` and `adapter_model.safetensors` into the folder `dir`, as `PeftModel.save_pretrained` does. Every adapted weight is written as a linear layer's. PEFT keeps the adapter of an `Embedding` in another layout, and an adapter here does not know which of its weights is one: pass the names of the model's embedding tables as `embeddings` (`Qwen3.embeddings(m)`, `DistilBert.embeddings(m)`), and an adapter of one of them is an error instead of a file PEFT would misread. A tensor whose rank is not `config.r`, or a weight no target takes, is an error too. The files do not say which model the adapter is for.
 - `Lora.open(dir, backend)` reads such a folder, as `F32`. `adapter.names` come from the names of its tensors. An error names what is not computed here: another `peft_type`; DoRA, rsLoRA, aLoRA, QALoRA, BD-LoRA or another variant (Arrow, KaSA, MonteCLoRA, VeLoRA); `fan_in_fan_out`; a trained bias; `modules_to_save`, `target_parameters` or `trainable_token_indices`; `layer_replication`; a rank or alpha pattern; `target_modules` as a regular expression; and the adapter of an `Embedding`. An adapter trained with `lora_dropout` is read and runs.
 
+On a model whose output head is tied to its embedding table (Qwen3), an adapter on the table also changes the head in `applied` and `merged`, since they are one weight; PEFT adapts the table alone. `Lora.save` with the model's `embeddings` refuses that adapter.
+
 LoRA trains without dropout: `Lora.params` refuses an adapter whose `dropout` is above 0 ([ml#209](https://github.com/agentica-lang/ml/issues/209)).
 
 ## Limits
