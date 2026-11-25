@@ -13,7 +13,8 @@ weight: 8
 ```toml
 [dependencies]
 vision = { git = "https://github.com/agentica-lang/ml", tag = "vision-0.5.0", subdir = "vision" }
-image = { git = "https://github.com/agentica-lang/packages", tag = "image-0.1.0", subdir = "image" }
+tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.5.0", subdir = "tensor" }
+image = { git = "https://github.com/agentica-lang/packages", tag = "image-0.2.0", subdir = "image" }
 ```
 
 ## Example
