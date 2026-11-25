@@ -9,7 +9,7 @@ largest gap between the two loss curves. It exits 1, since a fast
 wrong answer does not count, when:
 
 - the two sides did not run with the same thread count, the same decayed weights or the same token ids (our thread
-  count is the online CPUs, which ggml takes and `run.sh` writes: by construction, not measured);
+  count is the online CPUs, which `run.sh` gives ggml with `TENSOR_THREADS` and writes: by construction, not measured);
 - they differ in their steps or shapes;
 - a loss is not finite, or the two losses of a step differ by more than TOLERANCE (1.5e-7 fits the run of the README,
   which says how it was set; another run needs its own);
