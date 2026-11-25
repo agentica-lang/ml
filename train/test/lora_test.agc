@@ -172,6 +172,80 @@ def test_the_adapted_model_gives_the_output_of_peft() -> Result[Void]
   S.expect_close(try S.floats_of(out), g.output, ABS, REL, "the output")
 end
 
+def test_merged_weights_are_the_applied_ones_on_every_backend() -> Result[Void]
+  g = try golden()
+  ref = try setup(S.REF)
+  want = try Lora.applied(ref.weights, ref.adapter)
+  for backend in try backends()
+    s = try setup(backend)
+    before = try bits(s.weights["first.weight"])
+    with = try Lora.merged(s.weights, s.adapter)
+    try Test.eq(with.keys.sort, s.weights.keys.sort)
+    for name in ADAPTED
+      try Test.eq(Tensor.backend(with[name]), backend)
+      try S.expect_close(try S.floats_of(with[name]), try S.floats_of(want[name]), ABS, REL, "#{name} on #{backend}")
+    end
+
+    try Test.eq(try bits(with["first.bias"]), try bits(s.weights["first.bias"]))
+    try Test.eq(try bits(s.weights["first.weight"]), before)
+    out = try Trace.eval([s.batch.inputs], ->(xs: List[Tensor.Tensor]) { model(constants(with), xs[0]) })
+    try S.expect_close(try S.floats_of(out), g.output, ABS, REL, "the output of the merged model on #{backend}")
+  end
+
+  ok()
+end
+
+def constants(weights: Map[String, Tensor.Tensor]) -> Map[String, Tensor.Tensor]
+  out: Map[String, Tensor.Tensor] = {}
+  for name in weights.keys
+    out = out.put(name, Trace.constant(weights[name]))
+  end
+
+  out
+end
+
+## More adapted weights than one ggml graph answers (512): `merged` adds them in several graphs.
+def test_merged_takes_more_weights_than_a_graph_answers() -> Result[Void]
+  count = 600
+  for backend in try backends()
+    weights: Map[String, Tensor.Tensor] = {}
+    for i in 0...count
+      weights = weights.put(
+        "layers.#{i}.proj.weight",
+        try S.tensor([1.0, 2.0, 3.0, i.to_f], [2, 2], Tensor.Dtype.F32, backend),
+      )
+    end
+
+    made = try Lora.init(weights, Lora.Config(targets: ["proj"], r: 1, alpha: 1.0), 1, backend)
+    ones = made.b.map { |_b: Tensor.Tensor| S.tensor([1.0, 1.0], [2, 1], Tensor.Dtype.F32, backend).unwrap! }
+    with = try Lora.merged(weights, made.with(b: ones))
+    try Test.eq(with.size, count)
+    for k in [0, 255, 256, 511, 512, count - 1]
+      name = made.names[k]
+      a = try S.floats_of(made.a[k])
+      want = [1.0 + a[0], 2.0 + a[1], 3.0 + a[0], try name.split(".")[1].to_f + a[1]]
+      try S.expect_close(try S.floats_of(with[name]), want, ABS, REL, "#{name} on #{backend}")
+    end
+  end
+
+  ok()
+end
+
+def test_merged_refuses_what_it_cannot_add() -> Result[Void]
+  s = try setup(S.REF)
+  try Test.eq((try Lora.merged(s.weights, s.adapter.with(names: [], a: [], b: []))).keys.sort, s.weights.keys.sort)
+  try Test.assert(!Lora.merged(s.weights.delete("first.weight"), s.adapter).ok?, "a weight the model lacks")
+  half = try Tensor.zeros([4, 3], Tensor.Dtype.F16, S.REF)
+  try Test.assert(!Lora.merged(s.weights.put("first.weight", half), s.adapter).ok?, "an F16 weight")
+  for backend in try S.ggml_backends()
+    there = try setup(backend)
+    try Test.assert(!Lora.merged(s.weights, there.adapter).ok?, "weights on the reference, adapter on #{backend}")
+    try Test.assert(!Lora.merged(there.weights, s.adapter).ok?, "weights on #{backend}, adapter on the reference")
+  end
+
+  ok()
+end
+
 def test_the_gradients_of_a_and_b_are_those_of_peft() -> Result[Void]
   g = try golden()
   for backend in try backends()
