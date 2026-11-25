@@ -530,6 +530,34 @@ def test_a_graph_that_failed_a_run_runs_again() -> Result[Void]
   gives([try floats([1.0, 1.0], [2], CPU)], f, [0.0, 0.0])
 end
 
+## An output that is the result of an op is written where the caller holds it, and a view of one is copied there; both
+## are checked, and the error names the output.
+def test_a_value_that_is_not_finite_is_refused_whether_it_is_copied_or_not() -> Result[Void]
+  return ok() if !try present(CPU)
+
+  x = try floats([1.0, 0.0, 2.0, 3.0], [2, 2], CPU)
+  try says(Trace.eval_many([x], &log_after_double), "output 1")
+  try says(Trace.eval_many([x], &double_after_log), "output 0")
+  big = try floats([1.0e30, 2.0e30, 3.0e30, 4.0e30], [2, 2], CPU)
+  outs = try Trace.eval_many([big], &log_after_double)
+  Test.eq(outs.size, 2)
+end
+
+def log_after_double(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  ok([try Tensor.add(a[0], a[0]), try Tensor.reshape(try Tensor.log(a[0]), [4])])
+end
+
+def double_after_log(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  ok([try Tensor.log(a[0]), try Tensor.reshape(try Tensor.add(a[0], a[0]), [4])])
+end
+
+def says(r: Result[List[Tensor.Tensor]], text: String) -> Result[Void]
+  case r
+    ok(_) -> error("computed outputs where an error naming \"#{text}\" was due")
+    error(e) -> Test.assert(e.message.include?(text), "the error said \"#{e.message}\"")
+  end
+end
+
 def test_an_i32_graph_converts_in_and_out() -> Result[Void]
   return ok() if !try present(CPU)
 
