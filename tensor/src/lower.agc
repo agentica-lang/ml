@@ -61,6 +61,8 @@ RMS_NORM = 36
 SET_ROWS = 37
 TOP_K = 38
 CAST = 39
+ADAM_STEP = 40
+ADAM_PART = 41
 
 ## One node as the C layer takes it.
 struct Lowered
@@ -320,6 +322,11 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   leaves: List[Leaf] = []
   fills: List[Float] = []
   walked = try walk(outs, positions)
+  donors: List[Ref] = []
+  if donate
+    donors = try adam_donors(outs, positions, walked)
+  end
+
   for t in walked
     n = try Graph.node_of(t)
     half_ok = try half_node(t, n)
@@ -376,6 +383,8 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
         end
 
       Types.Op.RmsNorm(eps) -> ints = [Float.to_bits32(eps)]
+      Types.Op.AdamStep -> ints = [flag(donors.include?(n.id))]
+      Types.Op.AdamPart(i) -> ints = [i]
       _ -> nil
     end
 
@@ -399,7 +408,7 @@ def lower(outs: List[Types.Tensor], ids: List[Ref], device: Types.Device, keep: 
   outputs = outs.map { |o| pos[Graph.id_of(o)] }
   donates = outs.map { |_| -1 }
   if donate
-    donates = try donations(outs, positions, walked)
+    donates = try donations(outs, positions, walked, donors)
   end
 
   # ggml holds an I32 tensor as I32 and a leaf as F32: that one is converted at every bind.
@@ -441,7 +450,12 @@ end
 ## Per output, the position of the input a `set_rows` writes in place (`-1` for the others), when the writes are sound:
 ## the cache of a `set_rows` is an input read by no other node, the `set_rows` is an output (its result is the input
 ## itself, so it is not given twice), and an input is not also an output.
-def donations(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[Types.Tensor]) -> Result[List[Int]]
+def donations(
+  outs: List[Types.Tensor],
+  positions: Map[Ref, Int],
+  walked: List[Types.Tensor],
+  donors: List[Ref],
+) -> Result[List[Int]]
   output_ids = outs.map { |o| Graph.id_of(o) }
   written: Map[Ref, Int] = {}
   for t in walked
@@ -490,15 +504,84 @@ def donations(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[T
   end
 
   per_output: List[Int] = []
-  for id in output_ids
+  for o in outs
+    id = Graph.id_of(o)
     if written.has_key?(id)
       per_output = per_output.push(written[id])
     else
-      per_output = per_output.push(-1)
+      per_output = per_output.push(try adam_input(o, positions, donors))
     end
   end
 
   ok(per_output)
+end
+
+## The position of the input an output is when it is the first or second moment of an `adam_step` that updates its
+## moments in place (`adam_donors`), else `-1`.
+def adam_input(o: Types.Tensor, positions: Map[Ref, Int], donors: List[Ref]) -> Result[Int]
+  n = try Graph.node_of(o)
+  case n.op
+    Types.Op.AdamPart(i) ->
+      step = try Graph.node_of(n.args[0])
+      return ok(positions[Graph.id_of(step.args[1 + i])]) if i > 0 and donors.include?(step.id)
+      ok(-1)
+    _ -> ok(-1)
+  end
+end
+
+## The `adam_step` nodes that update their moments in place: the first and second moment are inputs (not constants) that
+## the step alone reads, once each, and that are not outputs, and the step's two parts for them are outputs, one node
+## each, listed once. A step that fails any of that works on copies, which is what any other caller gets. One walk counts
+## the readers and the parts.
+def adam_donors(outs: List[Types.Tensor], positions: Map[Ref, Int], walked: List[Types.Tensor]) -> Result[List[Ref]]
+  listed: Map[Ref, Int] = {}
+  for o in outs
+    id = Graph.id_of(o)
+    listed = listed.put(id, listed.get(id, 0) + 1)
+  end
+
+  reads: Map[Ref, Int] = {}
+  parts: Map[Ref, List[Int]] = {}
+  for t in walked
+    n = try Graph.node_of(t)
+    for a in n.args
+      id = Graph.id_of(a)
+      reads = reads.put(id, reads.get(id, 0) + 1)
+    end
+
+    case n.op
+      Types.Op.AdamPart(i) ->
+        # `Tensor.adam_step` makes one part node per index and step (`Graph.adam_part`), so a part listed once as
+        # an output
+        # is the only one; a part that is not an output leaves the list short and the step copies
+        step = Graph.id_of(n.args[0])
+        if i > 0 and listed.get(n.id, 0) == 1
+          parts = parts.put(step, parts.get(step, []).push(i))
+        end
+
+      _ -> nil
+    end
+  end
+
+  found: List[Ref] = []
+  for t in walked
+    n = try Graph.node_of(t)
+    case n.op
+      Types.Op.AdamStep ->
+        m = Graph.id_of(n.args[2])
+        v = Graph.id_of(n.args[3])
+        sound = m != v and try an_input(n.args[2]) and try an_input(n.args[3])
+        sound = sound and reads.get(m, 0) == 1 and reads.get(v, 0) == 1
+        sound = sound and listed.get(m, 0) == 0 and listed.get(v, 0) == 0
+        if sound and parts.get(n.id, []).sort == [1, 2]
+          found = found.push(n.id)
+        end
+
+      _ -> nil
+    end
+  end
+
+  ok(found)
 end
 
 ## The bits of the double `x`, which the C layer reads back as `x`: a node takes integers only. A float
@@ -769,6 +852,8 @@ def code(t: Types.Tensor, n: Types.Node) -> Result[Int]
     Types.Op.GeluErf -> ok(GELU_ERF)
     Types.Op.LayerNorm(_) -> ok(NORM)
     Types.Op.RmsNorm(_) -> ok(RMS_NORM)
+    Types.Op.AdamStep -> ok(ADAM_STEP)
+    Types.Op.AdamPart(_) -> ok(ADAM_PART)
     Types.Op.SetRows -> ok(SET_ROWS)
     Types.Op.TopK(_) -> ok(TOP_K)
     Types.Op.Concat(_) -> ok(CONCAT)

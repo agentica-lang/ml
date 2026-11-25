@@ -18,7 +18,8 @@ Optim.Schedule = Constant | WarmupLinear(warmup, total) | WarmupCosine(warmup, t
 Optim.init(optimizer, params) -> Result[State]
 Optim.step(state, params, grads, scalars = []) -> Result[Step { state, params }]
 Optim.learning_rate(state) -> Float             lr times the schedule at the step count
-Optim.step_scalars(state) -> List[Float]        SGD's learning rate, Adam's two numbers, or AdamW's three, for the next step
+Optim.step_inputs(state) -> List[List[Float]]   the inputs of the next step: SGD's rate, or Adam's 7 numbers (AdamW has two rows)
+Optim.step_scalars(state) -> List[Float]        the rank-0 form (StableHLO): SGD's rate, Adam's two numbers, or AdamW's three
 
 Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
 Data.load(path, inputs, targets, backend) -> Result[Dataset]  two named tensors of a safetensors file
@@ -123,10 +124,23 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   (`tensor/DESIGN.md` §12). Adam's bias corrections depend on the step count, so
   there they are rank-0 inputs after the moments (`Optim.step_scalars`: SGD's
   learning rate, or Adam's two numbers, passed as the `scalars` of
-  `Optim.step`) and not constants of one step; `fit` passes them the same way, so
-  a learning rate that changes at every step (a schedule, which starts at 0)
-  is not a new graph. The goldens in `test/fixtures/stablehlo/`
+  `Optim.step`) and not constants of one step; `fit` passes them as
+  `Optim.step_inputs` (Adam's 7 numbers in one rank-1 input, for `Tensor.adam_step`),
+  so a learning rate that changes at every step (a schedule, which starts at 0)
+  is not a new graph. The StableHLO form keeps the rank-0 scalars and Adam's
+  older composition, which its goldens pin: an `adam_step` node has no StableHLO. The goldens in `test/fixtures/stablehlo/`
   are three chained runs on IREE, which `fit` reproduces at steps 1 and 3.
+- **Adam's moments are updated where they lie.** A step on ggml runs Adam's
+  update as `Tensor.adam_step`, and in the compiled step of `fit` its first and
+  second moments are inputs that nothing else reads, so the lowering updates
+  them in place: the step's results for them are the very tensors it was given
+  (`Trace.donated`), and `run` does not free the old moment that is the new one
+  (`Stepped.kept`). The parameters are never written (the loss reads them), so
+  the caller's weights need no copy on the first step; the moments are the
+  run's own zeros. The first moment is not checked for finite values where it is
+  written (a non-finite one reaches the new parameter through the update, which
+  is checked); the second is, since an infinite one leaves the parameter finite
+  and frozen.
 - **One native arena per step.** `fit` runs each step in `Native.arena`, so
   the intermediates of the trace's evaluation die at the step's end on
   libtorch and only the new state, parameters and loss leave it

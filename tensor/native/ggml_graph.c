@@ -86,6 +86,8 @@ enum {
   OP_SET_ROWS,    /* args: a cache leaf, the rows, their positions; written in place, its result is an output that is the leaf */
   OP_TOP_K,       /* the indices of the k largest of a vector, as F32; ints: k */
   OP_CAST,        /* ints: 1 for F16, 0 for F32; a node that already has the type is passed through */
+  OP_ADAM_STEP,   /* args: p, grad, m, v, the 7 numbers of ggml's AdamW; ints: 1 to update m and v in place; the node is its new p */
+  OP_ADAM_PART,   /* args: an adam_step; ints: 0, 1 or 2, the new p, m or v of it */
   OP_COUNT
 };
 
@@ -93,7 +95,7 @@ static const char *op_names[OP_COUNT] = {
   "leaf", "full", "add", "sub", "mul", "div", "neg", "exp", "log", "relu", "sqrt", "sigmoid", "tanh",
   "matmul", "transpose", "reshape", "broadcast_to", "sum", "mean", "max", "identity", "arange", "eq", "lt", "where",
   "slice", "gather", "gelu_erf", "concat", "conv1d", "scatter_add", "permute", "attention", "rope", "batch_matmul",
-  "norm", "rms_norm", "set_rows", "top_k", "cast",
+  "norm", "rms_norm", "set_rows", "top_k", "cast", "adam_step", "adam_part",
 };
 
 /* A leaf or an output: the tensor of the graph, its own memory (made on the
@@ -124,7 +126,7 @@ struct port {
   ggml_backend_buffer_t own;
   struct ggml_tensor *conv; /* the bound tensor, converted to or from `own`; else NULL. Its memory is `held` */
   bool set;                               /* bound or prepared for the next run */
-  bool donated;                           /* a leaf a `set_rows` writes in place, or the output that is that leaf: no copy in or out */
+  bool donated;                           /* a leaf a `set_rows` writes in place or an `adam_step` moment, or the output that is that leaf: no copy in or out */
   bool kept;                              /* a leaf that stays bound after the run; `held->kept` counts it */
   bool wanted;                            /* inside `ggml_keep`: a leaf of the list it was given */
   struct tg_storage *held;                /* the memory of the bound tensor, kept until the run is over */
@@ -148,6 +150,9 @@ struct gnode {
   struct ggml_tensor *half; /* the node as the F16 mask of a flash attention, made once */
   struct ggml_tensor *packed; /* the node as an operand of mul_mat when `dense` is not packed, made once */
   struct ggml_tensor *window; /* a slice from the first element as the view it is: what flash attention reads */
+  struct ggml_tensor *adam[3]; /* an adam_step: its new weight, first and second moment, each a tensor of its own */
+  int adam_donates;            /* an adam_step that updates its moments, two input leaves, in place */
+  int part;                    /* an adam_part: 0 the new weight, 1 the first moment, 2 the second */
 };
 
 #define MAX_OUTPUTS 512
@@ -488,6 +493,12 @@ static struct ggml_tensor *full_of(struct entry *p, const struct gnode *n) {
 
 static struct ggml_tensor *contiguous(struct entry *p, struct ggml_tensor *t) {
   return ggml_is_contiguous(t) ? t : ggml_cont(p->ctx, t);
+}
+
+/* `t` as a tensor that starts at the beginning of its buffer: a view at an offset (a value of the fill store, a slice) is
+   copied. */
+static struct ggml_tensor *aligned(struct entry *p, struct ggml_tensor *t) {
+  return t->view_src != NULL && t->view_offs != 0 ? ggml_cont(p->ctx, t) : t;
 }
 
 static struct ggml_tensor *dense(struct entry *p, const struct gnode *n) {
@@ -991,6 +1002,8 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
     if (nargs != 3 && nargs != 4) return tg_error(env, "attention takes q, k, v and an optional mask");
   } else if (op == OP_CONCAT) {
     if (nargs < 1) return tg_error(env, "concat takes at least 1 arg");
+  } else if (op == OP_ADAM_STEP) {
+    if (nargs != 5) return tg_error(env, "adam_step takes p, grad, m, v and the hyper-parameters");
   } else if (op > OP_FULL && op != OP_ARANGE && nargs != 1) {
     return tg_error(env, "a unary op takes 1 arg");
   }
@@ -1257,6 +1270,82 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
       t = ggml_rms_norm(p->ctx, dense(p, a), eps);
       break;
     }
+    case OP_ADAM_STEP: {
+      struct gnode *g = &p->nodes[args[1]], *m = &p->nodes[args[2]], *v = &p->nodes[args[3]], *hyper = &p->nodes[args[4]];
+      struct ggml_tensor *weight, *moments[2], *step;
+      int axis = a->rank, k;
+
+      if (nints != 1 || (ints[0] != 0 && ints[0] != 1) || rank != a->rank + 1 || rank > 4 || n->ne[axis] != 3) {
+        return tg_error(env, "adam_step takes a tensor of rank 3 or less, and 1 to update its moments in place");
+      }
+      for (k = 0; k < axis; k++) {
+        if (n->ne[k] != a->ne[k] || g->ne[k] != a->ne[k] || m->ne[k] != a->ne[k] || v->ne[k] != a->ne[k]) {
+          return tg_error(env, "adam_step takes p, grad, m and v of one shape");
+        }
+      }
+      if (g->rank != a->rank || m->rank != a->rank || v->rank != a->rank || volume(hyper->ne) != 7) {
+        return tg_error(env, "adam_step takes p, grad, m and v of one shape, and 7 hyper-parameters");
+      }
+      if (dense(p, a)->type != GGML_TYPE_F32 || dense(p, g)->type != GGML_TYPE_F32 || dense(p, hyper)->type != GGML_TYPE_F32 ||
+          (ints[0] == 0 && (dense(p, m)->type != GGML_TYPE_F32 || dense(p, v)->type != GGML_TYPE_F32))) {
+        return tg_error(env, "adam_step takes F32 tensors");
+      }
+      /* The op updates its weight and moments where they lie. The weight is read by the rest of the graph (the loss
+         and the gradients), and every argument may be a value other nodes or the caller read, so the weight is always
+         a copy. The moments are copies too, unless the step updates them in place (`ints[0]`, which the lowering sets
+         only for two inputs that nothing else reads, whose results are outputs): the caller's moments are then the
+         new ones. Each of the three is a tensor of its own, so that the backend binds it at an aligned offset. */
+      weight = ggml_cpy(p->ctx, dense(p, a), ggml_dup_tensor(p->ctx, dense(p, a)));
+      /* ggml asserts that the weight is a parameter (a leaf marked for training); `ggml_set_param` refuses a tensor
+         that is not a leaf, as a copy is. Only that assert reads the flag here: no backward pass is built. */
+      weight->flags |= GGML_TENSOR_FLAG_PARAM;
+      for (k = 0; k < 2; k++) {
+        struct gnode *moment = k == 0 ? m : v;
+
+        if (ints[0] == 0) {
+          moments[k] = ggml_cpy(p->ctx, dense(p, moment), ggml_dup_tensor(p->ctx, dense(p, moment)));
+        } else {
+          struct port *leaf = NULL;
+          int64_t l;
+
+          if (moment->op != OP_LEAF || moment->t->type != GGML_TYPE_F32) return tg_error(env, "adam_step updates F32 inputs in place");
+          for (l = 0; l < p->leaf_count; l++) {
+            if (p->leaves[l].t == moment->t) leaf = &p->leaves[l];
+          }
+          if (leaf == NULL || leaf->donated || m == v) return tg_error(env, "adam_step updates two inputs, each in place once");
+          leaf->donated = true;
+          moments[k] = moment->t;
+        }
+      }
+      /* the kernel binds its gradient and its numbers as buffers: a view at an offset (one value of the fill store,
+         a slice) is not aligned for every backend, so such a tensor is copied first */
+      step = ggml_opt_step_adamw(p->ctx, weight, aligned(p, dense(p, g)), moments[0], moments[1], aligned(p, dense(p, hyper)));
+      /* The three results, each a view that depends on the step, so that whoever reads one runs after it. */
+      n->adam[0] = step;
+      for (k = 0; k < 2; k++) {
+        n->adam[k + 1] = ggml_view_4d(p->ctx, moments[k], a->ne[0], a->ne[1], a->ne[2], a->ne[3], moments[k]->nb[1], moments[k]->nb[2],
+                                      moments[k]->nb[3], 0);
+        n->adam[k + 1]->src[1] = step;
+      }
+      n->adam_donates = (int)ints[0];
+      /* the node itself is its weight; its recorded shape is the stack of the three, which only the trace holds */
+      n->t = step;
+      n->ne[axis] = 1;
+      n->rank = a->rank;
+      t = step;
+      break;
+    }
+    case OP_ADAM_PART:
+      if (a->op != OP_ADAM_STEP || nints != 1 || ints[0] < 0 || ints[0] > 2 || a->adam[0] == NULL) {
+        return tg_error(env, "adam_part takes 0, 1 or 2 of an adam_step");
+      }
+      t = a->adam[ints[0]];
+      /* the moments of a step that updates them in place: the output is the input itself, nothing to copy. The first
+         moment is not checked (a non-finite one reaches the weight, which is); the second is, since an infinite one
+         leaves the weight finite and frozen. */
+      n->part = (int)ints[0];
+      if (a->adam_donates && ints[0] > 0) n->in_place = 1;
+      break;
     case OP_CONCAT:
       if (nints != 2 || ints[0] < 0 || ints[0] >= rank) return tg_error(env, "concat takes an axis and the stack flag");
       if (!joins(p, args, nargs, rank, rank - 1 - (int)ints[0], ints[1] != 0, n->ne)) {
@@ -1372,9 +1461,13 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     p->outs[i].t = ggml_new_tensor_4d(p->port_ctx, n->t->type == GGML_TYPE_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32,
                                       n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
     if (n->in_place) {
-      /* the output is the leaf itself: nothing to copy or to check, the node only has to run */
+      /* the output is the leaf itself: nothing to copy, the node only has to run */
       p->outs[i].donated = true;
       ggml_build_forward_expand(p->graph, n->t);
+      if (n->op == OP_ADAM_PART && n->part == 2) {
+        check = ggml_sum(p->ctx, ggml_sum_rows(p->ctx, ggml_scale(p->ctx, n->t, 0.0f)));
+        ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
+      }
       continue;
     }
     value = dense(p, n);
@@ -1699,10 +1792,10 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
     int64_t k;
 
     if (!p->leaves[i].donated) continue;
-    if (p->leaves[i].conv != NULL) return tg_error(env, "an input a set_rows writes in place must be the F32 or F16 tensor the graph was lowered with");
+    if (p->leaves[i].conv != NULL) return tg_error(env, "an input written in place (a set_rows cache, an adam_step moment) must be the tensor the graph was lowered with");
     for (k = 0; k < p->leaf_count; k++) {
       if (k != i && p->leaves[k].held != NULL && p->leaves[k].held == p->leaves[i].held) {
-        return tg_error(env, "an input a set_rows writes in place is bound to another input too");
+        return tg_error(env, "an input written in place is bound to another input too");
       }
     }
   }

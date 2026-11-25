@@ -124,6 +124,8 @@ enum Op
   GeluErf
   LayerNorm(Float)
   RmsNorm(Float)
+  AdamStep
+  AdamPart(Int)
   SetRows
   TopK(Int)
   Eq
@@ -394,6 +396,8 @@ def op_name(op: Op) -> String
     Op.GeluErf -> "gelu_erf"
     Op.LayerNorm(_) -> "layer_norm"
     Op.RmsNorm(_) -> "rms_norm"
+    Op.AdamStep -> "adam_step"
+    Op.AdamPart(_) -> "adam_part"
     Op.SetRows -> "set_rows"
     Op.TopK(_) -> "top_k"
     Op.Eq -> "eq"

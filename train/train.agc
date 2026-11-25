@@ -120,9 +120,12 @@ struct Run
   metrics: Optional[Metrics.Run]
 end
 
+## `kept` says, for each moment (the first ones, then the second), whether the step updated it where it lay, so that
+## the new one is the old tensor and must not be freed with it.
 struct Stepped
   step: Optim.Step
   loss: Float
+  kept: List[Bool]
 end
 
 ## What `run` answers: the fit or its error, and the compiled steps to close, one per batch shape seen.
@@ -177,7 +180,7 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
 
       done = stepped.unwrap!
       rate = Optim.learning_rate(state)
-      release(state, current, owned)
+      release_replaced(state, done.kept, current, owned)
       state = done.step.state
       current = done.step.params
       owned = true
@@ -206,6 +209,23 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
 
   release(state, [], false)
   Ran(result: ok(Fit(params: current, history: history)), programs: programs)
+end
+
+## Frees what a step replaced: the moments of `state` that the step did not update in place (`kept`), and `params`
+## when the run owns them.
+def release_replaced(state: Optim.State, kept: List[Bool], params: List[Tensor.Tensor], owned: Bool) -> Void
+  moments = state.first + state.second
+  for i in 0...moments.size
+    if !kept[i]
+      Data.free(moments[i])
+    end
+  end
+
+  if owned
+    for t in params
+      Data.free(t)
+    end
+  end
 end
 
 ## Frees the moments of `state`, and `params` when the run owns them.
@@ -267,9 +287,9 @@ end
 def shapes_of(batch: Data.Batch) -> String = JSON.encode([Trace.spec_of(batch.inputs), Trace.spec_of(batch.targets)])
 
 ## The step of `fit` traced and lowered once for batches shaped like `batch`: its arguments are the parameters, the
-## optimizer's first and second moments, the scalars of the step, then the batch's inputs and targets. The function
-## keeps `state` for its optimizer and for how many moments it has, never for its tensors, which are arguments: `run`
-## frees them after the step.
+## optimizer's first and second moments, the inputs of the step (`Optim.step_inputs`), then the batch's inputs and
+## targets. The function keeps `state` for its optimizer and for how many moments it has, never for its tensors, which
+## are arguments: `run` frees them after the step, except the moments the step updated in place.
 def compile_step(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   state: Optim.State,
@@ -279,8 +299,12 @@ def compile_step(
   return error("a step needs at least one parameter") if params.empty?
   n = params.size
   k = state.first.size
-  scalar = Trace.Spec(shape: [], dtype: Tensor.dtype(params[0]), backend: Tensor.backend(params[0]))
-  scalars = Optim.step_scalars(state).map { |_| scalar }
+  dtype = Tensor.dtype(params[0])
+  backend = Tensor.backend(params[0])
+  scalars = Optim.step_inputs(state).map { |numbers|
+    Trace.Spec(shape: Optim.input_shape(numbers), dtype: dtype, backend: backend)
+  }
+
   moments = (state.first + state.second).map { |t| Trace.spec_of(t) }
   specs = (
     params.map { |t| Trace.spec_of(t) } +
@@ -312,7 +336,8 @@ def step(
     args = params + state.first + state.second + try scalar_inputs(state, params) + [batch.inputs, batch.targets]
     outs = try Trace.run(program, args)
     moved = state.with(steps: state.steps + 1, first: outs.drop(1 + n).take(k), second: outs.drop(1 + n + k))
-    ok(Stepped(step: Optim.Step(state: moved, params: outs.drop(1).take(n)), loss: try scalar(outs[0])))
+    kept = Trace.donated(program).drop(1 + n)
+    ok(Stepped(step: Optim.Step(state: moved, params: outs.drop(1).take(n)), loss: try scalar(outs[0]), kept: kept))
   end
 end
 
@@ -339,14 +364,15 @@ def traced_step(
   ok([value] + stepped.params + stepped.state.first + stepped.state.second)
 end
 
-## The numbers of `Optim.step_scalars` as rank-0 tensors of the dtype and backend of the first parameter: inputs of the
-## step, so that a learning rate that changes (a schedule) is not a new graph.
+## The numbers of `Optim.step_inputs` as tensors of the dtype and backend of the first parameter: inputs of the step,
+## so that a learning rate that changes (a schedule) is not a new graph.
 def scalar_inputs(state: Optim.State, params: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   out: List[Tensor.Tensor] = []
   return ok(out) if params.empty?
-  for v in Optim.step_scalars(state)
+  for numbers in Optim.step_inputs(state)
+    values = numbers.map { |x: Float| Tensor.Values.Float(x) }
     out = out.push(
-      try Tensor.from_list([Tensor.Values.Float(v)], [], Tensor.dtype(params[0]), Tensor.backend(params[0])),
+      try Tensor.from_list(values, Optim.input_shape(numbers), Tensor.dtype(params[0]), Tensor.backend(params[0])),
     )
   end
 

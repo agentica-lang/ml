@@ -132,6 +132,28 @@ records each as one node, `layer_norm` or `rms_norm`, so that ggml can run it
 as one norm (a trace of a transformer step holds a dozen of them, each 10
 nodes composed); the gradient has a rule of its own, checked against a central
 difference.
+The same holds for the update of Adam: `adam_step(p, g, m, v, hyper)` is derived
+(`adam_composed`) and a trace of `F32` tensors of rank 3 or less records two
+kinds of node, `AdamStep` (whose recorded shape is the three new tensors
+stacked, which only the trace and the reference hold) and one `AdamPart` per
+new tensor. ggml runs `AdamStep` as `ggml_opt_step_adamw` (`hyper` is that op's 7
+numbers), which updates its arguments in place and asserts that its weight is
+a parameter: the lowering works on a copy of the weight and marks it by hand (a
+copy is not a leaf, which `ggml_set_param` needs; nothing else reads the flag,
+no backward pass is built). The weight is always a copy, since the loss and the
+gradients read it. The moments are copies too, each a tensor of its own (the
+Vulkan backend binds each as a buffer and aborts on a misaligned offset, so they
+are not slices of one), except in a function compiled by `Trace.compile` when
+both are inputs that no other node reads, not outputs, and the two parts for
+them are outputs (`adam_donors`): then they are updated where they lie, and
+their results are the input tensors (`Trace.donated`), consumed like the cache
+of a `set_rows`, even by a run that fails. The first moment is not checked for
+finite values (a non-finite one reaches the new weight through the update,
+which is checked); the second is, since an infinite one leaves the weight finite
+and frozen. `Trace.eval` and
+`eval_many` never donate. It has no gradient (a gradient through the Adam
+update of `Optim.step` is an error). A StableHLO module does not take it
+(`Train.stablehlo` passes rank-0 scalars, which keep the older composition).
 Convolution/pooling: `conv1d, avg_pool1d` (stride and padding; no dilation or
 groups).
 Random: none (dropout is identity at inference).

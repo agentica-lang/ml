@@ -144,14 +144,17 @@ def fitted(s: Setup) -> Result[Measured]
   ok(Measured(first_ns: ns[0], steps_ns: ns.drop(1 + WARM), losses: fit.history))
 end
 
-## One `Trace.compile` of the loss, its gradients and the update, with the step scalars (SGD's rate, Adam's two
-## numbers or AdamW's three) as inputs, then a `run` per step.
+## One `Trace.compile` of the loss, its gradients and the update, with the inputs of the step (`Optim.step_inputs`) as
+## arguments, then a `run` per step.
 def compiled(s: Setup) -> Result[Measured]
   started = Time.monotonic_ns()
   state = try Optim.init(s.optimizer, s.params)
   counts = Counts(params: s.params.size, first: state.first.size, second: state.second.size)
-  scalar = Trace.Spec(shape: [], dtype: Tensor.dtype(s.params[0]), backend: s.backend)
-  scalars = Optim.step_scalars(state).map { |_| scalar }
+  dtype = Tensor.dtype(s.params[0])
+  scalars = Optim.step_inputs(state).map { |nums|
+    Trace.Spec(shape: Optim.input_shape(nums), dtype: dtype, backend: s.backend)
+  }
+
   moments = (state.first + state.second).map { |t| Trace.spec_of(t) }
   specs = s.params.map { |t| Trace.spec_of(t) } + moments + scalars + [Trace.spec_of(s.x), Trace.spec_of(s.y)]
   program = try Trace.compile(specs, ->(xs: List[Tensor.Tensor]) { traced_step(state, counts, xs) })
@@ -185,8 +188,9 @@ def compiled_step(
 ) -> Result[Stepped]
   Native.arena do
     scalars: List[Tensor.Tensor] = []
-    for v in Optim.step_scalars(state)
-      scalars = scalars.push(try Tensor.from_list([Tensor.Values.Float(v)], [], Tensor.Dtype.F32, s.backend))
+    for nums in Optim.step_inputs(state)
+      values = nums.map { |x: Float| Tensor.Values.Float(x) }
+      scalars = scalars.push(try Tensor.from_list(values, Optim.input_shape(nums), Tensor.Dtype.F32, s.backend))
     end
 
     n = params.size
