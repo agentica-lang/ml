@@ -1,6 +1,6 @@
 # transformers — design
 
-BERT, DistilBERT, Qwen3 and Qwen2.5, from Hugging Face checkpoints (Qwen3 also
+BERT, DistilBERT, Qwen3, Qwen2.5 and ResNet, from Hugging Face checkpoints (Qwen3 also
 from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
 with a KV cache (greedy or sampled), the tokenizers, and the weights by name
 for a fine-tune with `train/`. Qwen3.5 is planned (ml#150, ml#151).
@@ -239,6 +239,39 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
   `" '"` stays apart from `"t"`), not the joined text, and the result is what
   `tokenizers` prints, not what `transformers` prints.
 
+## ResNet
+
+`resnet.agc` reads `ResNetForImageClassification` checkpoints (`microsoft/resnet-50`, `microsoft/resnet-18`): a 7x7
+stem and a max pool, four stages of bottleneck or basic layers, a global average pool and a linear head. The input is
+`[batch, 3, height, width]` in `F32`, already normalized as the checkpoint's image processor does; `vision/` makes it
+(`Resize(256)`, `CenterCrop(224)`, `to_tensor` and `normalize` with the ImageNet mean and std), which is how
+`crop_pct` 0.875 of 224 reads. `ResNet.run` gives the logits `[batch, classes]` and `ResNet.top(m, logits, k)` the `k`
+best classes with their `id2label` names.
+
+- The batch norm of every convolution is folded into it at load (`Nn.fold_batch_norm`, the idea of MNN): the weight of
+  each output channel is scaled by `gamma / sqrt(var + eps)` and the bias is `beta + (bias - mean) * scale`. The fold
+  runs as one small graph per convolution, then the checkpoint's five tensors are closed. The model is for inference
+  only: the folded weights are not the checkpoint's, and the statistics do not update. `eps` is 1e-5, PyTorch's
+  default, which Hugging Face's config does not hold.
+- Where the stride sits follows `downsample_in_bottleneck` (the 3x3 convolution by default, the first 1x1 when true;
+  the official checkpoints have it false) and `downsample_in_first_stage` (the first stage keeps the size when false).
+  A shortcut is a 1x1 convolution (and its batch norm) when a layer changes the width or the stride. `hidden_act` is
+  `relu` only. A `layer_type` is `bottleneck` or `basic`.
+- `run` is one staged graph on ggml (`Lift.staged`), as BERT's. `forward` is the same as plain `Tensor` calls, for a
+  loss: with the traced weights it is part of a trace (the bench takes the gradient of every weight and of the images
+  that way). A convolution's bias gradient sums the batch and the plane, which `Trace.unbroadcast` splits in two sums so
+  that ggml can lower it (a reduction there takes a leading or a trailing block of axes).
+- Official checkpoints at pinned revisions, `model.safetensors` only (never a pickle or `pytorch_model.bin`):
+
+  | Checkpoint | Revision | `model.safetensors` sha256 |
+  |---|---|---|
+  | `microsoft/resnet-50` | `34c2154c194f829b11125337b98c8f5f9965ff19` | `9c6061af1f450bb0847e529fd742aa5066017be379c71bbf5546b198e5b13a1e` |
+  | `microsoft/resnet-18` | `65a5785d9156231087c481e0c7dd33a5ff6f7e3e` | `1cf00ee468998c23d084361b02cffadabacb5074105564c596b8079f77ecb126` |
+
+  `config.json` sha256: `a1be0f56d516d0b55f9844ce0fbfe5fb359195cba6c6c102d41ae6c202c84d5e` (50) and
+  `11a01bcc873444bb433140e5f30f3687356641ed923266d738eef1c3438f6d22` (18). `preprocessor_config.json` is the same
+  file in both, sha256 `fd575b890da5a949493e1d1e7a70bfcb9e4b99fe444004d2dbfa253add254741`.
+
 ## Tests
 
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
@@ -275,6 +308,18 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
   `F32` (`llama-quantize --allow-requantize`) differs by 0.018 at most, which is its
   `F16` KV cache. The Q8_0 run takes 2.0 GB at its peak against 4.1 GB with `F32`
   weights, and its prompts 15% to 25% less time (one run).
+- `test/resnet_test.agc` against `test/resnet_peer.py` (standard library, doubles, the batch norms not folded): three
+  tiny random ResNets (bottleneck, basic, and a bottleneck with `downsample_in_first_stage` and
+  `downsample_in_bottleneck`) with batch norms that have statistics of their own, on the reference (1e-9) and on ggml
+  (1e-4), plus the errors of a missing weight and an unsupported config.
+- `vision/tools/resnet_check.agc` against Hugging Face (`vision/test/resnet_golden.py`, manual: it needs `torch`,
+  `transformers` 4.57.6 and `pillow`, in a venv, run with `python -I`): four drawn images (`vision/test/resnet_images.py`,
+  140 KB in all, no license) through `Resize(256)`, `CenterCrop(224)`, `normalize` and the model, in `float32` on ggml
+  CPU and Vulkan. The best 10 logits and the top 5 classes of each image are `float32` Hugging Face's, in the same
+  order, for both models. On Hugging Face's own pixels the largest gap of a logit is 1.6e-5 (ResNet-50) and 1.1e-5
+  (ResNet-18) on CPU, 2.0e-5 on Vulkan; with the pixels of our own pipeline 0.16 (ResNet-50) and 0.065 (ResNet-18),
+  from the pixels, which are up to 0.018 (normalized units) from Pillow's: libvips and Pillow resize with different
+  kernels. The golden is committed (`vision/test/fixtures/resnet/golden.json`) and never made in CI.
 - `test/bert_test.agc` against `test/bert_peer.py` (standard library, doubles):
   a tiny random BERT in both namings and a padded batch, on the reference and
   on ggml (CPU, and Vulkan where there is one).

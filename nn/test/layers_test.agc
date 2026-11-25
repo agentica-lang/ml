@@ -411,3 +411,19 @@ def test_conv2d_adds_the_bias_per_output_channel_and_global_avg_pool2d_means_eac
   try Test.eq(try S.floats_of(pooled), [62.5, 9.0])
   Test.error?(Nn.global_avg_pool2d(try S.f32([1.0, 2.0], [1, 2])))
 end
+
+def test_fold_batch_norm_scales_the_weight_and_moves_the_bias_as_the_batch_norm_after_the_conv_would() -> Result[Void]
+  # eps 1 and variances 3 and 0 make the square roots 2 and 1; the scales are gamma / sqrt = 2 and 3.
+  weight = try S.f32([2.0, -1.0], [2, 1, 1, 1])
+  gamma = try S.f32([4.0, 3.0], [2])
+  beta = try S.f32([0.5, -1.0], [2])
+  mean = try S.f32([1.0, 2.0], [2])
+  var = try S.f32([3.0, 0.0], [2])
+  with_bias = Nn.Conv2d(weight: weight, bias: some(try S.f32([1.0, 0.0], [2])))
+  folded = try Nn.fold_batch_norm(with_bias, gamma, beta, mean, var, 1.0)
+  try Test.eq(try S.floats_of(folded.weight), [4.0, -3.0])
+  try Test.eq(try S.floats_of(try folded.bias.to_result("a bias")), [0.5, -7.0])
+  bare = try Nn.fold_batch_norm(with_bias.with(bias: none), gamma, beta, mean, var, 1.0)
+  try Test.eq(try S.floats_of(try bare.bias.to_result("a bias")), [-1.5, -7.0])
+  Test.error?(Nn.fold_batch_norm(with_bias, try S.f32([1.0], [1]), beta, mean, var, 1.0))
+end

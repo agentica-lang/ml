@@ -355,6 +355,27 @@ Tiny gains 6 percent on jfk and nothing on es-hola from F16 weights alone: its d
 
 The load. The conversion of a BF16 or F32 file to F16 runs on up to 8 threads (one run of whole chunks of the tensor each, `tensor/native/float_file.h`). Loading on the CPU takes 3.1 s for whisper-medium (2.3 to 2.6 s with F32 weights) and 1.5 s for Qwen3-0.6B (about 1.5 s with F32 weights).
 
+## ResNet-18 and ResNet-50 (ml#83), ours only
+
+`microsoft/resnet-50` and `microsoft/resnet-18` (revisions and hashes in `transformers/DESIGN.md`, `model.safetensors`, `float32`), one batch of 224 by 224 images of constant pixels, with the batch norms folded into the convolutions at load, as `ResNet.open` does. Ours is `transformers/tools/bench_resnet.agc` on this PR's branch (Agentica 0.38.0), same machine as above, nothing else running (`--bench` slot): one warm-up run, then the median of 5 timed runs (3 for a training step). "forward" is `ResNet.run` (one graph), whose logits are read back; "forward and backward" is one `Trace.value_and_grad` of a loss (the mean square of the logits) over every weight and the images, all gradients read back. The weights are `F32`, Vulkan multiplies in exact `float32`, and there is no peer row: PyTorch and llama.cpp were not run for this model.
+
+| Row | batch 1 | batch 32 |
+|---|---|---|
+| ResNet-50, ggml CPU, forward | 130 ms (7.6 images/s) | 3949 ms (8.1) |
+| ResNet-50, ggml CPU, forward and backward | 1486 ms (0.6) | 34733 ms (0.9) |
+| ResNet-50, ggml Vulkan, forward | 56 ms (17.8) | 1157 ms (27.6) |
+| ResNet-50, ggml Vulkan, forward and backward | 2862 ms (0.3) | 12554 ms (2.5) |
+| ResNet-18, ggml CPU, forward | 55 ms (18.1) | 1601 ms (19.9) |
+| ResNet-18, ggml CPU, forward and backward | 767 ms (1.3) | 20155 ms (1.5) |
+| ResNet-18, ggml Vulkan, forward | 26 ms (38.4) | 428 ms (74.7) |
+| ResNet-18, ggml Vulkan, forward and backward | 322 ms (3.1) | 4436 ms (7.2) |
+
+Loading takes 0.1 to 0.5 s on the CPU and 0.4 to 1.1 s on Vulkan. At batch 32 the backward takes 9 to 13 times the forward on the CPU. ResNet-50 on Vulkan at batch 1 is the odd row: a training step takes 2.9 s, a fifth of the 12.6 s of 32 images (ResNet-18 takes 0.3 s at batch 1); it was repeated (2818 and 2862 ms) and not profiled. Before this PR the bias gradient of a convolution (a sum over the batch and the plane) was not lowered to ggml at a batch above 1; `Trace.unbroadcast` now sums the two blocks one after the other.
+
+```sh
+agentica --max-steps 1000000000000 transformers/tools/bench_resnet.agc MODEL_DIR cpu|vulkan BATCH REPS forward|backward
+```
+
 ## Run it
 
 You need the Hugging Face checkout of `openai/whisper-tiny`, openai/whisper's `whisper/assets/mel_filters.npz`, a whisper.cpp checkout (never modified), `cmake`, a C++ compiler, `/usr/bin/time` (GNU time), `agentica` 0.38.0 on `PATH`, libtorch, and the Vulkan headers and `glslc` for the Vulkan rows. Python needs only the system numpy: the scripts run with `python3 -I`, which ignores virtual environments and `PYTHONPATH`.

@@ -73,9 +73,12 @@ def measure(dir: String, backend: Tensor.Backend, batch: Int, reps: Int, backwar
   end
 
   ok(
-    "load #{load} ms; #{what}, batch #{batch}: median #{median} ms of #{reps} runs, #{batch * 1000 / [median, 1].max.unwrap!} images/s",
+    "load #{load} ms; #{what}, batch #{batch}: median #{median} ms of #{reps} runs, #{tenths(batch * 10000 / [median, 1].max.unwrap!)} images/s",
   )
 end
+
+## `n` tenths as a decimal number.
+def tenths(n: Int) -> String = "#{n / 10}.#{n % 10}"
 
 def forward(m: ResNet.ResNet, images: Tensor.Tensor) -> Result[Void]
   ResNet.close(try ResNet.run(m, images))
