@@ -23,6 +23,9 @@
 #ifdef __linux__
 #include <sched.h>
 #endif
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
 #include "float_file.h"
 
@@ -199,10 +202,77 @@ static ggml_backend_dev_t device_of(int64_t device, char *why, size_t len) {
   return dev;
 }
 
+#define MAX_CPUS 1024
+
+#ifdef __linux__
+/* The first CPU of the core that `cpu` belongs to (the head of its `thread_siblings_list`), or -1 without sysfs. */
+static int core_of(int cpu) {
+  char path[96], line[64];
+  FILE *f;
+  int head = -1;
+
+  snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", cpu);
+  if ((f = fopen(path, "r")) == NULL) return -1;
+  if (fgets(line, sizeof line, f) != NULL) head = atoi(line);
+  fclose(f);
+  return head;
+}
+
+/* The physical cores among the CPUs this process may run on; without sysfs topology, those CPUs themselves. 0 when
+   the affinity is unknown. */
+static int physical_cores(void) {
+  cpu_set_t allowed;
+  int seen[MAX_CPUS], found = 0;
+  int cpu, i;
+
+  if (sched_getaffinity(0, sizeof allowed, &allowed) != 0) return 0;
+  for (cpu = 0; cpu < MAX_CPUS; cpu++) {
+    int head;
+
+    if (!CPU_ISSET(cpu, &allowed)) continue;
+    if ((head = core_of(cpu)) < 0) return CPU_COUNT(&allowed);
+    for (i = 0; i < found && seen[i] != head; i++) {}
+    if (i == found) seen[found++] = head;
+  }
+  return found;
+}
+#elif defined(__APPLE__)
+static int physical_cores(void) {
+  int cores = 0;
+  size_t len = sizeof cores;
+
+  if (sysctlbyname("hw.physicalcpu", &cores, &len, NULL, 0) != 0) return 0;
+  return cores;
+}
+#else
+static int physical_cores(void) { return 0; }
+#endif
+
+/* The threads of the CPU backend, at most `GGML_MAX_N_THREADS`: `TENSOR_THREADS` when it is a positive integer, else
+   the physical cores (ggml's threads busy-wait, so a second thread on a core adds stalls when the machine is busy),
+   else the online CPUs, else 4. */
+static int cpu_threads_choice(void) {
+  const char *set = getenv("TENSOR_THREADS");
+  long cores;
+  int physical;
+
+  if (set != NULL) {
+    char *end;
+    long n = strtol(set, &end, 10);
+
+    if (end != set && *end == '\0' && n > 0 && n <= GGML_MAX_N_THREADS) return (int)n;
+  }
+  if ((physical = physical_cores()) > 0) return physical > GGML_MAX_N_THREADS ? GGML_MAX_N_THREADS : physical;
+  cores = sysconf(_SC_NPROCESSORS_ONLN);
+  if (cores > GGML_MAX_N_THREADS) return GGML_MAX_N_THREADS;
+  return cores > 0 ? (int)cores : 4;
+}
+
+static int cpu_threads = 0; /* set under the device lock when the CPU backend opens */
+
 ggml_backend_t tg_backend(int64_t device, char *why, size_t len) {
   ggml_backend_dev_t dev;
   ggml_backend_t backend;
-  long cores;
 
   if (device >= -1 && device < MAX_DEVICES - 1 && backends[device + 1] != NULL) return backends[device + 1];
   if ((dev = device_of(device, why, len)) == NULL) return NULL;
@@ -212,8 +282,8 @@ ggml_backend_t tg_backend(int64_t device, char *why, size_t len) {
     return NULL;
   }
   if (device == -1) {
-    cores = sysconf(_SC_NPROCESSORS_ONLN);
-    ggml_backend_cpu_set_n_threads(backend, cores > 0 ? (int)cores : 4);
+    cpu_threads = cpu_threads_choice();
+    ggml_backend_cpu_set_n_threads(backend, cpu_threads);
   }
   backends[device + 1] = backend;
   return backend;
@@ -240,6 +310,16 @@ an_term ggml_vulkan_fp16(an_env *env, bool enabled) {
                                : "this process chose F32 mul_mat for Vulkan already; choose before the first ggml call");
   }
   return ggml_result_Void_ok(env, an_void(env));
+}
+
+/* What the CPU backend runs on, or will: it does not open the backend (that would fix the precision of Vulkan). */
+an_term ggml_cpu_threads(an_env *env) {
+  int n;
+
+  tg_lock_device();
+  n = cpu_threads != 0 ? cpu_threads : cpu_threads_choice();
+  tg_unlock_device();
+  return ggml_result_Int_ok(env, n);
 }
 
 static bool failed_with(an_term *failure, an_term term) {

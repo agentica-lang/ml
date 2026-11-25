@@ -248,6 +248,12 @@ def compiles() -> Result[Int]
   ok(GgmlRaw.compiles())
 end
 
+## The threads the ggml CPU backend runs a graph on: `TENSOR_THREADS` when it is set, else the physical cores.
+def cpu_threads() -> Result[Int]
+  _ = try Ggml.code_of(Types.Device.Cpu, "cpu_threads")
+  GgmlRaw.cpu_threads()
+end
+
 ## Every traced tensor `roots` reach, each node once, in id order. The walk
 ## does not enter a node of `env`; an input that is not there belongs to
 ## another trace.
