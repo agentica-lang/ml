@@ -8,7 +8,9 @@ Usage: python3 distilbert_peer.py. Writes into a new temporary folder, prints it
   must ignore;
 - `missing/`: `tiny` without one weight;
 - `expected.json`: for the batch of `IDS`, the hidden state, the mean-pooled embedding and that embedding over its
-  length, with the exact erf GELU and the layer-norm eps of 1e-12 that Hugging Face's DistilBERT uses.
+  length, with the exact erf GELU and the layer-norm eps of 1e-12 that Hugging Face's DistilBERT uses; and for the
+  scored pairs of `PAIRS`, the cosine loss (`loss`) and its slope for one value of a few weights (`slopes`), each a
+  central difference of the loss in doubles: an oracle of the gradient that shares no code with the one it checks.
 """
 
 import json
@@ -26,6 +28,21 @@ CONFIG = {
 # Two sentences, the second shorter (padded with 0).
 IDS = [[1, 5, 2, 7, 3], [1, 4, 6, 3]]
 EPS = 1e-12
+# Two pairs of sentences with a score each (`distilbert_weights_test.agc` has the same, padded with 0), the eps of
+# `Nn.cosine_similarity`, the step of the central difference and the values it is taken at: a name and an index.
+PAIRS = [([1, 5, 2, 7, 3], [1, 6, 3]), ([1, 4, 6, 3], [1, 2, 2, 5, 3])]
+SCORES = [0.8, 0.1]
+COSINE_EPS = 1e-16
+STEP = 1e-5
+PROBES = [
+    ("embeddings.word_embeddings.weight", 42), ("embeddings.position_embeddings.weight", 3),
+    ("embeddings.LayerNorm.weight", 1), ("embeddings.LayerNorm.bias", 6),
+    ("transformer.layer.0.attention.q_lin.weight", 5), ("transformer.layer.0.attention.k_lin.weight", 9),
+    ("transformer.layer.0.attention.v_lin.bias", 3), ("transformer.layer.0.attention.out_lin.weight", 11),
+    ("transformer.layer.0.sa_layer_norm.bias", 2), ("transformer.layer.0.ffn.lin1.weight", 20),
+    ("transformer.layer.0.ffn.lin1.bias", 2), ("transformer.layer.1.attention.q_lin.bias", 4),
+    ("transformer.layer.1.ffn.lin2.weight", 7), ("transformer.layer.1.output_layer_norm.weight", 4),
+]
 
 
 def f32(x):
@@ -112,6 +129,35 @@ class Model:
         return h
 
 
+def pooled(m, ids, seq):
+    """The mean of the token vectors of `ids`, run padded to `seq` as a batch does."""
+    n = len(ids)
+    h = m.forward(ids + [CONFIG["pad_token_id"]] * (seq - n), [True] * n + [False] * (seq - n))
+    return [sum(r[c] for r in h[:n]) / n for c in range(CONFIG["dim"])]
+
+
+def cosine_loss(m):
+    """The mean of `(cos(a, b) - score)^2` over `PAIRS`, as `Sentence.cosine_similarity_loss`."""
+    seq = max(len(s) for pair in PAIRS for s in pair)
+    total = 0.0
+    for (left, right), score in zip(PAIRS, SCORES):
+        a, b = pooled(m, left, seq), pooled(m, right, seq)
+        dot, aa, bb = sum(x * y for x, y in zip(a, b)), sum(x * x for x in a), sum(y * y for y in b)
+        total += (dot / math.sqrt(aa * bb + COSINE_EPS) - score) ** 2
+    return total / len(PAIRS)
+
+
+def slope(m, name, at):
+    """`(f(x + h) - f(x - h)) / 2h` of the loss for the value `at` of the weight `name`."""
+    old = m.values[name][at]
+    m.values[name][at] = old + STEP
+    up = cosine_loss(m)
+    m.values[name][at] = old - STEP
+    down = cosine_loss(m)
+    m.values[name][at] = old
+    return (up - down) / (2 * STEP)
+
+
 def plus(a, b):
     return [[x + y for x, y in zip(ra, rb)] for ra, rb in zip(a, b)]
 
@@ -165,7 +211,9 @@ def write(out):
         (out / folder).mkdir()
         model.save(out / folder / "model.safetensors", rename, skip)
         (out / folder / "config.json").write_text(json.dumps(CONFIG))
-    (out / "expected.json").write_text(json.dumps(dict(ids=IDS, hidden=hidden, mean=mean, unit=unit)))
+    slopes = [dict(name=name, at=at, slope=slope(m, name, at)) for name, at in PROBES]
+    (out / "expected.json").write_text(json.dumps(dict(
+        ids=IDS, hidden=hidden, mean=mean, unit=unit, loss=cosine_loss(m), slopes=slopes)))
 
 
 def main():

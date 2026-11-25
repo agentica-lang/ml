@@ -113,7 +113,7 @@ try SafetensorsWrite.write("last_block.safetensors", try Params.named(split, fit
 With `AdamW`, the `decay` flags follow `split.names`, the order of `split.trainable`. A fine-tune decays every weight but the biases and the layer-norm weights, which is the rule of Hugging Face's `Trainer`:
 
 ```agentica
-split = try Params.split(DistilBert.weights(m), ->(name: String) { true })
+split = try Params.split(DistilBert.weights(m), ->(_name: String) { true })
 norm = ->(name: String) { name.include?("LayerNorm") or name.include?("layer_norm") }
 decay = split.names.map { |name: String| !(name.end_with?(".bias") or norm.call(name)) }
 optimizer = Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.00002, weight_decay: 0.01, decay: decay))
