@@ -240,6 +240,14 @@ def test_a_q8_0_weight_anywhere_else_is_an_error() -> Result[Void]
         ok(_) -> return error("a gradient was taken for a Q8_0 weight")
         error(e) -> try Test.assert(e.message.include?("quantized weight"), "the error said \"#{e.message}\"")
       end
+
+      frozen = Trace.value_and_grad([x]) do |a| Tensor.sum(try Tensor.linear(a[0], Trace.constant(w), none, true)) end
+
+      case frozen
+        ok(_) -> return error("a gradient was taken through a Q8_0 weight")
+        error(e) ->
+          try Test.assert(e.message.include?("Q8_0 weight is not supported"), "the error said \"#{e.message}\"")
+      end
     end
 
     ok()

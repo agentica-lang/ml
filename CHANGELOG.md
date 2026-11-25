@@ -14,6 +14,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 - ggml: `scatter_add` (the gradient of an embedding lookup) on Vulkan in F32 mode adds the rows of an index with a matmul by a mask instead of `get_rows_back`, whose Vulkan kernel costs rows x k x width; `tools/bench-scatter.agc` times it.
 - ggml: a graph returns up to 512 outputs (it was 256), so a training step takes 170 parameters with Adam.
 - `Tensor.append_file` appends the values of an `F32` tensor to a file, written by C on libtorch and ggml.
+- A gradient through a frozen Q8_0 weight (for the input of a `linear`) is an error naming it, as the weight itself already was.
 
 ### nn
 
