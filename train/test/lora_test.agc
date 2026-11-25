@@ -231,6 +231,22 @@ def test_merged_takes_more_weights_than_a_graph_answers() -> Result[Void]
   ok()
 end
 
+## A failure in a later graph of `merged` (here the 300th weight is missing) is the error of the whole call.
+def test_merged_fails_as_a_whole_when_a_later_graph_fails() -> Result[Void]
+  for backend in try backends()
+    weights: Map[String, Tensor.Tensor] = {}
+    for i in 0...300
+      weights = weights.put("layers.#{i}.proj.weight", try S.tensor([1.0, 2.0, 3.0, 4.0], [2, 2], Tensor.Dtype.F32, backend))
+    end
+
+    made = try Lora.init(weights, Lora.Config(targets: ["proj"], r: 1), 1, backend)
+    last = made.names[299]
+    try S.expect_error(Lora.merged(weights.delete(last), made), last)
+  end
+
+  ok()
+end
+
 def test_merged_refuses_what_it_cannot_add() -> Result[Void]
   s = try setup(S.REF)
   try Test.eq((try Lora.merged(s.weights, s.adapter.with(names: [], a: [], b: []))).keys.sort, s.weights.keys.sort)

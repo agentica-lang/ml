@@ -130,6 +130,12 @@ def pooled(m: DistilBert, ids: Tensor.Tensor, mask: Tensor.Tensor, normalize: Bo
   graph(m, ids, mask, pooling_of(normalize))
 end
 
+## The names of the embedding tables among `weights(m)`: what `Lora.save` of `train` must not write as the adapter
+## of a linear layer.
+def embeddings(m: DistilBert) -> List[String]
+  ["word_embeddings", "position_embeddings"].map { |table: String| "#{m.prefix}embeddings.#{table}.weight" }
+end
+
 ## The weights of `m` by their names in the checkpoint (`transformer.layer.0.attention.q_lin.weight`, under
 ## `distilbert.` when the file has it), for training the model or part of it (`Params.split` of `train`).
 def weights(m: DistilBert) -> Map[String, Tensor.Tensor]
