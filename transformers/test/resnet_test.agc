@@ -65,6 +65,7 @@ def test_a_checkpoint_the_model_cannot_read_is_an_error_that_names_why() -> Resu
       try S.replaced(config, "\"resnet\"", "\"vit\""),
       try S.replaced(config, "\"relu\"", "\"gelu\""),
       try S.replaced(config, "\"basic\"", "\"mixed\""),
+      try S.replaced(config, "\"4\": \"class 4\"", "\"4\": \"class 4\", \"5\": \"class 5\""),
     ]
       try File.write_text("#{dir}/basic/config.json", wrong)
       try Test.error?(ResNet.open("#{dir}/basic", S.REF))

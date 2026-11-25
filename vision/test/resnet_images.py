@@ -1,4 +1,4 @@
-"""Writes the images of `tools/resnet_check.agc` into the folder given as the argument: four images, bigger than the 256
+"""Writes the images of `test/resnet_hf_test.agc` into the folder given as the argument: four images, bigger than the 256
 pixels of the shorter side that the model's image processor resizes to, so they go through `Resize(256)` and
 `CenterCrop(224)` as photos do. They are drawn, not photographed (smooth colors and a few discs with soft edges), so
 they are small and have no license; what a model says of them is arbitrary, but the same for every implementation.

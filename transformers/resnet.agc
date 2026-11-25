@@ -51,6 +51,21 @@ struct Prediction
   logit: Float
 end
 
+## A convolution to load: its name in the checkpoint, its kernel and its stride.
+struct Spec
+  prefix: String
+  kernel: Int
+  stride: Int
+end
+
+## Where a layer sits: its name in the checkpoint, its width in and out, and the stride of its first convolution.
+struct Place
+  prefix: String
+  width: Int
+  out: Int
+  stride: Int
+end
+
 ## The model in `dir`, which holds `model.safetensors` and `config.json`.
 def open(dir: String, backend: Tensor.Backend) -> Result[ResNet]
   text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
@@ -58,7 +73,8 @@ def open(dir: String, backend: Tensor.Backend) -> Result[ResNet]
   load(try Hub.open("#{dir}/model.safetensors"), config, backend)
 end
 
-## The model of an open checkpoint, its shapes checked against `config`.
+## The model of an open checkpoint, its shapes checked against `config`. A weight that fails to load, or a shape that is
+## wrong, closes the ones loaded before it.
 def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[ResNet]
   return error("model_type is #{config.model_type}, not resnet") if config.model_type != "resnet"
   return error("hidden_act #{config.hidden_act} is not supported, only relu") if config.hidden_act != "relu"
@@ -70,31 +86,32 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[R
     return error("hidden_sizes #{config.hidden_sizes} and depths #{config.depths} need one entry for each stage")
   end
 
-  stem = try conv_bn(c, "resnet.embedder.embedder", 7, 2, backend)
-  try expect_shape("the stem", Tensor.shape(stem.weight), [config.embedding_size, config.num_channels, 7, 7])
-  stages: List[List[Layer]] = []
-  width = config.embedding_size
-  for s in 0...config.depths.size
-    layers: List[Layer] = []
-    for l in 0...config.depths[s]
-      stride = 1
-      if l == 0 and (s > 0 or config.downsample_in_first_stage)
-        stride = 2
-      end
-
-      layers = layers.push(
-        try layer(c, config, "resnet.encoder.stages.#{s}.layers.#{l}", width, config.hidden_sizes[s], stride, backend),
-      )
-
-      width = config.hidden_sizes[s]
+  places = places_of(config)
+  specs = [Spec(prefix: "resnet.embedder.embedder", kernel: 7, stride: 2)]
+  for stage in places
+    for place in stage
+      specs = specs + layer_specs(config, place)
     end
-
-    stages = stages.push(layers)
   end
 
-  head = try Load.dense(c, "classifier.1", backend)
-  try expect_shape("classifier.1.weight", Tensor.shape(head.w), [config.id2label.size, width])
-  ok(ResNet(config: config, stem: stem, stages: stages, classifier: head))
+  convs = try conv_bns(c, specs, backend)
+  dense = Load.dense(c, "classifier.1", backend)
+  case dense
+    ok(_) -> nil
+    error(e) ->
+      close_convs(convs)
+      return error(e)
+  end
+
+  head = try dense
+
+  case assembled(config, places, convs, head)
+    ok(m) -> ok(m)
+    error(e) ->
+      close_convs(convs)
+      Lift.close(Lift.dense_parts(head))
+      error(e)
+  end
 end
 
 ## The logits `[batch, classes]` of `images` (`[batch, channels, height, width]`, normalized): one graph on ggml. The
@@ -168,21 +185,19 @@ end
 
 ## Closes the weights of `m` now. Nothing may use `m` afterwards.
 def close_model(m: ResNet) -> Void
-  tensors = Lift.conv2d_parts(m.stem) + Lift.dense_parts(m.classifier)
+  convs = [m.stem]
   for stage in m.stages
     for l in stage
-      for conv in l.convs
-        tensors = tensors + Lift.conv2d_parts(conv)
-      end
-
+      convs = convs + l.convs
       case l.shortcut
-        some(p) -> tensors = tensors + Lift.conv2d_parts(p)
+        some(p) -> convs = convs.push(p)
         none -> nil
       end
     end
   end
 
-  Lift.close(tensors)
+  close_convs(convs)
+  Lift.close(Lift.dense_parts(m.classifier))
 end
 
 private
@@ -229,49 +244,129 @@ def residual(l: Layer, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   Tensor.relu(try Tensor.add(h, skip))
 end
 
-## The layer `prefix` from `width` to `out` channels, with the stride of its first convolution that Hugging Face puts
-## where `downsample_in_bottleneck` says (the 3x3 one by default).
-def layer(
-  c: Hub.Checkpoint,
-  config: Config,
-  prefix: String,
-  width: Int,
-  out: Int,
-  stride: Int,
-  backend: Tensor.Backend,
-) -> Result[Layer]
-  convs: List[Nn.Conv2d] = []
+def places_of(config: Config) -> List[List[Place]]
+  stages: List[List[Place]] = []
+  width = config.embedding_size
+  for s in 0...config.depths.size
+    layers: List[Place] = []
+    for l in 0...config.depths[s]
+      stride = 1
+      if l == 0 and (s > 0 or config.downsample_in_first_stage)
+        stride = 2
+      end
+
+      out = config.hidden_sizes[s]
+      layers = layers.push(
+        Place(prefix: "resnet.encoder.stages.#{s}.layers.#{l}", width: width, out: out, stride: stride),
+      )
+
+      width = out
+    end
+
+    stages = stages.push(layers)
+  end
+
+  stages
+end
+
+## The convolutions of a layer in order, a shortcut last when the layer changes the width or the size. Hugging Face puts
+## the stride of a bottleneck where `downsample_in_bottleneck` says (the 3x3 convolution by default).
+def layer_specs(config: Config, p: Place) -> List[Spec]
+  specs: List[Spec] = []
   if config.layer_type == "bottleneck"
-    mid = out / 4
     first = 1
-    second = stride
+    second = p.stride
     if config.downsample_in_bottleneck
-      first = stride
+      first = p.stride
       second = 1
     end
 
-    convs = [
-      try conv_bn(c, "#{prefix}.layer.0", 1, first, backend),
-      try conv_bn(c, "#{prefix}.layer.1", 3, second, backend),
-      try conv_bn(c, "#{prefix}.layer.2", 1, 1, backend),
+    specs = [
+      Spec(prefix: "#{p.prefix}.layer.0", kernel: 1, stride: first),
+      Spec(prefix: "#{p.prefix}.layer.1", kernel: 3, stride: second),
+      Spec(prefix: "#{p.prefix}.layer.2", kernel: 1, stride: 1),
     ]
-
-    try expect_shape("#{prefix}.layer.0", Tensor.shape(convs[0].weight), [mid, width, 1, 1])
   else
-    convs = [
-      try conv_bn(c, "#{prefix}.layer.0", 3, stride, backend),
-      try conv_bn(c, "#{prefix}.layer.1", 3, 1, backend),
+    specs = [
+      Spec(prefix: "#{p.prefix}.layer.0", kernel: 3, stride: p.stride),
+      Spec(prefix: "#{p.prefix}.layer.1", kernel: 3, stride: 1),
     ]
-
-    try expect_shape("#{prefix}.layer.0", Tensor.shape(convs[0].weight), [out, width, 3, 3])
   end
 
-  shortcut: Optional[Nn.Conv2d] = none
-  if width != out or stride != 1
-    shortcut = some(try conv_bn(c, "#{prefix}.shortcut", 1, stride, backend))
+  if p.width != p.out or p.stride != 1
+    specs = specs.push(Spec(prefix: "#{p.prefix}.shortcut", kernel: 1, stride: p.stride))
   end
 
-  ok(Layer(convs: convs, shortcut: shortcut))
+  specs
+end
+
+## The convolutions of `specs`, in order. When one fails, the ones before it are closed.
+def conv_bns(c: Hub.Checkpoint, specs: List[Spec], backend: Tensor.Backend) -> Result[List[Nn.Conv2d]]
+  out: List[Nn.Conv2d] = []
+  for s in specs
+    case conv_bn(c, s.prefix, s.kernel, s.stride, backend)
+      ok(conv) -> out = out.push(conv)
+      error(e) ->
+        close_convs(out)
+        return error(e)
+    end
+  end
+
+  ok(out)
+end
+
+def close_convs(convs: List[Nn.Conv2d]) -> Void
+  tensors: List[Tensor.Tensor] = []
+  for conv in convs
+    tensors = tensors + Lift.conv2d_parts(conv)
+  end
+
+  Lift.close(tensors)
+end
+
+## The model of `convs` (those of `layer_specs` in order, after the stem) and `head`, with the shapes checked.
+def assembled(config: Config, places: List[List[Place]], convs: List[Nn.Conv2d], head: Nn.Dense) -> Result[ResNet]
+  stem = convs[0]
+  try expect_shape("the stem", Tensor.shape(stem.weight), [config.embedding_size, config.num_channels, 7, 7])
+  per_layer = 2
+  if config.layer_type == "bottleneck"
+    per_layer = 3
+  end
+
+  at = 1
+  stages: List[List[Layer]] = []
+  for stage in places
+    layers: List[Layer] = []
+    for p in stage
+      first = convs[at]
+      want = [p.out, p.width, 3, 3]
+      if config.layer_type == "bottleneck"
+        want = [p.out / 4, p.width, 1, 1]
+      end
+
+      try expect_shape("#{p.prefix}.layer.0", Tensor.shape(first.weight), want)
+      shortcut: Optional[Nn.Conv2d] = none
+      used = per_layer
+      if p.width != p.out or p.stride != 1
+        shortcut = some(convs[at + per_layer])
+        used = per_layer + 1
+      end
+
+      layers = layers.push(Layer(convs: convs.drop(at).take(per_layer), shortcut: shortcut))
+      at = at + used
+    end
+
+    stages = stages.push(layers)
+  end
+
+  width = config.hidden_sizes.last
+  classes = Tensor.shape(head.w)
+  try expect_shape("classifier.1.weight", [classes[1]], [width])
+  if !config.id2label.empty? and config.id2label.size != classes[0]
+    return error("id2label names #{config.id2label.size} classes, classifier.1.weight has #{classes[0]}")
+  end
+
+  ok(ResNet(config: config, stem: stem, stages: stages, classifier: head))
 end
 
 ## The convolution `{prefix}.convolution` of a kernel `kernel` by `kernel` and the batch norm `{prefix}.normalization`

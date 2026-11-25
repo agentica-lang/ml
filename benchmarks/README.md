@@ -357,20 +357,20 @@ The load. The conversion of a BF16 or F32 file to F16 runs on up to 8 threads (o
 
 ## ResNet-18 and ResNet-50 (ml#83), ours only
 
-`microsoft/resnet-50` and `microsoft/resnet-18` (revisions and hashes in `transformers/DESIGN.md`, `model.safetensors`, `float32`), one batch of 224 by 224 images of constant pixels, with the batch norms folded into the convolutions at load, as `ResNet.open` does. Ours is `transformers/tools/bench_resnet.agc` on this PR's branch (Agentica 0.38.0), same machine as above, nothing else running (`--bench` slot): one warm-up run, then the median of 5 timed runs (3 for a training step). "forward" is `ResNet.run` (one graph), whose logits are read back; "forward and backward" is one `Trace.value_and_grad` of a loss (the mean square of the logits) over every weight and the images, all gradients read back. The weights are `F32`, Vulkan multiplies in exact `float32`, and there is no peer row: PyTorch and llama.cpp were not run for this model.
+`microsoft/resnet-50` and `microsoft/resnet-18` (revisions and hashes in `transformers/DESIGN.md`, `model.safetensors`, `float32`), one batch of 224 by 224 images of constant pixels, with the batch norms folded into the convolutions at load, as `ResNet.open` does. Ours is `transformers/tools/bench_resnet.agc` on this PR's branch (Agentica 0.38.0), same machine as above, nothing else running (`--bench` slot): one warm-up run, then the median of 5 timed runs (3 for a training step). "forward" is `ResNet.run` (one graph), whose logits are read back; "forward and backward" is the forward and backward of the folded model, one `Trace.value_and_grad` of a loss (the mean square of the logits) over every weight and the images, all gradients read back, with no optimizer step. The weights are `F32`, Vulkan multiplies in exact `float32` (the tool calls `Tensor.vulkan_fp16(false)` first; the Vulkan rows were measured with that), and there is no peer row: PyTorch and llama.cpp were not run for this model.
 
 | Row | batch 1 | batch 32 |
 |---|---|---|
 | ResNet-50, ggml CPU, forward | 130 ms (7.6 images/s) | 3949 ms (8.1) |
 | ResNet-50, ggml CPU, forward and backward | 1486 ms (0.6) | 34733 ms (0.9) |
-| ResNet-50, ggml Vulkan, forward | 56 ms (17.8) | 1157 ms (27.6) |
-| ResNet-50, ggml Vulkan, forward and backward | 2862 ms (0.3) | 12554 ms (2.5) |
+| ResNet-50, ggml Vulkan, forward | 56 ms (17.8) | 1148 ms (27.8) |
+| ResNet-50, ggml Vulkan, forward and backward | 2827 ms (0.3) | 12617 ms (2.5) |
 | ResNet-18, ggml CPU, forward | 55 ms (18.1) | 1601 ms (19.9) |
 | ResNet-18, ggml CPU, forward and backward | 767 ms (1.3) | 20155 ms (1.5) |
-| ResNet-18, ggml Vulkan, forward | 26 ms (38.4) | 428 ms (74.7) |
-| ResNet-18, ggml Vulkan, forward and backward | 322 ms (3.1) | 4436 ms (7.2) |
+| ResNet-18, ggml Vulkan, forward | 23 ms (43.4) | 439 ms (72.8) |
+| ResNet-18, ggml Vulkan, forward and backward | 344 ms (2.9) | 4368 ms (7.3) |
 
-Loading takes 0.1 to 0.5 s on the CPU and 0.4 to 1.1 s on Vulkan. At batch 32 the backward takes 9 to 13 times the forward on the CPU. ResNet-50 on Vulkan at batch 1 is the odd row: a training step takes 2.9 s, a fifth of the 12.6 s of 32 images (ResNet-18 takes 0.3 s at batch 1); it was repeated (2818 and 2862 ms) and not profiled. Before this PR the bias gradient of a convolution (a sum over the batch and the plane) was not lowered to ggml at a batch above 1; `Trace.unbroadcast` now sums the two blocks one after the other.
+Loading takes 0.1 to 0.5 s on the CPU and 0.4 to 1.1 s on Vulkan. At batch 32 the backward takes 9 to 13 times the forward on the CPU. ResNet-50 on Vulkan at batch 1 is the odd row: forward and backward take 2.8 s, a fifth of the 12.6 s of 32 images (ResNet-18 takes 0.34 s at batch 1); it was measured three times (2818, 2862 and 2827 ms) and not profiled. Before this PR the bias gradient of a convolution (a sum over the batch and the plane) was not lowered to ggml at a batch above 1; `Trace.unbroadcast` now sums the two blocks one after the other.
 
 ```sh
 agentica --max-steps 1000000000000 transformers/tools/bench_resnet.agc MODEL_DIR cpu|vulkan BATCH REPS forward|backward

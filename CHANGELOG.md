@@ -5,12 +5,20 @@ All packages are released together at one version, each on its own tag, `<packag
 ## [Unreleased]
 
 - `tensor` has `conv2d` (stride, padding and groups), `max_pool2d` and `avg_pool2d` for `[N, C, H, W]` images (ml#83): on the reference, libtorch and ggml (a native kernel on the CPU and on Vulkan), with gradients on every backend. XLA has no lowering for them, as for `conv1d`. `nn` has `Conv2d`, `conv2d` and `global_avg_pool2d`.
-- `transformers` has `ResNet` (ml#83): ResNet-18 and ResNet-50 from the official `microsoft/resnet-*` checkpoints, with the batch norms folded into the convolutions at load (`Nn.fold_batch_norm`). Their logits and top-5 classes match Hugging Face's on images through `vision`'s resize, crop and normalize. The bias gradient of a convolution now runs on ggml at a batch above 1.
 - The documentation site has a version selector: the pages of each release (`0.4.0`, `0.3.0`, `0.2.0`) and of `dev`.
 
 ### tensor
 
+- The bias gradient of a convolution (a sum over the batch and the plane) runs on ggml at a batch above 1: the gradient of `broadcast_to` sums a leading and a trailing block of axes in two steps.
 - `Tensor.from_bytes(data, shape, format, backend)`: an `F32` tensor from bytes that are in memory, as `from_file` makes one from a range of a file. libtorch and ggml read the bytes in C, so no value becomes a list.
+
+### nn
+
+- `Nn.fold_batch_norm`: a convolution and the inference batch norm after it as one convolution.
+
+### transformers
+
+- `ResNet` (ml#83): ResNet-18 and ResNet-50 from the official `microsoft/resnet-*` checkpoints, with the batch norms folded into the convolutions at load. Their logits and top-5 classes match Hugging Face's on images through `vision`'s resize, crop and normalize.
 
 ### vision
 

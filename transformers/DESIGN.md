@@ -245,7 +245,7 @@ tokenizer/bpe.agc            NFC, the Qwen split by hand, byte-level BPE
 stem and a max pool, four stages of bottleneck or basic layers, a global average pool and a linear head. The input is
 `[batch, 3, height, width]` in `F32`, already normalized as the checkpoint's image processor does; `vision/` makes it
 (`Resize(256)`, `CenterCrop(224)`, `to_tensor` and `normalize` with the ImageNet mean and std), which is how
-`crop_pct` 0.875 of 224 reads. `ResNet.run` gives the logits `[batch, classes]` and `ResNet.top(m, logits, k)` the `k`
+`crop_pct` 0.875 of 224 reads. The pinned `preprocessor_config.json` (the same in both checkpoints) says `resample` 3 (Pillow's bicubic), `size` 224, `crop_pct` 0.875, `do_normalize` with the ImageNet mean and std. The golden used the slow processor (`use_fast=False`). Two differences stay: libvips resizes with another kernel than Pillow (pixels up to 0.018 apart after normalizing), and `Vision.CenterCrop` rounds a half-pixel offset to the even pixel, as torchvision does, where Hugging Face floors it (`vision/` is not changed for it). `ResNet.run` gives the logits `[batch, classes]` and `ResNet.top(m, logits, k)` the `k`
 best classes with their `id2label` names.
 
 - The batch norm of every convolution is folded into it at load (`Nn.fold_batch_norm`, the idea of MNN): the weight of
@@ -312,14 +312,14 @@ best classes with their `id2label` names.
   tiny random ResNets (bottleneck, basic, and a bottleneck with `downsample_in_first_stage` and
   `downsample_in_bottleneck`) with batch norms that have statistics of their own, on the reference (1e-9) and on ggml
   (1e-4), plus the errors of a missing weight and an unsupported config.
-- `vision/tools/resnet_check.agc` against Hugging Face (`vision/test/resnet_golden.py`, manual: it needs `torch`,
-  `transformers` 4.57.6 and `pillow`, in a venv, run with `python -I`): four drawn images (`vision/test/resnet_images.py`,
+- `vision/test/resnet_hf_test.agc` against Hugging Face (the golden script `vision/test/resnet_golden.py` is manual: it needs `torch` 2.6.0,
+  `transformers` 4.57.6 and `pillow` 11.3.0, in a venv, run with `python -I`; the test does nothing unless `RESNET_MODELS` names the checkpoint folders): four drawn images (`vision/test/resnet_images.py`,
   140 KB in all, no license) through `Resize(256)`, `CenterCrop(224)`, `normalize` and the model, in `float32` on ggml
   CPU and Vulkan. The best 10 logits and the top 5 classes of each image are `float32` Hugging Face's, in the same
   order, for both models. On Hugging Face's own pixels the largest gap of a logit is 1.6e-5 (ResNet-50) and 1.1e-5
-  (ResNet-18) on CPU, 2.0e-5 on Vulkan; with the pixels of our own pipeline 0.16 (ResNet-50) and 0.065 (ResNet-18),
+  (ResNet-18) on CPU, 2.1e-5 on Vulkan; with the pixels of our own pipeline 0.16 (ResNet-50) and 0.065 (ResNet-18),
   from the pixels, which are up to 0.018 (normalized units) from Pillow's: libvips and Pillow resize with different
-  kernels. The golden is committed (`vision/test/fixtures/resnet/golden.json`) and never made in CI.
+  kernels. The 224 by 224 crops that the processor made are committed as 8-bit PNGs too (`vision/test/fixtures/resnet/crops`, 113 KB: `pixel_values` is exactly those samples over 255, normalized), so the model alone runs from committed files on its checkpoint, with a tolerance of 1e-3. The golden is committed (`vision/test/fixtures/resnet/golden.json`) and never made in CI. The tolerances are about twice the gaps measured: 0.035 for the pixels and 0.32 for the logits after the pipeline. Vulkan runs with `Tensor.vulkan_fp16(false)`.
 - `test/bert_test.agc` against `test/bert_peer.py` (standard library, doubles):
   a tiny random BERT in both namings and a padded batch, on the reference and
   on ggml (CPU, and Vulkan where there is one).

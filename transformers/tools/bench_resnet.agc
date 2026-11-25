@@ -1,12 +1,11 @@
 ## Times ResNet on ggml: the forward of a batch of `BATCH` images of 224 by 224 (one warm-up run first, then the median
-## of `REPS` runs), or with `backward` a whole training step of it: the forward, a loss (the mean square of the
-## logits) and the gradient of every weight and of the images, in one graph. The model is the folded one that
+## of `REPS` runs), or with `backward` the forward and backward of the folded model: the forward, a loss (the mean
+## square of the logits) and the gradient of every weight and of the images, in one graph (no optimizer step). The model is the folded one that
 ## `ResNet.open` loads, so the batch norms are inference ones. Manual; run from `transformers/`:
 ##
 ##   agentica tools/bench_resnet.agc MODEL_DIR [cpu|vulkan] [BATCH] [REPS] [forward|backward]
 
 import Lift from "../lift"
-import Load from "pkg/hub/load"
 import Nn from "pkg/nn/nn"
 import ResNet from "../resnet"
 import Tensor from "pkg/tensor/tensor"
@@ -48,7 +47,7 @@ end
 private
 
 def measure(dir: String, backend: Tensor.Backend, batch: Int, reps: Int, backward: Bool) -> Result[String]
-  try Load.vulkan_fp16_from_env(true)
+  try Tensor.vulkan_fp16(false)
   started = Time.monotonic_ms
   m = try ResNet.open(dir, backend)
   load = Time.monotonic_ms - started
