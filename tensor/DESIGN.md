@@ -584,10 +584,18 @@ end
   `stop_grad` through, and every other primitive answers
   `Xla.compiled_only(op)`. `Trace.compile` emits the function as StableHLO
   (§12) and compiles it once; `Trace.run` runs it, with the constants after the
-  inputs. `evaluate` compiles for each call. Only `Device.Cpu` exists: the
-  device keeps the shape of the other backends, so a GPU plugin is not a
-  breaking change. No input is donated yet: a run makes new outputs. A run
-  holds its inputs only while it runs, and `Trace.close` frees the program.
+  inputs. Only `Device.Cpu` exists: the device keeps the shape of the other
+  backends, so a GPU plugin is not a breaking change. A compiled program goes
+  in a cache of the process keyed by its text (32 programs, the least recently
+  used one that nobody holds leaves first), so `evaluate`, which compiles for
+  each call, compiles a retraced function once, and `Trace.close` lets go of
+  the program as it ends a ggml pin: a run afterwards finds it in the cache or
+  compiles it again. The moments that an `adam_step` updates in place (the
+  rule of ggml's `adam_donors`) are aliased to their outputs
+  (`tf.aliasing_output`), so XLA writes them over the old ones: the run
+  consumes those inputs and answers new tensors (`Trace.donated` is false), and
+  every other input is kept. A run holds its inputs only while it runs.
+  `Train.fit` runs on XLA as on ggml, the batch gathered in the step.
 
 ## 8. Tensor lifetime
 
@@ -825,8 +833,10 @@ The price:
   `gelu_tanh_approx`, `matmul` (`dot_general`, contracting `[1]` with `[0]`),
   `transpose`, `reshape`, `broadcast_to`, `sum`, `mean`, `max` (a `reduce` from
   `0` or `-inf`, then a `reshape` for `keep_dims`), `eq`, `lt`, `where`
-  (`select`), `arange` (`iota`), `slice`, `full` and `stop_grad`. Any other op is an
-  error naming it. `Q8_0` has no MLIR element type; `Bool` is `i1`, `U8` is
+  (`select`), `arange` (`iota`), `slice`, `full`, `stop_grad`, `gather` (a
+  `stablehlo.gather` of whole rows; XLA clamps an index outside the rows) and
+  `adam_step` (the ops of its composed form over the 7 numbers, its three
+  results stacked; a part is a `slice`). Any other op is an error naming it. `Q8_0` has no MLIR element type; `Bool` is `i1`, `U8` is
   `ui8`.
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,

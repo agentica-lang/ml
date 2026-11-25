@@ -311,7 +311,9 @@ error that names the install step. Only the CPU device exists.
 What runs: `Trace.compile` emits the function as StableHLO
 (`Trace.stablehlo`, `DESIGN.md` §12) and XLA compiles it once; `Trace.run`
 runs it. `Trace.eval`, `eval_many` and `value_and_grad` compile the graph for
-each call. The ops are the ones the StableHLO emitter covers (an MLP, its
+each call, through a cache of the process keyed by the text, so a retraced
+function compiles once. `Train.fit` runs on XLA; the moments of an
+`adam_step` are updated in place, so a run consumes them. The ops are the ones the StableHLO emitter covers (an MLP, its
 gradients and an SGD or Adam step written with them); any other is an error
 naming it. Eagerly, `Xla` only creates tensors, reads them back and passes
 `stop_grad` through, as `Ggml` does: every other op is an error naming the op.
