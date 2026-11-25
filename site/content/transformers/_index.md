@@ -216,15 +216,17 @@ end
 
 - The model is hybrid: by `layer_types`, a layer is linear attention (a Gated DeltaNet, `Delta.gated_delta_net` of [nn](../nn/_index.md)) or full attention (grouped-query, with an output gate and rotary positions on part of each head, a quarter in 0.8B), followed by a gated MLP. The head is the embedding table. The vision tower and the multi-token-prediction head of the checkpoint are ignored.
 - The norms of Qwen3.5 scale by `1 + weight`; the loader adds the 1. Only `F32` weights are loaded, a batch is unrolled row by row in the graph, and the model cannot be fine-tuned with `train/`.
-- Against Hugging Face's `Qwen3_5ForCausalLM` in `float32` on ggml CPU, over five prompts of 5 to 50 tokens, the largest gap of a logit is 2.0e-5 and the five largest logits of every position are the same ids. A tiny random model is tested on the reference and ggml. Vulkan is not measured yet.
+- Against Hugging Face's `Qwen3_5ForCausalLM` in `float32` on ggml CPU, over five prompts of 5 to 50 tokens, the largest gap of a logit is 2.0e-5 (5.5e-5 on Vulkan with `vulkan_fp16` off) and the five largest logits of every position are the same ids. A tiny random model is tested on the reference and ggml.
 - Generation: `Generate.open(m)` of `pkg/transformers/generate_qwen35` is the generator of a Qwen3.5 model, with `generate`, `step`, `step_logits`, `step_top`, `finish` and `close` as in [Generation](#generation). The cache of a full-attention layer is the padded KV cache described there; a linear-attention layer keeps its two states (the last rows of the convolution's input and the recurrent state), which do not grow.
-- `Generate.open(m, usable)` sets how many ids a step may answer. The embedding of Qwen3.5 has more rows than its tokenizer has tokens (248,320 and 248,070 in 0.8B), and the ids in between have no text, so a caller with a tokenizer passes its token count (`Generate.open(m, tok.pieces.size)`) and the sampler never gives an id that `Bpe.decode` rejects. The default 0 is Hugging Face's, no mask.
-- Against Hugging Face's greedy `generate` for `Qwen/Qwen3.5-0.8B` in `float32`, the 24 new ids of each of six prompts (5 to 375 tokens) are equal on ggml CPU and on Vulkan (with `vulkan_fp16` off), at about 9 tokens per second after the prompt on both.
+- `Generate.open(m, usable)` is the one of Qwen3 above. The embedding of Qwen3.5 has more rows than its tokenizer has tokens (248,320 and 248,070 in 0.8B), and the ids in between have no text, so a caller with a tokenizer passes its token count (`Generate.open(m, tok.pieces.size)`) and the sampler never gives an id that `Bpe.decode` rejects. The default 0 is Hugging Face's, no mask.
+- Against Hugging Face's greedy `generate` for `Qwen/Qwen3.5-0.8B` in `float32`, the 24 new ids of each of six prompts (5 to 375 tokens) are equal on ggml CPU and on Vulkan (with `vulkan_fp16` off), at 8 to 9 tokens per second after the prompt (7.8 on CPU, 8.7 on Vulkan, `benchmarks/README.md`).
 - A `model_type` other than `qwen3_5`, an activation other than `silu`, `attention_bias: true`, a `rope_type` other than `default` and a layer type other than `linear_attention` and `full_attention` are errors.
 
 ## Generation
 
 `Generate.open(m)` gives the generator of a model, which keeps the compiled steps for every sequence of that model. `Generate.generate(g, ids, max_new, stop, sampling)` adds at most `max_new` ids to the prompt `ids`, and stops before an id of `stop`. By default it takes the id with the largest logit (greedy), which runs in the graph. With `sampling: some(Sample.Sampling(temperature: 0.8, top_k: 40, top_p: 0.95, seed: 7))` each step draws among the largest logits with Hugging Face's order (the temperature, then `top_k`, then `top_p`), and the same `seed` (0 to 2147483645) draws the same ids, up to the float noise of each backend (a generator of its own, so the ids are not those of Hugging Face's `generate(do_sample=True)`, only the distribution is). The graph keeps only the largest logits and reads back their ids and values, so a sampled step costs about what a greedy one does: `top_k` of them when it is set, else the largest 256 (`Sample.MAX_CANDIDATES`). Ids below those are never drawn, so with `top_k` unset the draw is from the top 256 and `top_p` is measured against their mass, not that of the whole vocabulary (the mass below them after a real temperature is negligible; at a very high temperature over a flat distribution it is not), and a tie at the edge of the `top_k` keeps one id here where Hugging Face keeps all. Ids more than 30 below the largest logit (a mass under 1e-13) are never drawn either. It keeps the keys and values of the tokens so far (a KV cache), so a new token costs one step, not a pass over the whole sequence. It gives the new ids; a second call finds the compiled steps of the first and traces none. `Generate.close(g)` ends the compiled steps, and goes before `Qwen3.close_model(m)`.
+
+`Generate.open(m, usable)` sets how many ids a step may answer. The embedding of Qwen3 has more rows than its tokenizer has tokens (151,936 and 151,669), and the ids in between have no text, so a caller with a tokenizer passes its token count (`Generate.open(m, tok.pieces.size)`) and the sampler never gives an id that `Bpe.decode` rejects. The default 0 is Hugging Face's, no mask.
 
 ```agentica
 import Bpe from "pkg/transformers/tokenizer/bpe"
@@ -237,7 +239,7 @@ def main() -> Void
   tok = Bpe.open("Qwen3-0.6B/tokenizer.json").unwrap!
   m = Qwen3.open("Qwen3-0.6B", backend).unwrap!
   prompt = Bpe.encode(tok, "The capital of France is").unwrap!
-  g = Generate.open(m).unwrap!
+  g = Generate.open(m, tok.pieces.size).unwrap!
   made = Generate.generate(g, prompt, 8, [151645, 151643]).unwrap!
   puts(Bpe.decode(tok, made).unwrap!)
   Generate.close(g)
@@ -299,7 +301,7 @@ def main() -> Void
   m = Qwen3.open("Qwen2.5-0.5B-Instruct", backend).unwrap!
   messages = [Chat.Message(role: "user", content: "Name the capital of France in one word.")]
   prompt = Bpe.encode(tok, Chat.apply(m.config.model_type, messages).unwrap!).unwrap!
-  g = Generate.open(m).unwrap!
+  g = Generate.open(m, tok.pieces.size).unwrap!
   puts(Bpe.decode(tok, Generate.generate(g, prompt, 16, [151645, 151643]).unwrap!).unwrap!)
   Generate.close(g)
 end

@@ -303,8 +303,14 @@ end
 ## Seven ids after a prompt of three: the cache goes from 8 to 16 rows. The ids are those of the forward without a cache.
 ## A second call finds the steps of the first: it compiles none.
 def generating(dir: String, folder: String, backend: Tensor.Backend) -> Result[Void]
-  prompt = [1, 5, 2]
   m = try Qwen3.open("#{dir}/#{folder}", backend)
+  ran = generating_on(m, backend)
+  Qwen3.close_model(m)
+  ran
+end
+
+def generating_on(m: Qwen3.Qwen3, backend: Tensor.Backend) -> Result[Void]
+  prompt = [1, 5, 2]
   g = try Generate.open(m)
   want = try greedy(m, prompt, 7)
   try Test.eq(try Generate.generate(g, prompt, 7), want)
@@ -319,6 +325,24 @@ def generating(dir: String, folder: String, backend: Tensor.Backend) -> Result[V
   try Test.eq(try Generate.generate(g, prompt, 0), [])
   try Test.eq(Generate.compiles(g), made)
   Generate.close(g)
+  # With `usable` the ids from it on are never answered: the first id of the greedy choice is cut off.
+  cut = [want[0], 1].max.unwrap!
+  try Test.error?(Generate.open(m, m.config.vocab_size + 1))
+  few = try Generate.open(m, cut)
+  ran = cut_off(few, prompt, cut)
+  Generate.close(few)
+  ran
+end
+
+def cut_off(few: Generate.Generator, prompt: List[Int], cut: Int) -> Result[Void]
+  made = try Generate.generate(few, prompt, 7)
+  try Test.eq(made.size, 7)
+  try Test.assert(made.all? { |id| id < cut }, "an id of #{cut} or more")
+  hot = some(Sample.Sampling(temperature: 5.0, seed: 3))
+  drawn = try Generate.generate(few, prompt, 7, [], hot)
+  try Test.eq(drawn.size, 7)
+  try Test.assert(drawn.all? { |id| id < cut }, "a drawn id of #{cut} or more")
+  try Test.error?(Generate.step_top(few, Generate.start(), prompt, cut + 1))
   ok()
 end
 
