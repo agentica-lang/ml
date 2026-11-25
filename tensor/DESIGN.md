@@ -465,10 +465,17 @@ end
   `get_rows_back`, with the same index check and the same 2^24 limit; its cost
   is `O(k width)` on the CPU, but the Vulkan shader runs one thread per cell
   of the answer and loops over all `k` indices, so there it is `O(rows k
-  width)`, with no `[rows, k]` grid in memory: the gradient of a lookup over a
-  50000 x 64 table and 4096 indices takes 14 ms on the CPU (1.7 s before) and
-  960 ms on the Vega iGPU (455 ms with the old one-hot `matmul`); at 10000 x
-  64 and 1024 indices, 58 ms against 30 ms), and
+  width)`. On Vulkan, with `k` below the rows, the lowering instead gives each
+  update row the sum of the rows that name its index, by one matmul with the
+  `k x k` mask of equal indices (`O(k^2 width)`, exact: it adds only the rows
+  of one index), and writes those sums into zero rows with `set_rows` (the
+  rows of one index write the same sum). The mask is made `kc` columns at a
+  time, at most 2^24 cells each (a table of more than 64 chunks, k above about
+  130000, and `k >= rows` keep `get_rows_back`). `TENSOR_SCATTER_ADD=get_rows_back`
+  keeps ggml's kernel, for the benchmark (`tools/bench-scatter.agc`). The
+  long-term fix is an upstream Vulkan kernel for `GGML_OP_GET_ROWS_BACK` with
+  one thread per (index, column), which would make this lowering unneeded),
+  and
   `permute` (a `ggml_permute` and a copy), `batch_matmul` (`mul_mat` over the
   batch axes) and `rope` (`ggml_rope_ext`, with the sequence axis swapped to
   ggml's third; its positions are `I32`, as every integer here, and a rank above

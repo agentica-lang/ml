@@ -11,6 +11,7 @@ Each package is released on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the
 - ggml: a decode step runs fewer kernels (the positions converted and checked once for every cache, a long-row `max` in pieces, SwiGLU as one kernel): Qwen3-0.6B decode on Vulkan is 7 to 11% faster.
 - ggml: a `Trace.compile` function keeps its constants bound to its graph between runs and binds only its inputs; the graph that ran last keeps its allocation.
 - ggml: an `attention` reads a `slice` of an `F16` cache that starts at its first element where it is, with no copy.
+- ggml: `scatter_add` (the gradient of an embedding lookup) on Vulkan adds the rows of an index with a matmul by a mask instead of `get_rows_back`, whose Vulkan kernel costs rows x k x width; `tools/bench-scatter.agc` times it.
 - ggml: a graph returns up to 512 outputs (it was 256), so a training step takes 170 parameters with Adam.
 - `Tensor.append_file` appends the values of an `F32` tensor to a file, written by C on libtorch and ggml.
 
