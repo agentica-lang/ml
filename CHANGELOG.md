@@ -2,7 +2,7 @@
 
 All packages are released together at one version, each on its own tag, `<package>-X.Y.Z`. Release 0.2.0 is the first one and covers everything shipped so far (milestones 0.1.0 and 0.2.0).
 
-## [Unreleased]
+## [0.5.1] - 2026-11-25
 
 ### vision
 
