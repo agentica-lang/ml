@@ -10,9 +10,9 @@
 #
 # The threads: THREADS must be the online CPUs (8 here) for PyTorch and libtorch, which take OMP_NUM_THREADS, which
 # run.sh sets. ggml's CPU rows run on the physical cores (tensor/native/ggml.c; `TENSOR_THREADS=n` in the environment
-# sets another count, for example the online CPUs), and JAX's CPU pool is XLA's own default (all the cores; its size is not checked here). `run` refuses to start
-# when the load average is above 1.0, and every line records the load average at its start. The venvs are `venv-torch`
-# and `venv-jax`, in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}.
+# sets another count, for example the online CPUs), and JAX's CPU pool is XLA's own default (all the cores; its size
+# is not checked here). `run` refuses to start when the load average is above 1.0, and every line records the load
+# average at its start. The venvs are `venv-torch` and `venv-jax`, in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)

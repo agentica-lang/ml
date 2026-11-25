@@ -10,11 +10,12 @@
 #   sh benchmarks/stsb/run.sh peer [OUT]         the run in PyTorch, its lines into OUT (peer.jsonl)
 #   python3 -I benchmarks/stsb/summary.py ours.jsonl peer.jsonl
 #
-# PAIRS (1000), BATCH (16) and PAD_TO (1) set the run on both sides. The threads are the online CPUs on both sides: this
-# script sets `TENSOR_THREADS` to them for ggml (its default is the physical cores, tensor/native/ggml.c) and ggml
-# reports no count to the run, so it writes the `threads` line of our side: that count by construction, not a measurement; the peer sets
-# `torch.set_num_threads` to the CPUs of its process and prints what PyTorch then runs with. A process kept to fewer
-# CPUs than are online is refused. Everything lives in ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}:
+# PAIRS (1000), BATCH (16) and PAD_TO (1) set the run on both sides. The threads are the online CPUs on both sides:
+# this script sets `TENSOR_THREADS` to them for ggml (its default is the physical cores, tensor/native/ggml.c), and
+# ggml reports no count to the run, so it writes the `threads` line of our side: that count by construction, not a
+# measurement; the peer sets `torch.set_num_threads` to the CPUs of its process and prints what PyTorch then runs
+# with. A process kept to fewer CPUs than are online is refused. Everything lives in
+# ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}:
 # the venv `venv-torch` (shared with benchmarks/training, so a setup of either changes it for both),
 # `hf/msmarco-distilbert-cos-v5` and `hf/stsb`. Only `model.safetensors` is fetched, never the pickle. Every run
 # checks the hashes of the parquet files and writes their JSON lines again, so a stale copy is never read.
