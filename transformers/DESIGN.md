@@ -443,8 +443,10 @@ error row per config field.
   `float32`, so it fits in 5 GB): five prompts of 5 to 217 tokens, the logits of the last position over the vocabulary
   and the five largest ids of every position (the long prompt at its last position only). Largest gap of a logit: 3.7e-5
   on ggml CPU (peak 5.6 GB), 9.3e-5 on Vulkan with `vulkan_fp16` off, the top five equal; with `vulkan_fp16` on, 0.34,
-  and the fifth id of two positions differs (logits are 14 to 28 at the top). This is the gap of the fp16 path of
-  `Tensor.expert_matmul` that `tensor/DESIGN.md` leaves open. The checkpoint:
+  and the fifth id of two positions differs (logits are 14 to 28 at the top). That is Vulkan's fp16 `mul_mat` over all the
+  products of the model, `Tensor.expert_matmul` among them; the share of the experts is not isolated. For context,
+  `tools/qwen_check.agc` on Qwen3-0.6B (dense, five prompts of 5 to 50 tokens, logits up to 30) with `VULKAN_FP16=1`
+  gives 0.028 (0.8e-4 with it off), the fifth id of two positions differing. The checkpoint:
 
   | Checkpoint | Revision | `model.safetensors` sha256 |
   |---|---|---|

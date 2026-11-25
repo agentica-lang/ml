@@ -89,6 +89,7 @@ def test_a_config_that_the_model_does_not_run_is_an_error() -> Result[Void]
   for change in [
     ["\"model_type\": \"granitemoe\"", "\"model_type\": \"granite\""],
     ["\"hidden_act\": \"silu\"", "\"hidden_act\": \"gelu\""],
+    ["\"num_experts_per_tok\": 2", "\"num_experts_per_tok\": 7"],
     ["\"attention_bias\": false", "\"attention_bias\": true"],
     ["\"rope_scaling\": null", "\"rope_scaling\": {\"rope_type\": \"linear\", \"factor\": 2.0}"],
   ]

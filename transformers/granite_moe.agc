@@ -16,7 +16,8 @@ import Lift from "lift"
 import Qwen3 from "qwen3"
 import Source from "tokenizer/source"
 
-## The fields of `config.json` that the model reads. The defaults are those of Hugging Face's `GraniteMoeConfig`.
+## The fields of `config.json` that the model reads. The four multipliers default to 1.0 and `tie_word_embeddings` to false, as
+## in Hugging Face's `GraniteMoeConfig`; the other fields are required.
 struct Config
   model_type: String
   hidden_size: Int
@@ -74,12 +75,19 @@ def read_config(dir: String) -> Result[Config]
 end
 
 ## An error when `config` is a model this file does not run: another type, activation, attention bias or rope scaling
-## (each would be read and ignored), or head counts that do not divide.
+## (each would be read and ignored), a number of experts per token outside 1 to the number of experts, or head counts that do
+## not divide.
 def check_config(config: Config) -> Result[Void]
   return error("model_type is #{config.model_type}, not granitemoe") if config.model_type != "granitemoe"
   return error("hidden_act #{config.hidden_act} is not supported, only silu") if config.hidden_act != "silu"
   return error("attention_bias is not supported") if config.attention_bias
   return error("rope_scaling is not supported") if config.rope_scaling.some?
+  if config.num_experts_per_tok < 1 or config.num_experts_per_tok > config.num_local_experts
+    return error(
+      "num_experts_per_tok #{config.num_experts_per_tok} is not in 1 to #{config.num_local_experts} experts",
+    )
+  end
+
   if config.num_key_value_heads < 1 or config.num_attention_heads % config.num_key_value_heads != 0
     return error("#{config.num_attention_heads} heads are not a multiple of #{config.num_key_value_heads} key heads")
   end
