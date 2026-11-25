@@ -735,6 +735,7 @@ def handle_of(t: Types.Tensor) -> Result[Raw.TensorHandle]
     Types.Handle.Plain(_) -> error("a Plain tensor has no native handle (backend #{Types.backend_name(t.backend)})")
     Types.Handle.Traced(_) -> error("a traced tensor has no native handle")
     Types.Handle.Ggml(_) -> error("a ggml tensor has no torch handle")
+    Types.Handle.Xla(_) -> error("an XLA tensor has no torch handle")
   end
 end
 

@@ -1,0 +1,567 @@
+/* The thin C layer of `src/xla_native.agc`: XLA on the CPU through the PJRT C API of a plugin loaded with `dlopen`
+   (`tensor/DESIGN.md` §7). Nothing of XLA is linked at build time; `pjrt_c_api.h` is the header of the API the
+   pinned plugin speaks (0.81), vendored with its notice.
+
+   One client and its first device serve the process. A buffer and a program are refcounted, so a run (`Call`) holds
+   what it reads even when its handle is closed meanwhile. */
+#if !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+#define XLA_NATIVE_IMPLEMENTATION
+#include "cchecker.h"
+#include "xla_native.h"
+
+#include "pjrt_c_api.h"
+
+#include <dlfcn.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* The dtype codes of `src/xla.agc` (`code_of`), in order. */
+enum { DT_F32, DT_F64, DT_I32, DT_I64, DT_I16, DT_I8, DT_U8, DT_BOOL, DT_COUNT };
+static const PJRT_Buffer_Type TYPES[DT_COUNT] = {
+    PJRT_Buffer_Type_F32, PJRT_Buffer_Type_F64, PJRT_Buffer_Type_S32, PJRT_Buffer_Type_S64,
+    PJRT_Buffer_Type_S16, PJRT_Buffer_Type_S8,  PJRT_Buffer_Type_U8,  PJRT_Buffer_Type_PRED,
+};
+static const size_t SIZES[DT_COUNT] = {4, 8, 4, 8, 2, 1, 1, 1};
+
+#define MAX_RANK 16
+
+/* Set once by `xla_open`, under `open_lock`; `api` is published last (release), so a reader that sees it sees the
+   client and the device. */
+CC_LOCK_LEVEL(1) static pthread_mutex_t open_lock = PTHREAD_MUTEX_INITIALIZER;
+static const PJRT_Api *api; /* atomic */
+static PJRT_Client *client;
+static PJRT_Device *device;
+static char *opened_path;
+
+struct buffer {
+  int refs; /* atomic */
+  PJRT_Buffer *b;
+};
+
+struct program {
+  int refs; /* atomic */
+  PJRT_LoadedExecutable *exe;
+  size_t outputs;
+};
+
+struct xla_Buffer_state {
+  struct buffer *buffer;
+};
+
+struct xla_Program_state {
+  struct program *program;
+};
+
+struct xla_Call_state {
+  struct program *program;
+  struct buffer **args;
+  size_t count, cap;
+};
+
+static const PJRT_Api *loaded(void) { return __atomic_load_n(&api, __ATOMIC_ACQUIRE); }
+
+/* Copies the message of `err` into `out` and destroys it. */
+static void message_of(const PJRT_Api *a, PJRT_Error *err, char *out, size_t size) {
+  PJRT_Error_Message_Args m = {.struct_size = PJRT_Error_Message_Args_STRUCT_SIZE, .error = err};
+  PJRT_Error_Destroy_Args d = {.struct_size = PJRT_Error_Destroy_Args_STRUCT_SIZE, .error = err};
+
+  a->PJRT_Error_Message(&m);
+  snprintf(out, size, "%.*s", (int)(m.message_size < 1000 ? m.message_size : 1000), m.message);
+  a->PJRT_Error_Destroy(&d);
+}
+
+static an_term failed(an_env *env, const char *message) { return an_error(env, message, strlen(message)); }
+
+/* The error of a PJRT call, `what: message`. */
+static an_term pjrt_failed(an_env *env, PJRT_Error *err, const char *what) {
+  char text[1024], line[1200];
+
+  message_of(loaded(), err, text, sizeof text);
+  snprintf(line, sizeof line, "%s: %s", what, text);
+  return failed(env, line);
+}
+
+/* Waits for `ev` and destroys it; the error of the event, or NULL. */
+static PJRT_Error *await_event(PJRT_Event *ev) {
+  const PJRT_Api *a = loaded();
+  PJRT_Error *err;
+
+  if (ev == NULL) return NULL;
+  PJRT_Event_Await_Args w = {.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE, .event = ev};
+  err = a->PJRT_Event_Await(&w);
+  PJRT_Event_Destroy_Args d = {.struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE, .event = ev};
+  a->PJRT_Event_Destroy(&d);
+  return err;
+}
+
+static void buffer_release(struct buffer *b) {
+  if (b == NULL || __atomic_sub_fetch(&b->refs, 1, __ATOMIC_ACQ_REL) > 0) return;
+  PJRT_Buffer_Destroy_Args d = {.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE, .buffer = b->b};
+  PJRT_Error *err = loaded()->PJRT_Buffer_Destroy(&d);
+  if (err != NULL) {
+    char ignored[8];
+    message_of(loaded(), err, ignored, sizeof ignored);
+  }
+  free(b);
+}
+
+static void program_release(struct program *p) {
+  if (p == NULL || __atomic_sub_fetch(&p->refs, 1, __ATOMIC_ACQ_REL) > 0) return;
+  PJRT_LoadedExecutable_Destroy_Args d = {.struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE,
+                                          .executable = p->exe};
+  PJRT_Error *err = loaded()->PJRT_LoadedExecutable_Destroy(&d);
+  if (err != NULL) {
+    char ignored[8];
+    message_of(loaded(), err, ignored, sizeof ignored);
+  }
+  free(p);
+}
+
+CC_SHORT static void xla_Buffer_free(void *state) {
+  struct xla_Buffer_state *self = (struct xla_Buffer_state *)state;
+
+  buffer_release(self->buffer);
+  self->buffer = NULL;
+}
+
+CC_SHORT static void xla_Program_free(void *state) {
+  struct xla_Program_state *self = (struct xla_Program_state *)state;
+
+  program_release(self->program);
+  self->program = NULL;
+}
+
+CC_SHORT static void xla_Call_free(void *state) {
+  struct xla_Call_state *self = (struct xla_Call_state *)state;
+  size_t i;
+
+  for (i = 0; i < self->count; i++) buffer_release(self->args[i]);
+  free(self->args);
+  program_release(self->program);
+  memset(self, 0, sizeof *self);
+}
+#define XLA_Buffer_FREE xla_Buffer_free
+#define XLA_Program_FREE xla_Program_free
+#define XLA_Call_FREE xla_Call_free
+
+an_term xla_arch(an_env *env) {
+#if defined(__x86_64__)
+  return an_string(env, "x86_64", 6);
+#elif defined(__aarch64__)
+  return an_string(env, "aarch64", 7);
+#else
+  return an_string(env, "other", 5);
+#endif
+}
+
+/* Loads the plugin and makes the client; a message in `why` on failure, which leaves nothing loaded. */
+static bool load_plugin(const char *path, char *why, size_t size) {
+  void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+  const PJRT_Api *(*get_api)(void);
+  const PJRT_Api *a;
+  PJRT_Error *err;
+
+  if (lib == NULL) {
+    snprintf(why, size, "cannot load the XLA plugin %s: %s", path, dlerror());
+    return false;
+  }
+  *(void **)(&get_api) = dlsym(lib, "GetPjrtApi");
+  if (get_api == NULL || (a = get_api()) == NULL) {
+    snprintf(why, size, "%s has no GetPjrtApi: it is not a PJRT plugin", path);
+    dlclose(lib);
+    return false;
+  }
+  if (a->pjrt_api_version.major_version != PJRT_API_MAJOR || a->pjrt_api_version.minor_version < PJRT_API_MINOR) {
+    snprintf(why, size, "the XLA plugin %s speaks PJRT %d.%d, this module needs %d.%d or a later minor", path,
+             a->pjrt_api_version.major_version, a->pjrt_api_version.minor_version, PJRT_API_MAJOR, PJRT_API_MINOR);
+    dlclose(lib);
+    return false;
+  }
+  PJRT_Plugin_Initialize_Args init = {.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE};
+  err = a->PJRT_Plugin_Initialize(&init);
+  if (err == NULL) {
+    PJRT_NamedValue options[1] = {{.struct_size = PJRT_NamedValue_STRUCT_SIZE,
+                                   .name = "cpu_device_count",
+                                   .name_size = 16,
+                                   .type = PJRT_NamedValue_kInt64,
+                                   .int64_value = 1,
+                                   .value_size = 1}};
+    PJRT_Client_Create_Args cc = {
+        .struct_size = PJRT_Client_Create_Args_STRUCT_SIZE, .create_options = options, .num_options = 1};
+    err = a->PJRT_Client_Create(&cc);
+    if (err == NULL) {
+      PJRT_Client_AddressableDevices_Args ad = {.struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE,
+                                                .client = cc.client};
+      err = a->PJRT_Client_AddressableDevices(&ad);
+      if (err == NULL && ad.num_addressable_devices < 1) {
+        snprintf(why, size, "the XLA plugin %s has no device", path);
+        return false;
+      }
+      if (err == NULL) {
+        client = cc.client;
+        device = ad.addressable_devices[0];
+        __atomic_store_n(&api, a, __ATOMIC_RELEASE);
+        return true;
+      }
+    }
+  }
+  {
+    char text[1024];
+
+    message_of(a, err, text, sizeof text);
+    snprintf(why, size, "the XLA plugin %s did not start: %s", path, text);
+  }
+  return false;
+}
+
+an_term xla_open(an_env *env, ng_str path) {
+  char why[1400], *copy;
+  bool ok;
+
+  copy = (char *)malloc(path.len + 1);
+  if (copy == NULL) return failed(env, "out of memory");
+  memcpy(copy, path.data, path.len);
+  copy[path.len] = '\0';
+  pthread_mutex_lock(&open_lock);
+  if (opened_path != NULL) {
+    ok = strcmp(opened_path, copy) == 0;
+    if (!ok) snprintf(why, sizeof why, "the XLA plugin %s is loaded already, not %s", opened_path, copy);
+    free(copy);
+  } else {
+    ok = load_plugin(copy, why, sizeof why);
+    if (ok) opened_path = copy;
+    else free(copy);
+  }
+  pthread_mutex_unlock(&open_lock);
+  if (!ok) return failed(env, why);
+  return xla_result_Void_ok(env, an_void(env));
+}
+
+/* The dimensions of `shape` into `dims`, their element count into `count`; an error term on failure. */
+static bool dims_of(an_env *env, xla_list_Int *shape, int64_t *dims, size_t *rank, int64_t *count, an_term *failure) {
+  int64_t dim;
+  int code;
+
+  *rank = 0;
+  *count = 1;
+  while ((code = xla_list_Int_next(env, shape, &dim)) == 1) {
+    if (dim < 0) return *failure = failed(env, "a shape holds no negative dimension"), false;
+    if (*rank == MAX_RANK) return *failure = failed(env, "the XLA backend holds tensors of rank 16 at most"), false;
+    if (dim > 0 && *count > INT64_MAX / 8 / dim) return *failure = failed(env, "the tensor is too large"), false;
+    *count *= dim;
+    dims[(*rank)++] = dim;
+  }
+  if (code < 0) return *failure = an_void(env), false;
+  return true;
+}
+
+static void store(void *bytes, int dtype, int64_t i, double x) {
+  switch (dtype) {
+  case DT_F32: ((float *)bytes)[i] = (float)x; break;
+  case DT_F64: ((double *)bytes)[i] = x; break;
+  case DT_I32: ((int32_t *)bytes)[i] = (int32_t)x; break;
+  case DT_I64: ((int64_t *)bytes)[i] = (int64_t)x; break;
+  case DT_I16: ((int16_t *)bytes)[i] = (int16_t)x; break;
+  case DT_I8: ((int8_t *)bytes)[i] = (int8_t)x; break;
+  case DT_U8: ((uint8_t *)bytes)[i] = (uint8_t)x; break;
+  default: ((uint8_t *)bytes)[i] = x != 0.0; break;
+  }
+}
+
+static double load(const void *bytes, int dtype, int64_t i) {
+  switch (dtype) {
+  case DT_F32: return (double)((const float *)bytes)[i];
+  case DT_F64: return ((const double *)bytes)[i];
+  case DT_I32: return (double)((const int32_t *)bytes)[i];
+  case DT_I64: return (double)((const int64_t *)bytes)[i];
+  case DT_I16: return (double)((const int16_t *)bytes)[i];
+  case DT_I8: return (double)((const int8_t *)bytes)[i];
+  case DT_U8: return (double)((const uint8_t *)bytes)[i];
+  default: return ((const uint8_t *)bytes)[i] ? 1.0 : 0.0;
+  }
+}
+
+/* A new buffer resource from the host `bytes`. */
+static an_term put(an_env *env, const void *bytes, int dtype, const int64_t *dims, size_t rank) {
+  const PJRT_Api *a = loaded();
+  struct xla_Buffer_state *state;
+  struct buffer *b;
+  an_term term;
+  PJRT_Error *err;
+
+  PJRT_Client_BufferFromHostBuffer_Args args = {
+      .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
+      .client = client,
+      .data = bytes,
+      .type = TYPES[dtype],
+      .dims = dims,
+      .num_dims = rank,
+      .host_buffer_semantics = PJRT_HostBufferSemantics_kImmutableOnlyDuringCall,
+      .device = device,
+  };
+  err = a->PJRT_Client_BufferFromHostBuffer(&args);
+  if (err == NULL) err = await_event(args.done_with_host_buffer);
+  if (err != NULL) {
+    if (args.buffer != NULL) {
+      PJRT_Buffer_Destroy_Args d = {.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE, .buffer = args.buffer};
+      PJRT_Error *ignored = a->PJRT_Buffer_Destroy(&d);
+      if (ignored != NULL) {
+        char text[8];
+        message_of(a, ignored, text, sizeof text);
+      }
+    }
+    return pjrt_failed(env, err, "the upload failed");
+  }
+  b = (struct buffer *)malloc(sizeof *b);
+  if (b == NULL) {
+    PJRT_Buffer_Destroy_Args d = {.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE, .buffer = args.buffer};
+    PJRT_Error *ignored = a->PJRT_Buffer_Destroy(&d);
+    if (ignored != NULL) {
+      char text[8];
+      message_of(a, ignored, text, sizeof text);
+    }
+    return failed(env, "out of memory");
+  }
+  b->refs = 1;
+  b->b = args.buffer;
+  state = xla_Buffer_new(env, &term);
+  state->buffer = b;
+  return xla_result_Buffer_ok(env, term);
+}
+
+/* Host memory for `count` elements of `dtype`, or NULL. */
+static void *host(int64_t count, int dtype) { return malloc((size_t)(count > 0 ? count : 1) * SIZES[dtype]); }
+
+an_term xla_upload(an_env *env, xla_list_Int shape, xla_list_Float data, int64_t dtype) {
+  int64_t dims[MAX_RANK], count, i = 0;
+  size_t rank;
+  double x;
+  int code;
+  void *bytes;
+  an_term failure, out;
+
+  if (loaded() == NULL) return failed(env, "the XLA plugin is not loaded");
+  if (dtype < 0 || dtype >= DT_COUNT) return failed(env, "an unknown dtype code");
+  if (!dims_of(env, &shape, dims, &rank, &count, &failure)) return failure;
+  if ((int64_t)data.len != count) return failed(env, "the values do not match the shape");
+  bytes = host(count, (int)dtype);
+  if (bytes == NULL) return failed(env, "out of memory");
+  while ((code = xla_list_Float_next(env, &data, &x)) == 1) store(bytes, (int)dtype, i++, x);
+  if (code < 0) {
+    free(bytes);
+    return an_void(env);
+  }
+  out = put(env, bytes, (int)dtype, dims, rank);
+  free(bytes);
+  return out;
+}
+
+an_term xla_filled(an_env *env, xla_list_Int shape, double value, int64_t dtype) {
+  int64_t dims[MAX_RANK], count, i;
+  size_t rank;
+  void *bytes;
+  an_term failure, out;
+
+  if (loaded() == NULL) return failed(env, "the XLA plugin is not loaded");
+  if (dtype < 0 || dtype >= DT_COUNT) return failed(env, "an unknown dtype code");
+  if (!dims_of(env, &shape, dims, &rank, &count, &failure)) return failure;
+  bytes = host(count, (int)dtype);
+  if (bytes == NULL) return failed(env, "out of memory");
+  for (i = 0; i < count; i++) store(bytes, (int)dtype, i, value);
+  out = put(env, bytes, (int)dtype, dims, rank);
+  free(bytes);
+  return out;
+}
+
+an_term xla_readback(an_env *env, struct xla_Buffer_state *b) {
+  const PJRT_Api *a = loaded();
+  int64_t count = 1, i;
+  size_t k;
+  int dtype;
+  void *bytes;
+  PJRT_Error *err;
+  xla_list_Float_builder out;
+
+  if (b->buffer == NULL) return failed(env, "readback of a buffer that was never made");
+  PJRT_Buffer_ElementType_Args et = {.struct_size = PJRT_Buffer_ElementType_Args_STRUCT_SIZE, .buffer = b->buffer->b};
+  err = a->PJRT_Buffer_ElementType(&et);
+  if (err != NULL) return pjrt_failed(env, err, "readback");
+  for (dtype = 0; dtype < DT_COUNT && TYPES[dtype] != et.type; dtype++) {
+  }
+  if (dtype == DT_COUNT) return failed(env, "readback of a buffer of an element type the backend does not hold");
+  PJRT_Buffer_Dimensions_Args dm = {.struct_size = PJRT_Buffer_Dimensions_Args_STRUCT_SIZE, .buffer = b->buffer->b};
+  err = a->PJRT_Buffer_Dimensions(&dm);
+  if (err != NULL) return pjrt_failed(env, err, "readback");
+  for (k = 0; k < dm.num_dims; k++) count *= dm.dims[k];
+  bytes = host(count, dtype);
+  if (bytes == NULL) return failed(env, "out of memory");
+  PJRT_Buffer_ToHostBuffer_Args th = {.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE,
+                                      .src = b->buffer->b,
+                                      .dst = bytes,
+                                      .dst_size = (size_t)count * SIZES[dtype]};
+  err = a->PJRT_Buffer_ToHostBuffer(&th);
+  if (err == NULL) err = await_event(th.event);
+  if (err != NULL) {
+    free(bytes);
+    return pjrt_failed(env, err, "readback");
+  }
+  xla_list_Float_begin(env, &out, (size_t)count);
+  for (i = 0; i < count; i++) xla_list_Float_push(env, &out, load(bytes, dtype, i));
+  free(bytes);
+  return xla_result_list_Float_ok(env, xla_list_Float_end(env, &out));
+}
+
+an_term xla_compile(an_env *env, ng_str text, int64_t outputs) {
+  /* xla.CompileOptionsProto { executable_build_options (3) { num_replicas (4): 1, num_partitions (5): 1 } }: the
+     plugin aborts on an empty one. */
+  static const char options[] = {0x1a, 0x04, 0x20, 0x01, 0x28, 0x01};
+  const PJRT_Api *a = loaded();
+  struct xla_Program_state *state;
+  struct program *p;
+  size_t got;
+  PJRT_Error *err;
+  an_term term;
+
+  if (a == NULL) return failed(env, "the XLA plugin is not loaded");
+  PJRT_Program program = {.struct_size = PJRT_Program_STRUCT_SIZE,
+                          .code = (char *)text.data,
+                          .code_size = text.len,
+                          .format = "mlir",
+                          .format_size = 4};
+  PJRT_Client_Compile_Args cc = {.struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE,
+                                 .client = client,
+                                 .program = &program,
+                                 .compile_options = options,
+                                 .compile_options_size = sizeof options};
+  err = a->PJRT_Client_Compile(&cc);
+  if (err != NULL) return pjrt_failed(env, err, "XLA did not compile the program");
+  p = (struct program *)malloc(sizeof *p);
+  if (p == NULL) {
+    PJRT_LoadedExecutable_Destroy_Args d = {.struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE,
+                                            .executable = cc.executable};
+    err = a->PJRT_LoadedExecutable_Destroy(&d);
+    if (err != NULL) {
+      char ignored[8];
+      message_of(a, err, ignored, sizeof ignored);
+    }
+    return failed(env, "out of memory");
+  }
+  p->refs = 1;
+  p->exe = cc.executable;
+  p->outputs = (size_t)outputs;
+  state = xla_Program_new(env, &term);
+  state->program = p;
+  PJRT_LoadedExecutable_GetExecutable_Args ge = {.struct_size = PJRT_LoadedExecutable_GetExecutable_Args_STRUCT_SIZE,
+                                                 .loaded_executable = cc.executable};
+  err = a->PJRT_LoadedExecutable_GetExecutable(&ge);
+  if (err != NULL) return pjrt_failed(env, err, "XLA compiled a program it cannot describe");
+  PJRT_Executable_NumOutputs_Args no = {.struct_size = PJRT_Executable_NumOutputs_Args_STRUCT_SIZE,
+                                        .executable = ge.executable};
+  err = a->PJRT_Executable_NumOutputs(&no);
+  got = no.num_outputs;
+  PJRT_Executable_Destroy_Args ed = {.struct_size = PJRT_Executable_Destroy_Args_STRUCT_SIZE,
+                                     .executable = ge.executable};
+  PJRT_Error *dropped = a->PJRT_Executable_Destroy(&ed);
+  if (dropped != NULL) {
+    char ignored[8];
+    message_of(a, dropped, ignored, sizeof ignored);
+  }
+  if (err != NULL) return pjrt_failed(env, err, "XLA compiled a program it cannot describe");
+  if (got != (size_t)outputs) return failed(env, "XLA compiled a program with another number of outputs");
+  return xla_result_Program_ok(env, term);
+}
+
+an_term xla_call(an_env *env, struct xla_Program_state *p) {
+  struct xla_Call_state *state;
+  an_term term;
+
+  state = xla_Call_new(env, &term);
+  if (p->program != NULL) {
+    __atomic_add_fetch(&p->program->refs, 1, __ATOMIC_RELAXED);
+    state->program = p->program;
+  }
+  return term;
+}
+
+an_term xla_arg(an_env *env, struct xla_Call_state *c, struct xla_Buffer_state *b) {
+  struct buffer **grown;
+
+  if (b->buffer == NULL) return failed(env, "an argument of a run is a buffer that was never made");
+  if (c->count == c->cap) {
+    c->cap = c->cap ? c->cap * 2 : 8;
+    grown = (struct buffer **)realloc(c->args, c->cap * sizeof *grown);
+    if (grown == NULL) return failed(env, "out of memory");
+    c->args = grown;
+  }
+  __atomic_add_fetch(&b->buffer->refs, 1, __ATOMIC_RELAXED);
+  c->args[c->count++] = b->buffer;
+  return xla_result_Void_ok(env, an_void(env));
+}
+
+an_term xla_execute(an_env *env, struct xla_Call_state *c) {
+  const PJRT_Api *a = loaded();
+  PJRT_Buffer **args, **outs;
+  PJRT_Event *done[1] = {NULL};
+  PJRT_Error *err;
+  xla_list_Buffer_builder list;
+  size_t i, n;
+  bool short_of_memory = false;
+  an_term term;
+
+  if (c->program == NULL) return failed(env, "a run of a program that was never compiled");
+  n = c->program->outputs;
+  args = (PJRT_Buffer **)malloc((c->count ? c->count : 1) * sizeof *args);
+  outs = (PJRT_Buffer **)calloc(n ? n : 1, sizeof *outs);
+  if (args == NULL || outs == NULL) {
+    free(args);
+    free(outs);
+    return failed(env, "out of memory");
+  }
+  for (i = 0; i < c->count; i++) args[i] = c->args[i]->b;
+  PJRT_Buffer *const *arg_lists[1] = {args};
+  PJRT_Buffer **out_lists[1] = {outs};
+  PJRT_ExecuteOptions options = {.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE};
+  PJRT_LoadedExecutable_Execute_Args ex = {.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE,
+                                           .executable = c->program->exe,
+                                           .options = &options,
+                                           .argument_lists = arg_lists,
+                                           .num_devices = 1,
+                                           .num_args = c->count,
+                                           .output_lists = out_lists,
+                                           .device_complete_events = done};
+  err = a->PJRT_LoadedExecutable_Execute(&ex);
+  free(args);
+  if (err == NULL) err = await_event(done[0]);
+  xla_list_Buffer_begin(env, &list, n);
+  for (i = 0; i < n; i++) {
+    struct buffer *b;
+
+    if (outs[i] == NULL) continue;
+    b = (struct buffer *)malloc(sizeof *b);
+    if (b == NULL) {
+      PJRT_Buffer_Destroy_Args d = {.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE, .buffer = outs[i]};
+      PJRT_Error *ignored = a->PJRT_Buffer_Destroy(&d);
+      if (ignored != NULL) {
+        char text[8];
+        message_of(a, ignored, text, sizeof text);
+      }
+      short_of_memory = true;
+      continue;
+    }
+    b->refs = 1;
+    b->b = outs[i];
+    xla_Buffer_new(env, &term)->buffer = b;
+    xla_list_Buffer_push(env, &list, term);
+  }
+  free(outs);
+  if (err != NULL) return pjrt_failed(env, err, "the run failed");
+  if (short_of_memory) return failed(env, "out of memory");
+  return xla_result_list_Buffer_ok(env, xla_list_Buffer_end(env, &list));
+}
+
+XLA_NATIVE_MODULE(NULL)

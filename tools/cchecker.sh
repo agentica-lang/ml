@@ -63,6 +63,7 @@ sep='['
   done <<LIST
 tensor/native/ggml.c tensor/native third_party/ggml/include
 tensor/native/ggml_graph.c tensor/native third_party/ggml/include
+tensor/native/xla.c tensor/native
 whisper/native/whisper.c whisper/native third_party/whisper.cpp/include third_party/whisper.cpp/ggml/include
 LIST
   printf '\n]\n'

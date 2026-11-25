@@ -34,12 +34,15 @@ jobs:
     timeout-minutes: 5
     outputs:
       packages: ${{ steps.packages.outputs.packages }}
+      xla: ${{ steps.xla.outputs.xla }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Third-party engines (whisper.cpp and friends) enter as submodules,
           # never vendored; tests must run against the pinned commits.
           submodules: recursive
+          # The xla step compares the pull request with its base.
+          fetch-depth: 0
 
       - name: Find the packages
         id: packages
@@ -49,6 +52,20 @@ jobs:
           pkgs=$(for f in */agentica.toml; do echo "${f%/agentica.toml}"; done | jq -R -s -c 'split("\n") | map(select(. != ""))')
           echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
           echo "Packages: $pkgs"
+
+      # The xla job runs on a push to main, and on a pull request that changes tensor/, train/ or this file.
+      - name: Does the XLA backend need a run
+        id: xla
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BASE" ] || [ -n "$(git diff --name-only "$BASE...HEAD" -- tensor/ train/ .github/workflows/ci.yml)" ]; then
+            echo "xla=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "xla=false" >> "$GITHUB_OUTPUT"
+          fi
 
   # Each package on its pinned Agentica release: install, check, format, the
   # --check of its generated native headers, and its tests.
@@ -280,9 +297,57 @@ jobs:
       - name: make cchecker
         run: make cchecker CCHECKER_FLAGS="--gcc gcc-14 --clang clang-19 --clang-tidy clang-tidy-19 --strict-baseline"
 
+  # The XLA backend of tensor/ (Backend.Xla) on the pinned PJRT CPU plugin, in parallel with the packages. The plugin
+  # is a wheel of PyPI that tools/install_xla.agc downloads and checks by its sha256; the cache keeps the extracted
+  # plugin under that sha256, so a run downloads it only when the pin changes.
+  xla:
+    needs: plan
+    if: needs.plan.outputs.xla == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tensor
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the pinned Agentica version and the plugin's sha256
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version sha256 _ < AGENTICA_VERSION
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          plugin=$(awk '/arch: "x86_64"/ { f = 1 } f && /sha256:/ { match($0, /[0-9a-f]{64}/); print substr($0, RSTART, 64); exit }' src/xla.agc)
+          [ -n "$plugin" ] || { echo "no x86_64 sha256 in src/xla.agc" >&2; exit 1; }
+          echo "plugin=$plugin" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Agentica release
+        uses: agentica-lang/setup-agentica@v1
+        with:
+          version: ${{ steps.pin.outputs.version }}
+          sha256: ${{ steps.pin.outputs.sha256 }}
+
+      - uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/agentica-ml/xla/${{ steps.pin.outputs.plugin }}
+          key: xla-plugin-${{ steps.pin.outputs.plugin }}
+
+      - name: Install the locked dependencies
+        run: agentica install
+
+      - name: Install the XLA plugin
+        run: agentica tools/install_xla.agc
+
+      - name: Test
+        env:
+          TENSOR_REQUIRE_XLA: '1'
+        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_missing_test.agc
+
   # `test` is the required check, so it carries the result of the other jobs.
   test:
-    needs: [plan, packages, cchecker]
+    needs: [plan, packages, cchecker, xla]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -292,6 +357,8 @@ jobs:
           PLAN: ${{ needs.plan.result }}
           PACKAGES: ${{ needs.packages.result }}
           CCHECKER: ${{ needs.cchecker.result }}
+          XLA: ${{ needs.xla.result }}
         run: |
-          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER"
-          [ "$PLAN" = success ] && [[ "$PACKAGES" =~ ^(success|skipped)$ ]] && [ "$CCHECKER" = success ]
+          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER, xla: $XLA"
+          [ "$PLAN" = success ] && [[ "$PACKAGES" =~ ^(success|skipped)$ ]] && [ "$CCHECKER" = success ] &&
+            [[ "$XLA" =~ ^(success|skipped)$ ]]
