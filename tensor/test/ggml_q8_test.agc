@@ -9,6 +9,7 @@
 ## weight, whose rows are exact. Without the ggml module the ggml checks pass by asserting nothing, unless
 ## `TENSOR_REQUIRE_GGML` is set (CI sets it).
 
+import Files from "ggml_file_support"
 import Tensor from "../tensor"
 import Trace from "../trace"
 
@@ -29,28 +30,9 @@ VALUES = [0.5, 0.25, 1.0, -0.75, 0.0625, 0.125, 0.00390625, 0.03125]
 
 private
 
-def devices() -> Result[List[Tensor.Device]]
-  found = [CPU, VULKAN].select { |d: Tensor.Device| Tensor.available(Tensor.Backend.Ggml(d)) }
-  return ok(found) if !found.empty?
-  flag = System.env("TENSOR_REQUIRE_GGML")
-  return ok([]) if !flag.ok?
-  return ok([]) if try flag == ""
-  error("ggml required but not built (TENSOR_REQUIRE_GGML is set)")
-end
+def devices() -> Result[List[Tensor.Device]] = Files.devices([CPU, VULKAN])
 
-def with_file(data: Bytes, body: Fn[String, Result[Void]]) -> Result[Void]
-  dir = "/tmp/agentica-q8-#{Random.int(0, 999999999)}"
-  try Dir.mkdir_private(dir, 5000)
-  path = "#{dir}/data.bin"
-  try File.open(path, "write", 5000) do |f|
-    try File.write_bytes(f, data, 5000)
-    ok()
-  end
-
-  result = body.call(path)
-  _ = Path.remove(dir, 5000)
-  result
-end
+def with_file(data: Bytes, body: Fn[String, Result[Void]]) -> Result[Void] = Files.with_file("q8", data, body)
 
 ## The byte of value `j` of block `b`: every signed byte from -127 to 127, and -128 once.
 def byte_of(b: Int, j: Int) -> Int
