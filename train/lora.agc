@@ -176,9 +176,9 @@ end
 ## The adapter of the folder `dir`, written by PEFT or by `save`, on `backend` (as `F32`: a half-float adapter is
 ## widened). Its `names` are the weights it adapts, from the names of its tensors. It reads a LoRA adapter of linear
 ## layers alone, and an error names what is not computed here: another `peft_type`; DoRA, rsLoRA, aLoRA, QALoRA,
-## BD-LoRA or another variant (Arrow, KaSA, MonteCLoRA, VeLoRA); `fan_in_fan_out`; a trained bias; `modules_to_save`, `target_parameters` or `trainable_token_indices`;
-## `layer_replication`; a rank or alpha pattern; `target_modules` as a regular expression; and the adapter of an
-## `Embedding`. Which model the adapter is for (`base_model_name_or_path`) is not kept.
+## BD-LoRA or another variant (Arrow, KaSA, MonteCLoRA, VeLoRA); `fan_in_fan_out`; a trained bias;
+## `modules_to_save`, `target_parameters` or `trainable_token_indices`; `layer_replication`; a rank or alpha
+## pattern; `target_modules` as a regular expression; and the adapter of an `Embedding`. Which model the adapter is for (`base_model_name_or_path`) is not kept.
 def open(dir: String, backend: Tensor.Backend) -> Result[Adapter]
   file = try Shards.within("#{dir}/#{CONFIG}", config("#{dir}/#{CONFIG}"))
   c = try Hub.open("#{dir}/#{WEIGHTS}")
