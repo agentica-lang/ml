@@ -1,9 +1,9 @@
 """Writes `test/fixtures/granite_moe_golden.json`: a tiny random Granite MoE (2 layers, 16 wide, 6 experts of which 2 are
 picked, tied head, and multipliers that are not 1) as Hugging Face's `GraniteMoeForCausalLM` runs it in `float32`: its
 `config.json` (as an official `ibm-granite` repository writes it), its weights under the names of the official checkpoint,
-two sequences of token ids and the logits of every position. `test/granite_moe_test.agc` writes the weights as a
-safetensors file, opens the folder with `GraniteMoe.open` and compares the logits. No model is stored, only this small
-file.
+two sequences of token ids, the logits of every position, and the 14 ids and logits of a greedy `generate` from the first
+sequence. `test/granite_moe_test.agc` and `test/generate_granite_moe_test.agc` write the weights as a safetensors file,
+open the folder with `GraniteMoe.open` and compare the logits and the ids. No model is stored, only this small file.
 
 Manual, not run by the tests: it needs `torch` 2.6.0 and `transformers` 4.57.6 (the script stops on other versions). Run
 it in the venv of the repository (or a throwaway one), from `transformers/`, with Python's isolated mode:
@@ -29,6 +29,7 @@ SHAPE = dict(
     residual_multiplier=0.5, logits_scaling=2.5, tie_word_embeddings=True, attention_bias=False, rope_scaling=None,
 )
 ROWS = [[3, 1, 4, 1, 5, 9, 2], [6, 5, 3, 5, 8, 9, 7]]
+NEW = 14
 
 
 def flat(t):
@@ -44,7 +45,15 @@ def main():
             scale = 0.2 if "norm" in name else 0.5
             offset = 1.0 if "norm" in name else 0.0
             p.copy_((offset + torch.randn_like(p) * scale).double().round(decimals=8).float())
-        logits = model(torch.tensor(ROWS)).logits
+        ids = torch.tensor(ROWS)
+        logits = model(ids).logits
+        model.generation_config.eos_token_id = None
+        made = model.generate(ids[:1], do_sample=False, max_new_tokens=NEW, output_scores=True,
+                              return_dict_in_generate=True, pad_token_id=0)
+    # the cache keeps the keys and values in F16 on ggml: a greedy choice must not hang on a gap below that noise
+    for step in made.scores:
+        top = step[0].topk(2).values
+        assert float(top[0] - top[1]) > 0.02, float(top[0] - top[1])
     weights = {}
     shapes = {}
     for name, p in model.state_dict().items():
@@ -54,7 +63,8 @@ def main():
         shapes[name] = list(p.shape)
     document = dict(SHAPE, model_type="granitemoe", architectures=["GraniteMoeForCausalLM"], torch_dtype="bfloat16")
     json.dump({"config": json.dumps(document), "weights": weights, "shapes": shapes, "rows": ROWS,
-               "logits": flat(logits)}, sys.stdout)
+               "logits": flat(logits), "generated": made.sequences[0, len(ROWS[0]):].tolist(),
+               "scores": [flat(step[0]) for step in made.scores]}, sys.stdout)
     sys.stdout.write("\n")
 
 

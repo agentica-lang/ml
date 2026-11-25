@@ -202,6 +202,25 @@ def traced(m: GraniteMoe) -> GraniteMoe
   )
 end
 
+## `x` times the constant `factor`. Internal: the steps of `Generate` use it.
+def times(x: Tensor.Tensor, factor: Float) -> Result[Tensor.Tensor]
+  Tensor.mul(x, try Tensor.full(Tensor.shape(x), Tensor.Values.Float(factor), Tensor.dtype(x), Tensor.backend(x)))
+end
+
+## The logits of the final-normed hidden rows `h`: the head, divided by `logits_scaling`. Internal, as `times`.
+def scores(m: GraniteMoe, h: Tensor.Tensor) -> Result[Tensor.Tensor]
+  out = try Nn.dense(m.head, h)
+  Tensor.div(
+    out,
+    try Tensor.full(
+      Tensor.shape(out),
+      Tensor.Values.Float(m.config.logits_scaling),
+      Tensor.dtype(out),
+      Tensor.backend(out),
+    ),
+  )
+end
+
 private
 
 def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]
@@ -277,11 +296,6 @@ def layer(
   )
 end
 
-## `x` times the constant `factor`.
-def times(x: Tensor.Tensor, factor: Float) -> Result[Tensor.Tensor]
-  Tensor.mul(x, try Tensor.full(Tensor.shape(x), Tensor.Values.Float(factor), Tensor.dtype(x), Tensor.backend(x)))
-end
-
 ## `x` `[batch, seq, width]` through a layer: each branch is scaled by `residual_multiplier` before its residual add.
 def through(m: GraniteMoe, l: Layer, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   seen = try Nn.self_attention(l.attention, try Nn.layer_norm(l.norm1, x), none, true)
@@ -307,14 +321,5 @@ def graph(m: GraniteMoe, ids: Tensor.Tensor, last: Bool) -> Result[Tensor.Tensor
     h = try Tensor.slice(h, [0, seq - 1, 0], [batch, seq, width])
   end
 
-  scores = try Nn.dense(m.head, h)
-  Tensor.div(
-    scores,
-    try Tensor.full(
-      Tensor.shape(scores),
-      Tensor.Values.Float(m.config.logits_scaling),
-      Tensor.dtype(scores),
-      Tensor.backend(scores),
-    ),
-  )
+  scores(m, h)
 end
