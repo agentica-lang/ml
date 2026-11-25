@@ -1,0 +1,246 @@
+## DistilBERT for inference, from a Hugging Face checkpoint: the embeddings (words and learned positions, a layer
+## norm, no token types), the post-norm encoder blocks with the exact GELU, and no pooler
+## (`transformers/DESIGN.md`). `embed` adds the mean pooling and the optional normalization of a
+## sentence-transformers model (`sentence-transformers/msmarco-distilbert-cos-v5`).
+##
+## It loads the checkpoint of a `DistilBertModel` (no prefix) and of a `DistilBertFor...` (`distilbert.` prefix,
+## whose heads are ignored).
+
+import Hub from "pkg/hub/hub"
+import Lift from "lift"
+import Load from "pkg/hub/load"
+import Nn from "pkg/nn/nn"
+import Sentence from "sentence"
+import Source from "tokenizer/source"
+import Tensor from "pkg/tensor/tensor"
+import WordPiece from "tokenizer/wordpiece"
+
+## The `eps` of every layer norm: Hugging Face's DistilBERT has it in the code, not in the config.
+LAYER_NORM_EPS = 0.000000000001
+
+## The fields of `config.json` that the model reads.
+struct Config
+  dim: Int
+  n_layers: Int
+  n_heads: Int
+  hidden_dim: Int
+  vocab_size: Int
+  max_position_embeddings: Int
+  model_type: String
+  activation: String = "gelu"
+  pad_token_id: Int = 0
+  sinusoidal_pos_embds: Bool = false
+end
+
+struct DistilBert
+  config: Config
+  words: Nn.Embedding
+  positions: Nn.Embedding
+  norm: Nn.LayerNorm
+  stack: Nn.EncoderStack
+end
+
+## The model in `dir`, which holds `model.safetensors` and `config.json`.
+def open(dir: String, backend: Tensor.Backend) -> Result[DistilBert]
+  text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
+  config = try Source.within("#{dir}/config.json", JSON.decode(text, Config))
+  load(try Hub.open("#{dir}/model.safetensors"), config, backend)
+end
+
+## The model of an open checkpoint, its shapes checked against `config`.
+def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[DistilBert]
+  return error("model_type is #{config.model_type}, not distilbert") if config.model_type != "distilbert"
+  return error("sinusoidal position embeddings are not supported") if config.sinusoidal_pos_embds
+  return error("activation #{config.activation} is not supported, only gelu") if config.activation != "gelu"
+  width = config.dim
+  if config.n_heads < 1 or width % config.n_heads != 0
+    return error("dim #{width} is not a multiple of #{config.n_heads} heads")
+  end
+
+  prefix = ""
+  if Hub.has?(c, "distilbert.embeddings.word_embeddings.weight")
+    prefix = "distilbert."
+  end
+
+  e = "#{prefix}embeddings."
+  words = try Load.embedding(c, "#{e}word_embeddings.weight", backend)
+  try expect_shape("#{e}word_embeddings.weight", words.table, [config.vocab_size, width])
+  positions = try Load.embedding(c, "#{e}position_embeddings.weight", backend)
+  try expect_shape("#{e}position_embeddings.weight", positions.table, [config.max_position_embeddings, width])
+  blocks: List[Nn.EncoderBlock] = []
+  for i in 0...config.n_layers
+    block = try Load.encoder_block(
+      c,
+      block_names("#{prefix}transformer.layer.#{i}."),
+      config.n_heads,
+      Nn.Activation.GeluErf,
+      LAYER_NORM_EPS,
+      backend,
+    )
+
+    try expect_shape("layer #{i} lin1", block.mlp.up.w, [config.hidden_dim, width])
+    blocks = blocks.push(block.with(norm_first: false))
+  end
+
+  ok(
+    DistilBert(
+      config: config,
+      words: words,
+      positions: positions,
+      norm: try Load.layer_norm(c, "#{e}LayerNorm", LAYER_NORM_EPS, backend),
+      stack: Nn.EncoderStack(blocks: blocks),
+    ),
+  )
+end
+
+## The last hidden state `[batch, seq, dim]` of the batch of `encodings` (`WordPiece.encode`), padded with
+## `pad_token_id` to the longest; the padding rows are in it. Every encoding needs a token. The caller closes the
+## result (`Lift.close`).
+def run(m: DistilBert, encodings: List[WordPiece.Encoding]) -> Result[Tensor.Tensor]
+  batch = try inputs(m, encodings)
+  out = through(m, batch, Pooling.Hidden)
+  Lift.close([batch.ids, batch.keep])
+  out
+end
+
+## The sentence embedding of each encoding: the mean of its token vectors (padding left out) as `[batch, dim]`,
+## which the caller closes; with `normalize`, each over its length (the `Normalize` module of the checkpoint).
+def embed(m: DistilBert, encodings: List[WordPiece.Encoding], normalize: Bool = false) -> Result[Tensor.Tensor]
+  batch = try inputs(m, encodings)
+  pooling = Pooling.Mean
+  if normalize
+    pooling = Pooling.Normalized
+  end
+
+  out = through(m, batch, pooling)
+  Lift.close([batch.ids, batch.keep])
+  out
+end
+
+## `ids` (`I32`, `[batch, seq]`) and `mask` (`F32`, `[batch, seq]`: 1.0 for a token, 0.0 for padding), through the
+## model: the last hidden state. `seq` may not pass `max_position_embeddings`.
+def forward(m: DistilBert, ids: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Tensor.Tensor]
+  through(m, Inputs(ids: ids, keep: mask), Pooling.Hidden)
+end
+
+## Closes the weights of `m` now. Nothing may use `m` afterwards: a call that does is an error, never a read of freed
+## memory.
+def close_model(m: DistilBert) -> Void
+  tensors = [m.words.table, m.positions.table] + Lift.norm_parts(m.norm)
+  for b in m.stack.blocks
+    tensors = tensors + Lift.block_parts(b)
+  end
+
+  Lift.close(tensors)
+end
+
+private
+
+## The input tensors of a batch: the ids (`I32`) and the mask (`F32`).
+struct Inputs
+  ids: Tensor.Tensor
+  keep: Tensor.Tensor
+end
+
+## What follows the encoder in one graph.
+enum Pooling
+  Hidden
+  Mean
+  Normalized
+end
+
+## The tensors of `m` as `Trace` constants (`Lift`).
+def traced(m: DistilBert) -> DistilBert
+  m.with(
+    words: Lift.embedding(m.words),
+    positions: Lift.embedding(m.positions),
+    norm: Lift.norm(m.norm),
+    stack: Nn.EncoderStack(blocks: m.stack.blocks.map { |b| Lift.block(b) }),
+  )
+end
+
+## The names of one block, under `p` (`transformer.layer.N.`).
+def block_names(p: String) -> Load.BlockNames
+  Load.BlockNames(
+    norm1: "#{p}sa_layer_norm",
+    query: "#{p}attention.q_lin",
+    key: "#{p}attention.k_lin",
+    value: "#{p}attention.v_lin",
+    output: "#{p}attention.out_lin",
+    norm2: "#{p}output_layer_norm",
+    up: "#{p}ffn.lin1",
+    down: "#{p}ffn.lin2",
+  )
+end
+
+def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]
+  return error("#{name}: needs #{want}, got #{Tensor.shape(t)}") if Tensor.shape(t) != want
+  ok()
+end
+
+## The model over `batch`, then `pooling`: one graph on ggml.
+def through(m: DistilBert, batch: Inputs, pooling: Pooling) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(batch.ids)
+  if shape.size != 2 or Tensor.shape(batch.keep) != shape
+    return error("the model needs ids and a mask of one [batch, seq] shape, got #{shape}")
+  end
+
+  if shape[1] > m.config.max_position_embeddings
+    return error("#{shape[1]} tokens pass max_position_embeddings #{m.config.max_position_embeddings}")
+  end
+
+  outs = try Lift.staged(
+    m,
+    ->(p: DistilBert) { traced(p) },
+    [batch.ids, batch.keep],
+    ->(p: DistilBert, xs: List[Tensor.Tensor]) { ok([try graph(p, xs[0], xs[1], pooling)]) },
+  )
+
+  ok(outs[0])
+end
+
+## The batch of `encodings` as tensors: padded to the longest, with the mask.
+def inputs(m: DistilBert, encodings: List[WordPiece.Encoding]) -> Result[Inputs]
+  return error("run needs at least one encoding") if encodings.empty?
+  seq = encodings.map { |e| e.ids.size }.max.unwrap!
+  ids: List[Tensor.Values] = []
+  keep: List[Tensor.Values] = []
+  for e in encodings
+    return error("an encoding has no tokens") if e.ids.empty?
+    for i in 0...seq
+      if i < e.ids.size
+        ids = ids.push(Tensor.Values.Int(e.ids[i]))
+        keep = keep.push(Tensor.Values.Float(1.0))
+      else
+        ids = ids.push(Tensor.Values.Int(m.config.pad_token_id))
+        keep = keep.push(Tensor.Values.Float(0.0))
+      end
+    end
+  end
+
+  backend = Tensor.backend(m.words.table)
+  shape = [encodings.size, seq]
+  id_tensor = try Tensor.from_list(ids, shape, Tensor.Dtype.I32, backend)
+  case Tensor.from_list(keep, shape, Tensor.Dtype.F32, backend)
+    ok(mask) -> ok(Inputs(ids: id_tensor, keep: mask))
+    error(e) ->
+      Lift.close([id_tensor])
+      error(e)
+  end
+end
+
+## The embeddings and the blocks, then the pooling.
+def graph(m: DistilBert, ids: Tensor.Tensor, mask: Tensor.Tensor, pooling: Pooling) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(ids)
+  batch = shape[0]
+  seq = shape[1]
+  width = m.config.dim
+  words = try Tensor.reshape(try Nn.embedding(m.words, try Tensor.reshape(ids, [batch * seq])), [batch, seq, width])
+  h = try Nn.layer_norm(m.norm, try Nn.positional(m.positions, words))
+  h = try Nn.encoder_stack(m.stack, h, some(try Nn.padding_bias(mask)))
+  case pooling
+    Pooling.Hidden -> ok(h)
+    Pooling.Mean -> Sentence.mean_pooled(h, mask)
+    Pooling.Normalized -> Sentence.normalized(try Sentence.mean_pooled(h, mask))
+  end
+end

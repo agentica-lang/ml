@@ -13,6 +13,7 @@ import Tensor from "pkg/tensor/tensor"
 import WordPiece from "tokenizer/wordpiece"
 import Source from "tokenizer/source"
 import Lift from "lift"
+import Sentence from "sentence"
 
 ## The fields of `config.json` that the model reads.
 struct Config
@@ -137,7 +138,7 @@ def embed(m: Bert, encodings: List[WordPiece.Encoding]) -> Result[Tensor.Tensor]
         m,
         ->(p: Bert) { p },
         [xs[0], batch.keep],
-        ->(_: Bert, ys: List[Tensor.Tensor]) { ok([try mean_pooled(ys[0], ys[1])]) },
+        ->(_: Bert, ys: List[Tensor.Tensor]) { ok([try Sentence.mean_pooled(ys[0], ys[1])]) },
       )
     error(e) -> error(e.message)
   end
@@ -319,7 +320,7 @@ def graph(
   words = try Tensor.reshape(try Nn.embedding(m.words, try Tensor.reshape(ids, flat)), [batch, seq, width])
   kinds = try Tensor.reshape(try Nn.embedding(m.types, try Tensor.reshape(type_ids, flat)), [batch, seq, width])
   h = try Nn.layer_norm(m.norm, try Nn.positional(m.positions, try Tensor.add(words, kinds)))
-  h = try Nn.encoder_stack(m.stack, h, some(try padding_bias(mask)))
+  h = try Nn.encoder_stack(m.stack, h, some(try Nn.padding_bias(mask)))
   return ok([h]) if not pool
   case m.pooler
     some(p) ->
@@ -327,27 +328,4 @@ def graph(
       ok([h, try Tensor.tanh(try Nn.dense(p, first))])
     none -> ok([h])
   end
-end
-
-## The additive bias `[batch, 1, seq, seq]` of a `[batch, seq]` mask: `MASKED`
-## on the keys that are padding, 0.0 elsewhere.
-def padding_bias(mask: Tensor.Tensor) -> Result[Tensor.Tensor]
-  shape = Tensor.shape(mask)
-  ones = try Tensor.full(shape, Tensor.Values.Float(1.0), Tensor.Dtype.F32, Tensor.backend(mask))
-  scale = try Tensor.full(shape, Tensor.Values.Float(Nn.MASKED), Tensor.Dtype.F32, Tensor.backend(mask))
-  bias = try Tensor.mul(try Tensor.sub(ones, mask), scale)
-  Tensor.broadcast_to(try Tensor.reshape(bias, [shape[0], 1, 1, shape[1]]), [shape[0], 1, shape[1], shape[1]])
-end
-
-## `hidden` `[batch, seq, width]` averaged over the tokens `mask` keeps. The
-## tokens are the last axis while they are summed, as ggml lowers only sums
-## over a leading or trailing block of axes.
-def mean_pooled(hidden: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Tensor.Tensor]
-  shape = Tensor.shape(hidden)
-  across = [shape[0], shape[2], shape[1]]
-  row = try Tensor.reshape(mask, [shape[0], 1, shape[1]])
-  masked = try Tensor.mul(try Tensor.permute(hidden, [0, 2, 1]), try Tensor.broadcast_to(row, across))
-  total = try Tensor.sum(masked, some([2]))
-  count = try Tensor.sum(mask, some([1]), true)
-  Tensor.div(total, try Tensor.broadcast_to(count, [shape[0], shape[2]]))
 end

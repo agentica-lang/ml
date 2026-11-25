@@ -29,6 +29,8 @@ struct WordPiece
   sep: Int
   ## The `max_length` of the file's `truncation`, none when it has none.
   max_length: Optional[Int] = none
+  ## The `pad_id` of the file's `padding`, none when it has none: a model pads with its config's `pad_token_id`.
+  pad_id: Optional[Int] = none
 end
 
 struct Encoding
@@ -46,6 +48,12 @@ end
 def parse(text: String) -> Result[WordPiece]
   file = try JSON.decode(text, Json)
   max_length = try Added.limit(file.truncation, file.padding)
+  pad_id: Optional[Int] = none
+  case file.padding
+    some(p) -> pad_id = p.pad_id
+    none -> nil
+  end
+
   kind = file.model.type.unwrap_or("WordPiece")
   return error("the model is #{kind}, not WordPiece") if kind != "WordPiece"
   if file.normalizer.type != "BertNormalizer"
@@ -104,6 +112,7 @@ def parse(text: String) -> Result[WordPiece]
       cls: cls,
       sep: sep,
       max_length: max_length,
+      pad_id: pad_id,
     ),
   )
 end
