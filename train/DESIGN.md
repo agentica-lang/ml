@@ -16,7 +16,7 @@ Optim.Optimizer = Sgd(Sgd { lr, momentum = 0, schedule = Constant }) | Adam(Adam
                 | AdamW(AdamW { Adam's fields, weight_decay = 0.01, decay: List[Bool] = [] })
 Optim.Schedule = Constant | WarmupLinear(warmup, total) | WarmupCosine(warmup, total)
 Optim.init(optimizer, params) -> Result[State]
-Optim.step(state, params, grads, scalars = []) -> Result[Step { state, params }]
+Optim.step(state, params, grads, scalars = []) -> Result[Step { state, params }]   scalars: tensors of step_inputs, or none
 Optim.learning_rate(state) -> Float             lr times the schedule at the step count
 Optim.step_inputs(state) -> List[List[Float]]   the inputs of the next step: SGD's rate, or Adam's 7 numbers (AdamW has two rows)
 
@@ -125,9 +125,9 @@ Params.update(weights, changed) -> Result[Map[String, Tensor]]
   `Optim.step_inputs` (SGD's rate as a rank-0 input, Adam's 7 numbers in one
   rank-1 input), passed as the `scalars` of `Optim.step`, as `fit` passes them;
   so a learning rate that changes at every step (a schedule, which starts at 0)
-  is not a new graph. An `adam_step` node has no StableHLO, so `stablehlo`
-  steps with `fused: false`: the composition of ops that `Tensor.adam_step` is
-  everywhere else, one formula. The goldens in `test/fixtures/stablehlo/`
+  is not a new graph. An `adam_step` node has no StableHLO: `Trace.stablehlo`
+  writes it as the composition of ops that `Tensor.adam_step` is on every other
+  backend, one formula. The goldens in `test/fixtures/stablehlo/`
   are three chained runs on IREE, which `fit` reproduces at steps 1 and 3.
 - **Adam's moments are updated where they lie.** A step on ggml runs Adam's
   update as `Tensor.adam_step`, and in the compiled step of `fit` its first and

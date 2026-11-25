@@ -1101,8 +1101,8 @@ end
 ## `m = beta1 m + (1 - beta1) g`, `v = beta2 v + (1 - beta2) g^2`,
 ## `p = p (1 - lr decay) - lr (m / (1 - beta1^t)) / (sqrt(v / (1 - beta2^t)) + eps)`. In a trace of `F32` tensors of
 ## rank 3 or less it is one node, which ggml runs as `ggml_opt_step_adamw` on copies of the arguments (they stay
-## unchanged); every other case is the composition of the ops above, which `fused: false` asks for in a trace too (for
-## `Trace.stablehlo`, which has no emitter for the node). In a function compiled by `Trace.compile`, the
+## unchanged); every other case is the composition of the ops above (`Trace.stablehlo` writes that composition, as it has
+## no emitter for the node). In a function compiled by `Trace.compile`, the
 ## moments `m` and `v` are updated in place, and their results are those very tensors (as the cache of a `set_rows`),
 ## when they are inputs that nothing else reads and both results are outputs: they are consumed. `Trace.eval` and
 ## `eval_many` never do.
@@ -1112,7 +1112,6 @@ def adam_step(
   m: Types.Tensor,
   v: Types.Tensor,
   hyper: Types.Tensor,
-  fused: Bool = true,
 ) -> Result[List[Types.Tensor]]
   for t in [g, m, v, hyper]
     _ = try same_backend(p, t, "adam_step")
@@ -1127,7 +1126,7 @@ def adam_step(
   return error("adam_step needs 7 hyper-parameters, got shape #{hyper.shape}") if hyper.shape != [7]
   case p.backend
     Types.Backend.Trace ->
-      if fused and p.dtype == Types.Dtype.F32 and p.shape.size <= 3
+      if p.dtype == Types.Dtype.F32 and p.shape.size <= 3
         stepped = Graph.adam_step([p, g, m, v, hyper], p)
         return ok((0...3).map { |i| Graph.adam_part(stepped, i, p.shape) })
       end
@@ -1135,6 +1134,23 @@ def adam_step(
       adam_composed(p, g, m, v, hyper)
     _ -> adam_composed(p, g, m, v, hyper)
   end
+end
+
+## Derived: `adam_step` from the ops of §3.1, over the numbers of `adam_coefficients`, on every backend (a trace
+## records the ops, not the node): call `adam_step`; `Trace.stablehlo` calls this one.
+def adam_composed(
+  p: Types.Tensor,
+  g: Types.Tensor,
+  m: Types.Tensor,
+  v: Types.Tensor,
+  hyper: Types.Tensor,
+) -> Result[List[Types.Tensor]]
+  c = try adam_coefficients(hyper, p)
+  first = try add(try mul(m, c[1]), try mul(g, c[2]))
+  second = try add(try mul(v, c[3]), try mul(try mul(g, g), c[4]))
+  denominator = try add(try sqrt(try mul(second, c[8])), c[5])
+  step = try mul(c[0], try div(try mul(first, c[7]), denominator))
+  ok([try sub(try mul(p, c[6]), step), first, second])
 end
 
 ## Derived: the user-facing `gelu` is the `tanh` approximation (§3.2).
@@ -1522,22 +1538,6 @@ def layer_norm_composed(x: Types.Tensor, eps: Float) -> Result[Types.Tensor]
   eps_full = try full(x.shape, Types.Values.Float(eps), x.dtype, x.backend)
   denom = try sqrt(try add(try broadcast_to(var, x.shape), eps_full))
   div(centered, denom)
-end
-
-## Derived: `adam_step` from the ops of §3.1, over the numbers of `adam_coefficients`.
-def adam_composed(
-  p: Types.Tensor,
-  g: Types.Tensor,
-  m: Types.Tensor,
-  v: Types.Tensor,
-  hyper: Types.Tensor,
-) -> Result[List[Types.Tensor]]
-  c = try adam_coefficients(hyper, p)
-  first = try add(try mul(m, c[1]), try mul(g, c[2]))
-  second = try add(try mul(v, c[3]), try mul(try mul(g, g), c[4]))
-  denominator = try add(try sqrt(try mul(second, c[8])), c[5])
-  step = try mul(c[0], try div(try mul(first, c[7]), denominator))
-  ok([try sub(try mul(p, c[6]), step), first, second])
 end
 
 ## `[lr, beta1, 1 - beta1, beta2, 1 - beta2, eps, 1 - lr decay, correct1, correct2]` as tensors of the shape of `p`.

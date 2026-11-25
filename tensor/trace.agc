@@ -254,7 +254,44 @@ end
 def stablehlo(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]]) -> Result[Stablehlo.Module]
   return error("a StableHLO program needs at least one input") if specs.empty?
   inputs = specs.map { |s| Graph.record(Types.Op.Input, [], s.shape, s.dtype) }
-  Stablehlo.emit(inputs, try f.call(inputs))
+  Stablehlo.emit(inputs, try unfused(inputs, try f.call(inputs)))
+end
+
+## `outs` with each `adam_step` node written as the ops of `Tensor.adam_composed`, which StableHLO has an emitter for;
+## `outs` itself when the graph has no such node.
+def unfused(inputs: List[Types.Tensor], outs: List[Types.Tensor]) -> Result[List[Types.Tensor]]
+  positions: Map[Ref, Int] = {}
+  for i in 0...inputs.size
+    positions = positions.put(Graph.id_of(inputs[i]), i)
+  end
+
+  nodes = try Lower.walk(outs, positions)
+  has_step = false
+  for t in nodes
+    n = try Graph.node_of(t)
+    case n.op
+      Types.Op.AdamStep -> has_step = true
+      _ -> nil
+    end
+  end
+
+  return ok(outs) if !has_step
+  values: Map[Ref, Types.Tensor] = {}
+  steps: Map[Ref, List[Types.Tensor]] = {}
+  for t in nodes
+    n = try Graph.node_of(t)
+    args = n.args.map { |a| values.get(Graph.id_of(a), a) }
+    case n.op
+      Types.Op.AdamStep ->
+        steps = steps.put(n.id, try Tensor.adam_composed(args[0], args[1], args[2], args[3], args[4]))
+      Types.Op.AdamPart(i) -> values = values.put(n.id, steps[Graph.id_of(n.args[0])][i])
+      Types.Op.Input -> values = values.put(n.id, t)
+      Types.Op.Constant(_) -> values = values.put(n.id, t)
+      _ -> values = values.put(n.id, Graph.record(n.op, args, t.shape, t.dtype))
+    end
+  end
+
+  ok(outs.map { |o| values[Graph.id_of(o)] })
 end
 
 ## One run of `compiled` over `args`, which must match its specs (shape,

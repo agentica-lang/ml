@@ -123,16 +123,6 @@ def overflowing(a: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   Tensor.adam_step(a[0], try Tensor.exp(try Tensor.mul(a[1], big)), a[2], a[3], a[4])
 end
 
-## `fused: false` composes in a trace of any rank: the same numbers, and no node (the StableHLO program takes this form).
-def test_unfused_composes_in_a_trace() -> Result[Void]
-  args = try tensors(Tensor.Backend.Reference, Tensor.Dtype.F32)
-  outs = try Trace.eval_many(args) do |a| Tensor.adam_step(a[0], a[1], a[2], a[3], a[4], false) end
-  try close(try S.floats_of(outs[0]), WANT_P, 0.000001, "p")
-  try close(try S.floats_of(outs[1]), WANT_M, 0.000001, "m")
-  try close(try S.floats_of(outs[2]), WANT_V, 0.000001, "v")
-  ok()
-end
-
 ## Rank 4 is past what the node takes (the stack needs one more axis): the composition runs there and agrees.
 def test_a_rank_4_weight_composes() -> Result[Void]
   for backend in try ggml_backends()

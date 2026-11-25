@@ -152,8 +152,9 @@ finite values (a non-finite one reaches the new weight through the update,
 which is checked); the second is, since an infinite one leaves the weight finite
 and frozen. `Trace.eval` and
 `eval_many` never donate. It has no gradient (a gradient through the Adam
-update of `Optim.step` is an error). A StableHLO module does not take it
-(`Train.stablehlo` passes rank-0 scalars, which keep the older composition).
+update of `Optim.step` is an error). A StableHLO module has no node for it:
+`Trace.stablehlo` writes the composition of ops that `adam_step` is on the
+other backends.
 Convolution/pooling: `conv1d, avg_pool1d` (stride and padding; no dilation or
 groups).
 Random: none (dropout is identity at inference).

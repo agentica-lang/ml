@@ -93,14 +93,12 @@ end
 
 ## `scalars` are the inputs of a step that is one compiled program of every step count, where it otherwise holds the
 ## numbers as constants: the tensors of `step_inputs` (Adam's and AdamW's are rank-1 tensors of 7 numbers, which
-## `Tensor.adam_step` takes). `fused: false` is the Adam update as the ops of `Tensor.adam_step` in a trace too, which
-## `Train.stablehlo` needs.
+## `Tensor.adam_step` takes).
 def step(
   state: State,
   params: List[Tensor.Tensor],
   grads: List[Tensor.Tensor],
   scalars: List[Tensor.Tensor] = [],
-  fused: Bool = true,
 ) -> Result[Step]
   if grads.size != params.size
     return error("step needs one gradient per parameter, got #{grads.size} for #{params.size}")
@@ -112,7 +110,7 @@ def step(
       sgd(o, state, params, grads, scalars)
     Optimizer.Adam(o) ->
       try check_adam_rows(scalars, 1, "an Adam step takes one input of 7 numbers")
-      adam(o, none, state, params, grads, scalars, fused)
+      adam(o, none, state, params, grads, scalars)
     Optimizer.AdamW(o) ->
       try check_adam_rows(scalars, 2, "an AdamW step takes two inputs of 7 numbers")
       try check_decay(o, params.size)
@@ -121,7 +119,7 @@ def step(
         decays = List.repeat(true, params.size)
       end
 
-      adam(plain(o), some(decays), state, params, grads, scalars, fused)
+      adam(plain(o), some(decays), state, params, grads, scalars)
   end
 end
 
@@ -134,8 +132,8 @@ def learning_rate(state: State) -> Float
   end
 end
 
-## The numbers of each input of the step that `Train.fit` and `Train.stablehlo` compile, one list per input: SGD's learning rate, and for
-## Adam the 7 numbers of `Tensor.adam_step` (the learning rate with its schedule, `beta1`, `beta2`, `eps`, the weight
+## The numbers of each input of the step that `Train.fit` and `Train.stablehlo` compile, one list per input: SGD's
+## learning rate, and for Adam the 7 numbers of `Tensor.adam_step` (the learning rate with its schedule, `beta1`, `beta2`, `eps`, the weight
 ## decay, then the two bias corrections); AdamW has two, the second without decay, for the parameters that do not
 ## decay. A one-number input is a rank-0 tensor, the other a rank-1 tensor.
 def step_inputs(state: State) -> List[List[Float]]
@@ -256,7 +254,6 @@ def adam(
   params: List[Tensor.Tensor],
   grads: List[Tensor.Tensor],
   scalars: List[Tensor.Tensor],
-  fused: Bool,
 ) -> Result[Step]
   rows = scalars
   if rows.empty?
@@ -276,7 +273,7 @@ def adam(
       row = try Tensor.to_dtype(row, Tensor.dtype(params[i]))
     end
 
-    moved = try Tensor.adam_step(params[i], grads[i], state.first[i], state.second[i], row, fused)
+    moved = try Tensor.adam_step(params[i], grads[i], state.first[i], state.second[i], row)
     out = out.push(moved[0])
     first = first.push(moved[1])
     second = second.push(moved[2])
