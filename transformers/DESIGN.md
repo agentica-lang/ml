@@ -3,7 +3,8 @@
 BERT, DistilBERT, Qwen3, Qwen2.5, ResNet, ViT and CLIP, from Hugging Face checkpoints (Qwen3 also
 from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
 with a KV cache (greedy or sampled), the tokenizers, and the weights by name
-for a fine-tune with `train/`. Qwen3.5 is planned (ml#150, ml#151).
+for a fine-tune with `train/`. Qwen3.5 (text only) has its forward; generation,
+the tokenizer and the 2B model follow (ml#150).
 
 ## Generation
 
@@ -88,6 +89,35 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
   `load`). `tie_word_embeddings` defaults to `true`, as in Hugging Face, and
   then the file's `lm_head.weight` is ignored. On the reference backend
   attention needs `q * k` of at most 1,048,576 (about 1024 tokens, causal).
+
+## Qwen3.5
+
+`qwen3_5.agc`: `Qwen3_5.open(dir, backend, weights = F32)` (the folder of an
+official `Qwen/Qwen3.5-*` repository: `config.json` and `model.safetensors` or
+its `.index.json`), `Qwen3_5.run(m, rows, last)`, `Qwen3_5.logits(m, ids, last)`
+and `Qwen3_5.close_model(m)`. The forward is over whole sequences, with no
+cache; the hybrid cache comes with generation.
+
+- `config.json` is nested: the text model is `text_config` (`model_type`
+  `qwen3_5_text`), the file is `qwen3_5`. The vision tower (`model.visual.*`)
+  and the multi-token-prediction head (`mtp.*`) of the checkpoint are not read.
+  Text weights are under `model.language_model.`.
+- A layer is `Mixer.Linear` (`Delta.GatedDeltaNet`, `nn/DESIGN.md`) or
+  `Mixer.Full` (`Nn.Attention` with `gate`, GQA, `q_norm` and `k_norm`, rope on
+  the first `head_dim * partial_rotary_factor` columns), by `layer_types`
+  (every fourth is full attention in 0.8B). Both are followed by the gated MLP
+  with `Silu`. Rope positions are the token index: the three M-RoPE sections
+  agree for text, so the plain `rotate_half` rope with `dims` is the same.
+- Every norm of the decoder and the `q_norm` and `k_norm` scale by
+  `1 + weight`, not `weight`: the loader adds the 1 on the host
+  (`centered`). The gated norm of the linear layer keeps its weight as it is.
+- `conv1d.weight` is stored `[channels, 1, taps]` and kept `[channels, taps]`.
+  `q_proj.weight` is `[2 * heads * head_dim, hidden]`: per head the query rows,
+  then the gate rows (`Nn.query_heads`).
+- The head is the embedding table when `tie_word_embeddings` (the case of 0.8B
+  and 2B). A `model_type`, `hidden_act`, `layer_types` entry or `rope_type`
+  this loader does not run, `attention_bias` and a config without the output
+  gate are errors.
 
 `chat.agc`: `Chat.apply(model_type, messages, add_generation_prompt,
 enable_thinking)` is the ChatML text of `apply_chat_template` for the two
@@ -311,6 +341,18 @@ best classes with their `id2label` names.
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and
   in `float32` untied, on the reference and on ggml.
+- `test/qwen35_test.agc` against `test/qwen35_golden.py` (manual, Hugging Face's
+  `Qwen3_5ForCausalLM` in `float32`, `fixtures/qwen35_golden.json`): a tiny
+  random model (3 linear layers and 1 full layer, hidden 16, partial rotary
+  half, tied head) written as a safetensors file under the official names; the
+  logits of every position of two rows match on the reference (1e-4) and on
+  ggml CPU (1e-3), and the unsupported configs are errors.
+- `tools/qwen35_check.agc` against Hugging Face's `Qwen3_5ForCausalLM`
+  (`test/qwen35_check_golden.py`, manual): `Qwen/Qwen3.5-0.8B` on five prompts
+  of 5 to 50 tokens, the logits of the last position over the vocabulary and the
+  five largest logits of every position, in `float32`. Largest gap of a logit:
+  2.0e-5 on ggml CPU; the top five ids are the same at every position. Vulkan
+  is not measured yet.
 - `test/generate_test.agc` against the same peer: the logits of every step of
   a row of 20 ids (the prompt padded to a bucket, the cache growing to 16 and
   32 rows) match the peer's forward over the whole row on the reference (1e-9)

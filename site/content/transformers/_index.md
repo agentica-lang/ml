@@ -4,7 +4,7 @@ description: BERT, Qwen3, Qwen2.5, ResNet, ViT and CLIP in Agentica from Hugging
 weight: 7
 ---
 
-`transformers` is BERT, Qwen3, Qwen2.5, ResNet, ViT and CLIP in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), ResNet-18 and ResNet-50 and ViT-B/16 (image classification), CLIP ViT-B/32 (image and text embeddings, zero-shot classification), and the tokenizers of BERT, Qwen and CLIP: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
+`transformers` is BERT, Qwen3, Qwen3.5 (text, forward only), Qwen2.5, ResNet, ViT and CLIP in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), ResNet-18 and ResNet-50 and ViT-B/16 (image classification), CLIP ViT-B/32 (image and text embeddings, zero-shot classification), and the tokenizers of BERT, Qwen and CLIP: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
 
 ## BERT
 
@@ -198,6 +198,26 @@ end
 - `Qwen3.run` is the forward over a whole sequence, with no cache: on ggml every call traces and plans a graph (0.6 to 1.7 seconds on the CPU, 0.2 to 0.6 second on Vulkan for these prompts). To generate, use `Generate`.
 - `Qwen3.close_model(m)` frees the weights; the logits belong to the caller (`Lift.close`). `qwen_check` peaks at 3.7 GB on ggml CPU and 1.5 GB on Vulkan, where the weights live in device memory.
 - A `model_type` other than `qwen3` or `qwen2`, an activation other than `silu`, `attention_bias: true`, `rope_scaling`, `use_sliding_window: true` (a `sliding_window` size with it `false` is ignored, as Hugging Face does), a head count that the key heads do not divide, and a tensor of another shape are errors. Reference and ggml are tested; libtorch is not, and a sharded checkpoint is not tested. On the reference backend attention needs `q * k` of at most 1,048,576, about 1024 tokens with the causal mask; ggml has no such limit.
+
+## Qwen3.5
+
+`Qwen3_5.open(dir, backend, weights)` loads the text model of `Qwen/Qwen3.5-0.8B` from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory). `Qwen3_5.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache yet (generation and the tokenizer come next).
+
+```agentica
+import Qwen3_5 from "pkg/transformers/qwen3_5"
+import Tensor from "pkg/tensor/tensor"
+
+def main() -> Void
+  m = Qwen3_5.open("Qwen3.5-0.8B", Tensor.Backend.Ggml(Tensor.Device.Cpu)).unwrap!
+  puts(Tensor.shape(Qwen3_5.run(m, [[760, 6511, 314, 9338, 369]], true).unwrap!))
+  Qwen3_5.close_model(m)
+end
+```
+
+- The model is hybrid: by `layer_types`, a layer is linear attention (a Gated DeltaNet, `Delta.gated_delta_net` of [nn](../nn/_index.md)) or full attention (grouped-query, with an output gate and rotary positions on a quarter of each head), followed by a gated MLP. The head is the embedding table. The vision tower and the multi-token-prediction head of the checkpoint are ignored.
+- The norms of Qwen3.5 scale by `1 + weight`; the loader adds the 1.
+- Against Hugging Face's `Qwen3_5ForCausalLM` in `float32` on ggml CPU, over five prompts of 5 to 50 tokens, the largest gap of a logit is 2.0e-5 and the five largest logits of every position are the same ids. A tiny random model is tested on the reference and ggml. Vulkan is not measured yet.
+- A `model_type` other than `qwen3_5`, an activation other than `silu`, `attention_bias: true`, a `rope_type` other than `default` and a layer type other than `linear_attention` and `full_attention` are errors.
 
 ## Generation
 
