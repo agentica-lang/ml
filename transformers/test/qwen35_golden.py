@@ -2,7 +2,8 @@
 attention one, 16 wide, tied head) as Hugging Face's `Qwen3_5ForCausalLM` runs it in `float32`: its `config.json` (as an
 official `Qwen/Qwen3.5-*` repository writes it), its weights under the names of the official checkpoint
 (`model.language_model.*`, the convolution as `[channels, 1, taps]`, the norms as the zero-centered `weight`), two
-sequences of token ids and the logits of every position. `test/qwen35_test.agc` writes the weights as a safetensors
+sequences of token ids, the logits of every position, and the 14 ids and logits of a greedy `generate` from the first
+sequence. `test/qwen35_test.agc` and `test/generate_qwen35_test.agc` writes the weights as a safetensors
 file, opens the folder with `Qwen3_5.open` and compares the logits. No model is stored, only this small file.
 
 Manual, not run by the tests: it needs `torch` 2.15.0 and `transformers` 5.22.2 (the script stops on other versions)
@@ -31,6 +32,7 @@ SHAPE = dict(
 ROPE = {"rope_type": "default", "rope_theta": 10000, "partial_rotary_factor": 0.5, "mrope_section": [11, 11, 10],
         "mrope_interleaved": True}
 ROWS = [[3, 1, 4, 1, 5, 9, 2], [6, 5, 3, 5, 8, 9, 7]]
+NEW = 14
 
 
 def check_environment():
@@ -58,6 +60,9 @@ def main():
                 layer.linear_attn.A_log.copy_((torch.randn_like(layer.linear_attn.A_log) * 0.5).double().round(decimals=8).float())
         ids = torch.tensor(ROWS)
         logits = model(ids).logits
+        model.generation_config.eos_token_id = None
+        made = model.generate(ids[:1], do_sample=False, max_new_tokens=NEW, output_scores=True,
+                              return_dict_in_generate=True, pad_token_id=0)
     weights = {}
     shapes = {}
     for name, p in model.state_dict().items():
@@ -70,7 +75,9 @@ def main():
     document = {"architectures": ["Qwen3_5ForConditionalGeneration"], "model_type": "qwen3_5", "text_config": text,
                 "tie_word_embeddings": True}
     json.dump({"config": json.dumps(document), "weights": weights, "shapes": shapes, "rows": ROWS,
-               "logits": flat(logits)}, sys.stdout)
+               "logits": flat(logits),
+               "generated": made.sequences[0, len(ROWS[0]):].tolist(),
+               "scores": [flat(step[0]) for step in made.scores]}, sys.stdout)
     sys.stdout.write("\n")
 
 

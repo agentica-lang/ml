@@ -4,7 +4,7 @@ description: BERT, Qwen3, Qwen3.5, Qwen2.5, ResNet, ViT and CLIP in Agentica fro
 weight: 7
 ---
 
-`transformers` is BERT, Qwen3, Qwen3.5 (text, forward only: generation comes next), Qwen2.5, ResNet, ViT and CLIP in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), ResNet-18 and ResNet-50 and ViT-B/16 (image classification), CLIP ViT-B/32 (image and text embeddings, zero-shot classification), and the tokenizers of BERT, Qwen and CLIP: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
+`transformers` is BERT, Qwen3, Qwen3.5 (text), Qwen2.5, ResNet, ViT and CLIP in Agentica, for inference. It has BERT (`bert-base-uncased` and its relatives), Qwen3 and Qwen2.5 (the forward, generation with a KV cache, and the chat template), ResNet-18 and ResNet-50 and ViT-B/16 (image classification), CLIP ViT-B/32 (image and text embeddings, zero-shot classification), and the tokenizers of BERT, Qwen and CLIP: they read the `tokenizer.json` that sits beside a Hugging Face checkpoint and give the same ids as Hugging Face `tokenizers`.
 
 ## BERT
 
@@ -201,7 +201,7 @@ end
 
 ## Qwen3.5
 
-Its tokenizer is `Bpe` and its chat template `Chat.apply("qwen3_5", ...)`, below. `Qwen3_5.open(dir, backend, weights)` loads the text model of `Qwen/Qwen3.5-0.8B` from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory). `Qwen3_5.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache yet (generation comes next).
+Its tokenizer is `Bpe` and its chat template `Chat.apply("qwen3_5", ...)`, below. `Qwen3_5.open(dir, backend, weights)` loads the text model of `Qwen/Qwen3.5-0.8B` from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory). `Qwen3_5.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache; `Generate` of `pkg/transformers/generate_qwen35` generates with a cache that holds the keys and values of the full-attention layers and the states of the linear ones.
 
 ```agentica
 import Qwen3_5 from "pkg/transformers/qwen3_5"
@@ -217,6 +217,7 @@ end
 - The model is hybrid: by `layer_types`, a layer is linear attention (a Gated DeltaNet, `Delta.gated_delta_net` of [nn](../nn/_index.md)) or full attention (grouped-query, with an output gate and rotary positions on part of each head, a quarter in 0.8B), followed by a gated MLP. The head is the embedding table. The vision tower and the multi-token-prediction head of the checkpoint are ignored.
 - The norms of Qwen3.5 scale by `1 + weight`; the loader adds the 1. Only `F32` weights are loaded, a batch is unrolled row by row in the graph, and the model cannot be fine-tuned with `train/`.
 - Against Hugging Face's `Qwen3_5ForCausalLM` in `float32` on ggml CPU, over five prompts of 5 to 50 tokens, the largest gap of a logit is 2.0e-5 and the five largest logits of every position are the same ids. A tiny random model is tested on the reference and ggml. Vulkan is not measured yet.
+- Generation: `Generate.open(m)` of `pkg/transformers/generate_qwen35` is the generator of a Qwen3.5 model, with `generate`, `step`, `step_logits`, `step_top`, `finish` and `close` as in [Generation](#generation). The cache of a full-attention layer is the padded KV cache described here; a linear-attention layer keeps its two states (the last rows of the convolution's input and the recurrent state), which do not grow. `Generate.open(m, usable)` sets how many ids a step may answer: the embedding of Qwen3.5 has 248,320 rows and its tokenizer 248,070 tokens, and the ids in between have no text, so a caller with a tokenizer passes its count (`usable: 248070`) and the sampler never gives an id that `Bpe.decode` rejects; the default 0 is Hugging Face's, no mask. Against Hugging Face's greedy `generate` for `Qwen/Qwen3.5-0.8B` in `float32`, the 24 new ids of each of five prompts are equal on ggml CPU and on Vulkan, at about 9 tokens per second after the prompt on both.
 - A `model_type` other than `qwen3_5`, an activation other than `silu`, `attention_bias: true`, a `rope_type` other than `default` and a layer type other than `linear_attention` and `full_attention` are errors.
 
 ## Generation

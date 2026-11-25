@@ -59,10 +59,11 @@ Nn.encoder_stack(p, x, mask?, causal?) / decoder_stack(p, x, memory)
                                    the blocks in order, then final_norm
 
 Delta (`pkg/nn/delta`, the linear attention of Qwen3.5):
-Delta.gated_delta_net(p, x, state)  x [tokens, width] after a DeltaState -> DeltaOut { out, state }
+Delta.gated_delta_net(p, x, state, padding?)  x [tokens, width] after a DeltaState -> DeltaOut { out, state }
 Delta.causal_conv1d(x, weight, state)  depthwise over time, the past only -> Convolved { out, state }
 Delta.gated_rms_norm(x, z, weight, eps)  weight * rms_norm(x) * silu(z)
 Delta.delta_start(p, backend)      the zero DeltaState of a layer
+Delta.padding(real, tokens, taps, backend)  the Padding of a call whose last rows are padding
 ```
 
 The layer is for inference: a state is not a parameter and `gated_delta_rule` has no gradient, so nothing flows back
@@ -72,6 +73,12 @@ rows of the convolution's input in time order (Hugging Face keeps `[channels, ta
 `recurrent` is `[value heads, value, key]` (Hugging Face's `[value heads, key, value]`, transposed). A loader reads the
 checkpoint's convolution `[channels, 1, taps]` as `[channels, taps]`; `test/delta_test.agc` checks both states against
 the cache of Hugging Face.
+
+A compiled decode step has one shape for the prompts of a capacity, so a prompt is padded after its last real token.
+`Padding` makes the padding leave the state as the real tokens left it: `valid` (1.0 real, 0.0 padding) multiplies
+`beta` and `g`, so a padding row neither writes into the recurrent state nor decays it, and `keep` (`[taps - 1, taps - 1
++ tokens]`, one-hot) picks the convolution's state rows that end at the last real token, a product with a 0/1 matrix
+(exact). `test/delta_test.agc` checks the answers and both states against the same prompt unpadded.
 
 ```text
 Nn.init_dense / init_layer_norm / init_embedding / init_attention /

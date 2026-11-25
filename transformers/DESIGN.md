@@ -3,8 +3,8 @@
 BERT, DistilBERT, Qwen3, Qwen2.5, ResNet, ViT and CLIP, from Hugging Face checkpoints (Qwen3 also
 from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
 with a KV cache (greedy or sampled), the tokenizers, and the weights by name
-for a fine-tune with `train/`. Qwen3.5 (text only) has its forward; generation,
-the tokenizer and the 2B model follow (ml#150).
+for a fine-tune with `train/`. Qwen3.5 (text only) has its forward, its
+tokenizer, its chat template and generation; the 2B model follows (ml#150).
 
 ## Generation
 
@@ -96,7 +96,7 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 official `Qwen/Qwen3.5-*` repository: `config.json` and `model.safetensors` or
 its `.index.json`), `Qwen3_5.run(m, rows, last)`, `Qwen3_5.logits(m, ids, last)`
 and `Qwen3_5.close_model(m)`. The forward is over whole sequences, with no
-cache; the hybrid cache comes with generation.
+cache; generation is `generate_qwen35.agc` (below).
 
 - `config.json` is nested: the text model is `text_config` (`model_type`
   `qwen3_5_text`), the file is `qwen3_5`. The vision tower (`model.visual.*`)
@@ -125,6 +125,40 @@ cache; the hybrid cache comes with generation.
 - `graph` unrolls one forward per batch row, so a batch of N is N times the
   nodes of one row. There are no `weights`/`with_weights` yet, so a fine-tune
   with `train/` is not supported.
+
+### Qwen3.5 generation
+
+`generate_qwen35.agc` is `generate.agc` with a hybrid
+cache; the shared parts (the compiled plans, the head modes, the pick in the
+graph, the inputs) are in `stepping.agc`. `open(m, usable = 0)`, `step`,
+`step_logits`, `step_top`, `generate`, `finish`, `close` and `compiles` are the
+ones of `Generate`.
+
+- A full-attention layer keeps `[1, kv_heads, rows, head_dim]` keys and values
+  as Qwen3's layers do (`F16` on ggml), padded to the capacity, written in place
+  by a one-token step. A linear layer keeps the two `DeltaState` tensors in
+  `F32`: their size does not grow, and a step makes new ones (the old ones are
+  closed). A cache is the keys and values of the full layers then the two
+  states of each linear layer; the graph's inputs are the ids, the positions,
+  the one-hot of the last real token and the `Delta.Padding`.
+- A prompt is padded to the capacity (8, 16, ...): the full layers mask the
+  padding as before, the linear layers get `g` and `beta` of 0 on the padding
+  rows and the convolution state picked at the last real token
+  (`nn/DESIGN.md`). A decode step is width 1 and uses the same `Padding`
+  (`real` 1).
+- **The ids the tokenizer cannot decode.** The embedding of Qwen3.5 has 248,320
+  rows and the tokenizer 248,070 tokens; the 250 rows after them have no text.
+  Hugging Face and `Generate` (Qwen3) answer them when their logit is the
+  largest or sampled. Here `Generator.usable` (`open(m, usable)`) is how many
+  ids a step may answer: the logits of the others get `Nn.MASKED` in the graph,
+  `step_top` and the sampler's window stop at `usable`, and `step`, `generate`
+  never return one. The default 0 is no mask, so the ids are Hugging Face's
+  exactly; a caller that has a tokenizer opens with its count (`248070` for
+  Qwen3.5). On the real checkpoint the ids with and without it are the same on
+  the five prompts.
+- The reference backend runs a padded prompt and a decode step but is slow
+  (the delta rule is the recurrence in doubles): the generation test runs on
+  ggml, and the cached steps on both.
 
 `chat.agc`: `Chat.apply(model_type, messages, add_generation_prompt,
 enable_thinking)` is the ChatML text of `apply_chat_template` for the three
@@ -382,6 +416,18 @@ best classes with their `id2label` names.
   the sha256 of the template and of `tokenizer.json` asserted): 28
   conversations of the Qwen3.5 template (white space of every kind, one
   `</think>`, two, none, an unclosed `<think>`), 4 of them refused by it.
+- `test/generate_qwen35_test.agc` against the same golden (it adds a greedy
+  `generate` of Hugging Face from a prompt of 7 ids, 14 new ids and their
+  logits): the cached steps (a padded prompt of 3 ids, then one id at a time)
+  give the logits of the whole forward on the reference and ggml, and the
+  greedy generation crossing the capacities 8, 16 and 32 gives Hugging Face's
+  ids and logits on ggml. `usable` is tested on ggml.
+- `tools/generate_qwen35_check.agc` against Hugging Face's greedy `generate`
+  (`test/qwen35_check_golden.py`, manual): 24 new ids for each of the five
+  prompts of `Qwen/Qwen3.5-0.8B`, equal on ggml CPU and on Vulkan (the smallest
+  gap between the two largest logits of a step is 0.26), also with `USABLE=248070`.
+  About 9 tokens per second after the prompt on both, 3.4 GB at the peak on the
+  CPU. `tools/qwen35_check.agc` on Vulkan: largest gap of a logit 5.5e-5.
 - `tools/qwen35_check.agc` against Hugging Face's `Qwen3_5ForCausalLM`
   (`test/qwen35_check_golden.py`, manual): `Qwen/Qwen3.5-0.8B` on five prompts
   of 5 to 50 tokens, the logits of the last position over the vocabulary and the
