@@ -13,11 +13,21 @@ import Delta from "pkg/nn/delta"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
 import Lift from "lift"
+import Qwen3 from "qwen3"
 import Source from "tokenizer/source"
-import Trace from "pkg/tensor/trace"
 
 ## The prefix of the text weights.
 PREFIX = "model.language_model."
+
+## The model types of a `config.json`, read first to refuse the mixture-of-experts model with its own message.
+struct Kind
+  model_type: String
+  text_config: Optional[InnerKind]
+end
+
+struct InnerKind
+  model_type: String
+end
 
 ## `config.json` of a checkpoint: the text model is in `text_config`.
 struct Document
@@ -55,7 +65,7 @@ struct Text
   rope_parameters: Rotary
   attn_output_gate: Bool = true
   attention_bias: Bool = false
-  tie_word_embeddings: Bool = true
+  tie_word_embeddings: Optional[Bool]
 end
 
 ## What a layer does with the tokens: linear attention, or full attention.
@@ -85,30 +95,29 @@ end
 ## The model in `dir`, which holds `config.json` and `model.safetensors` (or the `model.safetensors.index.json` of a
 ## sharded one, as the official `Qwen/Qwen3.5-*` repositories have it).
 def open(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype = Tensor.Dtype.F32) -> Result[Qwen3_5]
-  load(try checkpoint(dir), try read_config(dir), backend, weights)
+  load(try Qwen3.checkpoint(dir), try read_config(dir), backend, weights)
 end
 
-## The text config of the model folder `dir`, with `tie_word_embeddings` of the file when it has one.
+## The text config of the model folder `dir`, with `tie_word_embeddings` of the file (the top level first) when it has
+## one; `load` decides otherwise from the weights.
 def read_config(dir: String) -> Result[Text]
   text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
+  kind = try Source.within("#{dir}/config.json", JSON.decode(text, Kind))
+  inner = kind.text_config.map { |t| t.model_type }.unwrap_or("")
+  if kind.model_type == "qwen3_5_moe" or inner == "qwen3_5_moe_text"
+    return error("qwen3_5_moe (a mixture of experts) is not supported, only the dense qwen3_5")
+  end
+
   file = try Source.within("#{dir}/config.json", JSON.decode(text, Document))
   return error("model_type is #{file.model_type}, not qwen3_5") if file.model_type != "qwen3_5"
 
-  ok(
-    file.text_config.with(
-      tie_word_embeddings: file.tie_word_embeddings.unwrap_or(file.text_config.tie_word_embeddings),
-    ),
-  )
-end
-
-## The weights of the model folder `dir`: its `model.safetensors`, or the `model.safetensors.index.json` of a sharded one.
-def checkpoint(dir: String) -> Result[Hub.Checkpoint]
-  file = "#{dir}/model.safetensors"
-  if not Path.real(file).ok?
-    file = "#{dir}/model.safetensors.index.json"
+  tie = file.tie_word_embeddings
+  case tie
+    some(_) -> nil
+    none -> tie = file.text_config.tie_word_embeddings
   end
 
-  Hub.open(file)
+  ok(file.text_config.with(tie_word_embeddings: tie))
 end
 
 ## An error when `config` is a model this file does not run.
@@ -131,8 +140,22 @@ def check_config(config: Text) -> Result[Void]
     end
   end
 
+  return error("head_dim #{config.head_dim} needs 1 or more") if config.head_dim < 1
+
   if config.num_key_value_heads < 1 or config.num_attention_heads % config.num_key_value_heads != 0
     return error("#{config.num_attention_heads} heads are not a multiple of #{config.num_key_value_heads} key heads")
+  end
+
+  if config.linear_num_key_heads < 1 or config.linear_num_value_heads % config.linear_num_key_heads != 0
+    return error(
+      "#{config.linear_num_value_heads} linear value heads are not a multiple of #{config.linear_num_key_heads} key heads",
+    )
+  end
+
+  if config.linear_key_head_dim != config.linear_value_head_dim
+    return error(
+      "linear_key_head_dim #{config.linear_key_head_dim} and linear_value_head_dim #{config.linear_value_head_dim} differ, the delta rule needs one width",
+    )
   end
 
   if config.linear_conv_kernel_dim < 2
@@ -140,7 +163,10 @@ def check_config(config: Text) -> Result[Void]
   end
 
   dims = try rotary_dims(config)
-  return error("the rotary width #{dims} is not even, which rope needs") if dims < 2 or dims % 2 != 0
+  if dims < 1 or dims > config.head_dim or dims % 2 != 0
+    return error("the rotary width #{dims} is not an even number in 2 to head_dim #{config.head_dim}")
+  end
+
   ok()
 end
 
@@ -156,7 +182,9 @@ def load(
   backend: Tensor.Backend,
   weights: Tensor.Dtype = Tensor.Dtype.F32,
 ) -> Result[Qwen3_5]
+  return error("only weights: F32 is supported, not #{weights}") if weights != Tensor.Dtype.F32
   try check_config(config)
+  tied = config.tie_word_embeddings.unwrap_or(not Hub.has?(c, "lm_head.weight"))
   tokens = try Load.embedding(c, "#{PREFIX}embed_tokens.weight", backend, weights)
   try expect_shape("#{PREFIX}embed_tokens.weight", tokens.table, [config.vocab_size, config.hidden_size])
   layers: List[Layer] = []
@@ -165,7 +193,7 @@ def load(
   end
 
   head = Nn.Dense(w: tokens.table, b: none, out_in: true)
-  if not config.tie_word_embeddings
+  if not tied
     head = try Load.dense(c, "lm_head", backend, weights)
     try expect_shape("lm_head.weight", head.w, [config.vocab_size, config.hidden_size])
   end
@@ -173,7 +201,7 @@ def load(
   ok(
     Qwen3_5(
       config: config,
-      tied: config.tie_word_embeddings,
+      tied: tied,
       tokens: tokens,
       layers: layers,
       final_norm: try centered(c, "#{PREFIX}norm", config.rms_norm_eps, backend),
@@ -226,10 +254,10 @@ end
 def close_model(m: Qwen3_5) -> Void
   tensors = [m.tokens.table] + Lift.dense_parts(m.head) + Lift.norm_parts(m.final_norm)
   for l in m.layers
-    tensors = tensors + Lift.norm_parts(l.norm1) + Lift.norm_parts(l.norm2) + mlp_parts(l.mlp)
+    tensors = tensors + Lift.norm_parts(l.norm1) + Lift.norm_parts(l.norm2) + Lift.mlp_parts(l.mlp)
     case l.mixer
-      Mixer.Linear(p) -> tensors = tensors + delta_parts(p)
-      Mixer.Full(a) -> tensors = tensors + attention_parts(a)
+      Mixer.Linear(p) -> tensors = tensors + Lift.delta_parts(p)
+      Mixer.Full(a) -> tensors = tensors + Lift.attention_parts(a)
     end
   end
 
@@ -250,58 +278,11 @@ private
 
 def traced_layer(l: Layer) -> Layer
   mixer = case l.mixer
-    Mixer.Linear(p) ->
-      Mixer.Linear(
-        p.with(
-          qkv: Lift.dense(p.qkv),
-          z: Lift.dense(p.z),
-          b: Lift.dense(p.b),
-          a: Lift.dense(p.a),
-          conv: Trace.constant(p.conv),
-          dt_bias: Trace.constant(p.dt_bias),
-          a_log: Trace.constant(p.a_log),
-          norm: Trace.constant(p.norm),
-          output: Lift.dense(p.output),
-        ),
-      )
+    Mixer.Linear(p) -> Mixer.Linear(Lift.delta(p))
     Mixer.Full(a) -> Mixer.Full(Lift.attention(a))
   end
 
   l.with(norm1: Lift.norm(l.norm1), mixer: mixer, norm2: Lift.norm(l.norm2), mlp: Lift.mlp(l.mlp))
-end
-
-def mlp_parts(p: Nn.Mlp) -> List[Tensor.Tensor]
-  out = Lift.dense_parts(p.up) + Lift.dense_parts(p.down)
-  case p.gate
-    some(g) -> out + Lift.dense_parts(g)
-    none -> out
-  end
-end
-
-def delta_parts(p: Delta.GatedDeltaNet) -> List[Tensor.Tensor]
-  denses = [p.qkv, p.z, p.b, p.a, p.output]
-  out = [p.conv, p.dt_bias, p.a_log, p.norm]
-  for d in denses
-    out = out + Lift.dense_parts(d)
-  end
-
-  out
-end
-
-def attention_parts(a: Nn.Attention) -> List[Tensor.Tensor]
-  out: List[Tensor.Tensor] = []
-  for d in [a.query, a.key, a.value, a.output]
-    out = out + Lift.dense_parts(d)
-  end
-
-  for n in [a.query_norm, a.key_norm]
-    case n
-      some(x) -> out = out + Lift.norm_parts(x)
-      none -> nil
-    end
-  end
-
-  out
 end
 
 def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]

@@ -1,6 +1,6 @@
 ---
 title: transformers
-description: BERT, Qwen3, Qwen2.5, ResNet, ViT and CLIP in Agentica from Hugging Face checkpoints, and the tokenizers that give Hugging Face's ids.
+description: BERT, Qwen3, Qwen3.5, Qwen2.5, ResNet, ViT and CLIP in Agentica from Hugging Face checkpoints, and the tokenizers that give Hugging Face's ids.
 weight: 7
 ---
 
@@ -214,8 +214,8 @@ def main() -> Void
 end
 ```
 
-- The model is hybrid: by `layer_types`, a layer is linear attention (a Gated DeltaNet, `Delta.gated_delta_net` of [nn](../nn/_index.md)) or full attention (grouped-query, with an output gate and rotary positions on a quarter of each head), followed by a gated MLP. The head is the embedding table. The vision tower and the multi-token-prediction head of the checkpoint are ignored.
-- The norms of Qwen3.5 scale by `1 + weight`; the loader adds the 1.
+- The model is hybrid: by `layer_types`, a layer is linear attention (a Gated DeltaNet, `Delta.gated_delta_net` of [nn](../nn/_index.md)) or full attention (grouped-query, with an output gate and rotary positions on part of each head, a quarter in 0.8B), followed by a gated MLP. The head is the embedding table. The vision tower and the multi-token-prediction head of the checkpoint are ignored.
+- The norms of Qwen3.5 scale by `1 + weight`; the loader adds the 1. Only `F32` weights are loaded, a batch is unrolled row by row in the graph, and the model cannot be fine-tuned with `train/`.
 - Against Hugging Face's `Qwen3_5ForCausalLM` in `float32` on ggml CPU, over five prompts of 5 to 50 tokens, the largest gap of a logit is 2.0e-5 and the five largest logits of every position are the same ids. A tiny random model is tested on the reference and ggml. Vulkan is not measured yet.
 - A `model_type` other than `qwen3_5`, an activation other than `silu`, `attention_bias: true`, a `rope_type` other than `default` and a layer type other than `linear_attention` and `full_attention` are errors.
 

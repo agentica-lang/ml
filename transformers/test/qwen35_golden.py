@@ -5,16 +5,19 @@ official `Qwen/Qwen3.5-*` repository writes it), its weights under the names of 
 sequences of token ids and the logits of every position. `test/qwen35_test.agc` writes the weights as a safetensors
 file, opens the folder with `Qwen3_5.open` and compares the logits. No model is stored, only this small file.
 
-Manual, not run by the tests: it needs `torch` and `transformers` (2.15.0 and 5.22.2 were used). Run it in a
+Manual, not run by the tests: it needs `torch` 2.15.0 and `transformers` 5.22.2 (the script stops on other versions)
+and no `flash-linear-attention` or `causal-conv1d` in the venv: their kernels are not the reference. Run it in a
 throwaway venv, from `transformers/`, with Python's isolated mode:
 
     python -I test/qwen35_golden.py > test/fixtures/qwen35_golden.json
 """
 
+import importlib.util
 import json
 import sys
 
 import torch
+import transformers
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
 
@@ -25,9 +28,16 @@ SHAPE = dict(
     linear_conv_kernel_dim=4, linear_key_head_dim=4, linear_num_key_heads=2, linear_num_value_heads=4,
     linear_value_head_dim=4, attention_bias=False, attn_output_gate=True, tie_word_embeddings=True,
 )
-ROPE = {"rope_type": "default", "rope_theta": 10000.0, "partial_rotary_factor": 0.5, "mrope_section": [11, 11, 10],
+ROPE = {"rope_type": "default", "rope_theta": 10000, "partial_rotary_factor": 0.5, "mrope_section": [11, 11, 10],
         "mrope_interleaved": True}
 ROWS = [[3, 1, 4, 1, 5, 9, 2], [6, 5, 3, 5, 8, 9, 7]]
+
+
+def check_environment():
+    assert torch.__version__.startswith("2.15.0"), torch.__version__
+    assert transformers.__version__ == "5.22.2", transformers.__version__
+    for name in ("fla", "causal_conv1d"):
+        assert importlib.util.find_spec(name) is None, f"{name} is installed: its kernel is not the reference"
 
 
 def flat(t):
@@ -35,6 +45,7 @@ def flat(t):
 
 
 def main():
+    check_environment()
     torch.manual_seed(3)
     config = Qwen3_5TextConfig(**SHAPE, rope_parameters=ROPE, attn_implementation="eager")
     model = Qwen3_5ForCausalLM(config).eval()

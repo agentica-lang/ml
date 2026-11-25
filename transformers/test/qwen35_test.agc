@@ -94,6 +94,10 @@ def test_a_config_the_model_does_not_run_is_an_error() -> Result[Void]
       "\"linear_attention\", \"full_attention\"",
     ],
     ["\"tie_word_embeddings\": true}", "\"tie_word_embeddings\": false}"],
+    ["\"linear_key_head_dim\": 4", "\"linear_key_head_dim\": 8"],
+    ["\"linear_num_key_heads\": 2", "\"linear_num_key_heads\": 3"],
+    ["\"head_dim\": 8", "\"head_dim\": 0"],
+    ["\"partial_rotary_factor\": 0.5", "\"partial_rotary_factor\": 1.5"],
   ]
     wrong = try S.replaced(g.config, change[0], change[1])
     try with_model(g, wrong) do |dir|
@@ -103,6 +107,53 @@ def test_a_config_the_model_does_not_run_is_an_error() -> Result[Void]
   end
 
   ok()
+end
+
+def test_the_mixture_of_experts_model_is_refused_by_name() -> Result[Void]
+  g = try golden()
+  for change in [
+    ["\"model_type\": \"qwen3_5\"", "\"model_type\": \"qwen3_5_moe\""],
+    ["\"model_type\": \"qwen3_5_text\"", "\"model_type\": \"qwen3_5_moe_text\""],
+  ]
+    wrong = try S.replaced(g.config, change[0], change[1])
+    try with_model(g, wrong) do |dir| S.expect_error(Qwen3_5.open(dir, S.REF), "mixture of experts") end
+  end
+
+  ok()
+end
+
+def test_only_f32_weights_are_loaded() -> Result[Void]
+  g = try golden()
+  with_model(g, g.config) do |dir| S.expect_error(Qwen3_5.open(dir, S.REF, Tensor.Dtype.F16), "F32") end
+end
+
+## An `lm_head.weight` of twice the embedding table gives twice the logits: the head is the file's when the config
+## says untied, or, with no `tie_word_embeddings` at either level, because the file has one.
+def test_an_untied_head_is_read_from_the_file() -> Result[Void]
+  g = try golden()
+  table = "model.language_model.embed_tokens.weight"
+  head = g.weights[table].map { |x| 2.0 * x }
+  untied = g.with(
+    weights: g.weights.put("lm_head.weight", head),
+    shapes: g.shapes.put("lm_head.weight", g.shapes[table]),
+  )
+
+  want = g.logits.map { |x| 2.0 * x }
+  false_config = try S.replaced(g.config, "\"tie_word_embeddings\": true", "\"tie_word_embeddings\": false")
+  silent_config = try S.replaced(g.config, ", \"tie_word_embeddings\": true", "")
+  for config in [false_config, silent_config]
+    try with_model(untied, config) do |dir|
+      m = try Qwen3_5.open(dir, S.REF)
+      out = try Qwen3_5.run(m, g.rows)
+      S.expect_close(try S.floats_of(out), want, ABS, REL, "untied logits")
+    end
+  end
+
+  with_model(g, silent_config) do |dir|
+    m = try Qwen3_5.open(dir, S.REF)
+    out = try Qwen3_5.run(m, g.rows)
+    S.expect_close(try S.floats_of(out), g.logits, ABS, REL, "tied logits")
+  end
 end
 
 def test_a_token_outside_the_vocabulary_is_an_error() -> Result[Void]

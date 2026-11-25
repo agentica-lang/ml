@@ -114,10 +114,17 @@ cache; the hybrid cache comes with generation.
 - `conv1d.weight` is stored `[channels, 1, taps]` and kept `[channels, taps]`.
   `q_proj.weight` is `[2 * heads * head_dim, hidden]`: per head the query rows,
   then the gate rows (`Nn.query_heads`).
-- The head is the embedding table when `tie_word_embeddings` (the case of 0.8B
-  and 2B). A `model_type`, `hidden_act`, `layer_types` entry or `rope_type`
-  this loader does not run, `attention_bias` and a config without the output
-  gate are errors.
+- The head is the embedding table when `tie_word_embeddings` (the case of
+  0.8B; the top level of `config.json` first, then `text_config`); with neither,
+  the head is `lm_head.weight` when the file has one. A `model_type` (the
+  mixture-of-experts `qwen3_5_moe` has its own message), `hidden_act`,
+  `layer_types` entry or `rope_type` this loader does not run, `attention_bias`,
+  a config without the output gate, linear key and value widths that differ
+  (the delta rule needs one width), a bad head count or rotary width, and
+  `weights` other than `F32` are errors.
+- `graph` unrolls one forward per batch row, so a batch of N is N times the
+  nodes of one row. There are no `weights`/`with_weights` yet, so a fine-tune
+  with `train/` is not supported.
 
 `chat.agc`: `Chat.apply(model_type, messages, add_generation_prompt,
 enable_thinking)` is the ChatML text of `apply_chat_template` for the two

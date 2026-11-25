@@ -3,7 +3,8 @@ answers on a few prompts, for `tools/qwen35_check.agc` to compare: per prompt, t
 tokenizer), the logits of the last position over the whole vocabulary, and for every position the ids of the five
 largest logits, in `float32`.
 
-Manual, not run by the tests: it needs `torch` and `transformers` (2.15.0 and 5.22.2 were used) and the checkpoint. Run
+Manual, not run by the tests: it needs `torch` 2.15.0 and `transformers` 5.22.2 (the script stops on other versions),
+no `flash-linear-attention` or `causal-conv1d` in the venv (their kernels are not the reference), and the checkpoint. Run
 it in a throwaway venv, from `transformers/`, with Python's isolated mode:
 
     python -I test/qwen35_check_golden.py MODEL_DIR > GOLDEN.json
@@ -12,10 +13,12 @@ MODEL_DIR holds the files of the official `Qwen/Qwen3.5-0.8B` repository: the sa
 `config.json` and `tokenizer.json`.
 """
 
+import importlib.util
 import json
 import sys
 
 import torch
+import transformers
 from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast
 
 PROMPTS = [
@@ -27,7 +30,15 @@ PROMPTS = [
 ]
 
 
+def check_environment():
+    assert torch.__version__.startswith("2.15.0"), torch.__version__
+    assert transformers.__version__ == "5.22.2", transformers.__version__
+    for name in ("fla", "causal_conv1d"):
+        assert importlib.util.find_spec(name) is None, f"{name} is installed: its kernel is not the reference"
+
+
 def main():
+    check_environment()
     path = sys.argv[1]
     tok = PreTrainedTokenizerFast(tokenizer_file=f"{path}/tokenizer.json")
     model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.float32, attn_implementation="eager").eval()
