@@ -89,8 +89,8 @@ end
 ## Creation: a tensor of `shape` from the values of `format` at byte `offset`
 ## of the file `path`, read by C; on Vulkan through one host copy. It is `F32`,
 ## `F16` with `dtype: F16` (half the memory and the bandwidth of a weight; a
-## value beyond 65504 is an error), or `Q8_0` with `dtype: Q8_0` (the blocks of
-## a Q8_0 file as they are). With `TENSOR_LOAD=agentica` Agentica reads the
+## value beyond 65504 is an error), or a quantized dtype (`Q8_0`, `Q4_K` or `Q6_K`)
+## with the `format` of the same name (the blocks of the file as they are). With `TENSOR_LOAD=agentica` Agentica reads the
 ## range and C widens or copies the bytes.
 def from_file(
   device: Types.Device,
@@ -102,7 +102,7 @@ def from_file(
 ) -> Result[Types.Tensor]
   code = try ready(device, shape, Types.Dtype.F32, "from_file")
   if dtype != Types.Dtype.F32 and !Types.is_packed_dtype(dtype)
-    return error("from_file: a ggml tensor read from a file is F32, F16 or Q8_0, got #{Types.dtype_name(dtype)}")
+    return error("from_file: a ggml tensor read from a file is F32, F16 or quantized, got #{Types.dtype_name(dtype)}")
   end
 
   held = Types.held_code(dtype)
@@ -254,6 +254,8 @@ def storable(dtype: Types.Dtype, op: String) -> Result[Bool]
   case dtype
     Types.Dtype.F16 -> refused(dtype, op)
     Types.Dtype.Q8_0 -> refused(dtype, op)
+    Types.Dtype.Q4_K -> refused(dtype, op)
+    Types.Dtype.Q6_K -> refused(dtype, op)
     Types.Dtype.F64 -> refused(dtype, op)
     Types.Dtype.I64 -> refused(dtype, op)
     _ -> ok(true)

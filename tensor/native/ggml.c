@@ -394,7 +394,11 @@ static bool make_tensor(an_env *env, int64_t device, ggml_list_Int *shape, enum 
   if (code < 0) return failed_with(failure, an_void(env));
   for (i = 0; i < rank; i++) ne[i] = dims[rank - 1 - i];
   if (ggml_is_quantized(type) && ne[0] % ggml_blck_size(type) != 0) {
-    return failed(env, failure, "a quantized tensor holds whole blocks of 32 values in each row");
+    char why[96];
+
+    snprintf(why, sizeof why, "a quantized tensor holds whole blocks of %lld values in each row",
+             (long long)ggml_blck_size(type));
+    return failed(env, failure, why);
   }
   return tg_new_tensor(env, device, ne, type, state, failure);
 }
@@ -559,9 +563,14 @@ static int half_threads(void) {
   return cores > HALF_MAX_THREADS ? HALF_MAX_THREADS : (int)cores;
 }
 
-/* What a loaded tensor holds, the code of `Types.held_code`: F32 or F16 converted from the floats of the source, or
-   the Q8_0 blocks of a Q8_0 source as they are. */
-enum { HELD_F32 = 0, HELD_F16 = 1, HELD_Q8_0 = 2 };
+/* The file format whose blocks a quantized `held` keeps. */
+static int64_t held_format(int64_t held) {
+  switch (held) {
+    case HELD_Q8_0: return FF_Q8_0;
+    case HELD_Q4_K: return FF_Q4_K;
+    default: return FF_Q6_K;
+  }
+}
 
 /* The tensor is filled where the source is read: in place on a host buffer (the CPU), through a host copy for
    a device that has its own memory (Vulkan). */
@@ -571,18 +580,18 @@ static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const
   struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
   char why[FF_PATH_MAX + 160];
   bool in_place, locked, read;
-  enum ggml_type type = held == HELD_F16 ? GGML_TYPE_F16 : (held == HELD_Q8_0 ? GGML_TYPE_Q8_0 : GGML_TYPE_F32);
+  enum ggml_type type = held_type(held);
   void *host;
 
-  if (held < HELD_F32 || held > HELD_Q8_0) return tg_error(env, "unknown held type code");
-  if ((held == HELD_Q8_0) != (format == FF_Q8_0) && held != HELD_F32) {
-    return tg_error(env, "a Q8_0 tensor is read from a Q8_0 range, and a Q8_0 range is read as F32 or kept as Q8_0");
+  if (held < HELD_F32 || held > HELD_Q6_K) return tg_error(env, "unknown held type code");
+  if ((held >= HELD_Q8_0 && format != held_format(held)) || (held == HELD_F16 && ff_block_values(format) != 0)) {
+    return tg_error(env, "a range of blocks is read as F32 or kept as the blocks of its own type, and nothing else");
   }
   if (!make_tensor(env, device, &shape, type, state, &failure)) return failure;
   in_place = !state->vulkan && ggml_backend_buffer_is_host(state->buffer);
   host = in_place ? state->t->data : host_bytes(state->t);
   if (host == NULL) return tg_error(env, "out of memory");
-  if (held == HELD_Q8_0) {
+  if (held >= HELD_Q8_0) {
     int64_t bytes = (int64_t)ggml_nbytes(state->t);
 
     if (src->data != NULL) {

@@ -94,7 +94,7 @@ true
 - An op with no backward rule on the path from the parameters to the loss makes `fit` fail with an error naming the op:
   `pow`, `clamp`, `to_dtype`, `batch_matmul` (on libtorch), `conv1d`, `avg_pool1d`. Use the derived ops (`softmax`,
   `gelu`, `layer_norm`, `linear`). An op off that path is fine, such as `to_dtype` on a padding mask.
-- Train a model loaded as `F32`. Half (`F16`) and quantized (`Q8_0`) weights have no gradient.
+- Train a model loaded as `F32`. Half (`F16`) and quantized (`Q8_0`, `Q4_K`, `Q6_K`) weights have no gradient.
 - On ggml, one step is one graph with at most 512 outputs: the loss, the new parameters and the moments. That is 170
   parameters with Adam or AdamW, 255 with momentum SGD, 511 with plain SGD.
 - `fit` frees the parameters and moments that a step replaces. The `params` you give stay yours, and so do the trained

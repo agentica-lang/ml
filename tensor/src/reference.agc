@@ -1535,6 +1535,8 @@ def file_float(b: Bytes, i: Int, format: Types.FloatFormat) -> Float
     Types.FloatFormat.F16 -> half(u16(b, 2 * i))
     Types.FloatFormat.BF16 -> Float32.from_bits(u16(b, 2 * i).shift_left(16).to_uint32!).to_f
     Types.FloatFormat.Q8_0 -> q8_0(b, i)
+    Types.FloatFormat.Q4_K -> q4_k(b, i)
+    Types.FloatFormat.Q6_K -> q6_k(b, i)
     Types.FloatFormat.U8 -> b[i].to_f
   end
 end
@@ -1543,6 +1545,56 @@ end
 def q8_0(b: Bytes, i: Int) -> Float
   at = (i / 32) * 34
   half(u16(b, at)) * b[at + 2 + i % 32].wrap_int8.to_f
+end
+
+## Value `i` of Q4_K blocks (144 bytes of 256 values: binary16 `d` and `dmin`, 12 bytes of 6-bit scales and minimums, 128
+## bytes of nibbles). Sub-block `s` of 32 values is the low nibbles (even `s`) or the high nibbles (odd `s`) of 32 bytes:
+## `d * scale * nibble - dmin * min`, as ggml's `dequantize_row_q4_K` (which rounds each step to binary32).
+def q4_k(b: Bytes, i: Int) -> Float
+  at = (i / 256) * 144
+  within = i % 256
+  sub = within / 32
+  q = b[at + 16 + (sub / 2) * 32 + within % 32]
+  nibble = q.bit_and(15)
+  if sub % 2 == 1
+    nibble = q.shift_right(4)
+  end
+
+  scale = k4_scale(b, at + 4, sub)
+  low = k4_min(b, at + 4, sub)
+  half(u16(b, at)) * scale.to_f * nibble.to_f - half(u16(b, at + 2)) * low.to_f
+end
+
+## The 6-bit scale and minimum of sub-block `s` of a Q4_K block, whose 12 bytes of scales start at `at`.
+def k4_scale(b: Bytes, at: Int, s: Int) -> Int
+  return b[at + s].bit_and(63) if s < 4
+  b[at + s + 4].bit_and(15).bit_or(b[at + s - 4].shift_right(6).shift_left(4))
+end
+
+def k4_min(b: Bytes, at: Int, s: Int) -> Int
+  return b[at + s + 4].bit_and(63) if s < 4
+  b[at + s + 4].shift_right(4).bit_or(b[at + s].shift_right(6).shift_left(4))
+end
+
+## Value `i` of Q6_K blocks (210 bytes of 256 values: 128 bytes of low nibbles, 64 of high bit pairs, 16 signed scales,
+## a binary16 `d`): `d * scale * (q - 32)` with the 6-bit `q` of ggml's `dequantize_row_q6_K`.
+def q6_k(b: Bytes, i: Int) -> Float
+  at = (i / 256) * 210
+  within = i % 256
+  half_of = within / 128
+  quarter = (within % 128) / 32
+  l = within % 32
+  low = b[at + half_of * 64 + (quarter % 2) * 32 + l]
+  if quarter >= 2
+    low = low.shift_right(4)
+  else
+    low = low.bit_and(15)
+  end
+
+  high = b[at + 128 + half_of * 32 + l].shift_right(2 * quarter).bit_and(3)
+  q = low.bit_or(high.shift_left(4)) - 32
+  scale = b[at + 192 + half_of * 8 + l / 16 + 2 * quarter].wrap_int8
+  half(u16(b, at + 208)) * scale.to_f * q.to_f
 end
 
 def u16(b: Bytes, at: Int) -> Int = b[at].bit_or(b[at + 1].shift_left(8))

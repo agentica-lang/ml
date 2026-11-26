@@ -512,19 +512,19 @@ def xla_evaluate(outs: List[Types.Tensor], env: Map[Ref, Types.Tensor]) -> Resul
   values
 end
 
-## A half or quantized weight (`F16` or `Q8_0` on ggml, `Tensor.from_file` with that `dtype`) is read-only:
+## A half or quantized weight (`F16`, `Q8_0`, `Q4_K` or `Q6_K` on ggml, `Tensor.from_file` with that `dtype`) is read-only:
 ## no gradient is taken for it, which an `F16` tensor of the other backends keeps.
 def not_half_weight(t: Types.Tensor, what: String) -> Result[Bool]
   case t.backend
     Types.Backend.Ggml(_) ->
       if Types.is_packed_dtype(t.dtype)
         kind = "half"
-        if t.dtype == Types.Dtype.Q8_0
+        if Types.is_quantized_dtype(t.dtype)
           kind = "quantized"
         end
 
         return error(
-          "#{what} is a #{kind} weight (#{Types.dtype_name(t.dtype)} on ggml): no gradient is taken for it, weights loaded as F16 or Q8_0 are for inference",
+          "#{what} is a #{kind} weight (#{Types.dtype_name(t.dtype)} on ggml): no gradient is taken for it, weights loaded as F16 or quantized are for inference",
         )
       end
 
@@ -738,8 +738,10 @@ end
 
 def matmul_rule(n: Types.Node, ct: Types.Tensor, i: Int) -> Result[Types.Tensor]
   if i == 0
-    if n.args[1].dtype == Types.Dtype.Q8_0
-      return error("the gradient of a product with a Q8_0 weight is not supported: the weight is for inference")
+    if Types.is_quantized_dtype(n.args[1].dtype)
+      return error(
+        "the gradient of a product with a #{Types.dtype_name(n.args[1].dtype)} weight is not supported: the weight is for inference",
+      )
     end
 
     return Tensor.matmul(ct, try Tensor.transpose(n.args[1]))

@@ -7,7 +7,7 @@
      ./llama_golden MODEL.gguf IDS_FILE > GOLDEN.json
      WEIGHTS=q8_0 QUANTIZED=1 agentica tools/qwen_check.agc MODEL.gguf GOLDEN.json cpu
 
-   It runs on the CPU, with the same Q8_0 products as ggml's CPU backend in `tensor/`. */
+   It runs on the CPU, with the same quantized products (Q8_0, Q4_K, Q6_K) as ggml's CPU backend in `tensor/`. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -667,6 +667,8 @@ end
 def leaf_name(held: Int) -> String
   return "F16" if held == 1
   return "Q8_0" if held == 2
+  return "Q4_K" if held == 3
+  return "Q6_K" if held == 4
   "F32"
 end
 
@@ -681,18 +683,17 @@ end
 
 ## A dtype whose values F32 holds exactly here: F32 itself, `Bool` as 0/1,
 ## and integers of up to 32 bits (exact below 2^24, which labels and `arange`
-## positions are). `I64`, `F64`, `F16` and `Q8_0` are refused.
+## positions are). `I64`, `F64`, `F16` and the quantized dtypes are refused.
 def exact(dtype: Types.Dtype) -> Bool
   case dtype
     Types.Dtype.F64 -> false
     Types.Dtype.F16 -> false
-    Types.Dtype.Q8_0 -> false
     Types.Dtype.I64 -> false
-    _ -> true
+    _ -> !Types.is_quantized_dtype(dtype)
   end
 end
 
-## An `F16` or `Q8_0` node ggml holds: a packed weight (an input or a constant), its
+## An `F16` or quantized node ggml holds: a packed weight (an input or a constant), its
 ## transpose, which a `matmul` reads in place, or the rows a `gather` reads from
 ## one, which ggml has widened to F32 already and only `to_dtype` may take, or
 ## a slice of an `F16` cache, which an attention reads.
@@ -726,19 +727,19 @@ def unheld(t: Types.Tensor, n: Types.Node) -> Result[Bool]
   )
 end
 
-## The `F16` and `Q8_0` operands of a node: the weight of a `matmul` (second operand) and
+## The `F16` and quantized operands of a node: the weight of a `matmul` (second operand) and
 ## the table of a `gather` (first), the argument of a transpose, or the rows of a
 ## `gather` that `to_dtype` widens, an `F16` input that `to_dtype` widens, the cache of a `set_rows` and the key and
 ## value of an attention, or a slice of a cache that an attention reads (F16 only). Anywhere else the packed weight would need an
-## op that ggml does not run on it. A `Q8_0` weight goes into a `matmul` only as the
+## op that ggml does not run on it. A quantized weight goes into a `matmul` only as the
 ## transpose that `linear(..., out_in: true)` makes, which is read in place.
 def half_operands(n: Types.Node) -> Result[Bool]
   for i in 0...n.args.size
     if Types.is_packed_dtype(n.args[i].dtype)
       fits = case n.op
-        Types.Op.Matmul -> i == 1 and (n.args[i].dtype != Types.Dtype.Q8_0 or try transposed(n.args[i]))
-        Types.Op.Gather -> i == 0 and (n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i]))
-        Types.Op.Transpose -> n.args[i].dtype != Types.Dtype.Q8_0 or try leaf(n.args[i])
+        Types.Op.Matmul -> i == 1 and (!Types.is_quantized_dtype(n.args[i].dtype) or try transposed(n.args[i]))
+        Types.Op.Gather -> i == 0 and (!Types.is_quantized_dtype(n.args[i].dtype) or try leaf(n.args[i]))
+        Types.Op.Transpose -> !Types.is_quantized_dtype(n.args[i].dtype) or try leaf(n.args[i])
         Types.Op.ToDtype -> try gathered(n.args[0]) or (n.args[i].dtype == Types.Dtype.F16 and try an_input(n.args[0]))
         Types.Op.SetRows -> i == 0 and n.args[i].dtype == Types.Dtype.F16 and try an_input(n.args[0])
         Types.Op.Attention(_) -> (i == 1 or i == 2) and n.args[i].dtype == Types.Dtype.F16 and try attended(n.args[i])
@@ -748,7 +749,7 @@ def half_operands(n: Types.Node) -> Result[Bool]
 
       if !fits
         return error(
-          "node #{n.id} (#{Types.op_name(n.op)}) takes an #{Types.dtype_name(n.args[i].dtype)} operand: a packed weight goes only into the weight of matmul and linear (a Q8_0 one with out_in) and the table of gather and embedding",
+          "node #{n.id} (#{Types.op_name(n.op)}) takes an #{Types.dtype_name(n.args[i].dtype)} operand: a packed weight goes only into the weight of matmul and linear (a quantized one with out_in) and the table of gather and embedding",
         )
       end
     end
@@ -815,7 +816,7 @@ def transposed(t: Types.Tensor) -> Result[Bool]
   end
 end
 
-## The `F16` or `Q8_0` tensor `t` is the rows of a `gather`.
+## The `F16` or quantized tensor `t` is the rows of a `gather`.
 def gathered(t: Types.Tensor) -> Result[Bool]
   n = try Graph.node_of(t)
   case n.op

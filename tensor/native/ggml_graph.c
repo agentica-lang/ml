@@ -1047,11 +1047,11 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
 
   switch (op) {
     case OP_LEAF:
-      /* ints[0]: the type the leaf is bound to, as `Types.held_code`: 0 F32, 1 F16, 2 Q8_0 */
-      if (nints > 0 && (ints[0] < 0 || ints[0] > 2)) return tg_error(env, "a leaf is F32, F16 or Q8_0");
-      type = nints > 0 && ints[0] == 2 ? GGML_TYPE_Q8_0 : (nints > 0 && ints[0] == 1 ? GGML_TYPE_F16 : GGML_TYPE_F32);
-      if (type == GGML_TYPE_Q8_0 && (rank != 2 || n->ne[0] % ggml_blck_size(type) != 0)) {
-        return tg_error(env, "a Q8_0 leaf is a rank-2 weight whose rows hold whole blocks of 32 values");
+      /* ints[0]: the type the leaf is bound to, as `Types.held_code`: 0 F32, 1 F16, 2 Q8_0, 3 Q4_K, 4 Q6_K */
+      if (nints > 0 && (ints[0] < 0 || ints[0] > 4)) return tg_error(env, "a leaf is F32, F16, Q8_0, Q4_K or Q6_K");
+      type = nints > 0 ? held_type(ints[0]) : GGML_TYPE_F32;
+      if (ggml_is_quantized(type) && (rank != 2 || n->ne[0] % ggml_blck_size(type) != 0)) {
+        return tg_error(env, "a quantized leaf is a rank-2 weight whose rows hold whole blocks");
       }
       t = ggml_new_tensor_4d(p->port_ctx, type, n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
       ggml_set_input(t);
