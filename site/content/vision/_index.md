@@ -77,7 +77,7 @@ x = Vision.normalize(Vision.to_tensor(image, backend).unwrap!, [0.5, 0.5, 0.5], 
 pixel_values = Vision.patches(x, 16, 2).unwrap!
 ```
 
-The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A shrunk image is at most one 8-bit level (0.0078 normalized) from the processor's, as for the other models; an image that grows (under `min_pixels`) is not, because libvips enlarges with another sub-pixel alignment than Pillow's bicubic: at the edges the pixels can be several levels apart (see [the transformers page](../transformers/_index.md)).
+The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A shrunk image is at most one 8-bit level (0.0078 normalized) from the processor's, as for the other models; an image that grows (under `min_pixels`) is not, because libvips enlarges with another sub-pixel alignment than Pillow's bicubic: at the edges the pixels can be several levels apart (see [the transformers page](../transformers/_index.md) and the [issue](https://github.com/agentica-lang/packages/issues/266)).
 
 ## A folder per class
 

@@ -162,7 +162,7 @@ which the text model reads at the image tokens (the wiring is the next step of m
   `normalize` with the mean and std 0.5, and `Vision.patches(x, 16, 2)`, which lays the patches out as the processor does
   (the image repeated for the two frames of the temporal patch). An image under `shortest_edge` is enlarged, and libvips
   enlarges with another sub-pixel alignment than Pillow's bicubic, so the pixels of an enlarged image are not within a
-  level of the processor's (the evidence is in "Tests" below); a shrunk one is.
+  level of the processor's (the evidence is in "Tests" below, the issue is agentica-lang/packages#266); a shrunk one is.
 - Not supported: video (the temporal patch of an image is the frame twice, which the processor makes), several images in
   one call (call it once for each), another `hidden_act`, deepstack (the config key is empty in Qwen3.5), and the
   `weights` and `with_weights` of a fine-tune.
@@ -758,7 +758,7 @@ error row per config field.
   values at 500 places of each: a shrink is one 8-bit level apart at the most (0.0078, 0.0157 on a 64 by 32 image; the
   tolerance is 0.016), the mean of all the values 1e-5 to 1e-3 apart. A grow of 1.4 times (an 8-bit crop enlarged) is not:
   30 percent of the sampled values are 3 or more levels apart, up to 0.29 (37 levels), at the edges of the drawn discs, the
-  mean 0.0003; the tolerance of that case is 0.6, so it checks the grid and the rough alignment only. The golden is
+  mean 0.0003; the tolerance of that case is 0.6, so it checks the grid and the rough alignment only. The cause is in the `image` package (agentica-lang/packages#266). The golden is
   committed (`vision/test/fixtures/qwen/golden.json`, 20 KB, sha256 `6700b928a2e0d8921ac628f255c37efdd76dc5b3508e869bc08e4589ec523e26`). Mutants that fail it: the tie of
   `smart_resize` rounded up, the floor of its grow branch, no minimum of one factor, the two frames of a patch not
   repeated, and the rows of a merge square in the other order.
