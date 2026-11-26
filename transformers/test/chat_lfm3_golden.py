@@ -2,7 +2,7 @@
 conversations, with and without tools, for the chat template of `LiquidAI/LFM3-1.7B` (`chat_template.jinja`, a Jinja
 template under the LFM Open License v1.0, not copied here). `test/chat_test.agc` compares `Chat.apply("lfm3", ...)` to it.
 
-Manual, not run by the tests: it needs `transformers` 5.22.2 (the script stops on another version), the four files
+Manual, not run by the tests: it needs `transformers` 5.22.2 and `jinja2` 3.1.6 (the script stops on other versions), the four files
 below of revision 1da06bec6a819da10b54c67e5c90972b46d81871 (it refuses files with another sha256) and no network. It
 only renders the template and reads the tokenizer files; no model code runs. Download and run it in a throwaway venv,
 from `transformers/`, with Python's isolated mode:
@@ -21,11 +21,14 @@ import hashlib
 import json
 import sys
 
+import jinja2
 import transformers
 from transformers import AutoTokenizer
 
 if transformers.__version__ != "5.22.2":
     raise SystemExit(f"transformers 5.22.2 is needed, got {transformers.__version__}")
+if jinja2.__version__ != "3.1.6":
+    raise SystemExit(f"jinja2 3.1.6 is needed, got {jinja2.__version__}")
 
 SHA256 = {
     "chat_template.jinja": "f45005c50cd2a97329722bf3a2dee9f16c04cdf825a589b280fb7e99e6827818",

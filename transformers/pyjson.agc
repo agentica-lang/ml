@@ -1,5 +1,6 @@
-## A JSON value as the text that Python's `json.dumps` writes (separators `, ` and `: `, no escaping of non-ASCII), which
-## is what the `tojson` filter of Hugging Face chat templates gives. `JSON.encode` writes it compact.
+## A JSON value as the text that Python's `json.dumps(value, ensure_ascii=False)` writes (separators `, ` and `: `, no
+## escaping of non-ASCII), which is what the `tojson` filter of Hugging Face chat templates gives. `JSON.encode` writes
+## it compact.
 
 ## The text of `value`.
 def dumps(value: JSON.Value) -> String
@@ -14,6 +15,8 @@ def dumps(value: JSON.Value) -> String
     JSON.Node.Object(fields) -> "{" + fields.keys.map { |k| quoted(k) + ": " + dumps(fields[k]) }.join(", ") + "}"
   end
 end
+
+private
 
 ## `true` or `false`.
 def bool_text(b: Bool) -> String
@@ -76,8 +79,6 @@ def float_text(f: Float) -> String
   sign + digits.slice(0, point) + "." + digits.slice(point, digits.size - point)
 end
 
-private
-
 def exponent_text(n: Int) -> String
   sign = "+"
   if n < 0
@@ -90,23 +91,20 @@ def exponent_text(n: Int) -> String
 end
 
 ## `s` in double quotes: the quote, the backslash and the control characters escaped.
-def quoted(s: String) -> String
-  out = "\""
-  for c in s.split("")
-    code = c.code
-    case code
-      34 -> out = out + "\\\""
-      92 -> out = out + "\\\\"
-      8 -> out = out + "\\b"
-      9 -> out = out + "\\t"
-      10 -> out = out + "\\n"
-      12 -> out = out + "\\f"
-      13 -> out = out + "\\r"
-      _ -> out = out + escaped(c, code)
-    end
-  end
+def quoted(s: String) -> String = "\"" + s.split("").map { |c| escaped_char(c) }.join("") + "\""
 
-  out + "\""
+def escaped_char(c: String) -> String
+  code = c.code
+  case code
+    34 -> "\\\""
+    92 -> "\\\\"
+    8 -> "\\b"
+    9 -> "\\t"
+    10 -> "\\n"
+    12 -> "\\f"
+    13 -> "\\r"
+    _ -> escaped(c, code)
+  end
 end
 
 def escaped(c: String, code: Int) -> String

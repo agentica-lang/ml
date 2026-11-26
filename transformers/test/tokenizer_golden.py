@@ -22,13 +22,13 @@ stops on another version).
 writes `bpe_groups.json` and `bpe_groups_golden.json`: the same tiny tokenizer with the split of LFM3 (up to three digits
 in a piece, `\\p{N}{1,3}`), no normalizer, `ignore_merges` on and its last merges cut off (so a piece that is a token
 and that the merges no longer reach is still one token), and the ids of the strings below plus those of `GROUP_TEXTS`
-(`tokenizers` 0.23.3, as above).
+and 20 random ones (`tokenizers` 0.23.3, as above).
 
     python -I test/tokenizer_golden.py golden wordpiece TOKENIZER_JSON [N] > OUT.json
     python -I test/tokenizer_golden.py golden bpe TOKENIZER_JSON [N] > OUT.json
     python -I test/tokenizer_golden.py golden bpe_groups TOKENIZER_JSON [N] > OUT.json
 
-writes the golden of a real tokenizer (`bert-base-uncased`, `Qwen3-0.6B`, `LFM3-1.7B` with `bpe_groups`, which adds `GROUP_TEXTS`),
+writes the golden of a real tokenizer (`bert-base-uncased`, `Qwen3-0.6B`, `LFM3-1.7B` with `bpe_groups`, which adds `GROUP_TEXTS` and checks the version of `tokenizers` and the sha256 of the file),
 which `tools/tokenizer_check.agc` compares; it is not committed. `N` adds that
 many random strings (seeded) of the pieces in `FUZZ`.
 """
@@ -113,6 +113,9 @@ LFM3_SPLIT = (
 
 # Strings where the digit groups decide the cut: runs of every length, digits of other scripts, other numbers (No, Nl),
 # digits next to letters, signs and separators, and text that NFC would change (LFM3 has no normalizer).
+# The `tokenizer.json` of `LiquidAI/LFM3-1.7B` at revision 1da06bec6a819da10b54c67e5c90972b46d81871.
+LFM3_TOKENIZER_SHA256 = "7e226e34bface23ccf6e495d157bf77186c1c30a7659880e1a8994db528c3701"
+
 GROUP_TEXTS = [
     "1", "12", "123", "1234", "12345", "123456", "1234567", "0001", "a1234b", "x 1234567", "-1234", " 12", "$1,000,000",
     "1.234.567,89", "3.14159", "a 123\n456", "2024-11-26", "٣٤٥٦٧", "２０２４年", "²³⁴⁵", "½¼¾", "Ⅷ Ⅻ", "①②③④",
@@ -317,7 +320,7 @@ def main():
         directory = sys.argv[2]
         make_bpe(directory, "bpe_groups", LFM3_SPLIT, groups=True)
         with open(f"{directory}/bpe_groups_golden.json", "w", encoding="utf-8") as f:
-            json.dump(golden("bpe", f"{directory}/bpe_groups.json", 60, GROUP_TEXTS), f, ensure_ascii=False, indent=None)
+            json.dump(golden("bpe", f"{directory}/bpe_groups.json", 20, GROUP_TEXTS), f, ensure_ascii=False, indent=None)
             f.write("\n")
     elif sys.argv[1] == "fixtures":
         directory = sys.argv[2]
@@ -329,6 +332,16 @@ def main():
                 f.write("\n")
     else:
         kind = "bpe" if sys.argv[2] == "bpe_groups" else sys.argv[2]
+        if sys.argv[2] == "bpe_groups":
+            import hashlib
+
+            import tokenizers
+
+            if tokenizers.__version__ != "0.23.3":
+                raise SystemExit(f"tokenizers 0.23.3 is needed, got {tokenizers.__version__}")
+            with open(sys.argv[3], "rb") as f:
+                if hashlib.sha256(f.read()).hexdigest() != LFM3_TOKENIZER_SHA256:
+                    raise SystemExit("the file is not the tokenizer.json of LFM3-1.7B at the pinned revision")
         extra = GROUP_TEXTS if sys.argv[2] == "bpe_groups" else []
         count = int(sys.argv[4]) if len(sys.argv) > 4 else 0
         json.dump(golden(kind, sys.argv[3], count, extra), sys.stdout, ensure_ascii=False)

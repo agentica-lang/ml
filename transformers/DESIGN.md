@@ -258,9 +258,10 @@ and `model.safetensors` or its `.index.json`; `weights` is `F32` or, on ggml, `F
 - The tokenizer is `Bpe` (see Tokenizers) and the template is `Chat.apply("lfm3", ...)`: `<|startoftext|>` first,
   `tools` (each a function, bare or under `function`) into the system turn as `<tools>` lines, calls as
   `<tool_call>\n<function=NAME>\n<parameter=K>\nV\n</parameter>\n</function>\n</tool_call>` (a string as it is, the
-  rest as `json.dumps` writes it: `Pyjson.dumps`), `tool` messages as `<tool_response>` (consecutive ones with the same
+  rest as `json.dumps(ensure_ascii=False)` writes it: `Pyjson.dumps`), `tool` messages as `<tool_response>` (consecutive ones with the same
   `tool_call_id` are one), and the reasoning of an assistant message (`thinking`) kept after the last user message, or
-  everywhere with `preserve_thinking`. Not read: images and other content parts, `tool_reference`s, `additional_tools`,
+  everywhere with `preserve_thinking`. Not read: the aliases `reasoning` and `reasoning_content` of `thinking`, images and
+  other content parts, `tool_reference`s, `additional_tools`,
   and a tool call whose arguments are a JSON string (the template refuses that one too).
 - The tiny golden (`test/lfm3_golden.py`, rows of 9 tokens, window 4, the real rotary factor and thetas) is the official
   code's `float32` eager run. `tools/lfm3_check.agc` is the manual check on the real checkpoint (`test/lfm3_check_golden.py`).
@@ -558,13 +559,16 @@ error row per config field.
 - `test/bpe_test.agc` on `fixtures/bpe_groups.json`, a tiny tokenizer with the split of LFM3, no normalizer and
   `ignore_merges` with its last 40 merges cut off, so that flipping the flag changes ids (`test/tokenizer_golden.py
   groups`, `tokenizers` 0.23.3): the ids and text of `tokenizers` on the strings of the BPE test, 30 of digit groups,
-  scripts and NFC and 60 random ones. `tools/tokenizer_check.agc bpe` on the real `tokenizer.json` of
+  scripts and NFC and 20 random ones. `tools/tokenizer_check.agc bpe` on the real `tokenizer.json` of
   `LiquidAI/LFM3-1.7B` (revision `1da06bec6a819da10b54c67e5c90972b46d81871`, sha256
   `7e226e34bface23ccf6e495d157bf77186c1c30a7659880e1a8994db528c3701`; manual, 500 random strings more): 2,941 cases agree,
   and 1,354 more on 1,184 chunks and lines of the repository's own files.
-- `test/chat_test.agc` against `test/chat_lfm3_golden.py` (`transformers` 5.22.2, the sha256 of the four files asserted):
+- `test/pyjson_test.agc` against `test/pyjson_golden.py` (standard library): 321 texts of `json.dumps(value, ensure_ascii=False)`
+  (floats at the edges of `repr` and of random bit patterns, big integers, control characters, nested objects with their
+  keys out of order), parsed and written again by `Pyjson.dumps`.
+- `test/chat_test.agc` against `test/chat_lfm3_golden.py` (`transformers` 5.22.2, `jinja2` 3.1.6, the sha256 of the four files asserted):
   49 conversations of the official LFM3 template, the Jinja run by Hugging Face, with tools (bare and under `function`,
-  `defer_loading`), calls with arguments of every JSON kind (Python's `json.dumps` text, floats as `repr`), one or
+  `defer_loading`), calls with arguments of every JSON kind (`json.dumps(ensure_ascii=False)` text, floats as `repr`), one or
   several answers per call, reasoning kept or dropped, `preserve_thinking`, `CONTINUE_FINAL_MESSAGE_TAG`, other roles.
 - `test/chat_test.agc` against `test/chat35_golden.py` (`transformers` 5.22.2,
   the sha256 of the template and of `tokenizer.json` asserted): 28

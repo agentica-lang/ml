@@ -326,15 +326,16 @@ def tool_line(tool: Map[String, JSON.Value]) -> Result[Optional[String]]
     end
   end
 
-  return ok(none) if deferred?(tool) or deferred?(fn)
+  return ok(none) if try deferred?(tool) or try deferred?(fn)
 
   ok(some(Pyjson.dumps(JSON.object(fn.delete("defer_loading")))))
 end
 
-def deferred?(fields: Map[String, JSON.Value]) -> Bool
+## Whether a tool has `defer_loading: true`; a value that is not a Boolean is an error.
+def deferred?(fields: Map[String, JSON.Value]) -> Result[Bool]
   case fields.get("defer_loading")
-    some(v) -> JSON.bool(v).unwrap_or(false)
-    none -> false
+    some(v) -> JSON.bool(v)
+    none -> ok(false)
   end
 end
 
@@ -401,7 +402,7 @@ def call_text(call: ToolCall) -> String
   text + "</function>\n</tool_call>"
 end
 
-## A string as it is, anything else as JSON the way Python writes it.
+## A string as it is, anything else as `json.dumps(ensure_ascii=False)` writes it.
 def argument_text(value: JSON.Value) -> String
   case JSON.node(value)
     JSON.Node.String(s) -> s

@@ -184,8 +184,9 @@ def encode(tok: ByteLevelBpe, text: String) -> Result[List[Int]]
 
         for word in split(normal, tok.marks, tok.digits)
           symbols = byte_chars(word)
-          if tok.ignore_merges and tok.vocab.key?(symbols.join(""))
-            out = out.push(tok.vocab[symbols.join("")])
+          whole = symbols.join("")
+          if tok.ignore_merges and tok.vocab.key?(whole)
+            out = out.push(tok.vocab[whole])
             next
           end
 

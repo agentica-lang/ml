@@ -117,7 +117,8 @@ def test_what_only_lfm3_reads_is_an_error_for_the_others() -> Result[Void]
   try Test.error?(Chat.apply("qwen3", hi, true, none, [{"name": JSON.from("f")}]))
   try Test.error?(Chat.apply("qwen3", hi, true, none, [], true))
   try Test.error?(Chat.apply("qwen3_5", [Chat.Message(role: "user", content: "Hi", thinking: some("t"))]))
-  Test.error?(Chat.apply("lfm3", []))
+  try Test.error?(Chat.apply("lfm3", []))
+  Test.error?(Chat.apply("lfm3", hi, true, none, [{"name": JSON.from("f"), "defer_loading": JSON.from("yes")}]))
 end
 
 private
