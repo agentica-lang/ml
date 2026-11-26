@@ -247,7 +247,7 @@ def test_a_step_with_other_outputs_than_the_stepper_says_is_an_error() -> Result
       layers: 1,
       limit: 8,
       vocab: 4,
-      table: try Tensor.zeros([4, 2], Tensor.Dtype.F32, backend),
+      backend: backend,
       traced: ->(m: Int) { m },
       stepped: ->(_m: Int, req: KvDecoder.Request) {
         logits = try Tensor.zeros([4], Tensor.Dtype.F32, Tensor.backend(req.xs[0]))

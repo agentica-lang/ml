@@ -442,21 +442,27 @@ end
   `ggml_backend_vk_device_supports_buft` refuses any buffer type that is not a
   Vulkan one, and the Vulkan sync code casts the buffer of every source to its
   own. So a mixed graph goes through `ggml_backend_sched` over the device and
-  the CPU, as llama.cpp does for `-ngl`. `place` gives each node that is not a
-  view a side: the CPU when any operand's memory (a view looks through to its
-  source) is in host memory, a weight, a cache or any other tensor, whatever
-  else it reads (a long prompt's activations outweigh a weight, and copying
-  the weight on each run is what a CPU layer avoids); else the side with most
-  operand bytes (a device leaf under 64 KiB, a norm weight or a position,
-  counts for nothing), a tie with an operand computed on the CPU going to the
-  CPU, so the residual stream of a CPU layer stays there. A node that nothing
-  decides (a table made of constants) takes the side of its consumers, from the
-  end of the graph back, and the device when they are on both sides or it has
-  none. It checks that the backend of that side runs the op, and keeps
-  the sides until a leaf changes sides (`placed` is set only when every node
-  has one, so a failed `place` is tried again on the next call). The key of
-  the graph does not say where the leaves are, so two placements share an
-  entry and each run places itself by the tensors bound.
+  the CPU, as llama.cpp does for `-ngl`.
+  `place` gives each node that is not a view a side, by the first rule that
+  applies: (1) the CPU when any operand's memory is in host memory (a view
+  looks through to its source), a weight, a cache or any other tensor,
+  whatever else the node reads (a long prompt's activations outweigh a weight,
+  and copying the weight on each run is what a CPU layer avoids); (2) the
+  device when a product or a row lookup reads a matrix that lives there (a
+  weight, however small); (3) the side with most operand bytes (the operands
+  that earlier nodes computed, and the device leaves of 64 KiB or more), a
+  device leaf below 64 KiB that is not such a matrix (a norm weight, a
+  position, a mask) counting for nothing; (4)
+  on a tie, the side of the product of a matrix that the node reads, so the
+  residual stream follows the layer it passes through whatever the order of
+  the operands, else the CPU when an operand was computed there. A node that
+  nothing decides (a table made of constants) takes the side of its consumers,
+  from the end of the graph back, and the device when they are on both sides
+  or it has none. `place` then checks that the backend of that side runs the
+  op, and keeps the sides until a leaf changes sides (`placed` is set only
+  when every node has one, so a failed `place` is tried again on the next
+  call). The key of the graph does not say where the leaves are, so two
+  placements share an entry and each run places itself by the tensors bound.
   `compute_mixed` gives every node its backend with
   `ggml_backend_sched_set_tensor_backend`, lets the scheduler split the graph
   and copy the activations where the sides meet, and puts back the sources and

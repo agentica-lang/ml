@@ -1,7 +1,7 @@
 ## The decoder that Qwen3 (`generate.agc`), Granite MoE (`generate_granite_moe.agc`), LFM3 (`generate_lfm3.agc`) and
 ## Qwen3.5 (`generate_qwen35.agc`) share, over a key-value cache
 ## (`transformers/DESIGN.md`), the design of `asr/`'s decoder (`asr/asr.agc`); the cache helpers are shared in
-## `nn/kv.agc`. A model gives a `Stepper`: its sizes, its token table, `traced` and its `stepped` function, the graph of
+## `nn/kv.agc`. A model gives a `Stepper`: its sizes, its backend, `traced` and its `stepped` function, the graph of
 ## one step; everything else is here:
 ##
 ## - The cache of a layer is `[1, kv_heads, rows, head_dim]`, the keys already normalized and rotated, padded with zero
@@ -119,8 +119,9 @@ struct Stepper[M]
   ## The positions of the model (`max_position_embeddings`).
   limit: Int
   vocab: Int
-  ## The token table, which tells the backend of the model.
-  table: Tensor.Tensor
+  ## The backend of the model, which the ids and the inputs of a step are made on (the one its table is on, unless the
+  ## table is on the CPU under a model on a Vulkan device).
+  backend: Tensor.Backend
   ## How many state tensors a step takes and gives, after the keys and the values (0 for a model with none).
   states: Int = 0
   ## The taps of the convolution of a model with states: a prompt (more than one row) is given a `Delta.Padding` for
@@ -435,7 +436,7 @@ def advance[M](g: Core[M], cache: Cache, ids: List[Int], mode: Stepping.Head) ->
     width = room
   end
 
-  backend = Tensor.backend(s.table)
+  backend = s.backend
   made = fed_inputs(s, ids, cache.length, width, room, backend)
   if not made.ok?
     finish(cache)

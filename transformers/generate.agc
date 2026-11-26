@@ -91,7 +91,7 @@ def stepper(m: Qwen3.Qwen3) -> KvDecoder.Stepper[Qwen3.Qwen3]
     layers: m.config.num_hidden_layers,
     limit: m.config.max_position_embeddings,
     vocab: m.config.vocab_size,
-    table: m.tokens.table,
+    backend: m.device,
     traced: ->(p: Qwen3.Qwen3) { Qwen3.traced(p) },
     stepped: ->(p: Qwen3.Qwen3, req: KvDecoder.Request) { stepped(p, req) },
   )

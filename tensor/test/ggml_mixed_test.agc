@@ -1,8 +1,8 @@
 ## Layers across a Vulkan device and the CPU: a graph over tensors on both. A leaf on `Ggml(Cpu)` under a graph on a
 ## Vulkan device makes the graph run through a scheduler over the two backends, and the node that reads a CPU weight or
 ## cache runs on the CPU. Its values are those of the same graph with every tensor on the device, an output of a CPU node
-## is a CPU tensor, and a cache on the CPU is written in place. Without a Vulkan device these checks pass by asserting
-## nothing.
+## is a CPU tensor, and a cache on the CPU is written in place. Without a Vulkan device these checks only assert that no
+## device is there.
 
 import GgmlRaw from "../src/ggml_native"
 import Support from "support"
@@ -183,24 +183,29 @@ def test_a_sum_of_a_device_row_and_a_cpu_product_runs_on_the_cpu() -> Result[Voi
   Test.eq(Tensor.backend(swapped[0]), HOME)
 end
 
-## A model of `blocks` residual blocks and a head: inputs are the ids, the table, the head, then per block a norm weight
+## A model of `blocks` residual blocks and a head, giving the logits and the stream after the first and after the last
+## block: inputs are the ids, the table, the head, then per block a norm weight
 ## and a matrix. The first `on_device` blocks have their matrix on the device, the others on the CPU.
 def stack(xs: List[Tensor.Tensor], blocks: Int) -> Result[List[Tensor.Tensor]]
   h = try Tensor.gather(xs[1], xs[0])
+  first = h
   for k in 0...blocks
     normed = try Tensor.mul(try Tensor.rms_norm(h, 0.00001), xs[3 + 2 * k])
     h = try Tensor.add(h, try Tensor.linear(normed, xs[4 + 2 * k], none, true))
+    if k == 0
+      first = h
+    end
   end
 
-  ok([try Tensor.linear(h, xs[2], none, true)])
+  ok([try Tensor.linear(h, xs[2], none, true), first, h])
 end
 
-def stack_inputs(blocks: Int, on_device: Int) -> Result[List[Tensor.Tensor]]
+def stack_inputs(blocks: Int, on_device: Int, ends: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   ids = try Tensor.from_list([Tensor.Values.Int(7)], [1], Tensor.Dtype.I32, DEVICE)
   args = [
     ids,
-    try floats(counting(300 * WIDTH), [300, WIDTH], DEVICE),
-    try floats(counting(300 * WIDTH), [300, WIDTH], DEVICE),
+    try floats(counting(300 * WIDTH), [300, WIDTH], ends),
+    try floats(counting(300 * WIDTH), [300, WIDTH], ends),
   ]
 
   for k in 0...blocks
@@ -216,10 +221,26 @@ def stack_inputs(blocks: Int, on_device: Int) -> Result[List[Tensor.Tensor]]
   ok(args)
 end
 
+## Each node runs on the side of its weights: the stream after a block on the device is a device tensor and after a block on
+## the CPU a CPU one, and so are the logits with the head on either side.
+def test_the_stream_of_the_stack_is_on_the_side_of_its_blocks() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  for ends in [DEVICE, HOME]
+    got = try Trace.eval_many(try stack_inputs(4, 2, ends)) do |xs| stack(xs, 4) end
+    try Test.eq(Tensor.backend(got[0]), ends)
+    try Test.eq(Tensor.backend(got[1]), DEVICE)
+    try Test.eq(Tensor.backend(got[2]), HOME)
+  end
+
+  none_on_device = try Trace.eval_many(try stack_inputs(4, 0, DEVICE)) do |xs| stack(xs, 4) end
+  Test.eq(Tensor.backend(none_on_device[1]), HOME)
+end
+
 ## The splits of the scheduler in one run of the stack, and its values against the same stack with all on the device.
-def stack_splits(blocks: Int, on_device: Int) -> Result[Int]
-  want = try values(try Trace.eval_many(try stack_inputs(blocks, blocks)) do |xs| stack(xs, blocks) end)
-  got = try Trace.eval_many(try stack_inputs(blocks, on_device)) do |xs| stack(xs, blocks) end
+def stack_splits(blocks: Int, on_device: Int, ends: Tensor.Backend) -> Result[Int]
+  want = try values(try Trace.eval_many(try stack_inputs(blocks, blocks, DEVICE)) do |xs| stack(xs, blocks) end)
+  got = try Trace.eval_many(try stack_inputs(blocks, on_device, ends)) do |xs| stack(xs, blocks) end
   have = try values(got)
   for t in 0...want.size
     for k in 0...want[t].size
@@ -239,18 +260,30 @@ def stack_splits(blocks: Int, on_device: Int) -> Result[Int]
 end
 
 ## Layers on the CPU do not make the scheduler change backend at every layer: the splits are a few, whatever the number
-## of blocks, with all the blocks on the CPU (n of 0) and with the first ones on the device (n of 14 in the model).
+## of blocks, with all the blocks on the CPU (n of 0) and with the first ones on the device (n of 14 in the model). The
+## counts are those of the pinned ggml, with the three outputs of `stack`.
 def test_the_splits_do_not_grow_with_the_blocks_on_the_cpu() -> Result[Void]
   return absent() if !try mixed_present()
 
-  four = try stack_splits(4, 0)
-  eight = try stack_splits(6, 0)
-  try Test.assert(four <= 4, "4 blocks on the CPU made #{four} splits")
-  try Test.eq(eight, four)
-  two_four = try stack_splits(4, 2)
-  two_eight = try stack_splits(6, 2)
-  try Test.assert(two_four <= 4, "2 blocks on the device and 2 on the CPU made #{two_four} splits")
-  Test.eq(two_eight, two_four)
+  for blocks in [4, 6, 8]
+    try Test.eq(try stack_splits(blocks, 0, DEVICE), 5)
+    try Test.eq(try stack_splits(blocks, 2, DEVICE), 5)
+  end
+
+  ok()
+end
+
+## The same with the table and the head on the CPU too (the model with `layers_on_device` below its blocks): the residual
+## stream starts on the CPU, goes over to the device blocks and back, and is a few splits whatever the blocks.
+def test_the_splits_do_not_grow_with_the_table_and_the_head_on_the_cpu() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  for blocks in [4, 6, 8]
+    try Test.eq(try stack_splits(blocks, 0, HOME), 2)
+    try Test.eq(try stack_splits(blocks, 2, HOME), 6)
+  end
+
+  ok()
 end
 
 def message(r: Result[List[Tensor.Tensor]]) -> String
@@ -303,4 +336,28 @@ def test_only_a_graph_with_a_cpu_leaf_goes_through_the_scheduler() -> Result[Voi
   try Test.eq(GgmlRaw.mixed_runs(), before)
   try Trace.eval_many(try inputs(HOME)) do |xs| model(xs) end
   Test.eq(GgmlRaw.mixed_runs(), before + 1)
+end
+
+def chained(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  h = try Tensor.linear(xs[0], xs[1], none, true)
+  ok([try Tensor.linear(h, xs[2], none, true)])
+end
+
+def chained_inputs(first: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  ok([
+    try floats(counting(100 * 4), [100, 4], DEVICE),
+    try floats(counting(16), [4, 4], first),
+    try floats(counting(32), [8, 4], DEVICE),
+  ])
+end
+
+## A small matrix on the device that a product reads pins the product there, though its input is bigger and was computed
+## on the CPU: the first product reads a CPU weight, the second a device weight of 32 floats.
+def test_a_small_device_matrix_pins_its_product_to_the_device() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  want = try values(try Trace.eval_many(try chained_inputs(DEVICE)) do |xs| chained(xs) end)
+  got = try Trace.eval_many(try chained_inputs(HOME)) do |xs| chained(xs) end
+  try Test.eq(try values(got), want)
+  Test.eq(Tensor.backend(got[0]), DEVICE)
 end

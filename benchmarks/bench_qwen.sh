@@ -28,9 +28,10 @@
 # `float32`, as the checks against Hugging Face run). Every row pins both variables, whatever the caller exports. The
 # GPU column is the most that the GPU memory in use (VRAM and GTT, sampled every 0.1 s) rose above its value before the
 # row, in MB, for the Vulkan rows (llama.cpp's mapped weights are in it, not in the RSS); `-` on the CPU rows.
-# The rows `ours-vulkan-q4k-n14` and `-n0` run the Q4_K_M file with `AGENTICA_ML_LAYERS_ON_DEVICE` 14 and 0 (the blocks
-# from the 14th on, or all of them, on the CPU with their KV cache), against llama.cpp's `-ngl 14` and `-ngl 0` on the
-# Vulkan build: llama.cpp counts the layers from the end, and `-ngl 0` keeps its output layer on the CPU too.
+# The rows `ours-vulkan-q4k-n27`, `-n14` and `-n0` run the Q4_K_M file with `AGENTICA_ML_LAYERS_ON_DEVICE` 27, 14 and 0
+# (the blocks from the 27th, the 14th or the first on the CPU with their KV cache, and the embedding table, the head and
+# the final norm too), against llama.cpp's `-ngl 27`, `-ngl 14` and `-ngl 0` on the Vulkan build: llama.cpp counts the
+# layers from the end and keeps the input embedding and the output layer on the CPU for every `-ngl` below its layer count.
 set -eu
 
 model=$1
@@ -65,7 +66,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-all_rows="ours-cpu ours-cpu-f16 ours-cpu-q4k llama-cpu-f32 llama-cpu-f16 llama-cpu-q4km ours-vulkan ours-vulkan-exact ours-vulkan-f16 ours-vulkan-q4k ours-vulkan-q4k-n14 ours-vulkan-q4k-n0 llama-vulkan-f32 llama-vulkan-f16 llama-vulkan-q4km llama-vulkan-q4km-ngl14 llama-vulkan-q4km-ngl0"
+all_rows="ours-cpu ours-cpu-f16 ours-cpu-q4k llama-cpu-f32 llama-cpu-f16 llama-cpu-q4km ours-vulkan ours-vulkan-exact ours-vulkan-f16 ours-vulkan-q4k ours-vulkan-q4k-n27 ours-vulkan-q4k-n14 ours-vulkan-q4k-n0 llama-vulkan-f32 llama-vulkan-f16 llama-vulkan-q4km llama-vulkan-q4km-ngl27 llama-vulkan-q4km-ngl14 llama-vulkan-q4km-ngl0"
 
 want() { # name: true when ROWS is unset or one of its comma-separated words is in the name
   [ -z "${ROWS:-}" ] && return 0
@@ -251,6 +252,8 @@ ours_vulkan_f16() { ours ours-vulkan-f16 vulkan "$model" WEIGHTS=f16; }
 llama_vulkan_f16() { llama llama-vulkan-f16 "$vulkan" "$ggufs/qwen3-0.6b-f16.gguf" -ngl 99; }
 ours_vulkan_q4k() { ours ours-vulkan-q4k vulkan "$q4km" WEIGHTS=q4_k; }
 llama_vulkan_q4km() { llama llama-vulkan-q4km "$vulkan" "$q4km" -ngl 99; }
+ours_vulkan_q4k_n27() { ours ours-vulkan-q4k-n27 vulkan "$q4km" WEIGHTS=q4_k AGENTICA_ML_LAYERS_ON_DEVICE=27; }
+llama_vulkan_q4km_ngl27() { llama llama-vulkan-q4km-ngl27 "$vulkan" "$q4km" -ngl 27; }
 ours_vulkan_q4k_n14() { ours ours-vulkan-q4k-n14 vulkan "$q4km" WEIGHTS=q4_k AGENTICA_ML_LAYERS_ON_DEVICE=14; }
 llama_vulkan_q4km_ngl14() { llama llama-vulkan-q4km-ngl14 "$vulkan" "$q4km" -ngl 14; }
 ours_vulkan_q4k_n0() { ours ours-vulkan-q4k-n0 vulkan "$q4km" WEIGHTS=q4_k AGENTICA_ML_LAYERS_ON_DEVICE=0; }
@@ -265,6 +268,7 @@ while [ "$round" -lt "$rounds" ]; do
   ours ours-vulkan-exact vulkan "$model" VULKAN_FP16=0
   pair ours_vulkan_f16 llama_vulkan_f16
   pair ours_vulkan_q4k llama_vulkan_q4km
+  pair ours_vulkan_q4k_n27 llama_vulkan_q4km_ngl27
   pair ours_vulkan_q4k_n14 llama_vulkan_q4km_ngl14
   pair ours_vulkan_q4k_n0 llama_vulkan_q4km_ngl0
   echo "round $round done, load average $(cut -d' ' -f1 /proc/loadavg)" >&2
@@ -277,7 +281,7 @@ python3 -I - "$out" << 'PY'
 import statistics, sys
 pairs = {"ours-cpu": "llama-cpu-f32", "ours-cpu-f16": "llama-cpu-f16", "ours-cpu-q4k": "llama-cpu-q4km",
          "ours-vulkan": "llama-vulkan-f32", "ours-vulkan-f16": "llama-vulkan-f16", "ours-vulkan-q4k": "llama-vulkan-q4km",
-         "ours-vulkan-q4k-n14": "llama-vulkan-q4km-ngl14", "ours-vulkan-q4k-n0": "llama-vulkan-q4km-ngl0"}
+         "ours-vulkan-q4k-n27": "llama-vulkan-q4km-ngl27", "ours-vulkan-q4k-n14": "llama-vulkan-q4km-ngl14", "ours-vulkan-q4k-n0": "llama-vulkan-q4km-ngl0"}
 rows = {}
 for line in open(sys.argv[1]):
     name, load, pp, tg, rss, gpu, rnd = line.split()

@@ -430,39 +430,43 @@ The GPU memory is the most that VRAM plus GTT in use (`mem_info_vram_used` and `
 
 The cheap gaps: none found in the weight products, so the code of the model is unchanged.
 
-## Layers on the CPU against llama.cpp `-ngl` (ml#310, ml#312, ml#85)
+## Layers on the CPU against llama.cpp `-ngl` (ml#310, ml#312, ml#320, ml#85)
 
-The Q4_K_M Qwen3-0.6B of the section above on Vulkan, with the blocks from the `n`th on on the CPU: ours `Qwen3.open(..., layers_on_device: n)` (`AGENTICA_ML_LAYERS_ON_DEVICE`, the first `n` blocks, the embedding table, the head and the final norm on the card), llama.cpp `llama-bench -ngl N` (its layers count from the end, and `-ngl 0` keeps the output layer on the CPU too). The 28 blocks of the model: `n` = 14 and `-ngl 14` put half on each side, `n` = 0 and `-ngl 0` none on the card. The all-device pair is the control: it shows the default path (no scheduler) next to the section above.
+The Q4_K_M Qwen3-0.6B of the section above on Vulkan, with the blocks from the `n`th on on the CPU: ours `Qwen3.open(..., layers_on_device: n)` (`AGENTICA_ML_LAYERS_ON_DEVICE`: the first `n` blocks on the card, and with `n` below the 28 blocks the embedding table, the head and the final norm on the CPU, as llama.cpp does), llama.cpp `llama-bench -ngl N` (its layers count from the end, and `-ngl 0` keeps the output layer on the CPU too). The 28 blocks of the model: `n` = 27 and `-ngl 27` leave the last block on the CPU, `n` = 14 and `-ngl 14` put half on each side, `n` = 0 and `-ngl 0` none on the card. The all-device pair is the control: it shows the default path (no scheduler) next to the section above.
 
-- **Machine and tools.** The machine of the sections above, nothing else timing (the other lines frozen), Agentica 0.40.0-beta.1, ours at the code of the PR (ml#314, `cff15962`) over ggml `v1.0.0` (`417a024b4fb6`), the same engines. llama.cpp commit `711f9f4c117042570ef66ef58fba1f15835a331b`, built with `-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DGGML_VULKAN=ON` (the CPU build without the Vulkan flag); `llama-bench` ran with 4 threads, flash attention on, F16 KV, generation at depth 128 (the script prints these lines), and ours with `cpu_threads=4`.
-- **Method.** `ROWS=vulkan-q4k THREADS=4 benchmarks/bench_qwen.sh QWEN3_DIR GGUF_DIR BUILD_CPU BUILD_VULKAN 5`: 5 rounds, each pair once per round, the two swapping places from one round to the next, under a lock and a 5 GB memory cap. The load average at the end of the last round was 2.1.
+- **Machine and tools.** The machine of the sections above, nothing else timing (the other lines frozen), Agentica 0.40.0-beta.1, ours at the code of the PR (ml#323, `516c650d`) over ggml `v1.0.0` (`417a024b4fb6`), the same engines. llama.cpp commit `711f9f4c117042570ef66ef58fba1f15835a331b`, built with `-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DGGML_VULKAN=ON` (the CPU build without the Vulkan flag); `llama-bench` ran with 4 threads, flash attention on, F16 KV, generation at depth 128 (the script prints these lines), and ours with `cpu_threads=4`. The GPU clock was at its default (`auto`).
+- **Method.** `ROWS=vulkan-q4k THREADS=4 benchmarks/bench_qwen.sh QWEN3_DIR GGUF_DIR BUILD_CPU BUILD_VULKAN 5`: 5 rounds, each pair once per round, the two swapping places from one round to the next, under a lock and a 5 GB memory cap. The load average after the run was 1.3.
 
 Medians of the 5 rounds (128 prompt tokens, then 64 tokens after it):
 
 | Row | Prompt | Tokens | Load | Peak RSS | Peak GPU memory |
 |---|---|---|---|---|---|
-| ours, all blocks on the card (control) | 606.6 tokens/s | 49.0 tokens/s | 0.61 s | 0.45 GB | 579 MB |
-| llama.cpp, `-ngl 99` (control) | 731.9 | 60.83 | | 0.14 GB | 627 MB |
-| ours, `n` = 14 | 181.3 | 20.14 | 0.62 s | 0.57 GB | 386 MB |
-| llama.cpp, `-ngl 14` | 183.3 | 26.56 | | 0.15 GB | 592 MB |
-| ours, `n` = 0 | 126.0 | 21.15 | 0.65 s | 0.69 GB | 209 MB |
-| llama.cpp, `-ngl 0` | 91.6 | 47.09 | | 0.17 GB | 698 MB |
+| ours, all blocks on the card (control) | 600.9 tokens/s | 49.81 tokens/s | 0.49 s | 0.45 GB | 579 MB |
+| llama.cpp, `-ngl 99` (control) | 740.3 | 61.09 | | 0.15 GB | 627 MB |
+| ours, `n` = 27 | 368.9 | 20.55 | 0.45 s | 0.57 GB | 344 MB |
+| llama.cpp, `-ngl 27` | 619.5 | 57.62 | | 0.15 GB | 604 MB |
+| ours, `n` = 14 | 179.3 | 18.77 | 0.46 s | 0.73 GB | 181 MB |
+| llama.cpp, `-ngl 14` | 182.5 | 26.22 | | 0.16 GB | 591 MB |
+| ours, `n` = 0 | 131.8 | 36.91 | 0.47 s | 0.90 GB | 2 MB |
+| llama.cpp, `-ngl 0` | 91.7 | 46.82 | | 0.17 GB | 697 MB |
 
 The ratio of ours to llama.cpp in each round (the rounds in order), then its minimum and maximum:
 
 | Pair | Prompt | Tokens |
 |---|---|---|
-| all on the card | 0.83 0.82 0.83 0.83 0.82 (0.82 to 0.83) | 0.82 0.82 0.81 0.78 0.81 (0.78 to 0.82) |
-| 14 blocks | 1.03 0.95 0.98 1.00 0.99 (0.95 to 1.03) | 0.79 0.78 0.73 0.82 0.69 (0.69 to 0.82) |
-| 0 blocks | 1.40 1.32 1.37 1.43 1.40 (1.32 to 1.43) | 0.45 0.44 0.45 0.49 0.45 (0.44 to 0.49) |
+| all on the card | 0.82 0.72 0.81 0.82 0.79 (0.72 to 0.82) | 0.83 0.72 0.80 0.81 0.82 (0.72 to 0.83) |
+| 27 blocks | 0.60 0.59 0.64 0.62 0.58 (0.58 to 0.64) | 0.36 0.38 0.34 0.33 0.37 (0.33 to 0.38) |
+| 14 blocks | 0.96 0.98 1.02 0.99 0.97 (0.96 to 1.02) | 0.72 0.68 0.72 0.63 0.76 (0.63 to 0.76) |
+| 0 blocks | 1.37 1.44 1.45 1.43 1.46 (1.37 to 1.46) | 0.79 0.79 0.81 0.75 0.80 (0.75 to 0.81) |
 
 The GPU memory is measured as in the section above.
 
-- **The default is unchanged.** The all-device pair takes the plain path (`ggml_run` without a scheduler: `GgmlRaw.mixed_runs` stays at 0, which a test checks) and its ratios (0.82 to 0.83 on the prompt, 0.78 to 0.82 on the tokens) are those of the section above (0.82 to 0.85 and 0.82 to 0.84).
-- **Memory is what the knob buys.** The GPU memory falls with `n`: 579, 386 and 209 MB, which is the weights and the KV cache of the blocks that moved. llama.cpp's GPU memory does not fall as much (627, 592 and 698 MB: at `-ngl 0` it is more than with every layer); the host RSS rises with `n` on both sides, ours from 0.45 to 0.69 GB.
-- **Speed.** The prompt is at llama.cpp's speed with half the blocks on the CPU (0.95 to 1.03) and 1.3 to 1.4 times it with none on the card. The tokens are at 0.78 (0.69 to 0.82) with half and 0.45 (0.44 to 0.49) with none: 49.7 ms and 47.3 ms a token, against 37.7 ms and 21.2 ms. Our CPU-only engine does this model at 33.6 tokens per second (the section above), so the step with every block on the CPU is at 0.63 of it; in the profile of one step (`tools/profile_qwen.agc`, the `ml.run` section) it is 47 ms against 39 ms.
-- **What a first measure of this section found (ml#312).** The same rows before the placement was fixed gave 8.5 and 6.2 tokens per second at `n` = 14 and 0 (0.33 and 0.13 of llama.cpp): the scheduler made 116 splits per step, because the residual stream of the CPU blocks sat on the device and the checks of the graph were copied between the layers. The stream now stays on the CPU, a table of constants goes where its consumers are, and the copies of the checks come after all of them: 3 to 7 splits a graph.
-- **Where `n` pays.** The knob is for a model that does not fit in the memory of the card, not for speed: at `n` = 14 the tokens run at 20 per second instead of 49 and half of the card's memory is free.
+- **The default is unchanged.** The all-device pair takes the plain path (`ggml_run` without a scheduler: `GgmlRaw.mixed_runs` stays at 0, which a test checks). Its ratios are those of the section above (0.82 to 0.85 on the prompt, 0.82 to 0.84 on the tokens) in four rounds; the second round had a slow run of ours (0.72 on both).
+- **Memory is what the knob buys.** The GPU memory falls with `n`: 579, 344, 181 and 2 MB, which is the weights and the KV cache of the blocks that moved (and the table and the head, from `n` = 27). llama.cpp's GPU memory does not fall as much (627, 604, 591 and 697 MB: at `-ngl 0` it is more than with every layer); the host RSS rises with `n` on both sides, ours from 0.45 to 0.90 GB.
+- **`n` = 0.** With no block on the card the table, the head and the final norm are on the CPU too (ml#320), as in llama.cpp: 27.1 ms a token against 21.4 ms for llama.cpp (0.79, 0.75 to 0.81), and 1.4 times its speed on the prompt. Before ml#320 this row took 52 ms a step in the profile harness, with the head on the card; the same harness gives 29.8 ms now, 31.4 ms for our CPU-only engine. The step of `n` = 0 is now the CPU-only engine's.
+- **`n` = 14 and `n` = 27 are slow because of the card's clock.** The tokens run at 0.72 of llama.cpp's at `n` = 14 (53.3 ms against 38.1) and at 0.36 at `n` = 27 (48.7 ms against 17.4 ms), and the prompt is at 0.98 and 0.60. The blocks on the card run in short bursts between the CPU splits, and the card's governor keeps the clock at its lowest (200 MHz sampled from `pp_dpm_sclk`): `MUL_MAT_VEC q4_K m=3072` takes 283 us in such a step against 65 us in an all-device one, which ramps the clock to 1.0 to 1.2 GHz. It holds with one CPU thread, so it is not the scheduler. Control, with the clock forced high (`power_dpm_force_performance_level=high`, 300 steps of the profile harness, 3 runs): `n` = 14 takes 31.4, 31.4 and 32.2 ms a step instead of 55, and `n` = 0 29.8 and 29.2 ms, so the step does no more than the CPU work when the card is fast. The rows of this section stay at the default clock, as the earlier ones; `n` = 27 was not measured with the clock raised.
+- **What a first measure of this section found (ml#312).** The same rows before the placement was fixed gave 8.5 and 6.2 tokens per second at `n` = 14 and 0 (0.33 and 0.13 of llama.cpp): the scheduler made 116 splits per step, because the residual stream of the CPU blocks sat on the device and the checks of the graph were copied between the layers. The stream now stays on the CPU, a table of constants goes where its consumers are, and the copies of the checks come after all of them: 3 to 7 splits a graph (`tensor/test/ggml_mixed_test.agc` pins the splits of a stack of blocks).
+- **Where `n` pays.** The knob is for a model that does not fit in the memory of the card, not for speed: at `n` = 14 the tokens run at 19 per second instead of 50 and 400 MB of the card's memory are free.
 
 ## ResNet-18 and ResNet-50 (ml#83), ours only
 
