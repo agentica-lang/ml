@@ -59,11 +59,13 @@ def close(g: Generator) -> Void
   KvDecoder.close(core(g))
 end
 
-## The empty cache.
-def start() -> Cache = KvDecoder.start()
+## The empty cache, or with `sight` the one of a prompt with images (`KvDecoder.start`): the ids of the prompt hold an
+## image token for each row of `sight.features`, where `Mrope.layout` says.
+def start(sight: Optional[KvDecoder.Sight] = none) -> Cache = KvDecoder.start(sight)
 
-## Feeds `ids` after the tokens of `cache`: a prompt of any length when the cache is empty, one id after that. The
-## cache that `step` takes is dead afterwards, even when the step fails (`KvDecoder.step`).
+## Feeds `ids` after the tokens of `cache`: a prompt of any length when the cache is empty (its images come from
+## `start(sight)`), one id after that. The cache that `step` takes is dead afterwards, even when the step fails
+## (`KvDecoder.step`).
 def step(g: Generator, cache: Cache, ids: List[Int]) -> Result[Stepping.Picked[Cache]]
   KvDecoder.step(core(g), cache, ids)
 end
@@ -85,15 +87,17 @@ def finish(cache: Cache) -> Void
 end
 
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`),
-## greedy or sampled (`Stepping.generate`). The prompt and the new ids must fit `max_position_embeddings`.
+## greedy or sampled (`Stepping.generate`). The prompt and the new ids must fit `max_position_embeddings`. `sight` is
+## the images of the prompt.
 def generate(
   g: Generator,
   ids: List[Int],
   max_new: Int,
   stop: List[Int] = [],
   sampling: Optional[Sample.Sampling] = none,
+  sight: Optional[KvDecoder.Sight] = none,
 ) -> Result[List[Int]]
-  KvDecoder.generate(core(g), ids, max_new, stop, sampling)
+  KvDecoder.generate(core(g), ids, max_new, stop, sampling, sight)
 end
 
 private
@@ -103,6 +107,22 @@ struct Mixed
   hidden: Tensor.Tensor
   kv: Optional[KvDecoder.Kv]
   states: List[Tensor.Tensor]
+end
+
+## The masks of the sectioned rope of the full layers (`Nn.axis_masks`), made once for the step, when it turns by three
+## axes (a prompt with images); none when it turns by one position.
+def axis_masks(m: Qwen3_5.Qwen3_5, req: KvDecoder.Request, h: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
+  rotary = req.rotary
+  return ok([]) if rotary.none? or Tensor.shape(rotary.unwrap!).size != 2
+  for l in m.layers
+    case l.mixer
+      Qwen3_5.Mixer.Full(a) ->
+        return Nn.axis_masks(a.rope.unwrap!, m.config.head_dim, Tensor.dtype(h), Tensor.backend(h))
+      Qwen3_5.Mixer.Linear(_) -> nil
+    end
+  end
+
+  error("a prompt with images needs a layer with full attention")
 end
 
 def core(g: Generator) -> KvDecoder.Core[Qwen3_5.Qwen3_5]
@@ -129,6 +149,7 @@ def stepper(m: Qwen3_5.Qwen3_5) -> KvDecoder.Stepper[Qwen3_5.Qwen3_5]
     table: m.tokens.table,
     states: 2 * (m.layers.size - full),
     taps: m.config.linear_conv_kernel_dim,
+    sighted: true,
     traced: ->(p: Qwen3_5.Qwen3_5) { Qwen3_5.traced(p) },
     stepped: ->(p: Qwen3_5.Qwen3_5, req: KvDecoder.Request) { stepped(p, req) },
   )
@@ -145,7 +166,7 @@ def stepped(m: Qwen3_5.Qwen3_5, req: KvDecoder.Request) -> Result[List[Tensor.Te
   d = m.config.hidden_size
   full = full_layers(m)
   slots = Padded.Slots(positions: xs[1], capacity: req.room)
-  h = try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d])
+  h = try KvDecoder.spliced(try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d]), req)
   mask = try Padded.padded_mask(slots.with(capacity: req.reach), Tensor.dtype(h))
   # A prompt is the only step with padding, and the only one without a cache.
   padding: Optional[Delta.Padding] = none
@@ -156,6 +177,7 @@ def stepped(m: Qwen3_5.Qwen3_5, req: KvDecoder.Request) -> Result[List[Tensor.Te
   end
 
   reading = try KvDecoder.reading(req, mask)
+  reading = reading.with(axes: try axis_masks(m, req, h))
   keys: List[Tensor.Tensor] = []
   values: List[Tensor.Tensor] = []
   states: List[Tensor.Tensor] = []

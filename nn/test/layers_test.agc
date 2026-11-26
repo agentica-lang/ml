@@ -336,6 +336,60 @@ def test_positions_start_rope_where_they_say() -> Result[Void]
   S.expect_close(try S.floats_of(both), try S.floats_of(try Nn.attention(p, x, memory)), ABS, REL, "cross")
 end
 
+## The interleaved M-RoPE: a row of positions per axis, and each pair of the rotated columns takes the rotation of its
+## axis. The oracle is the plain rope of each row, whose columns are picked by hand: of 6 pairs with the sections
+## [2, 2, 1] the height turns pairs 1 and 4, the width pair 2 (pair 5 is past its 3 * 1 limit) and the time the rest.
+def test_sections_rotate_each_pair_by_the_position_row_of_its_axis() -> Result[Void]
+  sections = Nn.Rope(dims: some(12), sections: some([2, 2, 1]))
+  x = try S.f32(Init.uniform_values(48, 1.0, 71), [1, 3, 16])
+  rows = [[0, 1, 2], [5, 5, 7], [3, 9, 4]]
+  flat: List[Tensor.Values] = []
+  for row in rows
+    flat = flat + row.map { |n| Tensor.Values.Int(n) }
+  end
+
+  axes = try Tensor.from_list(flat, [3, 3], Tensor.Dtype.I32, S.REF)
+  at = ->(i: Int) { Tensor.from_list(rows[i].map { |n| Tensor.Values.Int(n) }, [3], Tensor.Dtype.I32, S.REF) }
+  options = Nn.BlockOptions(rope: some(sections))
+  p = try S.jitter_attention(try Nn.init_attention(16, 1, 72, S.REF, options), 73)
+  plain = p.with(rope: some(Nn.Rope(dims: some(12))))
+  got = try Nn.project(p, x, x, some(axes))
+  turned: List[List[Float]] = []
+  for i in 0...3
+    turned = turned.push(try S.floats_of((try Nn.project(plain, x, x, some(try at.call(i)))).query))
+  end
+
+  axis_of_pair = [0, 1, 2, 0, 1, 0]
+  want: List[Float] = []
+  for token in 0...3
+    for column in 0...16
+      from = 0
+      if column < 12
+        from = axis_of_pair[column % 6]
+      end
+
+      want = want.push(turned[from][token * 16 + column])
+    end
+  end
+
+  try S.expect_close(try S.floats_of(got.query), want, ABS, REL, "sectioned query")
+  same = try Tensor.from_list(flat.take(3) + flat.take(3) + flat.take(3), [3, 3], Tensor.Dtype.I32, S.REF)
+  moved = try S.floats_of((try Nn.project(p, x, x, some(same))).query)
+  try S.expect_close(moved, turned[0], ABS, REL, "three equal rows are the plain rope")
+  one = try S.floats_of((try Nn.project(p, x, x, some(try at.call(0)))).query)
+  try S.expect_close(one, turned[0], ABS, REL, "one row is the plain rope")
+  masks = try Nn.axis_masks(sections, 16, Tensor.Dtype.F32, S.REF)
+  made = try S.floats_of((try Nn.project(p, x, x, some(axes), axes: masks)).query)
+  try S.expect_close(made, want, ABS, REL, "masks made once")
+  for few in [[2, 0, 1], [2, 1, 0], [2, 1], [-1, 1, 1]]
+    try Test.error?(Nn.axis_masks(Nn.Rope(dims: some(12), sections: some(few)), 16, Tensor.Dtype.F32, S.REF))
+  end
+
+  try Test.error?(Nn.project(plain, x, x, some(axes)))
+  try Test.error?(Nn.project(p, x, x, some(try Tensor.slice(axes, [0, 0], [3, 2]))))
+  ok()
+end
+
 def test_a_post_norm_decoder_block_matches_the_naive_model() -> Result[Void]
   x = Init.uniform_values(24, 1.0, 47)
   memory = Init.uniform_values(40, 1.0, 48)
