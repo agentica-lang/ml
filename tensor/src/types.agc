@@ -65,6 +65,14 @@ enum Device
   Vulkan(Int)
 end
 
+## Where a weight read from a file lives. `Device` is the device's own memory; `Host` is, on a Vulkan device, its
+## pinned host memory: the card reads the weight over the bus, and the device's memory keeps the rest. Elsewhere it is
+## `Device`.
+enum Placement
+  Device
+  Host
+end
+
 enum Backend
   Reference
   Torch(Device)

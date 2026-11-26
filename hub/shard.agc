@@ -85,6 +85,7 @@ def tensor(
   name: String,
   backend: Tensor.Backend,
   dtype: Tensor.Dtype = Tensor.Dtype.F32,
+  placement: Tensor.Placement = Tensor.Placement.Device,
 ) -> Result[Tensor.Tensor]
   e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
   at = shard.base + e.start
@@ -105,14 +106,14 @@ def tensor(
 
     return within(
       "#{shard.path}: tensor #{name}",
-      Tensor.from_file(shard.path, at, e.shape, BLOCKS[e.dtype], backend, kept),
+      Tensor.from_file(shard.path, at, e.shape, BLOCKS[e.dtype], backend, kept, placement),
     )
   end
 
   if FORMATS.key?(e.dtype)
     return within(
       "#{shard.path}: tensor #{name}",
-      Tensor.from_file(shard.path, at, e.shape, FORMATS[e.dtype], backend, dtype),
+      Tensor.from_file(shard.path, at, e.shape, FORMATS[e.dtype], backend, dtype, placement),
     )
   end
 

@@ -44,7 +44,7 @@ end
 private
 
 def run(dir: String, prefills: Int, decodes: Int, backend: Tensor.Backend) -> Result[Void]
-  m = try Qwen3.open(dir, backend, try Load.weights_from_env())
+  m = try Qwen3.open(dir, backend, try Load.weights_from_env(), try Load.layers_on_device_from_env())
   g = try Generate.open(m)
   prompt = (0...PROMPT).map { |i| 1000 + (i * 7) % 5000 }
   s = try Generate.step(g, Generate.start(), prompt)

@@ -86,6 +86,10 @@ bool tg_fp16(void);
    switch), read once when the process fixes its precision. */
 bool tg_masked_scatter(void);
 
+/* Added to a Vulkan device index, it places the tensor in the device's pinned host memory (the compute stays on the
+   device): a weight that the card reads over the bus, kept out of its own memory. */
+#define TG_HOST ((int64_t)1 << 32)
+
 /* A fresh tensor of `ne` and `type` on `device` into `state`; false with the
    error term in `failure`. Takes the device lock itself. */
 bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_type type,

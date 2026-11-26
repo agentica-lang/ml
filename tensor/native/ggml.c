@@ -339,14 +339,15 @@ bool tg_new_tensor(an_env *env, int64_t device, const int64_t ne[4], enum ggml_t
   struct ggml_init_params params;
   size_t size;
   enum ggml_status placed;
-  bool held;
+  bool held, host = device >= 0 && (device & TG_HOST) != 0;
 
+  if (host) device &= ~TG_HOST;
   tg_lock_device();
   dev = device_of(device, why, sizeof why);
-  if (dev != NULL) buft = ggml_backend_dev_buffer_type(dev);
+  if (dev != NULL) buft = host ? ggml_backend_dev_host_buffer_type(dev) : ggml_backend_dev_buffer_type(dev);
   tg_unlock_device();
   if (dev == NULL) return failed(env, failure, why);
-  if (buft == NULL) return failed(env, failure, "the device has no buffer type");
+  if (buft == NULL) return failed(env, failure, host ? "the device has no pinned host memory" : "the device has no buffer type");
   state->vulkan = device >= 0;
   state->store = (struct tg_storage *)calloc(1, sizeof *state->store);
   if (state->store == NULL) return failed(env, failure, "out of memory");
@@ -588,7 +589,7 @@ static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const
     return tg_error(env, "a range of blocks is read as F32 or kept as the blocks of its own type, and nothing else");
   }
   if (!make_tensor(env, device, &shape, type, state, &failure)) return failure;
-  in_place = !state->vulkan && ggml_backend_buffer_is_host(state->buffer);
+  in_place = ggml_backend_buffer_is_host(state->buffer);
   host = in_place ? state->t->data : host_bytes(state->t);
   if (host == NULL) return tg_error(env, "out of memory");
   if (held >= HELD_Q8_0) {

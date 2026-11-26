@@ -92,6 +92,24 @@ def test_f16_weights_need_ggml_and_leave_a_tiny_model_alone() -> Result[Void]
   end
 end
 
+## `layers_on_device: n` keeps the weights of the blocks from the `n`th on in host memory, and the model computes the same
+## logits whichever `n` it is (all blocks, none, one of two) and in half; a negative `n` is an error.
+def test_layers_on_device_do_not_change_the_logits() -> Result[Void]
+  with_peer do |dir|
+    rows = try ids(dir)
+    try Test.error?(Qwen3.open("#{dir}/tiny", S.REF, Tensor.Dtype.F32, some(-1)))
+    for backend in try S.ggml_backends()
+      want = try S.floats_of(try Qwen3.run(try Qwen3.open("#{dir}/tiny", backend), rows))
+      for n in [0, 1, 2]
+        m = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(n))
+        try Test.eq(try S.floats_of(try Qwen3.run(m, rows)), want)
+      end
+    end
+
+    ok()
+  end
+end
+
 ## The half path through a model: with `weights: F16` the table (which is also the tied head) and the big MLP
 ## matrices are half, the small ones stay `F32`, and the logits stay within the half-weight bound of the `F32` model's.
 def test_f16_weights_keep_the_big_matrices_half_and_the_logits_close() -> Result[Void]

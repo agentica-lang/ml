@@ -103,9 +103,15 @@ def zeros_then(count: Int, tail: List[Int]) -> Result[List[Bytes]]
   ok(parts.push(try Bytes.from_list(tail)))
 end
 
-def run_model(path: String, device: Tensor.Device, dtype: Tensor.Dtype, xs: List[Float]) -> Result[List[Tensor.Tensor]]
+def run_model(
+  path: String,
+  device: Tensor.Device,
+  dtype: Tensor.Dtype,
+  xs: List[Float],
+  placement: Tensor.Placement = Tensor.Placement.Device,
+) -> Result[List[Tensor.Tensor]]
   backend = Tensor.Backend.Ggml(device)
-  w = try Tensor.from_file(path, 0, [4, 3], Tensor.FloatFormat.F32, backend, dtype)
+  w = try Tensor.from_file(path, 0, [4, 3], Tensor.FloatFormat.F32, backend, dtype, placement)
   x = try Tensor.from_list(xs.map { |v: Float| Tensor.Values.Float(v) }, [2, 3], Tensor.Dtype.F32, backend)
   ids = try Tensor.from_list([3, 0, 2].map { |v: Int| Tensor.Values.Int(v) }, [3], Tensor.Dtype.I32, backend)
   Trace.eval_many([x, ids, w]) do |a|
@@ -301,6 +307,30 @@ def test_a_compiled_graph_reads_a_half_weight_as_the_f32_weight() -> Result[Void
 
         # embedding: the rows are the weights themselves, exact
         try Test.eq(try floats(half[1]), try floats(whole[1]))
+      end
+
+      ok()
+    end
+  end
+
+  ok()
+end
+
+## A weight placed in the host's memory (`Placement.Host`: pinned memory under Vulkan, a plain no-op on the CPU) reads back
+## as the device one does and serves the same compiled `linear` and `embedding`, in F32 and in half.
+def test_a_host_placed_weight_gives_the_device_placed_results() -> Result[Void]
+  xs = [1.0, -0.5, 0.25, 2.0, 0.125, -1.0]
+  for device in try devices()
+    backend = Tensor.Backend.Ggml(device)
+    try with_file(try weight_bytes()) do |path|
+      for dtype in [Tensor.Dtype.F32, Tensor.Dtype.F16]
+        placed = try Tensor.from_file(path, 0, [4, 3], Tensor.FloatFormat.F32, backend, dtype, Tensor.Placement.Host)
+        try Test.eq(try floats(placed), weights())
+        host = try run_model(path, device, dtype, xs, Tensor.Placement.Host)
+        home = try run_model(path, device, dtype, xs)
+        for i in 0...2
+          try Test.eq(try floats(host[i]), try floats(home[i]))
+        end
       end
 
       ok()

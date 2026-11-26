@@ -55,13 +55,21 @@ end
 ## The model in `dir`, which holds `config.json` and `model.safetensors` (or
 ## the `model.safetensors.index.json` of a sharded one), or in the `.gguf` file
 ## `dir` names, whose key-values give the config.
-def open(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype = Tensor.Dtype.F32) -> Result[Qwen3]
+## `layers_on_device: n` keeps the weights of the blocks from the `n`th on in pinned host memory (`Tensor.Placement.Host`,
+## Vulkan only): the card reads them over the bus and its memory holds the rest. The embedding table, the head and the
+## norms stay on the device; `none` keeps every block there.
+def open(
+  dir: String,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+  layers_on_device: Optional[Int] = none,
+) -> Result[Qwen3]
   if dir.end_with?(".gguf")
     c = try Hub.open(dir)
-    return load(c, try gguf_config(c), backend, weights)
+    return load(c, try gguf_config(c), backend, weights, layers_on_device)
   end
 
-  load(try checkpoint(dir), try read_config(dir), backend, weights)
+  load(try checkpoint(dir), try read_config(dir), backend, weights, layers_on_device)
 end
 
 ## The `config.json` of the model folder `dir`.
@@ -151,15 +159,25 @@ def load(
   config: Config,
   backend: Tensor.Backend,
   weights: Tensor.Dtype = Tensor.Dtype.F32,
+  layers_on_device: Optional[Int] = none,
 ) -> Result[Qwen3]
   config = try with_head_dim(config)
   try check_config(config)
+  if layers_on_device.some? and layers_on_device.unwrap! < 0
+    return error("layers_on_device is 0 or more, got #{layers_on_device.unwrap!}")
+  end
+
   width = config.hidden_size
   tokens = try Load.embedding(c, "model.embed_tokens.weight", backend, weights)
   try expect_shape("model.embed_tokens.weight", tokens.table, [config.vocab_size, width])
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
-    blocks = blocks.push(try block(c, "model.layers.#{i}.", config, backend, weights))
+    placement = Tensor.Placement.Device
+    if layers_on_device.some? and i >= layers_on_device.unwrap!
+      placement = Tensor.Placement.Host
+    end
+
+    blocks = blocks.push(try block(c, "model.layers.#{i}.", config, backend, weights, placement))
   end
 
   head = try head_of(c, config, tokens, backend, weights)
@@ -426,6 +444,7 @@ def block(
   config: Config,
   backend: Tensor.Backend,
   weights: Tensor.Dtype,
+  placement: Tensor.Placement,
 ) -> Result[Nn.EncoderBlock]
   width = config.hidden_size
   q_width = config.num_attention_heads * config.head_dim
@@ -442,10 +461,10 @@ def block(
   end
 
   attention = Nn.Attention(
-    query: try Load.dense(c, "#{a}q_proj", backend, weights),
-    key: try Load.dense(c, "#{a}k_proj", backend, weights),
-    value: try Load.dense(c, "#{a}v_proj", backend, weights),
-    output: try Load.dense(c, "#{a}o_proj", backend, weights),
+    query: try Load.dense(c, "#{a}q_proj", backend, weights, placement),
+    key: try Load.dense(c, "#{a}k_proj", backend, weights, placement),
+    value: try Load.dense(c, "#{a}v_proj", backend, weights, placement),
+    output: try Load.dense(c, "#{a}o_proj", backend, weights, placement),
     heads: config.num_attention_heads,
     kv_heads: some(config.num_key_value_heads),
     rope: some(Nn.Rope(base: config.rope_theta)),
@@ -459,10 +478,10 @@ def block(
   try expect_shape("#{a}o_proj.weight", attention.output.w, [width, q_width])
   m = "#{p}mlp."
   mlp = Nn.Mlp(
-    up: try Load.dense(c, "#{m}up_proj", backend, weights),
-    down: try Load.dense(c, "#{m}down_proj", backend, weights),
+    up: try Load.dense(c, "#{m}up_proj", backend, weights, placement),
+    down: try Load.dense(c, "#{m}down_proj", backend, weights, placement),
     activation: Nn.Activation.Silu,
-    gate: some(try Load.dense(c, "#{m}gate_proj", backend, weights)),
+    gate: some(try Load.dense(c, "#{m}gate_proj", backend, weights, placement)),
   )
 
   try expect_shape("#{m}up_proj.weight", mlp.up.w, [config.intermediate_size, width])

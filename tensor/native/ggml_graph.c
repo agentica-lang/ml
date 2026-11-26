@@ -1712,7 +1712,8 @@ an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, str
   if (t->t == NULL) return tg_error(env, "bind a tensor that was made");
   leaf = &p->leaves[slot];
   if (ggml_nelements(t->t) != ggml_nelements(leaf->t)) return tg_error(env, "a bound tensor has another element count than its leaf");
-  if (!ggml_backend_supports_buft(p->backend, ggml_backend_buffer_get_type(t->buffer))) {
+  if (!ggml_backend_supports_buft(p->backend, ggml_backend_buffer_get_type(t->buffer)) &&
+      !(t->vulkan && ggml_backend_buffer_is_host(t->buffer) && p->device >= 0)) {
     return tg_error(env, "a bound tensor lives on another device than its graph");
   }
   if (leaf->t->type != t->t->type && (leaf->t->type != GGML_TYPE_F32 || t->t->type != GGML_TYPE_I32)) {
