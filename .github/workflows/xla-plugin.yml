@@ -8,13 +8,17 @@ name: XLA plugin
 # Pushing the tag xla-<the first 12 characters of the pinned commit> also
 # publishes a GitHub Release on that tag: both plugins, the header, the
 # licenses and SHA256SUMS, which tensor/tools/install_xla.agc downloads. The
-# run fails when the tag does not match the pin, or when the tag is not on a
-# commit of main. A run by hand (workflow_dispatch) builds and publishes
-# nothing; to try another XLA commit, run it from a branch that changes
-# tensor/xla-commit. The build takes hours.
+# run fails when the tag does not match the pin, when the tag is not on a
+# commit of main, or when a release of the tag exists. A run by hand
+# (workflow_dispatch) on a branch builds and publishes nothing; to try another
+# XLA commit, run it from a branch that changes tensor/xla-commit. A run by
+# hand on the tag itself (to resume an unfinished run) publishes like the push.
+# The build takes hours. The release is made as a draft, filled, then
+# published, so a failed run leaves no half release; a re-run replaces the
+# draft of the tag and never a published release.
 # A run that does not finish (time limit, failure, cancel) uploads its Bazel
-# disk cache as an artifact kept 3 days, one per architecture; a new run given
-# that run's id in `resume_run_id` starts from it. The cache of GitHub Actions
+# disk cache as an artifact kept 3 days, one per platform; a new run given
+# that run's id in `resume_run_id` (a run of this workflow) starts from it. The cache of GitHub Actions
 # is not used, so this workflow never evicts what ci.yml caches.
 on:
   push:
@@ -50,6 +54,9 @@ jobs:
     timeout-minutes: 5
     outputs:
       commit: ${{ steps.pin.outputs.commit }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RESUME_RUN_ID: ${{ inputs.resume_run_id }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -73,6 +80,28 @@ jobs:
             }
             git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
               echo "the tag $GITHUB_REF_NAME is not on a commit of main" >&2
+              exit 1
+            }
+            # A draft is not seen here (and the publish job replaces it); a
+            # published release is never replaced.
+            if out=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" 2>&1); then
+              echo "a release of $GITHUB_REF_NAME exists already" >&2
+              exit 1
+            elif ! grep -q 'Not Found' <<< "$out"; then
+              echo "$out" >&2
+              exit 1
+            fi
+          fi
+          # The cache of an earlier run is used only when that run is of this
+          # workflow in this repository.
+          if [ -n "$RESUME_RUN_ID" ]; then
+            [[ "$RESUME_RUN_ID" =~ ^[0-9]+$ ]] || {
+              echo "resume_run_id must be a run id (digits)" >&2
+              exit 1
+            }
+            name=$(gh run view "$RESUME_RUN_ID" --repo "$GITHUB_REPOSITORY" --json workflowName --jq .workflowName)
+            [ "$name" = "$GITHUB_WORKFLOW" ] || {
+              echo "run $RESUME_RUN_ID is of the workflow '$name', not '$GITHUB_WORKFLOW'" >&2
               exit 1
             }
           fi
@@ -212,6 +241,8 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: env.RESUME_RUN_ID != ''
+        continue-on-error: true
+        id: resume
         with:
           name: xla-disk-cache-${{ env.XLA_COMMIT }}-${{ env.ARCH }}
           run-id: ${{ env.RESUME_RUN_ID }}
@@ -219,7 +250,7 @@ jobs:
           path: ${{ env.XLA_WORK }}/resume
 
       - name: Unpack the disk cache of the earlier run
-        if: env.RESUME_RUN_ID != ''
+        if: steps.resume.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -314,6 +345,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: xla-pjrt-cpu-plugin-linux-${{ env.ARCH }}-${{ env.XLA_COMMIT }}
           path: out
           retention-days: 90
@@ -342,6 +374,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && steps.pack.outcome == 'success'
         with:
+          overwrite: true
           name: xla-disk-cache-${{ env.XLA_COMMIT }}-${{ env.ARCH }}
           path: ${{ env.XLA_WORK }}/disk-cache.tar.zst
           retention-days: 3
@@ -358,7 +391,9 @@ jobs:
     needs: pin
     runs-on: macos-26
     continue-on-error: true
-    timeout-minutes: 360
+    # Shorter than the Linux jobs: the build stops itself at minute 150, with
+    # the rest left for the cache upload.
+    timeout-minutes: 180
     env:
       XLA_COMMIT: ${{ needs.pin.outputs.commit }}
       RESUME_RUN_ID: ${{ inputs.resume_run_id }}
@@ -455,11 +490,11 @@ jobs:
       - name: Build the plugin
         id: build
         working-directory: xla
-        timeout-minutes: 300
+        timeout-minutes: 160
         shell: bash
         run: |
           set -euo pipefail
-          left=$((290 * 60 - ($(date +%s) - JOB_START)))
+          left=$((150 * 60 - ($(date +%s) - JOB_START)))
           [ "$left" -gt 0 ]
           gtimeout --signal=INT --kill-after=300 "${left}s" bazel build "$XLA_TARGET"
           df -h /
@@ -480,9 +515,12 @@ jobs:
           cp xla/xla/pjrt/c/pjrt_c_api.h out/
           [ "$(lipo -archs "$plugin")" = arm64 ]
           nm -gU "$plugin" | grep -q ' _GetPjrtApi$'
-          # The plugin may need only what ships with macOS (the first line of
-          # otool -L is the file, the second its own install name).
-          needed=$(otool -L "$plugin" | tail -n +3 | awk '{ print $1 }')
+          # The plugin may need only what ships with macOS; its own install
+          # name is not a need.
+          id=$(otool -D "$plugin" | tail -n +2)
+          [ -n "$id" ]
+          needed=$(otool -L "$plugin" | tail -n +2 | awk '{ print $1 }' | grep -vxF -- "$id" || true)
+          [ -n "$needed" ]
           while read -r lib; do
             case "$lib" in
               /usr/lib/* | /System/Library/*) ;;
@@ -519,9 +557,9 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -I out ml/tensor/tools/xla/smoke.c -o "$RUNNER_TEMP/smoke"
           "$RUNNER_TEMP/smoke" "$PWD/out/pjrt_c_api_cpu_plugin.dylib"
 
+      # Unlike the Linux job, the artifact is uploaded only when the licenses
+      # are complete: nothing of macOS is published without them.
       - name: Collect the licenses
-        id: licenses
-        continue-on-error: true
         shell: bash
         run: bash ml/tensor/tools/xla/collect-licenses.sh xla out
 
@@ -535,17 +573,11 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: xla-pjrt-cpu-plugin-macos-arm64-${{ env.XLA_COMMIT }}
           path: out
           retention-days: 90
           if-no-files-found: error
-
-      - name: Fail when a license is missing
-        if: steps.licenses.outcome == 'failure'
-        shell: bash
-        run: |
-          echo "collect-licenses.sh failed: see its step and licenses/MISSING.txt in the artifact" >&2
-          exit 1
 
       - name: Pack the disk cache
         id: pack
@@ -559,19 +591,20 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && steps.pack.outcome == 'success'
         with:
+          overwrite: true
           name: xla-disk-cache-${{ env.XLA_COMMIT }}-macos-arm64
           path: ${{ env.XLA_WORK }}/disk-cache.tar.zst
           retention-days: 3
           compression-level: 0
           if-no-files-found: error
 
-  # Only on a pushed tag, after both Linux builds. The macOS build is taken
+  # Only on a tag (pushed, or a run by hand on it), after both Linux builds. The macOS build is taken
   # when its artifact exists, and the notes say when it is not there. The only
   # job that may write.
   publish:
     name: GitHub Release
     needs: [pin, build, build-macos]
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && github.ref_type == 'tag' && needs.build.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
@@ -600,6 +633,7 @@ jobs:
               continue
             fi
             have+=("$platform")
+            (cd "$dir" && sha256sum -c --quiet sha256sums.txt)
             cp "$dir/pjrt_c_api_cpu_plugin.$ext" "release/pjrt_c_api_cpu_plugin-$platform.$ext"
             cp "$dir/BUILD-INFO.txt" "release/BUILD-INFO-$platform.txt"
             [ -f "$dir/licenses/MISSING.txt" ] && [ -f "$dir/LICENSE" ] || { echo "$dir has no licenses" >&2; exit 1; }
@@ -625,11 +659,28 @@ jobs:
           (cd release && find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort | xargs -d '\n' sha256sum > SHA256SUMS && cat SHA256SUMS)
           ls -l release
 
+      # The release is a draft until every file is in it. The tag must still
+      # be the commit this run built, and only a draft of an earlier run of
+      # this tag is replaced.
       - name: Create the release
         shell: bash
         run: |
           set -euo pipefail
+          [ "$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)" = "$GITHUB_SHA" ] || {
+            echo "the tag $GITHUB_REF_NAME no longer points at $GITHUB_SHA" >&2
+            exit 1
+          }
+          drafts() {
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+              --jq ".[] | select(.draft and .tag_name == \"$GITHUB_REF_NAME\") | .id"
+          }
+          for id in $(drafts); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done
           gh release create "$GITHUB_REF_NAME" release/* \
-            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --latest=false \
             --title "XLA PJRT CPU plugin ($GITHUB_REF_NAME)" \
             --notes-file notes.md
+          id=$(drafts)
+          [ -n "$id" ] && [ "$(wc -w <<< "$id")" -eq 1 ]
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=false -f make_latest=false
