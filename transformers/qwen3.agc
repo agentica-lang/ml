@@ -40,6 +40,12 @@ struct Config
   sliding_window: Optional[Int]
 end
 
+## `config.json` of a SmolVLM folder: the text model is in `text_config`.
+struct Idefics3Document
+  model_type: String
+  text_config: Config
+end
+
 ## Any `rope_scaling` object: the model has none.
 struct Scaling
   rope_type: Optional[String]
@@ -86,6 +92,22 @@ end
 def read_config(dir: String) -> Result[Config]
   text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
   Source.within("#{dir}/config.json", JSON.decode(text, Config))
+end
+
+## The Llama text model of the folder `dir` of a SmolVLM (`Idefics3ForConditionalGeneration`, `model_type` `idefics3`):
+## the `text_config` of its `config.json`, its tensors under `model.text_model.` and its head `lm_head.weight`. The
+## tower and the connector in the same file are not read, and `weights(m)` still names the tensors of a plain model
+## (`model.layers...`).
+def open_idefics3(
+  dir: String,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+  layers_on_device: Optional[Int] = none,
+) -> Result[Qwen3]
+  text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
+  file = try Source.within("#{dir}/config.json", JSON.decode(text, Idefics3Document))
+  return error("model_type is #{file.model_type}, not idefics3") if file.model_type != "idefics3"
+  load(try checkpoint(dir), file.text_config, backend, weights, layers_on_device, "model.text_model")
 end
 
 ## The weights of the model folder `dir`: its `model.safetensors`, or the `model.safetensors.index.json` of a sharded one.
@@ -164,13 +186,15 @@ def check_config(config: Config) -> Result[Void]
   ok()
 end
 
-## The model of an open checkpoint, its shapes checked against `config`.
+## The model of an open checkpoint, its shapes checked against `config`. The tensors of the embedding table, the blocks
+## and the final norm are under `root` (`model.`), and the head is `lm_head` at the top.
 def load(
   c: Hub.Checkpoint,
   config: Config,
   backend: Tensor.Backend,
   weights: Tensor.Dtype = Tensor.Dtype.F32,
   layers_on_device: Optional[Int] = none,
+  root: String = "model",
 ) -> Result[Qwen3]
   config = try with_head_dim(config)
   try check_config(config)
@@ -180,23 +204,24 @@ def load(
 
   width = config.hidden_size
   side = Placement.placement(backend, config.num_hidden_layers, layers_on_device)
-  tokens = try Load.embedding(c, "model.embed_tokens.weight", side.table, weights)
-  try expect_shape("model.embed_tokens.weight", tokens.table, [config.vocab_size, width])
+  table = "#{root}.embed_tokens.weight"
+  tokens = try Load.embedding(c, table, side.table, weights)
+  try expect_shape(table, tokens.table, [config.vocab_size, width])
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
     blocks = blocks.push(
-      try block(c, "model.layers.#{i}.", config, Placement.layer_backend(backend, i, layers_on_device), weights),
+      try block(c, "#{root}.layers.#{i}.", config, Placement.layer_backend(backend, i, layers_on_device), weights),
     )
   end
 
-  head = try head_of(c, config, tokens, side.head, weights)
+  head = try head_of(c, config, tokens, side.head, weights, table)
   ok(
     Qwen3(
       config: config,
       tokens: tokens,
       stack: Nn.EncoderStack(
         blocks: blocks,
-        final_norm: some(try rms(c, "model.norm", config.rms_norm_eps, side.head)),
+        final_norm: some(try rms(c, "#{root}.norm", config.rms_norm_eps, side.head)),
       ),
       head: head,
       device: backend,
@@ -431,11 +456,12 @@ def head_of(
   tokens: Nn.Embedding,
   backend: Tensor.Backend,
   weights: Tensor.Dtype,
+  table: String,
 ) -> Result[Nn.Dense]
   if config.tie_word_embeddings
     return ok(Nn.Dense(w: tokens.table, b: none, out_in: true)) if Tensor.backend(tokens.table) == backend
 
-    copy = try Load.embedding(c, "model.embed_tokens.weight", backend, weights)
+    copy = try Load.embedding(c, table, backend, weights)
     return ok(Nn.Dense(w: copy.table, b: none, out_in: true))
   end
 
