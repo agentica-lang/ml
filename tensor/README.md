@@ -157,7 +157,8 @@ Limits of what crosses the boundary:
 ## Local setup
 
 libtorch 2.4.1+cpu (the shared-library CPU release) is what this package was
-built and tested against:
+built against, and the numbers below were measured on. CI tests Ubuntu's
+`libtorch-dev` (2.9.1 today; Debian's 2.6.0 passes too), so 2.4.1 to 2.9 works:
 
 ```sh
 # https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-2.4.1%2Bcpu.zip
@@ -327,8 +328,9 @@ headers; the repository never downloads it). So:
   changes. The line coverage of `src/torch.agc`, `src/torch_dtypes.agc` and
   `src/native.agc` is counted from this job (`tools/coverage_check.py --only
   libtorch`), not from the package job.
-- The release the tolerances and the numbers of this README were measured on is
-  libtorch 2.4.1+cpu at `$HOME/opt/libtorch`.
+- The release the numbers of this README were measured on is libtorch 2.4.1+cpu
+  at `$HOME/opt/libtorch`; the `torch` job tests whatever version Ubuntu's
+  `libtorch-dev` is (2.9.1 today).
 - CI **does** build ggml's CPU backend (`tools/build-engine.sh`, the
   workflow's engine step), so `native/ggml.c` compiles and the ggml CPU
   checks run there; `TENSOR_REQUIRE_GGML=1` makes a module that did not build

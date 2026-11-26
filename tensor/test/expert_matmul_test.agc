@@ -136,7 +136,8 @@ def test_ggml_runs_the_ids_of_top_ids_in_the_graph() -> Result[Void]
   close(try routed(CPU), try Support.floats_of(try routed(REF)), F32_TOL, "out")
 end
 
-## libtorch runs the loop over its own ops.
+## libtorch runs the loop over its own ops. Its `F32` sums differ from the `Float64` reference by a few ulps of the inputs,
+## more than `Conform.agrees` allows for a result near zero, so it is held to PyTorch's output of the fixture, as ggml is.
 def test_libtorch_agrees_with_the_reference() -> Result[Void]
   return Conform.absent() if !Conform.available()
 
@@ -154,8 +155,7 @@ def test_libtorch_agrees_with_the_reference() -> Result[Void]
     )
   end
 
-  x = try inputs_of(c, REF)
-  Conform.agrees(try ours, try Tensor.expert_matmul(x.weights, x.x, x.ids), "expert_matmul")
+  close(try ours, c.out, F32_TOL, "out")
 end
 
 def test_there_is_no_gradient() -> Result[Void]
