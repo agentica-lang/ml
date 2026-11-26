@@ -93,6 +93,9 @@ end
 ## head over its width (Qwen3), before `rope`. With `gate` (Qwen3.5) `query` projects to `2 * heads` heads: per head
 ## its query and then its gate, and `attend` multiplies the merged heads by `sigmoid(gate)` before `output`. `scale` is
 ## the factor of `q k^T` when the model sets one (Granite MoE's `attention_multiplier`), `1 / sqrt(head width)` when none.
+## `head_gate` (LFM3) is a gate of one number per head: a `Dense` `[heads, width]` (`out_in`) of the input of `query`,
+## whose sigmoid scales the merged heads, each head by its own number, before `output`. `project` returns it as a
+## `Heads.gate`, so `attend` treats it as the gate of `gate: true`; an attention has one of the two, not both.
 struct Attention
   query: Dense
   key: Dense
@@ -105,6 +108,7 @@ struct Attention
   key_norm: Optional[LayerNorm] = none
   gate: Bool = false
   scale: Optional[Float] = none
+  head_gate: Optional[Dense] = none
 end
 
 ## `dense -> activation -> dense`; with a `gate`, the gated form
@@ -333,6 +337,7 @@ def project(
   memory_positions: Optional[Tensor.Tensor] = none,
 ) -> Result[Heads]
   kv_heads = p.kv_heads.unwrap_or(p.heads)
+  return error("an attention has a gate or a head gate, not both") if p.gate and p.head_gate.some?
   asked = try query_heads(p, queries)
   q = asked.query
   k = try split_heads(try dense(p.key, memory), kv_heads, p.key_norm)
@@ -349,7 +354,7 @@ def project(
     none -> nil
   end
 
-  ok(Heads(query: q, key: k, value: v, gate: asked.gate))
+  ok(Heads(query: q, key: k, value: v, gate: try head_gate_of(p, q, queries, asked.gate)))
 end
 
 ## `Tensor.attention` of `query` over `key` and `value` (the tensors of a
@@ -366,8 +371,10 @@ def attend(
   causal: Bool = false,
   gate: Optional[Tensor.Tensor] = none,
 ) -> Result[Tensor.Tensor]
-  return error("a gated attention needs the gate of its heads") if p.gate and gate.none?
-  return error("a gate is for a gated attention: this one has no gate") if !p.gate and gate.some?
+  return error("an attention has a gate or a head gate, not both") if p.gate and p.head_gate.some?
+  gated = p.gate or p.head_gate.some?
+  return error("a gated attention needs the gate of its heads") if gated and gate.none?
+  return error("a gate is for a gated attention: this one has no gate") if !gated and gate.some?
   context = try Tensor.attention(query, key, value, mask: mask, causal: causal, scale: p.scale)
   merged = try merge_heads(context)
   case gate
@@ -435,15 +442,41 @@ end
 
 ## The additive `[size, size]` mask that keeps query `i` off the keys after
 ## it: `0.0` where `key <= i`, `MASKED` above the diagonal, the same bias that
-## `causal: true` builds inside `Tensor.attention`.
-def causal_mask(size: Int, dtype: Tensor.Dtype, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+## `causal: true` builds inside `Tensor.attention`. With a `window` (a sliding-window layer) it is `0.0` where
+## `i - window < key <= i` only: query `i` sees itself and the `window - 1` keys before it. A `window` of `size` or
+## more changes nothing.
+def causal_mask(
+  size: Int,
+  dtype: Tensor.Dtype,
+  backend: Tensor.Backend,
+  window: Optional[Int] = none,
+) -> Result[Tensor.Tensor]
   return error("causal_mask needs size >= 1, got #{size}") if size < 1
   square = [size, size]
   positions = try Tensor.arange(0, size, 1, Tensor.Dtype.I32, backend)
   rows = try Tensor.broadcast_to(try Tensor.reshape(positions, [size, 1]), square)
   cols = try Tensor.broadcast_to(try Tensor.reshape(positions, [1, size]), square)
+  case window
+    some(w) -> return window_bias(rows, cols, w, dtype)
+    none -> nil
+  end
+
   blocked = try Tensor.full(square, Tensor.Values.Float(MASKED), dtype, backend)
   Tensor.where(try Tensor.lt(rows, cols), blocked, try Tensor.zeros(square, dtype, backend))
+end
+
+## The sliding-window bias of `causal_mask` over the grids `queries` and `keys` (`I32`, one shape): the position of each
+## query and of each key it is compared with, so a padded cache can name its own.
+def window_bias(queries: Tensor.Tensor, keys: Tensor.Tensor, window: Int, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
+  return error("a window is at least 1 key, got #{window}") if window < 1
+  shape = Tensor.shape(queries)
+  backend = Tensor.backend(queries)
+  edge = try Tensor.full(shape, Tensor.Values.Float(window.to_f - 1.0), Tensor.Dtype.F32, backend)
+  blocked = try Tensor.full(shape, Tensor.Values.Float(MASKED), dtype, backend)
+  reach = try Tensor.add(try Tensor.to_dtype(keys, Tensor.Dtype.F32), edge)
+  older = try Tensor.lt(reach, try Tensor.to_dtype(queries, Tensor.Dtype.F32))
+  inside = try Tensor.where(older, blocked, try Tensor.zeros(shape, dtype, backend))
+  Tensor.where(try Tensor.lt(queries, keys), blocked, inside)
 end
 
 ## The additive bias `[batch, 1, seq, seq]` of a `[batch, seq]` mask (1.0 for a token, 0.0 for padding): `MASKED` on
@@ -738,5 +771,27 @@ def normalized(norm: Optional[LayerNorm], x: Tensor.Tensor) -> Result[Tensor.Ten
   case norm
     some(n) -> layer_norm(n, x)
     none -> ok(x)
+  end
+end
+
+## The gate of `p.head_gate` as the `Heads.gate` of `query`: `[batch, heads, q, head]`, the one number of each head
+## repeated over its width. `gate` is the gate that `query_heads` made.
+def head_gate_of(
+  p: Attention,
+  query: Tensor.Tensor,
+  queries: Tensor.Tensor,
+  gate: Optional[Tensor.Tensor],
+) -> Result[Optional[Tensor.Tensor]]
+  case p.head_gate
+    none -> ok(gate)
+    some(d) ->
+      shape = Tensor.shape(query)
+      per_head = try dense(d, queries)
+      if Tensor.shape(per_head) != [shape[0], shape[2], p.heads]
+        return error("a head gate needs [#{shape[0]}, #{shape[2]}, #{p.heads}], got #{Tensor.shape(per_head)}")
+      end
+
+      column = try Tensor.permute(try Tensor.reshape(per_head, [shape[0], shape[2], p.heads, 1]), [0, 2, 1, 3])
+      ok(some(try Tensor.broadcast_to(column, shape)))
   end
 end

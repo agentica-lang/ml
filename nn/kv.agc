@@ -48,8 +48,9 @@ def reached(t: Tensor.Tensor, rows: Int) -> Result[Tensor.Tensor]
 end
 
 ## `[n, capacity]`: `MASKED` where the key's row is after the query's position
-## (later tokens and the padding), 0 elsewhere.
-def padded_mask(s: Slots, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
+## (later tokens and the padding), 0 elsewhere. With a `window` (a sliding-window layer) the keys `window` rows or
+## more before the position are `MASKED` too (`Nn.causal_mask` with a window).
+def padded_mask(s: Slots, dtype: Tensor.Dtype, window: Optional[Int] = none) -> Result[Tensor.Tensor]
   n = Tensor.shape(s.positions)[0]
   backend = Tensor.backend(s.positions)
   grid = [n, s.capacity]
@@ -58,6 +59,11 @@ def padded_mask(s: Slots, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
     try Tensor.reshape(try Tensor.arange(0, s.capacity, 1, Tensor.Dtype.I32, backend), [1, s.capacity]),
     grid,
   )
+
+  case window
+    some(w) -> return Nn.window_bias(queries, keys, w, dtype)
+    none -> nil
+  end
 
   blocked = try Tensor.full(grid, Tensor.Values.Float(Nn.MASKED), dtype, backend)
   Tensor.where(try Tensor.lt(queries, keys), blocked, try Tensor.zeros(grid, dtype, backend))

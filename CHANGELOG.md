@@ -9,6 +9,10 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Dtype.Q4_K`, `Dtype.Q6_K` and the formats of the same names: `Tensor.from_file` dequantizes ggml's K blocks to `F32` on every backend, or keeps them as a weight on ggml (ml#126).
 - `Tensor.packed?(dtype)`: true for the dtypes that ggml keeps packed (`F16` and the quantized ones).
 
+### nn
+
+- `ShortConv`, the gated short convolution of LFM3 (`pkg/nn/short_conv`), `Attention.head_gate` (a gate of one number per head) and a `window` in `Nn.causal_mask` and `Padded.padded_mask`, the mask of a sliding-window layer (ml#275).
+
 ### hub
 
 - GGUF files with `Q4_K` and `Q6_K` tensors are read; `weights: Dtype.Q4_K` (`WEIGHTS=q4_k`) keeps each matrix as blocks at the bit width the file stores it in (ml#126).
