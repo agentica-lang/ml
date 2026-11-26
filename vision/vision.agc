@@ -11,6 +11,8 @@ import Trace from "pkg/tensor/trace"
 
 export Image.Kernel
 
+PI = 3.141592653589793
+
 ## The longest edge that SmolVLM's image processor scales an image to, and the side of its tiles.
 IDEFICS3_LONGEST_EDGE = 2048
 IDEFICS3_TILE = 512
@@ -67,10 +69,10 @@ struct Tiling
   cols: Int
 end
 
-## The tiles of an image (`idefics3_tiles`): `rows * cols` of them, row by row, then the whole image resized to a tile
-## (the global image).
+## The tiles of an image (`idefics3_tiles`): `rows * cols` tensors of them, row by row, then the whole image resized to a
+## tile (the global image), each `[3, 512, 512]` in `F32` in `0.0..1.0`, as `to_tensor` makes them.
 struct Tiles
-  images: List[Image.Image]
+  tiles: List[Tensor.Tensor]
   rows: Int
   cols: Int
 end
@@ -142,29 +144,43 @@ def idefics3_tiling(height: Int, width: Int) -> Result[Tiling]
 end
 
 ## The tiles of `image` as Hugging Face's `Idefics3ImageProcessor` cuts them (`idefics3_tiling`): the image resized to
-## `resized`, then to the `grid`, cut into tiles of 512 by 512 row by row, then the whole grid resized to one tile. The
-## image is an sRGB one of 3 bands (`Image.colourspace` of the `image` package; the processor converts to RGB itself,
-## this function does not), else an error. The resize is libvips', not Pillow's (the processor's, Lanczos): libvips
-## enlarges with its bicubic interpolation whatever the kernel, and shrinks with the Lanczos3 one used here. The tiles
-## are within what `smolvlm_processor_test.agc` measures of the processor's frames (3 levels of 8 bits on smooth images,
-## up to 36 on an enlarged one with hard edges), not bit for bit.
-def idefics3_tiles(image: Image.Image) -> Result[Tiles]
+## `resized`, then to the `grid`, cut into tiles of 512 by 512 row by row, then the whole grid resized to one tile, as
+## tensors on `backend` (`Tiles`). The image is an sRGB `U8` one of 3 bands (`Image.colourspace` of the `image` package;
+## the processor converts to RGB itself, this function does not), else an error. Each resize is Pillow's Lanczos
+## (`ImagingResample`: the filter with its support scaled when shrinking, the centre of output pixel `i` at
+## `(i + 0.5) * scale`, weights normalized for each output pixel, a pass across and then one down, each held to 0..255), as products by matrices of
+## weights in one graph. libvips' resize is not used: it enlarges with bicubic
+## interpolation whatever the kernel. The passes are not rounded to 8 bits as Pillow's are (ggml has no rounding), so a sample is within a level
+## or two of the processor's.
+def idefics3_tiles(image: Image.Image, backend: Tensor.Backend = Tensor.Backend.Reference) -> Result[Tiles]
   return error("idefics3_tiles needs an sRGB image of 3 bands, got #{Image.bands(image)}") if Image.bands(image) != 3
+  kind = Image.pixel_format(image)
+  return error("idefics3_tiles needs a U8 image, got #{kind}") if kind != Image.Format.U8
 
   Native.arena do
     t = try idefics3_tiling(Image.height(image), Image.width(image))
-    kernel = Image.Kernel.Lanczos3
-    resized = try resize_to(image, t.resized.width, t.resized.height, kernel)
-    grid = try resize_to(resized, t.grid.width, t.grid.height, kernel)
-    images: List[Image.Image] = []
-    for r in 0...t.rows
-      for c in 0...t.cols
-        images = images.push(try crop_at(grid, IDEFICS3_TILE, IDEFICS3_TILE, c * IDEFICS3_TILE, r * IDEFICS3_TILE))
+    pixels = try pixels_of(image)
+    raw = try Tensor.from_bytes(pixels.data, [pixels.height, pixels.width, 3], Tensor.FloatFormat.U8, backend)
+    steps = [
+      Resize(from_h: pixels.height, from_w: pixels.width, to_h: t.resized.height, to_w: t.resized.width),
+      Resize(from_h: t.resized.height, from_w: t.resized.width, to_h: t.grid.height, to_w: t.grid.width),
+      Resize(from_h: t.grid.height, from_w: t.grid.width, to_h: IDEFICS3_TILE, to_w: IDEFICS3_TILE),
+    ]
+
+    weights: List[Tensor.Tensor] = []
+    for r in steps
+      if r.to_w != r.from_w
+        weights = weights.push(try lanczos_matrix(r.from_w, r.to_w, backend))
+      end
+
+      if r.to_h != r.from_h
+        weights = weights.push(try lanczos_matrix(r.from_h, r.to_h, backend))
       end
     end
 
-    whole = try resize_to(grid, IDEFICS3_TILE, IDEFICS3_TILE, kernel)
-    ok(Tiles(images: images.push(whole), rows: t.rows, cols: t.cols))
+    tiles = try Trace.eval_many([raw] + weights) do |xs| grid_and_whole(xs, steps, t) end
+
+    ok(Tiles(tiles: tiles, rows: t.rows, cols: t.cols))
   end
 end
 
@@ -287,6 +303,18 @@ MODULUS = 2147483647
 MULTIPLIER = 48271
 SUFFIXES = [".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif"]
 
+struct Resample
+  image: Tensor.Tensor
+  at: Int
+end
+
+struct Resize
+  from_h: Int
+  from_w: Int
+  to_h: Int
+  to_w: Int
+end
+
 ## An image's samples, interleaved: one byte each for a `U8` image, little-endian `F32` for the others.
 struct Pixels
   data: Bytes
@@ -294,6 +322,103 @@ struct Pixels
   height: Int
   bands: Int
   pixel_format: Image.Format
+end
+
+## `[to, from]` weights of Pillow's Lanczos resize of a line of `from` samples to `to`: row `i` holds the weights of the
+## samples that output sample `i` adds, and zeros elsewhere.
+def lanczos_matrix(from: Int, to: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  scale = from.to_f / to.to_f
+  spread = [scale, 1.0].max.unwrap!
+  support = 3.0 * spread
+  rows: List[List[Float]] = []
+  for i in 0...to
+    centre = (i.to_f + 0.5) * scale
+    low = [(centre - support + 0.5).floor, 0].max.unwrap!
+    high = [(centre + support + 0.5).floor, from].min.unwrap!
+    weights = (low...high).to_a.map { |x| lanczos((x.to_f - centre + 0.5) / spread) }
+    total = weights.sum
+    rows = rows.push(
+      (0...low).to_a.map { |_| 0.0 } + weights.map { |w| w / total } + (high...from).to_a.map { |_| 0.0 },
+    )
+  end
+
+  Tensor.floats(rows.flat_map { |row| row }, [to, from], backend)
+end
+
+## The samples of a pass held to `0.0..255.0`, as Pillow's clip to 8 bits does (`relu` twice: ggml has no `clamp`). They are
+## not rounded to a level: ggml has no rounding either.
+def held(x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  top = try Tensor.full(Tensor.shape(x), Tensor.Values.Float(255.0), Tensor.Dtype.F32, Tensor.backend(x))
+  Tensor.sub(try Tensor.relu(x), try Tensor.relu(try Tensor.sub(x, top)))
+end
+
+## `x` of `[height, width, 3]` resized across to `w` of `[to, width]`.
+def across(x: Tensor.Tensor, w: Tensor.Tensor) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(x)
+  columns = try Tensor.reshape(try Tensor.permute(x, [1, 0, 2]), [shape[1], shape[0] * 3])
+  moved = try Tensor.reshape(try Tensor.matmul(w, columns), [Tensor.shape(w)[0], shape[0], 3])
+  held(try Tensor.permute(moved, [1, 0, 2]))
+end
+
+## `x` of `[height, width, 3]` resized down by `w` of `[to, height]`.
+def down(x: Tensor.Tensor, w: Tensor.Tensor) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(x)
+  rows = try Tensor.reshape(x, [shape[0], shape[1] * 3])
+  held(try Tensor.reshape(try Tensor.matmul(w, rows), [Tensor.shape(w)[0], shape[1], 3]))
+end
+
+## `x` resized as `r` says by the weights from `xs[at]` on (across first, then down); the weights left at `at`.
+def resized_by(x: Tensor.Tensor, r: Resize, xs: List[Tensor.Tensor], at: Int) -> Result[Resample]
+  out = x
+  next_at = at
+  if r.to_w != r.from_w
+    out = try across(out, xs[next_at])
+    next_at += 1
+  end
+
+  if r.to_h != r.from_h
+    out = try down(out, xs[next_at])
+    next_at += 1
+  end
+
+  ok(Resample(image: out, at: next_at))
+end
+
+## The tiles of `idefics3_tiles` from its graph inputs: the pixels and the weights of each step.
+def grid_and_whole(xs: List[Tensor.Tensor], steps: List[Resize], t: Tiling) -> Result[List[Tensor.Tensor]]
+  first = try resized_by(xs[0], steps[0], xs, 1)
+  grid = try resized_by(first.image, steps[1], xs, first.at)
+  whole = try resized_by(grid.image, steps[2], xs, grid.at)
+  outs: List[Tensor.Tensor] = []
+  for r in 0...t.rows
+    for c in 0...t.cols
+      top = r * IDEFICS3_TILE
+      left = c * IDEFICS3_TILE
+      outs = outs.push(try Tensor.slice(grid.image, [top, left, 0], [top + IDEFICS3_TILE, left + IDEFICS3_TILE, 3]))
+    end
+  end
+
+  outs = outs.push(whole.image)
+  done: List[Tensor.Tensor] = []
+  for o in outs
+    done = done.push(try unit(o))
+  end
+
+  ok(done)
+end
+
+## A tile of `[512, 512, 3]` levels as `to_tensor` gives it: `[3, 512, 512]` in `0.0..1.0`.
+def unit(x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  scale = try Tensor.full(Tensor.shape(x), Tensor.Values.Float(1.0 / 255.0), Tensor.Dtype.F32, Tensor.backend(x))
+  Tensor.permute(try Tensor.mul(x, scale), [2, 0, 1])
+end
+
+def lanczos(x: Float) -> Float
+  return 0.0 if x <= -3.0 or x >= 3.0
+  return 1.0 if x == 0.0
+  a = PI * x
+  b = a / 3.0
+  (Math.sin(a) / a) * (Math.sin(b) / b)
 end
 
 def image_name?(file: String) -> Bool

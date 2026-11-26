@@ -428,9 +428,9 @@ file: the text side (a Llama), the splice, the processor and the chat template a
   512 and `split_images`), in Python's floats; the tiles are the crops row by row and the global image, the grid
   resized to 512 by 512, last. `do_image_splitting: false` is not supported (with the 2048 target every image has
   at least 4 tiles of one side, so a grid of one tile does not occur). The image must be 3-band sRGB: the processor's
-  conversion to RGB is the caller's. libvips resizes differently from Pillow's Lanczos: it enlarges with bicubic
-  interpolation whatever the kernel (the tiles of every image here are enlargements) and shrinks with the kernel (the
-  global image); see the test below for the gaps.
+  conversion to RGB is the caller's. The resize is Pillow's Lanczos, made here (`Vision.idefics3_tiles`): libvips enlarges with bicubic
+  interpolation whatever the kernel (the tiles of every image here are enlargements), so the tiles come out of matrices
+  of Pillow's weights (`ImagingResample`) in one graph, as tensors; see the test below for the gaps.
   `SmolVlmPrompt.expand` works on ids, as `Mrope.expand` does: the template's one `<image>` per image becomes the ids of
   the processor, with `"\n"` after each row of tiles and `"\n\n"` (one id, 1116) after the last, as the tokenizer
   merges them. The ids of the text around the images are the caller's: the tokenizer of SmolVLM is `Bpe` (the
@@ -733,18 +733,20 @@ error row per config field.
   9 frames), whose grid (1024 by 2048) is not its resized size (682 by 2048). The tiles through `to_tensor` and
   `normalize` are the frames of `pixel_values`: a value of every 2621st place, the mean, the standard deviation, the
   mean absolute difference of neighbours across and down, and for the synthetic image the values at the 300 places of
-  the largest differences (largest and mean gap). On the smooth images the bounds are 0.024, 0.002, 0.0006 and 0.0003
-  (measured 0.0157, 9e-4, 2e-4, 9e-5). On the synthetic image libvips and Pillow differ: a tile (an enlargement, which
-  libvips does with bicubic interpolation whatever the kernel) is up to 0.28 from a sample, 0.023 in the mean, 0.019
-  in the standard deviation and 0.017 in the neighbour differences, and its bounds are 1.2 times that; the global image
-  (a shrink) is within 0.15, 0.0065, 0.0043, 0.0067, 0.0116 and, at the edges, 0.063 and 0.017 on average, and its
-  bounds are 1.15 times that. `SmolVlmPrompt.expand` of the tokenizer's ids with one `<image>` gives the processor's ids,
+  the largest differences (largest and mean gap). The bounds are the same for every frame, smooth or with hard edges, a tile
+  (an enlargement) or the global image (a shrink): 0.015 in a value (0.0112 measured, a level of 8 bits is 0.0078: the
+  passes are not rounded to levels, ggml has no rounding), 1e-4 in the mean (1e-5), 2e-4 in the standard deviation
+  (1.2e-4), 1.3e-4 in the neighbour differences (1.2e-4) and, at the places of the synthetic image's largest
+  differences, 0.016 (0.0122) and 0.004 on average (0.0031). With libvips' resize (ml#337) a tile of the synthetic
+  image was 0.28 from a sample and 0.023 in the mean (ml#339). `SmolVlmPrompt.expand` of the tokenizer's ids with one `<image>` gives the processor's ids,
   875, 1736 and 875 of them, and `SmolVlmPrompt.open` reads the ids from the small folder `prompt/` (and the real
   folder when `SMOLVLM_MODEL` names it). A 1-band or 4-band image is an error. Mutants, each failing it: the grid
   resize left out, the crops taken column by column, the row and column ids swapped, the global image's closing token
   missing, `"\n\n"` as one newline, a newline after the last row too, the bilinear, bicubic, Lanczos2 and nearest
-  kernels (the last two on the global image of the synthetic one), and the global image taken before the resize to the
-  grid.
+  kernels, and the global image taken before the resize to the grid; in the Lanczos made here, the support not scaled
+  when shrinking, the centre of an output pixel without the half, weights not normalized, no hold to 0..255 (each side
+  alone) and the kernel of Lanczos 2. The 3000 by 2000 image takes 8 s into 13 frames on the CPU, most of it the lists
+  of the weights.
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and

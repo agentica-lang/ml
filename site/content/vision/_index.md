@@ -82,15 +82,15 @@ The tower of Qwen3.5 reads these patches, and the text model the features it giv
 
 ## Tiles for SmolVLM
 
-`idefics3_tiling(height, width)` gives the sizes that Hugging Face's `Idefics3ImageProcessor` works out with the settings of SmolVLM: the longest edge goes to 2048 (up as well as down) and the other side keeps the aspect ratio, cut to a whole number and made even (`resized`); then each side is rounded up to a multiple of 512 (`grid`), and the grid holds `rows` by `cols` tiles of 512 by 512. `idefics3_tiles(image)` makes the tiles: the image resized to `resized` and then to `grid`, cut row by row, and the whole grid resized to one tile, last (the global image). The image must be an sRGB one of 3 bands (`Image.colourspace`; the processor converts itself, this function gives an error for another band count). The processor's `do_image_splitting: false` (one image, no tiles) is not supported, and the sizes are those of the settings above only.
+`idefics3_tiling(height, width)` gives the sizes that Hugging Face's `Idefics3ImageProcessor` works out with the settings of SmolVLM: the longest edge goes to 2048 (up as well as down) and the other side keeps the aspect ratio, cut to a whole number and made even (`resized`); then each side is rounded up to a multiple of 512 (`grid`), and the grid holds `rows` by `cols` tiles of 512 by 512. `idefics3_tiles(image, backend)` makes the tiles as tensors on `backend`: the image resized to `resized` and then to `grid`, cut row by row, and the whole grid resized to one tile, last (the global image); each is `[3, 512, 512]` in `F32`, `0.0..1.0`, as `to_tensor` gives it. The image must be an sRGB one of 3 bands (`Image.colourspace`; the processor converts itself, this function gives an error for another band count). The processor's `do_image_splitting: false` (one image, no tiles) is not supported, and the sizes are those of the settings above only.
 
-Each tile goes through `to_tensor` and `normalize` with mean and std 0.5, as the `pixel_values` of the processor do. The resize is libvips', not Pillow's: it enlarges with its bicubic interpolation whatever the kernel, and shrinks with Lanczos3. The frames are within 3 levels of 8 bits of Hugging Face's on smooth drawings, and up to 36 levels (0.28 after the normalization) at the hard edges of an enlarged synthetic image, where its Lanczos and libvips' bicubic differ. The ids of the prompt for the tiles are in [`SmolVlmPrompt`](../transformers/models.md#smolvlm).
+Each tile goes through `normalize` with mean and std 0.5, as the `pixel_values` of the processor do. The resize is Pillow's Lanczos, made here as products by matrices of its weights (libvips enlarges with bicubic interpolation whatever the kernel), with each pass held to 0..255 but not rounded to a level: the frames are within 1.5 levels of 8 bits (0.0112 after the normalization) of Hugging Face's, with hard edges too. A 3000 by 2000 image takes some 8 seconds on the CPU. The ids of the prompt for the tiles are in [`SmolVlmPrompt`](../transformers/models.md#smolvlm).
 
 ```agentica {mode="fragment"}
 image = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
-tiles = Vision.idefics3_tiles(image).unwrap!
-# tiles.images: rows * cols tiles of 512 by 512, then the global image
-frames = tiles.images.map { |t| Vision.normalize(Vision.to_tensor(t, backend).unwrap!, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap! }
+tiles = Vision.idefics3_tiles(image, backend).unwrap!
+# tiles.tiles: rows * cols tiles of [3, 512, 512], then the global image
+frames = tiles.tiles.map { |t| Vision.normalize(t, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap! }
 ```
 
 ## A folder per class
