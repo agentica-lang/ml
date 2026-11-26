@@ -43,6 +43,11 @@ def inputs(weight_on: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   ok([try floats(counting(12), [3, 4], DEVICE), try floats(counting(32), [8, 4], weight_on)])
 end
 
+## `rows` rows of input and a weight on `weight_on`.
+def fn_inputs(rows: Int, weight_on: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  ok([try floats(counting(rows * 4), [rows, 4], DEVICE), try floats(counting(32), [8, 4], weight_on)])
+end
+
 def values(ts: List[Tensor.Tensor]) -> Result[List[List[Float]]]
   out: List[List[Float]] = []
   for t in ts
@@ -128,7 +133,26 @@ def test_a_long_input_does_not_pull_a_cpu_weight_to_the_device() -> Result[Void]
   Test.eq(Tensor.backend(got[1]), DEVICE)
 end
 
-## An output that converts to I32 and is written by a node on the CPU lives on the CPU too.
+## Two mixed graphs of different sizes take turns on the one scheduler of the device: each run is planned for its own
+## graph, so neither reads the memory of the other.
+def test_two_mixed_graphs_take_turns_on_the_scheduler() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  want_small = try values(try Trace.eval_many(try fn_inputs(3, DEVICE)) do |xs| model(xs) end)
+  want_large = try values(try Trace.eval_many(try fn_inputs(100, DEVICE)) do |xs| model(xs) end)
+  for rows in [3, 100, 3, 100, 100, 3]
+    got = try Trace.eval_many(try fn_inputs(rows, HOME)) do |xs| model(xs) end
+    want = want_large
+    if rows == 3
+      want = want_small
+    end
+
+    try Test.eq(try values(got), want)
+  end
+
+  ok()
+end
+
 ## A graph with every leaf on the device never goes through the scheduler; one with a leaf on the CPU does.
 def test_only_a_graph_with_a_cpu_leaf_goes_through_the_scheduler() -> Result[Void]
   return absent() if !try mixed_present()

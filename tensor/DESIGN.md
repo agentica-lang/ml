@@ -438,43 +438,46 @@ end
   graph needed until the process ends.
 - **Layers across the device and the CPU (ml#310).** A leaf in host memory
   (`Ggml(Cpu)`) bound to a graph of a Vulkan device makes the graph mixed.
-  Pinned host memory for a weight does not work: `ggml_backend_vk_device_supports_buft`
-  refuses any buffer type that is not a Vulkan one, and the Vulkan sync code
-  casts the buffer of every source to its own. So a mixed graph goes through
-  `ggml_backend_sched` over the device and the CPU, as llama.cpp does for
-  `-ngl`. `place` gives each node that is not a view a side: the CPU when
-  any operand's memory (a view looks through to its source) is in host memory,
-  whatever else it reads (a long prompt's activations outweigh a weight, and
-  copying the weight each run is what a CPU layer avoids); else the side with
-  most operand bytes, a tie going to the side of the first computed operand,
-  else the device. It checks that the backend of that side runs the op, and
-  keeps the sides until a leaf changes sides (`placed` is set only when every
-  node has one, so a failed `place` is tried again on the next call); the key of the graph does not say where the leaves are, so
-  two placements share an entry and each run places itself by the tensors
-  bound. `compute_mixed` gives every node its backend with
+  Pinned host memory for a weight does not work:
+  `ggml_backend_vk_device_supports_buft` refuses any buffer type that is not a
+  Vulkan one, and the Vulkan sync code casts the buffer of every source to its
+  own. So a mixed graph goes through `ggml_backend_sched` over the device and
+  the CPU, as llama.cpp does for `-ngl`. `place` gives each node that is not a
+  view a side: the CPU when any operand's memory (a view looks through to its
+  source) is in host memory, a weight, a cache or any other tensor, whatever
+  else it reads (a long prompt's activations outweigh a weight, and copying
+  the weight on each run is what a CPU layer avoids); else the side with most
+  operand bytes, a tie going to the side of the first computed operand, else
+  the device. It checks that the backend of that side runs the op, and keeps
+  the sides until a leaf changes sides (`placed` is set only when every node
+  has one, so a failed `place` is tried again on the next call). The key of
+  the graph does not say where the leaves are, so two placements share an
+  entry and each run places itself by the tensors bound.
+  `compute_mixed` gives every node its backend with
   `ggml_backend_sched_set_tensor_backend`, lets the scheduler split the graph
-  and copy the activations where the sides meet, and puts back the sources of
-  the nodes (the scheduler rewrites them to its copies, and the Vulkan backend
-  reorders the nodes of a split, so the nodes are saved by pointer). The
-  intermediates are the scheduler's own, and the plain allocator's plan is
+  and copy the activations where the sides meet, and puts back the sources and
+  the order of the nodes (the scheduler rewrites the sources to its copies,
+  and the Vulkan backend reorders the nodes, so both are saved by pointer).
+  The intermediates are the scheduler's own, and the plain allocator's plan is
   forgotten. One scheduler serves all the mixed graphs of a device, so
   `compute_mixed` reserves its memory for the graph that runs when another one
   ran last (`sched_planned`); without it the allocator would reuse another
   graph's offsets and alias live intermediates. Its tables hold the nodes, the
   leaves and the copies of the split inputs, sized from the graph's own count
-  (`sched_need`). The mixed graph has two allocators, the scheduler's and the
-  plain `gallocr`, and a graph uses one or the other for a run; the arrays that
-  a mixed graph needs (`leaf_side`, the saved nodes and sources, the sides) are
-  made by the first `place` that finds a leaf in host memory, so a graph that is
-  all on the device or all on the CPU pays nothing. A converting (`I32`) output
-  of a CPU node gets its own buffer in host memory. Threads: every graph
-  compute, mixed or not, holds the device lock, and no other code computes on
-  the shared CPU backend (the tensors move without it), so no task can compute
-  on it while the scheduler does. `ggml_output` makes an output on the side of the node that writes
-  it, so a KV cache of a CPU layer is a CPU tensor; `output_into` takes a
-  tensor on that side only. A `set_rows` into a cache on the CPU runs there and
-  writes it in place. A graph whose leaves are all in device memory never
-  calls the scheduler, and `ggml_run` runs it exactly as before.
+  (`sched_need`). A mixed graph has two allocators, the scheduler's and the
+  plain `gallocr`, and a graph uses one or the other for a run. The arrays
+  that a mixed graph needs (`leaf_side`, the saved nodes and sources, the
+  sides) are made by the first `place` that finds a leaf in host memory, so a
+  graph with no leaf there pays nothing; a device graph whose leaves are all
+  in host memory is mixed too, and counts as a scheduler run (`mixed_runs`).
+  Threads: every graph compute, mixed or not, holds the device lock, and no
+  other code computes on the shared CPU backend (the tensors move without it),
+  so no task can compute on it while the scheduler does.
+  `ggml_output` makes an output on the side of the node that writes it, so a
+  KV cache of a CPU layer is a CPU tensor; `output_into` takes a tensor on
+  that side only. A `set_rows` into a cache on the CPU runs there and writes
+  it in place. A graph whose leaves are all in device memory never calls the
+  scheduler, and `ggml_run` runs it exactly as before.
 - **Tensor memory.** It is a refcounted `tg_storage`: the handle holds one
   count, and a bind takes another. The graph lets go of its counts when the
   run ends, or at the end of the lease if the run never happens (a failed
