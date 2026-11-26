@@ -7,6 +7,7 @@
 import Generate from "../generate"
 import Stepping from "../stepping"
 import Ggml from "pkg/tensor/src/ggml"
+import KvDecoder from "../kv_decoder"
 import Lift from "../lift"
 import Qwen3 from "../qwen3"
 import S from "support"
@@ -206,6 +207,30 @@ def test_sampling_is_greedy_when_one_id_is_left_and_seeded_otherwise_on_ggml() -
 
     ok()
   end
+end
+
+## A model whose step gives other tensors than its `Stepper` says (a keys-and-values layer, one tensor too few) is an
+## error, on the reference and on ggml.
+def test_a_step_with_other_outputs_than_the_stepper_says_is_an_error() -> Result[Void]
+  for backend in [S.REF] + try S.ggml_backends()
+    stepper = KvDecoder.Stepper(
+      layers: 1,
+      limit: 8,
+      vocab: 4,
+      table: try Tensor.zeros([4, 2], Tensor.Dtype.F32, backend),
+      traced: ->(m: Int) { m },
+      stepped: ->(_m: Int, req: KvDecoder.Request) {
+        logits = try Tensor.zeros([4], Tensor.Dtype.F32, Tensor.backend(req.xs[0]))
+        ok([try Stepping.headed(logits, req.mode)])
+      },
+    )
+
+    g = try KvDecoder.open(0, stepper)
+    try Test.error?(KvDecoder.step(g, KvDecoder.start(), [1, 2]))
+    KvDecoder.close(g)
+  end
+
+  ok()
 end
 
 def test_bad_steps_are_errors() -> Result[Void]

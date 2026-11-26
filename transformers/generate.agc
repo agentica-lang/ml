@@ -107,7 +107,6 @@ def stepped(m: Qwen3.Qwen3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor
   room = req.room
   reach = req.reach
   mode = req.mode
-  in_place = req.in_place
   compiled = req.compiled
   layers = m.config.num_hidden_layers
   width = Tensor.shape(xs[0])[0]
@@ -115,11 +114,7 @@ def stepped(m: Qwen3.Qwen3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor
   slots = Padded.Slots(positions: xs[1], capacity: room)
   h = try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d])
   mask = try Padded.padded_mask(slots.with(capacity: reach), Tensor.dtype(h))
-  spread: Optional[Tensor.Tensor] = none
-  if not in_place
-    spread = some(try Padded.spread_of(slots, Tensor.dtype(h)))
-  end
-
+  reading = try KvDecoder.reading(req, mask)
   keys: List[Tensor.Tensor] = []
   values: List[Tensor.Tensor] = []
   for i in 0...layers
@@ -128,7 +123,7 @@ def stepped(m: Qwen3.Qwen3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor
       old = some(KvDecoder.Kv(key: xs[3 + i], value: xs[3 + layers + i]))
     end
 
-    r = try layer(m.stack.blocks[i], h, slots.positions, mask, spread, old, in_place, reach)
+    r = try layer(m.stack.blocks[i], h, reading, old, req)
     h = r.hidden
     keys = keys.push(try Stepping.cached(r.key, compiled))
     values = values.push(try Stepping.cached(r.value, compiled))
@@ -151,34 +146,13 @@ end
 def layer(
   b: Nn.EncoderBlock,
   h: Tensor.Tensor,
-  positions: Tensor.Tensor,
-  mask: Tensor.Tensor,
-  spread: Optional[Tensor.Tensor],
+  reading: KvDecoder.Reading,
   old: Optional[KvDecoder.Kv],
-  in_place: Bool,
-  reach: Int,
+  req: KvDecoder.Request,
 ) -> Result[KvDecoder.Layer]
   x = try Nn.layer_norm(b.norm1, h)
-  heads = try Nn.project(b.attention, x, x, some(positions))
-  key = heads.key
-  value = heads.value
-  if in_place
-    key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
-    value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
-  else
-    key = try Padded.written(try Stepping.widened(old.map { |kv| kv.key }), heads.key, spread.unwrap!, 2)
-    value = try Padded.written(try Stepping.widened(old.map { |kv| kv.value }), heads.value, spread.unwrap!, 2)
-  end
-
-  seen = try Nn.attend(
-    b.attention,
-    heads.query,
-    try Padded.reached(key, reach),
-    try Padded.reached(value, reach),
-    some(mask),
-  )
-
-  mid = try Tensor.add(h, seen)
+  kept = try KvDecoder.attend_cached(b.attention, x, old, reading, req)
+  mid = try Tensor.add(h, kept.answer)
   out = try Tensor.add(mid, try Nn.mlp(b.mlp, try Nn.layer_norm(b.norm2, mid)))
-  ok(KvDecoder.Layer(hidden: out, key: key, value: value))
+  ok(KvDecoder.Layer(hidden: out, key: kept.key, value: kept.value))
 end

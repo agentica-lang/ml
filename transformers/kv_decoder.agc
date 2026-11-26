@@ -1,4 +1,5 @@
-## The decoder that Qwen3 (`generate.agc`), Granite MoE (`generate_granite_moe.agc`) and LFM3 (`generate_lfm3.agc`) share, over a key-value cache
+## The decoder that Qwen3 (`generate.agc`), Granite MoE (`generate_granite_moe.agc`), LFM3 (`generate_lfm3.agc`) and
+## Qwen3.5 (`generate_qwen35.agc`) share, over a key-value cache
 ## (`transformers/DESIGN.md`), the design of `asr/`'s decoder (`asr/asr.agc`); the cache helpers are shared in
 ## `nn/kv.agc`. A model gives a `Stepper`: its sizes, its token table, `traced` and its `stepped` function, the graph of
 ## one step; everything else is here:
@@ -15,15 +16,17 @@
 ## - Elsewhere the same graph runs eagerly in an arena. On the reference backend attention needs `q * k` of at most
 ##   1,048,576, which the padded prompt counts (a prompt of 600 tokens is padded to 1024). libtorch is not tested.
 ##
-## A model with layers that keep a state (LFM3's short convolutions) says so in its `Stepper` (`states`, `taps`): the
-## states are tensors of a size that does not depend on the length, new at every step, and a prompt is given the
-## `Delta.Padding` of its convolutions, so that the padding rows leave the state as the real ones did.
+## A model with layers that keep a state (LFM3's short convolutions, Qwen3.5's linear attention) says so in its
+## `Stepper` (`states`, `taps`): the states are tensors of a size that does not depend on the length, new at every step,
+## and a prompt is given the `Delta.Padding` of its convolutions, so that the padding rows leave the state as the real
+## ones did. A step that gives another number of tensors than the `Stepper` says is an error.
 ##
 ## Batch of one. A prompt is fed in one step (`step` at length 0), then one token at a time. A `Generator` belongs to
 ## one task at a time, and `close` ends it before the weights its graphs read are freed.
 
 import Padded from "pkg/nn/kv"
 import Delta from "pkg/nn/delta"
+import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 import Lift from "lift"
@@ -55,6 +58,25 @@ end
 ## What a layer of a step gives: its hidden rows and its new keys and values.
 struct Layer
   hidden: Tensor.Tensor
+  key: Tensor.Tensor
+  value: Tensor.Tensor
+end
+
+## What the attention layers of one step read, built once per step (`reading`): the positions of the new rows, the mask
+## over the cache (the first `Request.reach` rows) and, when the step is not in place, the `Padded.spread_of` the
+## positions that writes the new rows. A model whose layers have more than one mask (LFM3's sliding window) gives each
+## layer its own `mask` (`with`).
+struct Reading
+  positions: Tensor.Tensor
+  mask: Tensor.Tensor
+  spread: Optional[Tensor.Tensor]
+end
+
+## What `attend_cached` gives: the answer of the attention (not yet added to the stream) and the keys and values of the
+## cache after the step, in the dtype of the old ones; a model that keeps them in `F16` on ggml converts them
+## (`Stepping.cached`).
+struct Attended
+  answer: Tensor.Tensor
   key: Tensor.Tensor
   value: Tensor.Tensor
 end
@@ -204,6 +226,51 @@ def finish(cache: Cache) -> Void
   Lift.close(cache.keys + cache.values + cache.states)
 end
 
+## The `Reading` of the step `req` under `mask` (of the dtype of the stream), whose positions are the second input.
+def reading(req: Request, mask: Tensor.Tensor) -> Result[Reading]
+  positions = req.xs[1]
+  spread: Optional[Tensor.Tensor] = none
+  if not req.in_place
+    spread = some(try Padded.spread_of(Padded.Slots(positions: positions, capacity: req.room), Tensor.dtype(mask)))
+  end
+
+  ok(Reading(positions: positions, mask: mask, spread: spread))
+end
+
+## The attention `a` of a layer over the new rows `x` `[1, width, d]` (its input, normed): the keys and values of the
+## rows are written into the `old` ones of the cache (`Tensor.set_rows` in the tensors themselves when `req.in_place`,
+## else `Padded.written`), then the query attends over the first `req.reach` rows under the mask of `reading`. `old` is
+## none for a prompt, which has no cache.
+def attend_cached(
+  a: Nn.Attention,
+  x: Tensor.Tensor,
+  old: Optional[Kv],
+  reading: Reading,
+  req: Request,
+) -> Result[Attended]
+  heads = try Nn.project(a, x, x, some(reading.positions))
+  key = heads.key
+  value = heads.value
+  if req.in_place
+    key = try Tensor.set_rows(old.unwrap!.key, heads.key, reading.positions)
+    value = try Tensor.set_rows(old.unwrap!.value, heads.value, reading.positions)
+  else
+    key = try Padded.written(try Stepping.widened(old.map { |kv| kv.key }), heads.key, reading.spread.unwrap!, 2)
+    value = try Padded.written(try Stepping.widened(old.map { |kv| kv.value }), heads.value, reading.spread.unwrap!, 2)
+  end
+
+  seen = try Nn.attend(
+    a,
+    heads.query,
+    try Padded.reached(key, req.reach),
+    try Padded.reached(value, req.reach),
+    some(reading.mask),
+    gate: heads.gate,
+  )
+
+  ok(Attended(answer: seen, key: key, value: value))
+end
+
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`).
 ## Greedy (the choice runs in the graph) unless `sampling` says how to draw (`Stepping.generate`): then each step reads
 ## the largest logits and `Sample.pick_top` draws among them. The prompt and the new ids must fit
@@ -325,6 +392,12 @@ def compiled_step[M](
   )
 
   outs = try Trace.run(plan, args)
+  sized = counted(s, outs)
+  if not sized.ok?
+    Lift.close(outs)
+    return error(sized.message)
+  end
+
   head = Tensor.to_list(outs[0])
   Lift.close([outs[0]])
   if not head.ok?
@@ -332,6 +405,14 @@ def compiled_step[M](
   end
 
   ok(Advanced(head: try head, cache: cache_of(s, outs.drop(1))))
+end
+
+## An error when a step gave other tensors than its `Stepper` says: the head, the keys and the values of every layer
+## with a cache, then the states.
+def counted[M](s: Stepper[M], outs: List[Tensor.Tensor]) -> Result[Void]
+  want = 1 + 2 * s.layers + s.states
+  return ok() if outs.size == want
+  error("a step gave #{outs.size} tensors, its Stepper says #{want} (layers #{s.layers}, states #{s.states})")
 end
 
 ## The cache of the outputs of a step after its head: the keys, the values and the states.
@@ -389,6 +470,7 @@ def eager_step[M](
       ),
     )
 
+    try counted(s, outs)
     ok(Advanced(head: try Tensor.to_list(outs[0]), cache: cache_of(s, outs.drop(1))))
   end
 

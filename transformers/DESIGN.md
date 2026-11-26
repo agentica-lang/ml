@@ -11,8 +11,8 @@ LFM3 (`lfm3`) has its forward, its tokenizer, its chat template and generation (
 ## Generation
 
 `kv_decoder.agc` follows `asr/`'s decoder (the padded-cache helpers are shared, `nn/kv.agc`; each model keeps its own
-forward) and is the same for Qwen3, Granite MoE and LFM3: the model files (`generate.agc`, `generate_granite_moe.agc`, `generate_lfm3.agc`) give
-it a `Stepper` (the sizes of the model, its token table, `traced` and the `stepped` graph of one step) and keep their
+forward) and is the same for Qwen3, Granite MoE, LFM3 and Qwen3.5: the model files (`generate.agc`,
+`generate_granite_moe.agc`, `generate_lfm3.agc`, `generate_qwen35.agc`) give it a `Stepper` (the sizes of the model, its token table, `traced` and the `stepped` graph of one step) and keep their
 `Generator`, `stepped` and `layer`. `Request.compiled` tells `stepped` that the step is traced for ggml: Qwen3 keeps
 its cache in `F16` then and Granite MoE in `F32` always. `Generate.open(m)` is the generator of a Qwen3 model, which
 holds its compiled steps in a one-slot channel (as `Asr.Model.plans`), and `Generate.generate(g, ids, max_new, stop,
@@ -163,21 +163,16 @@ which the text model reads at the image tokens (the wiring is the next step of m
 
 ### Qwen3.5 generation
 
-`generate_qwen35.agc` is the decoder of `kv_decoder.agc` with a hybrid
-cache. What does not depend on the model is in `stepping.agc`, which a model
-that keeps a cache (the next one is a mixture of experts) uses the same way: it
-writes its `Generator`, its `Cache`, its `stepped` (the graph of a step, with
-`Stepping.cached`, `widened` and `masked`) and its `step`, `step_logits` and
-`step_top`, and gives `Stepping.generate` a `Stepping.Decoder` (`decoder(g)` in
-each file: `usable`, `limit`, `empty`, and `pick`, `top` and `finish` as
-closures over its generator). `Stepping.generate` is the loop of `generate`
-(greedy or sampled, stop ids, the checks of `max_new` and the positions). The
-rest is `Plans` with `reaches` and `planned` (the compiled steps by shape),
-`Head` with `picked`, `top_candidates`, `chosen` and `ranked` (what a graph
-answers and how it is read), `inputs`, `check_ids`, `in_place?` and
-`usable_ids`. `open(m, usable = 0)`, `step`, `step_logits`, `step_top`,
-`generate`, `finish`, `close` and `compiles` are the ones of `Generate`, and so
-are the records `Stepping.Picked` and `Stepping.Candidates`.
+`generate_qwen35.agc` gives `kv_decoder.agc` Qwen3.5's layer with a hybrid cache: its `Stepper` has `layers` (the
+full-attention ones), `states` (two tensors for each linear layer) and `taps` (`linear_conv_kernel_dim`: a prompt is
+given the `Delta.Padding` of the linear layers), and the file keeps its `Generator`, its `stepped` and its `layer`. The
+write-then-attend of a full layer (the new rows into the cache, in place or by `Padded.written`, then the attention over
+the first `reach` rows) is `KvDecoder.attend_cached`, the same call in `generate.agc`, `generate_granite_moe.agc`,
+`generate_lfm3.agc` and here. What does not depend on the model is in `kv_decoder.agc` and `stepping.agc` (`Plans` with
+`reaches` and `planned`, `Head` with `picked`, `chosen` and `ranked`, `inputs`, `check_ids`, `in_place?`, `usable_ids`,
+`cached`, `widened` and `masked`, and `Stepping.generate`, the loop of `generate`: greedy or sampled, stop ids, the
+checks of `max_new` and the positions). `open(m, usable = 0)`, `step`, `step_logits`, `step_top`, `generate`, `finish`,
+`close` and `compiles` are the ones of `Generate`, and so are the records `Stepping.Picked` and `Stepping.Candidates`.
 
 - A full-attention layer keeps `[1, kv_heads, rows, head_dim]` keys and values
   as Qwen3's layers do (`F16` on ggml), padded to the capacity, written in place
