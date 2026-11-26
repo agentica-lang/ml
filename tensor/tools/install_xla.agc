@@ -10,8 +10,7 @@
 
 import HTTP from "std/http"
 import Xla from "../src/xla"
-
-TIMEOUT_MS = 1800000
+import XlaInstall from "../src/xla_install"
 
 def main() -> Void
   case install()
@@ -28,49 +27,8 @@ def install() -> Result[String]
   p = try Xla.plugin()
   path = try Xla.plugin_path()
   return ok(path) if File.stat(path).ok?
-  try Dir.mkdir(try Xla.cache_dir())
-  part = try Path.join([try Xla.cache_dir(), "#{p.sha256}.part-#{System.pid()}"])
-  fetched = fetch(p, part)
-  if !fetched.ok?
-    _ = Path.remove(part)
-    return error(fetched.message)
-  end
-
-  # Another install may have finished first: its folder holds the same plugin.
-  if !Path.rename(part, try Xla.plugin_dir(p)).ok?
-    _ = Path.remove(part)
-  end
-
-  return error("the plugin is not at #{path} after the install") if !File.stat(path).ok?
-  ok(path)
-end
-
-## The plugin `p` in the new private folder `dest`, checked against its sha256.
-def fetch(p: Xla.Plugin, dest: String) -> Result[Void]
-  try Dir.mkdir_private(dest)
   client = try HTTP.client()
-  url = resolve(client, p.url)
-  if !url.ok?
-    HTTP.close_client(client)
-    return error(url.message)
-  end
-
-  options = HTTP.DownloadOptions(timeout_ms: some(TIMEOUT_MS), max_total_bytes: some(p.size), sha256: some(p.sha256))
-  got = HTTP.download(client, try url, try Path.join([dest, Xla.FILE]), options)
+  installed = XlaInstall.install(client, p, try Xla.cache_dir())
   HTTP.close_client(client)
-  # A status that is not 200 has a body that does not have the digest, so it fails here too.
-  return error("#{p.url}: #{got.message}") if !got.ok?
-  ok()
-end
-
-## Where the asset at `url` is: `url` itself, or the https address a GitHub release answers with (`HTTP.download` does
-## not follow a redirect).
-def resolve(client: HTTP.Client, url: String) -> Result[String]
-  head = try HTTP.request(client, "HEAD", url, "".bytes)
-  return ok(url) if head.status == 200
-  return error("#{url} answered #{head.status}") if ![301, 302, 307, 308].include?(head.status)
-  where = HTTP.header_values(head.headers, "location")
-  # The trust anchor is the sha256 of the file, not the host it comes from; https only keeps the transfer private.
-  return error("#{url} redirects somewhere that is not https") if where.empty? || !where[0].start_with?("https://")
-  ok(where[0])
+  installed
 end
