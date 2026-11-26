@@ -449,9 +449,10 @@ end
   whatever else the node reads (a long prompt's activations outweigh a weight,
   and copying the weight on each run is what a CPU layer avoids); (2) the
   device when a product or a row lookup reads a matrix that lives there (a
-  weight, however small); (3) the side that holds most of the bytes of the
-  operands that earlier nodes computed, a device leaf below 64 KiB that is not
-  such a matrix (a norm weight, a position, a mask) counting for nothing; (4)
+  weight, however small); (3) the side with most operand bytes (the operands
+  that earlier nodes computed, and the device leaves of 64 KiB or more), a
+  device leaf below 64 KiB that is not such a matrix (a norm weight, a
+  position, a mask) counting for nothing; (4)
   on a tie, the side of the product of a matrix that the node reads, so the
   residual stream follows the layer it passes through whatever the order of
   the operands, else the CPU when an operand was computed there. A node that

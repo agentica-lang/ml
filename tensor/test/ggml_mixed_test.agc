@@ -1,8 +1,8 @@
 ## Layers across a Vulkan device and the CPU: a graph over tensors on both. A leaf on `Ggml(Cpu)` under a graph on a
 ## Vulkan device makes the graph run through a scheduler over the two backends, and the node that reads a CPU weight or
 ## cache runs on the CPU. Its values are those of the same graph with every tensor on the device, an output of a CPU node
-## is a CPU tensor, and a cache on the CPU is written in place. Without a Vulkan device these checks pass by asserting
-## nothing.
+## is a CPU tensor, and a cache on the CPU is written in place. Without a Vulkan device these checks only assert that no
+## device is there.
 
 import GgmlRaw from "../src/ggml_native"
 import Support from "support"
