@@ -4,7 +4,7 @@ BERT, DistilBERT, Qwen3, Qwen2.5, ResNet, ViT and CLIP, from Hugging Face checkp
 from a GGUF file), over `tensor/`, `nn/` and `hub/`: the forwards, generation
 with a KV cache (greedy or sampled), the tokenizers, and the weights by name
 for a fine-tune with `train/`. Qwen3.5 (text only) has its forward, its
-tokenizer, its chat template and generation (ml#150).
+tokenizer, its chat template and generation (ml#150); its vision tower runs too (ml#151, below).
 Granite MoE (`granitemoe`) has its forward and generation (ml#274).
 LFM3 (`lfm3`) has its forward, its tokenizer, its chat template and generation (ml#275).
 
@@ -132,6 +132,34 @@ cache; generation is `generate_qwen35.agc` (below).
 - `graph` unrolls one forward per batch row, so a batch of N is N times the
   nodes of one row. There are no `weights`/`with_weights` yet, so a fine-tune
   with `train/` is not supported.
+
+### Qwen3.5 vision
+
+`qwen3_5_vision.agc`: `Qwen3_5Vision.open(dir, backend)` reads the tower `model.visual.*` of the same checkpoint (the
+other tensors are not opened) and `Qwen3_5Vision.encode(m, patches, height, width)` gives the features of one image,
+which the text model reads at the image tokens (the wiring is the next step of ml#151); `close_model` frees the weights.
+
+- The input is the `pixel_values` of Hugging Face's image processor: one row for each patch, `[height * width, channels
+  * frames * patch * patch]`, in the order of the merge squares (the 4 patches of a 2 by 2 square together, the squares
+  row by row). The output is one row for each square, `[height * width / 4, out_hidden_size]`. `height` and `width`
+  are in patches and multiples of `spatial_merge_size`. One graph on ggml; the reference is slow and its attention stops
+  at 1,024 patches.
+- The patch embedding is a convolution whose stride is its kernel over `[channels, frames, patch, patch]`, so it is one
+  dense layer; ggml holds tensors of rank 4 at most, so the loader flattens the weight on the host.
+- The learned positions are a square table (`num_position_embeddings`), resampled bilinearly to the grid with the corners
+  aligned: the host works out the four taps and weights of each patch, and the graph sums four gathers.
+- The rotary position is 2-D: the pairs of a head are `(i, i + head / 2)`, and the first half of the pairs turns by the
+  row of the patch and the second half by its column, with the angles of a head of `head / 2` columns. `Tensor.rope` takes
+  one position vector, so each half is rotated on its own, the rotated columns brought together (as `Rope.zero_tail`
+  does), the same for the queries and the keys: `q k^T` does not change. `rope_theta` is 10,000 unless the config says
+  otherwise.
+- A block is pre-norm (layer norm, `eps` 1e-6) with a fused `qkv` projection and full attention over every patch (one
+  image is one segment), then an MLP with `gelu_pytorch_tanh`, written with ops that ggml compiles (`Tensor.gelu` is not
+  lowered to ggml yet, ml#301). The merger is a layer norm, the join of each square (4 consecutive rows), a dense layer, the exact
+  GELU and a dense layer to the text model's width.
+- Not supported: video (the temporal patch of an image is the frame twice, which the processor makes), several images in
+  one call (call it once for each), another `hidden_act`, deepstack (the config key is empty in Qwen3.5), and the
+  `weights` and `with_weights` of a fine-tune.
 
 ### Qwen3.5 generation
 
@@ -585,6 +613,20 @@ error row per config field.
   errors. The tiny model's linear head width is 4, which ggml-vulkan's gated delta rule does not run (16, 32, 64 and 128
   only), so these tests and `generate_qwen35_test.agc` leave Vulkan out (`Support.ggml_backends_for_delta`); the real
   checkpoint checks below cover Vulkan.
+- `test/qwen35_vision_test.agc` against `test/qwen35_vision_golden.py` (manual, Hugging Face's `Qwen3_5VisionModel` in
+  `float32`, eager attention, `fixtures/qwen35_vision_golden.json`, sha256 `9192ce132509478ae62995ab0acc2c1584612e73aec477a6cb1d368adb8eb6f2`): a tiny random tower (2 blocks, 16
+  wide, 2 heads, patch 4, a table of 4 by 4 positions, `rope_parameters` with `rope_theta` 5000) written as a
+  safetensors file under the official names; the merged features of a 4 by 6 and a 6 by 2 grid match on the reference
+  (1e-4) and on ggml CPU (1e-3). The grids are wider and taller, and narrower, than the table, so a resampling that is
+  wrong shows. Mutants that fail it: the rows and columns of the rotary swapped, the other half of the pairs rotated, no
+  bilinear weight, the corners not aligned, the patches of a square in the wrong order, no cubic term in the GELU, a
+  `rope_theta` doubled, and the merger's exact GELU replaced by Silu or by the tanh form (the last two and the
+  `rope_theta` fail the reference test only: their gap is below ggml's 1e-3). A config the tower does not run (another
+  model type or activation, a position table that is not a square, a head width that is not a multiple of 4), a missing
+  tensor and a grid the patches do not fit are errors, each checked by its phrase.
+- `tools/qwen35_vision_check.agc` on the real tower of the same checkpoint (manual; `test/qwen35_vision_check_golden.py`
+  reads only `model.visual.*`): a 6 by 8 grid of patches whose values are an integer formula, 12 rows of 1,024 features;
+  the largest gap is 2.4e-5 on CPU and 2.0e-5 on Vulkan (it passes within 1e-4).
 - `test/bpe_test.agc` on `fixtures/bpe_marks.json`, a tiny tokenizer with the
   split of Qwen3.5 (`test/tokenizer_golden.py marks`, `tokenizers` 0.23.3):
   the ids and text of `tokenizers` on the strings of the BPE test, 16 where a
