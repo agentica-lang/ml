@@ -3,7 +3,9 @@
 ## time, a run of letters with one lead character, punctuation, new lines,
 ## white space), which `Qwen/Qwen3-0.6B` ships, or the one of `Qwen/Qwen3.5-0.8B`, where a mark counts as a
 ## letter (`PATTERN_MARKS`), or the one of `LiquidAI/LFM3-1.7B`, which has no normalizer, cuts digits in groups of up to
-## three (`PATTERN_GROUPS`) and takes a whole piece that is in the vocabulary without merging it (`ignore_merges`).
+## three (`PATTERN_GROUPS`) and takes a whole piece that is in the vocabulary without merging it (`ignore_merges`), or
+## the one of `HuggingFaceTB/SmolLM2` and SmolVLM, which has no normalizer, isolates each digit (`Digits`) and then splits
+## with the GPT-2 regular expression of ByteLevel (`gpt2`).
 ## A file with another normalizer, split pattern or model is an error, not a silent difference.
 ##
 ## The split is Hugging Face's regular expression written by hand over
@@ -45,6 +47,8 @@ struct ByteLevelBpe
   digits: Int = 1
   ## A piece that is a token of the vocabulary is that token, whatever the merges say.
   ignore_merges: Bool = false
+  ## The split of SmolLM2: each digit is a piece, and the rest is cut by the GPT-2 pattern (`GPT2_PATTERN`).
+  gpt2: Bool = false
 end
 
 ## The tokenizer in the `tokenizer.json` at `path`.
@@ -111,6 +115,7 @@ def parse(text: String) -> Result[ByteLevelBpe]
       marks: pattern.marks,
       digits: pattern.digits,
       ignore_merges: m.ignore_merges,
+      gpt2: pattern.gpt2,
     ),
   )
 end
@@ -182,7 +187,7 @@ def encode(tok: ByteLevelBpe, text: String) -> Result[List[Int]]
           normal = Unicode.nfc(chars)
         end
 
-        for word in split(normal, tok.marks, tok.digits)
+        for word in split(normal, tok.marks, tok.digits, tok.gpt2)
           symbols = byte_chars(word)
           whole = symbols.join("")
           if tok.ignore_merges and tok.vocab.key?(whole)
@@ -236,8 +241,10 @@ def decode(tok: ByteLevelBpe, ids: List[Int], skip_special: Bool = true) -> Resu
   ok((try Bytes.from_list(bytes)).scrub)
 end
 
-## The pieces of `chars` that the pattern cuts, as code points.
-def split(chars: List[Int], marks: Bool = false, digits: Int = 1) -> List[List[Int]]
+## The pieces of `chars` that the pattern cuts, as code points. With `gpt2` they are those of SmolLM2's pre-tokenizer: each
+## number is a piece, and what lies between two is cut by the GPT-2 pattern.
+def split(chars: List[Int], marks: Bool = false, digits: Int = 1, gpt2: Bool = false) -> List[List[Int]]
+  return gpt2_split(chars) if gpt2
   out: List[List[Int]] = []
   at = 0
   while at < chars.size
@@ -247,6 +254,79 @@ def split(chars: List[Int], marks: Bool = false, digits: Int = 1) -> List[List[I
   end
 
   out
+end
+
+## The pieces of SmolLM2's pre-tokenizer: `Digits` makes each number a piece (as `individual_digits` does) and cuts the
+## text between them, then the GPT-2 pattern of ByteLevel cuts each of those runs on its own.
+def gpt2_split(chars: List[Int]) -> List[List[Int]]
+  out: List[List[Int]] = []
+  start = 0
+  for i in 0...chars.size
+    if Unicode.number?(chars[i])
+      out = out + gpt2_run(chars, start, i)
+      out = out.push([chars[i]])
+      start = i + 1
+    end
+  end
+
+  out + gpt2_run(chars, start, chars.size)
+end
+
+## The pieces of the GPT-2 pattern in `chars[start...stop]`, which has no number: `'s|'t|'re|'ve|'m|'ll|'d`,
+## ` ?\p{L}+`, ` ?[^\s\p{L}\p{N}]+`, `\s+(?!\S)` and `\s+`, in that order.
+def gpt2_run(chars: List[Int], start: Int, stop: Int) -> List[List[Int]]
+  out: List[List[Int]] = []
+  at = start
+  while at < stop
+    size = gpt2_piece_size(chars, at, stop)
+    out = out.push(Unicode.span(chars, at, at + size))
+    at += size
+  end
+
+  out
+end
+
+def gpt2_piece_size(chars: List[Int], at: Int, stop: Int) -> Int
+  ending = gpt2_contraction(chars, at, stop)
+  return ending if ending > 0
+  lead = 0
+  if chars[at] == 32
+    lead = 1
+  end
+
+  first = at + lead
+  return lead + letters(chars, first, false) if first < stop and Unicode.letter?(chars[first])
+
+  return lead + symbols(chars, first) if first < stop and symbol?(chars[first], false)
+
+  white = at
+  while white < stop and Unicode.space?(chars[white])
+    white += 1
+  end
+
+  return white - at - 1 if white < stop and white - at >= 2
+  white - at
+end
+
+## The run of symbols (not a space, a letter or a number) at `at`.
+def symbols(chars: List[Int], at: Int) -> Int
+  stop = at
+  while stop < chars.size and symbol?(chars[stop], false)
+    stop += 1
+  end
+
+  stop - at
+end
+
+## `'s`, `'t`, `'re`, `'ve`, `'m`, `'ll` or `'d` at `at`, in lower case only: 2, 3 or 0.
+def gpt2_contraction(chars: List[Int], at: Int, stop: Int) -> Int
+  return 0 if chars[at] != 39 or at + 1 >= stop
+  a = chars[at + 1]
+  return 2 if a == 115 or a == 116 or a == 109 or a == 100
+  return 0 if at + 2 >= stop
+  b = chars[at + 2]
+  return 3 if (a == 114 and b == 101) or (a == 118 and b == 101) or (a == 108 and b == 108)
+  0
 end
 
 ## The symbols of one piece: its UTF-8 bytes, each as its character in the byte-level alphabet.
@@ -324,6 +404,7 @@ LF = 10
 struct Pattern
   marks: Bool
   digits: Int
+  gpt2: Bool = false
 end
 
 ## A pair of neighbours to join: the symbol at `at` and the one after it.
@@ -359,6 +440,7 @@ struct StepJson
   invert: Optional[Bool]
   add_prefix_space: Optional[Bool]
   use_regex: Optional[Bool]
+  individual_digits: Optional[Bool]
 end
 
 ## The model of a `tokenizer.json` that writes a merge as `["a", "b"]` (Qwen3's).
@@ -436,9 +518,11 @@ def lines_shape?(text: String) -> Bool
 end
 
 ## The pre-tokenizer must be the Qwen split (isolated, as written in `PATTERN`, `PATTERN_MARKS` or `PATTERN_GROUPS`)
-## followed by byte-level mapping without its own split. Its pattern.
+## followed by byte-level mapping without its own split, or SmolLM2's (`check_gpt2`). Its pattern.
 def check_pre_tokenizer(p: PreJson) -> Result[Pattern]
   steps = p.pretokenizers
+  return check_gpt2(steps) if p.type == "Sequence" and steps.size == 2 and steps[0].type == "Digits"
+
   ok_shape = p.type == "Sequence" and steps.size == 2 and steps[0].type == "Split" and steps[1].type == "ByteLevel"
   return error("the pre-tokenizer is not the Qwen split followed by ByteLevel") if not ok_shape
   split_step = steps[0]
@@ -461,6 +545,22 @@ def check_pre_tokenizer(p: PreJson) -> Result[Pattern]
   end
 
   ok(pattern)
+end
+
+## The pre-tokenizer of SmolLM2: `Digits` with `individual_digits`, then ByteLevel with no prefix space and its own GPT-2
+## split.
+def check_gpt2(steps: List[StepJson]) -> Result[Pattern]
+  if steps[1].type != "ByteLevel" or steps[0].individual_digits != some(true)
+    return error("the pre-tokenizer is not Digits with individual_digits followed by ByteLevel")
+  end
+
+  if steps[1].add_prefix_space != some(false) or steps[1].use_regex != some(true)
+    return error(
+      "the ByteLevel pre-tokenizer adds a prefix space or does not split with its regex, which is not supported",
+    )
+  end
+
+  ok(Pattern(marks: false, digits: 1, gpt2: true))
 end
 
 def rank_of(ranks: Map[String, Int], left: String, right: String) -> Int = ranks.get(left + " " + right).unwrap_or(-1)

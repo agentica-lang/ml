@@ -31,6 +31,7 @@ All packages are released together at one version, each on its own tag, `<packag
 ### transformers
 
 - `Lfm3`: LFM3-1.7B (`LiquidAI/LFM3-1.7B`) from its official safetensors, forward over whole sequences, `F32` or `F16` weights (ml#275).
+- `Bpe` reads the `tokenizer.json` of SmolLM2 and SmolVLM (`Digits` with individual digits, then ByteLevel's GPT-2 split), to the ids and text of `tokenizers` on a tiny tokenizer and on the real SmolVLM-256M-Instruct one (ml#84).
 - `Bpe` reads LFM3's `tokenizer.json` (digits in groups of up to three, `ignore_merges`, no normalizer), and `Chat.apply("lfm3", ...)` is its chat template with tools (`tools`, `Message.tool_calls`, `thinking`, `tool_call_id`, `preserve_thinking`) (ml#275).
 - `Generate` of `pkg/transformers/generate_lfm3`: greedy or sampled generation with LFM3's hybrid cache (the keys and values of the attention layers, the state of the convolutions); `KvDecoder` takes layers with a state (ml#275).
 - `Qwen3.open(dir, backend, weights, layers_on_device)`: the blocks from the `n`th on run on the CPU, with their weights and KV cache in host memory, like `-ngl` of llama.cpp; `AGENTICA_ML_LAYERS_ON_DEVICE` for the tools; binding a tensor on the CPU to a graph on a Vulkan device now runs it through ggml's backend scheduler instead of failing (ml#310, ml#85).
