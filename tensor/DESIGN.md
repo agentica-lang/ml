@@ -447,8 +447,12 @@ end
   source) is in host memory, a weight, a cache or any other tensor, whatever
   else it reads (a long prompt's activations outweigh a weight, and copying
   the weight on each run is what a CPU layer avoids); else the side with most
-  operand bytes, a tie going to the side of the first computed operand, else
-  the device. It checks that the backend of that side runs the op, and keeps
+  operand bytes (a device leaf under 64 KiB, a norm weight or a position,
+  counts for nothing), a tie with an operand computed on the CPU going to the
+  CPU, so the residual stream of a CPU layer stays there. A node that nothing
+  decides (a table made of constants) takes the side of its consumers, from the
+  end of the graph back, and the device when they are on both sides or it has
+  none. It checks that the backend of that side runs the op, and keeps
   the sides until a leaf changes sides (`placed` is set only when every node
   has one, so a failed `place` is tried again on the next call). The key of
   the graph does not say where the leaves are, so two placements share an
@@ -478,6 +482,12 @@ end
   that side only. A `set_rows` into a cache on the CPU runs there and writes
   it in place. A graph whose leaves are all in device memory never calls the
   scheduler, and `ggml_run` runs it exactly as before.
+- **The checks of a mixed graph (ml#312).** `compile` makes the finiteness sum
+  of each output where the output is, and the 1-float copies of the sums into
+  `checks` (device memory) after all of them. A copy after each output would
+  be a one-node device split between every two layers on the CPU; the sums
+  stay early so that each output's value is not kept alive to the end of the
+  graph, as on an all-device graph.
 - **Tensor memory.** It is a refcounted `tg_storage`: the handle holds one
   count, and a bind takes another. The graph lets go of its counts when the
   run ends, or at the end of the lease if the run never happens (a failed
