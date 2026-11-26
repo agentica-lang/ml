@@ -1,14 +1,15 @@
 ## Checks greedy generation with the hybrid cache (`generate_lfm3.agc`) against the official `generate`
-## (`test/generate_lfm3_check_golden.py`, which says how to run it) on `LiquidAI/LFM3-1.7B` on ggml: the 24 ids it adds
-## to each prompt must be the same (the last prompt is over the sliding window of 256), the largest gap of a logit at the
-## five ids the official code found largest is printed, and the speed: the first call (which traces and plans the steps),
-## then a second one with the steps compiled. Manual (it needs the checkpoint); run from `transformers/`:
+## (`test/generate_lfm3_check_golden.py`, which says how to run it) on `LiquidAI/LFM3-1.7B` on ggml: the 24 ids it adds to
+## each prompt must be the same (two prompts are over the sliding window of 256, and the last decodes in a cache of 1024
+## rows and reads 768), the largest gap of a logit at the five ids the official code found largest is printed, and the
+## speed: the first call (which traces and plans the steps), then a second one with the steps compiled. Manual (it needs
+## the checkpoint); run from `transformers/`:
 ##
 ##   python -I test/generate_lfm3_check_golden.py MODEL_DIR > GOLDEN.json
 ##   WEIGHTS=f16 agentica tools/generate_lfm3_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
 ##
-## `WEIGHTS=f16` is what a 12 GB machine runs (3.4 GB; see `tools/lfm3_check.agc`). `VULKAN_FP16=0` is the default of the
-## check. On a shared machine run it as `flock LOCK systemd-run --user --scope -q -p MemoryMax=5G agentica ...`.
+## `WEIGHTS=f16` is what a 12 GB machine runs (3.4 GB; see `tools/lfm3_check.agc`). `VULKAN_FP16=0` is the
+## default of the check. On a shared machine run it as `flock LOCK systemd-run --user --scope -q -p MemoryMax=5G agentica ...`.
 
 import Generate from "../generate_lfm3"
 import Lfm3 from "../lfm3"

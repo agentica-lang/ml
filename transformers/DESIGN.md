@@ -278,22 +278,28 @@ convolutions, as in Qwen3.5, so the padding rows leave the state as the real row
 - The cache holds the keys and values of the 11 attention layers, padded to a capacity of 8, 16, 32, ... (`F16` on ggml),
   and the state of the 13 convolution layers, `[6, width]` in `F32`: the last 6 rows of the input of the convolution.
 - A sliding layer keeps every row and its mask hides the keys a window or more before the position
-  (`padded_mask` with `window`), so its cache grows like a global one's. A ring that drops the rows out of the window is not
-  done: the five sliding layers hold 10 KB a token in `F16` (4 kv heads of 128) against 12 KB for the six global ones, so
-  a ring would halve the cache of a very long sequence and nothing else.
-- The prompt step takes its own `Delta.Padding`; every later step is one token with no padding. The prompt is given the
-  mask of a sliding layer over `reach` rows, so rows past the window are hidden in it as in a decode step.
+  (`padded_mask` with `window`), so its cache grows like a global one's and a decode step reads as many rows in a sliding
+  layer as in a global one. A ring that drops the rows out of the window is not done: it would cut the reads of a sliding
+  layer to 256 rows and halve the cache of a very long sequence (the five sliding layers hold 10 KB a token in `F16`, 4 kv
+  heads of 128, against 12 KB for the six global ones), and nothing else.
+- The prompt step takes its own `Delta.Padding`; every later step is one token with no padding. The masks of the
+  prompt step are dense `[capacity, reach]` tensors and the attention scores of the whole prompt are too, so the cost of
+  a prompt grows with the square of its length: the practical context is a few thousand tokens, not the 256K of the
+  config (not measured above 601 tokens).
 - The tiny golden of generation is the same file (`fixtures/lfm3_golden.json` has the 14 ids and scores of the official
   greedy `generate` from 7 ids, window 4): `test/generate_lfm3_test.agc` checks the logits of the cached steps against the
   whole forward on the reference (one row) and on ggml (two rows), and the greedy ids and scores against the official ones
   on ggml; a sliding layer that read the whole cache fails it.
 - `tools/generate_lfm3_check.agc` is the manual check on the real checkpoint (`test/generate_lfm3_check_golden.py`, the
-  official code's `float32` run layer by layer from the `bfloat16` file, which needed 7.2 GB resident of mapped file under a
-  6 GB scope): the 24 greedy ids after each of five prompts of 5, 5, 14, 19 and 375 tokens (the last is past the window of
-  256 and generates 24 ids after it) are equal with `F16` weights on ggml CPU and on Vulkan with `vulkan_fp16` off (the
-  smallest gap between the two largest logits of a step is 0.116), and the largest gap of a logit at the five ids the
-  official code found largest is 3.6e-3 on CPU and 4.4e-3 on Vulkan, the cost of `F16` weights and of the `F16` KV cache. The
-  CPU run holds 3.9 GB at the peak. `tools/bench_lfm3.agc` is the timing row of `benchmarks/README.md`.
+  official code's `float32` run layer by layer from the `bfloat16` file, which needed a 6 GB scope: 7.5 GB resident, mostly
+  the mapped file; 5 GB was killed): the 24 greedy ids after each of six prompts of 5, 5, 14, 19, 375 and 601 tokens are equal
+  with `F16` weights on ggml CPU and on Vulkan with `vulkan_fp16` off. The smallest gap between the
+  two largest logits of a step is 0.116 (0.222 for the 601 tokens). The tokens past 256 test the window; the 601-token
+  prompt leaves a cache of 1024 rows that a decode step reads 768 of (`Padded.reach`), the only test of a `reach` below the
+  capacity: the tiny test has at most 32 rows, where they are equal. The largest gap of a logit at the five ids the
+  official code found largest is 3.6e-3 on CPU with the `F16` cache and 2.9e-5 with an `F32` cache (the cache line of
+  `generate_lfm3.agc` changed for the run, not kept): the `F16` cache is the whole gap, `F16` weights are not. Peak 4.0 GB
+  on CPU at 601 tokens, nothing longer measured. `tools/bench_lfm3.agc` is the timing row of `benchmarks/README.md`.
 
 ## BERT
 

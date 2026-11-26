@@ -1,10 +1,12 @@
-## Times LFM3 generation on ggml (`benchmarks/README.md`, "LFM3-1.7B (ml#275), ours only"): the load, then one warm-up pass (which compiles
-## the steps), then one timed pass: a prompt of 128 token ids in one step, and 64 one-token steps after it. Prints
+## Times LFM3 generation on ggml (`benchmarks/README.md`, "LFM3-1.7B (ml#275), ours only"): the load, then one warm-up
+## pass (which compiles the steps), then one timed pass: a prompt of 128 token ids in one step, and 64 one-token steps
+## after it. Prints
 ## `RESULT load_ms prompt_tokens_per_s decode_tokens_per_s`. Run from `transformers/`:
 ##
 ##   agentica --max-steps 100000000000 tools/bench_lfm3.agc MODEL_DIR [cpu|vulkan]
 ##
-## `VULKAN_FP16=0` makes Vulkan multiply in exact `float32` (fp16 is the default). The weights are `F16` (the `F32` model is
+## `VULKAN_FP16=0` makes Vulkan multiply in exact `float32` (fp16 is the default). The weights are `F16` (the `F32`
+## model is
 ## 6.9 GB).
 
 import Generate from "../generate_lfm3"

@@ -38,6 +38,9 @@ import torch
 import transformers
 from transformers import PreTrainedTokenizerFast
 
+if not sys.flags.isolated:
+    raise SystemExit("run it with python -I")
+
 PROMPTS = [
     "The capital of France is",
     "def fibonacci(n):\n    ",
@@ -50,7 +53,18 @@ SHA256 = {
     "configuration_lfm3.py": "176cced35657aedfea7d7002221360582d1c05fcaca882c21508bc3a73b282e5",
     "lfm3_conv.py": "80d4a985382a22774212759248a6b4c737bfbf9c2a47b3dd7f797dda748e4bb4",
     "modeling_lfm3.py": "e8cd5254ea99ce6bd731b57b10908c2e8b5010ce8315341f895a38484885eeab",
+    "model.safetensors": "135922caef64e81e52af88ede8b7c3ddaa9d6da220a9737fb3065275dbfb4330",
+    "config.json": "8c6ae8b8f6d88c87cfb98cf4b5e34e943d0ee07e24215c4121b3159a46e1399d",
+    "tokenizer.json": "7e226e34bface23ccf6e495d157bf77186c1c30a7659880e1a8994db528c3701",
 }
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 24):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def check_environment(folder):
@@ -62,9 +76,8 @@ def check_environment(folder):
         if importlib.util.find_spec(name) is not None:
             raise SystemExit(f"{name} is installed: its kernel is not the reference")
     for name, digest in SHA256.items():
-        with open(f"{folder}/{name}", "rb") as f:
-            if hashlib.sha256(f.read()).hexdigest() != digest:
-                raise SystemExit(f"{name} is not the file of the pinned revision")
+        if file_sha256(f"{folder}/{name}") != digest:
+            raise SystemExit(f"{name} is not the file of the pinned revision")
 
 
 def load_remote(folder):

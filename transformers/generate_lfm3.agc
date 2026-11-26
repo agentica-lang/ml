@@ -33,8 +33,8 @@ type Cache = KvDecoder.Cache
 type Scored = KvDecoder.Scored
 
 ## The generator of `m`. `usable` is how many ids it may answer (see `Generator.usable`); the whole vocabulary when it
-## is 0. The tokenizer of LFM3 has 124,893 pieces and 140 added tokens (125,033) and the embedding 128,000 rows, so the ids
-## in between have no text: pass `tok.pieces.size` to keep the sampler to ids that `Bpe.decode` accepts.
+## is 0. The tokenizer of LFM3 has 124,893 pieces and 140 added tokens (125,033) and the embedding 128,000 rows, so the
+## ids in between have no text: pass `tok.pieces.size` to keep the sampler to ids that `Bpe.decode` accepts.
 def open(m: Lfm3.Lfm3, usable: Int = 0) -> Result[Generator]
   c = try KvDecoder.open(m, stepper(m), usable)
   ok(Generator(model: m, plans: c.plans, usable: c.usable, whole: false))
@@ -88,29 +88,32 @@ end
 
 private
 
-## One layer's answer: the hidden rows and what it leaves in the cache.
-struct Layer
-  hidden: Tensor.Tensor
-  key: Optional[Tensor.Tensor]
-  value: Optional[Tensor.Tensor]
-  state: Optional[Tensor.Tensor]
-end
-
-## The answer of an attention and its keys and values after the new rows.
-struct Attended
-  out: Tensor.Tensor
-  key: Tensor.Tensor
-  value: Tensor.Tensor
-end
-
 def core(g: Generator) -> KvDecoder.Core[Lfm3.Lfm3]
   KvDecoder.Core(model: g.model, stepper: stepper(g.model), plans: g.plans, usable: g.usable, whole: g.whole)
 end
 
-def conv?(l: Lfm3.Layer) -> Bool
+def conv_of(mixer: Lfm3.Mixer) -> Optional[ShortConv.ShortConv]
+  case mixer
+    Lfm3.Mixer.Conv(p) -> some(p)
+    _ -> none
+  end
+end
+
+def conv?(l: Lfm3.Layer) -> Bool = conv_of(l.mixer).some?
+
+def sliding?(l: Lfm3.Layer) -> Bool
   case l.mixer
-    Lfm3.Mixer.Conv(_) -> true
+    Lfm3.Mixer.Sliding(_) -> true
     _ -> false
+  end
+end
+
+## The attention of a layer that has one.
+def attention_of(l: Lfm3.Layer) -> Result[Nn.Attention]
+  case l.mixer
+    Lfm3.Mixer.Full(a) -> ok(a)
+    Lfm3.Mixer.Sliding(a) -> ok(a)
+    Lfm3.Mixer.Conv(_) -> error("a convolution layer has no attention")
   end
 end
 
@@ -167,45 +170,38 @@ def stepped(m: Lfm3.Lfm3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor]]
   attention_at = 0
   conv_at = 0
   for l in m.layers
-    old_key: Optional[Tensor.Tensor] = none
-    old_value: Optional[Tensor.Tensor] = none
-    old_state: Optional[Tensor.Tensor] = none
-    if xs.size > lead
-      if conv?(l)
-        old_state = some(xs[lead + 2 * attention_layers + conv_at])
-      else
-        old_key = some(xs[lead + attention_at])
-        old_value = some(xs[lead + attention_layers + attention_at])
-      end
+    x = try Nn.layer_norm(l.operator_norm, h)
+    mixed = x
+    case conv_of(l.mixer)
+      some(p) ->
+        old: Optional[Tensor.Tensor] = none
+        if xs.size > lead
+          old = some(xs[lead + 2 * attention_layers + conv_at])
+        end
+
+        r = try conv_step(p, x, old, padding)
+        mixed = try Tensor.reshape(r.out, Tensor.shape(h))
+        states = states.push(r.state)
+        conv_at += 1
+      none ->
+        old: Optional[KvDecoder.Kv] = none
+        if xs.size > lead
+          old = some(KvDecoder.Kv(key: xs[lead + attention_at], value: xs[lead + attention_layers + attention_at]))
+        end
+
+        mask = full_mask
+        if sliding?(l)
+          mask = sliding_mask
+        end
+
+        kept = try cached_attention(try attention_of(l), x, slots.positions, mask, spread, old, req)
+        mixed = kept.hidden
+        keys = keys.push(try Stepping.cached(kept.key, req.compiled))
+        values = values.push(try Stepping.cached(kept.value, req.compiled))
+        attention_at += 1
     end
 
-    mask = full_mask
-    if sliding?(l)
-      mask = sliding_mask
-    end
-
-    r = try layer(l, h, slots.positions, mask, spread, old_key, old_value, old_state, padding, req)
-    h = r.hidden
-    case r.key
-      some(k) -> keys = keys.push(try Stepping.cached(k, req.compiled))
-      none -> nil
-    end
-
-    case r.value
-      some(v) -> values = values.push(try Stepping.cached(v, req.compiled))
-      none -> nil
-    end
-
-    case r.state
-      some(s) -> states = states.push(s)
-      none -> nil
-    end
-
-    if conv?(l)
-      conv_at += 1
-    else
-      attention_at += 1
-    end
+    h = try after_mixer(l, h, mixed)
   end
 
   last = try Tensor.reshape(try Tensor.matmul(xs[2], try Tensor.reshape(h, [width, d])), [1, 1, d])
@@ -215,89 +211,59 @@ def stepped(m: Lfm3.Lfm3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor]]
   ok([head] + keys + values + states)
 end
 
-def sliding?(l: Lfm3.Layer) -> Bool
-  case l.mixer
-    Lfm3.Mixer.Sliding(_) -> true
-    _ -> false
+## The convolution over the new rows `x` `[1, width, d]` after its `old` state (the zeros when there is none).
+def conv_step(
+  p: ShortConv.ShortConv,
+  x: Tensor.Tensor,
+  old: Optional[Tensor.Tensor],
+  padding: Optional[Delta.Padding],
+) -> Result[ShortConv.ShortOut]
+  shape = Tensor.shape(x)
+  start = old
+  if start.none?
+    start = some(try ShortConv.short_start(p, Tensor.backend(x)))
   end
+
+  ShortConv.short_conv(p, try Tensor.reshape(x, [shape[1], shape[2]]), start.unwrap!, padding)
 end
 
-## One decoder layer over the new tokens `h` `[1, width, d]`, as `Lfm3.through`'s: the mixer (the convolution over its
-## state, or the attention over the cache) and the MLP, each normed before and after.
-def layer(
-  l: Lfm3.Layer,
-  h: Tensor.Tensor,
-  positions: Tensor.Tensor,
-  mask: Tensor.Tensor,
-  spread: Optional[Tensor.Tensor],
-  old_key: Optional[Tensor.Tensor],
-  old_value: Optional[Tensor.Tensor],
-  old_state: Optional[Tensor.Tensor],
-  padding: Optional[Delta.Padding],
-  req: KvDecoder.Request,
-) -> Result[Layer]
-  shape = Tensor.shape(h)
-  x = try Nn.layer_norm(l.operator_norm, h)
-  mixed = x
-  key: Optional[Tensor.Tensor] = none
-  value: Optional[Tensor.Tensor] = none
-  state: Optional[Tensor.Tensor] = none
-  case l.mixer
-    Lfm3.Mixer.Conv(p) ->
-      start = old_state
-      if start.none?
-        start = some(try ShortConv.short_start(p, Tensor.backend(h)))
-      end
-
-      r = try ShortConv.short_conv(p, try Tensor.reshape(x, [shape[1], shape[2]]), start.unwrap!, padding)
-      mixed = try Tensor.reshape(r.out, shape)
-      state = some(r.state)
-    Lfm3.Mixer.Full(a) ->
-      kept = try cached_attention(a, x, positions, mask, spread, old_key, old_value, req)
-      mixed = kept.out
-      key = some(kept.key)
-      value = some(kept.value)
-    Lfm3.Mixer.Sliding(a) ->
-      kept = try cached_attention(a, x, positions, mask, spread, old_key, old_value, req)
-      mixed = kept.out
-      key = some(kept.key)
-      value = some(kept.value)
-  end
-
+## What follows a mixer in a layer, as `Lfm3.through`: the mixer's answer normed and added, then the MLP, normed before
+## and after, and added.
+def after_mixer(l: Lfm3.Layer, h: Tensor.Tensor, mixed: Tensor.Tensor) -> Result[Tensor.Tensor]
   mid = try Tensor.add(h, try Nn.layer_norm(l.post_operator_norm, mixed))
   ffn = try Nn.layer_norm(l.post_ffn_norm, try Nn.mlp(l.mlp, try Nn.layer_norm(l.ffn_norm, mid)))
-  ok(Layer(hidden: try Tensor.add(mid, ffn), key: key, value: value, state: state))
+  Tensor.add(mid, ffn)
 end
 
+## The attention `a` over the new rows `x`: its answer (`hidden`) and its keys and values after the new rows.
 def cached_attention(
   a: Nn.Attention,
   x: Tensor.Tensor,
   positions: Tensor.Tensor,
   mask: Tensor.Tensor,
   spread: Optional[Tensor.Tensor],
-  old_key: Optional[Tensor.Tensor],
-  old_value: Optional[Tensor.Tensor],
+  old: Optional[KvDecoder.Kv],
   req: KvDecoder.Request,
-) -> Result[Attended]
+) -> Result[KvDecoder.Layer]
   heads = try Nn.project(a, x, x, some(positions))
-  whole_key = heads.key
-  whole_value = heads.value
+  key = heads.key
+  value = heads.value
   if req.in_place
-    whole_key = try Tensor.set_rows(old_key.unwrap!, heads.key, positions)
-    whole_value = try Tensor.set_rows(old_value.unwrap!, heads.value, positions)
+    key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
+    value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
   else
-    whole_key = try Padded.written(try Stepping.widened(old_key), heads.key, spread.unwrap!, 2)
-    whole_value = try Padded.written(try Stepping.widened(old_value), heads.value, spread.unwrap!, 2)
+    key = try Padded.written(try Stepping.widened(old.map { |kv| kv.key }), heads.key, spread.unwrap!, 2)
+    value = try Padded.written(try Stepping.widened(old.map { |kv| kv.value }), heads.value, spread.unwrap!, 2)
   end
 
   seen = try Nn.attend(
     a,
     heads.query,
-    try Padded.reached(whole_key, req.reach),
-    try Padded.reached(whole_value, req.reach),
+    try Padded.reached(key, req.reach),
+    try Padded.reached(value, req.reach),
     some(mask),
     gate: heads.gate,
   )
 
-  ok(Attended(out: seen, key: whole_key, value: whole_value))
+  ok(KvDecoder.Layer(hidden: seen, key: key, value: value))
 end

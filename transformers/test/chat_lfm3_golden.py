@@ -21,6 +21,9 @@ import hashlib
 import json
 import sys
 
+if not sys.flags.isolated:
+    raise SystemExit("run it with python -I")
+
 import jinja2
 import transformers
 from transformers import AutoTokenizer

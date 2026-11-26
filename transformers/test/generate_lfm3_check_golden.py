@@ -1,11 +1,15 @@
 """Prints what the official LFM3 code (`LiquidAI/LFM3-1.7B`) generates, for `tools/generate_lfm3_check.agc` to compare:
 per prompt, the input ids, the 24 ids of the greedy `generate` (no stop id, so every prompt gives 24) with the gap of
-the two largest logits of each step, and the five largest logits and their ids of each step. The last prompt is over 300
-tokens, past the sliding window of 256, and generates 24 tokens after it.
+the two largest logits of each step, and the five largest logits and their ids of each step. The last two prompts are
+over
+300 and over 600 tokens, past the sliding window of 256, and generate 24 tokens after it (the second decodes in a cache
+of 1024 rows and reads 768 of them).
 
 The `float32` model is 6.9 GB, more than a 12 GB machine shared with other work may give: the checkpoint is loaded in
-`bfloat16` (3.4 GB, every weight is exactly a `float32` number) and each decoder layer, with the embedding table and the
-final norm, is turned to `float32` only while it runs, as `test/lfm3_check_golden.py` does; the arithmetic is the one of a
+`bfloat16` (3.4 GB, every weight is exactly a `float32` number) and each decoder layer, with the embedding table and
+the
+final norm, is turned to `float32` only while it runs, as `test/lfm3_check_golden.py` does; the arithmetic is the one
+of a
 `float32` model. In `bfloat16` the process takes about 4 GB: on a shared machine run it as
 `flock LOCK systemd-run --user --scope -q -p MemoryMax=5G python ...`.
 
@@ -38,6 +42,9 @@ import torch
 import transformers
 from transformers import PreTrainedTokenizerFast
 
+if not sys.flags.isolated:
+    raise SystemExit("run it with python -I")
+
 NEW = 24
 # An id no token has: the generation never stops early (the generation config would stop at `<|im_end|>`).
 NO_STOP = 2**31 - 1
@@ -48,12 +55,25 @@ PROMPTS = [
     "Naïve café owners: 東京は日本の首都です。 1234567890",
     # Over 300 tokens: the sliding layers drop the first tokens, and the convolution carries 6 rows over every chunk.
     "The quick brown fox jumps over the lazy dog, and the dog does not mind. " * 22,
+    # Over 600 tokens: the cache has 1024 rows and a decode step reads 768 of them (`Padded.reach`).
+    "A hybrid model keeps a short convolution state in most layers and a cache of keys in a few. " * 30,
 ]
 SHA256 = {
     "configuration_lfm3.py": "176cced35657aedfea7d7002221360582d1c05fcaca882c21508bc3a73b282e5",
     "lfm3_conv.py": "80d4a985382a22774212759248a6b4c737bfbf9c2a47b3dd7f797dda748e4bb4",
     "modeling_lfm3.py": "e8cd5254ea99ce6bd731b57b10908c2e8b5010ce8315341f895a38484885eeab",
+    "model.safetensors": "135922caef64e81e52af88ede8b7c3ddaa9d6da220a9737fb3065275dbfb4330",
+    "config.json": "8c6ae8b8f6d88c87cfb98cf4b5e34e943d0ee07e24215c4121b3159a46e1399d",
+    "tokenizer.json": "7e226e34bface23ccf6e495d157bf77186c1c30a7659880e1a8994db528c3701",
 }
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 24):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def check_environment(folder):
@@ -65,9 +85,17 @@ def check_environment(folder):
         if importlib.util.find_spec(name) is not None:
             raise SystemExit(f"{name} is installed: its kernel is not the reference")
     for name, digest in SHA256.items():
-        with open(f"{folder}/{name}", "rb") as f:
-            if hashlib.sha256(f.read()).hexdigest() != digest:
-                raise SystemExit(f"{name} is not the file of the pinned revision")
+        if file_sha256(f"{folder}/{name}") != digest:
+            raise SystemExit(f"{name} is not the file of the pinned revision")
+
+
+def check_cache(cache):
+    """The official cache must be `float32`, so that the scores are those of a `float32` run."""
+    for i, layer in enumerate(cache.layers):
+        keys = getattr(layer, "keys", None)
+        tensor = keys if keys is not None else cache.get_conv_state(i)
+        if tensor.dtype != torch.float32:
+            raise SystemExit(f"the cache of layer {i} is {tensor.dtype}, not float32")
 
 
 def load_remote(folder):
@@ -96,8 +124,10 @@ def main():
     for prompt in PROMPTS:
         ids = tok(prompt, return_tensors="pt")["input_ids"]
         with torch.no_grad():
-            made = model.generate(ids, do_sample=False, repetition_penalty=1.0, max_new_tokens=NEW, eos_token_id=NO_STOP,
-                                  pad_token_id=0, output_scores=True, return_dict_in_generate=True)
+            made = model.generate(ids, do_sample=False, repetition_penalty=1.0, max_new_tokens=NEW,
+                                  eos_token_id=NO_STOP, pad_token_id=0, output_scores=True,
+                                  return_dict_in_generate=True)
+        check_cache(made.past_key_values)
         if made.scores[0].dtype != torch.float32:
             raise SystemExit(f"the scores are {made.scores[0].dtype}, not float32")
         cases.append({

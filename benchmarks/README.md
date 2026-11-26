@@ -349,7 +349,7 @@ VULKAN_FP16=1 agentica --max-steps 100000000000 transformers/tools/bench_qwen35.
 | ours, ggml Vulkan, exact (fp16 off) | 71.0 | 7.7 | 7.3 s | 0.85 GB |
 | ours, ggml Vulkan, fp16 products | 115.9 | 8.5 | 6.7 s | 0.86 GB |
 
-Correctness: the greedy ids match the official code's `generate` on five prompts of 5 to 375 tokens (the last is past the sliding window) on both backends (`transformers/tools/generate_lfm3_check.agc`).
+Correctness: the greedy ids match the official code's `generate` on prompts of 5 to 601 tokens (two are past the sliding window) on both backends (`transformers/tools/generate_lfm3_check.agc`).
 
 ```sh
 agentica --max-steps 100000000000 transformers/tools/bench_lfm3.agc MODEL_DIR cpu                          # ggml CPU

@@ -73,7 +73,7 @@ struct Stepper[M]
   ## How many state tensors a step takes and gives, after the keys and the values (0 for a model with none).
   states: Int = 0
   ## The taps of the convolution of a model with states: a prompt (more than one row) is given a `Delta.Padding` for
-  ## them. 0 for a model with no convolution.
+  ## them (its `valid` is for the recurrent state of Qwen3.5; LFM3 reads only `keep`). 0 for a model with no convolution.
   taps: Int = 0
   traced: Fn[M, M]
   stepped: Fn[M, Request, Result[List[Tensor.Tensor]]]
@@ -103,9 +103,9 @@ end
 struct Cache
   keys: List[Tensor.Tensor]
   values: List[Tensor.Tensor]
+  length: Int
   ## The states of a model that has them, new tensors at every step.
   states: List[Tensor.Tensor] = []
-  length: Int
 end
 
 ## `step_logits`: the logits after the last token fed, and the cache.

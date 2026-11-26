@@ -1,12 +1,13 @@
 """Writes `test/fixtures/lfm3_golden.json`: a tiny random LFM3 model (5 layers: three `conv`, a `full_attention` and a
 `sliding_attention` with a window of 4; 16 wide, a head of 16 and the real `partial_rotary_factor` 0.5 and thetas of
 the checkpoint, tied head) as the official code runs it in `float32` with the eager attention: its `config.json` (as
-the `LiquidAI/LFM3-*` repositories write it), its weights under the names of the official checkpoint, two sequences of 9
-token ids and the logits of every position, and the 14 ids and scores of the official greedy `generate` from the first
-7 ids of the first sequence (the window of 4 is crossed, and so are the cache capacities 8, 16 and 32).
+the `LiquidAI/LFM3-*` repositories write it), its weights under the names of the official checkpoint, two
+sequences of 9 token ids and the logits of every position, and the 14 ids and scores of the official greedy
+`generate` from the first 7 ids of the first sequence (the window of 4 is crossed, and so are the cache capacities 8,
+16 and 32).
 `test/lfm3_test.agc` writes the weights as a safetensors file, opens the folder with `Lfm3.open` and compares the
-logits; `test/generate_lfm3_test.agc` does the same with `Generate` and the generated ids. No model is stored, only this small file of random weights and its
-outputs.
+logits; `test/generate_lfm3_test.agc` does the same with `Generate` and the generated ids. No model is stored, only
+this small file of random weights and its outputs.
 
 The code is `modeling_lfm3.py`, `configuration_lfm3.py` and `lfm3_conv.py` of `LiquidAI/LFM3-1.7B`, revision
 1da06bec6a819da10b54c67e5c90972b46d81871, under the LFM Open License v1.0. It is not copied here. The script imports
@@ -37,6 +38,9 @@ import sys
 
 import torch
 import transformers
+
+if not sys.flags.isolated:
+    raise SystemExit("run it with python -I")
 
 SHAPE = dict(
     hidden_size=16, intermediate_size=24, num_hidden_layers=5, num_attention_heads=4, num_key_value_heads=2,
@@ -75,7 +79,17 @@ def load_remote(folder):
     package = importlib.util.module_from_spec(spec)
     package.__path__ = [folder]
     sys.modules["lfm3_code"] = package
-    return (importlib.import_module("lfm3_code.configuration_lfm3"), importlib.import_module("lfm3_code.modeling_lfm3"))
+    return (importlib.import_module("lfm3_code.configuration_lfm3"),
+            importlib.import_module("lfm3_code.modeling_lfm3"))
+
+
+def check_cache(cache):
+    """The official cache must be `float32`, so that the scores are those of a `float32` run."""
+    for i, layer in enumerate(cache.layers):
+        keys = getattr(layer, "keys", None)
+        tensor = keys if keys is not None else cache.get_conv_state(i)
+        if tensor.dtype != torch.float32:
+            raise SystemExit(f"the cache of layer {i} is {tensor.dtype}, not float32")
 
 
 def flat(t):
@@ -96,6 +110,7 @@ def main():
         logits = model(torch.tensor(ROWS)).logits
         made = model.generate(torch.tensor(ROWS[:1])[:, :PROMPT], do_sample=False, max_new_tokens=NEW,
                               output_scores=True, return_dict_in_generate=True, pad_token_id=0)
+        check_cache(made.past_key_values)
     weights = {}
     shapes = {}
     for name, p in model.state_dict().items():
@@ -103,7 +118,8 @@ def main():
             continue
         weights[name] = flat(p)
         shapes[name] = list(p.shape)
-    document = dict(SHAPE, architectures=["Lfm3ForCausalLM"], model_type="lfm3", rope_parameters=ROPE, dtype="bfloat16")
+    document = dict(SHAPE, architectures=["Lfm3ForCausalLM"], model_type="lfm3", rope_parameters=ROPE,
+                    dtype="bfloat16")
     json.dump({"config": json.dumps(document), "weights": weights, "shapes": shapes, "rows": ROWS,
                "logits": flat(logits), "generated": made.sequences[0, PROMPT:].tolist(),
                "scores": [flat(step[0]) for step in made.scores]}, sys.stdout)
