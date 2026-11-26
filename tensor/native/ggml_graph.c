@@ -211,6 +211,7 @@ struct entry {
   signed char *side_val;
   size_t side_cap;
   size_t sched_need;             /* the nodes of the graph and an upper bound of its leaves, for the scheduler's tables */
+  int64_t cache_write_products; /* of the graph, -1 when it writes no cache in place: see `note_cache_writes` */
   bool placed;                   /* `leaf_side` and the sides of the nodes are of the leaves now bound */
   bool mixed;                    /* some leaf is in host memory under a device graph: the scheduler runs it */
 };
@@ -224,6 +225,7 @@ struct device_state {
   struct entry *sched_planned; /* the graph that the scheduler last reserved its memory for */
 };
 static int64_t mixed_split_count; /* the splits of the scheduler in the last mixed run, atomic */
+static int64_t last_cache_write_products = -1; /* of the graph that ran last: see `note_cache_writes`, atomic */
 static int64_t mixed_run_count; /* the runs through a scheduler, for the tests: atomic, so reading it never waits */
 
 /* Lock order: the device lock (1), then cache_lock (2). Pins and the pin count of an entry are under cache_lock alone;
@@ -1575,6 +1577,40 @@ static struct ggml_tensor *finite_check(struct entry *p, struct ggml_tensor *val
   return ggml_sum(p->ctx, ggml_sum_rows(p->ctx, value));
 }
 
+/* For the tests: how many matrix products sit, in the order of the graph, between each write of a cache in place and the
+   first node that reads it (the attention of its layer), summed; -1 when the graph writes no cache in place. A layer that
+   makes its keys and its values before writing either has none. */
+static int64_t note_cache_writes(struct ggml_cgraph *graph) {
+  int n = ggml_graph_n_nodes(graph), i, k, j;
+  int64_t products = 0;
+  bool any = false;
+
+  for (i = 0; i < n; i++) {
+    struct ggml_tensor *write = ggml_graph_node(graph, i);
+    const struct ggml_tensor *cache = write->src[2];
+    const struct ggml_tensor *root = cache != NULL && cache->view_src != NULL ? cache->view_src : cache;
+    int64_t between = 0;
+
+    if (write->op != GGML_OP_SET_ROWS || cache == NULL) continue;
+    if (root->op != GGML_OP_NONE) continue;
+    any = true;
+    for (k = i + 1; k < n; k++) {
+      struct ggml_tensor *node = ggml_graph_node(graph, k);
+      bool read = false;
+
+      for (j = 0; j < GGML_MAX_SRC; j++) {
+        if (node->src[j] != NULL && (node->src[j] == write || (node->src[j]->view_src != NULL && node->src[j]->view_src == root))) read = true;
+      }
+      if (read) {
+        products += between;
+        break;
+      }
+      if (node->op == GGML_OP_MUL_MAT) between++;
+    }
+  }
+  return any ? products : -1;
+}
+
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
   struct ggml_tensor *finite[MAX_OUTPUTS]; /* the finiteness check of each output; its copy to `checks` is made after all of them */
   struct entry *p = lease->e;
@@ -1601,6 +1637,12 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   /* the positions of the ropes go first: a cast between a rope's norm and the rope keeps ggml-vulkan from fusing them */
   for (i = 0; i < p->count; i++) {
     if (p->nodes[i].at != NULL) ggml_build_forward_expand(p->graph, p->nodes[i].at);
+  }
+  /* The rows that a cache is written with go first: ggml visits the sources of a node in order, so the attention would
+     otherwise write the keys of a layer before it made the values, and a cache in host memory would make two splits of the
+     scheduler of its writes where one is enough (keys, values and attention on the CPU). */
+  for (i = 0; i < p->count; i++) {
+    if (p->nodes[i].op == OP_SET_ROWS && p->nodes[i].in_place && p->nodes[i].t->src[0] != NULL) ggml_build_forward_expand(p->graph, p->nodes[i].t->src[0]);
   }
   for (i = 0; i < nouts; i++) {
     struct gnode *n = &p->nodes[outs[i]];
@@ -1688,6 +1730,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     }
   }
 
+  p->cache_write_products = note_cache_writes(p->graph);
   p->sched_need = 0;
   for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
     for (j = 0; j < GGML_MAX_SRC; j++) {
@@ -2068,6 +2111,8 @@ an_term ggml_mixed_runs(an_env *env) {
   return an_int(env, __atomic_load_n(&mixed_run_count, __ATOMIC_RELAXED));
 }
 
+an_term ggml_cache_write_products(an_env *env) { return an_int(env, __atomic_load_n(&last_cache_write_products, __ATOMIC_RELAXED)); }
+
 an_term ggml_mixed_splits(an_env *env) { return an_int(env, __atomic_load_n(&mixed_split_count, __ATOMIC_RELAXED)); }
 
 an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease) {
@@ -2312,6 +2357,7 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   char text[160];
 
   if (p == NULL || !p->compiled) return tg_error(env, "run a compiled graph");
+  __atomic_store_n(&last_cache_write_products, p->cache_write_products, __ATOMIC_RELAXED);
   if (p->kept_leaves > 0 && !lease->resumed) {
     pthread_mutex_lock(&cache_lock);
     p->kept_for = 0;
