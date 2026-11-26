@@ -174,9 +174,9 @@ an_term ggml_on_cpu(an_env *env, struct ggml_TensorHandle_state *t);
    the process started: a graph with every leaf in device memory never counts. */
 an_term ggml_mixed_runs(an_env *env);
 
-/* For the tests: the matrix products that sit between the cache writes of one layer (`set_rows` in place) in the node
-   order of the last compiled graph that had two or more such writes, -1 before any: 0 when a layer makes its keys and
-   its values before writing either. */
+/* For the tests: of the graph that ran last, the matrix products that sit between each cache write in place
+   (`set_rows`) and the first node that reads it, in the node order, summed; -1 when the graph wrote no cache in place.
+   0 when a layer makes its keys and its values before writing either. */
 an_term ggml_cache_write_products(an_env *env);
 
 /* The splits of the scheduler in the last of those runs: each is a change of backend, with a submit, a wait and a copy. */

@@ -184,11 +184,16 @@ end
 
 ## The order of the nodes of a step in place: both projections of a layer come before the writes of its keys and values,
 ## so that with the cache on the CPU the writes and the attention are one split of the scheduler and the layer is two
-## (the card, the CPU), not four. `cache_write_products` counts the products between the writes of one layer: 0.
+## (the card, the CPU), not four. `cache_write_products` counts the products between each write and the first node that
+## reads it: 0. On the CPU engine, which runs the attention of the tiny model as ggml's flash attention (on Vulkan this
+## model's attention is the longer one, with its query projected after the writes; `ggml_mixed_test` pins the splits of a
+## layer there).
 def test_a_step_in_place_projects_the_keys_and_the_values_before_writing_either() -> Result[Void]
   with_peer do |dir|
     row = try ints(try JSON.get(try expected(dir), "long"))
     for backend in try S.ggml_backends()
+      next if backend != Tensor.Backend.Ggml(Tensor.Device.Cpu)
+
       m = try Qwen3.open("#{dir}/tiny", backend)
       g = try Generate.open(m)
       s = try Generate.step_logits(g, Generate.start(), row.take(5))

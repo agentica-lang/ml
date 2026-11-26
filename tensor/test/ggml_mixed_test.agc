@@ -321,6 +321,47 @@ end
 
 ## A value that is not finite and an index outside the table are refused as they are on the device, whichever side makes
 ## them.
+## One layer of attention over a cache: the projections of the query, the key and the value, the rows written into the
+## caches in place, the attention over them and the output projection. The inputs are x `[1, 8]`, the four matrices, the
+## two caches `[1, 1, 4, 8]` and the position.
+def layer(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  q = try Tensor.reshape(try Tensor.linear(xs[0], xs[1], none, true), [1, 1, 1, 8])
+  k = try Tensor.reshape(try Tensor.linear(xs[0], xs[2], none, true), [1, 1, 1, 8])
+  v = try Tensor.reshape(try Tensor.linear(xs[0], xs[3], none, true), [1, 1, 1, 8])
+  keys = try Tensor.set_rows(xs[5], k, xs[7])
+  values = try Tensor.set_rows(xs[6], v, xs[7])
+  seen = try Tensor.reshape(try Tensor.attention(q, keys, values), [1, 8])
+  ok([try Tensor.linear(seen, xs[4], none, true), keys, values])
+end
+
+def layer_inputs(cache_on: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  args = [try floats(counting(8), [1, 8], DEVICE)]
+  for _ in 0...4
+    args = args.push(try floats(counting(64), [8, 8], DEVICE))
+  end
+
+  args = args.push(try floats(counting(32), [1, 1, 4, 8], cache_on))
+  args = args.push(try floats(counting(32), [1, 1, 4, 8], cache_on))
+  ok(args + [try Tensor.from_list([Tensor.Values.Int(2)], [1], Tensor.Dtype.I32, DEVICE)])
+end
+
+## A layer with its cache on the CPU and its weights on the device is two stretches on the device around one on the CPU
+## (the writes and the attention): 3 splits, and the products are all before the first write, and its values are those of
+## the same layer with the cache on the device.
+def test_a_layer_over_a_cache_on_the_cpu_is_three_splits() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  want = try values(try Trace.eval_many(try layer_inputs(DEVICE)) do |xs| layer(xs) end)
+  args = try layer_inputs(HOME)
+  compiled = try Trace.compile(specs_of(args)) do |xs| layer(xs) end
+  try Trace.run(compiled, args)
+  try Test.eq(GgmlRaw.cache_write_products(), 0)
+  try Test.eq(GgmlRaw.mixed_splits(), 3)
+  have = try values([args[5], args[6]])
+  try Test.eq(have, [want[1], want[2]])
+  ok()
+end
+
 def test_the_checks_of_a_mixed_graph_refuse_what_a_device_graph_refuses() -> Result[Void]
   return absent() if !try mixed_present()
 

@@ -68,9 +68,9 @@ extern module "ggml"
   ## How many runs went through the scheduler (a graph on a device with a leaf in host memory, even every leaf), since
   ## the process started: a graph with every leaf in device memory never counts.
   def mixed_runs() -> Int
-  ## For the tests: the matrix products that sit between the cache writes of one layer (`set_rows` in place) in the node
-  ## order of the last compiled graph that had two or more such writes, -1 before any: 0 when a layer makes its keys and
-  ## its values before writing either.
+  ## For the tests: of the graph that ran last, the matrix products that sit between each cache write in place
+  ## (`set_rows`) and the first node that reads it, in the node order, summed; -1 when the graph wrote no cache in place.
+  ## 0 when a layer makes its keys and its values before writing either.
   def cache_write_products() -> Int
   ## The splits of the scheduler in the last of those runs: each is a change of backend, with a submit, a wait and a copy.
   def mixed_splits() -> Int
