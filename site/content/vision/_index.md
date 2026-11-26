@@ -58,10 +58,26 @@ end
 | `CenterCrop(width, height)` | cuts the area at the center; when the gap is odd and falls between two pixels, the offset is the even one, as Python's `round` and torchvision do |
 | `RandomCrop(width, height)` | cuts the area at a random place |
 | `HorizontalFlip(p)` | mirrors the image with probability `p` |
+| `SmartResize(factor, min_pixels, max_pixels, kernel)` | scales to the size that `smart_resize` gives, the one of Qwen2-VL's image processor (see below) |
 
 `kernel` is a `Vision.Kernel` (`Image.Kernel` of the `image` package, which `vision` re-exports; `Nearest`, `Linear`, `Cubic`, `Lanczos2`, `Lanczos3`): the filter that libvips resizes with. Use the kernel of the model's image processor: Hugging Face's ResNet and CLIP processors resize with Pillow's bicubic (`Cubic`) and ViT's with its bilinear (`Linear`). With the kernel of the processor the pixels are at most one 8-bit level from Pillow's (0.0175 for ResNet, 0.0078 for ViT and 0.015 for CLIP, after normalizing): on the four drawn images of the tests 92% to 96% of the samples are Pillow's exactly, 4% to 8% are one level off and under 0.1% two levels off (see [the transformers page](../transformers/_index.md)).
 
 The random steps draw from `seed`, so one seed gives one result. A crop larger than the image, a `Resize` below 1 or a `p` outside `0.0..1.0` is an `error`. The images that `apply` makes along the way are closed when it returns, but the one it gives stays open (see [image](https://www.agentica-lang.com/packages/image/) for the lifetime of an image).
+
+## Patches for a vision-language model
+
+`smart_resize(height, width, factor, min_pixels, max_pixels)` is Hugging Face's function of the same name (the image processor of Qwen2-VL and its successors, Qwen3.5 among them) and gives a `Size(height, width)`: each side is the nearest multiple of `factor` (a half goes to the even multiple, as Python's `round` does), and an image with more than `max_pixels` pixels shrinks, or one with fewer than `min_pixels` grows, by the same ratio on both sides. An aspect ratio above 200 is an `error`. `Step.SmartResize` resizes to that size.
+
+`patches(x, patch_size, merge_size, temporal_patch_size)` lays one normalized image `x` (`[channels, height, width]`, `F32`) out as that processor's `pixel_values`: one row of `channels * temporal_patch_size * patch_size * patch_size` values for each patch, in the order of the merge squares of `merge_size` by `merge_size` patches, with the image repeated for the frames of the temporal patch. `height` and `width` must be multiples of `patch_size * merge_size`, which `SmartResize` makes. For the processor of `Qwen/Qwen3.5-0.8B` (`patch_size` 16, `merge_size` 2, `shortest_edge` 65,536 and `longest_edge` 16,777,216 pixels in its `preprocessor_config.json`, mean and std 0.5):
+
+```agentica {mode="fragment"}
+steps = [Vision.Step.SmartResize(32, 65536, 16777216, Vision.Kernel.Cubic)]
+image = Vision.apply(Image.load("photo.jpg").unwrap!, steps).unwrap!
+x = Vision.normalize(Vision.to_tensor(image, backend).unwrap!, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap!
+pixel_values = Vision.patches(x, 16, 2).unwrap!
+```
+
+The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A shrunk image is at most one 8-bit level (0.0078 normalized) from the processor's, as for the other models; an image that grows (under `min_pixels`) is not, because libvips enlarges with another sub-pixel alignment than Pillow's bicubic: at the edges the pixels can be several levels apart (see [the transformers page](../transformers/_index.md)).
 
 ## A folder per class
 

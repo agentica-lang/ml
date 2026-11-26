@@ -25,6 +25,10 @@ All packages are released together at one version, each on its own tag, `<packag
 
 - GGUF files with `Q4_K` and `Q6_K` tensors are read; `weights: Dtype.Q4_K` (`WEIGHTS=q4_k`) keeps each matrix as blocks at the bit width the file stores it in (ml#126).
 
+### vision
+
+- `Vision.Step.SmartResize(factor, min_pixels, max_pixels, kernel)` and `Vision.smart_resize`: the size that Hugging Face's `smart_resize` gives (Qwen2-VL's image processor), and `Vision.patches`: the patches of a normalized image in the order of the processor's `pixel_values` (ml#151).
+
 ## [0.6.0] - 2026-11-26
 
 ### tensor
