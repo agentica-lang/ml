@@ -12,17 +12,13 @@ import Qwen3 from "qwen3"
 import Sample from "sample"
 import Stepping from "stepping"
 
-## A model and the compiled steps it has run (on `Ggml`), which every sequence of the model shares (`KvDecoder.Core`).
+## A model and the compiled steps it has run (on `Ggml`), which every sequence of the model shares: the fields of a
+## `KvDecoder.Core` (see there), which `core` makes of it.
 struct Generator
   model: Qwen3.Qwen3
   plans: Channel[Stepping.Plans]
-  ## How many ids a step may answer: the ids from `usable` on get a logit of `Nn.MASKED`. The embedding of a model can
-  ## have more rows than its tokenizer has tokens (Qwen3: 151,936 and 151,669); with the tokenizer's count here
-  ## (`tok.pieces.size`) the sampler cannot give an id that `Bpe.decode` rejects. `vocab_size` (the default of `open`)
-  ## is no mask, as in Hugging Face.
+  ## See `KvDecoder.Core`.
   usable: Int
-  ## Every step reads the whole capacity of the cache, not only the rows in use: `false` from `open`. The tests set it
-  ## to have the logits of the other way of reading the same cache.
   whole: Bool
 end
 
@@ -85,17 +81,6 @@ end
 
 private
 
-struct Kv
-  key: Tensor.Tensor
-  value: Tensor.Tensor
-end
-
-struct Layer
-  hidden: Tensor.Tensor
-  key: Tensor.Tensor
-  value: Tensor.Tensor
-end
-
 def core(g: Generator) -> KvDecoder.Core[Qwen3.Qwen3]
   KvDecoder.Core(model: g.model, stepper: stepper(g.model), plans: g.plans, usable: g.usable, whole: g.whole)
 end
@@ -138,9 +123,9 @@ def stepped(m: Qwen3.Qwen3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor
   keys: List[Tensor.Tensor] = []
   values: List[Tensor.Tensor] = []
   for i in 0...layers
-    old: Optional[Kv] = none
+    old: Optional[KvDecoder.Kv] = none
     if xs.size > 3
-      old = some(Kv(key: xs[3 + i], value: xs[3 + layers + i]))
+      old = some(KvDecoder.Kv(key: xs[3 + i], value: xs[3 + layers + i]))
     end
 
     r = try layer(m.stack.blocks[i], h, slots.positions, mask, spread, old, in_place, reach)
@@ -156,12 +141,7 @@ def stepped(m: Qwen3.Qwen3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor
   end
 
   logits = try Stepping.masked(try Tensor.reshape(try Nn.dense(m.head, last), [m.config.vocab_size]), usable)
-  head = logits
-  case mode
-    Stepping.Head.Pick -> head = try Stepping.picked(logits)
-    Stepping.Head.Top(k) -> head = try Stepping.top_candidates(logits, k)
-    Stepping.Head.Logits -> nil
-  end
+  head = try Stepping.headed(logits, mode)
 
   ok([head] + keys + values)
 end
@@ -174,10 +154,10 @@ def layer(
   positions: Tensor.Tensor,
   mask: Tensor.Tensor,
   spread: Optional[Tensor.Tensor],
-  old: Optional[Kv],
+  old: Optional[KvDecoder.Kv],
   in_place: Bool,
   reach: Int,
-) -> Result[Layer]
+) -> Result[KvDecoder.Layer]
   x = try Nn.layer_norm(b.norm1, h)
   heads = try Nn.project(b.attention, x, x, some(positions))
   key = heads.key
@@ -200,5 +180,5 @@ def layer(
 
   mid = try Tensor.add(h, seen)
   out = try Tensor.add(mid, try Nn.mlp(b.mlp, try Nn.layer_norm(b.norm2, mid)))
-  ok(Layer(hidden: out, key: key, value: value))
+  ok(KvDecoder.Layer(hidden: out, key: key, value: value))
 end

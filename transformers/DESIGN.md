@@ -9,20 +9,18 @@ Granite MoE (`granitemoe`) has its forward and generation (ml#274).
 
 ## Generation
 
-`generate.agc` follows `asr/`'s decoder (the padded-cache helpers are shared,
-`nn/kv.agc`; each model keeps its own forward). The decoder itself, the same for Qwen3 and Granite MoE, is `kv_decoder.agc`
-(`KvDecoder.Core`, over a `Stepper`: the sizes of the model, its token table, `traced` and the `stepped` graph of one
-step); `generate.agc` and `generate_granite_moe.agc` keep the `Generator` of their model, the `Stepper`, `stepped` and
-`layer`. `Generate.open(m)` is the generator of a Qwen3 model, which holds its
-compiled steps in a one-slot channel (as `Asr.Model.plans`), and
-`Generate.generate(g, ids, max_new, stop, sampling)` decodes greedily, or by
-`sample.agc` (below); `start`, then `step` (the id with the largest logit) or
+`kv_decoder.agc` follows `asr/`'s decoder (the padded-cache helpers are shared, `nn/kv.agc`; each model keeps its own
+forward) and is the same for Qwen3 and Granite MoE: both model files (`generate.agc`, `generate_granite_moe.agc`) give
+it a `Stepper` (the sizes of the model, its token table, `traced` and the `stepped` graph of one step) and keep their
+`Generator`, `stepped` and `layer`. `Request.compiled` tells `stepped` that the step is traced for ggml: Qwen3 keeps
+its cache in `F16` then and Granite MoE in `F32` always. `Generate.open(m)` is the generator of a Qwen3 model, which
+holds its compiled steps in a one-slot channel (as `Asr.Model.plans`), and `Generate.generate(g, ids, max_new, stop,
+sampling)` decodes greedily, or by `sample.agc` (below); `start`, then `step` (the id with the largest logit) or
 `step_logits` per call, then `finish`, are the same by hand. `Generate.close(g)` ends the compiled steps, before
-`Qwen3.close_model`. Batch of one, one task at a time. `Generate.open(m, usable = 0)`
-is how many ids a step may answer (below, "The ids the tokenizer cannot decode"):
-the embedding of Qwen3 has 151,936 rows and its tokenizer 151,669 tokens, so a
-caller with a tokenizer opens with `tok.pieces.size` and the sampler never gives
-an id that `Bpe.decode` rejects. The default 0 is no mask, as in Hugging Face.
+`Qwen3.close_model`. Batch of one, one task at a time. `Generate.open(m, usable = 0)` is how many ids a step may
+answer (below, "The ids the tokenizer cannot decode"): the embedding of Qwen3 has 151,936 rows and its tokenizer
+151,669 tokens, so a caller with a tokenizer opens with `tok.pieces.size` and the sampler never gives an id that
+`Bpe.decode` rejects. The default 0 is no mask, as in Hugging Face.
 
 - The cache of a layer is `[1, kv_heads, rows, head_dim]`: the keys already
   normalized and rotated, so a step never rotates the past. Rows are padded
@@ -136,7 +134,7 @@ cache; generation is `generate_qwen35.agc` (below).
 
 ### Qwen3.5 generation
 
-`generate_qwen35.agc` is `generate.agc` with a hybrid
+`generate_qwen35.agc` is the decoder of `kv_decoder.agc` with a hybrid
 cache. What does not depend on the model is in `stepping.agc`, which a model
 that keeps a cache (the next one is a mixture of experts) uses the same way: it
 writes its `Generator`, its `Cache`, its `stepped` (the graph of a step, with
@@ -222,8 +220,8 @@ whole sequences, with no cache; generation is `generate_granite_moe.agc` (below)
 
 ### Granite MoE generation
 
-`generate_granite_moe.agc` is `generate.agc` with Granite's layer, on `kv_decoder.agc` and `stepping.agc`: the API, the compiled steps, the
-padded prompt, the `usable` mask and the pick in the graph are those of [Qwen3.5 generation](#qwen35-generation) and
+`generate_granite_moe.agc` gives `kv_decoder.agc` Granite's layer: the API, the compiled steps, the padded prompt, the
+`usable` mask and the pick in the graph are those of [Qwen3.5 generation](#qwen35-generation) and
 `Generate`. The cache is the keys and values of every layer, `[1, kv_heads, rows, head_dim]`, padded to a capacity, in
 `F32` with no option: an `F16` cache moved the logits by up to 0.19, more than the gap of some greedy choices. A
 prompt's padding rows go through the router and the experts too, which changes no real token (the mask keeps them off,

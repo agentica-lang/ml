@@ -101,6 +101,15 @@ def top_candidates(logits: Tensor.Tensor, k: Int) -> Result[Tensor.Tensor]
   Tensor.concat([values, try Tensor.to_dtype(ids, Tensor.dtype(logits))], 0)
 end
 
+## What the graph of a step answers by `mode`: `logits` `[vocab]` as they are, the pick as one float, or the candidates.
+def headed(logits: Tensor.Tensor, mode: Head) -> Result[Tensor.Tensor]
+  case mode
+    Head.Logits -> ok(logits)
+    Head.Pick -> picked(logits)
+    Head.Top(k) -> top_candidates(logits, k)
+  end
+end
+
 ## The key of the step of `width` tokens over a cache of `rows` rows that leaves `room` and reads `reach` of them.
 def plan_key(width: Int, rows: Int, room: Int, reach: Int, mode: Head) -> String
   "#{width} #{rows} #{room} #{reach} #{head_key(mode)}"

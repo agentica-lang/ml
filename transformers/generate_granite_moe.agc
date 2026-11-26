@@ -15,16 +15,13 @@ import GraniteMoe from "granite_moe"
 import Sample from "sample"
 import Stepping from "stepping"
 
-## A model and the compiled steps it has run (on `Ggml`), which every sequence of the model shares (`KvDecoder.Core`).
+## A model and the compiled steps it has run (on `Ggml`), which every sequence of the model shares: the fields of a
+## `KvDecoder.Core` (see there), which `core` makes of it.
 struct Generator
   model: GraniteMoe.GraniteMoe
   plans: Channel[Stepping.Plans]
-  ## How many ids a step may answer: the ids from `usable` on get a logit of `Nn.MASKED`, for a caller whose tokenizer
-  ## has fewer tokens than the embedding has rows (`tok.pieces.size`). `vocab_size` (the default of `open`) is no mask,
-  ## as in Hugging Face.
+  ## See `KvDecoder.Core`.
   usable: Int
-  ## Every step reads the whole capacity of the cache, not only the rows in use: `false` from `open`. The tests set it
-  ## to have the logits of the other way of reading the same cache.
   whole: Bool
 end
 
@@ -87,17 +84,6 @@ end
 
 private
 
-struct Kv
-  key: Tensor.Tensor
-  value: Tensor.Tensor
-end
-
-struct Layer
-  hidden: Tensor.Tensor
-  key: Tensor.Tensor
-  value: Tensor.Tensor
-end
-
 def core(g: Generator) -> KvDecoder.Core[GraniteMoe.GraniteMoe]
   KvDecoder.Core(model: g.model, stepper: stepper(g.model), plans: g.plans, usable: g.usable, whole: g.whole)
 end
@@ -143,9 +129,9 @@ def stepped(m: GraniteMoe.GraniteMoe, req: KvDecoder.Request) -> Result[List[Ten
   keys: List[Tensor.Tensor] = []
   values: List[Tensor.Tensor] = []
   for i in 0...layers
-    old: Optional[Kv] = none
+    old: Optional[KvDecoder.Kv] = none
     if xs.size > 3
-      old = some(Kv(key: xs[3 + i], value: xs[3 + layers + i]))
+      old = some(KvDecoder.Kv(key: xs[3 + i], value: xs[3 + layers + i]))
     end
 
     r = try layer(m, m.layers[i], h, slots.positions, mask, spread, old, in_place, reach)
@@ -160,12 +146,7 @@ def stepped(m: GraniteMoe.GraniteMoe, req: KvDecoder.Request) -> Result[List[Ten
     usable,
   )
 
-  head = logits
-  case mode
-    Stepping.Head.Pick -> head = try Stepping.picked(logits)
-    Stepping.Head.Top(k) -> head = try Stepping.top_candidates(logits, k)
-    Stepping.Head.Logits -> nil
-  end
+  head = try Stepping.headed(logits, mode)
 
   ok([head] + keys + values)
 end
@@ -179,10 +160,10 @@ def layer(
   positions: Tensor.Tensor,
   mask: Tensor.Tensor,
   spread: Optional[Tensor.Tensor],
-  old: Optional[Kv],
+  old: Optional[KvDecoder.Kv],
   in_place: Bool,
   reach: Int,
-) -> Result[Layer]
+) -> Result[KvDecoder.Layer]
   x = try Nn.layer_norm(l.norm1, h)
   heads = try Nn.project(l.attention, x, x, some(positions))
   key = heads.key
@@ -206,5 +187,5 @@ def layer(
   mid = try Tensor.add(h, try GraniteMoe.times(seen, m.config.residual_multiplier))
   routed = try Moe.moe(l.moe, try Nn.layer_norm(l.norm2, mid))
   out = try Tensor.add(mid, try GraniteMoe.times(routed, m.config.residual_multiplier))
-  ok(Layer(hidden: out, key: key, value: value))
+  ok(KvDecoder.Layer(hidden: out, key: key, value: value))
 end

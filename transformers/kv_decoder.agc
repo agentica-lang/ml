@@ -40,6 +40,19 @@ struct Request
   compiled: Bool
 end
 
+## The old keys and values of one layer, which a step reads and (in place) writes.
+struct Kv
+  key: Tensor.Tensor
+  value: Tensor.Tensor
+end
+
+## What a layer of a step gives: its hidden rows and its new keys and values.
+struct Layer
+  hidden: Tensor.Tensor
+  key: Tensor.Tensor
+  value: Tensor.Tensor
+end
+
 ## What a model gives the decoder, `M` being its type. `stepped(model, request)` is the graph of a step: its outputs are
 ## the head (the logits `[vocab]`, the choice `[1]` or the candidates, by `request.mode`), then the keys and the values
 ## of every layer. `traced` is the model with its tensors as `Trace` constants.
@@ -56,8 +69,8 @@ end
 
 ## What a generator of a model is for the decoder: the model, its `Stepper`, and the compiled steps it has run (on
 ## `Ggml`), which every sequence of the model shares: the channel holds one `Plans`, which a call takes to read or
-## change it and puts back at once, and a graph goes in as soon as it is made. The `Generator` of a model file is a
-## `Core` that keeps its own type, so a caller names it and the decoder takes it as a `Core` (`generate.agc`).
+## change it and puts back at once, and a graph goes in as soon as it is made. A model file's `Generator` has the same
+## fields (without the `Stepper`) and is turned into a `Core` by its `core`.
 struct Core[M]
   model: M
   stepper: Stepper[M]
