@@ -31,7 +31,7 @@ ggml with the script, and `eval` its exports in the shell that runs your app (th
 depends on them, so a shell without them builds nothing):
 
 ```sh
-git clone --depth 1 --branch tensor-0.6.0 https://github.com/agentica-lang/ml ~/src/ml
+git clone --depth 1 --branch tensor-0.7.0 https://github.com/agentica-lang/ml ~/src/ml
 git -C ~/src/ml submodule update --init --depth 1 third_party/ggml
 eval "$(sh ~/src/ml/tensor/tools/build-engine.sh | grep '^export ')"                # CPU, about a minute
 eval "$(JOBS=2 sh ~/src/ml/tensor/tools/build-engine.sh vulkan | grep '^export ')"  # CPU and Vulkan, long the first time

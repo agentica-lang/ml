@@ -25,7 +25,7 @@ Use the install block of `ml-inference` (its `SKILL.md`: `tensor`, `nn`, `hub`, 
 Hugging Face model) and add `train`:
 
 ```toml
-train = { git = "https://github.com/agentica-lang/ml", tag = "train-0.6.0", subdir = "train" }
+train = { git = "https://github.com/agentica-lang/ml", tag = "train-0.7.0", subdir = "train" }
 ```
 
 ## First fit

@@ -4,6 +4,8 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-27
+
 ### tensor
 
 - The XLA backend starts with a CUDA PJRT plugin: the client is made with the plugin's default options (the CPU-only `cpu_device_count` made the CUDA plugin refuse it) (ml#324).
@@ -61,6 +63,10 @@ All packages are released together at one version, each on its own tag, `<packag
 - `vision` needs `image-0.3.0`: an enlarged image has the pixel centres of Pillow's bicubic, so the pixels of an image under `min_pixels` are within one 8-bit level of Hugging Face's processor, as a shrunk one is (ml#306).
 - `Vision.idefics3_tiling` and `Vision.idefics3_tiles`: the sizes and the tiles (512 by 512, row by row, then the global image) that SmolVLM's image processor makes of an sRGB image; as `[3, 512, 512]` tensors with Pillow's Lanczos resize (matrices of its weights; libvips enlarges with bicubic whatever the kernel), within 1.5 levels of 8 bits of Hugging Face's on every frame, with hard edges too (ml#84, ml#339).
 - `Vision.smart_resize` (it gives a `Vision.Size`) and `Vision.Step.SmartResize(factor, min_pixels, max_pixels, kernel)`: the size that Hugging Face's `smart_resize` gives (Qwen2-VL's image processor); `Vision.patches`: the patches of a normalized 3-channel image in the order of the processor's `pixel_values` (ml#151).
+
+### train
+
+- No user-visible change in 0.7.0.
 
 ## [0.6.0] - 2026-11-26
 
