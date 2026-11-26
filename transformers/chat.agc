@@ -11,6 +11,10 @@ import Pyjson from "pyjson"
 ## system message refuses it), and the `qwen2` and `qwen3` templates, which have no images, write it as the tags it is.
 IMAGE = "<|vision_start|><|image_pad|><|vision_end|>"
 
+## What the SmolVLM template writes for an image of a message: put it in the `content` where the image goes. The
+## tokenizer makes one id of it (`<image>`), and `SmolVlmPrompt.expand` gives the tokens of the image's tiles.
+SMOLVLM_IMAGE = "<image>"
+
 ## One turn: `role` is `system`, `user` or `assistant` (and `tool` for LFM3, which also reads the other fields).
 struct Message
   role: String
@@ -35,8 +39,8 @@ struct Reply
   content: String
 end
 
-## The prompt of `messages` for the model family of `model_type` (`qwen2`, `qwen3` or `qwen3_5`, the `model_type` of
-## its `config.json`). With `add_generation_prompt` it ends with the opening of the assistant's turn.
+## The prompt of `messages` for the model family of `model_type` (`qwen2`, `qwen3`, `qwen3_5`, `lfm3` or `idefics3`,
+## the `model_type` of its `config.json`). With `add_generation_prompt` it ends with the opening of the assistant's turn.
 ## `enable_thinking` (Qwen3 and Qwen3.5) decides whether that turn opens with `<think>` (`some(true)`) or with an
 ## empty think block, so the model answers without thinking (`some(false)`). Left at `none` it is what Hugging Face's
 ## template does when it is not told: thinking for `qwen3`, no thinking for `qwen3_5` (whose template thinks only
@@ -60,6 +64,13 @@ end
 ## message, or in every message with `preserve_thinking`; before it the text up to a `</think>` is dropped. Any role is
 ## written as it is, as the template does.
 ##
+## `idefics3` (SmolVLM) starts with `<|im_start|>` once, writes each message as its role with a capital (`User`, `Assistant`,
+## `System`), a colon, the content and `<end_of_utterance>` with a newline, and ends the prompt with `Assistant:`. Its
+## template takes a list of parts for a message with images and `content` is the text of that list, `SMOLVLM_IMAGE` where
+## an image goes: a content that starts with the image has no space after the colon (`User:<image>What is it?`), any
+## other has one (`User: What is in <image>?`), and an empty content is an error (the template reads its first part). No
+## message is trimmed and the roles are the three below, in any order.
+##
 ## Errors: no messages, a role other than the three, a `tool` role (except for `lfm3`), `enable_thinking:
 ## some(false)` for `qwen2`, tools, `preserve_thinking`, reasoning, calls or a `tool_call_id` for a template other
 ## than `lfm3`'s.
@@ -71,8 +82,8 @@ def apply(
   tools: List[Map[String, JSON.Value]] = [],
   preserve_thinking: Bool = false,
 ) -> Result[String]
-  if model_type != "qwen2" and model_type != "qwen3" and model_type != "qwen3_5" and model_type != "lfm3"
-    return error("no chat template for model_type #{model_type}, only qwen2, qwen3, qwen3_5 and lfm3")
+  if not ["qwen2", "qwen3", "qwen3_5", "lfm3", "idefics3"].include?(model_type)
+    return error("no chat template for model_type #{model_type}, only qwen2, qwen3, qwen3_5, lfm3 and idefics3")
   end
 
   return error("a conversation needs at least one message") if messages.empty?
@@ -84,8 +95,8 @@ def apply(
     return error("tools, tool calls, reasoning fields and preserve_thinking are options of lfm3")
   end
 
-  if model_type == "qwen2" and enable_thinking == some(false)
-    return error("enable_thinking is an option of qwen3 and qwen3_5, not of qwen2")
+  if (model_type == "qwen2" or model_type == "idefics3") and enable_thinking == some(false)
+    return error("enable_thinking is an option of qwen3 and qwen3_5, not of #{model_type}")
   end
 
   thinking = enable_thinking.unwrap_or(model_type != "qwen3_5")
@@ -99,6 +110,7 @@ def apply(
   end
 
   return qwen35(messages, add_generation_prompt, thinking) if model_type == "qwen3_5"
+  return idefics3(messages, add_generation_prompt) if model_type == "idefics3"
 
   last_user = last_user_index(messages)
   text = ""
@@ -141,6 +153,27 @@ CONTINUE_TAG = "CONTINUE_FINAL_MESSAGE_TAG "
 def lfm3_only?(m: Message) -> Bool = m.thinking.some? or not m.tool_calls.empty? or not m.tool_call_id.empty?
 
 ## The prompt of the Qwen3.5 template: no tools; an image is the text `IMAGE`.
+def idefics3(messages: List[Message], add_generation_prompt: Bool) -> Result[String]
+  text = "<|im_start|>"
+  for m in messages
+    return error("a message of idefics3 needs content (the template reads its first part)") if m.content.empty?
+    colon = ": "
+    if m.content.start_with?(SMOLVLM_IMAGE)
+      colon = ":"
+    end
+
+    text = text + "#{capital(m.role)}#{colon}#{m.content}<end_of_utterance>\n"
+  end
+
+  if add_generation_prompt
+    text = text + "Assistant:"
+  end
+
+  ok(text)
+end
+
+def capital(role: String) -> String = role.slice(0, 1).upcase + role.slice(1, role.size - 1)
+
 def qwen35(messages: List[Message], add_generation_prompt: Bool, thinking: Bool) -> Result[String]
   query = -1
   for i in 0...messages.size
