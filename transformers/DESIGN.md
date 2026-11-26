@@ -111,7 +111,11 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
   norms nor the biases, and is otherwise the same block (grouped-query
   attention, rotary positions, a gated MLP with `silu`). Both may leave out
   the `head_dim` of their config (`hidden_size / num_attention_heads`, read once in
-  `load`). `tie_word_embeddings` defaults to `true`, as in Hugging Face, and
+  `load`). `open_idefics3` is the same loader on the text model of a SmolVLM
+  folder: `model_type` `idefics3`, the Llama config in `text_config`, the
+  tensors under `model.text_model.` (`load`'s `root`) and the head at the top
+  (`lm_head.weight`); `weights(m)` names them as a plain model's.
+  `tie_word_embeddings` defaults to `true`, as in Hugging Face, and
   then the file's `lm_head.weight` is ignored. On the reference backend
   attention needs `q * k` of at most 1,048,576 (about 1024 tokens, causal).
 
@@ -657,6 +661,18 @@ error row per config field.
   and 1e-4 on ggml CPU, and `mlp_bias`, `attention_bias`, a `rope_scaling` and another `model_type` are errors that
   name the field. Mutants, each failing it: `mlp_bias` not checked, `llama` read with the norms of `qwen3`, the rope
   base fixed at 10000, the key heads taken as the query heads, and `llama` refused.
+- `test/smolvlm_text_test.agc` against `test/smolvlm_text_golden.py` (`torch` 2.15.0, `transformers` 5.22.2, manual): a
+  tiny random `Idefics3ForConditionalGeneration` (the Llama of `llama_test` in `text_config`, a 1-block tower beside it;
+  `test/fixtures/smolvlm_text_golden.json`, 137 KB) whose text weights and untied head are written under the names of
+  the official checkpoint (`model.text_model.*`, `lm_head.weight`) and opened by `Qwen3.open_idefics3`: the logits of
+  every position of two rows are Hugging Face's within 1e-5 on the reference and 1e-4 on ggml CPU; a missing tensor
+  (a block's, the head), another `model_type`, `mlp_bias` and a wrong `hidden_size` are errors that name the cause.
+  Mutant, failing it: the head taken as the embedding table.
+- `vision/test/smolvlm_text_hf_test.agc` against `vision/test/smolvlm_text_hf_golden.py` (manual, as the vision one:
+  `vision/test/fixtures/smolvlm/text_golden.json`): the real `SmolVLM-256M-Instruct` text model on 20 fixed token ids;
+  the golden holds the mean and the mean of absolute values of the 20 by 49280 logits, 501 of them at every 1971st
+  place, and the top 10 of the last position. It does nothing unless `SMOLVLM_MODEL` names the folder. The largest gap
+  is 4.7e-5 on ggml CPU and 1.1e-4 on Vulkan (logits of about 20 at the top); the test passes within 3e-4.
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and
