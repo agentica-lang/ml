@@ -216,12 +216,11 @@ end
 ## A model that does not read images refuses a sight, before it runs a step.
 def test_a_model_that_reads_no_images_refuses_a_sight() -> Result[Void]
   g = try golden()
-  table = try S.f32([0.0, 0.0], [1, 2])
   stepper = KvDecoder.Stepper(
     layers: 0,
     limit: 64,
     vocab: 32,
-    table: table,
+    backend: S.REF,
     traced: ->(p: Int) { p },
     stepped: ->(_p: Int, _req: KvDecoder.Request) { error("the step must not run") },
   )
@@ -229,7 +228,7 @@ def test_a_model_that_reads_no_images_refuses_a_sight() -> Result[Void]
   core = try KvDecoder.open(0, stepper)
   sight = try sight_of(g, S.REF)
   try S.expect_error(KvDecoder.step_logits(core, KvDecoder.start(some(sight)), g.ids), "reads no images")
-  Lift.close([sight.features, table])
+  Lift.close([sight.features])
   ok()
 end
 
