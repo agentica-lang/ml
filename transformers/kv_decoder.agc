@@ -21,9 +21,10 @@
 ## and a prompt is given the `Delta.Padding` of its convolutions, so that the padding rows leave the state as the real
 ## ones did. A step that gives another number of tensors than the `Stepper` says is an error.
 ##
-## A model that reads images (Qwen3.5) says so in its `Stepper` (`sighted`): a prompt starts from `begin(sight)`, the
+## A model that reads images (Qwen3.5) says so in its `Stepper` (`sighted`): a prompt starts from `start(sight)`, the
 ## step splices the image rows into the embeddings (`spliced`) and turns the attention layers by the three axes of
 ## `Sight.layout` (`Request.rotary`), and the later tokens turn by their index plus the `Cache.delta` of the prompt.
+## Each number of image tokens compiles its own graph for the prompt.
 ##
 ## Batch of one. A prompt is fed in one step (`step` at length 0), then one token at a time. A `Generator` belongs to
 ## one task at a time, and `close` ends it before the weights its graphs read are freed.
@@ -66,10 +67,12 @@ struct Splice
   features: Tensor.Tensor
 end
 
-## The images of a prompt: their `features` (`[n, width]`, the rows of the image tokens in the order of the prompt, which
-## the caller keeps and closes) and where `Mrope.layout` put the tokens.
+## The images of a prompt: their `features` (`[n, width]`, the rows of the image tokens in the order of the prompt,
+## which the caller keeps and closes), the id of the `image_token` of the prompt and where `Mrope.layout` put the
+## tokens.
 struct Sight
   features: Tensor.Tensor
+  image_token: Int
   layout: Mrope.Layout
 end
 
@@ -88,14 +91,14 @@ end
 
 ## What the attention layers of one step read, built once per step (`reading`): the positions of the new rows, the mask
 ## over the cache (the first `Request.reach` rows) and, when the step is not in place, the `Padded.spread_of` the
-## positions that writes the new rows, and the `rotary` positions of the rope when they are not the `positions`. A model whose layers have more than one mask (LFM3's sliding window) gives each
-## layer its own `mask` (`with`).
+## positions that writes the new rows. A model whose layers have more than one mask (LFM3's sliding window) gives each
+## layer its own `mask` (`with`). A model with a sectioned rope gives the `axes` of its masks (`Nn.axis_masks`), built
+## once for all its layers.
 struct Reading
   positions: Tensor.Tensor
   mask: Tensor.Tensor
   spread: Optional[Tensor.Tensor]
-  ## What the rope turns by (`Request.rotary`), `positions` when none.
-  rotary: Optional[Tensor.Tensor] = none
+  axes: List[Tensor.Tensor] = []
 end
 
 ## What `attend_cached` gives: the answer of the attention (not yet added to the stream) and the keys and values of the
@@ -123,7 +126,7 @@ struct Stepper[M]
   ## The taps of the convolution of a model with states: a prompt (more than one row) is given a `Delta.Padding` for
   ## them (its `valid` is for the recurrent state of Qwen3.5; LFM3 reads only `keep`). 0 for a model with no convolution.
   taps: Int = 0
-  ## Whether `stepped` reads `Request.rotary` and `Request.splice`: only then may a prompt start from a `Sight`.
+  ## Whether `stepped` reads `Request.rotary` and `Request.splice`: only then may a cache start from a `Sight`.
   sighted: Bool = false
   traced: Fn[M, M]
   stepped: Fn[M, Request, Result[List[Tensor.Tensor]]]
@@ -158,7 +161,7 @@ struct Cache
   states: List[Tensor.Tensor] = []
   ## How far the position of the next token is from its index, after a prompt with images (0 for a text prompt).
   delta: Int = 0
-  ## The images of the prompt that the first step reads (`begin`); none after it.
+  ## The images of the prompt that the first step reads (`start`); none after it.
   sight: Optional[Sight] = none
 end
 
@@ -200,15 +203,13 @@ def close[M](g: Core[M]) -> Void
   end
 end
 
-## The empty cache.
-def start() -> Cache = Cache(keys: [], values: [], length: 0)
+## The empty cache, or, with `sight`, the one of a prompt with images: the first `step` splices their `features` in and
+## positions the tokens by their `layout`, and the cache it gives remembers the `delta` for the tokens after. A model
+## that does not read images (`Stepper.sighted`) refuses the step.
+def start(sight: Optional[Sight] = none) -> Cache = Cache(keys: [], values: [], length: 0, sight: sight)
 
-## The empty cache of a prompt with images: the first `step` splices their `features` in and positions the tokens by
-## their `layout`, and the cache it gives remembers the `delta` for the tokens after. A model that does not read images
-## (`Stepper.sighted`) refuses the step.
-def begin(sight: Sight) -> Cache = start().with(sight: some(sight))
-
-## Feeds `ids` after the tokens of `cache`: a prompt of any length when the cache is empty, one id after that. The cache
+## Feeds `ids` after the tokens of `cache`: a prompt of any length when the cache is empty (the images of a prompt come
+## from `start(sight)`), one id after that. The cache
 ## that `step` takes is dead afterwards, even when the step fails: on ggml a step of the same capacity writes the new
 ## row into its tensors, which are the ones of the cache it gives, elsewhere they are closed. Use the one it gives;
 ## never step a cache twice or read one after it was stepped.
@@ -271,7 +272,7 @@ def reading(req: Request, mask: Tensor.Tensor) -> Result[Reading]
     spread = some(try Padded.spread_of(Padded.Slots(positions: positions, capacity: req.room), Tensor.dtype(mask)))
   end
 
-  ok(Reading(positions: positions, mask: mask, spread: spread, rotary: req.rotary))
+  ok(Reading(positions: positions, mask: mask, spread: spread))
 end
 
 ## The embeddings `h` (`[1, width, d]`) with the rows of the images of `req.splice` in place of the rows `at` names: the
@@ -316,7 +317,7 @@ def attend_cached(
   reading: Reading,
   req: Request,
 ) -> Result[Attended]
-  heads = try Nn.project(a, x, x, some(reading.rotary.unwrap_or(reading.positions)))
+  heads = try Nn.project(a, x, x, some(req.rotary.unwrap_or(reading.positions)), axes: reading.axes)
   key = heads.key
   value = heads.value
   if req.in_place
@@ -342,7 +343,7 @@ end
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`).
 ## Greedy (the choice runs in the graph) unless `sampling` says how to draw (`Stepping.generate`): then each step reads
 ## the largest logits and `Sample.pick_top` draws among them. The prompt and the new ids must fit
-## `max_position_embeddings`. `sight` is the images of the prompt (`begin`).
+## `max_position_embeddings`. `sight` is the images of the prompt (`start`).
 def generate[M](
   g: Core[M],
   ids: List[Int],
@@ -351,12 +352,7 @@ def generate[M](
   sampling: Optional[Sample.Sampling] = none,
   sight: Optional[Sight] = none,
 ) -> Result[List[Int]]
-  first = case sight
-    some(s) -> begin(s)
-    none -> start()
-  end
-
-  Stepping.generate(decoder(g, first), ids, max_new, stop, sampling)
+  Stepping.generate(decoder(g, start(sight)), ids, max_new, stop, sampling)
 end
 
 private
@@ -593,8 +589,8 @@ def fed_inputs[M](
   ok(base + [pad.valid, pad.keep])
 end
 
-## The `Feed` of the step of `ids` after `cache`: the three axes and the image rows of a prompt that starts from a `Sight`,
-## the position of the token after one (its index plus the `delta`), or nothing for a text prompt.
+## The `Feed` of the step of `ids` after `cache`: the three axes and the image rows of a prompt that starts from a
+## `Sight`, the position of the token after one (its index plus the `delta`), or nothing for a text prompt.
 def rotation[M](s: Stepper[M], cache: Cache, ids: List[Int], width: Int, backend: Tensor.Backend) -> Result[Feed]
   bare = Feed(rotary: none, splice: none, own: [], tag: "")
   if cache.sight.none?
@@ -612,10 +608,7 @@ def rotation[M](s: Stepper[M], cache: Cache, ids: List[Int], width: Int, backend
   return error("this model reads no images (Stepper.sighted)") if not s.sighted
   return error("a Sight is for the prompt: the cache already has #{cache.length} tokens") if cache.length > 0
   seen = sight.layout
-  if seen.time.size != ids.size
-    return error("the sight has the layout of #{seen.time.size} tokens, the prompt has #{ids.size}")
-  end
-
+  try fits(sight, ids)
   n = seen.at.size
   return ok(bare) if n == 0
   shape = Tensor.shape(sight.features)
@@ -641,6 +634,37 @@ def rotation[M](s: Stepper[M], cache: Cache, ids: List[Int], width: Int, backend
 
   images = Splice(at: where.unwrap!, features: sight.features)
   ok(Feed(rotary: some(rotary), splice: some(images), own: [rotary, images.at], tag: " sight #{n}"))
+end
+
+## An error unless the layout of `sight` is the one of the prompt `ids`: a position on each axis for every token, and
+## the image rows `at` the tokens that are the sight's `image_token`, in order and no other.
+def fits(sight: Sight, ids: List[Int]) -> Result[Void]
+  seen = sight.layout
+  for axis in [seen.time, seen.down, seen.across]
+    if axis.size != ids.size
+      return error("the sight has positions for #{axis.size} tokens, the prompt has #{ids.size}")
+    end
+  end
+
+  last = -1
+  for i in seen.at
+    return error("the sight puts an image row at #{i}, outside the #{ids.size} tokens") if i < 0 or i >= ids.size
+    return error("the image rows of the sight are not in increasing order (#{i} after #{last})") if i <= last
+    if ids[i] != sight.image_token
+      return error(
+        "the sight puts an image row at #{i}, whose id #{ids[i]} is not the image token #{sight.image_token}",
+      )
+    end
+
+    last = i
+  end
+
+  tokens = ids.select { |id| id == sight.image_token }.size
+  if tokens != seen.at.size
+    return error("the prompt has #{tokens} image tokens, the sight has #{seen.at.size} image rows")
+  end
+
+  ok()
 end
 
 ## The same graph, run now and in an arena that keeps the new cache alone.

@@ -83,10 +83,10 @@ end
 ## `0...zero_tail / 2` and `head / 2...head / 2 + zero_tail / 2`. It is `rope` over the first `zero_tail` columns after
 ## those are brought together, so the head comes out with its columns reordered (the rotated ones, then the rest). The
 ## queries and the keys get the same order and `q k^T` does not change, but the heads are not those of the input.
-## With `sections` (Qwen3.5's interleaved M-RoPE, `[time, height, width]`) the positions may be `[3, seq]`, one row per
-## axis, and the pair `i` of the rotated columns turns by the height row when `i % 3 == 1` and `i < 3 * height`, by the
-## width row when `i % 3 == 2` and `i < 3 * width`, and by the time row otherwise. Positions of `[seq]` (or none) are
-## the three rows alike: the plain rope.
+## With `sections` (Qwen3.5's interleaved M-RoPE, `[time, height, width]`) the positions may be `[3, seq]`, one row
+## per axis, and the pair `i` of the rotated columns turns by the height row when `i % 3 == 1` and `i < 3 * height`,
+## by the width row when `i % 3 == 2` and `i < 3 * width`, and by the time row otherwise. Positions of `[seq]` (or
+## none) are the three rows alike: the plain rope.
 struct Rope
   base: Float = 10000.0
   neox: Bool = true
@@ -341,12 +341,15 @@ end
 ## (`positions` of `[n]` for a token at position `n`, the keys cached already
 ## rotated), and gives `attend` the cache. With a `Rope.zero_tail` the heads come out with their columns reordered (the
 ## rotated ones first, the same for `query` and `key`), which `attend` does not mind and nothing else may read.
+## With a `Rope.sections` and positions of `[3, seq]`, `axes` are the `axis_masks` of the rope, which a decoder makes
+## once for all its layers (made here when empty).
 def project(
   p: Attention,
   queries: Tensor.Tensor,
   memory: Tensor.Tensor,
   positions: Optional[Tensor.Tensor] = none,
   memory_positions: Optional[Tensor.Tensor] = none,
+  axes: List[Tensor.Tensor] = [],
 ) -> Result[Heads]
   kv_heads = p.kv_heads.unwrap_or(p.heads)
   return error("an attention has a gate or a head gate, not both") if p.gate and p.head_gate.some?
@@ -356,13 +359,13 @@ def project(
   v = try split_heads(try dense(p.value, memory), kv_heads)
   case p.rope
     some(r) ->
-      q = try rotate(r, q, positions)
+      q = try rotate(r, q, positions, axes)
       key_positions = memory_positions
       if key_positions.none?
         key_positions = positions
       end
 
-      k = try rotate(r, k, key_positions)
+      k = try rotate(r, k, key_positions, axes)
     none -> nil
   end
 
@@ -710,6 +713,35 @@ def init_decoder_stack(
   ok(DecoderStack(blocks: blocks, final_norm: try init_final_norm(width, backend, options)))
 end
 
+## The three masks `[1, 1, 1, width]` of a `Rope` with `sections` over a head of `width` columns (`rotate` with
+## positions of `[3, seq]`): the columns that the time, the height and the width row turn, 1 or 0, which sum to 1 on
+## every column (those that rope leaves alone belong to the time). Built from fills, so that they are constants of a
+## graph. A decoder with many layers makes them once and gives them to `project`.
+def axis_masks(r: Rope, width: Int, dtype: Tensor.Dtype, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  return error("axis_masks needs a Rope with sections") if r.sections.none?
+  sections = r.sections.unwrap!
+  if sections.size != 3 or sections[0] < 0 or sections[1] < 1 or sections[2] < 1
+    return error("sections are [time, height, width] with 1 or more for the height and the width, got #{sections}")
+  end
+
+  return error("a Rope with sections is the neox layout and takes no zero_tail") if r.zero_tail.some? or !r.neox
+  dims = r.dims.unwrap_or(width)
+  if dims < 2 or dims % 2 != 0 or dims > width
+    return error("a Rope with sections needs an even number of columns to turn, got #{dims}")
+  end
+
+  pairs = dims / 2
+  height = try axis_mask(1, sections[1], pairs, width, dtype, backend)
+  across = try axis_mask(2, sections[2], pairs, width, dtype, backend)
+  time = try Tensor.sub(try Tensor.ones([width], dtype, backend), try Tensor.add(height, across))
+  masks: List[Tensor.Tensor] = []
+  for m in [time, height, across]
+    masks = masks.push(try Tensor.reshape(m, [1, 1, 1, width]))
+  end
+
+  ok(masks)
+end
+
 private
 
 ## The query heads of a projection and, for a gated attention, their gates.
@@ -769,14 +801,19 @@ def merge_heads(x: Tensor.Tensor) -> Result[Tensor.Tensor]
 end
 
 ## `x` (`[batch, heads, seq, width]`) rotated by `positions` if given, otherwise `0...seq`.
-def rotate(r: Rope, x: Tensor.Tensor, positions: Optional[Tensor.Tensor]) -> Result[Tensor.Tensor]
+def rotate(
+  r: Rope,
+  x: Tensor.Tensor,
+  positions: Optional[Tensor.Tensor],
+  axes: List[Tensor.Tensor],
+) -> Result[Tensor.Tensor]
   case r.zero_tail
     some(n) -> return rotate_tail(r, n, x, positions)
     none -> nil
   end
 
   case positions
-    some(at) -> return rotate_axes(r, x, at) if Tensor.shape(at).size == 2
+    some(at) -> return rotate_axes(r, x, at, axes) if Tensor.shape(at).size == 2
     none -> nil
   end
 
@@ -856,40 +893,34 @@ def rotate_tail(r: Rope, n: Int, x: Tensor.Tensor, positions: Optional[Tensor.Te
 end
 
 ## `rotate` of a `Rope` with `sections` by `positions` of `[3, seq]`: `x` rotated by each row, and each pair of columns
-## taken from the rotation of its axis (a 0/1 mask over the columns, made from fills so that it is a graph constant).
-def rotate_axes(r: Rope, x: Tensor.Tensor, positions: Tensor.Tensor) -> Result[Tensor.Tensor]
+## taken from the rotation of its axis (`axes`, the masks over the columns).
+def rotate_axes(
+  r: Rope,
+  x: Tensor.Tensor,
+  positions: Tensor.Tensor,
+  axes: List[Tensor.Tensor],
+) -> Result[Tensor.Tensor]
   shape = Tensor.shape(x)
   seq = shape[2]
-  width = shape[3]
-  return error("positions of [3, seq] need a Rope with sections") if r.sections.none?
-  sections = r.sections.unwrap!
-  if sections.size != 3 or sections.any? { |n| n < 0 }
-    return error("sections are [time, height, width], got #{sections}")
-  end
-
-  return error("a Rope with sections is the neox layout and takes no zero_tail") if r.zero_tail.some? or !r.neox
-
   if Tensor.shape(positions) != [3, seq]
     return error("rope positions of [3, #{seq}] are needed, got #{Tensor.shape(positions)}")
   end
 
-  dims = r.dims.unwrap_or(width)
-  pairs = dims / 2
-  backend = Tensor.backend(x)
-  dtype = Tensor.dtype(x)
-  turned: List[Tensor.Tensor] = []
-  for axis in 0...3
-    row = try Tensor.reshape(try Tensor.slice(positions, [axis, 0], [axis + 1, seq]), [seq])
-    turned = turned.push(try Tensor.rope(x, row, base: r.base, dims: r.dims, neox: true))
+  masks = axes
+  if masks.empty?
+    masks = try axis_masks(r, shape[3], Tensor.dtype(x), Tensor.backend(x))
   end
 
-  height_mask = try axis_mask(1, sections[1], pairs, width, dtype, backend)
-  width_mask = try axis_mask(2, sections[2], pairs, width, dtype, backend)
-  time_mask = try Tensor.sub(try Tensor.ones([width], dtype, backend), try Tensor.add(height_mask, width_mask))
-  out = try Tensor.zeros(shape, dtype, backend)
-  for pick in [[turned[0], time_mask], [turned[1], height_mask], [turned[2], width_mask]]
-    columns = try Tensor.broadcast_to(try Tensor.reshape(pick[1], [1, 1, 1, width]), shape)
-    out = try Tensor.add(out, try Tensor.mul(pick[0], columns))
+  out = x
+  for axis in 0...3
+    row = try Tensor.reshape(try Tensor.slice(positions, [axis, 0], [axis + 1, seq]), [seq])
+    turned = try Tensor.rope(x, row, base: r.base, dims: r.dims, neox: true)
+    picked = try Tensor.mul(turned, try Tensor.broadcast_to(masks[axis], shape))
+    if axis == 0
+      out = picked
+    else
+      out = try Tensor.add(out, picked)
+    end
   end
 
   ok(out)

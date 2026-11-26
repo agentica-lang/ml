@@ -110,8 +110,8 @@ Qwen3.5 turns each pair of the rotated columns by one of three positions (the in
 `i % 3 == 2` and `i < 3 * width`, the time row otherwise. `Tensor.rope` takes one position vector, so with positions of
 `[3, seq]` the head is rotated three times, once by each row, and a 0/1 mask over the columns (a cycle of three, tiled,
 cut at the limit, built from fills so that it is a graph constant) picks each pair from its axis. Positions of `[seq]`
-are the plain rope, which is what the three rows are for text. `test/layers_test.agc` checks it against the plain rope of
-each row with the pairs picked by hand.
+are the plain rope, which is what the three rows are for text. `test/layers_test.agc` checks it against the plain rope
+of each row with the pairs picked by hand.
 
 A compiled decode step has one shape for the prompts of a capacity, so a prompt is padded after its last real token.
 `Padding` makes the padding leave the state as the real tokens left it: `valid` (1.0 real, 0.0 padding) multiplies

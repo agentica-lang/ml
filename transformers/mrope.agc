@@ -21,8 +21,9 @@ struct Layout
   delta: Int
 end
 
-## The `Layout` of `ids`, whose tokens equal to `image_token` come in runs, one per grid of `grids` in order: each run
-## has the `height / merge * width / merge` tokens of its image.
+## The `Layout` of `ids`, whose tokens equal to `image_token` come in runs, one per grid of `grids` in order: each
+## run has the `height / merge * width / merge` tokens of its image. Two images need the vision start and end tokens
+## between them: adjacent runs are one run, and the count of its tokens then fails.
 def layout(ids: List[Int], image_token: Int, grids: List[Grid], merge: Int) -> Result[Layout]
   return error("merge needs 1 or more, got #{merge}") if merge < 1
   time: List[Int] = []

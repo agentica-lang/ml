@@ -93,6 +93,21 @@ def test_key_and_value_heads_of_another_width_are_an_error() -> Result[Void]
   with_model(g, wrong) do |dir| Test.error?(Qwen3_5.open(dir, S.REF)) end
 end
 
+## The text model reads the interleaved M-RoPE only, and a section of the height or the width needs 1 or more.
+def test_a_rope_that_is_not_the_interleaved_one_is_refused() -> Result[Void]
+  g = try golden()
+  for change in [
+    ["\"mrope_interleaved\": true", "\"mrope_interleaved\": false", "interleaved"],
+    ["\"mrope_section\": [11, 11, 10]", "\"mrope_section\": [11, 0, 10]", "mrope_section"],
+    ["\"mrope_section\": [11, 11, 10]", "\"mrope_section\": [11, 11]", "mrope_section"],
+  ]
+    wrong = try S.replaced(g.config, change[0], change[1])
+    try with_model(g, wrong) do |dir| S.expect_error(Qwen3_5.open(dir, S.REF), change[2]) end
+  end
+
+  ok()
+end
+
 def test_the_mixture_of_experts_model_is_refused_by_name() -> Result[Void]
   g = try golden()
   for change in [

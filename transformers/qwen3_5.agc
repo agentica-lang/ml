@@ -1,9 +1,10 @@
 ## Qwen3.5 text models for inference, from a Hugging Face checkpoint (`transformers/DESIGN.md`): the embedding table,
-## decoder layers that are either linear attention (Gated DeltaNet, `Delta.gated_delta_net`) or full attention with an
-## output gate and rotary positions on part of each head (`Nn.Attention` with `gate`), each followed by a SwiGLU MLP,
-## the final norm and the output head, tied to the embedding table when the config says so. This is the forward over
-## whole sequences, with no cache (the rotary positions of an image prompt are in `generate_qwen35.agc`). The vision tower and the multi-token-prediction head of the checkpoint are not read.
-## The norms of Qwen3.5 scale by `1 + weight`: the loader adds the 1.
+## decoder layers that are either linear attention (Gated DeltaNet, `Delta.gated_delta_net`) or full attention with
+## an output gate and rotary positions on part of each head (`Nn.Attention` with `gate`), each followed by a SwiGLU
+## MLP, the final norm and the output head, tied to the embedding table when the config says so. This is the forward
+## over whole sequences, with no cache (the rotary positions of an image prompt are in `generate_qwen35.agc`). The
+## vision tower and the multi-token-prediction head of the checkpoint are not read. The norms of Qwen3.5 scale by `1
+## + weight`: the loader adds the 1.
 ##
 ## `Qwen/Qwen3.5-0.8B` is `bfloat16` on disk, its text weights under `model.language_model.`; they are `F32` in memory.
 
@@ -44,6 +45,7 @@ struct Rotary
   partial_rotary_factor: Float = 1.0
   rope_type: String = "default"
   mrope_section: Optional[List[Int]] = none
+  mrope_interleaved: Optional[Bool] = none
 end
 
 ## The fields of `text_config` that the model reads.
@@ -166,8 +168,14 @@ def check_config(config: Text) -> Result[Void]
   end
 
   sections = sections_of(config)
-  if sections.size != 3 or sections.any? { |n| n < 0 }
-    return error("mrope_section needs the 3 numbers of time, height and width, got #{sections}")
+  if sections.size != 3 or sections[0] < 0 or sections[1] < 1 or sections[2] < 1
+    return error(
+      "mrope_section needs the numbers of time, height and width (1 or more for the last two), got #{sections}",
+    )
+  end
+
+  if config.rope_parameters.mrope_interleaved == some(false)
+    return error("mrope_interleaved false is not supported, only the interleaved M-RoPE")
   end
 
   dims = try rotary_dims(config)

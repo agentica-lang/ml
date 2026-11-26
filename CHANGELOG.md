@@ -15,7 +15,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 - `ShortConv`, the gated short convolution of LFM3 (`pkg/nn/short_conv`), `Attention.head_gate` (a gate of one number per head) and a `window` in `Nn.causal_mask` and `Padded.padded_mask`, the mask of a sliding-window layer (ml#275).
 - `Rope.zero_tail`, the rotary of LFM3's global layers (a partial rotation with the frequencies of the whole head) (ml#275).
-- `Rope.sections`, the interleaved M-RoPE of Qwen3.5: positions of `[3, seq]` (time, height, width) turn each pair of columns by the row of its axis; positions of `[seq]` are the plain rope (ml#151).
+- `Rope.sections`, the interleaved M-RoPE of Qwen3.5: positions of `[3, seq]` (time, height, width) turn each pair of columns by the row of its axis, with `Nn.axis_masks` for a decoder that makes the masks once; positions of `[seq]` are the plain rope (ml#151).
 
 ### transformers
 
@@ -25,7 +25,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Qwen3.open(dir, backend, weights, layers_on_device)`: the blocks from the `n`th on run on the CPU, with their weights and KV cache in host memory, like `-ngl` of llama.cpp; `AGENTICA_ML_LAYERS_ON_DEVICE` for the tools; binding a tensor on the CPU to a graph on a Vulkan device now runs it through ggml's backend scheduler instead of failing (ml#310, ml#85).
 - `tools/profile_qwen.agc` reads `WEIGHTS` (`f16`, `q8_0`, `q4_k`), and `benchmarks/bench_qwen.sh` has the Q4_K_M rows against llama.cpp, at equal threads, with the peak GPU memory (ml#291).
 - `Qwen3_5Vision` (`pkg/transformers/qwen3_5_vision`): the vision tower of Qwen3.5 (`Qwen/Qwen3.5-0.8B`), `open` and `encode` of one image's patches to the features that the text model reads at the image tokens (ml#151).
-- Images in the Qwen3.5 text model: `Mrope.layout` (the 3-axis positions and `rope_deltas` of an image prompt), `Generate.begin(KvDecoder.Sight)` and the `sight` of `Generate.generate` splice the features of `Qwen3_5Vision` in at the image tokens and turn the attention by the three axes, to Hugging Face's logits on a tiny model (ml#151).
+- Images in the Qwen3.5 text model: `Mrope.layout` (the 3-axis positions and `rope_deltas` of an image prompt), `Generate.start(sight)` and the `sight` of `Generate.generate` splice the features of `Qwen3_5Vision` in at the image tokens and turn the attention by the three axes, to Hugging Face's logits on a tiny model (ml#151).
 
 ### hub
 

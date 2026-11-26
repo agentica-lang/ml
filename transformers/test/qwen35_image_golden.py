@@ -1,5 +1,6 @@
-"""Writes `test/fixtures/qwen35_image_golden.json`: a tiny random Qwen3.5 with a vision tower (the text model of 4 layers
-and 16 wide, a head of 16 columns of which 12 turn, `mrope_section` [2, 2, 1]; the tower of `qwen35_vision_golden.py`)
+"""Writes `test/fixtures/qwen35_image_golden.json`: a tiny random Qwen3.5 with a vision tower (the text model of 4
+layers and 16 wide, a head of 16 columns of which 12 turn, `mrope_section` [2, 2, 1]; the tower of
+`qwen35_vision_golden.py`)
 as Hugging Face's `Qwen3_5ForConditionalGeneration` runs it in `float32` on a prompt with two images (grids of 4 by 6
 and 6 by 2 patches, that is 6 and 3 tokens, the second one taller than wide): the `config.json` of its text model (as an
 official `Qwen/Qwen3.5-*` repository writes it), the text weights under the names of the official checkpoint, the ids,
@@ -70,7 +71,8 @@ def main():
             p.copy_((torch.randn_like(p) * scale).double().round(decimals=8).float())
         for layer in model.model.language_model.layers:
             if hasattr(layer, "linear_attn"):
-                layer.linear_attn.A_log.copy_((torch.randn_like(layer.linear_attn.A_log) * 0.5).double().round(decimals=8).float())
+                log = layer.linear_attn.A_log
+                log.copy_((torch.randn_like(log) * 0.5).double().round(decimals=8).float())
         width = VISION["in_channels"] * VISION["temporal_patch_size"] * VISION["patch_size"] ** 2
         pixels = torch.cat([(torch.randn(h * w, width) * 0.5).double().round(decimals=8).float() for h, w in GRIDS])
         grid = torch.tensor([[1, h, w] for h, w in GRIDS])

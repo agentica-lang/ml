@@ -378,6 +378,13 @@ def test_sections_rotate_each_pair_by_the_position_row_of_its_axis() -> Result[V
   try S.expect_close(moved, turned[0], ABS, REL, "three equal rows are the plain rope")
   one = try S.floats_of((try Nn.project(p, x, x, some(try at.call(0)))).query)
   try S.expect_close(one, turned[0], ABS, REL, "one row is the plain rope")
+  masks = try Nn.axis_masks(sections, 16, Tensor.Dtype.F32, S.REF)
+  made = try S.floats_of((try Nn.project(p, x, x, some(axes), axes: masks)).query)
+  try S.expect_close(made, want, ABS, REL, "masks made once")
+  for few in [[2, 0, 1], [2, 1, 0], [2, 1], [-1, 1, 1]]
+    try Test.error?(Nn.axis_masks(Nn.Rope(dims: some(12), sections: some(few)), 16, Tensor.Dtype.F32, S.REF))
+  end
+
   try Test.error?(Nn.project(plain, x, x, some(axes)))
   try Test.error?(Nn.project(p, x, x, some(try Tensor.slice(axes, [0, 0], [3, 2]))))
   ok()
