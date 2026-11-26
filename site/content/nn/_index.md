@@ -51,6 +51,7 @@ An activation is a function applied to each value, such as `relu`. The `Activati
 
 - `Relu` and `Silu`.
 - `Gelu`, a smooth activation in its tanh approximation.
+- `GeluTanh`, the same function as `Gelu`, written with ops that ggml compiles (`Gelu` is not lowered to ggml yet): use it for a `gelu_pytorch_tanh` checkpoint that runs on ggml.
 - `GeluErf`, the exact form that Whisper and BERT use.
 
 `Trace` differentiates all of them.

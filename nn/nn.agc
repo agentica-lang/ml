@@ -68,11 +68,14 @@ struct Conv2d
   groups: Int = 1
 end
 
-## `Gelu` is the tanh approximation; `GeluErf` the exact form.
+## `Gelu` is the tanh approximation; `GeluErf` the exact form. `GeluTanh` is the same function as `Gelu`, written with
+## the ops that ggml compiles (`Gelu` is not lowered to ggml yet, ml#301): a checkpoint that asks for
+## `gelu_pytorch_tanh` and runs on ggml uses it.
 enum Activation
   Relu
   Gelu
   GeluErf
+  GeluTanh
   Silu
 end
 
@@ -327,8 +330,18 @@ def activate(a: Activation, x: Tensor.Tensor) -> Result[Tensor.Tensor]
     Activation.Relu -> Tensor.relu(x)
     Activation.Gelu -> Tensor.gelu(x)
     Activation.GeluErf -> Tensor.gelu_erf(x)
+    Activation.GeluTanh -> gelu_tanh(x)
     Activation.Silu -> Tensor.silu(x)
   end
+end
+
+## `x * sigmoid(2 * sqrt(2 / pi) * (x + 0.044715 * x^3))`, which is `Tensor.gelu` from mul, add and sigmoid.
+def gelu_tanh(x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(x)
+  by = ->(v: Float) { Tensor.full(shape, Tensor.Values.Float(v), Tensor.dtype(x), Tensor.backend(x)) }
+  cube = try Tensor.mul(try Tensor.mul(x, x), x)
+  inner = try Tensor.add(x, try Tensor.mul(cube, try by.call(0.044715)))
+  Tensor.mul(x, try Tensor.sigmoid(try Tensor.mul(inner, try by.call(1.5957691216057308))))
 end
 
 ## The heads of `queries` (`[batch, q, width]`) and of `memory`

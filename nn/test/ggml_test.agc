@@ -48,6 +48,28 @@ def test_a_configured_stack_agrees_with_the_reference_on_ggml() -> Result[Void]
   ok()
 end
 
+## The tanh GELU of `GeluTanh` compiles on ggml (`Gelu` does not yet) and agrees with the reference.
+def test_the_tanh_gelu_agrees_with_the_reference_on_ggml() -> Result[Void]
+  x = try S.f32(Init.uniform_values(48, 4.0, 91), [3, 16])
+  for backend in try engines()
+    d = try Trace.diff(
+      [x],
+      S.REF,
+      backend,
+      rtol: 0.001,
+      atol: 0.0001,
+      f: ->(a: List[Tensor.Tensor]) { Nn.activate(Nn.Activation.GeluTanh, a[0]) },
+    )
+
+    case d.first
+      some(n) -> return error("on #{backend}: node #{n.node} (#{n.op} #{n.shape}) differs by #{n.max_abs}")
+      none -> try Test.assert(d.nodes >= 5, "only #{d.nodes} nodes compared")
+    end
+  end
+
+  ok()
+end
+
 ## A dense layer whose weight is stored `[out, in]` (`out_in`) agrees with the reference on ggml, where it multiplies by
 ## the transpose with no copy of the weight.
 def test_a_dense_with_out_in_agrees_with_the_reference_on_ggml() -> Result[Void]
