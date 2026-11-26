@@ -107,7 +107,7 @@ The test fixtures drop the `model.` part of the prefix
   Q4_K` a rank-2 weight stored as Q4_K stays Q4_K and one stored as Q6_K stays
   Q6_K, each as the file has it (`Load.kept`); `weights: Q8_0` keeps no K tensor
   and `weights: Q4_K` no Q8_0 one, and Q6_K is no request of its own (`WEIGHTS=q4_k`
-  sets it for the tools). `Hub.tensor` with `dtype: Q4_K` or `Q6_K` is that one
+  sets it for the tools). A tensor stored as another packed type (Q8_0 under `weights: Q4_K`) is dequantized to `F32`. `Hub.tensor` with `dtype: Q4_K` or `Q6_K` is that one
   type, and an error on a tensor stored as another. A K row holds whole blocks of
   256 values: llama.cpp stores a matrix whose rows do not in another type (Q5_0
   and the like), which is not read, so loading such a file is an error naming the tensor.

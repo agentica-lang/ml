@@ -7,7 +7,7 @@
 ##   agentica tools/qwen_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
 ##
 ## A quantized GGUF is checked against the golden of llama.cpp for the same file (`tools/llama_golden.c`): with
-## `QUANTIZED=1` the logits pass within `QUANT_ABS` and the top five of each position are not compared. Both programs
+## `QUANTIZED=1` the logits pass within `QUANT_ABS` (by `WEIGHTS`) and the top five of each position are not compared. Both programs
 ## round every activation of a product to Q8_0 (Q8_K for the K types) blocks, and that rounding is chaotic: llama.cpp's own logits move by up
 ## to 0.65 when its KV cache is `F16` instead of `F32`, so no tighter gap can be asked of another implementation.
 ##
@@ -24,9 +24,11 @@ import Tensor from "pkg/tensor/tensor"
 ABS = 0.002
 REL = 0.0005
 
-## The gap that passes for a quantized model (logits of up to 30): the noise of the activations' rounding, 0.4 to 0.7
-## at most between two implementations for Q8_0 and 1.7 for Q4_K_M, whose own noise in llama.cpp is 2.0.
-QUANT_ABS = 2.5
+## The gap that passes with `QUANTIZED=1` (logits of up to 30), by `WEIGHTS`: the noise of the activations' rounding for
+## quantized weights, 0.4 to 0.7 at most between two implementations for Q8_0 (1.0) and 1.7 for Q4_K_M (2.5), whose own
+## noise in llama.cpp is 2.0; and 0.05 for the weights of a quantized file dequantized to `F32` (0.021 measured).
+QUANT_ABS = {"q4_k": 2.5, "q8_0": 1.0}
+DEQUANTIZED_ABS = 0.05
 
 struct Case
   ids: List[Int]
@@ -136,7 +138,7 @@ def compare(what: String, got: List[Float], want: List[Float]) -> Result[Float]
   allowed = ABS
   rel = REL
   if quantized?()
-    allowed = QUANT_ABS
+    allowed = QUANT_ABS.get(System.env("WEIGHTS").unwrap_or("f32")).unwrap_or(DEQUANTIZED_ABS)
     rel = 0.0
   end
 

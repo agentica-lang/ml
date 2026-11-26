@@ -394,7 +394,11 @@ static bool make_tensor(an_env *env, int64_t device, ggml_list_Int *shape, enum 
   if (code < 0) return failed_with(failure, an_void(env));
   for (i = 0; i < rank; i++) ne[i] = dims[rank - 1 - i];
   if (ggml_is_quantized(type) && ne[0] % ggml_blck_size(type) != 0) {
-    return failed(env, failure, "a quantized tensor holds whole blocks of 32 values in each row");
+    char why[96];
+
+    snprintf(why, sizeof why, "a quantized tensor holds whole blocks of %lld values in each row",
+             (long long)ggml_blck_size(type));
+    return failed(env, failure, why);
   }
   return tg_new_tensor(env, device, ne, type, state, failure);
 }
