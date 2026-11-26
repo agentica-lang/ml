@@ -11,8 +11,8 @@ LFM3 (`lfm3`) has its forward, its tokenizer, its chat template and generation (
 ## Generation
 
 `kv_decoder.agc` follows `asr/`'s decoder (the padded-cache helpers are shared, `nn/kv.agc`; each model keeps its own
-forward) and is the same for Qwen3, Granite MoE, LFM3 and Qwen3.5: the model files (`generate.agc`, `generate_granite_moe.agc`, `generate_lfm3.agc`, `generate_qwen35.agc`) give
-it a `Stepper` (the sizes of the model, its token table, `traced` and the `stepped` graph of one step) and keep their
+forward) and is the same for Qwen3, Granite MoE, LFM3 and Qwen3.5: the model files (`generate.agc`,
+`generate_granite_moe.agc`, `generate_lfm3.agc`, `generate_qwen35.agc`) give it a `Stepper` (the sizes of the model, its token table, `traced` and the `stepped` graph of one step) and keep their
 `Generator`, `stepped` and `layer`. `Request.compiled` tells `stepped` that the step is traced for ggml: Qwen3 keeps
 its cache in `F16` then and Granite MoE in `F32` always. `Generate.open(m)` is the generator of a Qwen3 model, which
 holds its compiled steps in a one-slot channel (as `Asr.Model.plans`), and `Generate.generate(g, ids, max_new, stop,
@@ -167,7 +167,7 @@ which the text model reads at the image tokens (the wiring is the next step of m
 full-attention ones), `states` (two tensors for each linear layer) and `taps` (`linear_conv_kernel_dim`: a prompt is
 given the `Delta.Padding` of the linear layers), and the file keeps its `Generator`, its `stepped` and its `layer`. The
 write-then-attend of a full layer (the new rows into the cache, in place or by `Padded.written`, then the attention over
-the first `reach` rows) is `KvDecoder.attended`, the same call in `generate.agc`, `generate_granite_moe.agc`,
+the first `reach` rows) is `KvDecoder.attend_cached`, the same call in `generate.agc`, `generate_granite_moe.agc`,
 `generate_lfm3.agc` and here. What does not depend on the model is in `kv_decoder.agc` and `stepping.agc` (`Plans` with
 `reaches` and `planned`, `Head` with `picked`, `chosen` and `ranked`, `inputs`, `check_ids`, `in_place?`, `usable_ids`,
 `cached`, `widened` and `masked`, and `Stepping.generate`, the loop of `generate`: greedy or sampled, stop ids, the

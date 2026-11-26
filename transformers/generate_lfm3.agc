@@ -144,12 +144,14 @@ def stepped(m: Lfm3.Lfm3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor]]
   attention_layers = m.layers.select { |l| not conv?(l) }.size
   slots = Padded.Slots(positions: xs[1], capacity: req.room)
   h = try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d])
-  reading = slots.with(capacity: req.reach)
-  full_mask = try Padded.padded_mask(reading, Tensor.dtype(h))
+  reached = slots.with(capacity: req.reach)
+  full_mask = try Padded.padded_mask(reached, Tensor.dtype(h))
   sliding_mask = full_mask
   if m.layers.any? { |l| sliding?(l) }
-    sliding_mask = try Padded.padded_mask(reading, Tensor.dtype(h), m.config.sliding_window)
+    sliding_mask = try Padded.padded_mask(reached, Tensor.dtype(h), m.config.sliding_window)
   end
+
+  reading = try KvDecoder.reading(req, full_mask)
 
   # A prompt is the only step with padding, and the only one without a cache.
   padding: Optional[Delta.Padding] = none
@@ -157,11 +159,6 @@ def stepped(m: Lfm3.Lfm3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor]]
   if width > 1
     padding = some(Delta.Padding(valid: xs[3], keep: xs[4]))
     lead = 5
-  end
-
-  spread: Optional[Tensor.Tensor] = none
-  if not req.in_place
-    spread = some(try Padded.spread_of(slots, Tensor.dtype(h)))
   end
 
   keys: List[Tensor.Tensor] = []
@@ -189,13 +186,13 @@ def stepped(m: Lfm3.Lfm3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor]]
           old = some(KvDecoder.Kv(key: xs[lead + attention_at], value: xs[lead + attention_layers + attention_at]))
         end
 
-        mask = full_mask
+        seen = reading
         if sliding?(l)
-          mask = sliding_mask
+          seen = reading.with(mask: sliding_mask)
         end
 
-        kept = try KvDecoder.attended(try attention_of(l), x, slots.positions, mask, spread, old, req)
-        mixed = kept.hidden
+        kept = try KvDecoder.attend_cached(try attention_of(l), x, old, seen, req)
+        mixed = kept.answer
         keys = keys.push(try Stepping.cached(kept.key, req.compiled))
         values = values.push(try Stepping.cached(kept.value, req.compiled))
         attention_at += 1

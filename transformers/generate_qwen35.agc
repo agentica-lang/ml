@@ -155,11 +155,7 @@ def stepped(m: Qwen3_5.Qwen3_5, req: KvDecoder.Request) -> Result[List[Tensor.Te
     lead = 5
   end
 
-  spread: Optional[Tensor.Tensor] = none
-  if not req.in_place
-    spread = some(try Padded.spread_of(slots, Tensor.dtype(h)))
-  end
-
+  reading = try KvDecoder.reading(req, mask)
   keys: List[Tensor.Tensor] = []
   values: List[Tensor.Tensor] = []
   states: List[Tensor.Tensor] = []
@@ -177,7 +173,7 @@ def stepped(m: Qwen3_5.Qwen3_5, req: KvDecoder.Request) -> Result[List[Tensor.Te
       end
     end
 
-    r = try layer(l, h, slots.positions, mask, spread, old, old_state, padding, req)
+    r = try layer(l, h, reading, old, old_state, padding, req)
     h = r.hidden
     case r.kv
       some(kv) ->
@@ -207,9 +203,7 @@ end
 def layer(
   l: Qwen3_5.Layer,
   h: Tensor.Tensor,
-  positions: Tensor.Tensor,
-  mask: Tensor.Tensor,
-  spread: Optional[Tensor.Tensor],
+  reading: KvDecoder.Reading,
   old: Optional[KvDecoder.Kv],
   old_state: Optional[Delta.DeltaState],
   padding: Optional[Delta.Padding],
@@ -231,8 +225,8 @@ def layer(
       mixed = try Tensor.reshape(r.out, shape)
       states = [r.state.conv, r.state.recurrent]
     Qwen3_5.Mixer.Full(a) ->
-      kept = try KvDecoder.attended(a, x, positions, mask, spread, old, req)
-      mixed = kept.hidden
+      kept = try KvDecoder.attend_cached(a, x, old, reading, req)
+      mixed = kept.answer
       kv = some(KvDecoder.Kv(key: kept.key, value: kept.value))
   end
 

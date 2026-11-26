@@ -1,4 +1,5 @@
-## What the decoding steps of the models that keep a cache share (`generate.agc`, `generate_qwen35.agc`), so that a model
+## What the decoding steps of the models that keep a cache share (`kv_decoder.agc`, and the generators on it:
+## `generate.agc`, `generate_granite_moe.agc`, `generate_lfm3.agc` and `generate_qwen35.agc`), so that a model
 ## writes only its own step and cache (`transformers/DESIGN.md`, "Generation"):
 ##
 ## - the loop that decodes (`generate` over a `Decoder`, the record that a generator fills in with its `pick`, `top`
