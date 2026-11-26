@@ -1,8 +1,8 @@
 ## The input of SmolVLM against Hugging Face's `Idefics3Processor` (`smolvlm_processor_golden.py`,
 ## `fixtures/smolvlm/processor_golden.json`): `Vision.idefics3_tiling` on a table of sizes; the tiles of
 ## `Vision.idefics3_tiles` of the drawn images of `fixtures/resnet` and of a synthetic one with hard edges
-## (`fixtures/smolvlm/checker.png`; each tile 512 by 512, the global image last) through `to_tensor` and `normalize`
-## with the `pixel_values` of the processor, which is a resize of libvips against Pillow's; and `SmolVlmPrompt.expand`,
+## (`fixtures/smolvlm/checker.png`; each tile 512 by 512, the global image last) through `normalize` against the
+## `pixel_values` of the processor; and `SmolVlmPrompt.expand`,
 ## which gives the ids of the processor from the ids with one `<image>` for each image. No checkpoint is needed. Run from
 ## `vision/`.
 
@@ -17,21 +17,14 @@ TILE = 512
 MEAN = [0.5, 0.5, 0.5]
 STD = [0.5, 0.5, 0.5]
 
-## What passes for a frame: `limits` (below) gives the bounds of each kind of frame.
-##
-## A tile or a global image of the drawn images (smooth ones, `resnet/*`) is a value of a frame within three 8-bit levels
-## (1 / 255 / 0.5 = 0.0078 each; the largest gap measured is two), its mean within 0.002 (9e-4 for a global image,
-## which shrinks 4 times), and its standard deviation and mean absolute difference of neighbours within 0.0006 and
-## 0.0003 (2e-4 and 9e-5 measured). Those images do not tell a kernel or a pass of the resize from another.
-##
-## The synthetic image with hard edges (`edges`) does, and libvips does not give Pillow's pixels on it. The tiles are an
-## enlargement (2.05 times), which libvips does with its bicubic interpolation whatever the kernel; the processor's
-## Lanczos differs from it at an edge by up to 0.28 (36 levels) at a sampled value, 0.023 in a mean and 0.02 in the other
-## measures, and a tile that has the lines and steps is the farthest. The bounds of a tile are 1.2 times those measured,
-## and a bilinear resize is far outside them (0.59, 0.037 and 0.047). The global image is a shrink (4 and 2 times),
-## where the kernel counts: its bounds are 1.15 times the gaps measured (0.15, 0.0065, 0.0043, 0.0067, 0.0116, and
-## 0.063 and 0.017 at the edges), which a bicubic kernel (0.20, 0.0088, 0.0165, 0.015, 0.11 and 0.062) or a global image
-## taken before the resize to the grid (0.0061 for the standard deviation, 0.086 and 0.021 at the edges) leaves.
+## What passes for a frame: a value within 1.4 of the 8-bit levels the processor makes (0.0112 measured: 1 / 255 / 0.5 =
+## 0.0078 a level, and our passes are not rounded to a level), its mean within 1e-4 (1e-5 measured), its standard
+## deviation within 2e-4 (1.2e-4), its mean absolute difference of neighbours across and down within 1.3e-4 (1.2e-4 and
+## 9e-5), and at the edges of the synthetic image with hard edges (`edges`) the values within 0.016 (0.0122) and 0.004 in
+## a typical place (0.0031). The same bounds hold for every frame, smooth or with hard edges, a tile (an enlargement) or
+## a global image (a shrink): the resize is Pillow's, whatever the kernel and the scale. With libvips' resize the tiles
+## of `edges` were 0.28 off in a value and 0.023 in a mean, and the bicubic kernel or a global image taken before the
+## resize to the grid were outside the bounds of the global image.
 struct Limits
   largest: Float
   mean: Float
@@ -213,20 +206,13 @@ def measure(got: Tensor.Tensor, c: Case, frame: Int) -> Result[Gap]
   )
 end
 
-## The bounds of a tile or of a global image (the last frame of an image), of the drawn images or of the one with edges.
-def limits(edges: Bool, global: Bool) -> Limits
-  if edges and global
-    return Limits(largest: 0.17, mean: 0.0075, std: 0.0055, dx: 0.0075, dy: 0.0135, places: 0.075, typical: 0.019)
-  end
-
-  return Limits(largest: 0.35, mean: 0.03, std: 0.025, dx: 0.022, dy: 0.02, places: 0.32, typical: 0.11) if edges
-
-  Limits(largest: 0.024, mean: 0.002, std: 0.0006, dx: 0.0003, dy: 0.0003, places: 0.0, typical: 0.0)
+def limits() -> Limits
+  Limits(largest: 0.015, mean: 0.0001, std: 0.0002, dx: 0.00013, dy: 0.00013, places: 0.016, typical: 0.004)
 end
 
 ## An error unless `gap` is within what passes for the frame `frame` of the case `c`.
-def within(c: Case, frame: Int, global: Bool, gap: Gap) -> Result[Void]
-  max = limits(c.name == "edges", global)
+def within(c: Case, frame: Int, gap: Gap) -> Result[Void]
+  max = limits()
   where = "#{c.name} frame #{frame}"
   try Test.assert(gap.largest <= max.largest, "#{where}: the largest gap of a sample is #{gap.largest}")
   try Test.assert(gap.mean <= max.mean, "#{where}: the mean is #{gap.mean} from Hugging Face's")
@@ -258,17 +244,17 @@ end
 def image_frames(c: Case, k: Int, first: Int, backend: Tensor.Backend) -> Result[Int]
   Native.arena do
     image = try Image.colourspace(try Image.load("test/fixtures/#{c.images[k]}"), Image.Space.Srgb)
-    tiles = try Vision.idefics3_tiles(image)
+    tiles = try Vision.idefics3_tiles(image, backend)
     try Test.eq([tiles.rows, tiles.cols], [c.rows[k], c.cols[k]])
-    try Test.eq(tiles.images.size, c.rows[k] * c.cols[k] + 1)
-    for i in 0...tiles.images.size
-      tile = tiles.images[i]
-      try Test.eq([Image.width(tile), Image.height(tile)], [TILE, TILE])
-      got = try Vision.normalize(try Vision.to_tensor(tile, backend), MEAN, STD)
-      try within(c, first + i, i == tiles.images.size - 1, try measure(got, c, first + i))
+    try Test.eq(tiles.tiles.size, c.rows[k] * c.cols[k] + 1)
+    for i in 0...tiles.tiles.size
+      tile = tiles.tiles[i]
+      try Test.eq(Tensor.shape(tile), [3, TILE, TILE])
+      got = try Vision.normalize(tile, MEAN, STD)
+      try within(c, first + i, try measure(got, c, first + i))
     end
 
-    ok(first + tiles.images.size)
+    ok(first + tiles.tiles.size)
   end
 end
 
