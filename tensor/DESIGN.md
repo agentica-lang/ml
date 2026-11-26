@@ -873,7 +873,7 @@ The price:
   memory and run 20 to 40% slower. Rounding every op to binary32 would not make
   the oracle closer to ggml either (ggml sums in blocks, not in the order of
   the loop) and would cost it digits: a dot product of 4096 items rounded at
-  each step is off the double one by up to 7e-5 (1e-5 at 1024), against
+  each step is off the double one by up to 7e-5 (1.6e-5 at 1024), against
   tolerances of 1e-4 to 1e-3. So the reference keeps doubles. Revisit it
   when Agentica has a packed `Float32` list.
 
