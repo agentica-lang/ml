@@ -1,6 +1,7 @@
 /* The thin C layer of `src/xla_native.agc`: XLA on the CPU through the PJRT C API of a plugin loaded with `dlopen`
    (`tensor/DESIGN.md` §7). Nothing of XLA is linked at build time; `pjrt_c_api.h` is the header of the API the
-   pinned plugin speaks (0.81), vendored with its notice.
+   plugin speaks, vendored with its notice: the header is PJRT 0.81 and a plugin may speak a later minor (0.117 in the
+   release xla-c9276de87e15), which `load_plugin` accepts.
 
    One client and its first device serve the process. A buffer and a program are refcounted, so a run (`Call`) holds
    what it reads even when its handle is closed meanwhile. */

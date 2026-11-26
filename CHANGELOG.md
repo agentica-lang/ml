@@ -9,6 +9,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Dtype.Q4_K`, `Dtype.Q6_K` and the formats of the same names: `Tensor.from_file` dequantizes ggml's K blocks to `F32` on every backend, or keeps them as a weight on ggml (ml#126).
 - `Tensor.packed?(dtype)`: true for the dtypes that ggml keeps packed (`F16` and the quantized ones).
 - A graph on a Vulkan device may read tensors on `Ggml(Cpu)`: ggml's backend scheduler runs each node where its operands are and copies the activations between the two, and an output of a CPU node is a CPU tensor (ml#310).
+- `tools/install_xla.agc` installs the XLA CPU plugin from our own build, a GitHub Release of this repository (Linux x86_64 and aarch64, with the licenses of what it links), instead of the PyPI wheel, and needs no `unzip`; the old `xla/<wheel-sha>/` folders of the cache can be deleted (ml#287).
 
 ### nn
 

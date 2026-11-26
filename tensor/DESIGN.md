@@ -636,10 +636,16 @@ end
 - **`Xla` is compiled-only too, on the CPU.** It runs a trace through XLA,
   loaded at run time: `native/xla.c` opens the PJRT plugin with `dlopen` and
   calls `GetPjrtApi`, so nothing of XLA is linked or built here. The plugin is
-  the pinned `xla-cpu-pjrt` wheel of PyPI (Linux x86_64 and aarch64; CI tests
-  x86_64 only), which
-  `tools/install_xla.agc` downloads, checks by its sha256 and keeps in the ml
-  cache; we do not redistribute it. `native/pjrt_c_api.h` is vendored
+  our own build of openxla/xla at the commit in `tensor/xla-commit` (Linux
+  x86_64 and aarch64; CI tests x86_64 only): the `XLA plugin` workflow builds
+  it, and the tag `xla-<first 12 characters of the commit>` publishes it as a
+  GitHub Release of this repository with `pjrt_c_api.h`, the licenses of what
+  it links and `SHA256SUMS`. We redistribute it (the plugin is Apache-2.0, and
+  the licenses of what it links go with it). `tools/install_xla.agc` downloads
+  the plugin of the machine from that release, checks it against the sha256
+  pinned in `src/xla.agc`, and keeps it in the ml cache. Both that table and
+  `xla-commit` change together (`test/xla_pin_test.agc` checks the tag).
+  `native/pjrt_c_api.h` is vendored
   (openxla/xla@dd6381370d6f, PJRT 0.81, Apache-2.0, its notice inside), so the
   module builds with no download and a missing plugin is an error at run time
   that names the install step; this is the one header that breaks the rule

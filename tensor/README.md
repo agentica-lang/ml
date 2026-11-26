@@ -61,7 +61,8 @@ answers whether this machine has it, and the dispatch arm answers
   XLA's PJRT plugin loaded with `dlopen`, a `Trace.compile` emitted as
   StableHLO and compiled once; see "The XLA backend" below.
   `native/pjrt_c_api.h` is the PJRT header, vendored with its notice.
-- `tools/install_xla.agc` — downloads the pinned XLA plugin into the ml cache.
+- `tools/install_xla.agc` — downloads the pinned XLA plugin of our release into
+  the ml cache.
 - `xla-commit` — the openxla/xla commit the `XLA plugin` workflow builds.
   Pushing the tag `xla-<its first 12 characters>` builds the plugin for Linux
   x86_64 and aarch64 (and macOS arm64, experimental) and publishes a GitHub
@@ -282,17 +283,17 @@ A step of `Train.fit` is one graph that the loop retraces, differentiates and lo
 `Backend.Xla(Device.Cpu)` runs a traced function through XLA on the CPU. The
 native module (`native/xla.c`) builds with every install, links nothing of XLA,
 and loads XLA's PJRT plugin with `dlopen` at the first use. Install the plugin
-once, from `tensor/` (it needs `unzip`):
+once, from `tensor/`:
 
 ```sh
 agentica tools/install_xla.agc
 ```
 
-It downloads the pinned `xla-cpu-pjrt` 0.0.1 wheel of this machine from PyPI,
-checks its sha256 and extracts the plugin to
-`${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}/xla/<sha256>/`. The wheel exists
-for Linux x86_64 and aarch64 only (CI runs x86_64; aarch64 is untested); on any
-other system, and before the install,
+It downloads the plugin of this machine from our release (`Xla.RELEASE`,
+built by the `XLA plugin` workflow, see `xla-commit`), checks its sha256 and
+keeps it in `${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}/xla/<sha256>/`. The
+release has Linux x86_64 and aarch64 only (CI runs x86_64; aarch64 is
+untested); on any other system, and before the install,
 `Tensor.available(Backend.Xla(Device.Cpu))` is `false` and an op answers an
 error that names the install step. Only the CPU device exists.
 
