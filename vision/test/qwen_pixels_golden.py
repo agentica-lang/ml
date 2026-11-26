@@ -36,6 +36,7 @@ import torch
 import transformers
 from PIL import Image
 from transformers import AutoImageProcessor
+from transformers.image_utils import PILImageResampling
 from transformers.models.qwen2_vl.image_processing_pil_qwen2_vl import Qwen2VLImageProcessorPil, smart_resize
 
 SAMPLES = 500
@@ -43,9 +44,12 @@ PATCH = 16
 MERGE = 2
 FRAMES = 2
 FACTOR = PATCH * MERGE
+DEFAULTS = {"shortest_edge": 65536, "longest_edge": 16777216}
 # The id of the case, its image (in `test/fixtures`; `qwen/crops/tall-2.png` is made by the case `tall-2` of this script,
-# so it comes after it), the bounds of `size`, and whether the resized image is written (the small ones).
+# so it comes after it), the bounds of `size` (none: the checkpoint's own), and whether the resized image is written (the
+# small ones).
 CASES = [
+    ("default-1", "resnet/wide-1.png", None, None, False),
     ("wide-1", "resnet/wide-1.png", 4096, 16384, True),
     ("tall-1", "resnet/tall-1.png", 4096, 262144, False),
     ("tall-2", "resnet/tall-2.png", 1024, 4096, True),
@@ -86,8 +90,17 @@ def main():
     crops_dir.mkdir(parents=True, exist_ok=True)
     cases = []
     for name, image, low, high, write in CASES:
-        processor = AutoImageProcessor.from_pretrained(config_dir, size={"shortest_edge": low, "longest_edge": high})
+        if low is None:
+            # No override: the bounds are the checkpoint's own.
+            low, high = DEFAULTS["shortest_edge"], DEFAULTS["longest_edge"]
+            processor = AutoImageProcessor.from_pretrained(config_dir)
+        else:
+            processor = AutoImageProcessor.from_pretrained(config_dir, size={"shortest_edge": low, "longest_edge": high})
         assert isinstance(processor, Qwen2VLImageProcessorPil), type(processor)
+        assert processor.size.shortest_edge == low and processor.size.longest_edge == high, processor.size
+        assert tuple(processor.image_mean) == (0.5,) * 3 and tuple(processor.image_std) == (0.5,) * 3
+        assert processor.do_rescale and processor.rescale_factor == 1 / 255, processor.rescale_factor
+        assert processor.do_convert_rgb and processor.resample == PILImageResampling.BICUBIC, processor.resample
         assert (processor.patch_size, processor.merge_size, processor.temporal_patch_size) == (PATCH, MERGE, FRAMES)
         source = Image.open(fixtures / image).convert("RGB")
         out = processor(source, return_tensors="np")

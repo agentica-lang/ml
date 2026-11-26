@@ -129,11 +129,13 @@ end
 ## temporal_patch_size * patch_size * patch_size]`. A row is one patch, as `channels`, `temporal_patch_size` frames (the
 ## image repeated: a still image is its own frames) and the pixels of the patch. The patches come in the order of the
 ## merge squares of `merge_size` by `merge_size` patches: the patches of one square together (by row, then column), the
-## squares row by row. `height` and `width` must be multiples of `patch_size * merge_size`, which `SmartResize` makes.
+## squares row by row. `height` and `width` must be multiples of `patch_size * merge_size`, which `SmartResize` makes. `x`
+## has 3 channels: an image with an alpha band is an `error` (Hugging Face's processor flattens it first).
 def patches(x: Tensor.Tensor, patch_size: Int, merge_size: Int, temporal_patch_size: Int = 2) -> Result[Tensor.Tensor]
   shape = Tensor.shape(x)
   return error("patches needs an F32 tensor, got #{Tensor.dtype(x)}") if Tensor.dtype(x) != Tensor.Dtype.F32
   return error("patches needs [channels, height, width], got #{shape}") if shape.size != 3
+  return error("patches needs 3 channels (sRGB, no alpha), got #{shape[0]}") if shape[0] != 3
   if patch_size < 1 or merge_size < 1 or temporal_patch_size < 1
     return error("patches needs a patch_size, merge_size and temporal_patch_size of 1 or more")
   end

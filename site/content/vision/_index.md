@@ -68,16 +68,17 @@ The random steps draw from `seed`, so one seed gives one result. A crop larger t
 
 `smart_resize(height, width, factor, min_pixels, max_pixels)` is Hugging Face's function of the same name (the image processor of Qwen2-VL and its successors, Qwen3.5 among them) and gives a `Size(height, width)`: each side is the nearest multiple of `factor` (a half goes to the even multiple, as Python's `round` does), and an image with more than `max_pixels` pixels shrinks, or one with fewer than `min_pixels` grows, by the same ratio on both sides. An aspect ratio above 200 is an `error`. `Step.SmartResize` resizes to that size.
 
-`patches(x, patch_size, merge_size, temporal_patch_size)` lays one normalized image `x` (`[channels, height, width]`, `F32`) out as that processor's `pixel_values`: one row of `channels * temporal_patch_size * patch_size * patch_size` values for each patch, in the order of the merge squares of `merge_size` by `merge_size` patches, with the image repeated for the frames of the temporal patch. `height` and `width` must be multiples of `patch_size * merge_size`, which `SmartResize` makes. For the processor of `Qwen/Qwen3.5-0.8B` (`patch_size` 16, `merge_size` 2, `shortest_edge` 65,536 and `longest_edge` 16,777,216 pixels in its `preprocessor_config.json`, mean and std 0.5):
+`patches(x, patch_size, merge_size, temporal_patch_size)` lays one normalized image `x` (`[3, height, width]`, `F32`: sRGB with 3 bands) out as that processor's `pixel_values`: one row of `channels * temporal_patch_size * patch_size * patch_size` values for each patch, in the order of the merge squares of `merge_size` by `merge_size` patches, with the image repeated for the frames of the temporal patch. `height` and `width` must be multiples of `patch_size * merge_size`, which `SmartResize` makes. An image with an alpha band is an `error`: Hugging Face's processor flattens it first (`convert_to_rgb`) and `vision` does not yet, so flatten it before. For the processor of `Qwen/Qwen3.5-0.8B` (`patch_size` 16, `merge_size` 2, `shortest_edge` 65,536 and `longest_edge` 16,777,216 pixels in its `preprocessor_config.json`, mean and std 0.5):
 
 ```agentica {mode="fragment"}
 steps = [Vision.Step.SmartResize(32, 65536, 16777216, Vision.Kernel.Cubic)]
-image = Vision.apply(Image.load("photo.jpg").unwrap!, steps).unwrap!
+srgb = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
+image = Vision.apply(srgb, steps).unwrap!
 x = Vision.normalize(Vision.to_tensor(image, backend).unwrap!, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap!
 pixel_values = Vision.patches(x, 16, 2).unwrap!
 ```
 
-The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A shrunk image is at most one 8-bit level (0.0078 normalized) from the processor's, as for the other models; an image that grows (under `min_pixels`) is not, because libvips enlarges with another sub-pixel alignment than Pillow's bicubic: at the edges the pixels can be several levels apart (see [the transformers page](../transformers/_index.md) and the [issue](https://github.com/agentica-lang/packages/issues/266)).
+The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A shrunk image is at most one 8-bit level (0.0078 normalized) from the processor's, two for a shrink of several times, as for the other models; an image that grows (under `min_pixels`) is not, because libvips enlarges with another sub-pixel alignment than Pillow's bicubic: at the edges the pixels can be several levels apart (see [the transformers page](../transformers/_index.md) and the [issue](https://github.com/agentica-lang/packages/issues/266)).
 
 ## A folder per class
 

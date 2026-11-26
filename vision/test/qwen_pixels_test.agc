@@ -2,12 +2,13 @@
 ## `fixtures/qwen/golden.json`): `smart_resize` on a table of sizes, `Vision.patches` on the 8-bit images that the
 ## processor made (`fixtures/qwen/crops`), which must give its `pixel_values` to float rounding, and the whole input
 ## (`Step.SmartResize` with the bicubic kernel, `to_tensor`, `normalize` with the mean and std 0.5, `patches`) on the
-## drawn images of `fixtures/resnet`, which is a resize of libvips against Pillow's. No checkpoint is needed. Run from
-## `vision/`.
+## drawn images of `fixtures/resnet`, which is a resize of libvips against Pillow's. The values compared are about 500
+## of each image (every `stride`th of its `pixel_values`) and their mean. No checkpoint is needed. Run from `vision/`.
 
 import Image from "pkg/image/image"
 import S from "support"
 import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
 import Vision from "../vision"
 
 PATCH = 16
@@ -21,11 +22,12 @@ STD = [0.5, 0.5, 0.5]
 ## The patches of the processor's own 8-bit images are its `pixel_values` up to the rounding of `float32`.
 EXACT = 0.00001
 
-## What passes for our own resize. A shrink is one or two 8-bit levels (1 / 255 / 0.5 = 0.0078 each) from Pillow's at
-## the most: 0.0157 is twice the largest gap measured. A grow (the image is under `min_pixels`) is not: libvips enlarges
+## What passes for our own resize. A shrink is two 8-bit levels (1 / 255 / 0.5 = 0.0078 each) from Pillow's at the most
+## (the 64 by 32 case measured two, the others one). A grow (the image is under `min_pixels`) is not: libvips enlarges
 ## with another sub-pixel alignment than Pillow (a step edge lands about a quarter of an input pixel apart at 2 times), so
 ## at the edges of the drawn discs 30% of the sampled values are 3 or more levels apart and the largest gap is 0.29 (37
-## levels) on the grow of 1.4 times of the test; the mean of all the values is 0.0003 apart. `GROW_ABS` is twice that.
+## levels) on the grow of the test (area 2.5 times, 1.5 and 1.67 per axis); the mean of all the values is 0.0003 apart.
+## `GROW_ABS` is about twice that: tighten it to `PIXEL_ABS` when agentica-lang/packages#266 is fixed.
 PIXEL_ABS = 0.016
 GROW_ABS = 0.6
 PIXEL_MEAN = 0.002
@@ -70,11 +72,21 @@ def pixel_values(path: String, steps: List[Vision.Step], backend: Tensor.Backend
 end
 
 def measure(got: Tensor.Tensor, c: Case) -> Result[Gap]
-  values = try S.floats_of(got)
+  shape = Tensor.shape(got)
+  total = shape[0] * shape[1]
+  at = (0...c.samples.size).to_a.map { |i| Tensor.Values.Int(i * c.stride) }
+  ids = try Tensor.from_list(at, [at.size], Tensor.Dtype.I32, Tensor.backend(got))
+  # Only the sampled values and the mean come back to the host: a grid of 22 by 30 patches has a million values.
+  outs = try Trace.eval_many([got, ids]) do |xs|
+    column = try Tensor.reshape(xs[0], [total, 1])
+    ok([try Tensor.embedding(xs[1], column), try Tensor.reshape(try Tensor.mean(xs[0]), [1])])
+  end
+
+  values = try S.floats_of(outs[0])
   largest = 0.0
   far = 0
   for i in 0...c.samples.size
-    gap = (values[i * c.stride] - c.samples[i]).abs
+    gap = (values[i] - c.samples[i]).abs
     if gap > PIXEL_ABS
       far = far + 1
     end
@@ -84,8 +96,8 @@ def measure(got: Tensor.Tensor, c: Case) -> Result[Gap]
     end
   end
 
-  total = values.reduce(0.0) do |acc, v| acc + v end
-  ok(Gap(largest: largest, far: far.to_f / c.samples.size.to_f, mean: (total / values.size.to_f - c.mean).abs))
+  mean = (try S.floats_of(outs[1]))[0]
+  ok(Gap(largest: largest, far: far.to_f / c.samples.size.to_f, mean: (mean - c.mean).abs))
 end
 
 def test_smart_resize_gives_hugging_faces_sizes() -> Result[Void]
@@ -97,7 +109,9 @@ def test_smart_resize_gives_hugging_faces_sizes() -> Result[Void]
   ok()
 end
 
-def test_smart_resize_refuses_what_hugging_face_refuses() -> Result[Void]
+## The aspect ratio above 200 is Hugging Face's error (200 itself is allowed: the table has 1 by 200); the sizes under 1
+## and `min_pixels` above `max_pixels` are this function's own checks.
+def test_smart_resize_refuses_bad_arguments() -> Result[Void]
   try Test.error?(Vision.smart_resize(1, 201, FACTOR, 1, 100000))
   try Test.error?(Vision.smart_resize(201, 1, FACTOR, 1, 100000))
   try Test.error?(Vision.smart_resize(0, 5, FACTOR, 1, 100000))
@@ -146,9 +160,16 @@ def test_the_whole_input_is_hugging_faces_within_the_resize_of_libvips() -> Resu
 end
 
 def test_patches_refuses_what_it_cannot_lay_out() -> Result[Void]
-  x = try Tensor.floats((0...(3 * 64 * 32)).to_a.map { |i| i.to_f }, [3, 64, 32])
-  try Test.eq(Tensor.shape(try Vision.patches(x, PATCH, MERGE)), [8, 1536])
+  x = try Tensor.floats((0...(3 * 32 * 32)).to_a.map { |i| i.to_f }, [3, 32, 32])
+  try Test.eq(Tensor.shape(try Vision.patches(x, PATCH, MERGE)), [4, 1536])
   try Test.error?(Vision.patches(x, PATCH, 3))
   try Test.error?(Vision.patches(try Tensor.floats([1.0], [1, 1, 1, 1]), PATCH, MERGE))
-  Test.error?(Vision.patches(x, 0, MERGE))
+  try Test.error?(Vision.patches(x, 0, MERGE))
+  try Test.error?(Vision.patches(x, PATCH, MERGE, 0))
+  try Test.error?(
+    Vision.patches(try Tensor.floats((0...(32 * 32)).to_a.map { |i| i.to_f }, [1, 32, 32]), PATCH, MERGE),
+  )
+
+  ints = (0...(3 * 32 * 32)).to_a.map { |i| Tensor.Values.Int(i) }
+  Test.error?(Vision.patches(try Tensor.from_list(ints, [3, 32, 32], Tensor.Dtype.I32), PATCH, MERGE))
 end
