@@ -10,7 +10,10 @@ Granite MoE (`granitemoe`) has its forward and generation (ml#274).
 ## Generation
 
 `generate.agc` follows `asr/`'s decoder (the padded-cache helpers are shared,
-`nn/kv.agc`; each model keeps its own forward): `Generate.open(m)` is the generator of a model, which holds its
+`nn/kv.agc`; each model keeps its own forward). The decoder itself, the same for Qwen3 and Granite MoE, is `kv_decoder.agc`
+(`KvDecoder.Core`, over a `Stepper`: the sizes of the model, its token table, `traced` and the `stepped` graph of one
+step); `generate.agc` and `generate_granite_moe.agc` keep the `Generator` of their model, the `Stepper`, `stepped` and
+`layer`. `Generate.open(m)` is the generator of a Qwen3 model, which holds its
 compiled steps in a one-slot channel (as `Asr.Model.plans`), and
 `Generate.generate(g, ids, max_new, stop, sampling)` decodes greedily, or by
 `sample.agc` (below); `start`, then `step` (the id with the largest logit) or
@@ -219,7 +222,7 @@ whole sequences, with no cache; generation is `generate_granite_moe.agc` (below)
 
 ### Granite MoE generation
 
-`generate_granite_moe.agc` is `generate.agc` with Granite's layer, on `stepping.agc`: the API, the compiled steps, the
+`generate_granite_moe.agc` is `generate.agc` with Granite's layer, on `kv_decoder.agc` and `stepping.agc`: the API, the compiled steps, the
 padded prompt, the `usable` mask and the pick in the graph are those of [Qwen3.5 generation](#qwen35-generation) and
 `Generate`. The cache is the keys and values of every layer, `[1, kv_heads, rows, head_dim]`, padded to a capacity, in
 `F32` with no option: an `F16` cache moved the logits by up to 0.19, more than the gap of some greedy choices. A
