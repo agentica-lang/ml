@@ -1,4 +1,5 @@
-## The decoder that Qwen3 (`generate.agc`), Granite MoE (`generate_granite_moe.agc`) and LFM3 (`generate_lfm3.agc`) share, over a key-value cache
+## The decoder that Qwen3 (`generate.agc`), Granite MoE (`generate_granite_moe.agc`), LFM3 (`generate_lfm3.agc`) and
+## Qwen3.5 (`generate_qwen35.agc`) share, over a key-value cache
 ## (`transformers/DESIGN.md`), the design of `asr/`'s decoder (`asr/asr.agc`); the cache helpers are shared in
 ## `nn/kv.agc`. A model gives a `Stepper`: its sizes, its token table, `traced` and its `stepped` function, the graph of
 ## one step; everything else is here:
@@ -15,7 +16,7 @@
 ## - Elsewhere the same graph runs eagerly in an arena. On the reference backend attention needs `q * k` of at most
 ##   1,048,576, which the padded prompt counts (a prompt of 600 tokens is padded to 1024). libtorch is not tested.
 ##
-## A model with layers that keep a state (LFM3's short convolutions) says so in its `Stepper` (`states`, `taps`): the
+## A model with layers that keep a state (LFM3's short convolutions, Qwen3.5's linear attention) says so in its `Stepper` (`states`, `taps`): the
 ## states are tensors of a size that does not depend on the length, new at every step, and a prompt is given the
 ## `Delta.Padding` of its convolutions, so that the padding rows leave the state as the real ones did.
 ##
@@ -24,6 +25,7 @@
 
 import Padded from "pkg/nn/kv"
 import Delta from "pkg/nn/delta"
+import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 import Lift from "lift"
@@ -52,7 +54,7 @@ struct Kv
   value: Tensor.Tensor
 end
 
-## What a layer of a step gives: its hidden rows and its new keys and values.
+## What a layer of a step gives: its hidden rows (the answer of its attention, for `attended`) and its new keys and values.
 struct Layer
   hidden: Tensor.Tensor
   key: Tensor.Tensor
@@ -202,6 +204,44 @@ end
 ## Ends a sequence: closes the tensors of `cache`.
 def finish(cache: Cache) -> Void
   Lift.close(cache.keys + cache.values + cache.states)
+end
+
+## The attention `a` of a layer over the new rows `x` `[1, width, d]` (its input, normed): the keys and values of the
+## rows are written into the `old` ones of the cache (`Tensor.set_rows` in the tensors themselves when `req.in_place`,
+## else `Padded.written` with `spread`, the `Padded.spread_of` of the step), then the query attends over the first
+## `req.reach` rows under `mask`. The `Layer` has the answer of the attention (not yet added to the stream) and the
+## keys and values of the cache after the step, in the dtype of the old ones; a model that keeps them in `F16` on ggml
+## converts them (`Stepping.cached`). `old` is none for a prompt, which has no cache.
+def attended(
+  a: Nn.Attention,
+  x: Tensor.Tensor,
+  positions: Tensor.Tensor,
+  mask: Tensor.Tensor,
+  spread: Optional[Tensor.Tensor],
+  old: Optional[Kv],
+  req: Request,
+) -> Result[Layer]
+  heads = try Nn.project(a, x, x, some(positions))
+  key = heads.key
+  value = heads.value
+  if req.in_place
+    key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
+    value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
+  else
+    key = try Padded.written(try Stepping.widened(old.map { |kv| kv.key }), heads.key, spread.unwrap!, 2)
+    value = try Padded.written(try Stepping.widened(old.map { |kv| kv.value }), heads.value, spread.unwrap!, 2)
+  end
+
+  seen = try Nn.attend(
+    a,
+    heads.query,
+    try Padded.reached(key, req.reach),
+    try Padded.reached(value, req.reach),
+    some(mask),
+    gate: heads.gate,
+  )
+
+  ok(Layer(hidden: seen, key: key, value: value))
 end
 
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`).

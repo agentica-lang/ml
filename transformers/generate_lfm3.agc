@@ -194,7 +194,7 @@ def stepped(m: Lfm3.Lfm3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor]]
           mask = sliding_mask
         end
 
-        kept = try cached_attention(try attention_of(l), x, slots.positions, mask, spread, old, req)
+        kept = try KvDecoder.attended(try attention_of(l), x, slots.positions, mask, spread, old, req)
         mixed = kept.hidden
         keys = keys.push(try Stepping.cached(kept.key, req.compiled))
         values = values.push(try Stepping.cached(kept.value, req.compiled))
@@ -233,37 +233,4 @@ def after_mixer(l: Lfm3.Layer, h: Tensor.Tensor, mixed: Tensor.Tensor) -> Result
   mid = try Tensor.add(h, try Nn.layer_norm(l.post_operator_norm, mixed))
   ffn = try Nn.layer_norm(l.post_ffn_norm, try Nn.mlp(l.mlp, try Nn.layer_norm(l.ffn_norm, mid)))
   Tensor.add(mid, ffn)
-end
-
-## The attention `a` over the new rows `x`: its answer (`hidden`) and its keys and values after the new rows.
-def cached_attention(
-  a: Nn.Attention,
-  x: Tensor.Tensor,
-  positions: Tensor.Tensor,
-  mask: Tensor.Tensor,
-  spread: Optional[Tensor.Tensor],
-  old: Optional[KvDecoder.Kv],
-  req: KvDecoder.Request,
-) -> Result[KvDecoder.Layer]
-  heads = try Nn.project(a, x, x, some(positions))
-  key = heads.key
-  value = heads.value
-  if req.in_place
-    key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
-    value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
-  else
-    key = try Padded.written(try Stepping.widened(old.map { |kv| kv.key }), heads.key, spread.unwrap!, 2)
-    value = try Padded.written(try Stepping.widened(old.map { |kv| kv.value }), heads.value, spread.unwrap!, 2)
-  end
-
-  seen = try Nn.attend(
-    a,
-    heads.query,
-    try Padded.reached(key, req.reach),
-    try Padded.reached(value, req.reach),
-    some(mask),
-    gate: heads.gate,
-  )
-
-  ok(KvDecoder.Layer(hidden: seen, key: key, value: value))
 end
