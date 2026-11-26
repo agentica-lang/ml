@@ -35,6 +35,7 @@ jobs:
     outputs:
       packages: ${{ steps.packages.outputs.packages }}
       xla: ${{ steps.xla.outputs.xla }}
+      torch: ${{ steps.xla.outputs.xla }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -53,7 +54,7 @@ jobs:
           echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
           echo "Packages: $pkgs"
 
-      # The xla job runs on a push to main, and on a pull request that changes tensor/, train/ or this file.
+      # The xla and torch jobs run on a push to main, and on a pull request that changes tensor/, train/ or this file.
       - name: Does the XLA backend need a run
         id: xla
         shell: bash
@@ -376,9 +377,76 @@ jobs:
           TENSOR_REQUIRE_XLA: '1'
         run: agentica test --max-steps 10000000 test/fit_test.agc test/schedule_test.agc test/adamw_test.agc
 
+  # The libtorch backend of tensor/ (Backend.Torch) on Ubuntu's own libtorch-dev, the system package: the repository never
+  # downloads or vendors libtorch. tools/build-torch.sh finds it, `agentica install` builds the optional native module,
+  # and TENSOR_REQUIRE_TORCH=1 makes a module that did not build fail the torch tests instead of passing them as absent.
+  # The whole tensor suite runs, since much of it also compares against libtorch; coverage_check.py counts the torch
+  # files of this report (src/torch.agc and the others that the packages job cannot run). Same rule as the xla job.
+  torch:
+    needs: plan
+    if: needs.plan.outputs.torch == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: tensor
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the pinned Agentica version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version sha256 _ < AGENTICA_VERSION
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Agentica release
+        uses: agentica-lang/setup-agentica@v1
+        with:
+          version: ${{ steps.pin.outputs.version }}
+          sha256: ${{ steps.pin.outputs.sha256 }}
+
+      - name: Install libtorch
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libtorch-dev
+          dpkg-query -W -f='libtorch-dev ${Version}\n' libtorch-dev
+
+      # The build needs g++ and libtorch's headers: build-torch.sh prints the exports for them.
+      - name: Find libtorch
+        shell: bash
+        run: |
+          set -euo pipefail
+          exports=$(sh tools/build-torch.sh | grep '^export ')
+          eval "$exports"
+          echo "CC=$CC" >> "$GITHUB_ENV"
+          echo "CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH" >> "$GITHUB_ENV"
+
+      - name: Install the locked dependencies
+        run: agentica install
+
+      - name: Test
+        env:
+          TENSOR_REQUIRE_TORCH: '1'
+        run: agentica test --coverage --max-steps 10000000
+
+      - name: Coverage of the torch files
+        run: python3 ../tools/coverage_check.py coverage/lcov.info --package tensor --only libtorch
+
+      - name: Upload the coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lcov-tensor-torch
+          path: tensor/coverage/lcov.info
+          if-no-files-found: ignore
+          retention-days: 14
+
   # `test` is the required check, so it carries the result of the other jobs.
   test:
-    needs: [plan, packages, cchecker, xla]
+    needs: [plan, packages, cchecker, xla, torch]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -389,7 +457,8 @@ jobs:
           PACKAGES: ${{ needs.packages.result }}
           CCHECKER: ${{ needs.cchecker.result }}
           XLA: ${{ needs.xla.result }}
+          TORCH: ${{ needs.torch.result }}
         run: |
-          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER, xla: $XLA"
+          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER, xla: $XLA, torch: $TORCH"
           [ "$PLAN" = success ] && [[ "$PACKAGES" =~ ^(success|skipped)$ ]] && [ "$CCHECKER" = success ] &&
-            [[ "$XLA" =~ ^(success|skipped)$ ]]
+            [[ "$XLA" =~ ^(success|skipped)$ ]] && [[ "$TORCH" =~ ^(success|skipped)$ ]]

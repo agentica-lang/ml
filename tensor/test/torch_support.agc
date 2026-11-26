@@ -36,6 +36,9 @@ def available() -> Bool = Tensor.available(TORCH)
 ## `error("backend not available")` naming the reason. Spelled out, never a
 ## silent pass (`../README.md`, "CI").
 def absent() -> Result[Void]
+  # With `TENSOR_REQUIRE_TORCH` set (the `torch` job of CI), a module that did not build fails the test.
+  flag = System.env("TENSOR_REQUIRE_TORCH")
+  return error("libtorch required but not built (TENSOR_REQUIRE_TORCH is set)") if flag.ok? && try flag != ""
   try Test.assert(!available(), "the native torch module is loaded after all")
   case Tensor.zeros([2], Tensor.Dtype.F32, TORCH)
     ok(_) -> error("the Torch arm computed a tensor without the native module")
