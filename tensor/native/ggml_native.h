@@ -170,8 +170,8 @@ an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double val
    Vulkan device and a CPU together may be one. */
 an_term ggml_on_cpu(an_env *env, struct ggml_TensorHandle_state *t);
 
-/* How many runs went through the scheduler of a graph that has leaves on the device and on the CPU, since the process
-   started: a graph with every leaf on one side never counts. */
+/* How many runs went through the scheduler (a graph on a device with a leaf in host memory, even every leaf), since
+   the process started: a graph with every leaf in device memory never counts. */
 an_term ggml_mixed_runs(an_env *env);
 
 /* Host readback: the row-major values as doubles, which the caller tags
