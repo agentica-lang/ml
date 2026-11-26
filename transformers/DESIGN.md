@@ -815,12 +815,12 @@ error row per config field.
   `transformers` 5.22.2, `pillow` 11.3.0 as for the pixels golden, `torchvision` 0.29.2 for the video processor class
   that `AutoProcessor` loads, no `flash-linear-attention` or `causal-conv1d`, the sha256 of the checkpoint files, its
   tokenizer files and `preprocessor_config.json` checked, offline; `vision/test/fixtures/qwen/chat_golden.json`, sha256
-  `a944269cb2a6db8481494fbefc1e40c8ddee21832c26ae5ee5be088d8662e6b1`): the real `Qwen/Qwen3.5-0.8B` in `float32` with a
+  `bfac5426dbc1bde16a90832ea33db0af9e6003cd19e181bbcf3edb31670a0aa1`): the real `Qwen/Qwen3.5-0.8B` in `float32` with a
   picture, the chat of the user. It does nothing unless `QWEN35_MODEL` names the checkpoint folder
   (`QWEN35_DEVICE=vulkan` for Vulkan), and each of its three cases is a test of its own, as a test has 30 seconds. Three
   drawn images of the ResNet test: a wide one shrunk (a grid of 12 by 18 patches), a tall one shrunk (18 by 12) and an
   8-bit crop enlarged (14 by 20). The golden script writes the resized image that Hugging Face's processor made of each
-  as an 8-bit PNG (`vision/test/fixtures/qwen/crops/chat-NAME.png`, 71 KB; `pixel_values` is exactly its patches, scaled
+  as an 8-bit PNG (`vision/test/fixtures/qwen/crops/chat-NAME.png`, 71 KB, its sha256 in the golden and checked by a test that needs no checkpoint; `pixel_values` is exactly its patches, scaled
   and normalized, which `qwen_pixels_test` checks for the resize), and the test gives the tower that crop, so the gap of
   a logit is the model's and not the pixels'. The prompt (the template with `Chat.IMAGE`, the tokenizer,
   `Mrope.expand`, 75 to 90 ids) is the ids of the `AutoProcessor`'s own (its count of image tokens is the processor's,

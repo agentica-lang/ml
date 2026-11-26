@@ -4,7 +4,7 @@ pixel bounds `size` of the image processor and a question) the prompt that the p
 template, its image processor and the tokenizer) makes as ids, the grid `image_grid_thw`, the ids that greedy `generate`
 adds (at most `NEW`, stopping at an end id, which it keeps), and for each step the gap between the two largest logits and
 the five largest logits with their ids. The resized image that the processor made, 8 bits per channel, is written as a
-PNG into `test/fixtures/qwen/crops/chat-NAME.png` (`pixel_values` are exactly its patches, scaled and normalized, as in
+PNG into `test/fixtures/qwen/crops/chat-NAME.png`, whose sha256 goes in the golden (`pixel_values` are exactly its patches, scaled and normalized, as in
 `test/qwen_pixels_golden.py`, which checks the resize), and the test gives the tower that crop: the gap of its logits is
 then the model's and not the resize of libvips.
 
@@ -140,7 +140,8 @@ def run(processor):
                 do_sample=False, repetition_penalty=1.0, max_new_tokens=NEW, eos_token_id=STOP, pad_token_id=248044,
                 output_scores=True, return_dict_in_generate=True)
         cases.append({
-            "name": name, "image": image, "crop": f"qwen/crops/chat-{name}.png", "min_pixels": low, "max_pixels": high,
+            "name": name, "image": image, "crop": f"qwen/crops/chat-{name}.png",
+            "crop_sha256": hashlib.sha256(crop.read_bytes()).hexdigest(), "min_pixels": low, "max_pixels": high,
             "question": question,
             "grid": grid[0, 1:].tolist(), "ids": ids[0].tolist(),
             "generated": made.sequences[0, ids.shape[1]:].tolist(),

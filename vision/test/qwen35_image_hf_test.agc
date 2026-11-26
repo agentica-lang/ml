@@ -42,6 +42,7 @@ LOGIT_ABS = 0.005
 struct Case
   name: String
   crop: String
+  crop_sha256: String
   question: String
   grid: List[Int]
   ids: List[Int]
@@ -62,6 +63,17 @@ struct Encoded
 end
 
 private
+
+## The crops are the files that the golden was made from, so a changed picture is not a change of the model.
+def test_the_crops_are_the_files_of_the_golden() -> Result[Void]
+  want = try JSON.decode(try File.read_text("test/fixtures/qwen/chat_golden.json"), Golden)
+  try Test.eq(want.cases.size, 3)
+  for c in want.cases
+    try Test.eq(OpenSSL.Digest.hexencode(try File.sha256("test/fixtures/#{c.crop}")), c.crop_sha256)
+  end
+
+  ok()
+end
 
 def test_a_shrunk_wide_picture_gives_hugging_faces_ids() -> Result[Void] = checked("wide")
 
