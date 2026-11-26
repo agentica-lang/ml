@@ -371,6 +371,7 @@ def attend(
   causal: Bool = false,
   gate: Optional[Tensor.Tensor] = none,
 ) -> Result[Tensor.Tensor]
+  return error("an attention has a gate or a head gate, not both") if p.gate and p.head_gate.some?
   gated = p.gate or p.head_gate.some?
   return error("a gated attention needs the gate of its heads") if gated and gate.none?
   return error("a gate is for a gated attention: this one has no gate") if !gated and gate.some?
@@ -441,44 +442,41 @@ end
 
 ## The additive `[size, size]` mask that keeps query `i` off the keys after
 ## it: `0.0` where `key <= i`, `MASKED` above the diagonal, the same bias that
-## `causal: true` builds inside `Tensor.attention`.
-def causal_mask(size: Int, dtype: Tensor.Dtype, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+## `causal: true` builds inside `Tensor.attention`. With a `window` (a sliding-window layer) it is `0.0` where
+## `i - window < key <= i` only: query `i` sees itself and the `window - 1` keys before it. A `window` of `size` or
+## more changes nothing.
+def causal_mask(
+  size: Int,
+  dtype: Tensor.Dtype,
+  backend: Tensor.Backend,
+  window: Optional[Int] = none,
+) -> Result[Tensor.Tensor]
   return error("causal_mask needs size >= 1, got #{size}") if size < 1
   square = [size, size]
   positions = try Tensor.arange(0, size, 1, Tensor.Dtype.I32, backend)
   rows = try Tensor.broadcast_to(try Tensor.reshape(positions, [size, 1]), square)
   cols = try Tensor.broadcast_to(try Tensor.reshape(positions, [1, size]), square)
+  case window
+    some(w) -> return window_bias(rows, cols, w, dtype)
+    none -> nil
+  end
+
   blocked = try Tensor.full(square, Tensor.Values.Float(MASKED), dtype, backend)
   Tensor.where(try Tensor.lt(rows, cols), blocked, try Tensor.zeros(square, dtype, backend))
 end
 
-## The additive `[size, size]` mask of a sliding window: `0.0` where `i - window < key <= i`, so query `i` sees itself
-## and the `window - 1` keys before it, and `MASKED` elsewhere. With `window >= size` it is `causal_mask`.
-def window_mask(size: Int, window: Int, dtype: Tensor.Dtype, backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  return error("window_mask needs size >= 1, got #{size}") if size < 1
-  square = [size, size]
-  positions = try Tensor.arange(0, size, 1, Tensor.Dtype.I32, backend)
-  rows = try Tensor.broadcast_to(try Tensor.reshape(positions, [size, 1]), square)
-  cols = try Tensor.broadcast_to(try Tensor.reshape(positions, [1, size]), square)
-  window_bias(rows, cols, window, dtype)
-end
-
-## The `window_mask` bias over the grids `queries` and `keys` (`I32`, one shape): the position of each query and of
-## each key it is compared with, so a padded cache can name its own.
+## The sliding-window bias of `causal_mask` over the grids `queries` and `keys` (`I32`, one shape): the position of each
+## query and of each key it is compared with, so a padded cache can name its own.
 def window_bias(queries: Tensor.Tensor, keys: Tensor.Tensor, window: Int, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
   return error("a window is at least 1 key, got #{window}") if window < 1
   shape = Tensor.shape(queries)
   backend = Tensor.backend(queries)
   edge = try Tensor.full(shape, Tensor.Values.Float(window.to_f - 1.0), Tensor.Dtype.F32, backend)
   blocked = try Tensor.full(shape, Tensor.Values.Float(MASKED), dtype, backend)
-  later = try Tensor.mul(try Tensor.to_dtype(try Tensor.lt(queries, keys), dtype), blocked)
   reach = try Tensor.add(try Tensor.to_dtype(keys, Tensor.Dtype.F32), edge)
-  older = try Tensor.mul(
-    try Tensor.to_dtype(try Tensor.lt(reach, try Tensor.to_dtype(queries, Tensor.Dtype.F32)), dtype),
-    blocked,
-  )
-
-  Tensor.add(later, older)
+  older = try Tensor.lt(reach, try Tensor.to_dtype(queries, Tensor.Dtype.F32))
+  inside = try Tensor.where(older, blocked, try Tensor.zeros(shape, dtype, backend))
+  Tensor.where(try Tensor.lt(queries, keys), blocked, inside)
 end
 
 ## The additive bias `[batch, 1, seq, seq]` of a `[batch, seq]` mask (1.0 for a token, 0.0 for padding): `MASKED` on

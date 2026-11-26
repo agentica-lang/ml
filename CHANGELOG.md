@@ -11,7 +11,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### nn
 
-- `ShortConv`, the gated short convolution of LFM3 (`pkg/nn/short_conv`), `Attention.head_gate` (a gate of one number per head) and `Nn.window_mask`, with `window` in `Padded.padded_mask`, the mask of a sliding-window layer (ml#275).
+- `ShortConv`, the gated short convolution of LFM3 (`pkg/nn/short_conv`), `Attention.head_gate` (a gate of one number per head) and a `window` in `Nn.causal_mask` and `Padded.padded_mask`, the mask of a sliding-window layer (ml#275).
 
 ### hub
 

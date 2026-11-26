@@ -1,8 +1,7 @@
-"""Writes `test/fixtures/lfm3_golden.json`: what the official LFM3 code (`LiquidAI/LFM3-1.7B`, revision
-1da06bec6a819da10b54c67e5c90972b46d81871, `trust_remote_code`: `modeling_lfm3.py`, `configuration_lfm3.py` and
-`lfm3_conv.py`) answers for a tiny random model of one layer of each kind (`conv`, `sliding_attention` with a window of
-3, `full_attention`), in `float32` and the eager attention, for `test/lfm3_test.agc` and `test/layers_test.agc`
-to compare with `ShortConv.short_conv`, `Nn.attention` with a `head_gate`, and `Nn.window_mask`:
+"""Writes `test/fixtures/lfm3_golden.json`: what the official LFM3 code answers for a tiny random model of one layer of
+each kind (`conv`, `sliding_attention` with a window of 3, `full_attention`), in `float32` and the eager attention, for
+`test/lfm3_test.agc` to compare with `ShortConv.short_conv`, `Nn.attention` with a `head_gate`, and `Nn.causal_mask` with
+a window:
 
 - the short convolution over 10 tokens with no cache, then a prefill of 6 and 4 decode steps with a `DynamicCache`, and
   the state the cache holds after them (`[width, taps]` in Hugging Face, the last `taps - 1` columns are ours);
@@ -10,15 +9,23 @@ to compare with `ShortConv.short_conv`, `Nn.attention` with a `head_gate`, and `
   0/1 grid of the keys each query sees in the sliding layer.
 
 The rotary embedding here is the plain one (`partial_rotary_factor` 1.0): the zero-tail layout of the real model is
-the loader's (`transformers/`). The code is not in the repository: download the three files at the revision above into
-a folder and give it as the argument.
+the loader's (`transformers/`).
+
+The code is `modeling_lfm3.py`, `configuration_lfm3.py` and `lfm3_conv.py` of `LiquidAI/LFM3-1.7B`, revision
+1da06bec6a819da10b54c67e5c90972b46d81871, under the LFM Open License v1.0. It is not copied here, and the fixture holds
+only outputs on random weights. The script imports those files and runs them as code (`trust_remote_code`): read them
+first, run in a throwaway venv, and it refuses files whose sha256 is not the one of that revision. Download them with:
+
+    hf download LiquidAI/LFM3-1.7B modeling_lfm3.py configuration_lfm3.py lfm3_conv.py \\
+        --revision 1da06bec6a819da10b54c67e5c90972b46d81871 --local-dir ~/.cache/agentica-ml/hf/lfm3-1.7b-code
 
 Manual, not run by the tests: it needs `torch` 2.15.0 and `transformers` 5.22.2 (the script stops on other versions)
-and no `triton` or `causal-conv1d`. Run it in a throwaway venv, from `nn/`, with Python's isolated mode:
+and no `triton` or `causal-conv1d`. Run it from `nn/`, with Python's isolated mode:
 
     python -I test/lfm3_golden.py ~/.cache/agentica-ml/hf/lfm3-1.7b-code > test/fixtures/lfm3_golden.json
 """
 
+import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
@@ -44,11 +51,25 @@ ROPE = {"full_attention": {"rope_type": "default", "rope_theta": 10000.0, "parti
         "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0}}
 
 
-def check_environment():
-    assert torch.__version__.startswith("2.15.0"), torch.__version__
-    assert transformers.__version__ == "5.22.2", transformers.__version__
+SHA256 = {
+    "configuration_lfm3.py": "176cced35657aedfea7d7002221360582d1c05fcaca882c21508bc3a73b282e5",
+    "lfm3_conv.py": "80d4a985382a22774212759248a6b4c737bfbf9c2a47b3dd7f797dda748e4bb4",
+    "modeling_lfm3.py": "e8cd5254ea99ce6bd731b57b10908c2e8b5010ce8315341f895a38484885eeab",
+}
+
+
+def check_environment(folder):
+    if not torch.__version__.startswith("2.15.0"):
+        raise SystemExit(f"torch 2.15.0 is needed, got {torch.__version__}")
+    if transformers.__version__ != "5.22.2":
+        raise SystemExit(f"transformers 5.22.2 is needed, got {transformers.__version__}")
     for name in ("triton", "causal_conv1d"):
-        assert importlib.util.find_spec(name) is None, f"{name} is installed: its kernel is not the reference"
+        if importlib.util.find_spec(name) is not None:
+            raise SystemExit(f"{name} is installed: its kernel is not the reference")
+    for name, digest in SHA256.items():
+        with open(f"{folder}/{name}", "rb") as f:
+            if hashlib.sha256(f.read()).hexdigest() != digest:
+                raise SystemExit(f"{name} is not the file of the pinned revision")
 
 
 def load_remote(folder):
@@ -64,7 +85,7 @@ def flat(t):
 
 
 def main():
-    check_environment()
+    check_environment(sys.argv[1])
     configuration, modeling = load_remote(sys.argv[1])
     torch.manual_seed(5)
     config = configuration.Lfm3Config(**SHAPE, rope_parameters=ROPE, attn_implementation="eager")
@@ -76,6 +97,8 @@ def main():
         x = (torch.randn(1, TOKENS, HIDDEN)).double().round(decimals=8).float()
         ids = torch.arange(TOKENS)[None]
         masks = modeling.create_masks_by_layer_type(config, x, None, None, ids)
+        if masks["sliding_attention"] is None or masks["full_attention"] is None:
+            raise SystemExit("a mask is None: the attention would run unmasked")
         conv = model.layers[0].conv
         full = conv(x)
         cache = DynamicCache(config=config)

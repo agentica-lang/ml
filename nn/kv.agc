@@ -49,7 +49,7 @@ end
 
 ## `[n, capacity]`: `MASKED` where the key's row is after the query's position
 ## (later tokens and the padding), 0 elsewhere. With a `window` (a sliding-window layer) the keys `window` rows or
-## more before the position are `MASKED` too (`Nn.window_mask`).
+## more before the position are `MASKED` too (`Nn.causal_mask` with a window).
 def padded_mask(s: Slots, dtype: Tensor.Dtype, window: Optional[Int] = none) -> Result[Tensor.Tensor]
   n = Tensor.shape(s.positions)[0]
   backend = Tensor.backend(s.positions)

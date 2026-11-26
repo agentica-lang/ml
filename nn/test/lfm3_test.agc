@@ -1,6 +1,6 @@
 ## What LFM3 adds to `nn/`, against the official code (`lfm3_golden.py`, `fixtures/lfm3_golden.json`): the gated short
 ## convolution (`ShortConv.short_conv`), the gate of one number per head (`Attention.head_gate`) and the sliding-window
-## mask (`Nn.window_mask`, and `Padded.padded_mask` with a window). Run from `nn/`.
+## mask (`Nn.causal_mask` with a window, and `Padded.padded_mask` with one). Run from `nn/`.
 
 import Delta from "../delta"
 import Init from "../init"
@@ -112,7 +112,7 @@ end
 ## The layer `l` over its input, with the mask of its kind.
 def run_layer(p: Nn.Attention, l: Layer, x: Tensor.Tensor) -> Result[Tensor.Tensor]
   if l.window > 0
-    mask = try Nn.window_mask(l.tokens, l.window, Tensor.Dtype.F32, Tensor.backend(x))
+    mask = try Nn.causal_mask(l.tokens, Tensor.Dtype.F32, Tensor.backend(x), some(l.window))
     return Nn.self_attention(p, x, some(mask))
   end
 
@@ -230,7 +230,8 @@ def test_a_short_convolution_that_does_not_fit_is_an_error() -> Result[Void]
   Test.error?(ShortConv.short_start(p.with(conv: try S.f32(c.conv, [c.hidden * c.taps])), S.REF))
 end
 
-## The sliding layer (a window of 3 keys, `window_mask`) and the full one (`causal`), each with its gate per head.
+## The sliding layer (a window of 3 keys, `causal_mask` with a window) and the full one (`causal`), each with its gate
+## per head.
 def test_an_attention_with_a_gate_per_head_matches_the_official_code() -> Result[Void]
   for l in (try golden()).attentions
     p = try attention_of(l, S.REF)
@@ -243,15 +244,15 @@ def test_an_attention_with_a_gate_per_head_matches_the_official_code() -> Result
   ok()
 end
 
-def test_the_window_mask_is_the_grid_of_keys_the_official_code_shows_each_query() -> Result[Void]
+def test_the_windowed_causal_mask_is_the_grid_of_keys_the_official_code_shows_each_query() -> Result[Void]
   g = try golden()
   size = g.attentions[0].tokens
-  got = try S.floats_of(try Nn.window_mask(size, g.window, Tensor.Dtype.F32, S.REF))
+  got = try S.floats_of(try Nn.causal_mask(size, Tensor.Dtype.F32, S.REF, some(g.window)))
   try Test.eq(got.map { |v| seen(v) }, g.visible)
   causal = try S.floats_of(try Nn.causal_mask(size, Tensor.Dtype.F32, S.REF))
-  try Test.eq(try S.floats_of(try Nn.window_mask(size, size, Tensor.Dtype.F32, S.REF)), causal)
-  try Test.error?(Nn.window_mask(size, 0, Tensor.Dtype.F32, S.REF))
-  Test.error?(Nn.window_mask(0, 3, Tensor.Dtype.F32, S.REF))
+  try Test.eq(try S.floats_of(try Nn.causal_mask(size, Tensor.Dtype.F32, S.REF, some(size))), causal)
+  try Test.error?(Nn.causal_mask(size, Tensor.Dtype.F32, S.REF, some(0)))
+  Test.error?(Nn.causal_mask(0, Tensor.Dtype.F32, S.REF, some(3)))
 end
 
 ## The rows of a padded cache that a new token reads are the row of the window mask of its position.
@@ -261,11 +262,34 @@ def test_a_padded_cache_with_a_window_hides_the_keys_a_window_or_more_before() -
   at = (0...size).map { |i| Tensor.Values.Int(i) }
   slots = Padded.Slots(positions: try Tensor.from_list(at, [size], Tensor.Dtype.I32, S.REF), capacity: 16)
   got = try S.floats_of(try Padded.padded_mask(slots, Tensor.Dtype.F32, some(g.window)))
-  want = try S.floats_of(try Nn.window_mask(16, g.window, Tensor.Dtype.F32, S.REF))
+  want = try S.floats_of(try Nn.causal_mask(16, Tensor.Dtype.F32, S.REF, some(g.window)))
   try Test.eq(got, want.take(size * 16))
   plain = try S.floats_of(try Padded.padded_mask(slots, Tensor.Dtype.F32))
   try Test.eq(try S.floats_of(try Padded.padded_mask(slots, Tensor.Dtype.F32, some(16))), plain)
-  Test.error?(Padded.padded_mask(slots, Tensor.Dtype.F32, some(0)))
+  try Test.error?(Padded.padded_mask(slots, Tensor.Dtype.F32, some(0)))
+  try single_row(12, 16, g.window)
+  try single_row(16, 16, g.window)
+  ok()
+end
+
+## One new token at `position` over a cache of `capacity` rows: the row of the windowed causal mask of its position. The
+## position `capacity` is the padding of a prompt: its row has only the values 0 and `MASKED`, never a `NaN` or an
+## infinity.
+def single_row(position: Int, capacity: Int, window: Int) -> Result[Void]
+  slots = Padded.Slots(
+    positions: try Tensor.from_list([Tensor.Values.Int(position)], [1], Tensor.Dtype.I32, S.REF),
+    capacity: capacity,
+  )
+
+  got = try S.floats_of(try Padded.padded_mask(slots, Tensor.Dtype.F32, some(window)))
+  try Test.eq(got.size, capacity)
+  for v in got
+    try Test.assert(v == 0.0 or v == Nn.MASKED, "position #{position}: #{v} is not 0 or MASKED")
+  end
+
+  return ok() if position >= capacity
+  grid = try S.floats_of(try Nn.causal_mask(capacity, Tensor.Dtype.F32, S.REF, some(window)))
+  Test.eq(got, grid.drop(position * capacity).take(capacity))
 end
 
 ## The sliding layer on ggml (CPU): every node against the reference, with the mask built inside the graph.
@@ -322,6 +346,7 @@ def test_the_two_gates_do_not_mix() -> Result[Void]
   try Test.assert(heads.gate.some?, "a head gate projects a gate")
   try Test.eq(Tensor.shape(heads.gate.unwrap!), Tensor.shape(heads.query))
   try Test.error?(Nn.attend(p, heads.query, heads.key, heads.value, none, true))
+  try Test.error?(Nn.attend(p.with(gate: true), heads.query, heads.key, heads.value, none, true, heads.gate))
   try Test.error?(Nn.attend(p.with(head_gate: none), heads.query, heads.key, heads.value, none, true, heads.gate))
   Test.error?(Nn.project(p.with(head_gate: some(p.output)), x, x))
 end

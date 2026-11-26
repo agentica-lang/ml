@@ -50,9 +50,9 @@ Nn.mlp(p, x)                       down(act(up x)), or down(act(gate x) * up x) 
 Nn.encoder_block(p, x, mask?, causal?)
                                    pre-norm: h = x + attn(norm1(x)); h + mlp(norm2(h))
                                    post-norm: h = norm1(x + attn(x)); norm2(h + mlp(h))
-Nn.causal_mask(size, dtype, backend)   [size, size]: 0.0 on and below the diagonal, MASKED above
-Nn.window_mask(size, window, dtype, backend)   [size, size]: 0.0 where i - window < key <= i, MASKED elsewhere
-Nn.window_bias(queries, keys, window, dtype)   the same over grids of I32 positions (a padded cache names its own)
+Nn.causal_mask(size, dtype, backend, window?)   [size, size]: 0.0 on and below the diagonal, MASKED above; with a
+                                   window, 0.0 only where i - window < key <= i
+Nn.window_bias(queries, keys, window, dtype)   that window mask over grids of I32 positions (a padded cache names its own)
 Nn.padding_bias(mask)              [batch, seq] of 1.0/0.0 -> [batch, 1, seq, seq]: MASKED on padding keys
 Nn.decoder_block(p, x, memory)     x [batch, t, width] over memory [batch, s, width]:
                                    h = x + self_attn(norm1(x), causal);
@@ -87,12 +87,12 @@ rows of the convolution's input in time order (Hugging Face keeps `[channels, ta
 checkpoint's convolution `[channels, 1, taps]` as `[channels, taps]`; `test/delta_test.agc` checks both states against
 the cache of Hugging Face.
 
-`ShortConv` is the convolution layer of LFM3 (and LFM2): `in_proj` makes `b`, `c` and `x`, the depthwise convolution
+`ShortConv` is the convolution layer of LFM3 (LFM2 has the same layer, untested here): `in_proj` makes `b`, `c` and `x`, the depthwise convolution
 (`Delta.causal_conv1d`, so the same state, the same `Padding` and the same checks) runs over `b * x`, and `c` gates its
 output before `out_proj`; there is no bias (`conv_bias` is false in every checkpoint, a loader refuses it). The attention
 of LFM3 gates each head by one number, `sigmoid(gate_proj(x))` with `gate_proj` `[heads, width]`, which is
 `Attention.head_gate`: `project` repeats it over the head width as a `Heads.gate`, so `attend` is the one of `gate`. A
-sliding-window layer is an attention under `window_mask` (the window counts the key itself: a window of 3 sees the
+sliding-window layer is an attention under `causal_mask` with a `window` (the window counts the key itself: a window of 3 sees the
 position and the two before it, as Hugging Face's `sliding_window`); a padded cache gives `padded_mask` the window.
 `test/lfm3_test.agc` checks the three against the official code's tiny model (`test/lfm3_golden.py`).
 
