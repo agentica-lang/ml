@@ -38,7 +38,8 @@ build = { sources = ["native/ggml.c", "native/ggml_graph.c"], libs = ["tensor_gg
 # `src/xla_native.agc` and dispatched to from the `Backend.Xla(device)` arms of `tensor.agc` (`tensor/DESIGN.md` §7).
 # Nothing of XLA is linked: `native/xla.c` loads the plugin with `dlopen` at run time, from the ml cache where
 # `tools/install_xla.agc` puts it. `native/pjrt_c_api.h` is the API's header (openxla/xla@dd6381370d6f, PJRT 0.81,
-# Apache-2.0, its notice inside), vendored so the module builds with no download.
+# Apache-2.0, its notice inside), vendored so the module builds with no download; a plugin that speaks a later minor
+# (0.117 in the release xla-c9276de87e15) loads too.
 [native.xla]
 optional = true
 build = { sources = ["native/xla.c"], libs = ["dl", "pthread"] }

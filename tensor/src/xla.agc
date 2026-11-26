@@ -23,10 +23,12 @@ RELEASE = "xla-c9276de87e15"
 ## The name of the plugin in the cache.
 FILE = "pjrt_c_api_cpu_plugin.so"
 
-## One plugin of the release: the machine it is for, where it is and its sha256 (the one in the release's `SHA256SUMS`).
+## One plugin of the release: the machine it is for, where it is, its size in bytes and its sha256 (the ones of the
+## release's files; `SHA256SUMS` has the sha256).
 struct Plugin
   arch: String
   url: String
+  size: Int
   sha256: String
 end
 
@@ -51,11 +53,13 @@ def plugins() -> List[Plugin]
     Plugin(
       arch: "x86_64",
       url: asset_url("linux-x86_64"),
+      size: 164906544,
       sha256: "f9fd5884f1592a5ea277410337471b8e90e2de6df60d4df51d4b48670eeaa16d",
     ),
     Plugin(
       arch: "aarch64",
       url: asset_url("linux-aarch64"),
+      size: 118088344,
       sha256: "7610eb83dae26f875b1487d0099c34006d3cec1040bbea5677379e008b6ac4e7",
     ),
   ]

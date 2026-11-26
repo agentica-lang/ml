@@ -55,11 +55,11 @@ def fetch(p: Xla.Plugin, dest: String) -> Result[Void]
     return error(url.message)
   end
 
-  options = HTTP.DownloadOptions(timeout_ms: some(TIMEOUT_MS), sha256: some(p.sha256))
+  options = HTTP.DownloadOptions(timeout_ms: some(TIMEOUT_MS), max_total_bytes: some(p.size), sha256: some(p.sha256))
   got = HTTP.download(client, try url, try Path.join([dest, Xla.FILE]), options)
   HTTP.close_client(client)
-  saved = try got
-  return error("#{p.url} answered #{saved.status}") if saved.status != 200
+  # A status that is not 200 has a body that does not have the digest, so it fails here too.
+  return error("#{p.url}: #{got.message}") if !got.ok?
   ok()
 end
 
@@ -70,6 +70,7 @@ def resolve(client: HTTP.Client, url: String) -> Result[String]
   return ok(url) if head.status == 200
   return error("#{url} answered #{head.status}") if ![301, 302, 307, 308].include?(head.status)
   where = HTTP.header_values(head.headers, "location")
+  # The trust anchor is the sha256 of the file, not the host it comes from; https only keeps the transfer private.
   return error("#{url} redirects somewhere that is not https") if where.empty? || !where[0].start_with?("https://")
   ok(where[0])
 end

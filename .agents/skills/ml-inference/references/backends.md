@@ -54,11 +54,11 @@ If you built ggml too, run the torch line after it: both modules then build with
 ## XLA
 
 ```sh
-agentica deps/tensor/tools/install_xla.agc    # needs unzip; Linux x86_64 (AVX) or aarch64
+agentica deps/tensor/tools/install_xla.agc    # Linux x86_64 (AVX) or aarch64
 ```
 
-It downloads the pinned plugin from PyPI, checks its sha256 and keeps it in `~/.cache/agentica-ml/xla/`
-(`AGENTICA_ML_CACHE` moves the cache). Nothing of XLA is linked.
+It downloads the pinned plugin from our GitHub release of agentica-lang/ml, checks its sha256 and keeps it in
+`~/.cache/agentica-ml/xla/` (`AGENTICA_ML_CACHE` moves the cache). Nothing of XLA is linked.
 
 ## Pick a backend
 
