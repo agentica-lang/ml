@@ -263,27 +263,26 @@ def gpt2_split(chars: List[Int]) -> List[List[Int]]
   start = 0
   for i in 0...chars.size
     if Unicode.number?(chars[i])
-      out = out + gpt2_run(chars, start, i)
-      out = out.push([chars[i]])
+      out = gpt2_run(chars, start, i, out).push([chars[i]])
       start = i + 1
     end
   end
 
-  out + gpt2_run(chars, start, chars.size)
+  gpt2_run(chars, start, chars.size, out)
 end
 
-## The pieces of the GPT-2 pattern in `chars[start...stop]`, which has no number: `'s|'t|'re|'ve|'m|'ll|'d`,
+## `out` and the pieces of the GPT-2 pattern in `chars[start...stop]`, which has no number: `'s|'t|'re|'ve|'m|'ll|'d`,
 ## ` ?\p{L}+`, ` ?[^\s\p{L}\p{N}]+`, `\s+(?!\S)` and `\s+`, in that order.
-def gpt2_run(chars: List[Int], start: Int, stop: Int) -> List[List[Int]]
-  out: List[List[Int]] = []
+def gpt2_run(chars: List[Int], start: Int, stop: Int, out: List[List[Int]]) -> List[List[Int]]
+  pieces = out
   at = start
   while at < stop
     size = gpt2_piece_size(chars, at, stop)
-    out = out.push(Unicode.span(chars, at, at + size))
+    pieces = pieces.push(Unicode.span(chars, at, at + size))
     at += size
   end
 
-  out
+  pieces
 end
 
 def gpt2_piece_size(chars: List[Int], at: Int, stop: Int) -> Int

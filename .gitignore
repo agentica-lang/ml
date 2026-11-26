@@ -3,6 +3,9 @@ deps/
 # Bytecode caches and compiled programs.
 _build/
 *.agcb
+# The line coverage report of `agentica test --coverage`.
+coverage/
+
 # Downloaded model weights: never enter git (see whisper/tools/fetch-model.sh).
 models/
 

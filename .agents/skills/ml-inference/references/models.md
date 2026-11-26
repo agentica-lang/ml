@@ -134,8 +134,8 @@ end
 - SmolVLM (`HuggingFaceTB/SmolVLM-256M-Instruct`): `SmolVlmVision.open(dir, backend)` and
   `encode(v, tile)` of a normalized 512 by 512 tile (`Vision.to_tensor`, `Vision.normalize` with mean and std 0.5) give its
   64 rows of 576 for the text model, close the rows with `Lift.close` and the tower with `close_model`. The text
-  model is `Qwen3.open_idefics3`. The processor: `Vision.idefics3_tiles(image)` (an sRGB image of 3 bands; tiles of 512 by 512 row by row, then the
-  global image; `rows`, `cols`) and `SmolVlmPrompt.expand(ids, SmolVlmPrompt.open(dir).unwrap!, grids)`, which turns the one
+  model is `Qwen3.open_idefics3`. The processor: `Vision.idefics3_tiles(image, backend)` (an sRGB `U8` image of 3 bands; `[3, 512, 512]` tensors row by row, then
+  the global image, with Pillow's Lanczos; `rows`, `cols`) and `SmolVlmPrompt.expand(ids, SmolVlmPrompt.open(dir).unwrap!, grids)`, which turns the one
   `<image>` id of each image into the ids of its tiles; `Bpe.open("SmolVLM-256M-Instruct/tokenizer.json")` is its tokenizer (`<image>` is one id); `Chat.apply("idefics3", ...)` is its chat template (`Chat.SMOLVLM_IMAGE` where an image goes); the fragment is in `site/content/transformers/models.md`.
 - Granite MoE (`GraniteMoe.open(dir, backend)`, `ibm-granite/granite-3.1-1b-a400m-instruct`) generates with
   `pkg/transformers/generate_granite_moe` (`Generate.open(m)`, the same calls); it has no tokenizer or chat template yet,
