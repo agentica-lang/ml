@@ -12,16 +12,16 @@ and gradients), `nn/` (layers, forward only), `train/` (losses, SGD and Adam, a
 training loop, a data loader, LoRA with PEFT's files), `hub/` (safetensors and
 GGUF checkpoints), `asr/` (Whisper on the reference, libtorch and ggml
 backends, with Hugging Face's token ids on the test clips), `transformers/`
-(BERT, DistilBERT, Qwen3, Qwen2.5, Qwen3.5, IBM Granite MoE, ResNet, ViT and
-CLIP), `vision/` (images to tensors, on libvips) and `whisper/` (a binding over whisper.cpp).
+(BERT, DistilBERT, Qwen3, Qwen2.5, Qwen3.5 with images, LFM3, IBM Granite MoE,
+SmolVLM, ResNet, ViT and CLIP), `vision/` (images to tensors, on libvips) and `whisper/` (a binding over whisper.cpp).
 
 Works, but slow: `asr/` on ggml. Its tokens match, but on the test clips it
 runs about 1.5 times slower than whisper.cpp on CPU and about 1.7 times
 slower on Vulkan (jfk). The numbers and the machine are in
 [`benchmarks/README.md`](benchmarks/README.md).
 
-Not yet: what the [roadmap](roadmap.md) lists, from vision-language models to CUDA,
-serving and distributed training.
+Not yet: what the [roadmap](roadmap.md) lists, from placement of a model across
+GPU and RAM to CUDA, serving and distributed training.
 
 The tensor stack is designed in [`tensor/DESIGN.md`](tensor/DESIGN.md) and the
 original design is in [issue #1](https://github.com/agentica-lang/ml/issues/1).
@@ -41,7 +41,7 @@ tag. The API is not stable yet, so expect changes between versions.
 | `train/` | losses (`mse`, binary and softmax cross-entropy), optimizers (SGD, Adam, AdamW), a data loader (seeded shuffle, background prefetch), the training loop over `tensor/`'s gradients, training part of a model and LoRA adapters | `tensor`, `hub`, `nn` |
 | `hub/` | `safetensors` checkpoints (one file or sharded with an index) and GGUF files, and `nn` layers loaded from them by name | `tensor`, `nn` |
 | `asr/` | Whisper in Agentica: the model forward loaded from a Hugging Face checkpoint, its log-mel frontend, its tokenizer and `transcribe` (greedy decoding with a KV cache, language detection, timestamps, translation) for audio of any length, in windows of 30 s that seek; on the reference backend, libtorch and ggml (CPU and Vulkan) | `tensor`, `nn`, `hub` |
-| `transformers/` | BERT, DistilBERT, Qwen3, Qwen2.5, Qwen3.5 text and IBM Granite MoE (the forward and generation with a KV cache) and ResNet-18/50, ViT-B/16 (image classification) and CLIP ViT-B/32 (image and text embeddings, zero-shot) from Hugging Face checkpoints, and the WordPiece and byte-level BPE tokenizers, which give Hugging Face's ids | `tensor`, `nn`, `hub`, `train` (for the fine-tune tool of `tools/`) |
+| `transformers/` | BERT, DistilBERT, Qwen3, Qwen2.5, Qwen3.5 (text and images), LFM3 and IBM Granite MoE (the forward and generation with a KV cache), SmolVLM (a chat with an image) and ResNet-18/50, ViT-B/16 (image classification) and CLIP ViT-B/32 (image and text embeddings, zero-shot) from Hugging Face checkpoints, and the WordPiece and byte-level BPE tokenizers, which give Hugging Face's ids | `tensor`, `nn`, `hub`, `train` (for the fine-tune tool of `tools/`) |
 | `vision/` | images for tensors: libvips decodes and transforms them (resize, crops, flip), their pixels reach a tensor as one buffer, `normalize` runs on the backend, and a folder per class makes batches for `train`'s loader | `tensor`, the `image` package (libvips with its development files) |
 | `whisper/` | a binding over the pinned whisper.cpp engine, with WAV reading, microphone capture and long-audio chunking | whisper.cpp (a submodule), a C/C++ compiler |
 
