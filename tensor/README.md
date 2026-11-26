@@ -62,10 +62,14 @@ answers whether this machine has it, and the dispatch arm answers
   StableHLO and compiled once; see "The XLA backend" below.
   `native/pjrt_c_api.h` is the PJRT header, vendored with its notice.
 - `tools/install_xla.agc` — downloads the pinned XLA plugin into the ml cache.
-- `tools/xla/` — what the manual `XLA plugin` workflow runs after it builds
-  the XLA PJRT CPU plugin: `smoke.c` loads the plugin and creates a client,
-  `collect-licenses.sh` gathers the licenses of what it links. The plugin
-  needs a CPU with AVX.
+- `xla-commit` — the openxla/xla commit the `XLA plugin` workflow builds.
+  Pushing the tag `xla-<its first 12 characters>` builds the plugin for Linux
+  x86_64 and aarch64 (and macOS arm64, experimental) and publishes a GitHub
+  Release with the plugins, `pjrt_c_api.h`, the licenses and `SHA256SUMS`.
+- `tools/xla/` — what that workflow runs after it builds the XLA PJRT CPU
+  plugin: `smoke.c` loads the plugin and creates a client,
+  `collect-licenses.sh` gathers the licenses of what it links. The x86_64
+  plugin needs a CPU with AVX.
 - `tools/bench.agc` — the numbers in "What the dependency costs", reproducible.
 - `tools/bench-ggml.agc` — the data and the init of the training benchmark (`benchmarks/README.md`).
 - `test/` — the unit tests of the reference backend, the libtorch conformance
