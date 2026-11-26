@@ -422,6 +422,20 @@ are a non-goal until the processor slice. Only the 256M and 500M models (a side 
 4) are checked against Hugging Face; another size is read, not tested. The tower and the text model are not in one
 file: the text side (a Llama), the splice, the processor and the chat template are the next slices of ml#84.
 
+- `smolvlm_prompt.agc` and `Vision.idefics3_tiling`/`idefics3_tiles` (the processor slice): the image side of
+  `Idefics3Processor` with the settings of SmolVLM (a longest edge of 2048, tiles of 512). The tiling is Hugging Face's
+  own arithmetic (`resize` to a longest edge of 2048, even sides, then `resize_for_vision_encoder` to multiples of
+  512 and `split_images`), in Python's floats; the tiles are the crops row by row and the global image, the grid
+  resized to 512 by 512, last. `do_image_splitting: false` is not supported (with the 2048 target every image has
+  at least 4 tiles of one side, so a grid of one tile does not occur). The image must be 3-band sRGB: the processor's
+  conversion to RGB is the caller's. libvips resizes differently from Pillow's Lanczos: it enlarges with bicubic
+  interpolation whatever the kernel (the tiles of every image here are enlargements) and shrinks with the kernel (the
+  global image); see the test below for the gaps.
+  `SmolVlmPrompt.expand` works on ids, as `Mrope.expand` does: the template's one `<image>` per image becomes the ids of
+  the processor, with `"\n"` after each row of tiles and `"\n\n"` (one id, 1116) after the last, as the tokenizer
+  merges them. The ids of the text around the images are the caller's: the tokenizer of SmolVLM (a different
+  pre-tokenizer) is the next slice. The special ids and those of the two newlines come from `tokenizer.json` (`SmolVlmPrompt.open`), and
+  `image_seq_len` from `processor_config.json`.
 - The tower is SigLIP: a convolution of stride 16 without a class token, learned positions (one row for each patch of
   the tile, in row order), 12 pre-norm blocks of full attention (`layer_norm_eps` of the config, 1e-6 in the checkpoint, separate `q_proj`, `k_proj`, `v_proj` and
   `out_proj` with biases) and an MLP of `gelu_pytorch_tanh` (`Nn.Activation.GeluTanh`), then `post_layernorm`. They
@@ -702,6 +716,27 @@ error row per config field.
   through `Generate.step_logits` over a `Sight`; the golden holds the last position's logits (mean, abs mean, 501
   values and the top 10). The largest gap is 2.7e-5 on ggml CPU and 3.2e-5 on Vulkan; the test passes within 1e-4.
   The prompt is a fixed list of ids: the processor, tile splitting and the chat template are later slices.
+- `vision/test/smolvlm_processor_test.agc` against `vision/test/smolvlm_processor_golden.py` (manual: `torch` 2.15.0,
+  `transformers` 5.22.2, `pillow` 11.3.0, offline; `vision/test/fixtures/smolvlm/processor_golden.json`, 187 KB, and
+  `checker.png` and `prompt/`): the Pillow `Idefics3ImageProcessorPil` and the tokenizer on a table of 16 sizes (the
+  sizes after each resize and the rows and columns are equal), and on three prompts: the drawn images of the ResNet test
+  (one image of 4 by 3 tiles, and two of 3 by 4 and 4 by 3: 13 and 26 frames) and a synthetic image of 333 by 1000
+  (`checker.png`: a checkerboard of cells of 5, 6 and 7 pixels, 1-pixel diagonals and sharp steps; a grid of 2 by 4,
+  9 frames), whose grid (1024 by 2048) is not its resized size (682 by 2048). The tiles through `to_tensor` and
+  `normalize` are the frames of `pixel_values`: a value of every 2621st place, the mean, the standard deviation, the
+  mean absolute difference of neighbours across and down, and for the synthetic image the values at the 300 places of
+  the largest differences (largest and mean gap). On the smooth images the bounds are 0.024, 0.002, 0.0006 and 0.0003
+  (measured 0.0157, 9e-4, 2e-4, 9e-5). On the synthetic image libvips and Pillow differ: a tile (an enlargement, which
+  libvips does with bicubic interpolation whatever the kernel) is up to 0.28 from a sample, 0.023 in the mean, 0.019
+  in the standard deviation and 0.017 in the neighbour differences, and its bounds are 1.2 times that; the global image
+  (a shrink) is within 0.15, 0.0065, 0.0043, 0.0067, 0.0116 and, at the edges, 0.063 and 0.017 on average, and its
+  bounds are 1.15 times that. `SmolVlmPrompt.expand` of the tokenizer's ids with one `<image>` gives the processor's ids,
+  875, 1736 and 875 of them, and `SmolVlmPrompt.open` reads the ids from the small folder `prompt/` (and the real
+  folder when `SMOLVLM_MODEL` names it). A 1-band or 4-band image is an error. Mutants, each failing it: the grid
+  resize left out, the crops taken column by column, the row and column ids swapped, the global image's closing token
+  missing, `"\n\n"` as one newline, a newline after the last row too, the bilinear, bicubic, Lanczos2 and nearest
+  kernels (the last two on the global image of the synthetic one), and the global image taken before the resize to the
+  grid.
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and

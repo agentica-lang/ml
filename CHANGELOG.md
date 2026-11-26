@@ -45,6 +45,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Qwen3.open` reads `model_type` `llama` (SmolLM2, the text model of SmolVLM): the Qwen2 block with no biases, to Hugging Face's `LlamaForCausalLM` logits on a tiny model; `mlp_bias: true` is an error (ml#84).
 - `Qwen3.open_idefics3` reads the Llama text model of a SmolVLM folder (`model.text_model.*`, `text_config`), to Hugging Face's logits on the real SmolVLM-256M-Instruct (ml#84).
 - SmolVLM text with images: `Generate` over a `KvDecoder.plain_sight` (a stepper with `rotated: false`, `Qwen3.image_token`) splices the features of `SmolVlmVision` into the prompt, to Hugging Face's logits on the real SmolVLM-256M-Instruct (ml#84).
+- `SmolVlmPrompt` (`pkg/transformers/smolvlm_prompt`): `expand` writes the ids of a prompt with images as `Idefics3Processor` does (tiles, row and column ids, global image) from the ids with one `<image>` per image, and `open` reads the special ids of a SmolVLM folder (ml#84).
 
 ### hub
 
@@ -53,6 +54,7 @@ All packages are released together at one version, each on its own tag, `<packag
 ### vision
 
 - `vision` needs `image-0.3.0`: an enlarged image has the pixel centres of Pillow's bicubic, so the pixels of an image under `min_pixels` are within one 8-bit level of Hugging Face's processor, as a shrunk one is (ml#306).
+- `Vision.idefics3_tiling` and `Vision.idefics3_tiles`: the sizes and the tiles (512 by 512, row by row, then the global image) that SmolVLM's image processor makes of an sRGB image; the frames are within 3 levels of 8 bits of Hugging Face's on smooth images and up to 36 on an enlarged one with hard edges (libvips enlarges with bicubic interpolation, Pillow with Lanczos) (ml#84).
 - `Vision.smart_resize` (it gives a `Vision.Size`) and `Vision.Step.SmartResize(factor, min_pixels, max_pixels, kernel)`: the size that Hugging Face's `smart_resize` gives (Qwen2-VL's image processor); `Vision.patches`: the patches of a normalized 3-channel image in the order of the processor's `pixel_values` (ml#151).
 
 ## [0.6.0] - 2026-11-26

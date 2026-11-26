@@ -80,6 +80,19 @@ pixel_values = Vision.patches(x, 16, 2).unwrap!
 
 The tower of Qwen3.5 reads these patches, and the text model the features it gives: the chat with an image is in [Images with Qwen3.5](../transformers/models.md#images-with-qwen35). The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A resized image, shrunk or grown (under `min_pixels`), is at most one 8-bit level (0.0078 normalized) from the processor's, two for a shrink of several times, as for the other models; the grow needs `image-0.3.0`, which aligns the centres of an enlarged pixel like Pillow's bicubic.
 
+## Tiles for SmolVLM
+
+`idefics3_tiling(height, width)` gives the sizes that Hugging Face's `Idefics3ImageProcessor` works out with the settings of SmolVLM: the longest edge goes to 2048 (up as well as down) and the other side keeps the aspect ratio, cut to a whole number and made even (`resized`); then each side is rounded up to a multiple of 512 (`grid`), and the grid holds `rows` by `cols` tiles of 512 by 512. `idefics3_tiles(image)` makes the tiles: the image resized to `resized` and then to `grid`, cut row by row, and the whole grid resized to one tile, last (the global image). The image must be an sRGB one of 3 bands (`Image.colourspace`; the processor converts itself, this function gives an error for another band count). The processor's `do_image_splitting: false` (one image, no tiles) is not supported, and the sizes are those of the settings above only.
+
+Each tile goes through `to_tensor` and `normalize` with mean and std 0.5, as the `pixel_values` of the processor do. The resize is libvips', not Pillow's: it enlarges with its bicubic interpolation whatever the kernel, and shrinks with Lanczos3. The frames are within 3 levels of 8 bits of Hugging Face's on smooth drawings, and up to 36 levels (0.28 after the normalization) at the hard edges of an enlarged synthetic image, where its Lanczos and libvips' bicubic differ. The ids of the prompt for the tiles are in [`SmolVlmPrompt`](../transformers/models.md#smolvlm).
+
+```agentica {mode="fragment"}
+image = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
+tiles = Vision.idefics3_tiles(image).unwrap!
+# tiles.images: rows * cols tiles of 512 by 512, then the global image
+frames = tiles.images.map { |t| Vision.normalize(Vision.to_tensor(t, backend).unwrap!, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap! }
+```
+
 ## A folder per class
 
 `folder(root)` reads a folder per class, as ImageNet does (`root/cats/1.jpg`, `root/dogs/2.png`). The classes are the folder names in name order, and the images in each (`png`, `jpg`, `jpeg`, `webp`, `tif`, `tiff`, `bmp`, `gif`), in name order. A name that starts with `.` is skipped. It gives a `Folder` with `classes`, `paths` and `labels`.

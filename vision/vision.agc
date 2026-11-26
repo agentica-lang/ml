@@ -11,6 +11,10 @@ import Trace from "pkg/tensor/trace"
 
 export Image.Kernel
 
+## The longest edge that SmolVLM's image processor scales an image to, and the side of its tiles.
+IDEFICS3_LONGEST_EDGE = 2048
+IDEFICS3_TILE = 512
+
 ## How a tensor lays out an image: `Hwc` is `[height, width, channels]`, as libvips keeps the pixels, and `Chw` is
 ## `[channels, height, width]`. A batch has a first axis `[n, ...]`.
 enum Layout
@@ -53,6 +57,24 @@ struct Size
   width: Int
 end
 
+## How SmolVLM's image processor (Idefics3's) cuts an image of a given size (`idefics3_tiling`): the size `resized`
+## that its longest edge makes, the `grid` (a multiple of the tile on both sides, which the image is resized to again)
+## and the `rows` and `cols` of tiles that the grid holds.
+struct Tiling
+  resized: Size
+  grid: Size
+  rows: Int
+  cols: Int
+end
+
+## The tiles of an image (`idefics3_tiles`): `rows * cols` of them, row by row, then the whole image resized to a tile
+## (the global image).
+struct Tiles
+  images: List[Image.Image]
+  rows: Int
+  cols: Int
+end
+
 ## The size that Hugging Face's `smart_resize` (the image processor of Qwen2-VL and its successors) gives an image of
 ## `height` by `width`: each side is the nearest multiple of `factor` (a half goes to the even multiple, as Python's
 ## `round` does, and may be 0), and when that has more than `max_pixels` pixels the image shrinks, or when it has fewer
@@ -80,6 +102,70 @@ def smart_resize(height: Int, width: Int, factor: Int, min_pixels: Int, max_pixe
   end
 
   ok(Size(height: h_bar, width: w_bar))
+end
+
+## The sizes that Hugging Face's `Idefics3ImageProcessor` works out for an image of `height` by `width` with the
+## settings of SmolVLM (a longest edge of 2048 and tiles of 512 by 512): the longest edge is scaled to 2048 (up as well
+## as down) and the other side keeps the aspect ratio, cut to a whole number and made even (`resized`); then each side is
+## made a multiple of 512 (the second side from the aspect ratio of the first: `grid`), and the grid is cut into `rows`
+## by `cols` tiles. Python's floats do the arithmetic. The processor's `do_image_splitting: false` (one 512 by 512 image,
+## no tiles) is not supported.
+def idefics3_tiling(height: Int, width: Int) -> Result[Tiling]
+  return error("idefics3_tiling needs sizes of 1 or more, got #{height}x#{width}") if height < 1 or width < 1
+
+  aspect = width.to_f / height.to_f
+  h = height
+  w = width
+  if width >= height
+    w = IDEFICS3_LONGEST_EDGE
+    h = (w.to_f / aspect).floor
+    h = even(h)
+  else
+    h = IDEFICS3_LONGEST_EDGE
+    w = (h.to_f * aspect).floor
+    w = even(w)
+  end
+
+  resized = Size(height: [h, 1].max.unwrap!, width: [w, 1].max.unwrap!)
+  ratio = resized.width.to_f / resized.height.to_f
+  gh = resized.height
+  gw = resized.width
+  if resized.width >= resized.height
+    gw = ceiling(resized.width, IDEFICS3_TILE)
+    gh = ceiling((gw.to_f / ratio).floor, IDEFICS3_TILE)
+  else
+    gh = ceiling(resized.height, IDEFICS3_TILE)
+    gw = ceiling((gh.to_f * ratio).floor, IDEFICS3_TILE)
+  end
+
+  ok(Tiling(resized: resized, grid: Size(height: gh, width: gw), rows: gh / IDEFICS3_TILE, cols: gw / IDEFICS3_TILE))
+end
+
+## The tiles of `image` as Hugging Face's `Idefics3ImageProcessor` cuts them (`idefics3_tiling`): the image resized to
+## `resized`, then to the `grid`, cut into tiles of 512 by 512 row by row, then the whole grid resized to one tile. The
+## image is an sRGB one of 3 bands (`Image.colourspace` of the `image` package; the processor converts to RGB itself,
+## this function does not), else an error. The resize is libvips', not Pillow's (the processor's, Lanczos): libvips
+## enlarges with its bicubic interpolation whatever the kernel, and shrinks with the Lanczos3 one used here. The tiles
+## are within what `smolvlm_processor_test.agc` measures of the processor's frames (3 levels of 8 bits on smooth images,
+## up to 36 on an enlarged one with hard edges), not bit for bit.
+def idefics3_tiles(image: Image.Image) -> Result[Tiles]
+  return error("idefics3_tiles needs an sRGB image of 3 bands, got #{Image.bands(image)}") if Image.bands(image) != 3
+
+  Native.arena do
+    t = try idefics3_tiling(Image.height(image), Image.width(image))
+    kernel = Image.Kernel.Lanczos3
+    resized = try resize_to(image, t.resized.width, t.resized.height, kernel)
+    grid = try resize_to(resized, t.grid.width, t.grid.height, kernel)
+    images: List[Image.Image] = []
+    for r in 0...t.rows
+      for c in 0...t.cols
+        images = images.push(try crop_at(grid, IDEFICS3_TILE, IDEFICS3_TILE, c * IDEFICS3_TILE, r * IDEFICS3_TILE))
+      end
+    end
+
+    whole = try resize_to(grid, IDEFICS3_TILE, IDEFICS3_TILE, kernel)
+    ok(Tiles(images: images.push(whole), rows: t.rows, cols: t.cols))
+  end
 end
 
 ## The tensor of one image: the samples of a `U8` image scaled to `0..1` (a `U16` image by 65535, a `F32` one kept)
@@ -381,6 +467,12 @@ def resize_to(image: Image.Image, width: Int, height: Int, kernel: Image.Kernel)
   return ok(image) if width == Image.width(image) and height == Image.height(image)
   Image.resize(image, width, height, kernel)
 end
+
+## `length` made even by adding 1 when it is odd.
+def even(length: Int) -> Int = length + length % 2
+
+## `length` rounded up to a multiple of `factor`.
+def ceiling(length: Int, factor: Int) -> Int = ((length + factor - 1) / factor) * factor
 
 ## The multiple of `factor` nearest to `length`, a half to the even multiple, as Python's `round` goes.
 def nearest_multiple(length: Int, factor: Int) -> Int
