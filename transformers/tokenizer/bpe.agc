@@ -2,8 +2,9 @@
 ## normalizer and the GPT-4 style split (apostrophe endings, one digit at a
 ## time, a run of letters with one lead character, punctuation, new lines,
 ## white space), which `Qwen/Qwen3-0.6B` ships, or the one of `Qwen/Qwen3.5-0.8B`, where a mark counts as a
-## letter (`PATTERN_MARKS`). A file with another
-## normalizer, split pattern or model is an error, not a silent difference.
+## letter (`PATTERN_MARKS`), or the one of `LiquidAI/LFM3-1.7B`, which has no normalizer, cuts digits in groups of up to
+## three (`PATTERN_GROUPS`) and takes a whole piece that is in the vocabulary without merging it (`ignore_merges`).
+## A file with another normalizer, split pattern or model is an error, not a silent difference.
 ##
 ## The split is Hugging Face's regular expression written by hand over
 ## `unicode.agc`'s tables (`PATTERN`, with `\s` as White_Space and `\p{L}`,
@@ -25,6 +26,11 @@ PATTERN_MARKS = (
   "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
 )
 
+## The pattern of LFM3: Qwen's, with up to three digits in a piece (`\p{N}{1,3}`).
+PATTERN_GROUPS = (
+  "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+)
+
 struct ByteLevelBpe
   vocab: Map[String, Int]
   ## The byte-level text of each id, "" where the vocabulary has none.
@@ -35,6 +41,10 @@ struct ByteLevelBpe
   nfc: Bool
   ## The split of Qwen3.5 (`PATTERN_MARKS`): marks count as letters.
   marks: Bool = false
+  ## The most digits in a piece: 1, or 3 for `PATTERN_GROUPS`.
+  digits: Int = 1
+  ## A piece that is a token of the vocabulary is that token, whatever the merges say.
+  ignore_merges: Bool = false
 end
 
 ## The tokenizer in the `tokenizer.json` at `path`.
@@ -59,18 +69,13 @@ def parse(text: String) -> Result[ByteLevelBpe]
     none -> 0
   end
 
-  marks = try check_pre_tokenizer(file.pre_tokenizer)
+  pattern = try check_pre_tokenizer(file.pre_tokenizer)
   return error("the decoder is #{file.decoder.type}, not ByteLevel") if file.decoder.type != "ByteLevel"
   m = file.model
   return error("the model is #{m.type}, not BPE") if m.type != "BPE"
   return error("the BPE model has dropout, which is not supported") if m.dropout.some?
-  if (
-    m.ignore_merges or
-    m.byte_fallback or
-    m.continuing_subword_prefix.unwrap_or("") != "" or
-    m.end_of_word_suffix.unwrap_or("") != ""
-  )
-    return error("the BPE model has a prefix, a suffix, byte fallback or ignore_merges, which are not supported")
+  if m.byte_fallback or m.continuing_subword_prefix.unwrap_or("") != "" or m.end_of_word_suffix.unwrap_or("") != ""
+    return error("the BPE model has a prefix, a suffix or byte fallback, which are not supported")
   end
 
   added = try Added.parse(file.added_tokens)
@@ -96,7 +101,18 @@ def parse(text: String) -> Result[ByteLevelBpe]
     ranks = ranks.put(pair[0] + " " + pair[1], i)
   end
 
-  ok(ByteLevelBpe(vocab: m.vocab, pieces: pieces, ranks: ranks, added: added, nfc: nfc, marks: marks))
+  ok(
+    ByteLevelBpe(
+      vocab: m.vocab,
+      pieces: pieces,
+      ranks: ranks,
+      added: added,
+      nfc: nfc,
+      marks: pattern.marks,
+      digits: pattern.digits,
+      ignore_merges: m.ignore_merges,
+    ),
+  )
 end
 
 ## The tokenizer in the GGUF at `path`: `from_gguf` of its header.
@@ -166,8 +182,14 @@ def encode(tok: ByteLevelBpe, text: String) -> Result[List[Int]]
           normal = Unicode.nfc(chars)
         end
 
-        for word in split(normal, tok.marks)
-          for symbol in merge(tok.ranks, byte_chars(word))
+        for word in split(normal, tok.marks, tok.digits)
+          symbols = byte_chars(word)
+          if tok.ignore_merges and tok.vocab.key?(symbols.join(""))
+            out = out.push(tok.vocab[symbols.join("")])
+            next
+          end
+
+          for symbol in merge(tok.ranks, symbols)
             case tok.vocab.get(symbol)
               some(id) -> out = out.push(id)
               none -> return error("the vocabulary has no #{symbol}")
@@ -214,11 +236,11 @@ def decode(tok: ByteLevelBpe, ids: List[Int], skip_special: Bool = true) -> Resu
 end
 
 ## The pieces of `chars` that the pattern cuts, as code points.
-def split(chars: List[Int], marks: Bool = false) -> List[List[Int]]
+def split(chars: List[Int], marks: Bool = false, digits: Int = 1) -> List[List[Int]]
   out: List[List[Int]] = []
   at = 0
   while at < chars.size
-    size = piece_size(chars, at, marks)
+    size = piece_size(chars, at, marks, digits)
     out = out.push(Unicode.span(chars, at, at + size))
     at += size
   end
@@ -296,6 +318,12 @@ end
 
 CR = 13
 LF = 10
+
+## The shape of a split pattern: whether a mark is a letter in it, and the most digits in a piece.
+struct Pattern
+  marks: Bool
+  digits: Int
+end
 
 ## A pair of neighbours to join: the symbol at `at` and the one after it.
 struct Candidate
@@ -406,16 +434,21 @@ def lines_shape?(text: String) -> Bool
   JSON.string(items[0]).ok?
 end
 
-## The pre-tokenizer must be the Qwen split (isolated, as written in `PATTERN` or `PATTERN_MARKS`) followed by
-## byte-level mapping without its own split. Whether it is the one with marks.
-def check_pre_tokenizer(p: PreJson) -> Result[Bool]
+## The pre-tokenizer must be the Qwen split (isolated, as written in `PATTERN`, `PATTERN_MARKS` or `PATTERN_GROUPS`)
+## followed by byte-level mapping without its own split. Its pattern.
+def check_pre_tokenizer(p: PreJson) -> Result[Pattern]
   steps = p.pretokenizers
   ok_shape = p.type == "Sequence" and steps.size == 2 and steps[0].type == "Split" and steps[1].type == "ByteLevel"
   return error("the pre-tokenizer is not the Qwen split followed by ByteLevel") if not ok_shape
   split_step = steps[0]
-  pattern = split_step.pattern.unwrap_or({}).get("Regex").unwrap_or("")
+  regex = split_step.pattern.unwrap_or({}).get("Regex").unwrap_or("")
+  pattern = Pattern(marks: regex == PATTERN_MARKS, digits: 1)
+  if regex == PATTERN_GROUPS
+    pattern = Pattern(marks: false, digits: 3)
+  end
+
   if (
-    (pattern != PATTERN and pattern != PATTERN_MARKS) or
+    (regex != PATTERN and regex != PATTERN_MARKS and regex != PATTERN_GROUPS) or
     split_step.behavior != some("Isolated") or
     split_step.invert != some(false)
   )
@@ -426,7 +459,7 @@ def check_pre_tokenizer(p: PreJson) -> Result[Bool]
     return error("the ByteLevel pre-tokenizer adds a prefix space or splits again, which is not supported")
   end
 
-  ok(pattern == PATTERN_MARKS)
+  ok(pattern)
 end
 
 def rank_of(ranks: Map[String, Int], left: String, right: String) -> Int = ranks.get(left + " " + right).unwrap_or(-1)
@@ -448,7 +481,7 @@ def newline?(c: Int) -> Bool = c == CR or c == LF
 
 ## The length of the piece that starts at `at`: the first alternative of the
 ## pattern that matches there (one always does).
-def piece_size(chars: List[Int], at: Int, marks: Bool) -> Int
+def piece_size(chars: List[Int], at: Int, marks: Bool, digits: Int) -> Int
   c = chars[at]
   n = chars.size
   ending = contraction(chars, at)
@@ -459,7 +492,7 @@ def piece_size(chars: List[Int], at: Int, marks: Bool) -> Int
     return 1 + letters(chars, at + 1, marks)
   end
 
-  return 1 if Unicode.number?(c)
+  return numbers(chars, at, digits) if Unicode.number?(c)
   start = at
   if c == 32
     start = at + 1
@@ -499,6 +532,16 @@ end
 
 ## A letter, or a mark when `marks`.
 def word?(c: Int, marks: Bool) -> Bool = Unicode.letter?(c) or (marks and Unicode.any_mark?(c))
+
+## The run of numbers at `at`, up to `digits` of them.
+def numbers(chars: List[Int], at: Int, digits: Int) -> Int
+  stop = at
+  while stop < chars.size and stop - at < digits and Unicode.number?(chars[stop])
+    stop += 1
+  end
+
+  stop - at
+end
 
 def letters(chars: List[Int], at: Int, marks: Bool) -> Int
   stop = at

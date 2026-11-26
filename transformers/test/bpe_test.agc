@@ -31,6 +31,33 @@ def test_the_split_of_qwen35_counts_marks_as_letters() -> Result[Void]
   Test.error?(Bpe.parse(try S.replaced(text, "[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]", "[^\\\\s\\\\p{L}\\\\p{N}]")))
 end
 
+## LFM3's split cuts digits in groups of up to three, and `ignore_merges` takes a piece that is a token as it is:
+## `fixtures/bpe_groups.json` has both, no normalizer and its last merges cut off, so the second changes ids. Its ids
+## are those of `tokenizers`.
+def test_the_split_of_lfm3_groups_digits_and_ignores_merges() -> Result[Void]
+  tok = try Bpe.open("test/fixtures/bpe_groups.json")
+  try Test.eq(tok.digits, 3)
+  try Test.assert(not tok.marks and not tok.nfc and tok.ignore_merges, "the pattern flags were not read")
+  checked = try Golden.bpe_of(tok, "test/fixtures/bpe_groups_golden.json")
+  try Test.assert(checked > 100, "only #{checked} cases ran")
+  try Test.eq(
+    Bpe.split(Unicode.codepoints("a1234567 x"), false, 3).map { |w| Unicode.text_of(w) },
+    ["a", "123", "456", "7", " x"],
+  )
+
+  text = try File.read_text("test/fixtures/bpe_groups.json")
+  merging = try Bpe.parse(try S.replaced(text, "\"ignore_merges\": true", "\"ignore_merges\": false"))
+  changed = 0
+  for c in (try Golden.read("test/fixtures/bpe_groups_golden.json")).encode
+    if try Bpe.encode(merging, c.text) != c.ids
+      changed += 1
+    end
+  end
+
+  try Test.assert(changed > 0, "ignore_merges changed no ids")
+  Test.error?(Bpe.parse(try S.replaced(text, "p{N}{1,3}", "p{N}{1,2}")))
+end
+
 ## Qwen2.5's `tokenizer.json` writes a merge as "a b", Qwen3's as ["a", "b"]: both give the ids of `tokenizers`.
 def test_merges_written_as_lines_are_read_too() -> Result[Void]
   checked = try Golden.bpe("test/fixtures/bpe_lines.json", "test/fixtures/bpe_golden.json")

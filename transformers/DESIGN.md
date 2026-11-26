@@ -6,7 +6,7 @@ with a KV cache (greedy or sampled), the tokenizers, and the weights by name
 for a fine-tune with `train/`. Qwen3.5 (text only) has its forward, its
 tokenizer, its chat template and generation (ml#150).
 Granite MoE (`granitemoe`) has its forward and generation (ml#274).
-LFM3 (`lfm3`) has its forward (ml#275).
+LFM3 (`lfm3`) has its forward, its tokenizer and its chat template (ml#275).
 
 ## Generation
 
@@ -185,7 +185,9 @@ families, with the system turn of Qwen2.5 by default, the empty think block of
 Qwen3 (`enable_thinking: false`, and before an assistant message that ends the
 conversation), the `</think>` split of an assistant message (Qwen3) and no
 tools (a `tool` role is an error). The golden is
-Hugging Face's own output (`test/chat_golden.py`). `qwen3_5` follows the
+Hugging Face's own output (`test/chat_golden.py`). `lfm3` is the template of
+`LiquidAI/LFM3-1.7B` with tools (`test/chat_lfm3_golden.py`, 49 conversations of the
+official `chat_template.jinja`); see LFM3 below. `qwen3_5` follows the
 template of Qwen3.5 (`test/chat35_golden.py`, `fixtures/chat35_golden.json`):
 every message is stripped like Python's `str.strip` (White_Space and
 U+001C to U+001F), the system message must come first, a conversation needs a
@@ -253,6 +255,13 @@ and `model.safetensors` or its `.index.json`; `weights` is `F32` or, on ggml, `F
   a `sliding_attention` layer without `sliding_window`, and `weights` other than `F32` and `F16` are errors.
 - The batch is unrolled, one sequence at a time, as in Qwen3.5 (the convolution is over one `[tokens, width]`). The model
   cannot be fine-tuned with `train/` yet (no `weights`/`with_weights`).
+- The tokenizer is `Bpe` (see Tokenizers) and the template is `Chat.apply("lfm3", ...)`: `<|startoftext|>` first,
+  `tools` (each a function, bare or under `function`) into the system turn as `<tools>` lines, calls as
+  `<tool_call>\n<function=NAME>\n<parameter=K>\nV\n</parameter>\n</function>\n</tool_call>` (a string as it is, the
+  rest as `json.dumps` writes it: `Pyjson.dumps`), `tool` messages as `<tool_response>` (consecutive ones with the same
+  `tool_call_id` are one), and the reasoning of an assistant message (`thinking`) kept after the last user message, or
+  everywhere with `preserve_thinking`. Not read: images and other content parts, `tool_reference`s, `additional_tools`,
+  and a tool call whose arguments are a JSON string (the template refuses that one too).
 - The tiny golden (`test/lfm3_golden.py`, rows of 9 tokens, window 4, the real rotary factor and thetas) is the official
   code's `float32` eager run. `tools/lfm3_check.agc` is the manual check on the real checkpoint (`test/lfm3_check_golden.py`).
 
@@ -350,9 +359,15 @@ errors. The `pad_id` of the file's padding is kept (`tok.pad_id`) and never
 used by `encode`: a model pads a batch with its config's `pad_token_id`, and
 `tools/distilbert_check.agc` fails when the two differ.
 
+The tokenizer of LFM3 is `Bpe` too: `PATTERN_GROUPS` is Qwen3's with `\p{N}{1,3}` for `\p{N}` (the field `digits`, the
+most numbers in a piece), it has no normalizer (the text is not NFC), and `ignore_merges` is on: a piece that is a token
+of the vocabulary is that token and the merges are not run (`tokenizers` does the same). The 124,893 pieces and 140
+added tokens (`<|startoftext|>` 124894, `<|im_start|>` 124899, `<|im_end|>` 124900) are read as Qwen's are; no added
+token has a strip, single-word or normalized flag.
+
 The split of Qwen3.5 is Qwen3's with `[\p{L}\p{M}]` where it has `\p{L}`, and
 `\p{M}` also excluded from the symbol class: `Bpe` reads either pattern
-(`PATTERN`, `PATTERN_MARKS`, the field `marks`) and anything else is an error.
+(`PATTERN`, `PATTERN_MARKS`, the field `marks`) and anything else is an error (LFM3's: `PATTERN_GROUPS`, see below).
 `\p{M}` is a table of its own (`Unicode.any_mark?`, `tools/unicode_tables.py`:
 Mn, Mc and Me); the nonspacing table of BERT's accent stripping stays. The
 vocabulary of Qwen3.5 has 248,070 tokens (248,044 pieces and 26 added tokens,
@@ -540,6 +555,17 @@ error row per config field.
   mark decides the cut and 60 random ones. `tools/tokenizer_check.agc bpe` on the
   `tokenizer.json` of `Qwen/Qwen3.5-0.8B` (manual, 300 random strings more):
   1,827 cases agree.
+- `test/bpe_test.agc` on `fixtures/bpe_groups.json`, a tiny tokenizer with the split of LFM3, no normalizer and
+  `ignore_merges` with its last 40 merges cut off, so that flipping the flag changes ids (`test/tokenizer_golden.py
+  groups`, `tokenizers` 0.23.3): the ids and text of `tokenizers` on the strings of the BPE test, 30 of digit groups,
+  scripts and NFC and 60 random ones. `tools/tokenizer_check.agc bpe` on the real `tokenizer.json` of
+  `LiquidAI/LFM3-1.7B` (revision `1da06bec6a819da10b54c67e5c90972b46d81871`, sha256
+  `7e226e34bface23ccf6e495d157bf77186c1c30a7659880e1a8994db528c3701`; manual, 500 random strings more): 2,941 cases agree,
+  and 1,354 more on 1,184 chunks and lines of the repository's own files.
+- `test/chat_test.agc` against `test/chat_lfm3_golden.py` (`transformers` 5.22.2, the sha256 of the four files asserted):
+  49 conversations of the official LFM3 template, the Jinja run by Hugging Face, with tools (bare and under `function`,
+  `defer_loading`), calls with arguments of every JSON kind (Python's `json.dumps` text, floats as `repr`), one or
+  several answers per call, reasoning kept or dropped, `preserve_thinking`, `CONTINUE_FINAL_MESSAGE_TAG`, other roles.
 - `test/chat_test.agc` against `test/chat35_golden.py` (`transformers` 5.22.2,
   the sha256 of the template and of `tokenizer.json` asserted): 28
   conversations of the Qwen3.5 template (white space of every kind, one

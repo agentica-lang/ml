@@ -17,10 +17,18 @@ writes `bpe_marks.json` and `bpe_marks_golden.json`: the same tiny tokenizer wit
 as a letter) and the ids of the strings below plus those of `MARK_TEXTS` (it needs `tokenizers` 0.23.3; the script
 stops on another version).
 
+    python -I test/tokenizer_golden.py groups test/fixtures
+
+writes `bpe_groups.json` and `bpe_groups_golden.json`: the same tiny tokenizer with the split of LFM3 (up to three digits
+in a piece, `\\p{N}{1,3}`), no normalizer, `ignore_merges` on and its last merges cut off (so a piece that is a token
+and that the merges no longer reach is still one token), and the ids of the strings below plus those of `GROUP_TEXTS`
+(`tokenizers` 0.23.3, as above).
+
     python -I test/tokenizer_golden.py golden wordpiece TOKENIZER_JSON [N] > OUT.json
     python -I test/tokenizer_golden.py golden bpe TOKENIZER_JSON [N] > OUT.json
+    python -I test/tokenizer_golden.py golden bpe_groups TOKENIZER_JSON [N] > OUT.json
 
-writes the golden of a real tokenizer (`bert-base-uncased`, `Qwen3-0.6B`),
+writes the golden of a real tokenizer (`bert-base-uncased`, `Qwen3-0.6B`, `LFM3-1.7B` with `bpe_groups`, which adds `GROUP_TEXTS`),
 which `tools/tokenizer_check.agc` compares; it is not committed. `N` adds that
 many random strings (seeded) of the pieces in `FUZZ`.
 """
@@ -97,6 +105,18 @@ QWEN35_SPLIT = (
 MARK_TEXTS = [
     "a\u0301b", "\u0301\u0301x", "$\u0301a", " \u0301a", "e\u0301\u0903 x", "\u0903", "1\u0301", "a\u20dd b",
     "हिन्दी भाषा", "ไทย ภาษา", "عَرَبِيّ", "שָׁלוֹם", "x.\u0301y", "\n\u0301a", "'s\u0301", "e\u0301\n\u0301",
+]
+
+LFM3_SPLIT = (
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+
+# Strings where the digit groups decide the cut: runs of every length, digits of other scripts, other numbers (No, Nl),
+# digits next to letters, signs and separators, and text that NFC would change (LFM3 has no normalizer).
+GROUP_TEXTS = [
+    "1", "12", "123", "1234", "12345", "123456", "1234567", "0001", "a1234b", "x 1234567", "-1234", " 12", "$1,000,000",
+    "1.234.567,89", "3.14159", "a 123\n456", "2024-11-26", "٣٤٥٦٧", "２０２４年", "²³⁴⁵", "½¼¾", "Ⅷ Ⅻ", "①②③④",
+    "e\u0301 é", "1\u0301234", "12\u030134", "'s123", "x'123", "999 9999 99999", "abc123def456ghi789jkl",
 ]
 
 WORDPIECE_PAIRS = [("hello", "world"), ("", "world"), ("hello", ""), ("don't", "playing [SEP] x")]
@@ -196,9 +216,10 @@ def make_wordpiece(directory):
     tok.save(f"{directory}/wordpiece.json")
 
 
-def make_bpe(directory, name="bpe", split=QWEN_SPLIT):
+def make_bpe(directory, name="bpe", split=QWEN_SPLIT, groups=False):
     tok = Tokenizer(models.BPE())
-    tok.normalizer = normalizers.NFC()
+    if not groups:
+        tok.normalizer = normalizers.NFC()
     tok.pre_tokenizer = pre_tokenizers.Sequence(
         [
             pre_tokenizers.Split(Regex(split), behavior="isolated", invert=False),
@@ -210,7 +231,7 @@ def make_bpe(directory, name="bpe", split=QWEN_SPLIT):
     trainer = trainers.BpeTrainer(
         vocab_size=420, initial_alphabet=pre_tokenizers.ByteLevel.alphabet(), show_progress=False
     )
-    corpus = [t for t in BPE_TEXTS if "<" not in t] * 3 + [
+    corpus = [t for t in BPE_TEXTS + (GROUP_TEXTS if groups else []) if "<" not in t] * 3 + [
         "the quick brown fox jumps over the lazy dog, and the dog does not mind the fox at all.",
         "hello world, hello there, hello again; the world says hello to everyone in the world.",
         "def add(a, b):\n    return a + b\n\nprint(add(1, 2))\n",
@@ -222,6 +243,13 @@ def make_bpe(directory, name="bpe", split=QWEN_SPLIT):
     )
     tok.add_tokens([AddedToken("<think>", special=False, normalized=False)])
     tok.save(f"{directory}/{name}.json")
+    if groups:
+        with open(f"{directory}/{name}.json", encoding="utf-8") as f:
+            written = json.load(f)
+        written["model"]["ignore_merges"] = True
+        del written["model"]["merges"][-40:]
+        with open(f"{directory}/{name}.json", "w", encoding="utf-8") as f:
+            json.dump(written, f, ensure_ascii=False, indent=2)
     if name != "bpe":
         return
     # Qwen2.5's tokenizer.json writes a merge as "a b" where Qwen3's writes ["a", "b"]; `tokenizers` reads both.
@@ -282,6 +310,15 @@ def main():
         with open(f"{directory}/bpe_marks_golden.json", "w", encoding="utf-8") as f:
             json.dump(golden("bpe", f"{directory}/bpe_marks.json", 60, MARK_TEXTS), f, ensure_ascii=False, indent=None)
             f.write("\n")
+    elif sys.argv[1] == "groups":
+        import tokenizers
+
+        assert tokenizers.__version__ == "0.23.3", tokenizers.__version__
+        directory = sys.argv[2]
+        make_bpe(directory, "bpe_groups", LFM3_SPLIT, groups=True)
+        with open(f"{directory}/bpe_groups_golden.json", "w", encoding="utf-8") as f:
+            json.dump(golden("bpe", f"{directory}/bpe_groups.json", 60, GROUP_TEXTS), f, ensure_ascii=False, indent=None)
+            f.write("\n")
     elif sys.argv[1] == "fixtures":
         directory = sys.argv[2]
         make_wordpiece(directory)
@@ -291,7 +328,10 @@ def main():
                 json.dump(golden(kind, f"{directory}/{kind}.json"), f, ensure_ascii=False, indent=None)
                 f.write("\n")
     else:
-        json.dump(golden(sys.argv[2], sys.argv[3], int(sys.argv[4]) if len(sys.argv) > 4 else 0), sys.stdout, ensure_ascii=False)
+        kind = "bpe" if sys.argv[2] == "bpe_groups" else sys.argv[2]
+        extra = GROUP_TEXTS if sys.argv[2] == "bpe_groups" else []
+        count = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+        json.dump(golden(kind, sys.argv[3], count, extra), sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
 
 

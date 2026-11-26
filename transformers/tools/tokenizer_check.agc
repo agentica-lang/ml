@@ -5,12 +5,17 @@
 ##   python -I test/tokenizer_golden.py golden wordpiece TOKENIZER_JSON > GOLDEN.json
 ##   agentica tools/tokenizer_check.agc wordpiece TOKENIZER_JSON GOLDEN.json
 ##
-## `wordpiece` is `bert-base-uncased`, `bpe` is `Qwen/Qwen3-0.6B`, `Qwen/Qwen2.5-0.5B-Instruct` (they share the tokenizer) or `Qwen/Qwen3.5-0.8B` (marks count as letters).
+## `wordpiece` is `bert-base-uncased`, `bpe` is `Qwen/Qwen3-0.6B`, `Qwen/Qwen2.5-0.5B-Instruct` (they share the tokenizer), `Qwen/Qwen3.5-0.8B` (marks count as letters) or `LiquidAI/LFM3-1.7B`.
 ##
 ## For `Qwen/Qwen3.5-0.8B` (1,827 cases, the strings of the golden script and 300 random ones):
 ##
 ##   python -I test/tokenizer_golden.py golden bpe Qwen3.5-0.8B/tokenizer.json 300 > GOLDEN.json
 ##   agentica tools/tokenizer_check.agc bpe Qwen3.5-0.8B/tokenizer.json GOLDEN.json
+##
+## For `LiquidAI/LFM3-1.7B` (digit groups, `ignore_merges`; 2,941 cases with 500 random strings):
+##
+##   python -I test/tokenizer_golden.py golden bpe_groups LFM3-1.7B/tokenizer.json 500 > GOLDEN.json
+##   agentica tools/tokenizer_check.agc bpe LFM3-1.7B/tokenizer.json GOLDEN.json
 ##
 ## `clip` is the folder of a CLIP checkpoint (`vocab.json`, `merges.txt`) and its golden is
 ## `python -I test/clip_tokenizer_golden.py golden VOCAB_JSON MERGES_TXT [N] > GOLDEN.json`:
