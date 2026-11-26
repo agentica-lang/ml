@@ -1,15 +1,17 @@
 ## Qwen3.5 with an image against Hugging Face (`qwen35_image_hf_golden.py`, `fixtures/qwen/chat_golden.json`), on the
-## real `Qwen/Qwen3.5-0.8B` in `float32`: for each case the picture goes through `SmartResize` (the bounds of the
-## golden), `to_tensor`, `normalize` and `patches`, the vision tower, and the chat template and the tokenizer make
-## the prompt with the tokens of the image (`Chat.IMAGE`, `Mrope.expand`); the prompt must be the ids of Hugging
-## Face's processor, and the greedy ids that `generate_qwen35` adds from the images' features, spliced in with their
-## M-RoPE positions, must be the ones of Hugging Face's `generate`. The five largest logits of every step are
-## compared too.
+## real `Qwen/Qwen3.5-0.8B` in `float32`: for each case the resized picture that the image processor made (the 8-bit
+## crop `chat-NAME.png`, which `qwen_pixels_test` does not need to resize again) goes through `to_tensor`, `normalize`
+## and `patches` to the vision tower, and the chat template and the tokenizer make the prompt with the tokens of the
+## image (`Chat.IMAGE`, `Mrope.expand`); the prompt must be the ids of Hugging Face's processor, and the greedy ids that
+## `generate_qwen35` adds from the images' features, spliced in with their M-RoPE positions, must be the ones of Hugging
+## Face's `generate`. The five largest logits of every step are compared too, within `LOGIT_ABS`: with the crop as the
+## input, the gap is the model's, so the bound is tight enough to fail when the positions or the splice are off.
 ##
 ## It needs the checkpoint, which is not in the repository, so it runs only when `QWEN35_MODEL` names its folder (the
 ## revision of `transformers/DESIGN.md`, with `model.safetensors` or its index, `config.json` and `tokenizer.json`).
 ## `QWEN35_DEVICE=vulkan` runs on Vulkan, the CPU otherwise. The vision tower is closed before the text model opens, so
-## the two never share the memory. Run from `vision/`:
+## the two never share the memory. Run from `vision/`, in an environment where `QWEN35_MODEL` is the folder of the
+## checkpoint:
 ## `QWEN35_MODEL=Qwen3.5-0.8B agentica test --max-steps 1000000000000 test/qwen35_image_hf_test.agc`.
 
 import Bpe from "pkg/transformers/tokenizer/bpe"
@@ -26,25 +28,20 @@ import Tensor from "pkg/tensor/tensor"
 import Vision from "../vision"
 
 PATCH = 16
-MERGE = 2
-FACTOR = 32
 MEAN = [0.5, 0.5, 0.5]
 STD = [0.5, 0.5, 0.5]
 ## The end ids of the chat model: `<|im_end|>` and `<|endoftext|>`.
 STOP = [248046, 248044]
 
-## What passes for the five largest logits of a step, about twice the largest gap measured on the CPU (0.14, 0.08 and
-## 0.30 for the three cases; the logits are up to about 20). The gap is not the model's (the tower alone is within
-## 2.4e-5 of Hugging Face's and the text model within 2e-3, `transformers/DESIGN.md`): our pixels are up to one 8-bit
-## level from the processor's (the resize of libvips against Pillow's), and a level moves the features, and the
-## logits after 24 layers.
-LOGIT_ABS = 0.6
+## What passes for the five largest logits of a step (they are up to about 20): twice the largest gap measured, 0.0023 on
+## the CPU and 0.0021 on Vulkan for the three cases. It is the model's own (the tower alone is within 2.4e-5 of Hugging
+## Face's and the text model within 2e-3, `transformers/DESIGN.md`), since the tower reads the crop of the processor.
+## A change of the positions or of the splice moves a logit by far more (`DESIGN.md` has the mutants).
+LOGIT_ABS = 0.005
 
 struct Case
   name: String
-  image: String
-  min_pixels: Int
-  max_pixels: Int
+  crop: String
   question: String
   grid: List[Int]
   ids: List[Int]
@@ -56,6 +53,12 @@ end
 
 struct Golden
   cases: List[Case]
+end
+
+## The features of a crop and the merge of the tower that made them.
+struct Encoded
+  features: Tensor.Tensor
+  merge: Int
 end
 
 private
@@ -83,52 +86,52 @@ def checked(name: String) -> Result[Void]
   ok()
 end
 
-## The patches of the picture of `c` as the image processor of the checkpoint makes them, `[grid, 1536]` on `backend`.
-def pixel_patches(c: Case, backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  steps = [Vision.Step.SmartResize(FACTOR, c.min_pixels, c.max_pixels, Image.Kernel.Cubic)]
+## The patches of the crop of `c` (the resized picture of Hugging Face's processor), `[grid, 1536]` on `backend`.
+def crop_patches(c: Case, merge: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
   Native.arena do
-    image = try Image.colourspace(try Image.load("test/fixtures/#{c.image}"), Image.Space.Srgb)
-    x = try Vision.to_tensor(try Vision.apply(image, steps), backend)
-    Vision.patches(try Vision.normalize(x, MEAN, STD), PATCH, MERGE)
+    image = try Image.colourspace(try Image.load("test/fixtures/#{c.crop}"), Image.Space.Srgb)
+    x = try Vision.to_tensor(image, backend)
+    Vision.patches(try Vision.normalize(x, MEAN, STD), PATCH, merge)
   end
 end
 
-## The features of the picture of `c` through the tower of the checkpoint in `dir`.
-def encoded(dir: String, c: Case, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+## The features of the crop of `c` through the tower of the checkpoint in `dir`, and the merge of the tower.
+def encoded(dir: String, c: Case, backend: Tensor.Backend) -> Result[Encoded]
   vision = try Qwen3_5Vision.open(dir, backend)
-  patches = try pixel_patches(c, backend)
+  merge = Qwen3_5Vision.merge(vision)
+  patches = try crop_patches(c, merge, backend)
   try Test.eq(Tensor.shape(patches)[0], c.grid[0] * c.grid[1])
   features = try Qwen3_5Vision.encode(vision, patches, c.grid[0], c.grid[1])
   Lift.close([patches])
   Qwen3_5Vision.close_model(vision)
-  ok(features)
+  ok(Encoded(features: features, merge: merge))
 end
 
 ## The prompt of `c` as ids: the template with `Chat.IMAGE` in the user's message, the tokenizer, and the tokens of the
 ## image in place of its pad.
-def prompt_of(tok: Bpe.ByteLevelBpe, image_token: Int, c: Case) -> Result[List[Int]]
+def prompt_of(tok: Bpe.ByteLevelBpe, image_token: Int, merge: Int, c: Case) -> Result[List[Int]]
   text = try Chat.apply("qwen3_5", [Chat.Message(role: "user", content: Chat.IMAGE + c.question)])
-  tokens = try Mrope.tokens(Mrope.Grid(height: c.grid[0], width: c.grid[1]), MERGE)
-  Mrope.expand(try Bpe.encode(tok, text), image_token, [tokens])
+  Mrope.expand(try Bpe.encode(tok, text), image_token, [Mrope.Grid(height: c.grid[0], width: c.grid[1])], merge)
 end
 
 def check(dir: String, c: Case, backend: Tensor.Backend) -> Result[String]
   tok = try Bpe.open("#{dir}/tokenizer.json")
   image_token = try Qwen3_5.image_token(dir)
-  features = try encoded(dir, c, backend)
+  seen = try encoded(dir, c, backend)
   m = try Qwen3_5.open(dir, backend)
   g = try Generate.open(m, tok.pieces.size)
-  ids = try prompt_of(tok, image_token, c)
+  ids = try prompt_of(tok, image_token, seen.merge, c)
   try Test.eq(ids, c.ids)
-  layout = try Mrope.layout(ids, image_token, [Mrope.Grid(height: c.grid[0], width: c.grid[1])], MERGE)
-  sight = KvDecoder.Sight(features: features, image_token: image_token, layout: layout)
+  grid = Mrope.Grid(height: c.grid[0], width: c.grid[1])
+  layout = try Mrope.layout(ids, image_token, [grid], seen.merge)
+  sight = KvDecoder.Sight(features: seen.features, image_token: image_token, layout: layout)
   made = try Generate.generate(g, ids, c.generated.size, STOP, none, some(sight))
   # Hugging Face keeps the end id it stopped at; ours stops before it.
   try Test.eq(made, c.generated.filter { |id| not STOP.include?(id) })
   gap = try logits_gap(g, c, sight)
   Generate.close(g)
   Qwen3_5.close_model(m)
-  Lift.close([features])
+  Lift.close([seen.features])
   try Test.assert(gap <= LOGIT_ABS, "a logit is #{gap} from Hugging Face's, more than #{LOGIT_ABS}")
   ok(
     "#{c.name}: #{ids.size} tokens, #{made.size} ids equal, logits within #{gap}, HF smallest gap #{c.gaps.min.unwrap!}",

@@ -93,6 +93,8 @@ CONVERSATIONS = [
     ([m("system", "Be brief."), m("user", IMAGE + IMAGE), m("assistant", "Two pictures."), m("user", "Which first?")], True, None),
     ([m("user", IMAGE + "Describe."), m("assistant", "A disc."), m("user", IMAGE + "And this?")], False, None),
     ([m("system", "Look: " + IMAGE), m("user", "Hi")], True, None),
+    ([m("user", "Look."), m("assistant", IMAGE + "A disc."), m("user", "And?")], True, None),
+    ([m("user", "Look."), m("assistant", "It is " + IMAGE)], False, None),
 ]
 
 for name, digest in SHA256.items():

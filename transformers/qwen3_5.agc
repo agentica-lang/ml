@@ -31,7 +31,7 @@ struct InnerKind
 end
 
 ## The id that stands for an image in the prompt, from the top level of `config.json`.
-struct Special
+struct ImageIds
   image_token_id: Int
 end
 
@@ -134,7 +134,7 @@ end
 ## each image and that a `KvDecoder.Sight` names.
 def image_token(dir: String) -> Result[Int]
   text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
-  ok((try Source.within("#{dir}/config.json", JSON.decode(text, Special))).image_token_id)
+  ok((try Source.within("#{dir}/config.json", JSON.decode(text, ImageIds))).image_token_id)
 end
 
 ## An error when `config` is a model this file does not run.

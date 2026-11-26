@@ -96,6 +96,7 @@ def test_a_grid_the_patches_do_not_fit_is_an_error() -> Result[Void]
   image = g.images[0]
   with_model(g, g.config, "") do |dir|
     m = try Qwen3_5Vision.open(dir, S.REF)
+    try Test.eq(Qwen3_5Vision.merge(m), 2)
     patches = try S.f32(image.pixels, [24, 96])
     try S.expect_error(Qwen3_5Vision.encode(m, patches, 3, 8), "spatial_merge_size")
     try S.expect_error(Qwen3_5Vision.encode(m, patches, 4, 4), "the patches need")

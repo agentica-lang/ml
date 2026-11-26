@@ -130,21 +130,38 @@ end
 def test_the_pad_of_each_image_is_expanded_to_its_tokens() -> Result[Void]
   g = try golden()
   grids = grids_of(g)
-  counts = [try Mrope.tokens(grids[0], 2), try Mrope.tokens(grids[1], 2)]
-  try Test.eq(counts, [6, 3])
   pads = [5, 6, 29, IMAGE, 30, 7, 29, IMAGE, 30, 8, 9]
-  try Test.eq(try Mrope.expand(pads, IMAGE, counts), g.ids)
-  try Test.error?(Mrope.expand(pads, IMAGE, [6]))
-  try Test.error?(Mrope.expand(pads, IMAGE, [6, 3, 3]))
-  try Test.error?(Mrope.expand(pads, IMAGE, [6, 0]))
-  try Test.error?(Mrope.tokens(Mrope.Grid(height: 3, width: 6), 2))
-  try Test.error?(Mrope.tokens(Mrope.Grid(height: 4, width: 3), 2))
-  try Test.error?(Mrope.tokens(Mrope.Grid(height: 0, width: 4), 2))
-  try Test.error?(Mrope.tokens(Mrope.Grid(height: 4, width: 0), 2))
-  try Test.error?(Mrope.tokens(Mrope.Grid(height: 4, width: 4), 0))
-  try with_model(g) do |dir|
+  try Test.eq(try Mrope.expand(pads, IMAGE, grids, 2), g.ids)
+  try Test.error?(Mrope.expand(pads, IMAGE, [grids[0]], 2))
+  try Test.error?(Mrope.expand(pads, IMAGE, grids + [grids[0]], 2))
+  try Test.error?(Mrope.expand(pads, IMAGE, grids, 0))
+  try S.expect_error(
+    Mrope.expand(pads, IMAGE, [grids[0], Mrope.Grid(height: 3, width: 6)], 2),
+    "multiple of the merge",
+  )
+
+  try S.expect_error(
+    Mrope.expand(pads, IMAGE, [grids[0], Mrope.Grid(height: 4, width: 3)], 2),
+    "multiple of the merge",
+  )
+
+  ok()
+end
+
+def test_the_image_token_is_read_from_the_config() -> Result[Void]
+  g = try golden()
+  with_model(g) do |dir|
     try Test.eq(try Qwen3_5.image_token(dir), IMAGE)
-    ok()
+    try File.write_text("#{dir}/config.json", "{\"model_type\": \"qwen3_5\"}")
+    Test.error?(Qwen3_5.image_token(dir))
+  end
+end
+
+## A side of 0 is told apart from a grid that the merge does not divide.
+def test_a_grid_with_an_empty_side_is_an_error() -> Result[Void]
+  for grid in [Mrope.Grid(height: 0, width: 4), Mrope.Grid(height: 4, width: 0), Mrope.Grid(height: -2, width: 4)]
+    try S.expect_error(Mrope.expand([IMAGE], IMAGE, [grid], 2), "needs 1 or more")
+    try S.expect_error(Mrope.layout([IMAGE], IMAGE, [grid], 2), "needs 1 or more")
   end
 
   ok()

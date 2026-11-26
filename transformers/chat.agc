@@ -7,7 +7,8 @@ import Pyjson from "pyjson"
 
 ## What the Qwen3.5 template writes for an image of a message: put it in the `content` where the image goes. The
 ## tokenizer makes three ids of it (`<|vision_start|>`, `<|image_pad|>`, `<|vision_end|>`), and `Mrope.expand` gives
-## the middle one the tokens of the image.
+## the middle one the tokens of the image. It is only text: a `content` that holds it has an image, whoever wrote it (the
+## system message refuses it), and the `qwen2` and `qwen3` templates, which have no images, write it as the tags it is.
 IMAGE = "<|vision_start|><|image_pad|><|vision_end|>"
 
 ## One turn: `role` is `system`, `user` or `assistant` (and `tool` for LFM3, which also reads the other fields).

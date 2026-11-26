@@ -48,8 +48,10 @@ end
 ## A case without `enable_thinking` passes none: the template's own default.
 def test_the_text_is_that_of_the_template_of_qwen35() -> Result[Void]
   golden = try JSON.decode(try File.read_text("test/fixtures/chat35_golden.json"), Golden35)
-  try Test.eq(golden.cases.size, 34)
+  try Test.eq(golden.cases.size, 36)
   try Test.eq(golden.cases[28].messages[0].content, Chat.IMAGE + "Describe this picture.")
+  try Test.eq(golden.cases[34].messages[1].content, Chat.IMAGE + "A disc.")
+  try Test.eq(golden.cases[35].messages[1].content, "It is " + Chat.IMAGE)
   for c in golden.cases
     messages = c.messages.map { |t| Chat.Message(role: t.role, content: t.content) }
     made = Chat.apply("qwen3_5", messages, c.add_generation_prompt, c.enable_thinking)

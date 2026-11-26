@@ -125,7 +125,8 @@ end
   `pkg/transformers/generate_qwen35` (`Generate.open(m, 248070)`: the ids above the tokenizer's 248,070 tokens, which have
   no text, are never answered; stop ids `[248046, 248044]`). `Qwen3_5` has no `weights`/`with_weights` (no fine-tune).
   With a picture: `Qwen3_5Vision.open`/`encode`/`close_model` (patches from `Vision.patches`), `Chat.IMAGE` in the user's
-  `content`, `Mrope.expand(ids, Qwen3_5.image_token(dir), [Mrope.tokens(grid, 2)])`, `Mrope.layout`, and
+  `content` (text equal to it is an image; not in a system message),
+  `Mrope.expand(ids, Qwen3_5.image_token(dir), [grid], Qwen3_5Vision.merge(v))`, `Mrope.layout`, and
   `Generate.generate(g, ids, n, stop, none, some(KvDecoder.Sight(...)))`; close the tower before `Qwen3_5.open`. The
   fragment is in `site/content/transformers/models.md`.
 - Granite MoE (`GraniteMoe.open(dir, backend)`, `ibm-granite/granite-3.1-1b-a400m-instruct`) generates with

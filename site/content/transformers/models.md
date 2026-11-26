@@ -191,30 +191,41 @@ end
 
 ### Images with Qwen3.5
 
-`Qwen3_5Vision.open(dir, backend)` loads the vision tower of the same folder, and `Qwen3_5Vision.encode(v, patches, height, width)` turns the patches of one image (`Vision.patches`, `height` and `width` in patches) into its features, one row for each `merge_size` by `merge_size` square. `Chat.IMAGE` in the `content` of a user or assistant message is where the image goes (the template writes `<|vision_start|><|image_pad|><|vision_end|>`; a system message cannot hold one). The tokenizer makes one `<|image_pad|>` of it, which `Mrope.expand` repeats `Mrope.tokens(grid, 2)` times, and `Generate.generate(g, ids, n, stop, none, some(sight))` splices the features in at those ids, with the M-RoPE positions of Hugging Face's `get_rope_index` (`Mrope.layout`). A prompt with several images takes one `Mrope.Grid` for each, in the order of the pads, and the rows of all their features in one tensor (`features` of the `Sight`).
+`Qwen3_5Vision.open(dir, backend)` loads the vision tower of the same folder, and `Qwen3_5Vision.encode(v, patches, height, width)` turns the patches of one image (`Vision.patches`, `height` and `width` in patches) into its features, one row for each `merge` by `merge` square of patches (`Qwen3_5Vision.merge(v)`, 2 in the checkpoint). `Chat.IMAGE` in the `content` of a user or assistant message is where the image goes: the template writes `<|vision_start|><|image_pad|><|vision_end|>`, and any `content` that holds that text has an image, whoever wrote it (a system message cannot hold one: it is an error). The `qwen2` and `qwen3` templates have no images, and write the same text as the tags it is. The tokenizer makes one `<|image_pad|>` of it, which `Mrope.expand(ids, pad, grids, merge)` repeats once for each token of its grid (`height / merge * width / merge`), and `Generate.generate(g, ids, n, stop, none, some(sight))` splices the features in at those ids, with the M-RoPE positions of Hugging Face's `get_rope_index` (`Mrope.layout`). A prompt with several images takes one `Mrope.Grid` for each, in the order of the pads, and the rows of all their features in one tensor (`features` of the `Sight`).
 
 ```agentica {mode="fragment"}
 backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
-vision = Qwen3_5Vision.open("Qwen3.5-0.8B", backend).unwrap!
+dir = "Qwen3.5-0.8B"
+tok = Bpe.open("#{dir}/tokenizer.json").unwrap!
+image_token = Qwen3_5.image_token(dir).unwrap!
+
+vision = Qwen3_5Vision.open(dir, backend).unwrap!
+merge = Qwen3_5Vision.merge(vision)
 steps = [Vision.Step.SmartResize(32, 65536, 16777216, Vision.Kernel.Cubic)]
 srgb = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
 x = Vision.normalize(Vision.to_tensor(Vision.apply(srgb, steps).unwrap!, backend).unwrap!, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap!
-patches = Vision.patches(x, 16, 2).unwrap!
+patches = Vision.patches(x, 16, merge).unwrap!
 grid = Mrope.Grid(height: Tensor.shape(x)[1] / 16, width: Tensor.shape(x)[2] / 16)
 features = Qwen3_5Vision.encode(vision, patches, grid.height, grid.width).unwrap!
+Lift.close([patches])
 Qwen3_5Vision.close_model(vision)
 
-image_token = Qwen3_5.image_token("Qwen3.5-0.8B").unwrap!
+m = Qwen3_5.open(dir, backend).unwrap!
+g = Generate.open(m, tok.pieces.size).unwrap!
 text = Chat.apply("qwen3_5", [Chat.Message(role: "user", content: Chat.IMAGE + "What is in this picture?")]).unwrap!
-ids = Mrope.expand(Bpe.encode(tok, text).unwrap!, image_token, [Mrope.tokens(grid, 2).unwrap!]).unwrap!
-layout = Mrope.layout(ids, image_token, [grid], 2).unwrap!
+ids = Mrope.expand(Bpe.encode(tok, text).unwrap!, image_token, [grid], merge).unwrap!
+layout = Mrope.layout(ids, image_token, [grid], merge).unwrap!
 sight = KvDecoder.Sight(features: features, image_token: image_token, layout: layout)
-reply = Generate.generate(g, ids, 64, [248046, 248044], none, some(sight)).unwrap!
+made = Generate.generate(g, ids, 64, [248046, 248044], none, some(sight)).unwrap!
+puts(Bpe.decode(tok, made).unwrap!)
+Generate.close(g)
+Qwen3_5.close_model(m)
+Lift.close([features])
 ```
 
-- Close the tower before opening the text model (`Qwen3_5.open`) and the two never share the memory: the 0.8B model fits in 5 GB this way on CPU and on Vulkan. `Qwen3_5.image_token(dir)` reads the id from `config.json`.
+- Close the tower before opening the text model (`Qwen3_5.open`) and the two never share the memory: the 0.8B model fits in 5 GB this way on CPU and on Vulkan. `Qwen3_5.image_token(dir)` reads the id from `config.json`; the runnable path of this fragment, with its imports, is `check` of `vision/test/qwen35_image_hf_test.agc`.
 - `smart_resize` bounds the number of image tokens (`max_pixels / 1024`, 16,384 at the checkpoint's own bounds): pass smaller `min_pixels` and `max_pixels` to `SmartResize` for a short prompt. A picture with an alpha band is an error in `Vision.patches`: flatten it first.
-- Against Hugging Face's `Qwen3_5ForConditionalGeneration` in `float32` on the real `Qwen/Qwen3.5-0.8B`, for three pictures (two shrunk by `SmartResize`, one enlarged), the prompt ids (75 to 90 tokens) are the ones of Hugging Face's processor and chat template, and the 24 greedy ids are equal on ggml CPU and on Vulkan. The five largest logits of every step are within 0.14, 0.08 and 0.30 of Hugging Face's on both, which comes from the pixels (one 8-bit level from the processor's), not from the model.
+- Against Hugging Face's `Qwen3_5ForConditionalGeneration` in `float32` on the real `Qwen/Qwen3.5-0.8B`, for three pictures (two shrunk, one enlarged) given as the 8-bit crops that Hugging Face's image processor made, the prompt ids (75 to 90 tokens) are the ones of its processor and chat template, and the 24 greedy ids are equal on ggml CPU and on Vulkan. The five largest logits of every step are within 0.005 of Hugging Face's on both (the largest gap measured is 0.0023 on CPU and 0.0021 on Vulkan). Through our own resize (`SmartResize`) the pixels are up to one 8-bit level from the processor's and the logits up to 0.3 from its own, with the same ids: that gap comes from the pixels, not from the model.
 - Video and the numbered images of the chat template's `add_vision_id` are not supported.
 
 ## Granite MoE
