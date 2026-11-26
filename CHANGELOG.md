@@ -25,6 +25,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `ShortConv`, the gated short convolution of LFM3 (`pkg/nn/short_conv`), `Attention.head_gate` (a gate of one number per head) and a `window` in `Nn.causal_mask` and `Padded.padded_mask`, the mask of a sliding-window layer (ml#275).
 - `Rope.zero_tail`, the rotary of LFM3's global layers (a partial rotation with the frequencies of the whole head) (ml#275).
 - `Rope.sections`, the interleaved M-RoPE of Qwen3.5: positions of `[3, seq]` (time, height, width) turn each pair of columns by the row of its axis, with `Nn.axis_masks` for a decoder that makes the masks once; positions of `[seq]` are the plain rope (ml#151).
+- `Nn.Activation.GeluTanh`: the tanh GELU as ops that ggml compiles (`Gelu` is not lowered to ggml yet, ml#301); `Qwen3_5Vision` uses it (ml#84).
 
 ### transformers
 
@@ -36,6 +37,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `layers_on_device`: a decode step with the blocks on the CPU makes a few scheduler splits, not one or two per block: the residual stream stays on the CPU and the checks of the graph are copied together, about a third of the time of a step (ml#312).
 - `tools/profile_qwen.agc` reads `WEIGHTS` (`f16`, `q8_0`, `q4_k`), and `benchmarks/bench_qwen.sh` has the Q4_K_M rows against llama.cpp, at equal threads, with the peak GPU memory (ml#291).
 - Qwen3.5 chat with images: `Chat.IMAGE` is where a picture goes in a user or assistant message of `Chat.apply("qwen3_5", ...)` (a system message refuses it), `Mrope.expand(ids, pad, grids, merge)` gives the prompt its image tokens, `Qwen3_5.image_token(dir)` reads their id and `Qwen3_5Vision.merge(v)` the merge of the tower. The prompt ids and the greedy ids of `Qwen/Qwen3.5-0.8B` with a picture are Hugging Face's on CPU and Vulkan, with the five largest logits within 0.005 (ml#151).
+- `SmolVlmVision` (`pkg/transformers/smolvlm_vision`): the vision tower and the connector of SmolVLM (`HuggingFaceTB/SmolVLM-256M-Instruct`), `open` and `encode` of normalized 512 by 512 tiles to their 64 rows each for the text model, to Hugging Face's `get_image_features` on a tiny model and on the real checkpoint (ml#84, the first slice).
 - `Qwen3_5Vision` (`pkg/transformers/qwen3_5_vision`): the vision tower of Qwen3.5 (`Qwen/Qwen3.5-0.8B`), `open` and `encode` of one image's patches to the features that the text model reads at the image tokens (ml#151).
 - Images in the Qwen3.5 text model: `Mrope.layout` (the 3-axis positions and `rope_deltas` of an image prompt), `Generate.start(sight)` and the `sight` of `Generate.generate` splice the features of `Qwen3_5Vision` in at the image tokens and turn the attention by the three axes, to Hugging Face's logits on a tiny model (ml#151).
 

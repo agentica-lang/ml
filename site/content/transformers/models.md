@@ -228,6 +228,25 @@ Lift.close([features])
 - Against Hugging Face's `Qwen3_5ForConditionalGeneration` in `float32` on the real `Qwen/Qwen3.5-0.8B`, for three pictures (two shrunk, one enlarged) given as the 8-bit crops that Hugging Face's image processor made, the prompt ids (75 to 90 tokens) are the ones of its processor and chat template, and the 24 greedy ids are equal on ggml CPU and on Vulkan. The five largest logits of every step are within 0.005 of Hugging Face's on both (the largest gap measured is 0.0023 on CPU and 0.0021 on Vulkan). Through our own resize (`SmartResize`) the pixels are up to one 8-bit level from the processor's and the logits up to 0.3 from its own, with the same ids: that gap comes from the pixels, not from the model.
 - Video and the numbered images of the chat template's `add_vision_id` are not supported.
 
+## SmolVLM
+
+`SmolVlmVision.open(dir, backend)` loads the vision tower and the connector of SmolVLM (`Idefics3ForConditionalGeneration`, such as `HuggingFaceTB/SmolVLM-256M-Instruct`) from the folder of its official repository (`config.json` and `model.safetensors`; the weights are `bfloat16` on disk and `F32` in memory). `SmolVlmVision.encode(v, tiles)` turns tiles of 512 by 512 pixels, as the image processor normalizes them (`Vision.to_tensor`, then `Vision.normalize` with the mean and std 0.5), into the rows that the text model reads at the image tokens: `[tiles, 64, 576]` in the 256M model, 64 rows for each tile (`SmolVlmVision.tokens(v)`). The text model, the splitting of an image into tiles and the chat template are not here yet (ml#84): this is the first slice.
+
+```agentica {mode="fragment"}
+backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+v = SmolVlmVision.open("SmolVLM-256M-Instruct", backend).unwrap!
+image = Image.colourspace(Image.load("tile.png").unwrap!, Image.Space.Srgb).unwrap!
+tile = Vision.normalize(Vision.to_tensor(image, backend).unwrap!, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap!
+rows = SmolVlmVision.encode(v, tile).unwrap!
+# rows is [1, 64, 576]
+Lift.close([tile, rows])
+SmolVlmVision.close_model(v)
+```
+
+- The tower is SigLIP: a patch convolution, learned positions, 12 pre-norm blocks of full attention with an MLP of `gelu_pytorch_tanh`, and a final layer norm; the connector joins each 4 by 4 square of patches (`scale_factor`) into one vector with a pixel shuffle and takes it to the text width with one linear layer. Every tile is a whole square of `image_size` by `image_size` pixels: a tile of another size is an error (the padded tiles of Hugging Face's processor, with their patch mask, come with its port).
+- Against Hugging Face's `Idefics3ForConditionalGeneration.get_image_features` in `float32` on the real `SmolVLM-256M-Instruct`, for two tiles, the rows (the mean, the mean of the absolute values and 505 values of each tile) are within 5.3e-5 on ggml CPU and 1.1e-4 on Vulkan, and a tiny random model is within 2e-5 on the reference and 1e-4 on ggml (`transformers/DESIGN.md`).
+- `Nn.Activation.GeluTanh` is the tanh GELU as ops that ggml compiles, for a checkpoint with `gelu_pytorch_tanh` that runs on ggml (`Nn.Activation.Gelu` is the same function, not lowered to ggml yet).
+
 ## Granite MoE
 
 `GraniteMoe.open(dir, backend, weights)` loads IBM Granite MoE (`granitemoe`, the 1B-A400M model `ibm-granite/granite-3.1-1b-a400m-instruct`) from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory, 5.3 GB for the 1B-A400M model). `GraniteMoe.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache; `Generate` of `pkg/transformers/generate_granite_moe` generates with a KV cache, as in [Generation](generation.md#generation). There is no tokenizer or chat template for it yet, so a caller passes token ids.

@@ -429,7 +429,7 @@ def block(m: Vision, b: Block, h: Tensor.Tensor, rows: Tensor.Tensor, cols: Tens
   merged = try Tensor.reshape(try Tensor.permute(context, [0, 2, 1, 3]), [1, n, width])
   seen = try Tensor.add(h, try Nn.dense(b.proj, merged))
   up = try Nn.dense(b.up, try Nn.layer_norm(b.norm2, seen))
-  Tensor.add(seen, try Nn.dense(b.down, try gelu_tanh(up)))
+  Tensor.add(seen, try Nn.dense(b.down, try Nn.activate(Nn.Activation.GeluTanh, up)))
 end
 
 ## The queries (`i` 0), the keys (1) or the values (2) of the fused projection `qkv` `[1, n, 3 * width]`, as heads
@@ -438,16 +438,6 @@ def projected(m: Vision, qkv: Tensor.Tensor, i: Int) -> Result[Tensor.Tensor]
   n = Tensor.shape(qkv)[1]
   width = m.config.hidden_size
   heads_of(m, try Tensor.slice(qkv, [0, 0, i * width], [1, n, (i + 1) * width]))
-end
-
-## `gelu_pytorch_tanh`, `x * sigmoid(2 * sqrt(2 / pi) * (x + 0.044715 * x^3))`, from the ops that ggml compiles: it has
-## no `Tensor.gelu` (the tanh form) yet (ml#301).
-def gelu_tanh(x: Tensor.Tensor) -> Result[Tensor.Tensor]
-  shape = Tensor.shape(x)
-  by = ->(v: Float) { Tensor.full(shape, Tensor.Values.Float(v), Tensor.dtype(x), Tensor.backend(x)) }
-  cube = try Tensor.mul(try Tensor.mul(x, x), x)
-  inner = try Tensor.add(x, try Tensor.mul(cube, try by.call(0.044715)))
-  Tensor.mul(x, try Tensor.sigmoid(try Tensor.mul(inner, try by.call(1.5957691216057308))))
 end
 
 ## `[1, n, width]` as `[1, heads, n, head]`.

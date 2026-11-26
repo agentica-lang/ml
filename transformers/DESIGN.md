@@ -165,8 +165,8 @@ which the text model reads at the image tokens (the wiring is the next step of m
   does), the same for the queries and the keys: `q k^T` does not change. `rope_theta` is 10,000 unless the config says
   otherwise.
 - A block is pre-norm (layer norm, `eps` 1e-6) with a fused `qkv` projection and full attention over every patch (one
-  image is one segment), then an MLP with `gelu_pytorch_tanh`, written with ops that ggml compiles (`Tensor.gelu` is not
-  lowered to ggml yet, ml#301). The merger is a layer norm, the join of each square (4 consecutive rows), a dense layer, the exact
+  image is one segment), then an MLP with `gelu_pytorch_tanh` (`Nn.Activation.GeluTanh`, written with ops that ggml compiles:
+  `Tensor.gelu` is not lowered to ggml yet, ml#301). The merger is a layer norm, the join of each square (4 consecutive rows), a dense layer, the exact
   GELU and a dense layer to the text model's width.
 - The input is made by `vision/`: `Step.SmartResize(32, shortest_edge, longest_edge, Cubic)` (the bounds of
   `preprocessor_config.json`: 65,536 and 16,777,216 pixels; 32 is `patch_size * spatial_merge_size`), `to_tensor`,
@@ -382,6 +382,30 @@ convolutions, as in Qwen3.5, so the padding rows leave the state as the real row
   official code found largest is 3.6e-3 on CPU with the `F16` cache and 2.9e-5 with an `F32` cache (the cache line of
   `generate_lfm3.agc` changed for the run, not kept): the `F16` cache is the whole gap, `F16` weights are not. Peak 4.0 GB
   on CPU at 601 tokens, nothing longer measured. `tools/bench_lfm3.agc` is the timing row of `benchmarks/README.md`.
+
+## SmolVLM
+
+`smolvlm_vision.agc` (ml#84, the first slice): the vision tower and the connector of SmolVLM
+(`Idefics3ForConditionalGeneration`, `HuggingFaceTB/SmolVLM-256M-Instruct`), `SmolVlmVision.open(dir, backend)` and
+`encode(v, tiles)`. A tile is `[3, 512, 512]` (or `[n, 3, 512, 512]`) as the image processor makes it (rescaled by
+1/255, mean and std 0.5: `Vision.to_tensor` and `Vision.normalize`), and the result is `[n, 64, 576]`: the rows of
+`get_image_features`, 64 for each tile (`SmolVlmVision.tokens(v)`), at the width of the text model. The tower and the
+text model are not in one file: the text side (a Llama), the splice, the processor and the chat template are the next
+slices of ml#84.
+
+- The tower is SigLIP: a convolution of stride 16 without a class token, learned positions (one row for each patch of
+  the tile, in row order), 12 pre-norm blocks of full attention (`eps` 1e-6, separate `q_proj`, `k_proj`, `v_proj` and
+  `out_proj` with biases) and an MLP of `gelu_pytorch_tanh` (`Nn.Activation.GeluTanh`), then `post_layernorm`. They
+  are the `Nn.EncoderStack` of ViT, read through `Weights` (the names and shapes are checked before any tensor is
+  loaded).
+- Hugging Face's `Idefics3VisionEmbeddings` picks the position of a patch by the fraction of the tile it covers, so
+  that a padded tile of another size has its own positions. For a whole tile every patch is valid and the position of
+  a patch is its index, which is all this file does: a tile of another size, or a patch mask, is an error or not read.
+- The connector is `Idefics3Connector`: a pixel shuffle by `scale_factor` (4 in the 256M and 500M models, 2 in the
+  2.2B) joins each `scale_factor` by `scale_factor` square of patches into one vector (`width * scale^2` wide, the rows
+  of the square one after the other), and a linear layer without a bias takes it to the width of the text model.
+- `Nn.Activation.GeluTanh` is the function of `Gelu` written with mul, add and sigmoid, as ggml compiles them (`Gelu`
+  is not lowered to ggml yet, ml#301). `Qwen3_5Vision` uses it too, in place of its own copy.
 
 ## BERT
 
@@ -847,6 +871,26 @@ error row per config field.
   left over accepted, a count off by one, the pad itself moved, the rows times columns of the count a sum, each guard of
   a grid that the merge does not divide, the system image accepted, `Chat.IMAGE` without its end token, and the id read
   from another key.
+- `test/smolvlm_vision_test.agc` against `test/smolvlm_vision_golden.py` (`torch` 2.15.0, `transformers` 5.22.2, manual): a
+  tiny random SmolVLM (a tower of 2 blocks, 16 wide, 2 heads, patches of 4 over tiles of 16 by 16, a pixel shuffle by 2,
+  a text width of 12; `test/fixtures/smolvlm_vision_golden.json`, 107 KB) opened from a safetensors file written under
+  the names of the official checkpoint: the rows of three tiles are `get_image_features`' within 2e-5 on the reference
+  (doubles) and 1e-4 on ggml CPU, a single `[3, 16, 16]` tile gives the first tile's rows, and the errors name the
+  missing tensor, the model type, the activation, a `scale_factor` that does not divide the patches (3, 0), a head count
+  that does not divide the width, a patch size that does not divide the tile, a connector that does not fit the text
+  width, and a tile of another size. Mutants, each failing it: either permute of the pixel shuffle dropped, the square
+  taken along the other axis, the squares read in the other order, no `post_layernorm`, no learned positions, the exact
+  GELU for the tanh one, and the constant of the tanh GELU changed (this one fails `qwen35_vision_test` too).
+- `vision/test/smolvlm_hf_test.agc` against `vision/test/smolvlm_hf_golden.py` (manual: `torch` 2.15.0, `transformers`
+  5.22.2, `pillow` 11.3.0 as for the pixels golden, the sha256 of the checkpoint files checked, offline;
+  `vision/test/fixtures/smolvlm/golden.json`): the real `SmolVLM-256M-Instruct` in `float32`. Two tiles (the drawn images
+  `wide-1` and `tall-1` of the ResNet test, stretched to 512 by 512 with Pillow's bicubic and written as 8-bit PNGs
+  under `fixtures/smolvlm/tiles`, 100 KB each, their sha256 in the golden and checked by a test that needs no
+  checkpoint) go through `to_tensor`, `normalize` and the tower; of each tile's 64 rows of 576 the golden holds the mean,
+  the mean of the absolute values and 505 values at every 73rd place. It does nothing unless `SMOLVLM_MODEL` names the
+  checkpoint folder (`SMOLVLM_DEVICE=vulkan` for Vulkan). The largest gap is 3.6e-5 (wide) and 5.3e-5 (tall) on ggml CPU,
+  and 1.1e-4 and 9.2e-5 on Vulkan, for values of about 4 in absolute mean; the test passes within 3e-4 (with the exact GELU for the tanh one the gaps are 0.10 and 0.12). The tile is not
+  the output of the checkpoint's own processor (its splitting and padding are a later slice), only the same normalization.
 - `vision/test/qwen_pixels_test.agc` against Hugging Face's image processor of Qwen3.5 (the golden script
   `vision/test/qwen_pixels_golden.py` is manual: it needs `torch` 2.15.0 and `transformers` 5.22.2, in a venv, and
   `pillow` 11.3.0 from PyPI as the wheel `pillow-11.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`,

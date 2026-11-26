@@ -447,11 +447,15 @@ def activate(a: Nn.Activation, v: Float) -> Float
     Nn.Activation.Silu -> v / (1.0 + exp(-v))
     Nn.Activation.GeluErf -> 0.5 * v * (1.0 + erf(v / Math.sqrt(2.0)))
     Nn.Activation.Gelu -> v
+    Nn.Activation.GeluTanh -> v
   end
 end
 
 def mlp(p: Nn.Mlp, x: List[List[Float]]) -> Result[List[List[Float]]]
-  return error("the naive model has no tanh gelu") if p.activation == Nn.Activation.Gelu
+  if p.activation == Nn.Activation.Gelu or p.activation == Nn.Activation.GeluTanh
+    return error("the naive model has no tanh gelu")
+  end
+
   up = try dense(p.up, x)
   case p.gate
     some(g) ->
