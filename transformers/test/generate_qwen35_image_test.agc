@@ -140,6 +140,8 @@ def test_the_pad_of_each_image_is_expanded_to_its_tokens() -> Result[Void]
   try Test.error?(Mrope.tokens(Mrope.Grid(height: 3, width: 6), 2))
   try Test.error?(Mrope.tokens(Mrope.Grid(height: 4, width: 3), 2))
   try Test.error?(Mrope.tokens(Mrope.Grid(height: 0, width: 4), 2))
+  try Test.error?(Mrope.tokens(Mrope.Grid(height: 4, width: 0), 2))
+  try Test.error?(Mrope.tokens(Mrope.Grid(height: 4, width: 4), 0))
   try with_model(g) do |dir|
     try Test.eq(try Qwen3_5.image_token(dir), IMAGE)
     ok()
