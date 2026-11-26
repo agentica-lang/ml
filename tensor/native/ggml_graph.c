@@ -2252,7 +2252,7 @@ static const char *compute_mixed(struct entry *p, struct device_state *d) {
   }
   if (why == NULL && !ggml_backend_sched_alloc_graph(d->sched, p->graph)) why = "allocating the graph failed";
   if (why == NULL && ggml_backend_sched_graph_compute(d->sched, p->graph) != GGML_STATUS_SUCCESS) why = "ggml_backend_sched_graph_compute failed";
-  __atomic_store_n(&mixed_split_count, ggml_backend_sched_get_n_splits(d->sched), __ATOMIC_RELAXED);
+  if (why == NULL) __atomic_store_n(&mixed_split_count, ggml_backend_sched_get_n_splits(d->sched), __ATOMIC_RELAXED);
   restore_sources(p);
   forget(p);
   ggml_backend_sched_reset(d->sched);
