@@ -9,7 +9,7 @@
 ## The plugin is not built here and not linked: `native/xla.c` loads it with `dlopen` at the first use, from the ml
 ## cache, where `tools/install_xla.agc` puts the pinned wheel of PyPI (`WHEELS`).
 ##
-## Storage: `F32`, `F64`, `I32`, `I64`, `I16`, `I8`, `U8` and `Bool`; `F16` and `Q8_0` are refused. Lifetimes (§8):
+## Storage: `F32`, `F64`, `I32`, `I64`, `I16`, `I8`, `U8` and `Bool`; `F16` and the quantized dtypes are refused. Lifetimes (§8):
 ## one `Native.arena` per call, as in `src/ggml.agc`.
 
 import Reference from "reference"

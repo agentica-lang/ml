@@ -11,6 +11,19 @@
 
 #include <pthread.h>
 
+/* What a tensor holds, the code of `Types.held_code`: F32 or F16, or the blocks of a Q8_0, Q4_K or Q6_K weight. */
+enum { HELD_F32 = 0, HELD_F16 = 1, HELD_Q8_0 = 2, HELD_Q4_K = 3, HELD_Q6_K = 4 };
+
+static inline enum ggml_type held_type(int64_t held) {
+  switch (held) {
+    case HELD_F16: return GGML_TYPE_F16;
+    case HELD_Q8_0: return GGML_TYPE_Q8_0;
+    case HELD_Q4_K: return GGML_TYPE_Q4_K;
+    case HELD_Q6_K: return GGML_TYPE_Q6_K;
+    default: return GGML_TYPE_F32;
+  }
+}
+
 /* A queued `fn(arg)`, embedded in what it frees so queuing needs no memory. */
 struct deferred {
   void (*fn)(void *);

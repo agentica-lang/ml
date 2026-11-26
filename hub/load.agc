@@ -15,8 +15,10 @@
 ##
 ## With `weights: Q8_0` a rank-2 weight that the file stores as Q8_0 (a GGUF file) is kept as its blocks on the ggml
 ## backend, about a quarter of the memory of `F32` (`tensor/DESIGN.md` §7); everything else stays `F32` (a Q8_0
-## tensor of any other rank is dequantized, and a tensor that is not Q8_0 in its file is not quantized). Without it a
-## Q8_0 tensor is dequantized to `F32` at load, on every backend.
+## tensor of any other rank is dequantized, and a tensor that is not Q8_0 in its file is not quantized). With
+## `weights: Q4_K` the same holds for the rank-2 weights that the file stores as Q4_K or Q6_K (a Q4_K_M file mixes the
+## two: each tensor keeps the bit width it has). Without either a quantized tensor is dequantized to `F32` at load,
+## on every backend.
 
 import Hub from "hub"
 import Nn from "pkg/nn/nn"
@@ -56,14 +58,16 @@ struct DecoderBlockNames
   down: String
 end
 
-## The `weights` option the tools take from the environment: `WEIGHTS=f32` (the default), `WEIGHTS=f16` or `WEIGHTS=q8_0`.
+## The `weights` option the tools take from the environment: `WEIGHTS=f32` (the default), `WEIGHTS=f16`, `WEIGHTS=q8_0`
+## or `WEIGHTS=q4_k`.
 def weights_from_env() -> Result[Tensor.Dtype]
   name = System.env("WEIGHTS").unwrap_or("f32")
   case name
     "f32" -> ok(Tensor.Dtype.F32)
     "f16" -> ok(Tensor.Dtype.F16)
     "q8_0" -> ok(Tensor.Dtype.Q8_0)
-    _ -> error("WEIGHTS is f32, f16 or q8_0, got #{name}")
+    "q4_k" -> ok(Tensor.Dtype.Q4_K)
+    _ -> error("WEIGHTS is f32, f16, q8_0 or q4_k, got #{name}")
   end
 end
 
@@ -85,7 +89,7 @@ def weight(c: Hub.Checkpoint, name: String, rank: Int, backend: Tensor.Backend) 
 end
 
 ## A dense layer: `{prefix}.weight` `[out, in]` (`F16` under `weights: F16` when big enough, `Q8_0` under `weights: Q8_0`
-## when the file stores it so) and an optional bias.
+## or `Q4_K`/`Q6_K` under `weights: Q4_K` when the file stores it so) and an optional bias.
 def dense(
   c: Hub.Checkpoint,
   prefix: String,
@@ -130,8 +134,8 @@ def layer_norm(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Ba
   ok(Nn.LayerNorm(gamma: gamma, beta: beta, eps: eps))
 end
 
-## An embedding table, `F16` under `weights: F16` when big enough (`Q8_0` under `weights: Q8_0` when the file stores it
-## so): the tokens of a model with its tied head, not a
+## An embedding table, `F16` under `weights: F16` when big enough (`Q8_0` under `weights: Q8_0`, `Q4_K` or `Q6_K` under
+## `weights: Q4_K`, when the file stores it so): the tokens of a model with its tied head, not a
 ## positional table, which `Nn.positional` slices.
 def embedding(
   c: Hub.Checkpoint,
@@ -203,7 +207,7 @@ private
 
 ## The weight `name` of `rank`: `F32`, or `F16` when `weights` asks for it, it is a float file of rank 2 and it has
 ## `HALF_MIN_ELEMENTS` or more (an F64 file stays `F32`), or `Q8_0` when `weights` asks for it, the file stores it as
-## Q8_0 and it has rank 2.
+## Q8_0 and it has rank 2, or the Q4_K or Q6_K of the file when `weights` is Q4_K (the same conditions).
 def matrix(
   c: Hub.Checkpoint,
   name: String,
@@ -213,11 +217,8 @@ def matrix(
 ) -> Result[Tensor.Tensor]
   _ = try checked(weights, backend)
   dtype = Tensor.Dtype.F32
-  if weights == Tensor.Dtype.Q8_0 and rank == 2
-    stored = try Hub.dtype(c, name)
-    if stored == "Q8_0"
-      dtype = Tensor.Dtype.Q8_0
-    end
+  if rank == 2 and (weights == Tensor.Dtype.Q8_0 or weights == Tensor.Dtype.Q4_K)
+    dtype = kept(weights, try Hub.dtype(c, name))
   end
 
   if weights == Tensor.Dtype.F16 and rank == 2
@@ -230,7 +231,7 @@ def matrix(
   t = try Hub.tensor(c, name, backend, dtype)
   shape = Tensor.shape(t)
   return error("#{name}: needs rank #{rank}, got #{shape}") if shape.size != rank
-  return ok(t) if Tensor.dtype(t) == Tensor.Dtype.F16 or Tensor.dtype(t) == Tensor.Dtype.Q8_0
+  return ok(t) if Tensor.packed?(Tensor.dtype(t))
   case Tensor.dtype(t)
     Tensor.Dtype.F32 -> ok(t)
     Tensor.Dtype.F16 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
@@ -257,7 +258,19 @@ def bias(c: Hub.Checkpoint, prefix: String, rows: Int, backend: Tensor.Backend) 
   ok(some(b))
 end
 
-## `weights` is an `F32`, `F16` or `Q8_0` request that this backend can keep.
+## The dtype a tensor that the file stores as `stored` is kept in under `weights` Q8_0 or Q4_K: its own quantized type
+## when `weights` asks for that type (Q4_K asks for Q6_K too), else `F32`.
+def kept(weights: Tensor.Dtype, stored: String) -> Tensor.Dtype
+  return Tensor.Dtype.Q8_0 if weights == Tensor.Dtype.Q8_0 and stored == "Q8_0"
+
+  return Tensor.Dtype.Q4_K if weights == Tensor.Dtype.Q4_K and stored == "Q4_K"
+
+  return Tensor.Dtype.Q6_K if weights == Tensor.Dtype.Q4_K and stored == "Q6_K"
+
+  Tensor.Dtype.F32
+end
+
+## `weights` is an `F32`, `F16`, `Q8_0` or `Q4_K` request that this backend can keep.
 def checked(weights: Tensor.Dtype, backend: Tensor.Backend) -> Result[Bool]
   case weights
     Tensor.Dtype.F32 -> ok(true)
@@ -273,7 +286,13 @@ def checked(weights: Tensor.Dtype, backend: Tensor.Backend) -> Result[Bool]
         _ -> error("weights: Q8_0 needs the ggml backend (quantized weights are only held by ggml)")
       end
 
-    _ -> error("weights is F32, F16 or Q8_0")
+    Tensor.Dtype.Q4_K ->
+      case backend
+        Tensor.Backend.Ggml(_) -> ok(true)
+        _ -> error("weights: Q4_K needs the ggml backend (quantized weights are only held by ggml)")
+      end
+
+    _ -> error("weights is F32, F16, Q8_0 or Q4_K")
   end
 end
 

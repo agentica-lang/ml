@@ -31,20 +31,31 @@ enum Dtype
   U8
   Bool
   Q8_0
+  Q4_K
+  Q6_K
 end
 
 ## The formats `Tensor.from_file` reads: little-endian IEEE binary32, binary16
-## and bfloat16, and Q8_0 (ggml's blocks of 32 values: a binary16 scale and 32
-## signed bytes). The tensor it makes is `F32` whichever one it reads, or a
-## `Q8_0` weight that keeps the blocks of a Q8_0 file (ggml only). `U8` is for
-## `Tensor.from_bytes` alone: one unsigned byte per value, `0..255` as an `F32`,
-## such as the samples of an image.
+## and bfloat16, and ggml's quantized blocks: Q8_0 (32 values: a binary16 scale
+## and 32 signed bytes), Q4_K (256 values in 144 bytes) and Q6_K (256 values in
+## 210). The tensor it makes is `F32` whichever one it reads, or a weight of the
+## dtype of the same name that keeps the blocks of the file (ggml only). `U8` is
+## for `Tensor.from_bytes` alone: one unsigned byte per value, `0..255` as an
+## `F32`, such as the samples of an image.
 enum FloatFormat
   F32
   F16
   BF16
   Q8_0
+  Q4_K
+  Q6_K
   U8
+end
+
+## The values and the bytes of one block of a quantized format (`block_of`).
+struct Block
+  values: Int
+  bytes: Int
 end
 
 ## Where a backend computes: the host CPU, or the Vulkan device of that index
@@ -201,17 +212,46 @@ def volume(shape: List[Int]) -> Result[Int]
   ok(total)
 end
 
-## The bytes of `n` values of `format`: a Q8_0 range holds whole blocks of 32 values.
+## The values and the bytes of one block of a quantized `format`: Q8_0 32 values in 34 bytes, Q4_K and Q6_K 256 values in
+## 144 and 210. `none` for a format that is not quantized.
+def block_of(format: FloatFormat) -> Optional[Block]
+  case format
+    FloatFormat.Q8_0 -> some(Block(values: 32, bytes: 34))
+    FloatFormat.Q4_K -> some(Block(values: 256, bytes: 144))
+    FloatFormat.Q6_K -> some(Block(values: 256, bytes: 210))
+    _ -> none
+  end
+end
+
+## The bytes of `n` values of `format`: a quantized range holds whole blocks.
 def file_bytes(format: FloatFormat, n: Int) -> Result[Int]
   return error("#{n} values hold more bytes than an Int counts") if n > 2305843009213693951
+  case block_of(format)
+    some(b) ->
+      return error("#{format_name(format)} holds whole blocks of #{b.values} values, got #{n}") if n % b.values != 0
+      return ok((n / b.values) * b.bytes)
+    none -> nil
+  end
+
   case format
     FloatFormat.F32 -> ok(n * 4)
     FloatFormat.F16 -> ok(n * 2)
     FloatFormat.BF16 -> ok(n * 2)
-    FloatFormat.Q8_0 ->
-      return error("Q8_0 holds whole blocks of 32 values, got #{n}") if n % 32 != 0
-      ok((n / 32) * 34)
     FloatFormat.U8 -> ok(n)
+    _ -> error("#{format_name(format)} is a quantized format")
+  end
+end
+
+## The short name used in error messages.
+def format_name(format: FloatFormat) -> String
+  case format
+    FloatFormat.F32 -> "F32"
+    FloatFormat.F16 -> "F16"
+    FloatFormat.BF16 -> "BF16"
+    FloatFormat.Q8_0 -> "Q8_0"
+    FloatFormat.Q4_K -> "Q4_K"
+    FloatFormat.Q6_K -> "Q6_K"
+    FloatFormat.U8 -> "U8"
   end
 end
 
@@ -223,27 +263,46 @@ def file_code(format: FloatFormat) -> Int
     FloatFormat.BF16 -> 2
     FloatFormat.Q8_0 -> 3
     FloatFormat.U8 -> 4
+    FloatFormat.Q4_K -> 5
+    FloatFormat.Q6_K -> 6
   end
 end
 
-## What a loaded ggml tensor holds, for the native layer: 0 F32, 1 F16, 2 Q8_0 (the type of a graph's leaf too).
+## What a loaded ggml tensor holds, for the native layer: 0 F32, 1 F16, 2 Q8_0, 3 Q4_K, 4 Q6_K (the type of a graph's
+## leaf too).
 def held_code(dtype: Dtype) -> Int
   case dtype
     Dtype.F16 -> 1
     Dtype.Q8_0 -> 2
+    Dtype.Q4_K -> 3
+    Dtype.Q6_K -> 4
     _ -> 0
   end
 end
 
-## True for the dtypes a weight is kept in on ggml to save memory: `F16` and `Q8_0`. Read-only, and only the weight
-## of a matmul or the table of a gather (`tensor/DESIGN.md` §7).
-def is_packed_dtype(dtype: Dtype) -> Bool
+## True for the dtypes of ggml's quantized blocks: `Q8_0`, `Q4_K` and `Q6_K`.
+def is_quantized_dtype(dtype: Dtype) -> Bool
   case dtype
-    Dtype.F16 -> true
     Dtype.Q8_0 -> true
+    Dtype.Q4_K -> true
+    Dtype.Q6_K -> true
     _ -> false
   end
 end
+
+## The file format whose blocks a quantized dtype keeps (`F32` for the others, which keep none).
+def block_format(dtype: Dtype) -> FloatFormat
+  case dtype
+    Dtype.Q8_0 -> FloatFormat.Q8_0
+    Dtype.Q4_K -> FloatFormat.Q4_K
+    Dtype.Q6_K -> FloatFormat.Q6_K
+    _ -> FloatFormat.F32
+  end
+end
+
+## True for the dtypes a weight is kept in on ggml to save memory: `F16` and the quantized ones. Read-only, and only the
+## weight of a matmul or the table of a gather (`tensor/DESIGN.md` §7).
+def is_packed_dtype(dtype: Dtype) -> Bool = dtype == Dtype.F16 or is_quantized_dtype(dtype)
 
 ## True for the dtypes that hold non-integer numerics.
 def is_float_dtype(dtype: Dtype) -> Bool
@@ -273,6 +332,8 @@ def dtype_name(dtype: Dtype) -> String
     Dtype.F32 -> "F32"
     Dtype.F16 -> "F16"
     Dtype.Q8_0 -> "Q8_0"
+    Dtype.Q4_K -> "Q4_K"
+    Dtype.Q6_K -> "Q6_K"
     Dtype.F64 -> "F64"
     Dtype.I8 -> "I8"
     Dtype.I16 -> "I16"
@@ -336,6 +397,8 @@ def float_to_value(x: Float, dtype: Dtype) -> Result[Values]
     Dtype.F32 -> ok(Values.Float(x))
     Dtype.F16 -> ok(Values.Float(x))
     Dtype.Q8_0 -> ok(Values.Float(x))
+    Dtype.Q4_K -> ok(Values.Float(x))
+    Dtype.Q6_K -> ok(Values.Float(x))
     Dtype.F64 -> ok(Values.Float(x))
     Dtype.Bool ->
       return ok(Values.Bool(true)) if x == 1.0

@@ -129,8 +129,11 @@ def header_of(fields: List[Field], tensors: List[Out]) -> Result[Layout]
     return error("the tensor #{t.name} appears twice") if names.include?(t.name)
     names = names.add(t.name)
     shape = t.source.shape
-    if t.format == Tensor.FloatFormat.Q8_0
-      return error("the tensor #{t.name} is written as F32, F16 or BF16, not Q8_0")
+    case t.format
+      Tensor.FloatFormat.Q8_0 -> return error("the tensor #{t.name} is written as F32, F16 or BF16, not Q8_0")
+      Tensor.FloatFormat.Q4_K -> return error("the tensor #{t.name} is written as F32, F16 or BF16, not Q4_K")
+      Tensor.FloatFormat.Q6_K -> return error("the tensor #{t.name} is written as F32, F16 or BF16, not Q6_K")
+      _ -> nil
     end
 
     return error("the tensor #{t.name} is written as F32, F16 or BF16, not U8") if t.format == Tensor.FloatFormat.U8
@@ -166,6 +169,8 @@ def ggml_type(format: Tensor.FloatFormat) -> Result[Int]
     Tensor.FloatFormat.F16 -> ok(1)
     Tensor.FloatFormat.BF16 -> ok(30)
     Tensor.FloatFormat.Q8_0 -> ok(8)
+    Tensor.FloatFormat.Q4_K -> ok(12)
+    Tensor.FloatFormat.Q6_K -> ok(14)
     Tensor.FloatFormat.U8 -> error("U8 is a format of from_bytes, not of a GGUF file")
   end
 end

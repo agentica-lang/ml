@@ -4,6 +4,15 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ## [Unreleased]
 
+### tensor
+
+- `Dtype.Q4_K`, `Dtype.Q6_K` and the formats of the same names: `Tensor.from_file` dequantizes ggml's K blocks to `F32` on every backend, or keeps them as a weight on ggml (ml#126).
+- `Tensor.packed?(dtype)`: true for the dtypes that ggml keeps packed (`F16` and the quantized ones).
+
+### hub
+
+- GGUF files with `Q4_K` and `Q6_K` tensors are read; `weights: Dtype.Q4_K` (`WEIGHTS=q4_k`) keeps each matrix as blocks at the bit width the file stores it in (ml#126).
+
 ## [0.6.0] - 2026-11-26
 
 ### tensor

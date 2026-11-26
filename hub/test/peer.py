@@ -412,7 +412,7 @@ def gguf_write(out):
 
 # GGUF: the value types are numbered as in the format, the tensor types as in ggml.
 GGUF_SCALARS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
-GGML_TYPES = {"F32": 0, "F16": 1, "Q8_0": 8, "Q4_K": 12, "I32": 26, "F64": 28, "BF16": 30}
+GGML_TYPES = {"F32": 0, "F16": 1, "Q8_0": 8, "Q5_K": 13, "I32": 26, "F64": 28, "BF16": 30}
 
 
 def g_string(s):
@@ -487,8 +487,8 @@ def gguf_file(out):
         tensors.append((name, dims, GGML_TYPES[dtype], raw))
         expected[names[name]] = decoded(tensor(dtype, shape, values))
     gguf(out / "model.gguf", kvs, tensors)
-    # one Q4_K block (256 values, 144 bytes) that is all of the data: the file opens, and reading the tensor is refused
-    gguf(out / "q4k.gguf", [kvs[0]], [("blk.0.ffn_up.weight", [256, 1], GGML_TYPES["Q4_K"], bytes(144))])
+    # one Q5_K block (256 values, 176 bytes) that is all of the data: the file opens, and reading the tensor is refused
+    gguf(out / "q5k.gguf", [kvs[0]], [("blk.0.ffn_up.weight", [256, 1], GGML_TYPES["Q5_K"], bytes(176))])
     # big enough for `weights: F16`: a table, a BF16 matrix and an F32 one
     def pattern(n):
         return [((i * 7) % 17 - 8) / 16.0 for i in range(n)]

@@ -173,12 +173,64 @@ def test_weights_q8_0_keeps_the_blocks_of_a_q8_0_file() -> Result[Void]
   end
 end
 
-## A quantized tensor that is all of the data: sized in blocks, not in values, so the file opens.
+## Q4_K and Q6_K tensors of random blocks, written by the official `gguf` package (`kquants_golden.py`), read as it
+## dequantizes them (float32 values; the bound is a few ulps of values under 16), on every backend that reads a file.
+def test_a_k_quant_tensor_reads_as_the_gguf_package_dequantizes_it() -> Result[Void]
+  c = try Hub.open("test/fixtures/kquants.gguf")
+  want = try JSON.parse(try File.read_text("test/fixtures/kquants.json"))
+  names = {
+    "model.layers.0.self_attn.q_proj.weight": ["blk.0.attn_q.weight", "Q4_K"],
+    "model.layers.0.mlp.up_proj.weight": ["blk.0.ffn_up.weight", "Q6_K"],
+  }
+
+  for name in names.keys
+    peer = try JSON.get(want, names[name][0])
+    expected = (try JSON.decode(try JSON.get(peer, "bits"), List[Int])).map { |b: Int|
+      Float32.from_bits(b.to_uint32!).to_f
+    }
+
+    try Test.eq(try Hub.dtype(c, name), names[name][1])
+    try Test.eq(try Hub.shape(c, name), try JSON.decode(try JSON.get(peer, "shape"), List[Int]))
+    for backend in [S.REF] + try S.native()
+      t = try Hub.tensor(c, name, backend)
+      try Test.eq(Tensor.dtype(t), Tensor.Dtype.F32)
+      try S.expect_close(try S.floats_of(t), expected, 0.000004, 0.0, "#{name} on #{backend}")
+    end
+  end
+
+  ok()
+end
+
+## With `weights: Q4_K` each rank-2 weight of a file keeps the bit width it is stored in (Q4_K and Q6_K) as blocks on
+## ggml, and nothing else changes: `weights: Q8_0` keeps none of them, and Q6_K is no request of its own.
+def test_weights_q4_k_keeps_each_tensor_at_its_own_bit_width() -> Result[Void]
+  c = try Hub.open("test/fixtures/kquants.gguf")
+  four = "model.layers.0.self_attn.q_proj"
+  six = "model.layers.0.mlp.up_proj"
+  for backend in try S.ggml_backends()
+    try Test.eq(Tensor.dtype((try Load.dense(c, four, backend, Tensor.Dtype.Q4_K)).w), Tensor.Dtype.Q4_K)
+    try Test.eq(Tensor.dtype((try Load.dense(c, six, backend, Tensor.Dtype.Q4_K)).w), Tensor.Dtype.Q6_K)
+    table = try Load.embedding(c, "#{six}.weight", backend, Tensor.Dtype.Q4_K)
+    try Test.eq(Tensor.dtype(table.table), Tensor.Dtype.Q6_K)
+    try Test.eq(Tensor.shape(table.table), [2, 512])
+    try Test.eq(Tensor.dtype((try Load.dense(c, four, backend)).w), Tensor.Dtype.F32)
+    try Test.eq(Tensor.dtype((try Load.dense(c, four, backend, Tensor.Dtype.Q8_0)).w), Tensor.Dtype.F32)
+    try Test.eq(Tensor.dtype(try Hub.tensor(c, "#{six}.weight", backend, Tensor.Dtype.Q6_K)), Tensor.Dtype.Q6_K)
+    try S.expect_error(Hub.tensor(c, "#{six}.weight", backend, Tensor.Dtype.Q4_K), "only a Q4_K")
+    try S.expect_error(Hub.tensor(c, "#{four}.weight", backend, Tensor.Dtype.Q8_0), "only a Q8_0")
+    try S.expect_error(Load.dense(c, four, backend, Tensor.Dtype.Q6_K), "weights is")
+  end
+
+  S.expect_error(Load.dense(c, four, S.REF, Tensor.Dtype.Q4_K), "needs the ggml backend")
+end
+
+## A quantized tensor that is all of the data: sized in blocks, not in values, so the file opens (a type that is not read
+## is refused when it is asked for).
 def test_a_quantized_tensor_that_fills_the_data_opens() -> Result[Void]
   S.with_fixtures("gguf") do |dir|
-    c = try Hub.open("#{dir}/q4k.gguf")
+    c = try Hub.open("#{dir}/q5k.gguf")
     try Test.eq(try Hub.shape(c, "model.layers.0.mlp.up_proj.weight"), [1, 256])
-    S.expect_error(Hub.tensor(c, "model.layers.0.mlp.up_proj.weight", S.REF), "Q4_K")
+    S.expect_error(Hub.tensor(c, "model.layers.0.mlp.up_proj.weight", S.REF), "Q5_K")
   end
 end
 

@@ -8,10 +8,11 @@
 ##
 ## A quantized GGUF is checked against the golden of llama.cpp for the same file (`tools/llama_golden.c`): with
 ## `QUANTIZED=1` the logits pass within `QUANT_ABS` and the top five of each position are not compared. Both programs
-## round every activation of a product to Q8_0 blocks, and that rounding is chaotic: llama.cpp's own logits move by up
+## round every activation of a product to Q8_0 (Q8_K for the K types) blocks, and that rounding is chaotic: llama.cpp's own logits move by up
 ## to 0.65 when its KV cache is `F16` instead of `F32`, so no tighter gap can be asked of another implementation.
 ##
 ##   WEIGHTS=q8_0 QUANTIZED=1 agentica tools/qwen_check.agc MODEL.gguf GOLDEN.json cpu
+##   WEIGHTS=q4_k QUANTIZED=1 agentica tools/qwen_check.agc MODEL.gguf GOLDEN.json cpu   (a Q4_K_M file)
 
 import Qwen3 from "../qwen3"
 import Load from "pkg/hub/load"
@@ -23,9 +24,9 @@ import Tensor from "pkg/tensor/tensor"
 ABS = 0.002
 REL = 0.0005
 
-## The gap that passes for a quantized model (logits of up to 30): the noise of Q8_0 activations, 0.4 to 0.7 at most
-## between two implementations.
-QUANT_ABS = 1.0
+## The gap that passes for a quantized model (logits of up to 30): the noise of the activations' rounding, 0.4 to 0.7
+## at most between two implementations for Q8_0 and 1.7 for Q4_K_M, whose own noise in llama.cpp is 2.0.
+QUANT_ABS = 2.5
 
 struct Case
   ids: List[Int]

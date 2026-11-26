@@ -242,7 +242,7 @@ MLP sizes; `Tensor.vulkan_fp16(false)`, before any other ggml call (a CPU one, o
 `mul_mat` (on a build without Vulkan it changes nothing), and the checks against
 Hugging Face and whisper.cpp do. ggml
 holds `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are held as `F32`, which is
-exact for them; `F64` and `I64` are refused, `F16` and `Q8_0` are held only as a weight from `from_file` (or an `F16` cache), and a rank above 4 is refused. A
+exact for them; `F64` and `I64` are refused, `F16` and the quantized dtypes (`Q8_0`, `Q4_K`, `Q6_K`) are held only as a weight from `from_file` (or an `F16` cache), and a rank above 4 is refused. A
 fill is made in C, so it has no `List.repeat` cap. Vulkan buffer operations
 (allocate, write, read, free) run under one lock, so tasks can share a device.
 `Device.Vulkan(i)` counts only devices that are not a CPU (a software rasterizer

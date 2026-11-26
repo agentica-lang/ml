@@ -4,9 +4,9 @@
 
    The range is checked against the size of the file before anything is read, so a short file, a bad offset or a
    directory is an error and never a read past the end. An F32 range is read straight into `dest`; F16 and BF16
-   are read in chunks and widened into it, so no other buffer of the size of the tensor exists. A Q8_0 range (blocks
-   of 32 values: a binary16 scale and 32 signed bytes) is dequantized the same way, or read as the blocks it is
-   (`ff_read_bytes`) for a tensor that keeps them. */
+   are read in chunks and widened into it, so no other buffer of the size of the tensor exists. A quantized range (the
+   blocks of ggml's Q8_0, Q4_K and Q6_K) is dequantized the same way, or read as the blocks it is (`ff_read_bytes`)
+   for a tensor that keeps them. */
 #ifndef TENSOR_FLOAT_FILE_H
 #define TENSOR_FLOAT_FILE_H
 
@@ -36,11 +36,27 @@ _Static_assert(sizeof(off_t) == 8, "float_file.h needs a 64-bit off_t");
 #endif
 
 /* The codes of `Types.file_code` in `src/types.agc`. */
-enum { FF_F32 = 0, FF_F16 = 1, FF_BF16 = 2, FF_Q8_0 = 3, FF_U8 = 4 };
+enum { FF_F32 = 0, FF_F16 = 1, FF_BF16 = 2, FF_Q8_0 = 3, FF_U8 = 4, FF_Q4_K = 5, FF_Q6_K = 6 };
 
-/* A Q8_0 block: 32 values in 34 bytes. */
-#define FF_Q8_0_VALUES 32
-#define FF_Q8_0_BLOCK 34
+/* The values and the bytes of one block of a quantized format: Q8_0 32 values in 34 bytes, Q4_K and Q6_K 256 in 144 and
+   210. Zero for a format that is not quantized. */
+static int64_t ff_block_values(int64_t format) {
+  switch (format) {
+    case FF_Q8_0: return 32;
+    case FF_Q4_K:
+    case FF_Q6_K: return 256;
+    default: return 0;
+  }
+}
+
+static int64_t ff_block_bytes(int64_t format) {
+  switch (format) {
+    case FF_Q8_0: return 34;
+    case FF_Q4_K: return 144;
+    case FF_Q6_K: return 210;
+    default: return 0;
+  }
+}
 
 /* The raw bytes read at a time for F16 and BF16. */
 #define FF_CHUNK ((size_t)1 << 20)
@@ -102,22 +118,96 @@ static void ff_widen(const uint8_t *raw, int64_t count, int64_t format, float *d
   }
 }
 
-/* `blocks` Q8_0 blocks in `raw`, dequantized into `dest` as ggml does: the scale (binary16, widened) times the byte. */
-static void ff_dequant_q8_0(const uint8_t *raw, int64_t blocks, float *dest) {
-  int64_t b;
+/* The scale and the minimum of sub-block `j` of a Q4_K block: six bits each, packed in 12 bytes as ggml does. */
+static void ff_scale_min_k4(int j, const uint8_t *q, uint8_t *scale, uint8_t *min) {
+  if (j < 4) {
+    *scale = q[j] & 63;
+    *min = q[j + 4] & 63;
+  } else {
+    *scale = (uint8_t)((q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4));
+    *min = (uint8_t)((q[j + 4] >> 4) | ((q[j] >> 6) << 4));
+  }
+}
+
+/* One Q4_K block: d and dmin (binary16), 12 bytes of scales, 128 bytes of nibbles. Same operations as ggml. */
+static void ff_dequant_q4_k(const uint8_t *block, float *y) {
+  const uint8_t *q = block + 16;
+  float d = ff_half((uint16_t)(block[0] | (block[1] << 8)));
+  float min = ff_half((uint16_t)(block[2] | (block[3] << 8)));
+  int j, l, is = 0;
+  uint8_t sc, m;
+
+  for (j = 0; j < 256; j += 64) {
+    float d1, m1, d2, m2;
+
+    ff_scale_min_k4(is + 0, block + 4, &sc, &m);
+    d1 = d * sc;
+    m1 = min * m;
+    ff_scale_min_k4(is + 1, block + 4, &sc, &m);
+    d2 = d * sc;
+    m2 = min * m;
+    for (l = 0; l < 32; l++) *y++ = d1 * (q[l] & 0xF) - m1;
+    for (l = 0; l < 32; l++) *y++ = d2 * (q[l] >> 4) - m2;
+    q += 32;
+    is += 2;
+  }
+}
+
+/* One Q6_K block: 128 bytes of low nibbles, 64 of high bit pairs, 16 signed scales, d (binary16). */
+static void ff_dequant_q6_k(const uint8_t *block, float *y) {
+  const uint8_t *ql = block, *qh = block + 128;
+  const int8_t *sc = (const int8_t *)(block + 192);
+  float d = ff_half((uint16_t)(block[208] | (block[209] << 8)));
+  int n, l;
+
+  for (n = 0; n < 256; n += 128) {
+    for (l = 0; l < 32; l++) {
+      int is = l / 16;
+      int8_t q1 = (int8_t)((ql[l + 0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+      int8_t q2 = (int8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+      int8_t q3 = (int8_t)((ql[l + 0] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+      int8_t q4 = (int8_t)((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+
+      y[l + 0] = d * sc[is + 0] * q1;
+      y[l + 32] = d * sc[is + 2] * q2;
+      y[l + 64] = d * sc[is + 4] * q3;
+      y[l + 96] = d * sc[is + 6] * q4;
+    }
+    y += 128;
+    ql += 64;
+    qh += 32;
+    sc += 8;
+  }
+}
+
+/* `blocks` blocks of the quantized `format` in `raw`, dequantized into `dest` as ggml does. Q8_0 is the scale (binary16,
+   widened) times the byte. */
+static void ff_dequant(int64_t format, const uint8_t *raw, int64_t blocks, float *dest) {
+  size_t bytes = (size_t)ff_block_bytes(format);
+  int64_t b, values = ff_block_values(format);
   int j;
 
   for (b = 0; b < blocks; b++) {
-    const uint8_t *block = raw + (size_t)b * FF_Q8_0_BLOCK;
-    float scale = ff_half((uint16_t)(block[0] | (block[1] << 8)));
+    const uint8_t *block = raw + (size_t)b * bytes;
+    float *y = dest + b * values;
 
-    for (j = 0; j < FF_Q8_0_VALUES; j++) dest[b * FF_Q8_0_VALUES + j] = scale * (float)(int8_t)block[2 + j];
+    if (format == FF_Q4_K) {
+      ff_dequant_q4_k(block, y);
+    } else if (format == FF_Q6_K) {
+      ff_dequant_q6_k(block, y);
+    } else {
+      float scale = ff_half((uint16_t)(block[0] | (block[1] << 8)));
+
+      for (j = 0; j < 32; j++) y[j] = scale * (float)(int8_t)block[2 + j];
+    }
   }
 }
 
 /* The bytes of `count` values of `format`, or -1 when `format` is unknown or `count` is not whole blocks. */
 static int64_t ff_bytes(int64_t format, int64_t count) {
-  if (format == FF_Q8_0) return count % FF_Q8_0_VALUES == 0 ? count / FF_Q8_0_VALUES * FF_Q8_0_BLOCK : -1;
+  int64_t values = ff_block_values(format);
+
+  if (values != 0) return count % values == 0 ? count / values * ff_block_bytes(format) : -1;
   return ff_width(format) == 0 ? -1 : count * (int64_t)ff_width(format);
 }
 
@@ -278,34 +368,35 @@ static inline bool ff_append(const char *path, size_t path_len, const void *from
   return true;
 }
 
-/* The `count` values of a Q8_0 range (whole blocks) dequantized into `dest`, a chunk of blocks at a time. */
-static bool ff_read_q8_0(const char *path, size_t path_len, int64_t offset, int64_t count, float *dest, char *why,
-                         size_t why_len) {
-  int64_t blocks = count / FF_Q8_0_VALUES, done = 0, n;
+/* The `count` values of a quantized range (whole blocks) dequantized into `dest`, a chunk of blocks at a time. */
+static bool ff_read_blocks(const char *path, size_t path_len, int64_t offset, int64_t count, int64_t format, float *dest,
+                           char *why, size_t why_len) {
+  int64_t values = ff_block_values(format), bytes = ff_block_bytes(format);
+  int64_t blocks = count / values, per_chunk = (int64_t)FF_CHUNK / bytes, done = 0, n;
   uint8_t *raw;
   int fd;
 
-  if (count % FF_Q8_0_VALUES != 0) {
-    snprintf(why, why_len, "%lld values are not whole Q8_0 blocks of %d", (long long)count, FF_Q8_0_VALUES);
+  if (count % values != 0) {
+    snprintf(why, why_len, "%lld values are not whole blocks of %lld", (long long)count, (long long)values);
     return false;
   }
-  fd = ff_open_range(path, path_len, offset, blocks, FF_Q8_0_BLOCK, why, why_len);
+  fd = ff_open_range(path, path_len, offset, blocks, (size_t)bytes, why, why_len);
   if (fd < 0) return false;
-  raw = (uint8_t *)calloc((size_t)(FF_CHUNK / FF_Q8_0_BLOCK), FF_Q8_0_BLOCK);
+  raw = (uint8_t *)calloc((size_t)per_chunk, (size_t)bytes);
   if (raw == NULL) {
     close(fd);
     snprintf(why, why_len, "out of memory");
     return false;
   }
   while (done < blocks) {
-    n = blocks - done < (int64_t)(FF_CHUNK / FF_Q8_0_BLOCK) ? blocks - done : (int64_t)(FF_CHUNK / FF_Q8_0_BLOCK);
-    if (!ff_pread(fd, raw, (size_t)n * FF_Q8_0_BLOCK, offset + done * FF_Q8_0_BLOCK)) {
+    n = blocks - done < per_chunk ? blocks - done : per_chunk;
+    if (!ff_pread(fd, raw, (size_t)(n * bytes), offset + done * bytes)) {
       free(raw);
       close(fd);
       snprintf(why, why_len, "%.*s ended while it was read (it shrank?)", (int)path_len, path);
       return false;
     }
-    ff_dequant_q8_0(raw, n, dest + done * FF_Q8_0_VALUES);
+    ff_dequant(format, raw, n, dest + done * values);
     done += n;
   }
   free(raw);
@@ -322,7 +413,7 @@ static bool ff_read(const char *path, size_t path_len, int64_t offset, int64_t c
   uint8_t *raw;
   int fd;
 
-  if (format == FF_Q8_0) return ff_read_q8_0(path, path_len, offset, count, dest, why, why_len);
+  if (ff_block_values(format) != 0) return ff_read_blocks(path, path_len, offset, count, format, dest, why, why_len);
   if (width == 0) {
     snprintf(why, why_len, "unknown float format code %lld", (long long)format);
     return false;
@@ -387,13 +478,13 @@ static bool ff_from_bytes(const uint8_t *data, size_t len, int64_t count, int64_
     for (i = 0; i < count; i++) dest[i] = (float)data[i];
     return true;
   }
-  if (format == FF_Q8_0) {
-    if (count < 0 || count % FF_Q8_0_VALUES != 0 || len != (size_t)ff_bytes(format, count)) {
-      snprintf(why, why_len, "%zu bytes are not %lld Q8_0 values of whole blocks of %d bytes", len, (long long)count,
-               FF_Q8_0_BLOCK);
+  if (ff_block_values(format) != 0) {
+    if (count < 0 || count % ff_block_values(format) != 0 || len != (size_t)ff_bytes(format, count)) {
+      snprintf(why, why_len, "%zu bytes are not %lld values of whole blocks of %lld bytes", len, (long long)count,
+               (long long)ff_block_bytes(format));
       return false;
     }
-    ff_dequant_q8_0(data, count / FF_Q8_0_VALUES, dest);
+    ff_dequant(format, data, count / ff_block_values(format), dest);
     return true;
   }
   if (width == 0) {

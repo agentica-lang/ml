@@ -150,7 +150,8 @@ an_term ggml_upload(an_env *env, int64_t device, ggml_list_Int shape, ggml_list_
 /* A tensor of the row-major `shape` on `device` from the `format` (a code of
    `Types.file_code`) values that start at byte `offset` of the file `path`,
    held as `held` says (a code of `Types.held_code`): F32, F16 (a value
-   beyond 65504 is an error) or Q8_0, the blocks of a Q8_0 range as they are.
+   beyond 65504 is an error) or Q8_0, Q4_K or Q6_K, the blocks of a
+   range of that type as they are.
    C reads the file itself, so no value crosses as a list; a range past the
    end of the file is an error. An F16 tensor converts the values a chunk at
    a time. */

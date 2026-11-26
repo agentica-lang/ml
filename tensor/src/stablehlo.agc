@@ -459,6 +459,8 @@ def compare_type(dtype: Types.Dtype) -> String
     Types.Dtype.F16 -> "FLOAT"
     Types.Dtype.F64 -> "FLOAT"
     Types.Dtype.Q8_0 -> "FLOAT"
+    Types.Dtype.Q4_K -> "FLOAT"
+    Types.Dtype.Q6_K -> "FLOAT"
     Types.Dtype.I8 -> "SIGNED"
     Types.Dtype.I16 -> "SIGNED"
     Types.Dtype.I32 -> "SIGNED"
@@ -501,6 +503,8 @@ def element_type(dtype: Types.Dtype) -> Result[String]
     Types.Dtype.U8 -> ok("ui8")
     Types.Dtype.Bool -> ok("i1")
     Types.Dtype.Q8_0 -> error("StableHLO has no element type for Q8_0")
+    Types.Dtype.Q4_K -> error("StableHLO has no element type for Q4_K")
+    Types.Dtype.Q6_K -> error("StableHLO has no element type for Q6_K")
   end
 end
 

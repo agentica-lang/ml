@@ -100,6 +100,10 @@ def shape(t: Types.Tensor) -> List[Int] = t.shape
 ## The dtype of `t`: a field read, no backend call.
 def dtype(t: Types.Tensor) -> Types.Dtype = t.dtype
 
+## True for `dtype` of a weight that ggml keeps packed to save memory (`F16`, `Q8_0`, `Q4_K` or `Q6_K`): read-only, and
+## only the weight of a product or the table of a lookup (`tensor/DESIGN.md` §7).
+def packed?(dtype: Types.Dtype) -> Bool = Types.is_packed_dtype(dtype)
+
 ## The backend of `t`: a field read, no backend call.
 def backend(t: Types.Tensor) -> Types.Backend = t.backend
 
@@ -263,11 +267,12 @@ end
 ## With `dtype: F16` the tensor is a half weight: it keeps 16 bits per value
 ## (half the memory and the bandwidth), converted at load, and an
 ## `F32`, `F16` or `BF16` file value beyond 65504 is an `error`. With
-## `format: Q8_0` the file holds ggml's blocks of 32 values, and the tensor is
-## `F32` (dequantized at load, on every backend) or, with `dtype: Q8_0`, a
-## quantized weight that keeps the blocks (about a quarter of the memory of
-## `F32`; a rank-2 weight of rows of whole blocks). Only the ggml backend holds
-## an `F16` or a `Q8_0` weight, and a trace may use it only as the weight of
+## `format: Q8_0`, `Q4_K` or `Q6_K` the file holds ggml's blocks (32 values, or
+## 256 for the K formats), and the tensor is `F32` (dequantized at load, on
+## every backend) or, with the `dtype` of the same name, a quantized weight that
+## keeps the blocks (a quarter to a seventh of the memory of `F32`; a rank-2
+## weight of rows of whole blocks). Only the ggml backend holds an `F16` or a
+## quantized weight, and a trace may use it only as the weight of
 ## `matmul` or `linear` and as the table of `gather` or `embedding`
 ## (`tensor/DESIGN.md` §7). It is for inference, with `linear(..., out_in:
 ## true)` for a checkpoint's `[out, in]` weight.
@@ -280,9 +285,12 @@ def from_file(
   dtype: Types.Dtype = Types.Dtype.F32,
 ) -> Result[Types.Tensor]
   n = try Types.volume(shape)
-  return error("from_file reads F32, F16, BF16 or Q8_0 files: U8 is for from_bytes") if format == Types.FloatFormat.U8
+  if format == Types.FloatFormat.U8
+    return error("from_file reads F32, F16, BF16 or quantized files: U8 is for from_bytes")
+  end
+
   if !Types.is_packed_dtype(dtype) and dtype != Types.Dtype.F32
-    return error("from_file reads F32, F16 or Q8_0, got #{Types.dtype_name(dtype)}")
+    return error("from_file reads F32, F16 or a quantized dtype, got #{Types.dtype_name(dtype)}")
   end
 
   if Types.is_packed_dtype(dtype)
@@ -295,20 +303,23 @@ def from_file(
     end
   end
 
-  if dtype == Types.Dtype.Q8_0
-    if format != Types.FloatFormat.Q8_0
-      return error("from_file with dtype Q8_0 keeps the blocks of a Q8_0 file, got a file of another format")
+  name = Types.dtype_name(dtype)
+  if Types.is_quantized_dtype(dtype)
+    if format != Types.block_format(dtype)
+      return error("from_file with dtype #{name} keeps the blocks of a #{name} file, got a file of another format")
     end
 
-    if shape.size != 2 or shape[1] % 32 != 0
+    block = Types.block_of(format).unwrap!
+    if shape.size != 2 or shape[1] % block.values != 0
       return error(
-        "from_file with dtype Q8_0 reads a rank-2 weight whose rows hold whole blocks of 32 values, got #{shape}",
+        "from_file with dtype #{name} reads a rank-2 weight whose rows hold whole blocks of #{block.values} values, got #{shape}",
       )
     end
   end
 
-  if dtype == Types.Dtype.F16 and format == Types.FloatFormat.Q8_0
-    return error("from_file reads a Q8_0 file as F32 or keeps it as Q8_0, not as F16")
+  if dtype == Types.Dtype.F16 and Types.block_of(format).some?
+    fmt = Types.format_name(format)
+    return error("from_file reads a #{fmt} file as F32 or keeps it as #{fmt}, not as F16")
   end
 
   return error("from_file needs an offset of 0 or more, got #{offset}") if offset < 0
@@ -371,12 +382,12 @@ def convert_file(
 
   return error("convert_file needs a count of 0 or more, got #{count}") if count < 0
   if (
-    src_format == Types.FloatFormat.Q8_0 or
-    dst_format == Types.FloatFormat.Q8_0 or
+    Types.block_of(src_format).some? or
+    Types.block_of(dst_format).some? or
     src_format == Types.FloatFormat.U8 or
     dst_format == Types.FloatFormat.U8
   )
-    return error("convert_file converts F32, F16 and BF16 ranges, not Q8_0 or U8")
+    return error("convert_file converts F32, F16 and BF16 ranges, not quantized or U8 ones")
   end
 
   Ggml.convert_file(src, src_offset, src_format, count, dst, dst_offset, dst_format)
@@ -1623,7 +1634,7 @@ end
 def embedding(ids: Types.Tensor, table: Types.Tensor) -> Result[Types.Tensor]
   _ = try same_backend(ids, table, "embedding")
   return error("embedding needs integer ids, got #{Types.dtype_name(ids.dtype)}") if !Types.is_int_dtype(ids.dtype)
-  if table.dtype != Types.Dtype.Q8_0
+  if !Types.is_quantized_dtype(table.dtype)
     _ = try float_only(table, "embedding")
   end
 
@@ -2040,7 +2051,7 @@ def same_dtype(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
 end
 
 ## `x` and the weight `w` of a product share their dtype, or `w` is a half or
-## quantized weight (`F16` or `Q8_0`, from `from_file` with that `dtype`) of an
+## quantized weight (`F16`, `Q8_0`, `Q4_K` or `Q6_K`, from `from_file` with that `dtype`) of an
 ## `F32` `x` in a trace: ggml reads the weight and answers `F32`.
 def weight_dtype(x: Types.Tensor, w: Types.Tensor, op: String) -> Result[Bool]
   case x.backend
@@ -2103,10 +2114,10 @@ def check_pool2d(input: Types.Tensor, kernel: Int, stride: Int, padding: Int, op
   check_window_fits(input.shape[3], kernel, padding, op)
 end
 
-## `Q8_0` is a dtype of weights read by `from_file`: no other op makes a tensor of it.
+## The quantized dtypes are dtypes of weights read by `from_file`: no other op makes a tensor of one.
 def not_quantized(dtype: Types.Dtype, op: String) -> Result[Bool]
-  if dtype == Types.Dtype.Q8_0
-    return error("#{op} makes no Q8_0 tensor: only from_file reads one (tensor/DESIGN.md §7)")
+  if Types.is_quantized_dtype(dtype)
+    return error("#{op} makes no #{Types.dtype_name(dtype)} tensor: only from_file reads one (tensor/DESIGN.md §7)")
   end
 
   ok(true)

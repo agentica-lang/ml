@@ -24,6 +24,11 @@ DTYPES = {
 ## The float formats a backend reads from the file itself.
 FORMATS = {"F32": Tensor.FloatFormat.F32, "F16": Tensor.FloatFormat.F16, "BF16": Tensor.FloatFormat.BF16}
 
+## The quantized types of a GGUF file that a backend reads from the file itself: the format of their blocks, and the
+## dtype of a weight that keeps them.
+BLOCKS = {"Q8_0": Tensor.FloatFormat.Q8_0, "Q4_K": Tensor.FloatFormat.Q4_K, "Q6_K": Tensor.FloatFormat.Q6_K}
+KEPT = {"Q8_0": Tensor.Dtype.Q8_0, "Q4_K": Tensor.Dtype.Q4_K, "Q6_K": Tensor.Dtype.Q6_K}
+
 ## A tensor of a file: `start` and `stop` index the data buffer.
 struct Entry
   name: String
@@ -58,7 +63,7 @@ def source(shard: Shard, name: String) -> Result[Source]
   ok(Source(path: shard.path, offset: shard.base + e.start, format: FORMATS[e.dtype], shape: e.shape))
 end
 
-## The dtype of the tensor `name` of `shard` as the file names it (`F32`, `Q8_0`...), read from the header.
+## The dtype of the tensor `name` of `shard` as the file names it (`F32`, `Q8_0`, `Q4_K`...), read from the header.
 def dtype(shard: Shard, name: String) -> Result[String]
   e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
   ok(e.dtype)
@@ -71,8 +76,8 @@ def shape(shard: Shard, name: String) -> Result[List[Int]]
 end
 
 ## The tensor `name` of `shard`: F32, F16 and BF16 as `F32` (as `F16` with `dtype: F16`, a half weight of the ggml
-## backend, `Tensor.from_file`), a Q8_0 one dequantized to `F32` (as `Q8_0` with `dtype: Q8_0`, a quantized weight of the
-## ggml backend that keeps the blocks; no other file dtype has that form), any other dtype as the file has it, whatever
+## backend, `Tensor.from_file`), a Q8_0, Q4_K or Q6_K one dequantized to `F32` (as the dtype of its own type, a quantized
+## weight of the ggml backend that keeps the blocks; no other file dtype has that form), any other dtype as the file has it, whatever
 ## `dtype` says (only a float file has a half form), except an F64 tensor on ggml, which holds no F64: it comes as `F32`,
 ## silently (a value beyond F32 is an infinity).
 def tensor(
@@ -83,19 +88,24 @@ def tensor(
 ) -> Result[Tensor.Tensor]
   e = try shard.entries.get(name).to_result("#{shard.path}: no tensor #{name}")
   at = shard.base + e.start
-  if dtype == Tensor.Dtype.Q8_0 and e.dtype != "Q8_0"
-    return error("#{shard.path}: tensor #{name} is #{e.dtype}: only a Q8_0 tensor is kept as Q8_0")
+  case kept_type(dtype)
+    some(type) ->
+      if type != e.dtype
+        return error("#{shard.path}: tensor #{name} is #{e.dtype}: only a #{type} tensor is kept as #{type}")
+      end
+
+    none -> nil
   end
 
-  if e.dtype == "Q8_0"
+  if BLOCKS.key?(e.dtype)
     kept = Tensor.Dtype.F32
-    if dtype == Tensor.Dtype.Q8_0
-      kept = Tensor.Dtype.Q8_0
+    if dtype == KEPT[e.dtype]
+      kept = dtype
     end
 
     return within(
       "#{shard.path}: tensor #{name}",
-      Tensor.from_file(shard.path, at, e.shape, Tensor.FloatFormat.Q8_0, backend, kept),
+      Tensor.from_file(shard.path, at, e.shape, BLOCKS[e.dtype], backend, kept),
     )
   end
 
@@ -143,6 +153,15 @@ def within[T](prefix: String, r: Result[T]) -> Result[T]
 end
 
 private
+
+## The file type (`Q8_0`, `Q4_K` or `Q6_K`) of the quantized weight `dtype`, `none` for another dtype.
+def kept_type(dtype: Tensor.Dtype) -> Optional[String]
+  for type in KEPT.keys
+    return some(type) if KEPT[type] == dtype
+  end
+
+  none
+end
 
 ## The dtype a tensor of the file dtype `name` has on `backend`: as the file has it, but `F32` for F64 on ggml.
 def held(name: String, backend: Tensor.Backend) -> Tensor.Dtype

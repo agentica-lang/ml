@@ -43,7 +43,7 @@ without them, see §1).
 ## 2. Types
 
 ```text
-Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool | Q8_0   # Q8_0: a quantized weight of ggml only (§7)
+Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool | Q8_0 | Q4_K | Q6_K   # the last three: quantized weights of ggml only (§7)
 Device  = Cpu | Vulkan(Int)                                    # enum; Vulkan(i): ggml's device i
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
@@ -76,7 +76,7 @@ Tensor  = { shape: Shape, dtype: Dtype, backend: Backend, handle: Handle }
   compute pool; `List`/`Map` cross via cursors/builders).
 - **Dtype rule:** numeric compute is `F32`; `F16`
   and `F64` weights are converted to it on load (§6, lossy for `F64`), except
-  the half and `Q8_0` weights that ggml keeps as they are (§7). Two
+  the half and quantized (`Q8_0`, `Q4_K`, `Q6_K`) weights that ggml keeps as they are (§7). Two
   kinds of non-`F32` compute tensors are required by the op set itself: `Bool`
   masks (`eq`, `lt`, the condition of `where`) and integer index tensors
   (`gather` indices, `argmax` output). The other table entries are checkpoint
@@ -227,7 +227,7 @@ Tensor.zeros(shape, dtype, backend) -> Result[Tensor]
 Tensor.from_list(data: List[Values], shape, dtype, backend)
                                                   -> Result[Tensor]
 Tensor.from_file(path, offset, shape, format, backend, dtype)
-                                                  -> Result[Tensor]   # F32/F16/BF16/Q8_0 bytes of a file, read in C
+                                                  -> Result[Tensor]   # F32/F16/BF16/Q8_0/Q4_K/Q6_K bytes of a file, read in C
 Tensor.from_bytes(data: Bytes, shape, format, backend)
                                                   -> Result[Tensor]   # the same values from bytes in memory (an image's pixels)
 Tensor.to_list(t) -> Result[List[Values]]         # host readback, tests + decode loop
@@ -262,8 +262,8 @@ Tensor.backend(t) -> Backend                      # no native call
   itself (`native/float_file.h`: `pread` into the tensor's own memory, F16
   and BF16 widened in chunks) and no value crosses as a list. The tensor is
   `F32`, the compute dtype (§2), or with `dtype: F16` a half weight or with
-  `dtype: Q8_0` a quantized weight (ggml only, §7). A `format: Q8_0` range
-  loads as `F32` on every backend, as ggml dequantizes it; `convert_file`
+  `dtype: Q8_0`, `Q4_K` or `Q6_K` a quantized weight (ggml only, §7). A range of
+  one of those formats loads as `F32` on every backend, as ggml dequantizes it; `convert_file`
   does not take it; a short file, a bad offset or a missing file
   is an `error`, checked in C against the size of the file. `Reference` reads
   the bytes in Agentica (`File.seek` and `File.read_bytes`, `src/file_range.agc`)
@@ -322,7 +322,7 @@ reference implementation gives for the same input.
   contiguous little-endian C-order buffer, no strides). No code runs at load;
   that property is the reason for choosing it.
 - Numeric tensors are converted to `F32` on load (lossy for `F64`; ggml may
-  keep a half or `Q8_0` weight, §7), while
+  keep a half or quantized weight, §7), while
   integer index tensors and `Bool` masks keep their dtype because the op set
   needs them (§2).
 - The reader and the sharded index are `hub/` (`hub/DESIGN.md`), which reads
@@ -490,7 +490,9 @@ end
 - **Quantized weights.** `Tensor.from_file(..., format: Q8_0, dtype: Q8_0)` on
   ggml keeps the blocks of a Q8_0 file as they are (`GGML_TYPE_Q8_0`: 34 bytes
   for 32 values, about a quarter of `F32`; the range is copied, nothing is
-  converted). It is a rank-2 weight whose rows hold whole blocks, and a trace
+  converted). `Q4_K` and `Q6_K` are the same with ggml's super-blocks of 256
+  values (144 and 210 bytes: about a seventh and a fifth of `F32`), one type
+  per tensor: a file mixes them, and `hub/` keeps each at the type it stores. It is a rank-2 weight whose rows hold whole blocks, and a trace
   uses it where it uses a half weight (a leaf, the weight of `matmul` and
   `linear`, the table of `gather` and `embedding`, no gradient, no output),
   with one more rule: a product reads it only as `linear(..., out_in: true)`
@@ -500,10 +502,14 @@ end
   its CPU kernels round the activations of the product to Q8_0 blocks (the
   same rounding llama.cpp does) and Vulkan's to Q8_1 or F16, so the result is
   good to the half step of that rounding and of its scale's rounding to F16,
-  `amax * (1 / 254 + 2^-11)` of a block of 32 activations per product, not to `F32`'s 1e-7. `gather` of the table is
+  `amax * (1 / 254 + 2^-11)` of a block of 32 activations per product, not to `F32`'s 1e-7. The K types
+  round the activations to blocks of 256 (Q8_K, whose scale is a binary32), so the CPU bound is `amax / 254` of a block
+  of 256, and Vulkan's has its rounding to F16 on top. `gather` of the table is
   exact (ggml widens the rows). `to_list` of a quantized weight dequantizes it.
   A Q8_0 file of another backend or of `weights: F32` is read as `F32`, which is
-  exact (a binary16 scale times a byte has 19 significant bits).
+  exact (a binary16 scale times a byte has 19 significant bits). A Q4_K or Q6_K one
+  is dequantized by the same float32 operations as ggml's (`native/float_file.h`, and in doubles on `Reference`), and
+  the tests against the official `gguf` package's dequantizer on random blocks find the same values on every backend.
 - **What a half weight costs.** The weight rounds once, at load. The
   activations of the product stay `F32` on ggml's CPU backend and on Vulkan at
   the F32 choice (1e-7 from a double-precision sum). With fp16, the Vulkan
@@ -601,8 +607,8 @@ end
   `Tensor.available(Backend.Ggml(device))` is `true` when the module is built
   and, for `Vulkan(i)`, ggml sees device `i`; it opens no device. ggml stores
   `F32` and `I32`; `Bool`, `I8`, `I16` and `U8` are stored as `F32` (exact for
-  them), `F64`, `I64` and a rank above 4 are refused, and `F16` and `Q8_0` are
-  stored only as a half or quantized weight (§7).
+  them), `F64`, `I64` and a rank above 4 are refused, and `F16` and the quantized
+  dtypes are stored only as a half or quantized weight (§7).
 - **`Xla` is compiled-only too, on the CPU.** It runs a trace through XLA,
   loaded at run time: `native/xla.c` opens the PJRT plugin with `dlopen` and
   calls `GetPjrtApi`, so nothing of XLA is linked or built here. The plugin is
@@ -631,7 +637,7 @@ end
   every other input is kept. A run holds its inputs only while it runs.
   `Train.fit` runs on XLA as on ggml, the batch gathered in the step. XLA
   stores `F32`, `F64`, `I32`, `I64`, `I16`, `I8`, `U8` and `Bool`; `F16` and
-  `Q8_0` are refused (no half or quantized weights).
+  the quantized dtypes are refused (no half or quantized weights).
 
 ## 8. Tensor lifetime
 
@@ -886,7 +892,7 @@ The price:
   (below 0 for `U8`, at or above the rows when they are past its maximum) is
   left out) and `adam_step` (the ops of its composed form over the 7 numbers,
   its three results stacked; a part is a `slice`). Any other op is an error
-  naming it. `Q8_0` has no MLIR element type; `Bool` is `i1`, `U8` is `ui8`.
+  naming it. The quantized dtypes have no MLIR element type; `Bool` is `i1`, `U8` is `ui8`.
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,
   then the inputs of the step (`Optim.step_inputs`: SGD's learning rate as a

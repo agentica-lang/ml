@@ -77,7 +77,8 @@ def names(c: Checkpoint) -> List[String] = c.weight_map.keys.sort
 def has?(c: Checkpoint, name: String) -> Bool = c.weight_map.key?(name)
 
 ## The tensor `name` on `backend`: a float one as `F32`, or as `F16` with `dtype: F16` (a half weight, ggml only); a
-## Q8_0 one of a GGUF file dequantized to `F32`, or kept as it is with `dtype: Q8_0` (ggml only).
+## quantized one (Q8_0, Q4_K or Q6_K) of a GGUF file dequantized to `F32`, or kept as it is with the dtype of its type
+## (ggml only).
 def tensor(
   c: Checkpoint,
   name: String,
@@ -104,7 +105,7 @@ def source(c: Checkpoint, name: String) -> Result[Shards.Source]
   Shards.source(c.shards[file], name)
 end
 
-## The dtype of the tensor `name` as its file names it (`F32`, `Q8_0`...), from the header: nothing is read.
+## The dtype of the tensor `name` as its file names it (`F32`, `Q8_0`, `Q4_K`...), from the header: nothing is read.
 def dtype(c: Checkpoint, name: String) -> Result[String]
   file = try c.weight_map.get(name).to_result("no tensor #{name} in the checkpoint")
   Shards.dtype(c.shards[file], name)

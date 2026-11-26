@@ -10,7 +10,7 @@ Depends on `tensor/` and `nn/`.
 Hub.open(path) -> Result[Checkpoint]        a .safetensors file, a .gguf file, or a sharded .index.json
 Hub.names(c) -> List[String]                sorted
 Hub.has?(c, name) -> Bool
-Hub.tensor(c, name, backend, dtype = F32) -> Result[Tensor]   F32/F16/BF16 as F32 (F16 with dtype F16: ggml half weight), else the file's dtype (F64 on ggml: F32)
+Hub.tensor(c, name, backend, dtype = F32) -> Result[Tensor]   F32/F16/BF16 and quantized as F32 (F16 with dtype F16: ggml half weight; a quantized tensor with its own dtype: ggml blocks), else the file's dtype (F64 on ggml: F32)
 Hub.tensors(c, backend) -> Result[Map[String, Tensor]]   every tensor, read as `tensor` reads one
 Hub.shape(c, name) -> Result[List[Int]]     from the header
 Hub.dtype(c, name) -> Result[String]        how the file stores it, from the header
@@ -102,6 +102,15 @@ The test fixtures drop the `model.` part of the prefix
   weight is good to the half step of ggml's rounding of the activations to Q8_0
   blocks, not to `F32`'s exactness (`tensor/DESIGN.md` §7); `Hub.dtype` says
   how the file stores a tensor.
+- **`weights: Q4_K` keeps a bit width per tensor.** A Q4_K_M file mixes Q4_K and
+  Q6_K matrices (and `F32` norms), so one request covers both: under `weights:
+  Q4_K` a rank-2 weight stored as Q4_K stays Q4_K and one stored as Q6_K stays
+  Q6_K, each as the file has it (`Load.kept`); `weights: Q8_0` keeps no K tensor
+  and `weights: Q4_K` no Q8_0 one, and Q6_K is no request of its own (`WEIGHTS=q4_k`
+  sets it for the tools). `Hub.tensor` with `dtype: Q4_K` or `Q6_K` is that one
+  type, and an error on a tensor stored as another. A K row holds whole blocks of
+  256 values: llama.cpp stores a matrix whose rows do not in another type (Q5_0
+  and the like), which is not read, so loading such a file is an error naming the tensor.
 
 ## GGUF
 
@@ -139,12 +148,12 @@ not by its magic. It is the same design as safetensors:
   `output.weight` is read as tied.
 - **Types.** F32, F16, BF16 and Q8_0 (read by the backend), and F64 and the
   integers (as in safetensors). A quantized type (Q8_0, Q4_K and the others)
-  is sized and checked in blocks (a tensor may fill the data). A Q8_0 tensor
-  reads as `F32` (`Tensor.from_file` with `format: Q8_0`, dequantized by the
-  backend, exact) or, with `dtype: Q8_0`, as a quantized weight that keeps its
-  blocks on ggml (`tensor/DESIGN.md` §7). The other quantized types are
-  refused when read: they have no `tensor/` dtype yet. A type that is not
-  sized here (the IQ types) refuses the whole file.
+  is sized and checked in blocks (a tensor may fill the data). A Q8_0, Q4_K or
+  Q6_K tensor reads as `F32` (`Tensor.from_file` with its format, dequantized by
+  the backend, as ggml does) or, with the dtype of its type, as a quantized weight
+  that keeps its blocks on ggml (`tensor/DESIGN.md` §7). The other quantized types
+  (Q4_0, Q5_K...) are refused when read: they have no `tensor/` dtype yet. A type
+  that is not sized here (the IQ types) refuses the whole file.
 
 ### Writing
 
