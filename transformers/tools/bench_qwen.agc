@@ -1,6 +1,7 @@
 ## Times Qwen3 generation on ggml for `benchmarks/bench_qwen.sh`: the load, then one warm-up pass
 ## (which compiles the steps), then one timed pass: a prompt of 128 token ids in one step, and 64 one-token
-## steps after it. Prints `RESULT load_ms prompt_tokens_per_s decode_tokens_per_s`. Run from `transformers/`:
+## steps after it. Prints `RESULT load_ms prompt_tokens_per_s decode_tokens_per_s`, and on the CPU `THREADS n` first (the
+## threads of the ggml CPU backend: `TENSOR_THREADS`, else the physical cores). Run from `transformers/`:
 ##
 ##   agentica tools/bench_qwen.agc MODEL_DIR [cpu|vulkan]
 ##
@@ -10,6 +11,7 @@
 import Generate from "../generate"
 import Qwen3 from "../qwen3"
 import Load from "pkg/hub/load"
+import Lower from "pkg/tensor/src/lower"
 import Tensor from "pkg/tensor/tensor"
 
 PROMPT = 128
@@ -27,7 +29,7 @@ def main() -> Void
     device = Tensor.Device.Vulkan(0)
   end
 
-  case run(args[0], Tensor.Backend.Ggml(device))
+  case run(args[0], Tensor.Backend.Ggml(device), device == Tensor.Device.Cpu)
     ok(line) -> puts(line)
     error(e) ->
       puts("bench_qwen: #{e.message}")
@@ -37,7 +39,7 @@ end
 
 private
 
-def run(dir: String, backend: Tensor.Backend) -> Result[String]
+def run(dir: String, backend: Tensor.Backend, cpu: Bool) -> Result[String]
   started = Time.monotonic_ms
   try Load.vulkan_fp16_from_env(true)
   m = try Qwen3.open(dir, backend, try Load.weights_from_env())
@@ -50,6 +52,10 @@ def run(dir: String, backend: Tensor.Backend) -> Result[String]
   Qwen3.close_model(m)
   prompt_rate = (PROMPT * 1000).to_f / timed[0].to_f
   decode_rate = (NEW * 1000).to_f / timed[1].to_f
+  if cpu
+    puts("THREADS #{try Lower.cpu_threads()}")
+  end
+
   ok("RESULT #{load} #{prompt_rate} #{decode_rate}")
 end
 

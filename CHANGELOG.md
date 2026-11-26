@@ -19,6 +19,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Lfm3`: LFM3-1.7B (`LiquidAI/LFM3-1.7B`) from its official safetensors, forward over whole sequences, `F32` or `F16` weights (ml#275).
 - `Bpe` reads LFM3's `tokenizer.json` (digits in groups of up to three, `ignore_merges`, no normalizer), and `Chat.apply("lfm3", ...)` is its chat template with tools (`tools`, `Message.tool_calls`, `thinking`, `tool_call_id`, `preserve_thinking`) (ml#275).
 - `Generate` of `pkg/transformers/generate_lfm3`: greedy or sampled generation with LFM3's hybrid cache (the keys and values of the attention layers, the state of the convolutions); `KvDecoder` takes layers with a state (ml#275).
+- `tools/profile_qwen.agc` reads `WEIGHTS` (`f16`, `q8_0`, `q4_k`), and `benchmarks/bench_qwen.sh` has the Q4_K_M rows against llama.cpp, at equal threads, with the peak GPU memory (ml#291).
 - `Qwen3_5Vision` (`pkg/transformers/qwen3_5_vision`): the vision tower of Qwen3.5 (`Qwen/Qwen3.5-0.8B`), `open` and `encode` of one image's patches to the features that the text model reads at the image tokens (ml#151).
 
 ### hub
