@@ -42,7 +42,7 @@ private
 def run(dir: String, backend: Tensor.Backend, cpu: Bool) -> Result[String]
   started = Time.monotonic_ms
   try Load.vulkan_fp16_from_env(true)
-  m = try Qwen3.open(dir, backend, try Load.weights_from_env())
+  m = try Qwen3.open(dir, backend, try Load.weights_from_env(), try Load.layers_on_device_from_env())
   load = Time.monotonic_ms - started
   g = try Generate.open(m)
   prompt = (0...PROMPT).map { |i| 1000 + (i * 7) % 5000 }

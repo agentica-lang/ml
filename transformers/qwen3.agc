@@ -55,13 +55,22 @@ end
 ## The model in `dir`, which holds `config.json` and `model.safetensors` (or
 ## the `model.safetensors.index.json` of a sharded one), or in the `.gguf` file
 ## `dir` names, whose key-values give the config.
-def open(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype = Tensor.Dtype.F32) -> Result[Qwen3]
+## `layers_on_device: n` loads the weights of the blocks from the `n`th on on the CPU (`Ggml(Cpu)`), and a step runs
+## those blocks there, with their KV cache in host memory (`kv_decoder.agc`); the first `n` blocks, the embedding table,
+## the head and the final norm stay on the Vulkan device. `none` keeps every block there, and on any other backend, or
+## with an `n` of the number of blocks or more, `n` changes nothing.
+def open(
+  dir: String,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+  layers_on_device: Optional[Int] = none,
+) -> Result[Qwen3]
   if dir.end_with?(".gguf")
     c = try Hub.open(dir)
-    return load(c, try gguf_config(c), backend, weights)
+    return load(c, try gguf_config(c), backend, weights, layers_on_device)
   end
 
-  load(try checkpoint(dir), try read_config(dir), backend, weights)
+  load(try checkpoint(dir), try read_config(dir), backend, weights, layers_on_device)
 end
 
 ## The `config.json` of the model folder `dir`.
@@ -151,15 +160,22 @@ def load(
   config: Config,
   backend: Tensor.Backend,
   weights: Tensor.Dtype = Tensor.Dtype.F32,
+  layers_on_device: Optional[Int] = none,
 ) -> Result[Qwen3]
   config = try with_head_dim(config)
   try check_config(config)
+  if layers_on_device.some? and layers_on_device.unwrap! < 0
+    return error("layers_on_device is 0 or more, got #{layers_on_device.unwrap!}")
+  end
+
   width = config.hidden_size
   tokens = try Load.embedding(c, "model.embed_tokens.weight", backend, weights)
   try expect_shape("model.embed_tokens.weight", tokens.table, [config.vocab_size, width])
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
-    blocks = blocks.push(try block(c, "model.layers.#{i}.", config, backend, weights))
+    blocks = blocks.push(
+      try block(c, "model.layers.#{i}.", config, layer_backend(backend, i, layers_on_device), weights),
+    )
   end
 
   head = try head_of(c, config, tokens, backend, weights)
@@ -417,6 +433,15 @@ def rms(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Backend) 
       rms: true,
     ),
   )
+end
+
+## The backend of block `i`: the CPU from block `layers_on_device` on when the model is on a Vulkan device.
+def layer_backend(backend: Tensor.Backend, i: Int, layers_on_device: Optional[Int]) -> Tensor.Backend
+  return backend if layers_on_device.none? or i < layers_on_device.unwrap!
+  case backend
+    Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    _ -> backend
+  end
 end
 
 ## One decoder block under `p` (`model.layers.N.`).

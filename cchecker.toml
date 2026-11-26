@@ -11,3 +11,6 @@
 # - CC-TIDY-BUGPRONE-SIZEOF-EXPRESSION in tensor/native/pjrt_c_api.h, 50 times: the vendored PJRT header (kept as it is)
 #   measures each args struct with `sizeof(((T*)0)->last_field)` (PJRT_DEFINE_STRUCT_TRAITS), and the last field is a
 #   pointer. That is the size the API means, not a mistake.
+# - CC-GCC-ANALYZER-MALLOC-LEAK in tensor/native/ggml_graph.c (make_side_tables): a false positive. The one block that the
+#   first `place` of a mixed graph makes is stored in the entry (`save_node`, with the fields cut from it) and freed
+#   with it (`destroy`); the analyzer does not follow the store into the entry.

@@ -71,11 +71,17 @@ answer (below, "The ids the tokenizer cannot decode"): the embedding of Qwen3 ha
 
 ## Qwen3
 
-`qwen3.agc`: `Qwen3.open(dir, backend, weights = F32)` (`config.json` and
+`qwen3.agc`: `Qwen3.open(dir, backend, weights = F32, layers_on_device = none)` (`config.json` and
 `model.safetensors` or its `.index.json`, or a `.gguf` file),
 `Qwen3.run(m, rows, last)` over rows of ids and `Qwen3.logits(m, ids, last)`
 over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 
+- `layers_on_device: n` (ml#310) loads the blocks from the `n`th on with the backend `Ggml(Cpu)` when the model is on a
+  Vulkan device (`layer_backend`); nothing else changes in the model. The traced step reads those weights as constants
+  on the CPU, the graph is mixed (`tensor/DESIGN.md` §7) and the keys and values that a CPU block makes are `Ggml(Cpu)`
+  tensors, which the next step takes as inputs and writes in place: `kv_decoder.agc` has no placement code. The
+  embedding table, the head and the final norm stay on the device. `none` is every block on the device and the graph
+  of every step is the plain one.
 - Blocks are `Nn.EncoderBlock`s with `norm_first: true` under a causal mask
   (`Nn.encoder_stack(..., causal: true)`): `input_layernorm` and
   `post_attention_layernorm` are `LayerNorm.rms` (the `beta` is zeros and

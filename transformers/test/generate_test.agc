@@ -41,6 +41,36 @@ def test_each_step_matches_the_forward_over_the_whole_row() -> Result[Void]
   end
 end
 
+## `layers_on_device: n` runs the blocks from the `n`th on on the CPU: every step gives the logits of the forward, with
+## all the blocks on the device, with one, and with none. On a Vulkan device the cache of a CPU block is in host memory
+## (`Ggml(Cpu)`) and the cache of a device block is not; on any other backend `n` changes nothing.
+def test_blocks_on_the_cpu_give_the_logits_of_the_blocks_on_the_device() -> Result[Void]
+  with_peer do |dir|
+    row = try ints(try JSON.get(try expected(dir), "long"))
+    for backend in try S.ggml_backends()
+      for n in [0, 1, 2]
+        try stepping(dir, backend, 5, HALF_ABS, HALF_REL, some(n))
+      end
+
+      home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+      next if backend == home
+
+      g = try Generate.open(try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(1)))
+      cache = (try Generate.step_logits(g, Generate.start(), row.take(5))).cache
+      try Test.eq(Tensor.backend(cache.keys[0]), backend)
+      try Test.eq(Tensor.backend(cache.keys[1]), home)
+      try Test.eq(Tensor.backend(cache.values[1]), home)
+      cache = (try Generate.step_logits(g, cache, [row[5]])).cache
+      try Test.eq(Tensor.backend(cache.keys[0]), backend)
+      try Test.eq(Tensor.backend(cache.keys[1]), home)
+      Generate.finish(cache)
+      Generate.close(g)
+    end
+
+    ok()
+  end
+end
+
 ## On ggml a one-token step of the same capacity writes its row into the tensors it was given, which are the keys of the
 ## cache it returns (they stay open); the step that grows the capacity makes new ones and closes the old.
 def test_a_step_writes_the_cache_in_place_until_the_capacity_grows() -> Result[Void]
@@ -397,8 +427,15 @@ end
 
 ## The row `long` fed as a prompt of `first` and then one id at a time (the cache goes from 8 to 16 to 32 rows), the
 ## logits of every step against the peer's forward over the whole row.
-def stepping(dir: String, backend: Tensor.Backend, first: Int, abs: Float, rel: Float) -> Result[Void]
-  g = try Generate.open(try Qwen3.open("#{dir}/tiny", backend))
+def stepping(
+  dir: String,
+  backend: Tensor.Backend,
+  first: Int,
+  abs: Float,
+  rel: Float,
+  layers: Optional[Int] = none,
+) -> Result[Void]
+  g = try Generate.open(try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, layers))
   vocab = g.model.config.vocab_size
   e = try expected(dir)
   row = try ints(try JSON.get(e, "long"))

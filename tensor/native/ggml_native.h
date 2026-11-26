@@ -166,6 +166,14 @@ an_term ggml_from_bytes(an_env *env, int64_t device, ng_buf data, ggml_list_Int 
    so a large fill never crosses as a list. */
 an_term ggml_filled(an_env *env, int64_t device, ggml_list_Int shape, double value, bool int32);
 
+/* True when `t` lives in host memory, made for the CPU backend (`device` -1): an output of a graph that runs on a
+   Vulkan device and a CPU together may be one. */
+an_term ggml_on_cpu(an_env *env, struct ggml_TensorHandle_state *t);
+
+/* How many runs went through the scheduler (a graph on a device with a leaf in host memory, even every leaf), since
+   the process started: a graph with every leaf in device memory never counts. */
+an_term ggml_mixed_runs(an_env *env);
+
 /* Host readback: the row-major values as doubles, which the caller tags
    with the tensor's dtype. */
 an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t);
@@ -541,6 +549,19 @@ static an_term ggml_native_filled(an_env *env, int argc, const an_term *argv) {
   return ggml_filled(env, a0, a1, a2, a3);
 }
 
+static an_term ggml_native_on_cpu(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct ggml_TensorHandle_state *a0 = ggml_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  return ggml_on_cpu(env, a0);
+}
+
+static an_term ggml_native_mixed_runs(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  (void)argv;
+  return ggml_mixed_runs(env);
+}
+
 static an_term ggml_native_readback(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct ggml_TensorHandle_state *a0 = ggml_TensorHandle_get(env, argv[0]);
@@ -753,6 +774,8 @@ static const an_function ggml_native_functions[] = {
   {"load", "(Int, String, Int, List[Int], Int, Int) -> Result[TensorHandle]", ggml_native_load, AN_DIRTY},
   {"from_bytes", "(Int, Bytes, List[Int], Int, Int) -> Result[TensorHandle]", ggml_native_from_bytes, AN_DIRTY},
   {"filled", "(Int, List[Int], Float, Bool) -> Result[TensorHandle]", ggml_native_filled, AN_DIRTY},
+  {"on_cpu", "(TensorHandle) -> Bool", ggml_native_on_cpu, AN_SHORT},
+  {"mixed_runs", "() -> Int", ggml_native_mixed_runs, AN_SHORT},
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
   {"append_file", "(TensorHandle, String) -> Result[Void]", ggml_native_append_file, AN_DIRTY},
   {"transfer", "(TensorHandle, Int) -> Result[TensorHandle]", ggml_native_transfer, AN_DIRTY},
@@ -783,5 +806,5 @@ static const an_function ggml_native_functions[] = {
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
     {"Pin", sizeof(struct ggml_Pin_state), GGML_Pin_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 25, NULL, 0, ggml_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 27, NULL, 0, ggml_native_resources, 3, LOAD)
 #endif

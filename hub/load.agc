@@ -71,6 +71,21 @@ def weights_from_env() -> Result[Tensor.Dtype]
   end
 end
 
+## The `layers_on_device` option the tools take from the environment: `AGENTICA_ML_LAYERS_ON_DEVICE=n` (`Qwen3.open`),
+## `none` when it is not set.
+def layers_on_device_from_env() -> Result[Optional[Int]]
+  layers_on_device_of(System.env("AGENTICA_ML_LAYERS_ON_DEVICE").unwrap_or(""))
+end
+
+## The option of the text of that variable: `none` when it is empty, else a whole number.
+def layers_on_device_of(text: String) -> Result[Optional[Int]]
+  return ok(none) if text == ""
+  case text.to_i
+    ok(n) -> ok(some(n))
+    error(_) -> error("AGENTICA_ML_LAYERS_ON_DEVICE is a whole number, got #{text}")
+  end
+end
+
 ## Vulkan's fp16 or F32 `mul_mat` (`Tensor.vulkan_fp16`) for a tool, before any ggml call: `VULKAN_FP16=1` or `0` says, and
 ## when it is not set `default` does. A check against Hugging Face or whisper.cpp leaves `default` false (exact `float32`);
 ## a benchmark passes true (the library default).
