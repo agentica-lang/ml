@@ -62,6 +62,9 @@ extern module "ggml"
   ## A tensor of `shape` on `device` with every element `value`, filled in C,
   ## so a large fill never crosses as a list.
   compute def filled(device: Int, shape: List[Int], value: Float, int32: Bool) -> Result[TensorHandle]
+  ## True when `t` lives in host memory, made for the CPU backend (`device` -1): an output of a graph that runs on a
+  ## Vulkan device and a CPU together may be one.
+  def on_cpu(t: TensorHandle) -> Bool
   ## Host readback: the row-major values as doubles, which the caller tags
   ## with the tensor's dtype.
   compute def readback(t: TensorHandle) -> Result[List[Float]]

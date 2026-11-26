@@ -78,16 +78,15 @@ def has?(c: Checkpoint, name: String) -> Bool = c.weight_map.key?(name)
 
 ## The tensor `name` on `backend`: a float one as `F32`, or as `F16` with `dtype: F16` (a half weight, ggml only); a
 ## quantized one (Q8_0, Q4_K or Q6_K) of a GGUF file dequantized to `F32`, or kept as it is with the dtype of its type
-## (ggml only). `placement: Host` keeps a Vulkan tensor in pinned host memory (`Tensor.from_file`).
+## (ggml only).
 def tensor(
   c: Checkpoint,
   name: String,
   backend: Tensor.Backend,
   dtype: Tensor.Dtype = Tensor.Dtype.F32,
-  placement: Tensor.Placement = Tensor.Placement.Device,
 ) -> Result[Tensor.Tensor]
   file = try c.weight_map.get(name).to_result("no tensor #{name} in the checkpoint")
-  Shards.tensor(c.shards[file], name, backend, dtype, placement)
+  Shards.tensor(c.shards[file], name, backend, dtype)
 end
 
 ## Every tensor of the checkpoint on `backend`, by name, read as `tensor` reads one.

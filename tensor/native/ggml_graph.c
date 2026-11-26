@@ -136,6 +136,7 @@ struct port {
   bool kept;                              /* a leaf that stays bound after the run; `held->kept` counts it */
   bool wanted;                            /* inside `ggml_keep`: a leaf of the list it was given */
   struct tg_storage *held;                /* the memory of the bound tensor, kept until the run is over */
+  struct ggml_tensor *writer;             /* an output: the node that writes it, which `place` puts on a side */
 };
 
 struct gnode {
@@ -201,12 +202,24 @@ struct entry {
   int64_t kept_for;    /* the pin whose constants the kept leaves are; 0 for none */
   int64_t kept_leaves; /* how many leaves are kept */
   int64_t used; /* the tick of its last lease, for eviction */
+  /* Layers across the device and the CPU (`place`). A graph whose leaves are all in device memory never uses any of
+     this and runs on its backend alone. */
+  signed char *leaf_side;        /* per leaf: 1 when its tensor was in host memory at the last `place` */
+  struct ggml_tensor **save_node; /* every node of the graph as `compile` left it, with its sources in `save_src`: the */
+  struct ggml_tensor **save_src;  /* scheduler rewrites the sources and its backends reorder the nodes of the graph */
+  struct ggml_tensor **side_key; /* node -> side, for the sources of the next node */
+  signed char *side_val;
+  size_t side_cap;
+  bool placed;                   /* `leaf_side` and the sides of the nodes are of the leaves now bound */
+  bool mixed;                    /* some leaf is in host memory under a device graph: the scheduler runs it */
 };
 
 /* The intermediates' allocator of each device and the graph it last planned. */
 struct device_state {
   ggml_gallocr_t galloc;
   struct entry *planned;
+  ggml_backend_sched_t sched; /* the device and the CPU, for the graphs that have leaves on both */
+  size_t sched_size;
 };
 
 /* Lock order: the device lock (1), then cache_lock (2). Pins and the pin count of an entry are under cache_lock alone;
@@ -296,6 +309,11 @@ static void destroy(struct entry *e) {
     if (e->outs[i].own != NULL) ggml_backend_buffer_free(e->outs[i].own);
   }
   if (e->fill_buffer != NULL) ggml_backend_buffer_free(e->fill_buffer);
+  free(e->leaf_side);
+  free(e->save_node);
+  free(e->save_src);
+  free(e->side_key);
+  free(e->side_val);
   if (e->fill_ctx != NULL) ggml_free(e->fill_ctx);
   if (e->port_ctx != NULL) ggml_free(e->port_ctx);
   if (e->ctx != NULL) ggml_free(e->ctx);
@@ -1588,6 +1606,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     struct ggml_tensor *own = NULL;
 
     if (!n->in_place && !n->lazy) own = own_output(p, n, dense(p, n));
+    p->outs[i].writer = own;
     p->outs[i].t = own != NULL ? own
                                : ggml_new_tensor_4d(p->port_ctx, n->t->type == GGML_TYPE_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32,
                                                     n->ne[0], n->ne[1], n->ne[2], n->ne[3]);
@@ -1603,7 +1622,10 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     }
     value = dense(p, n);
     ggml_set_output(p->outs[i].t);
-    if (own == NULL) ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, value, p->outs[i].t));
+    if (own == NULL) {
+      p->outs[i].writer = ggml_cpy(p->ctx, value, p->outs[i].t);
+      ggml_build_forward_expand(p->graph, p->outs[i].writer);
+    }
     /* sum_rows first, since one ggml_sum of a large tensor is a single slow workgroup on Vulkan; the check reads
        the value, so it runs after the node that makes it */
     check = finite_check(p, value);
@@ -1656,6 +1678,15 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     }
   }
 
+  p->leaf_side = (signed char *)calloc((size_t)p->leaf_count + 1, 1);
+  p->save_node = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) + 1, sizeof(struct ggml_tensor *));
+  p->save_src = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * GGML_MAX_SRC + 1, sizeof(struct ggml_tensor *));
+  if (p->leaf_side == NULL || p->save_node == NULL || p->save_src == NULL) return tg_error(env, "out of memory");
+  for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
+    p->save_node[i] = ggml_graph_node(p->graph, i);
+    for (j = 0; j < GGML_MAX_SRC; j++) p->save_src[i * GGML_MAX_SRC + j] = p->save_node[i]->src[j];
+  }
+
   tg_lock_device();
   p->fill_buffer = ggml_backend_alloc_ctx_tensors(p->fill_ctx, p->backend);
   if (p->fill_buffer != NULL) ggml_backend_buffer_clear(p->fill_buffer, 0);
@@ -1668,6 +1699,130 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   }
   if (!p->compiled) return tg_error(env, "allocating the graph's fills failed");
   return ggml_result_Void_ok(env, an_void(env));
+}
+
+/* Layers across a device and the CPU. A leaf in host memory under a graph of a Vulkan device (a weight or a KV cache
+   that the loader put on the CPU) makes the graph "mixed": `place` gives every node a side, 0 the device and 1 the CPU,
+   from where its operands are, and `compute_mixed` runs the graph through a scheduler over the two backends, which
+   copies the activations where the sides meet. A graph whose leaves are all in device memory is never touched by any of
+   this. */
+#define DEVICE_SIDE 0
+#define CPU_SIDE 1
+
+static void forget(struct entry *e);
+
+/* The weight of a leaf operand in the vote of a node: a weight or a cache decides over the activations next to it. */
+#define LEAF_VOTE 4
+
+static bool is_view_op(enum ggml_op op) {
+  return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
+}
+
+static int buffer_side(const struct ggml_backend_buffer *b) { return ggml_backend_buffer_is_host((ggml_backend_buffer_t)b) ? CPU_SIDE : DEVICE_SIDE; }
+
+static size_t side_slot(const struct entry *p, const struct ggml_tensor *t) {
+  return ((size_t)((uintptr_t)t >> 4) * 11400714819323198485ull >> 20) & (p->side_cap - 1);
+}
+
+static void side_put(struct entry *p, const struct ggml_tensor *t, int side) {
+  size_t i = side_slot(p, t);
+
+  while (p->side_key[i] != NULL && p->side_key[i] != t) i = (i + 1) & (p->side_cap - 1);
+  p->side_key[i] = (struct ggml_tensor *)t;
+  p->side_val[i] = (signed char)side;
+}
+
+static int side_get(const struct entry *p, const struct ggml_tensor *t) {
+  size_t i = side_slot(p, t);
+
+  while (p->side_key[i] != NULL) {
+    if (p->side_key[i] == t) return p->side_val[i];
+    i = (i + 1) & (p->side_cap - 1);
+  }
+  return -1;
+}
+
+/* The side of a tensor that an earlier node or a leaf has: its own memory, else what `place` decided for it or for
+   the tensor it is a view of; -1 when nothing says. */
+static int side_of(const struct entry *p, const struct ggml_tensor *t) {
+  const struct ggml_tensor *root = t->view_src != NULL ? t->view_src : t;
+  int side;
+
+  if (t->buffer != NULL) return buffer_side(t->buffer);
+  if (root->buffer != NULL) return buffer_side(root->buffer);
+  side = side_get(p, t);
+  return side >= 0 ? side : side_get(p, root);
+}
+
+/* The side of `node`: the side of the memory it writes when that is made (a view of a cache), else the side that
+   holds most of its operands' bytes, a leaf's counting LEAF_VOTE times; a tie goes to the side of the first operand
+   that an earlier node computed, else to the device. */
+static int decide(const struct entry *p, const struct ggml_tensor *node) {
+  int64_t bytes[2] = {0, 0};
+  int j, side, tie = -1;
+
+  if (node->buffer != NULL) return buffer_side(node->buffer);
+  if (node->view_src != NULL && node->view_src->buffer != NULL) return buffer_side(node->view_src->buffer);
+  for (j = 0; j < GGML_MAX_SRC; j++) {
+    const struct ggml_tensor *src = node->src[j];
+    const struct ggml_tensor *root;
+
+    if (src == NULL) continue;
+    root = src->view_src != NULL ? src->view_src : src;
+    side = side_of(p, src);
+    if (side < 0) continue;
+    bytes[side] += (int64_t)ggml_nbytes(src) * (root->buffer != NULL ? LEAF_VOTE : 1);
+    if (tie < 0 && root->buffer == NULL) tie = side;
+  }
+  if (bytes[CPU_SIDE] != bytes[DEVICE_SIDE]) return bytes[CPU_SIDE] > bytes[DEVICE_SIDE] ? CPU_SIDE : DEVICE_SIDE;
+  return tie >= 0 ? tie : DEVICE_SIDE;
+}
+
+/* Sets `mixed` and, for a mixed graph, the side of every node that is not a view (in `side_key`), from the leaves bound
+   now. The sides are kept until a leaf changes sides. Call under the device lock. Returns NULL, or why it could not. */
+static const char *place(struct entry *p) {
+  ggml_backend_t cpu;
+  char why[160];
+  int64_t i, n = ggml_graph_n_nodes(p->graph);
+  bool changed = !p->placed, any = false;
+
+  if (p->device < 0) return NULL;
+  for (i = 0; i < p->leaf_count; i++) {
+    signed char side = p->leaves[i].t->buffer != NULL ? (signed char)buffer_side(p->leaves[i].t->buffer) : DEVICE_SIDE;
+
+    if (side != p->leaf_side[i]) changed = true;
+    p->leaf_side[i] = side;
+    any = any || side == CPU_SIDE;
+  }
+  if (!changed) return NULL;
+  p->placed = true;
+  p->mixed = any;
+  if (!any) return NULL;
+  if ((cpu = tg_backend(-1, why, sizeof why)) == NULL) return "the CPU backend did not open";
+  /* the intermediates of an earlier plain run must not look like memory a node writes */
+  if (devices[p->device + 1].planned == p) devices[p->device + 1].planned = NULL;
+  forget(p);
+  if (p->side_key == NULL) {
+    p->side_cap = 16;
+    while (p->side_cap < (size_t)n * 2 + 16) p->side_cap *= 2;
+    p->side_key = (struct ggml_tensor **)calloc(p->side_cap, sizeof(struct ggml_tensor *));
+    p->side_val = (signed char *)calloc(p->side_cap, 1);
+    if (p->side_key == NULL || p->side_val == NULL) return "out of memory";
+  }
+  memset(p->side_key, 0, p->side_cap * sizeof(struct ggml_tensor *));
+  for (i = 0; i < n; i++) {
+    struct ggml_tensor *node = ggml_graph_node(p->graph, i);
+    int side;
+
+    if (is_view_op(node->op)) continue;
+    side = decide(p, node);
+    if (!ggml_backend_supports_op(side == CPU_SIDE ? cpu : p->backend, node)) {
+      side = 1 - side;
+      if (!ggml_backend_supports_op(side == CPU_SIDE ? cpu : p->backend, node)) return "no backend runs a node of the graph";
+    }
+    side_put(p, node, side);
+  }
+  return NULL;
 }
 
 /* Points `port` at the memory of `h` when it has the port's type, or notes `h` for a converting copy through the
@@ -1713,7 +1868,7 @@ an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, str
   leaf = &p->leaves[slot];
   if (ggml_nelements(t->t) != ggml_nelements(leaf->t)) return tg_error(env, "a bound tensor has another element count than its leaf");
   if (!ggml_backend_supports_buft(p->backend, ggml_backend_buffer_get_type(t->buffer)) &&
-      !(t->vulkan && ggml_backend_buffer_is_host(t->buffer) && p->device >= 0)) {
+      !(p->device >= 0 && !t->vulkan && ggml_backend_buffer_is_host(t->buffer))) {
     return tg_error(env, "a bound tensor lives on another device than its graph");
   }
   if (leaf->t->type != t->t->type && (leaf->t->type != GGML_TYPE_F32 || t->t->type != GGML_TYPE_I32)) {
@@ -1725,13 +1880,22 @@ an_term ggml_bind(an_env *env, struct ggml_Lease_state *lease, int64_t slot, str
 
 an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output, bool int32) {
   struct entry *p = lease->e;
+  const char *why;
   an_term term, failure;
   struct ggml_TensorHandle_state *state = ggml_TensorHandle_new(env, &term);
   bool attached;
+  int64_t device = p != NULL ? p->device : 0;
 
   if (p == NULL || !p->compiled) return tg_error(env, "an output of a compiled graph");
   if (output < 0 || output >= p->output_count) return tg_error(env, "no such output");
-  if (!tg_new_tensor(env, p->device, p->outs[output].t->ne, int32 ? GGML_TYPE_I32 : p->outs[output].t->type, state, &failure)) {
+  tg_lock_device();
+  why = place(p);
+  if (why == NULL && p->mixed && p->outs[output].writer != NULL && side_get(p, p->outs[output].writer) == CPU_SIDE) {
+    device = -1;
+  }
+  tg_unlock_device();
+  if (why != NULL) return tg_error(env, why);
+  if (!tg_new_tensor(env, device, p->outs[output].t->ne, int32 ? GGML_TYPE_I32 : p->outs[output].t->type, state, &failure)) {
     return failure;
   }
   tg_lock_device();
@@ -1745,7 +1909,8 @@ an_term ggml_output(an_env *env, struct ggml_Lease_state *lease, int64_t output,
 an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t output, struct ggml_TensorHandle_state *t) {
   struct entry *p = lease->e;
   bool attached = false, alias = false;
-  char why[96];
+  const char *why;
+  char text[96];
   int64_t i;
 
   if (p == NULL || !p->compiled) return tg_error(env, "an output of a compiled graph");
@@ -1754,10 +1919,22 @@ an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t ou
   if (ggml_nelements(t->t) != ggml_nelements(p->outs[output].t)) {
     return tg_error(env, "an output tensor has another element count than its output");
   }
-  if (!ggml_backend_supports_buft(p->backend, ggml_backend_buffer_get_type(t->buffer))) {
-    return tg_error(env, "an output tensor lives on another device than its graph");
-  }
   tg_lock_device();
+  why = place(p);
+  if (why == NULL && ggml_backend_buffer_is_host(t->buffer) && !t->vulkan && p->device >= 0) {
+    /* a tensor on the CPU is the output of a node that runs there */
+    if (!p->mixed || p->outs[output].writer == NULL || side_get(p, p->outs[output].writer) != CPU_SIDE) {
+      why = "an output tensor lives on another device than its graph";
+    }
+  } else if (why == NULL && !ggml_backend_supports_buft(p->backend, ggml_backend_buffer_get_type(t->buffer))) {
+    why = "an output tensor lives on another device than its graph";
+  } else if (why == NULL && p->mixed && p->outs[output].writer != NULL && side_get(p, p->outs[output].writer) == CPU_SIDE) {
+    why = "an output tensor lives on another device than the layer that writes it";
+  }
+  if (why != NULL) {
+    tg_unlock_device();
+    return tg_error(env, why);
+  }
   for (i = 0; i < p->leaf_count; i++) {
     if (p->leaves[i].held == t->store) alias = true;
   }
@@ -1775,8 +1952,8 @@ an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t ou
   }
   tg_unlock_device();
   if (alias) {
-    snprintf(why, sizeof why, "output %" PRId64 ": the tensor given is an input of the run or another output", output);
-    return tg_error(env, why);
+    snprintf(text, sizeof text, "output %" PRId64 ": the tensor given is an input of the run or another output", output);
+    return tg_error(env, text);
   }
   if (!attached) return tg_error(env, "out of memory");
   return ggml_result_Void_ok(env, an_void(env));
@@ -1809,6 +1986,8 @@ an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease) {
   pin->e = cached ? p : NULL;
   return ggml_result_Pin_ok(env, term);
 }
+
+an_term ggml_on_cpu(an_env *env, struct ggml_TensorHandle_state *t) { return an_bool(env, !t->vulkan); }
 
 /* A pin that holds nothing has id 0, which keeps nothing. */
 an_term ggml_pin_id(an_env *env, struct ggml_Pin_state *pin) { return an_int(env, pin->id); }
@@ -1904,6 +2083,86 @@ static void forget(struct entry *e) {
   }
 }
 
+/* Runs a mixed graph (`place`) through the scheduler of its device: every node goes to the backend that `place`
+   chose, the scheduler splits the graph where the sides meet and copies what crosses, and the intermediates of both
+   sides are its own. It rewrites the sources of the nodes it copies for, so they are put back at the end. Call under
+   the device lock, with the leaves bound. Returns NULL, or why it failed. */
+static const char *compute_mixed(struct entry *p, struct device_state *d) {
+  ggml_backend_t backends[2];
+  const char *why = NULL;
+  char text[160];
+  int64_t i, j, n = ggml_graph_n_nodes(p->graph);
+  size_t need = (size_t)(2 * n + p->leaf_count) + 2 * MAX_OUTPUTS + 64;
+
+  backends[0] = p->backend;
+  if ((backends[1] = tg_backend(-1, text, sizeof text)) == NULL) return "the CPU backend did not open";
+  for (i = 0; i < p->output_count; i++) {
+    int side;
+
+    if (p->outs[i].donated || p->outs[i].writer == NULL || p->outs[i].t->buffer == NULL) continue;
+    side = side_get(p, p->outs[i].writer);
+    if (side >= 0 && side != buffer_side(p->outs[i].t->buffer)) return "an output lives on the other side than the layer that writes it";
+  }
+  if (d->sched != NULL && d->sched_size < need) {
+    ggml_backend_sched_free(d->sched);
+    d->sched = NULL;
+  }
+  if (d->sched == NULL) {
+    d->sched_size = need < 4096 ? 4096 : need;
+    d->sched = ggml_backend_sched_new(backends, NULL, 2, d->sched_size, false, false);
+    if (d->sched == NULL) return "making the scheduler failed";
+  }
+  if (d->planned == p) d->planned = NULL;
+  forget(p);
+  ggml_backend_sched_reset(d->sched);
+  for (i = 0; i < n; i++) {
+    struct ggml_tensor *node = ggml_graph_node(p->graph, i);
+    int side = side_get(p, node);
+
+    if (side >= 0) ggml_backend_sched_set_tensor_backend(d->sched, node, backends[side]);
+  }
+  if (!ggml_backend_sched_alloc_graph(d->sched, p->graph)) why = "allocating the graph failed";
+  else if (ggml_backend_sched_graph_compute(d->sched, p->graph) != GGML_STATUS_SUCCESS) why = "ggml_backend_sched_graph_compute failed";
+  for (i = 0; i < n; i++) {
+    for (j = 0; j < GGML_MAX_SRC; j++) p->save_node[i]->src[j] = p->save_src[i * GGML_MAX_SRC + j];
+  }
+  forget(p);
+  ggml_backend_sched_reset(d->sched);
+  return why;
+}
+
+/* Runs a graph whose leaves are all in the memory of its device, on its backend alone, with the allocator that every
+   graph of the device shares. Call under the device lock, with the leaves bound. Returns NULL, or why it failed. */
+static const char *compute_plain(struct entry *p, struct device_state *d) {
+  const char *why = NULL;
+  int64_t i;
+
+  if (d->galloc == NULL) d->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(p->backend));
+  if (d->galloc == NULL) return "making the graph allocator failed";
+  if (d->planned != p) {
+    /* The allocator is planned for one graph at a time, and a new plan may move its buffer: the graph that had the
+       plan forgets where its intermediates were, and this one is placed again. */
+    if (d->planned != NULL) forget(d->planned);
+    d->planned = NULL;
+    forget(p);
+    if (!ggml_gallocr_reserve(d->galloc, p->graph) || !ggml_gallocr_alloc_graph(d->galloc, p->graph)) {
+      why = "allocating the graph failed";
+    } else {
+      d->planned = p;
+    }
+  } else {
+    /* The same graph ran last and nothing planned the allocator since: its intermediates are where that run left
+       them. Only the views of the leaves and outputs follow what this run bound. */
+    for (i = 0; i < p->view_count; i++) {
+      if (p->views[i]->buffer == NULL) ggml_backend_view_init(p->views[i]);
+    }
+  }
+  if (why == NULL && ggml_backend_graph_compute(p->backend, p->graph) != GGML_STATUS_SUCCESS) {
+    why = "ggml_backend_graph_compute failed";
+  }
+  return why;
+}
+
 an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fills) {
   struct entry *p = lease->e;
   struct device_state *d;
@@ -1960,29 +2219,8 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
     else why = tg_copy(p->leaves[i].conv, p->leaves[i].t, p->leaves[i].held != NULL ? p->leaves[i].held->mirror : NULL);
   }
   d = &devices[p->device + 1];
-  if (d->galloc == NULL) d->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(p->backend));
-  if (d->galloc == NULL) why = "making the graph allocator failed";
-  if (why == NULL && d->planned != p) {
-    /* The allocator is planned for one graph at a time, and a new plan may move its buffer: the graph that had the
-       plan forgets where its intermediates were, and this one is placed again. */
-    if (d->planned != NULL) forget(d->planned);
-    d->planned = NULL;
-    forget(p);
-    if (!ggml_gallocr_reserve(d->galloc, p->graph) || !ggml_gallocr_alloc_graph(d->galloc, p->graph)) {
-      why = "allocating the graph failed";
-    } else {
-      d->planned = p;
-    }
-  } else if (why == NULL) {
-    /* The same graph ran last and nothing planned the allocator since: its intermediates are where that run left
-       them. Only the views of the leaves and outputs follow what this run bound. */
-    for (i = 0; i < p->view_count; i++) {
-      if (p->views[i]->buffer == NULL) ggml_backend_view_init(p->views[i]);
-    }
-  }
-  if (why == NULL && ggml_backend_graph_compute(p->backend, p->graph) != GGML_STATUS_SUCCESS) {
-    why = "ggml_backend_graph_compute failed";
-  }
+  if (why == NULL) why = place(p);
+  if (why == NULL) why = p->mixed ? compute_mixed(p, d) : compute_plain(p, d);
   if (why == NULL) {
     ggml_backend_tensor_get(p->checks, checks, 0, (size_t)(p->output_count + p->guard_count) * sizeof(float));
   }

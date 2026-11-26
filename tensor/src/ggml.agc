@@ -22,9 +22,6 @@ import FileRange from "file_range"
 import GgmlRaw from "ggml_native"
 import Types from "types"
 
-## Added to a Vulkan device's code: the tensor goes to the device's pinned host memory (`TG_HOST` of the native module).
-HOST_CODE = 4294967296
-
 ## True when `device` can hold ggml tensors here: the module is built and, for
 ## `Vulkan(i)`, ggml sees a Vulkan device `i`. Opens no device.
 def available(device: Types.Device) -> Bool
@@ -94,7 +91,7 @@ end
 ## `F16` with `dtype: F16` (half the memory and the bandwidth of a weight; a
 ## value beyond 65504 is an error), or a quantized dtype (`Q8_0`, `Q4_K` or `Q6_K`)
 ## with the `format` of the same name (the blocks of the file as they are). With `TENSOR_LOAD=agentica` Agentica reads the
-## range and C widens or copies the bytes. `Placement.Host` keeps a Vulkan weight in pinned host memory.
+## range and C widens or copies the bytes.
 def from_file(
   device: Types.Device,
   path: String,
@@ -102,13 +99,8 @@ def from_file(
   shape: List[Int],
   format: Types.FloatFormat,
   dtype: Types.Dtype,
-  placement: Types.Placement,
 ) -> Result[Types.Tensor]
   code = try ready(device, shape, Types.Dtype.F32, "from_file")
-  if placement == Types.Placement.Host and code >= 0
-    code += HOST_CODE
-  end
-
   if dtype != Types.Dtype.F32 and !Types.is_packed_dtype(dtype)
     return error("from_file: a ggml tensor read from a file is F32, F16 or quantized, got #{Types.dtype_name(dtype)}")
   end

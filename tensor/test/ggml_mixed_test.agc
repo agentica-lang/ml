@@ -1,0 +1,110 @@
+## Layers across a Vulkan device and the CPU: a graph over tensors on both. A leaf on `Ggml(Cpu)` under a graph on a
+## Vulkan device makes the graph run through a scheduler over the two backends, and the node that reads a CPU weight or
+## cache runs on the CPU. Its values are those of the same graph with every tensor on the device, an output of a CPU node
+## is a CPU tensor, and a cache on the CPU is written in place. Without a Vulkan device these checks pass by asserting
+## nothing.
+
+import Support from "support"
+import Tensor from "../tensor"
+import Trace from "../trace"
+
+DEVICE = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+HOME = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+
+## Ggml and a Vulkan device are there.
+def mixed_present() -> Result[Bool]
+  return ok(false) if !try Support.ggml_present()
+  ok(Tensor.available(DEVICE))
+end
+
+private
+
+def floats(xs: List[Float], shape: List[Int], backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  Tensor.from_list(xs.map { |x| Tensor.Values.Float(x) }, shape, Tensor.Dtype.F32, backend)
+end
+
+def counting(n: Int) -> List[Float] = (0...n).map { |i| ((i * 7) % 11 - 5).to_f / 8.0 }
+
+def specs_of(ts: List[Tensor.Tensor]) -> List[Trace.Spec] = ts.map { |t| Trace.spec_of(t) }
+
+## `relu(x w^T)` and `x * 2`: the first reads the weight, the second only the input.
+def model(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  y = try Tensor.linear(xs[0], xs[1], none, true)
+  ok([try Tensor.relu(y), try Tensor.add(xs[0], xs[0])])
+end
+
+def inputs(weight_on: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  ok([try floats(counting(12), [3, 4], DEVICE), try floats(counting(32), [8, 4], weight_on)])
+end
+
+def values(ts: List[Tensor.Tensor]) -> Result[List[List[Float]]]
+  out: List[List[Float]] = []
+  for t in ts
+    out = out.push(try Support.floats_of(t))
+  end
+
+  ok(out)
+end
+
+def test_a_cpu_weight_gives_the_values_of_the_device_weight() -> Result[Void]
+  return ok() if !try mixed_present()
+
+  args = try inputs(DEVICE)
+  want = try values(try Trace.eval_many(args) do |xs| model(xs) end)
+  args = try inputs(HOME)
+  got = try Trace.eval_many(args) do |xs| model(xs) end
+  try Test.eq(try values(got), want)
+  try Test.eq(Tensor.backend(got[0]), HOME)
+  Test.eq(Tensor.backend(got[1]), DEVICE)
+end
+
+## One graph structure, run with its weight on the device, then on the CPU, then on the device: each run places itself
+## by the weight it is given.
+def test_the_same_graph_is_placed_again_when_a_leaf_changes_sides() -> Result[Void]
+  return ok() if !try mixed_present()
+
+  want = try values(try Trace.eval_many(try inputs(DEVICE)) do |xs| model(xs) end)
+  for side in [HOME, DEVICE, HOME, HOME, DEVICE]
+    got = try Trace.eval_many(try inputs(side)) do |xs| model(xs) end
+    try Test.eq(try values(got), want)
+    try Test.eq(Tensor.backend(got[0]), side)
+  end
+
+  ok()
+end
+
+## `into` takes a tensor on the side of the node that writes the output, and refuses one on the other.
+def test_an_output_given_lives_on_the_side_of_its_node() -> Result[Void]
+  return ok() if !try mixed_present()
+
+  args = try inputs(HOME)
+  compiled = try Trace.compile(specs_of(args)) do |xs| model(xs) end
+  on_cpu = try floats(counting(24), [3, 8], HOME)
+  on_device = try floats(counting(12), [3, 4], DEVICE)
+  out = try Trace.run(compiled, args, [some(on_cpu), some(on_device)])
+  want = try values(try Trace.eval_many(try inputs(DEVICE)) do |xs| model(xs) end)
+  try Test.eq(try values(out), want)
+  try Test.error?(Trace.run(compiled, args, [some(on_device), none]))
+  Test.error?(Trace.run(compiled, args, [none, some(on_cpu)]))
+end
+
+## A cache on the CPU is written in place by rows that come from the device, and the tensor given is the result.
+def test_a_cpu_cache_is_written_in_place_by_rows_from_the_device() -> Result[Void]
+  return ok() if !try mixed_present()
+
+  args = [
+    try floats(counting(24), [2, 4, 3], HOME),
+    try floats([-1.0, -2.0, -3.0, -4.0, -5.0, -6.0], [2, 1, 3], DEVICE),
+    try Tensor.from_list([Tensor.Values.Int(2)], [1], Tensor.Dtype.I32, DEVICE),
+  ]
+
+  compiled = try Trace.compile(specs_of(args)) do |xs| ok([try Tensor.set_rows(xs[0], xs[1], xs[2])]) end
+
+  out = try Trace.run(compiled, args)
+  got = try Support.floats_of(args[0])
+  try Test.eq(got.drop(6).take(3), [-1.0, -2.0, -3.0])
+  try Test.eq(got.drop(18).take(3), [-4.0, -5.0, -6.0])
+  try Test.eq(got.take(6), counting(24).take(6))
+  try Test.eq(Tensor.backend(out[0]), HOME)
+  Test.eq(try Support.floats_of(out[0]), got)
+end

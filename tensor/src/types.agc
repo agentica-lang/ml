@@ -65,14 +65,6 @@ enum Device
   Vulkan(Int)
 end
 
-## Where a weight read from a file lives. `Device` is the device's own memory; `Host` is, on a Vulkan device, its
-## pinned host memory: the card reads the weight over the bus, and the device's memory keeps the rest. Elsewhere it is
-## `Device`.
-enum Placement
-  Device
-  Host
-end
-
 enum Backend
   Reference
   Torch(Device)
@@ -364,6 +356,44 @@ def device_name(device: Device) -> String
     Device.Cpu -> "Cpu"
     Device.Vulkan(i) -> "Vulkan(#{i})"
   end
+end
+
+## True for the ggml CPU backend.
+def ggml_cpu?(backend: Backend) -> Bool
+  case backend
+    Backend.Ggml(Device.Cpu) -> true
+    _ -> false
+  end
+end
+
+## True when a graph on the backend `lead` may read tensors that live on `b`: its own backend, or, on a Vulkan device,
+## the ggml CPU (the layers of a model that the device hands to the CPU, with their weights and caches in host memory).
+def reads?(lead: Backend, b: Backend) -> Bool
+  return true if b == lead
+  case lead
+    Backend.Ggml(Device.Vulkan(_)) -> ggml_cpu?(b)
+    _ -> false
+  end
+end
+
+## The backend a graph over tensors on `backends` (at least one) runs on: the one they all share, or the Vulkan device
+## when the others are the ggml CPU (`reads?`); an error naming the first that does not fit.
+def shared_backend(backends: List[Backend]) -> Result[Backend]
+  lead = backends[0]
+  for b in backends
+    if !ggml_cpu?(b)
+      lead = b
+      break
+    end
+  end
+
+  for b in backends
+    if !reads?(lead, b)
+      return error("tensors on #{backend_name(lead)} and #{backend_name(b)}: a graph runs on one backend")
+    end
+  end
+
+  ok(lead)
 end
 
 ## The short name used in error messages.

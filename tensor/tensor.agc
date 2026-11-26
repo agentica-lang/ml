@@ -81,7 +81,6 @@ export Types.Data
 export Types.DeltaRule
 export Types.Device
 export Types.Dtype
-export Types.Placement
 export Types.FloatFormat
 export Types.Handle
 export Types.Tensor
@@ -284,7 +283,6 @@ def from_file(
   format: Types.FloatFormat = Types.FloatFormat.F32,
   backend: Types.Backend = Types.Backend.Reference,
   dtype: Types.Dtype = Types.Dtype.F32,
-  placement: Types.Placement = Types.Placement.Device,
 ) -> Result[Types.Tensor]
   n = try Types.volume(shape)
   if format == Types.FloatFormat.U8
@@ -334,7 +332,7 @@ def from_file(
     Types.Backend.Reference -> Reference.from_file(path, offset, shape, format)
     Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format)
     Types.Backend.Trace -> error("from_file makes no traced tensor: lift one with Trace.constant")
-    Types.Backend.Ggml(device) -> Ggml.from_file(device, path, offset, shape, format, dtype, placement)
+    Types.Backend.Ggml(device) -> Ggml.from_file(device, path, offset, shape, format, dtype)
     Types.Backend.Xla(device) -> Xla.from_file(device, path, offset, shape, format)
   end
 end

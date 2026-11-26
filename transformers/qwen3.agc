@@ -55,9 +55,10 @@ end
 ## The model in `dir`, which holds `config.json` and `model.safetensors` (or
 ## the `model.safetensors.index.json` of a sharded one), or in the `.gguf` file
 ## `dir` names, whose key-values give the config.
-## `layers_on_device: n` keeps the weights of the blocks from the `n`th on in pinned host memory (`Tensor.Placement.Host`,
-## Vulkan only): the card reads them over the bus and its memory holds the rest. The embedding table, the head and the
-## norms stay on the device; `none` keeps every block there.
+## `layers_on_device: n` loads the weights of the blocks from the `n`th on on the CPU (`Ggml(Cpu)`), and a step runs
+## those blocks there, with their KV cache in host memory (`kv_decoder.agc`); the first `n` blocks, the embedding table,
+## the head and the final norm stay on the Vulkan device. `none` keeps every block there, and on any other backend
+## `n` changes nothing.
 def open(
   dir: String,
   backend: Tensor.Backend,
@@ -172,12 +173,9 @@ def load(
   try expect_shape("model.embed_tokens.weight", tokens.table, [config.vocab_size, width])
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
-    placement = Tensor.Placement.Device
-    if layers_on_device.some? and i >= layers_on_device.unwrap!
-      placement = Tensor.Placement.Host
-    end
-
-    blocks = blocks.push(try block(c, "model.layers.#{i}.", config, backend, weights, placement))
+    blocks = blocks.push(
+      try block(c, "model.layers.#{i}.", config, layer_backend(backend, i, layers_on_device), weights),
+    )
   end
 
   head = try head_of(c, config, tokens, backend, weights)
@@ -437,6 +435,15 @@ def rms(c: Hub.Checkpoint, prefix: String, eps: Float, backend: Tensor.Backend) 
   )
 end
 
+## The backend of block `i`: the CPU from block `layers_on_device` on when the model is on a Vulkan device.
+def layer_backend(backend: Tensor.Backend, i: Int, layers_on_device: Optional[Int]) -> Tensor.Backend
+  return backend if layers_on_device.none? or i < layers_on_device.unwrap!
+  case backend
+    Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    _ -> backend
+  end
+end
+
 ## One decoder block under `p` (`model.layers.N.`).
 def block(
   c: Hub.Checkpoint,
@@ -444,7 +451,6 @@ def block(
   config: Config,
   backend: Tensor.Backend,
   weights: Tensor.Dtype,
-  placement: Tensor.Placement,
 ) -> Result[Nn.EncoderBlock]
   width = config.hidden_size
   q_width = config.num_attention_heads * config.head_dim
@@ -461,10 +467,10 @@ def block(
   end
 
   attention = Nn.Attention(
-    query: try Load.dense(c, "#{a}q_proj", backend, weights, placement),
-    key: try Load.dense(c, "#{a}k_proj", backend, weights, placement),
-    value: try Load.dense(c, "#{a}v_proj", backend, weights, placement),
-    output: try Load.dense(c, "#{a}o_proj", backend, weights, placement),
+    query: try Load.dense(c, "#{a}q_proj", backend, weights),
+    key: try Load.dense(c, "#{a}k_proj", backend, weights),
+    value: try Load.dense(c, "#{a}v_proj", backend, weights),
+    output: try Load.dense(c, "#{a}o_proj", backend, weights),
     heads: config.num_attention_heads,
     kv_heads: some(config.num_key_value_heads),
     rope: some(Nn.Rope(base: config.rope_theta)),
@@ -478,10 +484,10 @@ def block(
   try expect_shape("#{a}o_proj.weight", attention.output.w, [width, q_width])
   m = "#{p}mlp."
   mlp = Nn.Mlp(
-    up: try Load.dense(c, "#{m}up_proj", backend, weights, placement),
-    down: try Load.dense(c, "#{m}down_proj", backend, weights, placement),
+    up: try Load.dense(c, "#{m}up_proj", backend, weights),
+    down: try Load.dense(c, "#{m}down_proj", backend, weights),
     activation: Nn.Activation.Silu,
-    gate: some(try Load.dense(c, "#{m}gate_proj", backend, weights, placement)),
+    gate: some(try Load.dense(c, "#{m}gate_proj", backend, weights)),
   )
 
   try expect_shape("#{m}up_proj.weight", mlp.up.w, [config.intermediate_size, width])

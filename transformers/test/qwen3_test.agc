@@ -92,8 +92,8 @@ def test_f16_weights_need_ggml_and_leave_a_tiny_model_alone() -> Result[Void]
   end
 end
 
-## `layers_on_device: n` keeps the weights of the blocks from the `n`th on in host memory, and the model computes the same
-## logits whichever `n` it is (all blocks, none, one of two) and in half; a negative `n` is an error.
+## `layers_on_device: n` loads the blocks from the `n`th on on the CPU, and the model computes the same logits whichever
+## `n` it is (no block on the device, one of two, both); a negative `n` is an error.
 def test_layers_on_device_do_not_change_the_logits() -> Result[Void]
   with_peer do |dir|
     rows = try ids(dir)
@@ -102,7 +102,7 @@ def test_layers_on_device_do_not_change_the_logits() -> Result[Void]
       want = try S.floats_of(try Qwen3.run(try Qwen3.open("#{dir}/tiny", backend), rows))
       for n in [0, 1, 2]
         m = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(n))
-        try Test.eq(try S.floats_of(try Qwen3.run(m, rows)), want)
+        try S.expect_close(try S.floats_of(try Qwen3.run(m, rows)), want, F32_ABS, F32_REL, "layers_on_device #{n}")
       end
     end
 

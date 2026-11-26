@@ -71,13 +71,15 @@ def weights_from_env() -> Result[Tensor.Dtype]
   end
 end
 
-## The `layers_on_device` option the tools take from the environment: `LAYERS_ON_DEVICE=n` (`Qwen3.open`), `none` when
-## it is not set.
+## The `layers_on_device` option the tools take from the environment: `AGENTICA_ML_LAYERS_ON_DEVICE=n` (`Qwen3.open`),
+## `none` when it is not set.
 def layers_on_device_from_env() -> Result[Optional[Int]]
-  text = System.env("LAYERS_ON_DEVICE").unwrap_or("")
+  text = System.env("AGENTICA_ML_LAYERS_ON_DEVICE").unwrap_or("")
   return ok(none) if text == ""
-  n = try text.to_i.to_result("LAYERS_ON_DEVICE is a whole number, got #{text}")
-  ok(some(n))
+  case text.to_i
+    ok(n) -> ok(some(n))
+    error(_) -> error("AGENTICA_ML_LAYERS_ON_DEVICE is a whole number, got #{text}")
+  end
 end
 
 ## Vulkan's fp16 or F32 `mul_mat` (`Tensor.vulkan_fp16`) for a tool, before any ggml call: `VULKAN_FP16=1` or `0` says, and
@@ -98,16 +100,14 @@ def weight(c: Hub.Checkpoint, name: String, rank: Int, backend: Tensor.Backend) 
 end
 
 ## A dense layer: `{prefix}.weight` `[out, in]` (`F16` under `weights: F16` when big enough, `Q8_0` under `weights: Q8_0`
-## or `Q4_K`/`Q6_K` under `weights: Q4_K` when the file stores it so) and an optional bias. With `placement: Host` the
-## weight stays in pinned host memory on a Vulkan device (the bias stays in the device's own).
+## or `Q4_K`/`Q6_K` under `weights: Q4_K` when the file stores it so) and an optional bias.
 def dense(
   c: Hub.Checkpoint,
   prefix: String,
   backend: Tensor.Backend,
   weights: Tensor.Dtype = Tensor.Dtype.F32,
-  placement: Tensor.Placement = Tensor.Placement.Device,
 ) -> Result[Nn.Dense]
-  w = try matrix(c, "#{prefix}.weight", 2, backend, weights, placement)
+  w = try matrix(c, "#{prefix}.weight", 2, backend, weights)
   b = try bias(c, prefix, Tensor.shape(w)[0], backend)
   ok(Nn.Dense(w: w, b: b, out_in: true))
 end
@@ -225,7 +225,6 @@ def matrix(
   rank: Int,
   backend: Tensor.Backend,
   weights: Tensor.Dtype,
-  placement: Tensor.Placement = Tensor.Placement.Device,
 ) -> Result[Tensor.Tensor]
   _ = try checked(weights, backend)
   dtype = Tensor.Dtype.F32
@@ -240,7 +239,7 @@ def matrix(
     end
   end
 
-  t = try Hub.tensor(c, name, backend, dtype, placement)
+  t = try Hub.tensor(c, name, backend, dtype)
   shape = Tensor.shape(t)
   return error("#{name}: needs rank #{rank}, got #{shape}") if shape.size != rank
   return ok(t) if Tensor.packed?(Tensor.dtype(t))

@@ -183,7 +183,7 @@ end
 def eval(args: List[Types.Tensor], f: Fn[List[Types.Tensor], Result[Types.Tensor]]) -> Result[Types.Tensor]
   inputs = try inputs_for(args)
   out = try System.Profile.measure("ml.trace") do f.call(inputs) end
-  values = try evaluate([out], bind(inputs, args), args[0].backend)
+  values = try evaluate([out], bind(inputs, args), try Types.shared_backend(args.map { |t| t.backend }))
   ok(values[0])
 end
 
@@ -197,7 +197,7 @@ def eval_many(
 ) -> Result[List[Types.Tensor]]
   inputs = try inputs_for(args)
   outs = try System.Profile.measure("ml.trace") do f.call(inputs) end
-  evaluate(outs, bind(inputs, args), args[0].backend, keep)
+  evaluate(outs, bind(inputs, args), try Types.shared_backend(args.map { |t| t.backend }), keep)
 end
 
 ## The spec of the tensor `t`.
@@ -226,10 +226,7 @@ def spec_of(t: Types.Tensor) -> Spec = Spec(shape: t.shape, dtype: t.dtype, back
 ## parameters included, and answers every tensor `run` gives back.
 def compile(specs: List[Spec], f: Fn[List[Types.Tensor], Result[List[Types.Tensor]]]) -> Result[Compiled]
   return error("a compiled function needs at least one input") if specs.empty?
-  backend = specs[0].backend
-  for s in specs
-    return error("a compiled function needs its inputs on one backend") if s.backend != backend
-  end
+  backend = try Types.shared_backend(specs.map { |s| s.backend })
 
   return error("a compiled function needs computed inputs, got traced ones") if backend == Types.Backend.Trace
   inputs = specs.map { |s| Graph.record(Types.Op.Input, [], s.shape, s.dtype) }
@@ -562,11 +559,8 @@ end
 ## one backend that computes.
 def inputs_for(args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
   return error("a traced function needs at least one argument") if args.empty?
-  for t in args
-    return error("a traced function needs its arguments on one backend") if t.backend != args[0].backend
-  end
-
-  return error("a traced function needs computed arguments, got traced ones") if args[0].backend == Types.Backend.Trace
+  backend = try Types.shared_backend(args.map { |t| t.backend })
+  return error("a traced function needs computed arguments, got traced ones") if backend == Types.Backend.Trace
   ok(args.map { |t| Graph.record(Types.Op.Input, [], t.shape, t.dtype) })
 end
 
