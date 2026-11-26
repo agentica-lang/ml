@@ -21,7 +21,7 @@ struct Format
 end
 
 ## Reads the WAV file at `path` and decodes its samples.
-def load(path: String) -> Result[List[Float]]
+def load(path: String) -> Result[List[Float32]]
   handle = try File.open(path)
   bytes = read_all(handle)
   _ = File.close(handle)
@@ -29,7 +29,7 @@ def load(path: String) -> Result[List[Float]]
 end
 
 ## Decodes the WAV in `data`: its RIFF header, then its chunks up to `data`.
-def decode(data: Bytes) -> Result[List[Float]]
+def decode(data: Bytes) -> Result[List[Float32]]
   return error("a WAV needs its 12 bytes of RIFF header") if data.size < 12
   return error("not a RIFF file") if data.slice(0, 4) != "RIFF".bytes
   return error("not a WAVE file") if data.slice(8, 4) != "WAVE".bytes
@@ -51,7 +51,7 @@ end
 
 # The chunks from `offset` on, with the format seen so far: `fmt ` sets it,
 # `data` decodes against it, any other chunk is skipped (plus its pad byte).
-def scan(data: Bytes, offset: Int, format: Optional[Format]) -> Result[List[Float]]
+def scan(data: Bytes, offset: Int, format: Optional[Format]) -> Result[List[Float32]]
   return error("a WAV has no data chunk") if offset + 8 > data.size
   id = data.slice(offset, 4)
   size = (try Binary.read_u32_le(data, offset + 4)).to_i
@@ -95,13 +95,13 @@ def have_format(format: Optional[Format]) -> Result[Format]
 end
 
 # The `size` bytes at `start` as 16-bit samples over 32768.
-def pcm16(data: Bytes, start: Int, size: Int) -> Result[List[Float]]
+def pcm16(data: Bytes, start: Int, size: Int) -> Result[List[Float32]]
   return error("a data chunk holds whole 16-bit samples") if size % 2 == 1
-  samples: List[Float] = []
+  samples: List[Float32] = []
   offset = start
   while offset < start + size
     value = try Binary.read_i16_le(data, offset)
-    samples = samples.push(value.to_f / 32768.0)
+    samples = samples.push((value.to_f / 32768.0).to_float32)
     offset += 2
   end
 

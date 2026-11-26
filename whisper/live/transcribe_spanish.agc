@@ -37,7 +37,7 @@ def main() -> Void
   end
 end
 
-def run(pcm: List[Float]) -> Void
+def run(pcm: List[Float32]) -> Void
   case Whisper.load_model(MODEL_PATH)
     ok(model) -> spanish(model, pcm)
     error(e) ->
@@ -47,14 +47,14 @@ def run(pcm: List[Float]) -> Void
 end
 
 # The Spanish pass, then the same audio translated.
-def spanish(model: Whisper.Model, pcm: List[Float]) -> Void
-  case Whisper.transcribe_with(model, pcm, Whisper.Options(language: "es"))
+def spanish(model: Whisper.Model, pcm: List[Float32]) -> Void
+  case Whisper.transcribe_with(model, Whisper.widen(pcm), Whisper.Options(language: "es"))
     ok(segments) -> check_spanish(segments, pcm.size / 16, model, pcm)
     error(e) -> fail("cannot transcribe #{FIXTURE_PATH} in Spanish: #{e.message}")
   end
 end
 
-def check_spanish(segments: List[Whisper.Segment], duration_ms: Int, model: Whisper.Model, pcm: List[Float]) -> Void
+def check_spanish(segments: List[Whisper.Segment], duration_ms: Int, model: Whisper.Model, pcm: List[Float32]) -> Void
   show(segments)
   check(!segments.empty?, "the Spanish decode has no segments")
   first = segments[0]
@@ -94,8 +94,8 @@ end
 
 # The same audio with `translate: true`, the other half of `Options`: the
 # engine answers in English instead of the spoken language.
-def english(model: Whisper.Model, pcm: List[Float]) -> Void
-  case Whisper.transcribe_with(model, pcm, Whisper.Options(language: "es", translate: true))
+def english(model: Whisper.Model, pcm: List[Float32]) -> Void
+  case Whisper.transcribe_with(model, Whisper.widen(pcm), Whisper.Options(language: "es", translate: true))
     ok(segments) ->
       show(segments)
       text = Whisper.join_text(segments)

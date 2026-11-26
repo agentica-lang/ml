@@ -33,7 +33,7 @@ def run() -> Result[Void]
   pcm = try Whisper.load(SAMPLE_PATH)
   model = try Whisper.load_model(MODEL_PATH)
   options = Whisper.Options(language: "auto", token_timestamps: true, max_len: 60, language_probabilities: true)
-  transcript = try Whisper.transcribe_detailed(model, pcm, options)
+  transcript = try Whisper.transcribe_detailed(model, Whisper.widen(pcm), options)
   try expect(transcript.language == "en", "decoded language #{transcript.language}, want en")
   detection = try transcript.detection.to_result("language_probabilities gave no detection")
   try expect(detection.language == "en", "detected #{detection.language}, want en")
@@ -45,7 +45,7 @@ def run() -> Result[Void]
 
   text = transcript.segments.map do |segment| segment.text.strip end
   try expect(text.join(" ").downcase.include?("ask not what your country"), "text #{text.join(" ")}")
-  beam = try Whisper.transcribe_with(model, pcm, Whisper.Options(beam_size: 5))
+  beam = try Whisper.transcribe_with(model, Whisper.widen(pcm), Whisper.Options(beam_size: 5))
   try expect(Whisper.join_text(beam).downcase.include?("your country"), "beam text #{Whisper.join_text(beam)}")
   ok()
 end

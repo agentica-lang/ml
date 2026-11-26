@@ -410,6 +410,26 @@ def floats(
   end
 end
 
+## Creation: packed `values` (4 bytes an item) as an `F32` tensor of `shape`,
+## for large data that is `F32` already, such as audio. Torch, ggml and XLA take
+## `Float`s across their native calls, so they get the list widened, one
+## transient copy of 8 bytes an item; the reference converts as it builds.
+def floats32(
+  values: List[Float32],
+  shape: List[Int],
+  backend: Types.Backend = Types.Backend.Reference,
+) -> Result[Types.Tensor]
+  case backend
+    Types.Backend.Torch(_) -> floats(values.map { |x: Float32| x.to_f }, shape, backend)
+    Types.Backend.Ggml(_) -> floats(values.map { |x: Float32| x.to_f }, shape, backend)
+    Types.Backend.Xla(_) -> floats(values.map { |x: Float32| x.to_f }, shape, backend)
+    _ ->
+      n = try Types.volume(shape)
+      return error("floats32 needs #{n} values for #{shape}, got #{values.size}") if values.size != n
+      from_list(values.map { |x: Float32| Types.Values.Float(x.to_f) }, shape, Types.Dtype.F32, backend)
+  end
+end
+
 ## Host readback: the values tagged with the tensor's dtype.
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   case t.backend

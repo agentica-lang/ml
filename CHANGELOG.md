@@ -9,7 +9,16 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Dtype.Q4_K`, `Dtype.Q6_K` and the formats of the same names: `Tensor.from_file` dequantizes ggml's K blocks to `F32` on every backend, or keeps them as a weight on ggml (ml#126).
 - `Tensor.packed?(dtype)`: true for the dtypes that ggml keeps packed (`F16` and the quantized ones).
 - A graph on a Vulkan device may read tensors on `Ggml(Cpu)`: ggml's backend scheduler runs each node where its operands are and copies the activations between the two, and an output of a CPU node is a CPU tensor (ml#310).
+- `Tensor.floats32(values, shape, backend)` makes an `F32` tensor from a packed `List[Float32]` (4 bytes an item, since Agentica 0.40.0); `floats` keeps its `List[Float]` (ml#316).
 - `tools/install_xla.agc` installs the XLA CPU plugin from our own build, a GitHub Release of this repository (Linux x86_64 and aarch64, with the licenses of what it links), instead of the PyPI wheel, and needs no `unzip`; the old `xla/<wheel-sha>/` folders of the cache can be deleted (ml#287).
+
+### asr
+
+- **Breaking:** the samples of `Asr.transcribe`, `Asr.features` and `Mel.features`/`Mel.spectrogram`, and the samples and the result of `Mel.log_mel`, are a packed `List[Float32]`, half the memory of a `List[Float]` (5 minutes of audio: 19 MB, not 38). `Mel.log_mel` still computes in doubles; it no longer refuses a sample past 1e150, which a `Float32` cannot hold (ml#316).
+
+### whisper
+
+- **Breaking:** `Wav.load`, `Wav.decode`, `Mic.capture`, `Mic.read`, `Mic.decode_s16le`, `Mic.Source.Samples`, `Stream.Window.samples`, `Stream.windows`, `Stream.has_speech`, `Stream.is_speech`, `Stream.frame_rms` and `Whisper.transcribe` hold the samples as a packed `List[Float32]`. `transcribe_with` and `transcribe_detailed` keep a `List[Float]`, because a native module cannot take a `Float32`: `Whisper.widen(pcm)` makes one. `Whisper.transcribe` widens the whole clip for the length of the call, 8 bytes a sample, so a long clip should go through `Stream.transcribe_stream`, which widens one window at a time (ml#316).
 
 ### nn
 

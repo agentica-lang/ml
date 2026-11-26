@@ -69,7 +69,7 @@ def compare_sample(model: Whisper.Model, audio: String, golden_path: String) -> 
   golden = try JSON.parse(try File.read_text(golden_path))
   pcm = try Whisper.load(audio)
   options = Whisper.Options(language: "auto", token_timestamps: true, max_len: 60, language_probabilities: true)
-  transcript = try Whisper.transcribe_detailed(model, pcm, options)
+  transcript = try Whisper.transcribe_detailed(model, Whisper.widen(pcm), options)
   try same_text("language", name(transcript.language), try string(golden, "language"))
   detection = try transcript.detection.to_result("no detection")
   try same_text("detected_language", name(detection.language), try string(golden, "detected_language"))

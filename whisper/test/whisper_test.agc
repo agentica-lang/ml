@@ -8,6 +8,16 @@ import Whisper from "../whisper"
 
 private
 
+def test_widen_keeps_each_sample_exactly() -> Result[Void]
+  packed: List[Float32] = [0.0, 0.1, -1.0, 32_767.0 / 32_768.0]
+  wide = Whisper.widen(packed)
+  try Test.eq(wide.size, 4)
+  try Test.eq(wide[1], 0.1.to_float32.to_f)
+  try Test.eq(wide[3], 32_767.0 / 32_768.0)
+  try Test.eq(wide.map { |x| x.to_float32 }, packed)
+  Test.eq(Whisper.widen([]), [])
+end
+
 def test_load_model_errors_on_a_missing_file() -> Result[Void]
   case Whisper.load_model("no/such/model.bin")
     ok(_) -> Test.assert(false, "load_model read a file that is not there")

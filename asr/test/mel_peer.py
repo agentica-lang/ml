@@ -4,12 +4,15 @@ Standard library only.
 
 Usage: python3 mel_peer.py. Prints a JSON list of cases, each with its
 synthetic samples, mel count, frame count and expected `[mels, frames]` values
-(row-major).
+(row-major). The samples and the expected values are rounded to binary32, as the
+package takes and gives them (a `List[Float32]`); the values of the cases lie in
+-0.67..1.38.
 """
 
 import json
 import math
 import random
+import struct
 
 SAMPLE_RATE = 16000
 N_FFT = 400
@@ -66,15 +69,21 @@ def log_mel(samples, mels, frames):
     return [(max(spec[i][m], low) + 4.0) / 4.0 for m in range(mels) for i in range(frames)]
 
 
+def binary32(x):
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
 def signal(n, seed):
-    """Three tones and some noise, then silence for the last fifth."""
+    """Three tones and some noise, then silence for the last fifth, each sample
+    rounded to binary32, as the package takes them (a `List[Float32]`)."""
     rng = random.Random(seed)
     out = []
     for t in range(n):
         s = t / SAMPLE_RATE
         v = 0.3 * math.sin(2 * math.pi * 440 * s) + 0.2 * math.sin(2 * math.pi * 1234.5 * s)
         v += 0.1 * math.sin(2 * math.pi * 5000 * s) + rng.uniform(-0.05, 0.05)
-        out.append(v if t < n * 4 // 5 else 0.0)
+        v = v if t < n * 4 // 5 else 0.0
+        out.append(binary32(v))
     return out
 
 
@@ -84,7 +93,7 @@ def main():
     # multiple of 160 samples is (the last frame reads the samples past `frames * HOP`).
     for mels, frames, n, seed in [(80, 21, 2500, 1), (128, 10, 2000, 2), (80, 5, 5 * HOP + 37, 3), (80, 5, 5 * HOP + 159, 4)]:
         samples = signal(n, seed)
-        cases.append({"mels": mels, "frames": frames, "samples": samples, "mel": log_mel(samples, mels, frames)})
+        cases.append({"mels": mels, "frames": frames, "samples": samples, "mel": [binary32(x) for x in log_mel(samples, mels, frames)]})
     print(json.dumps(cases))
 
 

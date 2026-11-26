@@ -262,7 +262,7 @@ end
 ## The log-mel features of `pcm` as `[1, num_mel_bins, frames]` on the model's backend (`Mel.features`), which the
 ## caller closes. On `Ggml` they run the graph that `load` compiled; elsewhere `Mel.log_mel` on `Reference` and the same
 ## graph, traced each time, on libtorch.
-def features(m: Model, pcm: List[Float], frames: Int) -> Result[Tensor.Tensor]
+def features(m: Model, pcm: List[Float32], frames: Int) -> Result[Tensor.Tensor]
   Mel.features(pcm, m.config.num_mel_bins, frames, Tensor.backend(m.tokens.table), m.mel)
 end
 
@@ -504,7 +504,7 @@ end
 def transcribe(
   m: Model,
   tok: Tokenizer.Tokenizer,
-  pcm: List[Float],
+  pcm: List[Float32],
   options: Options = Options(),
 ) -> Result[Transcript]
   frames = 2 * m.config.max_source_positions
@@ -677,7 +677,13 @@ end
 
 ## `transcribe` of up to one window, once its arguments are checked. Each step's self-attention keys and values are
 ## closed once the next step replaced them, so a call holds one cache at a time.
-def decoded(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Options, frames: Int) -> Result[Transcript]
+def decoded(
+  m: Model,
+  tok: Tokenizer.Tokenizer,
+  pcm: List[Float32],
+  options: Options,
+  frames: Int,
+) -> Result[Transcript]
   mel = try features(m, pcm, frames)
   audio = try encode(m, mel)
   close([mel])
@@ -702,7 +708,7 @@ end
 ## frames: the next 30 s of it, padded with zeros when fewer remain (Hugging Face pads the features, not the audio),
 ## decoded as `decoded` does, and `seek` moves on as `Greedy.window` says, for at most the budget of windows. The language
 ## is detected in the first window and kept; the segments' times are the window's plus its start.
-def sought(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float], options: Options, frames: Int) -> Result[Transcript]
+def sought(m: Model, tok: Tokenizer.Tokenizer, pcm: List[Float32], options: Options, frames: Int) -> Result[Transcript]
   total = pcm.size / HOP
   everything = try Mel.features(pcm, m.config.num_mel_bins, total, Tensor.backend(m.tokens.table), none)
   known = options.language
