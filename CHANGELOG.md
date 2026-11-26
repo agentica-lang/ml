@@ -12,6 +12,11 @@ All packages are released together at one version, each on its own tag, `<packag
 ### nn
 
 - `ShortConv`, the gated short convolution of LFM3 (`pkg/nn/short_conv`), `Attention.head_gate` (a gate of one number per head) and a `window` in `Nn.causal_mask` and `Padded.padded_mask`, the mask of a sliding-window layer (ml#275).
+- `Rope.zero_tail`, the rotary of LFM3's global layers (a partial rotation with the frequencies of the whole head) (ml#275).
+
+### transformers
+
+- `Lfm3`: LFM3-1.7B (`LiquidAI/LFM3-1.7B`) from its official safetensors, forward over whole sequences, `F32` or `F16` weights (ml#275).
 
 ### hub
 

@@ -77,11 +77,17 @@ enum Activation
 end
 
 ## Rotary position embedding of the queries and keys (`Tensor.rope`): the
-## positions are `0...seq` of each input.
+## positions are `0...seq` of each input. With `zero_tail` (LFM3, `partial_rotary_factor` times the head width, even) the
+## rotation is the one of Hugging Face's `rotate_half` over the whole head whose frequencies are `base^(-2i / head)` for
+## the first `zero_tail / 2` pairs and 0 for the others: the pairs are `(i, i + head / 2)`, so the rotated columns are
+## `0...zero_tail / 2` and `head / 2...head / 2 + zero_tail / 2`. It is `rope` over the first `zero_tail` columns after
+## those are brought together, so the head comes out with its columns reordered (the rotated ones, then the rest). The
+## queries and the keys get the same order and `q k^T` does not change, but the heads are not those of the input.
 struct Rope
   base: Float = 10000.0
   neox: Bool = true
   dims: Optional[Int] = none
+  zero_tail: Optional[Int] = none
 end
 
 ## Multi-head attention with its four projections: `query` projects to
@@ -758,6 +764,11 @@ end
 
 ## `x` (`[batch, heads, seq, width]`) rotated by `positions` if given, otherwise `0...seq`.
 def rotate(r: Rope, x: Tensor.Tensor, positions: Optional[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  case r.zero_tail
+    some(n) -> return rotate_tail(r, n, x, positions)
+    none -> nil
+  end
+
   seq = Tensor.shape(x)[2]
   case positions
     some(at) -> Tensor.rope(x, at, base: r.base, dims: r.dims, neox: r.neox)
@@ -794,4 +805,42 @@ def head_gate_of(
       column = try Tensor.permute(try Tensor.reshape(per_head, [shape[0], shape[2], p.heads, 1]), [0, 2, 1, 3])
       ok(some(try Tensor.broadcast_to(column, shape)))
   end
+end
+
+## `rotate` of a `Rope` with a `zero_tail` of `n` columns: the rotated columns first, then `rope` over them, with the base
+## that gives the pair `i` the angle `base^(-2i / head)` over `n` columns.
+def rotate_tail(r: Rope, n: Int, x: Tensor.Tensor, positions: Optional[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(x)
+  head = shape[3]
+  if r.dims.some? or !r.neox
+    return error("a zero_tail rope is the neox layout over the whole head: it takes no dims and no neox: false")
+  end
+
+  if n < 2 or n % 2 != 0 or head % 2 != 0 or n > head
+    return error("zero_tail needs an even number of columns in 2 to #{head}, got #{n}")
+  end
+
+  half = head / 2
+  quarter = n / 2
+  cut = ->(from: Int, to: Int) { Tensor.slice(x, [0, 0, 0, from], [shape[0], shape[1], shape[2], to]) }
+  brought = x
+  if n < head
+    brought = try Tensor.concat(
+      [
+        try cut.call(0, quarter),
+        try cut.call(half, half + quarter),
+        try cut.call(quarter, half),
+        try cut.call(half + quarter, head),
+      ],
+      3,
+    )
+  end
+
+  base = Math.exp((Math.log(r.base) * n.to_f) / head.to_f)
+  at = case positions
+    some(p) -> p
+    none -> try Tensor.arange(0, shape[2], 1, Tensor.Dtype.I32, Tensor.backend(x))
+  end
+
+  Tensor.rope(brought, at, base: base, dims: some(n), neox: true)
 end

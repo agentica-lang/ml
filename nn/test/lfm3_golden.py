@@ -8,8 +8,8 @@ a window:
 - the two attention layers over the same 10 tokens (rotary positions and masks from the model's own code), and the
   0/1 grid of the keys each query sees in the sliding layer.
 
-The rotary embedding here is the plain one (`partial_rotary_factor` 1.0): the zero-tail layout of the real model is
-the loader's (`transformers/`).
+The full-attention layer has the real `partial_rotary_factor` 0.5 (the zero-tail rotary, `Rope.zero_tail`) and a theta
+of 1e6, the sliding one a theta of 1e4, as the config of the real model has them.
 
 The code is `modeling_lfm3.py`, `configuration_lfm3.py` and `lfm3_conv.py` of `LiquidAI/LFM3-1.7B`, revision
 1da06bec6a819da10b54c67e5c90972b46d81871, under the LFM Open License v1.0. It is not copied here, and the fixture holds
@@ -47,7 +47,7 @@ SHAPE = dict(
     layer_types=["conv", "sliding_attention", "full_attention"], sliding_window=WINDOW, use_sandwich_norm=True,
     tie_word_embeddings=True, pad_token_id=0, bos_token_id=1, eos_token_id=2,
 )
-ROPE = {"full_attention": {"rope_type": "default", "rope_theta": 10000.0, "partial_rotary_factor": 1.0},
+ROPE = {"full_attention": {"rope_type": "default", "rope_theta": 1000000.0, "partial_rotary_factor": 0.5},
         "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0}}
 
 
@@ -119,7 +119,8 @@ def main():
             out, _ = layer(x, position_embeddings=cos_sin, attention_mask=masks[kind])
             attentions.append({
                 "kind": kind, "tokens": TOKENS, "hidden": HIDDEN, "heads": 4, "kv_heads": 2, "head": 8,
-                "theta": ROPE[kind]["rope_theta"], "window": WINDOW if kind == "sliding_attention" else 0,
+                "theta": ROPE[kind]["rope_theta"],
+                "zero_tail": int(ROPE[kind].get("partial_rotary_factor", 1.0) * 8) if kind == "full_attention" else 0, "window": WINDOW if kind == "sliding_attention" else 0,
                 "query": flat(layer.q_proj.weight), "key": flat(layer.k_proj.weight),
                 "value": flat(layer.v_proj.weight), "output": flat(layer.o_proj.weight),
                 "query_norm": flat(layer.q_norm.weight), "key_norm": flat(layer.k_norm.weight),

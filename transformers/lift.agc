@@ -9,6 +9,7 @@
 import Delta from "pkg/nn/delta"
 import Moe from "pkg/nn/moe"
 import Nn from "pkg/nn/nn"
+import ShortConv from "pkg/nn/short_conv"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
@@ -62,7 +63,12 @@ def attention(a: Nn.Attention) -> Nn.Attention
     output: dense(a.output),
     query_norm: a.query_norm.map { |n| norm(n) },
     key_norm: a.key_norm.map { |n| norm(n) },
+    head_gate: a.head_gate.map { |g| dense(g) },
   )
+end
+
+def short_conv(p: ShortConv.ShortConv) -> ShortConv.ShortConv
+  p.with(input: dense(p.input), conv: Trace.constant(p.conv), output: dense(p.output))
 end
 
 def delta(p: Delta.GatedDeltaNet) -> Delta.GatedDeltaNet
@@ -120,6 +126,11 @@ def attention_parts(a: Nn.Attention) -> List[Tensor.Tensor]
     out = out + dense_parts(d)
   end
 
+  case a.head_gate
+    some(g) -> out = out + dense_parts(g)
+    none -> nil
+  end
+
   for n in [a.query_norm, a.key_norm]
     case n
       some(x) -> out = out + norm_parts(x)
@@ -128,6 +139,10 @@ def attention_parts(a: Nn.Attention) -> List[Tensor.Tensor]
   end
 
   out
+end
+
+def short_conv_parts(p: ShortConv.ShortConv) -> List[Tensor.Tensor]
+  [p.conv] + dense_parts(p.input) + dense_parts(p.output)
 end
 
 def delta_parts(p: Delta.GatedDeltaNet) -> List[Tensor.Tensor]
