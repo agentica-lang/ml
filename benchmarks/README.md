@@ -393,26 +393,42 @@ The load. The conversion of a BF16 or F32 file to F16 runs on up to 8 threads (o
 
 ## Q4_K_M against llama.cpp (ml#291)
 
-Qwen3-0.6B as a Q4_K_M GGUF (456 MiB, Q4_K and Q6_K matrices, `F32` norms), the file that llama.cpp's `llama-quantize` makes from the F16 GGUF of the rows above (`llama-quantize qwen3-0.6b-f16.gguf qwen3-0.6b-q4_k_m.gguf Q4_K_M`; sha256 of the result `944461ec64c0...`), read by both sides: ours with `weights: Dtype.Q4_K` (`WEIGHTS=q4_k`, ml#126, the blocks stay packed on ggml) and llama.cpp's `llama-bench -p 128 -n 64 -t 8 -r 1` (`-ngl 99` on Vulkan). Same prompt, 64 tokens and rules as the Qwen3 rows above. `ROWS=q4k,q4km,f16 benchmarks/bench_qwen.sh` on ml `9517f8d` plus this PR, 5 rounds with every row once per round, Agentica 0.39.1, ggml `417a024b4fb6` (llamafile's sgemm on, fp16 products on Vulkan), llama.cpp the out-of-tree builds of the earlier rows (ggml 0.25.3; a `git archive`, so its commit is not recorded), the VRAM free (17 MB used before the run), nothing else timing (the load average was 4 to 5 at the end of the rounds, most of it the 8 threads of the rows). Medians:
+Qwen3-0.6B as a Q4_K_M GGUF (456 MiB, Q4_K and Q6_K matrices, `F32` norms), read by both sides: ours with `weights: Dtype.Q4_K` (`WEIGHTS=q4_k`, ml#126: the blocks stay packed on ggml) and llama.cpp's `llama-bench`. The F16 rows are the same model in half weights.
+
+- **Machine and tools.** The machine of the sections above (4 cores, 8 threads, the Vega iGPU; VRAM free, 17 MB used before the run), nothing else timing, Agentica 0.39.1. Ours is ml `9517f8d` (the code of every row; `bench_qwen.sh` and `profile_qwen.agc` are this PR's) over ggml `417a024b4fb6` (llamafile's sgemm on, fp16 products on Vulkan). llama.cpp is `711f9f4c117042570ef66ef58fba1f15835a331b` (official source, built out of tree with `cmake -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF` and, for Vulkan, `-DGGML_VULKAN=ON`; `llama-bench` and `llama-quantize` only; each build folder has a file `COMMIT` and `CMAKE_FLAGS`, and the script prints them).
+- **The file.** `llama-quantize qwen3-0.6b-f16.gguf qwen3-0.6b-q4_k_m.gguf Q4_K_M` with that same commit; sha256 of the F16 file `72d3cea51a8d269bc842687649700042e4d9744d13b1eb545cf58965baf5e4cc`, of the Q4_K_M one `944461ec64c0a644b8c440f322d5347ccb031f3d4886f8c7510033e52d0db056`.
+- **Equal terms.** 4 threads on both sides (`THREADS`, the physical cores: `TENSOR_THREADS=4` and `llama-bench -t 4`; ours defaults to the physical cores, llama.cpp to 8 here). `llama-bench -fa 1 -ctk f16 -ctv f16` (flash attention and an `F16` cache, as ours); its two rows are `-p 128 -n 0` (the prompt from an empty cache) and `-p 0 -n 64 -d 128` (64 tokens after 128 of context), the same as ours: a prompt of 128 ids in one step, then 64 one-token steps (the cache grows from 128 to 192 rows). The csv of `llama-bench` says `n_threads=4 flash_attn=1 type_k=f16 type_v=f16`.
+- **Method.** `ROWS=q4k,q4km,f16 benchmarks/bench_qwen.sh`, 5 rounds; every round runs each pair of ours and llama.cpp once, and the two swap places from one round to the next (ours first in odd rounds), under `flock` and a 5 GB memory scope. The load average at the end of the rounds was 3.3 to 3.9 (the 4 threads of the row and a few more).
+
+Medians of the 5 rounds:
 
 | Row | Prompt, 128 tokens | 64 tokens after it | Load | Peak RSS | Peak GPU memory |
 |---|---|---|---|---|---|
-| ours, ggml CPU, Q4_K | 127.1 tokens/s | 39.29 tokens/s | 0.52 s | 0.74 GB | |
-| llama.cpp CPU, Q4_K_M | 121.3 | 37.27 | | 0.74 GB | |
-| ours, ggml CPU, F16 weights | 98.6 | 20.98 | 1.73 s | 1.42 GB | |
-| llama.cpp CPU, F16 | 80.7 | 13.48 | | 1.49 GB | |
-| ours, ggml Vulkan, Q4_K | 598.1 | 49.08 | 0.60 s | 0.44 GB | 565 MB |
-| llama.cpp Vulkan, Q4_K_M | 619.3 | 60.28 | | 0.13 GB | 562 MB |
-| ours, ggml Vulkan, F16 weights | 571.4 | 23.76 | 2.12 s | 0.63 GB | 1260 MB |
-| llama.cpp Vulkan, F16 | 605.4 | 26.40 | | 0.13 GB | 1540 MB |
+| ours, ggml CPU, Q4_K | 94.3 tokens/s | 33.63 tokens/s | 0.55 s | 0.74 GB | |
+| llama.cpp CPU, Q4_K_M | 86.0 | 37.74 | | 0.75 GB | |
+| ours, ggml CPU, F16 weights | 78.6 | 18.40 | 1.88 s | 1.42 GB | |
+| llama.cpp CPU, F16 | 83.8 | 19.36 | | 1.51 GB | |
+| ours, ggml Vulkan, Q4_K | 463.8 | 42.70 | 0.67 s | 0.44 GB | 565 MB |
+| llama.cpp Vulkan, Q4_K_M | 553.9 | 50.74 | | 0.15 GB | 627 MB |
+| ours, ggml Vulkan, F16 weights | 481.2 | 21.61 | 2.17 s | 0.63 GB | 1260 MB |
+| llama.cpp Vulkan, F16 | 581.0 | 23.54 | | 0.15 GB | 1605 MB |
 
-The GPU memory is the most that VRAM plus GTT in use (`mem_info_vram_used` and `mem_info_gtt_used`, sampled every 0.1 s) rose above its value before the row; llama.cpp maps the file, so its Vulkan weights are in this column and not in the RSS, and ours pass through the process while they load (hence the 0.44 GB). The llama.cpp CPU F16 tokens moved between 12.3 and 17.3 tokens/s over the rounds, so that row is noisy; every other row stayed within about 10 percent.
+The ratio of ours to llama.cpp in each round (the rounds in order), then its minimum and maximum:
 
-- On the CPU Q4_K is at llama.cpp's speed and memory: the prompt is 5 percent faster and the tokens 5 percent faster, and the peak is the same 0.74 GB. Against our own F16 weights the tokens are 1.9 times faster, the prompt 1.3 times, at half the memory and a third of the load time.
-- On Vulkan the prompt is 3 percent behind (598 against 619) and the memory the same (565 against 562 MB), but the tokens are 19 percent behind: 49.1 against 60.3 tokens/s (20.4 against 16.6 ms a token, a gap of 3.8 ms). The F16 rows have a gap of the same size (23.8 against 26.4 tokens/s: 42.1 against 37.9 ms, 4.2 ms), which weighs less in a longer step, so the gap does not come from reading Q4_K.
-- The kernels of the decode step (`GGML_VK_PERF_LOGGER`, `vk_perf.py`, 8 steps, a cache of 256 rows) agree: the weight products are the same kernels at the same speed (`MUL_MAT_VEC q4_K m=3072 k=1024`, 56 calls: 3.98 ms ours, 3.90 ms llama.cpp; the head `q6_K m=151936`: 4.57 against 4.67 ms; the eight product kernels together 15.7 against 15.4 ms). The kernels add up to 19.7 ms a step for ours and 17.6 ms for llama.cpp, and 0.9 ms of the 2.1 is the flash attention of the 28 layers, the same shapes (`q(128,1,16)`, `k(128,256,8)`) at 1.67 ms against 0.79 ms; the rest is small fused kernels llama.cpp has (`RMS_NORM_MUL_ROPE_VIEW_SET_ROWS`) and the host side of the step. The cache is `F16` on both sides, so the attention gap is not its type; filed as ml#298.
+| Pair | Prompt | Tokens |
+|---|---|---|
+| CPU, Q4_K | 1.14 1.10 1.12 1.10 1.19 (1.10 to 1.19) | 0.89 0.89 0.88 0.89 0.90 (0.88 to 0.90) |
+| CPU, F16 | 0.94 1.10 0.93 0.91 0.87 (0.87 to 1.10) | 0.95 0.96 0.93 0.99 0.94 (0.93 to 0.99) |
+| Vulkan, Q4_K | 0.85 0.83 0.84 0.82 0.85 (0.82 to 0.85) | 0.84 0.82 0.84 0.84 0.83 (0.82 to 0.84) |
+| Vulkan, F16 | 0.84 0.82 0.81 0.83 0.83 (0.81 to 0.84) | 0.93 0.92 0.91 0.92 0.91 (0.91 to 0.93) |
 
-No cheap gap was found, so the code is unchanged: the PR adds the Q4_K_M rows and the GPU memory column to `bench_qwen.sh` (which also defines `want`, that `ROWS` always called and nothing defined) and lets `profile_qwen.agc` read `WEIGHTS`.
+The GPU memory is the most that VRAM plus GTT in use (`mem_info_vram_used` and `mem_info_gtt_used`, sampled every 0.1 s) rose above its value before the row. llama.cpp maps the file, so its Vulkan weights are in that column and not in its RSS; ours pass through the process while they load.
+
+- **Speed.** On the CPU Q4_K is 12 percent faster than llama.cpp on the prompt (every round, 1.10 to 1.19) and 11 percent slower on the tokens (every round, 0.88 to 0.90); the F16 CPU rows are 5 percent behind on the tokens (0.93 to 0.99), and their prompt ratio moves from 0.87 to 1.10, so it is noise. On Vulkan ours is at 0.82 to 0.85 of llama.cpp on the prompt and the tokens of Q4_K, and at 0.81 to 0.84 and 0.91 to 0.93 with F16 weights. Against our own F16 weights, Q4_K gives 1.8 times the tokens on the CPU and 2.0 times on Vulkan, at half the memory (0.74 against 1.42 GB, 565 against 1260 MB of GPU) and a third of the load time on the CPU.
+- **Memory.** On Vulkan the GPU memory is 62 MB less than llama.cpp's for Q4_K_M (565 against 627 MB) and 345 MB less for F16 (1260 against 1605 MB); the peak host RSS is 0.29 GB more (0.44 against 0.15 GB: the file's bytes pass through the process at load). On the CPU the RSS is the same (0.74 and 0.75 GB).
+- **The gap is a fixed cost of a step.** In milliseconds a token, ours is behind by 3.2 ms (CPU Q4_K), 2.7 ms (CPU F16), 3.7 ms (Vulkan Q4_K) and 3.8 ms (Vulkan F16): about the same for every weight type, so it does not come from reading Q4_K. The per-kernel timer of a Vulkan decode step agrees: `GGML_VK_PERF_LOGGER=1 GGML_VK_PERF_LOGGER_FREQUENCY=1`, ours `TENSOR_THREADS=4 WEIGHTS=q4_k agentica tools/profile_qwen.agc Q4_K_M.gguf 0 8 vulkan` with stderr to a file for `python3 -I vk_perf.py FILE`, llama.cpp `llama-bench -m Q4_K_M.gguf -p 0 -n 8 -d 128 -fa 1 -ctk f16 -ctv f16 -t 4 -ngl 99 -r 1`, one run each. The weight products are the same kernels at the same speed (`MUL_MAT_VEC q4_K m=3072 k=1024`, 56 calls: 4.36 ms ours, 4.37 ms llama.cpp; the head `q6_K m=151936`: 5.16 against 5.42 ms) and the flash attention is 1.87 against 1.68 ms. The kernels add up to 22.5 ms for ours and 21.1 ms for llama.cpp in these runs, against 3.7 ms a token in the table, so on this estimate (one run each; the logger changes the timing; a decode graph of ours has a few more small kernels, where llama.cpp fuses `RMS_NORM`, rope and `SET_ROWS`) about 2 ms of the gap is outside the kernels, on the host. What the host does in that time was not profiled. Filed as ml#298.
+
+The cheap gaps: none found in the weight products, so the code is unchanged. The PR adds the Q4_K_M rows and the GPU-memory column to `bench_qwen.sh`, and `profile_qwen.agc` reads `WEIGHTS`.
 
 ## ResNet-18 and ResNet-50 (ml#83), ours only
 
@@ -498,7 +514,7 @@ benchmarks/bench_whisper.sh run    WHISPER_TINY_DIR MEL_FILTERS_NPZ WHISPER_CPP_
 benchmarks/bench_whisper.sh report WORK_DIR
 ```
 
-The Qwen3 rows need `qwen3-0.6b-f32.gguf`, `qwen3-0.6b-f16.gguf` and `qwen3-0.6b-q4_k_m.gguf` (`python3 -I convert_hf_to_gguf.py MODEL_DIR --outtype f32|f16 --outfile ...` from llama.cpp's checkout; the Q4_K_M file is `llama-quantize` of the F16 one), the two out-of-tree builds of its `llama-bench`, and the engines of `transformers/` (`sh tensor/tools/build-engine.sh vulkan`, its exports in the shell):
+The Qwen3 rows need `qwen3-0.6b-f32.gguf`, `qwen3-0.6b-f16.gguf` and `qwen3-0.6b-q4_k_m.gguf` (`python3 -I convert_hf_to_gguf.py MODEL_DIR --outtype f32|f16 --outfile ...` from llama.cpp's checkout; the Q4_K_M file is `llama-quantize` of the F16 one), the two out-of-tree builds of its `llama-bench` (a file `COMMIT` in each build folder is printed with the rows; `THREADS` sets the threads of both sides, `ROWS` keeps the rows whose name contains one of its comma-separated words), and the engines of `transformers/` (`sh tensor/tools/build-engine.sh vulkan`, its exports in the shell):
 
 ```sh
 benchmarks/bench_qwen.sh QWEN3_DIR GGUF_DIR LLAMA_CPU_BUILD LLAMA_VULKAN_BUILD [ROUNDS]
