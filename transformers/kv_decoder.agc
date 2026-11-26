@@ -129,7 +129,8 @@ struct Stepper[M]
   ## The taps of the convolution of a model with states: a prompt (more than one row) is given a `Delta.Padding` for
   ## them (its `valid` is for the recurrent state of Qwen3.5; LFM3 reads only `keep`). 0 for a model with no convolution.
   taps: Int = 0
-  ## Whether `stepped` reads `Request.splice` (and `Request.rotary`, if `rotated`): only then may a cache start from a `Sight`.
+  ## Whether `stepped` reads `Request.splice` (and `Request.rotary`, if `rotated`): only then may a cache start from
+  ## a `Sight`.
   sighted: Bool = false
   ## Whether the rope of the model turns by more than the index of a token (Qwen3.5's three axes and `Cache.delta`). A
   ## model with one position per token (`false`) is given no `rotary`, and a `Sight` for it must be a plain one
@@ -623,7 +624,7 @@ def rotation[M](s: Stepper[M], cache: Cache, ids: List[Int], width: Int, backend
   seen = sight.layout
   try fits(sight, ids)
   if not s.rotated
-    try plain?(seen)
+    try check_plain(seen)
   end
 
   n = seen.at.size
@@ -661,7 +662,7 @@ def rotation[M](s: Stepper[M], cache: Cache, ids: List[Int], width: Int, backend
 end
 
 ## An error unless `seen` is the layout of `plain_sight`: the index of each token on every axis, and no `delta`.
-def plain?(seen: Mrope.Layout) -> Result[Void]
+def check_plain(seen: Mrope.Layout) -> Result[Void]
   if seen.delta != 0
     return error("this model has one position for each token, the layout has a delta of #{seen.delta}")
   end

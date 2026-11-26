@@ -413,6 +413,17 @@ are a non-goal until the processor slice. Only the 256M and 500M models (a side 
 4) are checked against Hugging Face; another size is read, not tested. The tower and the text model are not in one
 file: the text side (a Llama), the splice, the processor and the chat template are the next slices of ml#84.
 
+- `smolvlm_prompt.agc` and `Vision.idefics3_tiling`/`idefics3_tiles` (the processor slice): the image side of
+  `Idefics3Processor`. The tiling is Hugging Face's own arithmetic (`resize` to a longest edge of 2048, even sides,
+  then `resize_for_vision_encoder` to multiples of 512 and `split_images`), in Python's floats; the tiles are the
+  crops row by row and the global image, the grid resized to 512 by 512, last, each one 512 by 512 (an image whose grid
+  is one tile is not split and has itself alone; the 2048 target makes that impossible for the checkpoint's config).
+  `SmolVlmPrompt.expand` works on ids, as `Mrope.expand` does: the template's one `<image>` per image becomes the ids of
+  the processor, with `"\n"` after each row of tiles and `"\n\n"` (one id, 1116) after the last, as the tokenizer
+  merges them. The ids of the text around the images are the caller's: `Bpe` reads the Qwen split only, and
+  SmolVLM's tokenizer is a digit split and a GPT-2 byte-level one, so tokenizing the text is a later slice. The special
+  ids and those of the two newlines come from `tokenizer.json` (`SmolVlmPrompt.open`), and `image_seq_len` from
+  `processor_config.json`.
 - The tower is SigLIP: a convolution of stride 16 without a class token, learned positions (one row for each patch of
   the tile, in row order), 12 pre-norm blocks of full attention (`layer_norm_eps` of the config, 1e-6 in the checkpoint, separate `q_proj`, `k_proj`, `v_proj` and
   `out_proj` with biases) and an MLP of `gelu_pytorch_tanh` (`Nn.Activation.GeluTanh`), then `post_layernorm`. They
@@ -693,6 +704,18 @@ error row per config field.
   through `Generate.step_logits` over a `Sight`; the golden holds the last position's logits (mean, abs mean, 501
   values and the top 10). The largest gap is 2.7e-5 on ggml CPU and 3.2e-5 on Vulkan; the test passes within 1e-4.
   The prompt is a fixed list of ids: the processor, tile splitting and the chat template are later slices.
+- `vision/test/smolvlm_processor_test.agc` against `vision/test/smolvlm_processor_golden.py` (manual: `torch` 2.15.0,
+  `transformers` 5.22.2, `pillow` 11.3.0, offline; `vision/test/fixtures/smolvlm/processor_golden.json`, 116 KB): the
+  Pillow `Idefics3ImageProcessorPil` and the tokenizer on a table of 16 sizes (the sizes after each resize and the rows
+  and columns are equal), and on two prompts of the drawn images of the ResNet test (one image of 4 by 3 tiles, and two
+  of 3 by 4 and 4 by 3, so 13 and 26 frames). The tiles through `to_tensor` and `normalize` are the frames of
+  `pixel_values` (a value of every 2621st place and the mean) within 0.024 (3 levels of 8 bits; the largest gap is
+  0.0157) and 0.002 (the global images, which shrink 4 times, are 9e-4 off), and `SmolVlmPrompt.expand` of the
+  tokenizer's ids with one `<image>` gives the processor's ids, 875 and 1736 of them. `SmolVlmPrompt.open` is checked
+  on the real folder when `SMOLVLM_MODEL` names it. Mutants, each failing it: the grid resize left out, the crops
+  taken column by column, the row and column ids swapped, the global image's closing token missing, `"\n\n"` as one
+  newline, and a newline after the last row too, and the bilinear kernel; not failing it: the bicubic kernel and the
+  global image taken from the image before the grid resize (equal within the gaps on these drawings).
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and

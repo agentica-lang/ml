@@ -131,10 +131,12 @@ end
   `Mrope.expand(ids, Qwen3_5.image_token(dir), [grid], Qwen3_5Vision.merge(v))`, `Mrope.layout`, and
   `Generate.generate(g, ids, n, stop, none, some(KvDecoder.Sight(...)))`; close the tower before `Qwen3_5.open`. The
   fragment is in `site/content/transformers/models.md`.
-- SmolVLM (`HuggingFaceTB/SmolVLM-256M-Instruct`), the vision side only so far: `SmolVlmVision.open(dir, backend)` and
+- SmolVLM (`HuggingFaceTB/SmolVLM-256M-Instruct`): `SmolVlmVision.open(dir, backend)` and
   `encode(v, tile)` of a normalized 512 by 512 tile (`Vision.to_tensor`, `Vision.normalize` with mean and std 0.5) give its
   64 rows of 576 for the text model, close the rows with `Lift.close` and the tower with `close_model`. The text
-  model is `Qwen3.open_idefics3`; no splitting, processor or chat template yet (ml#84); the fragment is in `site/content/transformers/models.md`.
+  model is `Qwen3.open_idefics3`. The processor: `Vision.idefics3_tiles(image)` (tiles of 512 by 512 row by row, then the
+  global image; `rows`, `cols`) and `SmolVlmPrompt.expand(ids, SmolVlmPrompt.open(dir).unwrap!, grids)`, which turns the one
+  `<image>` id of each image into the ids of its tiles; the tokenizer of SmolVLM and the chat template are not here yet (ml#84); the fragment is in `site/content/transformers/models.md`.
 - Granite MoE (`GraniteMoe.open(dir, backend)`, `ibm-granite/granite-3.1-1b-a400m-instruct`) generates with
   `pkg/transformers/generate_granite_moe` (`Generate.open(m)`, the same calls); it has no tokenizer or chat template yet,
   so a caller passes ids.

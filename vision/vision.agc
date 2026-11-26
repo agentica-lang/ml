@@ -53,6 +53,25 @@ struct Size
   width: Int
 end
 
+## How SmolVLM's image processor (Idefics3's) cuts an image of a given size (`idefics3_tiling`): the size `resized`
+## that its longest edge makes, the `grid` (a multiple of the tile on both sides, which the image is resized to again)
+## and the `rows` and `cols` of tiles that the grid holds; both are 0 when the grid is one tile or less, which is not
+## split.
+struct Tiling
+  resized: Size
+  grid: Size
+  rows: Int
+  cols: Int
+end
+
+## The tiles of an image (`idefics3_tiles`): `rows * cols` of them, row by row, then the whole image resized to a tile
+## (the global image). An image that was not split (`rows` and `cols` of 0) has only itself.
+struct Tiles
+  images: List[Image.Image]
+  rows: Int
+  cols: Int
+end
+
 ## The size that Hugging Face's `smart_resize` (the image processor of Qwen2-VL and its successors) gives an image of
 ## `height` by `width`: each side is the nearest multiple of `factor` (a half goes to the even multiple, as Python's
 ## `round` does, and may be 0), and when that has more than `max_pixels` pixels the image shrinks, or when it has fewer
@@ -80,6 +99,70 @@ def smart_resize(height: Int, width: Int, factor: Int, min_pixels: Int, max_pixe
   end
 
   ok(Size(height: h_bar, width: w_bar))
+end
+
+## The sizes that Hugging Face's `Idefics3ImageProcessor` works out for an image of `height` by `width`: its longest
+## edge is scaled to `longest_edge` (up as well as down) and the other side keeps the aspect ratio, cut to a whole
+## number and made even; then each side is made a multiple of `tile` (the second side from the aspect ratio of the
+## first), and the grid is cut into tiles of `tile` by `tile`. The sizes are worked out as Python's floats do.
+def idefics3_tiling(height: Int, width: Int, longest_edge: Int = 2048, tile: Int = 512) -> Result[Tiling]
+  if height < 1 or width < 1 or longest_edge < 1 or tile < 1
+    return error("idefics3_tiling needs sizes of 1 or more, got #{height}x#{width}, #{longest_edge} and #{tile}")
+  end
+
+  aspect = width.to_f / height.to_f
+  h = height
+  w = width
+  if width >= height
+    w = longest_edge
+    h = (w.to_f / aspect).floor
+    h = even(h)
+  else
+    h = longest_edge
+    w = (h.to_f * aspect).floor
+    w = even(w)
+  end
+
+  resized = Size(height: [h, 1].max.unwrap!, width: [w, 1].max.unwrap!)
+  ratio = resized.width.to_f / resized.height.to_f
+  gh = resized.height
+  gw = resized.width
+  if resized.width >= resized.height
+    gw = ceiling(resized.width, tile)
+    gh = ceiling((gw.to_f / ratio).floor, tile)
+  else
+    gh = ceiling(resized.height, tile)
+    gw = ceiling((gh.to_f * ratio).floor, tile)
+  end
+
+  grid = Size(height: gh, width: gw)
+  return ok(Tiling(resized: resized, grid: grid, rows: 0, cols: 0)) if gh <= tile and gw <= tile
+  ok(Tiling(resized: resized, grid: grid, rows: gh / tile, cols: gw / tile))
+end
+
+## The tiles of `image` as Hugging Face's `Idefics3ImageProcessor` cuts them (`idefics3_tiling`): the image resized to
+## `resized`, then to the `grid`, and cut into tiles of `tile` by `tile` row by row, then the grid resized to one tile.
+## `kernel` is the filter of the resize (the processor's is Lanczos).
+def idefics3_tiles(
+  image: Image.Image,
+  longest_edge: Int = 2048,
+  tile: Int = 512,
+  kernel: Image.Kernel = Image.Kernel.Lanczos3,
+) -> Result[Tiles]
+  Native.arena do
+    t = try idefics3_tiling(Image.height(image), Image.width(image), longest_edge, tile)
+    resized = try resize_to(image, t.resized.width, t.resized.height, kernel)
+    grid = try resize_to(resized, t.grid.width, t.grid.height, kernel)
+    return ok(Tiles(images: [grid], rows: 0, cols: 0)) if t.rows == 0
+    images: List[Image.Image] = []
+    for r in 0...t.rows
+      for c in 0...t.cols
+        images = images.push(try crop_at(grid, tile, tile, c * tile, r * tile))
+      end
+    end
+
+    ok(Tiles(images: images.push(try resize_to(grid, tile, tile, kernel)), rows: t.rows, cols: t.cols))
+  end
 end
 
 ## The tensor of one image: the samples of a `U8` image scaled to `0..1` (a `U16` image by 65535, a `F32` one kept)
@@ -381,6 +464,12 @@ def resize_to(image: Image.Image, width: Int, height: Int, kernel: Image.Kernel)
   return ok(image) if width == Image.width(image) and height == Image.height(image)
   Image.resize(image, width, height, kernel)
 end
+
+## `length` made even by adding 1 when it is odd.
+def even(length: Int) -> Int = length + length % 2
+
+## `length` rounded up to a multiple of `factor`.
+def ceiling(length: Int, factor: Int) -> Int = ((length + factor - 1) / factor) * factor
 
 ## The multiple of `factor` nearest to `length`, a half to the even multiple, as Python's `round` goes.
 def nearest_multiple(length: Int, factor: Int) -> Int

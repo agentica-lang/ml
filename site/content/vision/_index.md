@@ -70,6 +70,17 @@ The random steps draw from `seed`, so one seed gives one result. A crop larger t
 
 `patches(x, patch_size, merge_size, temporal_patch_size)` lays one normalized image `x` (`[3, height, width]`, `F32`: sRGB with 3 bands) out as that processor's `pixel_values`: one row of `channels * temporal_patch_size * patch_size * patch_size` values for each patch, in the order of the merge squares of `merge_size` by `merge_size` patches, with the image repeated for the frames of the temporal patch. `height` and `width` must be multiples of `patch_size * merge_size`, which `SmartResize` makes. An image with an alpha band is an `error`: Hugging Face's processor flattens it first (`convert_to_rgb`) and `vision` does not yet, so flatten it before. For the processor of `Qwen/Qwen3.5-0.8B` (`patch_size` 16, `merge_size` 2, `shortest_edge` 65,536 and `longest_edge` 16,777,216 pixels in its `preprocessor_config.json`, mean and std 0.5):
 
+## Tiles for SmolVLM
+
+`idefics3_tiling(height, width, longest_edge, tile)` gives the sizes that Hugging Face's `Idefics3ImageProcessor` works out (SmolVLM, Idefics3): the longest edge goes to 2048 (up as well as down) and the other side keeps the aspect ratio, cut to a whole number and made even (`resized`); then each side is rounded up to a multiple of 512 (`grid`), and the grid holds `rows` by `cols` tiles of 512 by 512 (both 0 for a grid of one tile or less, which is not split). `idefics3_tiles(image, longest_edge, tile, kernel)` makes the tiles: the image resized to `resized` and then to `grid` (with Lanczos, the processor's kernel), cut row by row, and the whole grid resized to one tile, last (the global image). Each tile then goes through `to_tensor` and `normalize` with mean and std 0.5, as `pixel_values` of the processor do, within 3 levels of 8 bits of the values of Hugging Face's Pillow processor (libvips resizes as Pillow does up to rounding). The ids of the prompt for the tiles are in [`SmolVlmPrompt`](../transformers/models.md#smolvlm).
+
+```agentica {mode="fragment"}
+image = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
+tiles = Vision.idefics3_tiles(image).unwrap!
+# tiles.images: rows * cols tiles of 512 by 512, then the global image
+frames = tiles.images.map { |t| Vision.normalize(Vision.to_tensor(t, backend).unwrap!, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap! }
+```
+
 ```agentica {mode="fragment"}
 steps = [Vision.Step.SmartResize(32, 65536, 16777216, Vision.Kernel.Cubic)]
 srgb = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
