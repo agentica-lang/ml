@@ -233,7 +233,8 @@ def test_the_stream_of_the_stack_is_on_the_side_of_its_blocks() -> Result[Void]
     try Test.eq(Tensor.backend(got[2]), HOME)
   end
 
-  Test.eq(Tensor.backend(try Trace.eval_many(try stack_inputs(4, 0, DEVICE)) do |xs| stack(xs, 4) end[1]), HOME)
+  none_on_device = try Trace.eval_many(try stack_inputs(4, 0, DEVICE)) do |xs| stack(xs, 4) end
+  Test.eq(Tensor.backend(none_on_device[1]), HOME)
 end
 
 ## The splits of the scheduler in one run of the stack, and its values against the same stack with all on the device.
@@ -259,18 +260,17 @@ def stack_splits(blocks: Int, on_device: Int, ends: Tensor.Backend) -> Result[In
 end
 
 ## Layers on the CPU do not make the scheduler change backend at every layer: the splits are a few, whatever the number
-## of blocks, with all the blocks on the CPU (n of 0) and with the first ones on the device (n of 14 in the model).
+## of blocks, with all the blocks on the CPU (n of 0) and with the first ones on the device (n of 14 in the model). The
+## counts are those of the pinned ggml, with the three outputs of `stack`.
 def test_the_splits_do_not_grow_with_the_blocks_on_the_cpu() -> Result[Void]
   return absent() if !try mixed_present()
 
-  four = try stack_splits(4, 0, DEVICE)
-  eight = try stack_splits(6, 0, DEVICE)
-  try Test.assert(four <= 4, "4 blocks on the CPU made #{four} splits")
-  try Test.eq(eight, four)
-  two_four = try stack_splits(4, 2, DEVICE)
-  two_eight = try stack_splits(6, 2, DEVICE)
-  try Test.assert(two_four <= 4, "2 blocks on the device and 2 on the CPU made #{two_four} splits")
-  Test.eq(two_eight, two_four)
+  for blocks in [4, 6, 8]
+    try Test.eq(try stack_splits(blocks, 0, DEVICE), 5)
+    try Test.eq(try stack_splits(blocks, 2, DEVICE), 5)
+  end
+
+  ok()
 end
 
 ## The same with the table and the head on the CPU too (the model with `layers_on_device` below its blocks): the residual
@@ -278,16 +278,12 @@ end
 def test_the_splits_do_not_grow_with_the_table_and_the_head_on_the_cpu() -> Result[Void]
   return absent() if !try mixed_present()
 
-  none_on_device = try stack_splits(4, 0, HOME)
-  try Test.assert(none_on_device <= 4, "4 blocks and the ends on the CPU made #{none_on_device} splits")
-  try Test.eq(try stack_splits(6, 0, HOME), none_on_device)
-  some_on_device = try stack_splits(4, 2, HOME)
-  try Test.assert(
-    some_on_device <= 6,
-    "2 blocks on the device, 2 and the ends on the CPU made #{some_on_device} splits",
-  )
+  for blocks in [4, 6, 8]
+    try Test.eq(try stack_splits(blocks, 0, HOME), 2)
+    try Test.eq(try stack_splits(blocks, 2, HOME), 6)
+  end
 
-  Test.eq(try stack_splits(6, 2, HOME), some_on_device)
+  ok()
 end
 
 def message(r: Result[List[Tensor.Tensor]]) -> String
@@ -342,26 +338,26 @@ def test_only_a_graph_with_a_cpu_leaf_goes_through_the_scheduler() -> Result[Voi
   Test.eq(GgmlRaw.mixed_runs(), before + 1)
 end
 
+def chained(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  h = try Tensor.linear(xs[0], xs[1], none, true)
+  ok([try Tensor.linear(h, xs[2], none, true)])
+end
+
+def chained_inputs(first: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  ok([
+    try floats(counting(100 * 4), [100, 4], DEVICE),
+    try floats(counting(16), [4, 4], first),
+    try floats(counting(32), [8, 4], DEVICE),
+  ])
+end
+
 ## A small matrix on the device that a product reads pins the product there, though its input is bigger and was computed
 ## on the CPU: the first product reads a CPU weight, the second a device weight of 32 floats.
 def test_a_small_device_matrix_pins_its_product_to_the_device() -> Result[Void]
   return absent() if !try mixed_present()
 
-  chained = ->(xs: List[Tensor.Tensor]) {
-    h = try Tensor.linear(xs[0], xs[1], none, true)
-    ok([try Tensor.linear(h, xs[2], none, true)])
-  }
-
-  args = ->(first: Tensor.Backend) {
-    ok([
-      try floats(counting(100 * 4), [100, 4], DEVICE),
-      try floats(counting(16), [4, 4], first),
-      try floats(counting(32), [8, 4], DEVICE),
-    ])
-  }
-
-  want = try values(try Trace.eval_many(try args(DEVICE)) do |xs| chained(xs) end)
-  got = try Trace.eval_many(try args(HOME)) do |xs| chained(xs) end
+  want = try values(try Trace.eval_many(try chained_inputs(DEVICE)) do |xs| chained(xs) end)
+  got = try Trace.eval_many(try chained_inputs(HOME)) do |xs| chained(xs) end
   try Test.eq(try values(got), want)
   Test.eq(Tensor.backend(got[0]), DEVICE)
 end
