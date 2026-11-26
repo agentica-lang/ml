@@ -21,7 +21,11 @@ sampling)` decodes greedily, or by `sample.agc` (below); `start`, then `step` (t
 `Qwen3.close_model`. Batch of one, one task at a time. `Generate.open(m, usable = 0)` is how many ids a step may
 answer (below, "The ids the tokenizer cannot decode"): the embedding of Qwen3 has 151,936 rows and its tokenizer
 151,669 tokens, so a caller with a tokenizer opens with `tok.pieces.size` and the sampler never gives an id that
-`Bpe.decode` rejects. The default 0 is no mask, as in Hugging Face.
+`Bpe.decode` rejects. The default 0 is no mask, as in Hugging Face. `Generate.open(m, usable, kv)` takes a
+`Placement.Kv` (`placement.agc`): with `Host`, `KvDecoder.hosted` copies the keys and values that a compiled step gives
+on a Vulkan device to `Ggml(Cpu)` and closes the old ones (the next steps write in place into the host tensors, and the
+scheduler runs the attention on the CPU, as a node that reads host memory does); `Device`, the default, leaves them where
+the step made them.
 
 - The cache of a layer is `[1, kv_heads, rows, head_dim]`: the keys already
   normalized and rotated, so a step never rotates the past. Rows are padded

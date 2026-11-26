@@ -9,6 +9,7 @@ import Stepping from "../stepping"
 import Ggml from "pkg/tensor/src/ggml"
 import KvDecoder from "../kv_decoder"
 import Lift from "../lift"
+import Placement from "../placement"
 import Qwen3 from "../qwen3"
 import S from "support"
 import Sample from "../sample"
@@ -67,6 +68,50 @@ def test_blocks_on_the_cpu_give_the_logits_of_the_blocks_on_the_device() -> Resu
       Generate.close(g)
     end
 
+    ok()
+  end
+end
+
+## `kv: Host` keeps the keys and values of every layer in host memory (`Ggml(Cpu)`), the blocks staying on the device:
+## the logits are those of the cache on the device, after the prompt and after each token, and the one-token steps write
+## into the same tensors, which stay open until the capacity grows.
+def test_a_cache_in_host_memory_gives_the_logits_of_a_cache_on_the_device() -> Result[Void]
+  with_peer do |dir|
+    row = try ints(try JSON.get(try expected(dir), "long"))
+    home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    checked = 0
+    for backend in try S.ggml_backends()
+      next if backend == home
+
+      checked += 1
+      m = try Qwen3.open("#{dir}/tiny", backend)
+      device = try Generate.open(m)
+      host = try Generate.open(m, kv: Placement.Kv.Host)
+      a = try Generate.step_logits(device, Generate.start(), row.take(5))
+      b = try Generate.step_logits(host, Generate.start(), row.take(5))
+      try S.expect_close(b.logits, a.logits, HALF_ABS, HALF_REL, "the prompt")
+      try Test.eq(Tensor.backend(a.cache.keys[0]), backend)
+      prompt = b.cache.keys[0]
+      for t in [5, 6, 7]
+        a = try Generate.step_logits(device, a.cache, [row[t]])
+        b = try Generate.step_logits(host, b.cache, [row[t]])
+        try S.expect_close(b.logits, a.logits, HALF_ABS, HALF_REL, "token #{t}")
+        for layer in 0...2
+          try Test.eq(Tensor.backend(b.cache.keys[layer]), home)
+          try Test.eq(Tensor.backend(b.cache.values[layer]), home)
+        end
+
+        try Test.assert(!try closed?(prompt), "step #{t} closed the cache it was given")
+      end
+
+      Generate.finish(a.cache)
+      Generate.finish(b.cache)
+      Generate.close(device)
+      Generate.close(host)
+      Qwen3.close_model(m)
+    end
+
+    try Test.assert(checked > 0 or !Tensor.available(S.VULKAN), "a Vulkan device was there and no model was checked")
     ok()
   end
 end

@@ -9,6 +9,14 @@ struct Placement
   head: Tensor.Backend
 end
 
+## Where the keys and values of a decode are kept: `Device` where the blocks that make them are (the cache of a block on
+## the CPU is in host memory, the others stay on the device), `Host` all in host memory, as llama.cpp's
+## `--no-kv-offload` does: the attention then reads them on the CPU, and the card holds the weights only.
+enum Kv
+  Device
+  Host
+end
+
 ## The sides of the table and of the head (with the final norm) of a model of `blocks` blocks opened on `backend` with
 ## `layers_on_device: n`, as llama.cpp's `-ngl` puts them: with `n` below `blocks` on a Vulkan device the table is on the
 ## CPU, and the head is on the device for an `n` of 1 or more and on the CPU for 0; with `none` or an `n` of `blocks` or
@@ -28,5 +36,18 @@ def layer_backend(backend: Tensor.Backend, i: Int, layers_on_device: Optional[In
   case backend
     Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> Tensor.Backend.Ggml(Tensor.Device.Cpu)
     _ -> backend
+  end
+end
+
+## The backend a cache tensor made on `backend` is kept on under `kv`: `Host` moves a tensor of a Vulkan device to the
+## CPU; any other tensor stays where it is.
+def cache_backend(kv: Kv, backend: Tensor.Backend) -> Tensor.Backend
+  case kv
+    Kv.Device -> backend
+    Kv.Host ->
+      case backend
+        Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> Tensor.Backend.Ggml(Tensor.Device.Cpu)
+        _ -> backend
+      end
   end
 end

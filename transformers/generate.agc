@@ -8,6 +8,7 @@ import Padded from "pkg/nn/kv"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
 import KvDecoder from "kv_decoder"
+import Placement from "placement"
 import Qwen3 from "qwen3"
 import Sample from "sample"
 import Stepping from "stepping"
@@ -20,6 +21,8 @@ struct Generator
   ## See `KvDecoder.Core`.
   usable: Int
   whole: Bool
+  ## Where the cache is kept (`Placement.Kv`).
+  kv: Placement.Kv
 end
 
 type Cache = KvDecoder.Cache
@@ -28,9 +31,9 @@ type Scored = KvDecoder.Scored
 
 ## The generator of `m`. `usable` is how many ids it may answer (see `Generator.usable`); the whole vocabulary when it
 ## is 0.
-def open(m: Qwen3.Qwen3, usable: Int = 0) -> Result[Generator]
-  c = try KvDecoder.open(m, stepper(m), usable)
-  ok(Generator(model: m, plans: c.plans, usable: c.usable, whole: false))
+def open(m: Qwen3.Qwen3, usable: Int = 0, kv: Placement.Kv = Placement.Kv.Device) -> Result[Generator]
+  c = try KvDecoder.open(m, stepper(m, kv), usable)
+  ok(Generator(model: m, plans: c.plans, usable: c.usable, whole: false, kv: kv))
 end
 
 ## How many steps `g` has compiled: a shape it has seen compiles no more.
@@ -82,16 +85,17 @@ end
 private
 
 def core(g: Generator) -> KvDecoder.Core[Qwen3.Qwen3]
-  KvDecoder.Core(model: g.model, stepper: stepper(g.model), plans: g.plans, usable: g.usable, whole: g.whole)
+  KvDecoder.Core(model: g.model, stepper: stepper(g.model, g.kv), plans: g.plans, usable: g.usable, whole: g.whole)
 end
 
 ## What the decoder needs of `m`.
-def stepper(m: Qwen3.Qwen3) -> KvDecoder.Stepper[Qwen3.Qwen3]
+def stepper(m: Qwen3.Qwen3, kv: Placement.Kv) -> KvDecoder.Stepper[Qwen3.Qwen3]
   KvDecoder.Stepper(
     layers: m.config.num_hidden_layers,
     limit: m.config.max_position_embeddings,
     vocab: m.config.vocab_size,
     backend: m.device,
+    kv: kv,
     traced: ->(p: Qwen3.Qwen3) { Qwen3.traced(p) },
     stepped: ->(p: Qwen3.Qwen3, req: KvDecoder.Request) { stepped(p, req) },
   )
