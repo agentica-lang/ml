@@ -2,16 +2,19 @@
 ## the process every 100 steps: it must stay flat once the cache has its capacity (the cache grows with the length, so
 ## expect a step up at each power of two of rows, then no change). Manual (it needs the checkpoint); from `transformers/`:
 ##
-##   agentica tools/leak_check.agc MODEL_DIR STEPS [cpu|vulkan]
+##   agentica tools/leak_check.agc MODEL_DIR STEPS [cpu|vulkan] [device|host]
+##
+## `host` opens the generator with `kv: Placement.Kv.Host`: the cache then grows in host memory.
 
 import Generate from "../generate"
+import Placement from "../placement"
 import Qwen3 from "../qwen3"
 import Tensor from "pkg/tensor/tensor"
 
 def main() -> Void
   args = System.args
   if args.size < 2
-    puts("usage: leak_check.agc MODEL_DIR STEPS [cpu|vulkan]")
+    puts("usage: leak_check.agc MODEL_DIR STEPS [cpu|vulkan] [device|host]")
     System.exit(2)
   end
 
@@ -20,7 +23,12 @@ def main() -> Void
     device = Tensor.Device.Cpu
   end
 
-  case run(args[0], args[1].to_i.unwrap!, Tensor.Backend.Ggml(device))
+  kv = Placement.Kv.Device
+  if args.size > 3 and args[3] == "host"
+    kv = Placement.Kv.Host
+  end
+
+  case run(args[0], args[1].to_i.unwrap!, Tensor.Backend.Ggml(device), kv)
     ok(_) -> nil
     error(e) ->
       puts("leak_check: #{e.message}")
@@ -40,9 +48,9 @@ def resident() -> String
   "no VmRSS"
 end
 
-def run(dir: String, steps: Int, backend: Tensor.Backend) -> Result[Void]
+def run(dir: String, steps: Int, backend: Tensor.Backend, kv: Placement.Kv) -> Result[Void]
   m = try Qwen3.open(dir, backend)
-  g = try Generate.open(m)
+  g = try Generate.open(m, kv: kv)
   prompt = (0...16).map { |i| 1000 + (i * 7) % 5000 }
   s = try Generate.step(g, Generate.start(), prompt)
   for i in 1...(steps + 1)

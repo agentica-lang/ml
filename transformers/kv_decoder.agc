@@ -130,7 +130,8 @@ struct Stepper[M]
   taps: Int = 0
   ## Whether `stepped` reads `Request.rotary` and `Request.splice`: only then may a cache start from a `Sight`.
   sighted: Bool = false
-  ## Where the cache is kept (`Placement.Kv`): `Host` moves the keys and the values of a step on a Vulkan device to the CPU.
+  ## Where the cache is kept (`Placement.Kv`): `Host` moves the keys and the values of a step on a Vulkan device to
+  ## the CPU.
   kv: Placement.Kv = Placement.Kv.Device
   traced: Fn[M, M]
   stepped: Fn[M, Request, Result[List[Tensor.Tensor]]]
@@ -548,21 +549,22 @@ def compiled_step[M](
   Lift.close([outs[0]])
   if not head.ok?
     Lift.close(outs.drop(1))
+    return error(head.message)
   end
 
   kept = try hosted(s, outs.drop(1))
-  ok(Advanced(head: try head, cache: cache_of(s, kept)))
+  ok(Advanced(head: head.unwrap!, cache: cache_of(s, kept)))
 end
 
-## The keys and the values of `outs` (the cache of a step, then its states) in the memory that `Stepper.kv` says: a tensor
-## that is somewhere else is copied and the copy replaces it (the old one is closed); the tensors of a step in place are
-## already there. On an error every tensor of `outs` is closed.
+## The keys and the values of `outs` (the cache of a step, then its states) in the memory that `Stepper.kv` says: a
+## tensor that is somewhere else is copied and the copy replaces it (the old one is closed); the tensors of a step in
+## place are already there. On an error every tensor of `outs` is closed.
 def hosted[M](s: Stepper[M], outs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   kept: List[Tensor.Tensor] = []
   for i in 0...outs.size
     t = outs[i]
-    want = Placement.cache_backend(s.kv, Tensor.backend(t))
-    if i >= 2 * s.layers or want == Tensor.backend(t)
+    on = Tensor.backend(t)
+    if i >= 2 * s.layers or Placement.cache_backend(s.kv, on) == on
       kept = kept.push(t)
       next
     end

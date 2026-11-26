@@ -9,9 +9,11 @@ struct Placement
   head: Tensor.Backend
 end
 
-## Where the keys and values of a decode are kept: `Device` where the blocks that make them are (the cache of a block on
-## the CPU is in host memory, the others stay on the device), `Host` all in host memory, as llama.cpp's
-## `--no-kv-offload` does: the attention then reads them on the CPU, and the card holds the weights only.
+## Where the keys and values of a decode are kept: `Device` where the blocks that make them are (the cache of a block
+## on the CPU is in host memory, the others stay on the device), `Host` all in host memory, as llama.cpp's
+## `--no-kv-offload` does: the attention then reads them on the CPU. The step of the prompt still makes the whole cache
+## on the card, at the capacity of the prompt, and copies it over, so that is the card's peak; the steps after it keep
+## the cache in host memory, where it grows.
 enum Kv
   Device
   Host

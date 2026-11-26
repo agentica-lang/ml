@@ -7,6 +7,7 @@
 import Generate from "../generate"
 import Stepping from "../stepping"
 import Ggml from "pkg/tensor/src/ggml"
+import GgmlRaw from "pkg/tensor/src/ggml_native"
 import KvDecoder from "../kv_decoder"
 import Lift from "../lift"
 import Placement from "../placement"
@@ -72,46 +73,136 @@ def test_blocks_on_the_cpu_give_the_logits_of_the_blocks_on_the_device() -> Resu
   end
 end
 
-## `kv: Host` keeps the keys and values of every layer in host memory (`Ggml(Cpu)`), the blocks staying on the device:
-## the logits are those of the cache on the device, after the prompt and after each token, and the one-token steps write
-## into the same tensors, which stay open until the capacity grows.
+## Every key and value of `cache` is on `home`.
+def all_on(cache: Generate.Cache, home: Tensor.Backend) -> Result[Void]
+  for t in cache.keys + cache.values
+    try Test.eq(Tensor.backend(t), home)
+  end
+
+  ok()
+end
+
+## One generator with the cache where its blocks make it and one with `kv: Host`, over the same model and the same
+## ids: the logits agree after the prompt and after each of the tokens 5 to 10, every key and value of the host one is
+## on `home`, the tensors of the prompt stay open through the steps in place and are closed by the step that grows the
+## capacity (token 8), whose new tensors are open. With `mixed`, the steps of the host generator go through the
+## scheduler (`mixed_runs` grows); with `plain`, those of the device one do not (a model with all its blocks on the
+## device).
+def host_run(
+  m: Qwen3.Qwen3,
+  row: List[Int],
+  home: Tensor.Backend,
+  abs: Float,
+  rel: Float,
+  mixed: Bool,
+  plain: Bool,
+) -> Result[Void]
+  device = try Generate.open(m)
+  host = try Generate.open(m, kv: Placement.Kv.Host)
+  a = try Generate.step_logits(device, Generate.start(), row.take(5))
+  b = try Generate.step_logits(host, Generate.start(), row.take(5))
+  try S.expect_close(b.logits, a.logits, abs, rel, "the prompt")
+  try all_on(b.cache, home)
+  prompt = [b.cache.keys[0], b.cache.values[1]]
+  for t in 5...11
+    runs = GgmlRaw.mixed_runs()
+    a = try Generate.step_logits(device, a.cache, [row[t]])
+    if plain
+      try Test.eq(GgmlRaw.mixed_runs(), runs)
+    end
+
+    b = try Generate.step_logits(host, b.cache, [row[t]])
+    if mixed
+      try Test.assert(GgmlRaw.mixed_runs() > runs, "the host step #{t} did not go through the scheduler")
+    end
+
+    try S.expect_close(b.logits, a.logits, abs, rel, "token #{t}")
+    try all_on(b.cache, home)
+    for old in prompt
+      try Test.eq(try closed?(old), t >= 8)
+    end
+
+    try Test.assert(!try closed?(b.cache.keys[0]), "step #{t} closed the cache it gave")
+    try Test.assert(!try closed?(b.cache.values[1]), "step #{t} closed the cache it gave")
+  end
+
+  Generate.finish(a.cache)
+  Generate.finish(b.cache)
+  Generate.close(device)
+  Generate.close(host)
+  ok()
+end
+
+## `kv: Host` keeps the keys and values of every layer in host memory (`Ggml(Cpu)`), the blocks staying on the device.
+## The prompt step makes the whole cache on the device first and copies it over; the steps after it find it on the
+## host (the step that grows the capacity makes its tensors there already, where the old ones were read). Also with a
+## block on the CPU already (`layers_on_device` of 1). Without a Vulkan device nothing runs, and the test says so.
 def test_a_cache_in_host_memory_gives_the_logits_of_a_cache_on_the_device() -> Result[Void]
   with_peer do |dir|
     row = try ints(try JSON.get(try expected(dir), "long"))
     home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    unset: Optional[Int] = none
     checked = 0
     for backend in try S.ggml_backends()
       next if backend == home
 
       checked += 1
-      m = try Qwen3.open("#{dir}/tiny", backend)
-      device = try Generate.open(m)
-      host = try Generate.open(m, kv: Placement.Kv.Host)
-      a = try Generate.step_logits(device, Generate.start(), row.take(5))
-      b = try Generate.step_logits(host, Generate.start(), row.take(5))
-      try S.expect_close(b.logits, a.logits, HALF_ABS, HALF_REL, "the prompt")
-      try Test.eq(Tensor.backend(a.cache.keys[0]), backend)
-      prompt = b.cache.keys[0]
-      for t in [5, 6, 7]
-        a = try Generate.step_logits(device, a.cache, [row[t]])
-        b = try Generate.step_logits(host, b.cache, [row[t]])
-        try S.expect_close(b.logits, a.logits, HALF_ABS, HALF_REL, "token #{t}")
-        for layer in 0...2
-          try Test.eq(Tensor.backend(b.cache.keys[layer]), home)
-          try Test.eq(Tensor.backend(b.cache.values[layer]), home)
-        end
-
-        try Test.assert(!try closed?(prompt), "step #{t} closed the cache it was given")
+      for layers in [unset, some(1)]
+        m = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, layers)
+        try host_run(m, row, home, HALF_ABS, HALF_REL, true, layers.none?)
+        Qwen3.close_model(m)
       end
+    end
 
-      Generate.finish(a.cache)
-      Generate.finish(b.cache)
-      Generate.close(device)
-      Generate.close(host)
-      Qwen3.close_model(m)
+    if checked == 0
+      IO.warn("SKIP kv Host: no Vulkan device")
     end
 
     try Test.assert(checked > 0 or !Tensor.available(S.VULKAN), "a Vulkan device was there and no model was checked")
+
+    ok()
+  end
+end
+
+## On the CPU engine, `kv: Host` changes nothing: the same logits, every cache tensor on the CPU, the prompt's tensors
+## open through the steps in place (what CI runs without a card).
+def test_a_cache_in_host_memory_on_the_cpu_engine_changes_nothing() -> Result[Void]
+  with_peer do |dir|
+    row = try ints(try JSON.get(try expected(dir), "long"))
+    home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    for backend in try S.ggml_backends()
+      next if backend != home
+
+      m = try Qwen3.open("#{dir}/tiny", backend)
+      try host_run(m, row, home, SAME_ABS, SAME_REL, false, false)
+      Qwen3.close_model(m)
+    end
+
+    ok()
+  end
+end
+
+## A cache in host memory across a reach (768 rows of a capacity of 1024) gives the logits of the cache on the device.
+def test_a_cache_in_host_memory_crosses_a_reach_with_the_same_logits() -> Result[Void]
+  with_peer do |dir|
+    home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    for backend in try S.ggml_backends()
+      m = try Qwen3.open("#{dir}/roomy", backend)
+      host = try Generate.open(m, kv: Placement.Kv.Host)
+      device = try Generate.open(m)
+      abs = SAME_ABS
+      rel = SAME_REL
+      if backend != home
+        abs = HALF_ABS
+        rel = HALF_REL
+      end
+
+      try reading_with(host, device, 765, 5, abs, rel)
+      Generate.close(host)
+      Generate.close(device)
+      Qwen3.close_model(m)
+    end
+
     ok()
   end
 end
@@ -225,16 +316,28 @@ end
 
 ## A prompt of `first` ids and `steps` more, one at a time, through `g` and through `whole`: the same logits at each.
 def reading(g: Generate.Generator, whole: Generate.Generator, first: Int, steps: Int) -> Result[Void]
+  reading_with(g, whole, first, steps, SAME_ABS, SAME_REL)
+end
+
+## `reading` within `abs` and `rel`.
+def reading_with(
+  g: Generate.Generator,
+  whole: Generate.Generator,
+  first: Int,
+  steps: Int,
+  abs: Float,
+  rel: Float,
+) -> Result[Void]
   vocab = g.model.config.vocab_size
   on = Tensor.backend(g.model.tokens.table)
   row = (0...(first + steps)).map { |i| (i * 7 + i / 5) % vocab }
   ours = try Generate.step_logits(g, Generate.start(), row.take(first))
   theirs = try Generate.step_logits(whole, Generate.start(), row.take(first))
-  try S.expect_close(ours.logits, theirs.logits, SAME_ABS, SAME_REL, "prompt of #{first} on #{on}")
+  try S.expect_close(ours.logits, theirs.logits, abs, rel, "prompt of #{first} on #{on}")
   for t in first...row.size
     ours = try Generate.step_logits(g, ours.cache, [row[t]])
     theirs = try Generate.step_logits(whole, theirs.cache, [row[t]])
-    try S.expect_close(ours.logits, theirs.logits, SAME_ABS, SAME_REL, "row #{t} after a prompt of #{first} on #{on}")
+    try S.expect_close(ours.logits, theirs.logits, abs, rel, "row #{t} after a prompt of #{first} on #{on}")
   end
 
   Generate.finish(ours.cache)
