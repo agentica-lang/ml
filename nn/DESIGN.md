@@ -18,7 +18,7 @@ enum   Activation   = Relu | Gelu | GeluErf | Silu
 struct Rope         { base: Float = 10000.0, neox: Bool = true, dims: Optional[Int] = none }
 struct Attention    { query, key, value, output: Dense, heads: Int, kv_heads: Optional[Int] = none,
                       rope: Optional[Rope] = none, query_norm, key_norm: Optional[LayerNorm] = none,
-                      gate: Bool = false, scale: Optional[Float] = none }
+                      gate: Bool = false, scale: Optional[Float] = none, head_gate: Optional[Dense] = none }
 struct Mlp          { up, down: Dense, activation: Activation, gate: Optional[Dense] = none }
 struct EncoderBlock { norm1: LayerNorm, attention: Attention, norm2: LayerNorm, mlp: Mlp,
                       norm_first: Bool = true }
@@ -51,6 +51,8 @@ Nn.encoder_block(p, x, mask?, causal?)
                                    pre-norm: h = x + attn(norm1(x)); h + mlp(norm2(h))
                                    post-norm: h = norm1(x + attn(x)); norm2(h + mlp(h))
 Nn.causal_mask(size, dtype, backend)   [size, size]: 0.0 on and below the diagonal, MASKED above
+Nn.window_mask(size, window, dtype, backend)   [size, size]: 0.0 where i - window < key <= i, MASKED elsewhere
+Nn.window_bias(queries, keys, window, dtype)   the same over grids of I32 positions (a padded cache names its own)
 Nn.padding_bias(mask)              [batch, seq] of 1.0/0.0 -> [batch, 1, seq, seq]: MASKED on padding keys
 Nn.decoder_block(p, x, memory)     x [batch, t, width] over memory [batch, s, width]:
                                    h = x + self_attn(norm1(x), causal);
@@ -62,6 +64,12 @@ Moe (`pkg/nn/moe`, the mixture of experts of Granite MoE):
 struct Moe          { router: Dense ([experts, width], out_in), gate_up: [experts, 2 * inner, width],
                       down: [experts, width, inner], top_k: Int, activation: Activation, normalize: Bool = true }
 Moe.moe(p, x)                      x [..., width] -> the same shape: the gated MLPs of the picked experts, added by their gates
+
+ShortConv (`pkg/nn/short_conv`, the gated short convolution of LFM3):
+struct ShortConv    { input: Dense ([3 * width, width], out_in), conv: [width, taps], output: Dense }
+ShortConv.short_conv(p, x, state, padding?)  x [tokens, width] -> ShortOut { out, state }: output(c * conv(b * x)), with
+                                   b, c and x the three parts of input(x); state [taps - 1, width] as Delta's conv state
+ShortConv.short_start(p, backend)  the zero state of a layer
 
 Delta (`pkg/nn/delta`, the linear attention of Qwen3.5):
 Delta.gated_delta_net(p, x, state, padding?)  x [tokens, width] after a DeltaState -> DeltaOut { out, state }
@@ -78,6 +86,15 @@ rows of the convolution's input in time order (Hugging Face keeps `[channels, ta
 `recurrent` is `[value heads, value, key]` (Hugging Face's `[value heads, key, value]`, transposed). A loader reads the
 checkpoint's convolution `[channels, 1, taps]` as `[channels, taps]`; `test/delta_test.agc` checks both states against
 the cache of Hugging Face.
+
+`ShortConv` is the convolution layer of LFM3 (and LFM2): `in_proj` makes `b`, `c` and `x`, the depthwise convolution
+(`Delta.causal_conv1d`, so the same state, the same `Padding` and the same checks) runs over `b * x`, and `c` gates its
+output before `out_proj`; there is no bias (`conv_bias` is false in every checkpoint, a loader refuses it). The attention
+of LFM3 gates each head by one number, `sigmoid(gate_proj(x))` with `gate_proj` `[heads, width]`, which is
+`Attention.head_gate`: `project` repeats it over the head width as a `Heads.gate`, so `attend` is the one of `gate`. A
+sliding-window layer is an attention under `window_mask` (the window counts the key itself: a window of 3 sees the
+position and the two before it, as Hugging Face's `sliding_window`); a padded cache gives `padded_mask` the window.
+`test/lfm3_test.agc` checks the three against the official code's tiny model (`test/lfm3_golden.py`).
 
 A compiled decode step has one shape for the prompts of a capacity, so a prompt is padded after its last real token.
 `Padding` makes the padding leave the state as the real tokens left it: `valid` (1.0 real, 0.0 padding) multiplies
@@ -102,7 +119,7 @@ Nn.init_dense / init_layer_norm / init_embedding / init_attention /
 Init.uniform(shape, limit, seed, backend), Init.glorot_uniform(shape, seed, backend)
 
 Padded (kv.agc)   the padded KV cache that the decoding models share: capacity, reach, reached,
-                  padded_mask, spread_of, written
+                  padded_mask (with a `window` for a sliding-window layer), spread_of, written
 ```
 
 Every function returns `Result`; the checks are `tensor/`'s, plus the few
