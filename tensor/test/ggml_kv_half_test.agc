@@ -1,4 +1,4 @@
-## An F16 cache on ggml, the key-value cache of `transformers/generate.agc`: `to_dtype` makes it, `set_rows` writes F32 rows
+## An F16 cache on ggml, the key-value cache of Qwen3 (`transformers/generate.agc`, decoded by `transformers/kv_decoder.agc`): `to_dtype` makes it, `set_rows` writes F32 rows
 ## into it in place, `attention` reads it as the key and the value (flash attention, and the products when a mask of
 ## arbitrary values keeps it off, or only its first rows through a slice), and `to_dtype` widens it. The F16 rounding of
 ## what it holds is bounded.

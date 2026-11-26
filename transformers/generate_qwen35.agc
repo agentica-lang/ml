@@ -4,10 +4,11 @@
 ## layer keeps two tensors of a size that does not depend on the length: the last rows of the input of its convolution
 ## `[taps - 1, channels]` and its recurrent state `[value_heads, value_dim, key_dim]`, in `F32`.
 ##
-## A compiled step has one shape for the prompts of one capacity, so a prompt is padded to the capacity and the
-## padding must change nothing: a full layer masks it (positions of `room` name no row), and a linear layer is given a
-## `Delta.Padding` (`g` and `beta` of 0 on the padding rows, the convolution's rows picked at the last real token). Every
-## later step is one token, which has no padding and no `Padding`. The rest is as `generate.agc` (the plans, the pick in the graph, the reach of a decode step).
+## A compiled step has one shape for the prompts of one capacity, so a prompt is padded to the capacity and the padding
+## must change nothing: a full layer masks it (positions of `room` name no row), and a linear layer is given a
+## `Delta.Padding` (`g` and `beta` of 0 on the padding rows, the convolution's rows picked at the last real token).
+## Every later step is one token, which has no padding and no `Padding`. The rest is as `kv_decoder.agc` (the plans, the
+## pick in the graph, the reach of a decode step).
 ##
 ## Batch of one. A `Generator` belongs to one task at a time, and `close` ends it before `Qwen3_5.close_model` frees the
 ## weights its graphs read.
@@ -260,7 +261,7 @@ def fed_inputs(
   ok(base + [pad.valid, pad.keep])
 end
 
-## The graph of one step as a compiled function of its inputs on `Ggml` (see `Generate.compiled_step`).
+## The graph of one step as a compiled function of its inputs on `Ggml` (see `KvDecoder.compiled_step`).
 def compiled_step(
   g: Generator,
   cache: Cache,
@@ -407,12 +408,7 @@ def stepped(
   last = try Tensor.reshape(try Tensor.matmul(xs[2], try Tensor.reshape(h, [width, d])), [1, 1, d])
   last = try Nn.layer_norm(m.final_norm, last)
   logits = try Stepping.masked(try Tensor.reshape(try Nn.dense(m.head, last), [m.config.vocab_size]), usable)
-  head = logits
-  case mode
-    Stepping.Head.Pick -> head = try Stepping.picked(logits)
-    Stepping.Head.Top(k) -> head = try Stepping.top_candidates(logits, k)
-    Stepping.Head.Logits -> nil
-  end
+  head = try Stepping.headed(logits, mode)
 
   ok([head] + keys + values + states)
 end
