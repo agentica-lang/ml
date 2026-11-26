@@ -62,3 +62,9 @@ def test_the_cache_follows_its_block_or_stays_in_host_memory() -> Result[Void]
   try Test.eq(Placement.cache_backend(Placement.Kv.Host, Tensor.Backend.Reference), Tensor.Backend.Reference)
   ok()
 end
+
+## The tools read `AGENTICA_ML_KV` (`host` or `device`) as a `Kv`.
+def test_a_host_flag_gives_the_kv_of_the_tools() -> Result[Void]
+  try Test.eq(Placement.kv_of(true), Placement.Kv.Host)
+  Test.eq(Placement.kv_of(false), Placement.Kv.Device)
+end

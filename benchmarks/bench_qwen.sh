@@ -33,7 +33,9 @@
 # the final norm on the card for 26 and 13, on the CPU for 0), against llama.cpp's `-ngl 27`, `-ngl 14` and `-ngl 0` on
 # the Vulkan build: llama.cpp puts the output layer on the card for `-ngl` 1 or more and the first blocks on the CPU
 # (`i_gpu_start = n_layer + 1 - ngl`), so `-ngl N` holds N - 1 blocks on the card, as many as `n` = N - 1; ours puts the
-# last blocks on the CPU, llama.cpp the first ones.
+# last blocks on the CPU, llama.cpp the first ones. The pair `ours-vulkan-q4k-kvhost` and `llama-vulkan-q4km-nkvo` keeps
+# every block on the card and the KV cache in host memory: `AGENTICA_ML_KV=host` (`Placement.Kv.Host`) against
+# `llama-bench -ngl 99 -nkvo 1` (`--no-kv-offload`).
 set -eu
 
 model=$1
@@ -68,7 +70,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-all_rows="ours-cpu ours-cpu-f16 ours-cpu-q4k llama-cpu-f32 llama-cpu-f16 llama-cpu-q4km ours-vulkan ours-vulkan-exact ours-vulkan-f16 ours-vulkan-q4k ours-vulkan-q4k-n26 ours-vulkan-q4k-n13 ours-vulkan-q4k-n0 llama-vulkan-f32 llama-vulkan-f16 llama-vulkan-q4km llama-vulkan-q4km-ngl27 llama-vulkan-q4km-ngl14 llama-vulkan-q4km-ngl0"
+all_rows="ours-cpu ours-cpu-f16 ours-cpu-q4k llama-cpu-f32 llama-cpu-f16 llama-cpu-q4km ours-vulkan ours-vulkan-exact ours-vulkan-f16 ours-vulkan-q4k ours-vulkan-q4k-kvhost llama-vulkan-q4km-nkvo ours-vulkan-q4k-n26 ours-vulkan-q4k-n13 ours-vulkan-q4k-n0 llama-vulkan-f32 llama-vulkan-f16 llama-vulkan-q4km llama-vulkan-q4km-ngl27 llama-vulkan-q4km-ngl14 llama-vulkan-q4km-ngl0"
 
 want() { # name: true when ROWS is unset or one of its comma-separated words is in the name
   [ -z "${ROWS:-}" ] && return 0
@@ -254,6 +256,8 @@ ours_vulkan_f16() { ours ours-vulkan-f16 vulkan "$model" WEIGHTS=f16; }
 llama_vulkan_f16() { llama llama-vulkan-f16 "$vulkan" "$ggufs/qwen3-0.6b-f16.gguf" -ngl 99; }
 ours_vulkan_q4k() { ours ours-vulkan-q4k vulkan "$q4km" WEIGHTS=q4_k; }
 llama_vulkan_q4km() { llama llama-vulkan-q4km "$vulkan" "$q4km" -ngl 99; }
+ours_vulkan_q4k_kvhost() { ours ours-vulkan-q4k-kvhost vulkan "$q4km" WEIGHTS=q4_k AGENTICA_ML_KV=host; }
+llama_vulkan_q4km_nkvo() { llama llama-vulkan-q4km-nkvo "$vulkan" "$q4km" -ngl 99 -nkvo 1; }
 ours_vulkan_q4k_n26() { ours ours-vulkan-q4k-n26 vulkan "$q4km" WEIGHTS=q4_k AGENTICA_ML_LAYERS_ON_DEVICE=26; }
 llama_vulkan_q4km_ngl27() { llama llama-vulkan-q4km-ngl27 "$vulkan" "$q4km" -ngl 27; }
 ours_vulkan_q4k_n13() { ours ours-vulkan-q4k-n13 vulkan "$q4km" WEIGHTS=q4_k AGENTICA_ML_LAYERS_ON_DEVICE=13; }
@@ -270,6 +274,7 @@ while [ "$round" -lt "$rounds" ]; do
   ours ours-vulkan-exact vulkan "$model" VULKAN_FP16=0
   pair ours_vulkan_f16 llama_vulkan_f16
   pair ours_vulkan_q4k llama_vulkan_q4km
+  pair ours_vulkan_q4k_kvhost llama_vulkan_q4km_nkvo
   pair ours_vulkan_q4k_n26 llama_vulkan_q4km_ngl27
   pair ours_vulkan_q4k_n13 llama_vulkan_q4km_ngl14
   pair ours_vulkan_q4k_n0 llama_vulkan_q4km_ngl0
@@ -283,7 +288,7 @@ python3 -I - "$out" << 'PY'
 import statistics, sys
 pairs = {"ours-cpu": "llama-cpu-f32", "ours-cpu-f16": "llama-cpu-f16", "ours-cpu-q4k": "llama-cpu-q4km",
          "ours-vulkan": "llama-vulkan-f32", "ours-vulkan-f16": "llama-vulkan-f16", "ours-vulkan-q4k": "llama-vulkan-q4km",
-         "ours-vulkan-q4k-n26": "llama-vulkan-q4km-ngl27", "ours-vulkan-q4k-n13": "llama-vulkan-q4km-ngl14", "ours-vulkan-q4k-n0": "llama-vulkan-q4km-ngl0"}
+         "ours-vulkan-q4k-kvhost": "llama-vulkan-q4km-nkvo", "ours-vulkan-q4k-n26": "llama-vulkan-q4km-ngl27", "ours-vulkan-q4k-n13": "llama-vulkan-q4km-ngl14", "ours-vulkan-q4k-n0": "llama-vulkan-q4km-ngl0"}
 rows = {}
 for line in open(sys.argv[1]):
     name, load, pp, tg, rss, gpu, rnd = line.split()

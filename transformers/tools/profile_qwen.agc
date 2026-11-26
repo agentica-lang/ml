@@ -8,9 +8,11 @@
 ##   agentica tools/profile_qwen.agc MODEL_DIR PREFILLS DECODES [cpu|vulkan|vulkan32]
 ##
 ## `vulkan` multiplies in fp16 (the default), `vulkan32` in exact `float32`. `WEIGHTS=f16`, `q8_0` or `q4_k` as in
-## `bench_qwen.agc` (MODEL_DIR is then the `.gguf` file for the quantized ones).
+## `bench_qwen.agc` (MODEL_DIR is then the `.gguf` file for the quantized ones). `AGENTICA_ML_KV=host` keeps the KV cache
+## in host memory (`Placement.Kv.Host`).
 
 import Generate from "../generate"
+import Placement from "../placement"
 import Qwen3 from "../qwen3"
 import Load from "pkg/hub/load"
 import Tensor from "pkg/tensor/tensor"
@@ -45,7 +47,7 @@ private
 
 def run(dir: String, prefills: Int, decodes: Int, backend: Tensor.Backend) -> Result[Void]
   m = try Qwen3.open(dir, backend, try Load.weights_from_env(), try Load.layers_on_device_from_env())
-  g = try Generate.open(m)
+  g = try Generate.open(m, kv: try Placement.kv_from_env())
   prompt = (0...PROMPT).map { |i| 1000 + (i * 7) % 5000 }
   s = try Generate.step(g, Generate.start(), prompt)
   cache = s.cache

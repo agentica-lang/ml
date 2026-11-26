@@ -6,9 +6,10 @@
 ##   agentica tools/bench_qwen.agc MODEL_DIR [cpu|vulkan]
 ##
 ## `WEIGHTS=f16` loads the big matrices as half weights (off by default) and `VULKAN_FP16=0` makes Vulkan multiply in
-## exact `float32` (fp16 is the default).
+## exact `float32` (fp16 is the default). `AGENTICA_ML_KV=host` keeps the KV cache in host memory (`Placement.Kv.Host`).
 
 import Generate from "../generate"
+import Placement from "../placement"
 import Qwen3 from "../qwen3"
 import Load from "pkg/hub/load"
 import Lower from "pkg/tensor/src/lower"
@@ -44,7 +45,7 @@ def run(dir: String, backend: Tensor.Backend, cpu: Bool) -> Result[String]
   try Load.vulkan_fp16_from_env(true)
   m = try Qwen3.open(dir, backend, try Load.weights_from_env(), try Load.layers_on_device_from_env())
   load = Time.monotonic_ms - started
-  g = try Generate.open(m)
+  g = try Generate.open(m, kv: try Placement.kv_from_env())
   prompt = (0...PROMPT).map { |i| 1000 + (i * 7) % 5000 }
   try pass(g, prompt)
   timed = try pass(g, prompt)
