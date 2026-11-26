@@ -4,6 +4,8 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-26
+
 ### tensor
 
 - `Tensor.expert_matmul(weights, x, ids)`: the product of each token by the experts it was routed to (`F32`, no gradient; ggml `ggml_mul_mat_id`), and `Tensor.top_ids` takes a matrix: the ids of each row (ml#274).
@@ -28,6 +30,22 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Generate` of `pkg/transformers/generate_qwen35`: greedy and sampled generation with Qwen3.5's hybrid cache (the keys and values of the full layers, the states of the linear ones), with `usable` to keep the sampler off the ids the tokenizer cannot decode (ml#150). The shared parts of `Generate` (`picked`, `Plans`, `Candidate`, the `Head` modes) moved to `pkg/transformers/stepping`, with the loop of `generate`; they were not documented API, and the records of `step` and `step_top` are now `Stepping.Picked` and `Stepping.Candidates`.
 - `Generate.open(m, usable)` of Qwen3 (and Qwen2.5) has the same `usable` as Qwen3.5's: pass `tok.pieces.size` and the sampler never gives an id that `Bpe.decode` rejects; the default 0 is no mask (ml#150).
 - **Breaking:** the `enable_thinking` of `Chat.apply` is an `Optional[Bool]` (`none` by default: what each template does when it is not told, Qwen3 thinks, Qwen3.5 does not); pass `some(false)` where you passed `false` (ml#150).
+
+### hub
+
+- No user-visible change in 0.6.0; its readers now use `std/binary`.
+
+### train
+
+- The TensorBoard writer's CRC runs on `UInt32`; the files it writes are the same.
+
+### asr
+
+- A WAV file whose chunk runs past its end is an error, not a read past the buffer.
+
+### vision
+
+- No user-visible change since 0.5.1; released with the other members.
 
 ## [0.5.1] - 2026-11-25
 

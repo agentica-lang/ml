@@ -30,11 +30,11 @@ name = "app"
 agentica = "0.38.0"
 
 [dependencies]
-tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.5.0", subdir = "tensor" }
-nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.5.0", subdir = "nn" }
-hub = { git = "https://github.com/agentica-lang/ml", tag = "hub-0.5.0", subdir = "hub" }
-transformers = { git = "https://github.com/agentica-lang/ml", tag = "transformers-0.5.0", subdir = "transformers" }
-asr = { git = "https://github.com/agentica-lang/ml", tag = "asr-0.5.0", subdir = "asr" }
+tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.6.0", subdir = "tensor" }
+nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.6.0", subdir = "nn" }
+hub = { git = "https://github.com/agentica-lang/ml", tag = "hub-0.6.0", subdir = "hub" }
+transformers = { git = "https://github.com/agentica-lang/ml", tag = "transformers-0.6.0", subdir = "transformers" }
+asr = { git = "https://github.com/agentica-lang/ml", tag = "asr-0.6.0", subdir = "asr" }
 # only to read WAV files with `pkg/whisper/wav` (it needs no C++ engine), or to use whisper.cpp:
 whisper = { git = "https://github.com/agentica-lang/ml", tag = "whisper-0.5.0", subdir = "whisper" }
 ```
