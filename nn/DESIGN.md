@@ -15,7 +15,7 @@ struct Embedding    { table: [rows, width] }
 struct Conv1d       { weight: [out, in, kernel], bias: Optional [out], stride, padding: Int }
 struct Conv2d       { weight: [out, in / groups, kh, kw], bias: Optional [out], stride = 1, padding = 0, groups = 1 }
 enum   Activation   = Relu | Gelu | GeluErf | Silu
-struct Rope         { base: Float = 10000.0, neox: Bool = true, dims: Optional[Int] = none }
+struct Rope         { base: Float = 10000.0, neox: Bool = true, dims: Optional[Int] = none, zero_tail: Optional[Int] = none }
 struct Attention    { query, key, value, output: Dense, heads: Int, kv_heads: Optional[Int] = none,
                       rope: Optional[Rope] = none, query_norm, key_norm: Optional[LayerNorm] = none,
                       gate: Bool = false, scale: Optional[Float] = none, head_gate: Optional[Dense] = none }
@@ -94,7 +94,16 @@ of LFM3 gates each head by one number, `sigmoid(gate_proj(x))` with `gate_proj` 
 `Attention.head_gate`: `project` repeats it over the head width as a `Heads.gate`, so `attend` is the one of `gate`. A
 sliding-window layer is an attention under `causal_mask` with a `window` (the window counts the key itself: a window of 3 sees the
 position and the two before it, as Hugging Face's `sliding_window`); a padded cache gives `padded_mask` the window.
-`test/lfm3_test.agc` checks the three against the official code's tiny model (`test/lfm3_golden.py`).
+The full-attention layers of LFM3 rotate only part of the head, in a layout that `dims` does not give: Hugging Face
+keeps the frequencies `base^(-2i / head)` of the whole head and zeroes those of the last pairs, so the pairs that turn are
+`(i, i + head / 2)` for `i < zero_tail / 2` and the others stay. `Rope.zero_tail` (the rotated columns, `head *
+partial_rotary_factor`) brings those columns together (four slices and a `concat` of the head) and runs `Tensor.rope` over
+them with `dims: zero_tail` and the base `base^(zero_tail / head)`, which gives pair `i` the same angle. The head comes out
+reordered, the same for the queries and the keys, so `q k^T` is the one of Hugging Face; the values are not reordered, and
+nothing reads the reordered heads but the scores (a cache keeps the keys as they come out). A `zero_tail` of the whole
+head is an error (it is a plain rotation: leave it out). Doing it in the graph, not in the weights at load, works for `F16`
+and quantized weights, which a host permutation of rows could not touch.
+`test/lfm3_test.agc` checks the three layers and the rotary against the official code's tiny model (`test/lfm3_golden.py`).
 
 A compiled decode step has one shape for the prompts of a capacity, so a prompt is padded after its last real token.
 `Padding` makes the padding leave the state as the real tokens left it: `valid` (1.0 real, 0.0 padding) multiplies

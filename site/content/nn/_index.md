@@ -91,7 +91,7 @@ A model changes a detail of the block, so each detail is an option. The default 
 
 - `norm_first: false` makes the block post-norm, as BERT: `norm(x + attention(x))` in place of `x + attention(norm(x))`. A pre-norm stack ends in a final norm and a post-norm one does not.
 - `kv_heads` fewer than `heads` is grouped-query attention: each key and value head serves several query heads. It must divide `heads`.
-- `rope` rotates the queries and keys by the position `0...seq` of each input, or by the integer vector `positions` (queries) and `memory_positions` (keys) when `attention` or `project` gets them. Only `positions` means self-attention (the keys use them too); pass `memory_positions` for cross-attention. `Rope` has `base`, `neox` (the pairing of the columns) and `dims`.
+- `rope` rotates the queries and keys by the position `0...seq` of each input, or by the integer vector `positions` (queries) and `memory_positions` (keys) when `attention` or `project` gets them. Only `positions` means self-attention (the keys use them too); pass `memory_positions` for cross-attention. `Rope` has `base`, `neox` (the pairing of the columns), `dims` and `zero_tail` (LFM3: the rotated columns of a head whose other pairs have a frequency of 0; the heads come out with their columns reordered, the same for queries and keys, so the scores are unchanged).
 - `query_norm` and `key_norm` normalize each head over its width before `rope` (Qwen3).
 - `LayerNorm` with `rms: true` is an RMS norm. An `Mlp` with a `gate` is a gated one (SwiGLU with `Silu`).
 - `encoder_block` with `causal: true` is a decoder-only block, as Qwen's. There is no separate decoder-only function.

@@ -6,6 +6,7 @@ with a KV cache (greedy or sampled), the tokenizers, and the weights by name
 for a fine-tune with `train/`. Qwen3.5 (text only) has its forward, its
 tokenizer, its chat template and generation (ml#150).
 Granite MoE (`granitemoe`) has its forward and generation (ml#274).
+LFM3 (`lfm3`) has its forward (ml#275).
 
 ## Generation
 
@@ -226,6 +227,34 @@ whole sequences, with no cache; generation is `generate_granite_moe.agc` (below)
 `F32` with no option: an `F16` cache moved the logits by up to 0.19, more than the gap of some greedy choices. A
 prompt's padding rows go through the router and the experts too, which changes no real token (the mask keeps them off,
 `Moe.moe` treats tokens alone). `GraniteMoe.times` and `GraniteMoe.scores` are what the forward and the steps share.
+
+## LFM3
+
+`lfm3.agc`: `Lfm3.open(dir, backend, weights = F32)` (the folder of an official `LiquidAI/LFM3-*` repository: `config.json`
+and `model.safetensors` or its `.index.json`; `weights` is `F32` or, on ggml, `F16`), `Lfm3.run(m, rows, last)`,
+`Lfm3.logits(m, ids, last)` and `Lfm3.close_model(m)`. The forward is over whole sequences, with no cache.
+
+- A layer is a mixer by `layer_types`: `ShortConv` (`nn/DESIGN.md`) for `conv`, and `Nn.Attention` for `full_attention`
+  and `sliding_attention`, each followed by the SwiGLU MLP (`w1` the gate, `w3` the value, `w2` the output). Both branches
+  have a norm before and one after (`operator_norm`, `post_operator_norm`, `ffn_norm`, `post_ffn_norm`), the output of the
+  branch is normed before the residual add. `embedding_norm` is the final norm; there is no norm after the embeddings.
+  Norms are plain `weight` scales (no `1 + weight`).
+- The attention is GQA with a norm per head on the queries and keys before the rotation, and a gate of one number per
+  head, `sigmoid(gate_proj(x))` (`Attention.head_gate`). A sliding layer sees its own position and the `sliding_window - 1`
+  before it (`Nn.causal_mask` with a window; the whole prompt when the window covers it) and rotates by `rope_theta` of
+  its `rope_parameters` entry; a global one rotates a `partial_rotary_factor` of the head (0.5 in 1.7B, `Rope.zero_tail`).
+- The official code has no `hidden_act` and no bias in its config (its code fixes `silu` and `bias=False`), so the config
+  fields the loader does not read (`use_cache`, `pad_token_id`, ...) change no result; `Load.dense` would read a `.bias`
+  that a file had, which no official file does.
+- The convolution of a `conv` layer is stored `[width, 1, conv_L_cache]` and kept `[width, taps]`. The head is the
+  embedding table (`tie_word_embeddings` defaults to true), else `lm_head`.
+- `model_type` other than `lfm3`, `conv_bias`, `use_sandwich_norm: false`, a `layer_types` entry other than `conv`,
+  `full_attention` and `sliding_attention`, a `rope_type` other than `default`, a rotary width that is not an even number,
+  a `sliding_attention` layer without `sliding_window`, and `weights` other than `F32` and `F16` are errors.
+- The batch is unrolled, one sequence at a time, as in Qwen3.5 (the convolution is over one `[tokens, width]`). The model
+  cannot be fine-tuned with `train/` yet (no `weights`/`with_weights`).
+- The tiny golden (`test/lfm3_golden.py`, rows of 9 tokens, window 4, the real rotary factor and thetas) is the official
+  code's `float32` eager run. `tools/lfm3_check.agc` is the manual check on the real checkpoint (`test/lfm3_check_golden.py`).
 
 ## BERT
 

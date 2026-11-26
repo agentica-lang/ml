@@ -38,6 +38,7 @@ struct Layer
   kv_heads: Int
   head: Int
   theta: Float
+  zero_tail: Int
   window: Int
   query: List[Float]
   key: List[Float]
@@ -81,6 +82,12 @@ def conv_of(c: Conv, backend: Tensor.Backend) -> Result[ShortConv.ShortConv]
   )
 end
 
+## The rotated columns of the zero-tail rotary of `l`, none for a full rotation.
+def tail(l: Layer) -> Optional[Int]
+  return none if l.zero_tail == 0
+  some(l.zero_tail)
+end
+
 def rms(gamma: List[Float], width: Int, eps: Float, backend: Tensor.Backend) -> Result[Nn.LayerNorm]
   ok(
     Nn.LayerNorm(
@@ -101,7 +108,7 @@ def attention_of(l: Layer, backend: Tensor.Backend) -> Result[Nn.Attention]
       output: try dense(l.output, l.hidden, l.heads * l.head, backend),
       heads: l.heads,
       kv_heads: some(l.kv_heads),
-      rope: some(Nn.Rope(base: l.theta)),
+      rope: some(Nn.Rope(base: l.theta, zero_tail: tail(l))),
       query_norm: some(try rms(l.query_norm, l.head, l.eps, backend)),
       key_norm: some(try rms(l.key_norm, l.head, l.eps, backend)),
       head_gate: some(try dense(l.gate, l.heads, l.hidden, backend)),
@@ -292,47 +299,65 @@ def single_row(position: Int, capacity: Int, window: Int) -> Result[Void]
   Test.eq(got, grid.drop(position * capacity).take(capacity))
 end
 
-## The sliding layer on ggml (CPU): every node against the reference, with the mask built inside the graph.
-def test_the_sliding_layer_agrees_with_the_reference_on_ggml() -> Result[Void]
+## Both layers on ggml (CPU): every node against the reference, with the mask built inside the graph and the zero-tail
+## rotary of the full one.
+def test_the_layers_agree_with_the_reference_on_ggml() -> Result[Void]
   return ok() if !try S.ggml_present()
-  l = (try golden()).attentions[0]
-  p = try attention_of(l, S.REF)
-  args = [
-    try S.f32(l.x, [1, l.tokens, l.hidden]),
-    p.query.w,
-    p.key.w,
-    p.value.w,
-    p.output.w,
-    p.query_norm.unwrap!.gamma,
-    p.key_norm.unwrap!.gamma,
-    p.head_gate.unwrap!.w,
-  ]
+  for l in (try golden()).attentions
+    p = try attention_of(l, S.REF)
+    args = [
+      try S.f32(l.x, [1, l.tokens, l.hidden]),
+      p.query.w,
+      p.key.w,
+      p.value.w,
+      p.output.w,
+      p.query_norm.unwrap!.gamma,
+      p.key_norm.unwrap!.gamma,
+      p.head_gate.unwrap!.w,
+    ]
 
-  d = try Trace.diff(
-    args,
-    S.REF,
-    S.CPU,
-    rtol: 0.001,
-    atol: 0.0001,
-    f: ->(a: List[Tensor.Tensor]) {
-      q = p.with(
-        query: p.query.with(w: a[1]),
-        key: p.key.with(w: a[2]),
-        value: p.value.with(w: a[3]),
-        output: p.output.with(w: a[4]),
-        query_norm: some(p.query_norm.unwrap!.with(gamma: a[5])),
-        key_norm: some(p.key_norm.unwrap!.with(gamma: a[6])),
-        head_gate: some(p.head_gate.unwrap!.with(w: a[7])),
-      )
+    d = try Trace.diff(
+      args,
+      S.REF,
+      S.CPU,
+      rtol: 0.001,
+      atol: 0.0001,
+      f: ->(a: List[Tensor.Tensor]) {
+        q = p.with(
+          query: p.query.with(w: a[1]),
+          key: p.key.with(w: a[2]),
+          value: p.value.with(w: a[3]),
+          output: p.output.with(w: a[4]),
+          query_norm: some(p.query_norm.unwrap!.with(gamma: a[5])),
+          key_norm: some(p.key_norm.unwrap!.with(gamma: a[6])),
+          head_gate: some(p.head_gate.unwrap!.with(w: a[7])),
+        )
 
-      run_layer(q, l, a[0])
-    },
-  )
+        run_layer(q, l, a[0])
+      },
+    )
 
-  case d.first
-    some(n) -> error("node #{n.node} (#{n.op} #{n.shape}) differs by #{n.max_abs}")
-    none -> Test.assert(d.nodes > 30, "only #{d.nodes} nodes compared")
+    case d.first
+      some(n) -> return error("#{l.kind}: node #{n.node} (#{n.op} #{n.shape}) differs by #{n.max_abs}")
+      none -> try Test.assert(d.nodes > 30, "only #{d.nodes} nodes compared")
+    end
   end
+
+  ok()
+end
+
+## A zero tail is an even number of columns of the head, on the neox layout.
+def test_a_zero_tail_that_does_not_fit_is_an_error() -> Result[Void]
+  l = (try golden()).attentions[1]
+  p = try attention_of(l, S.REF)
+  x = try S.f32(l.x, [1, l.tokens, l.hidden])
+  for bad in [3, 8, 10]
+    r = Nn.Rope(base: l.theta, zero_tail: some(bad))
+    try Test.error?(Nn.self_attention(p.with(rope: some(r)), x, none, true))
+  end
+
+  try Test.error?(Nn.self_attention(p.with(rope: some(Nn.Rope(zero_tail: some(4), neox: false))), x, none, true))
+  Test.error?(Nn.self_attention(p.with(rope: some(Nn.Rope(zero_tail: some(4), dims: some(4)))), x, none, true))
 end
 
 ## An attention has the gate of its query projection or a gate per head, not both, and `attend` takes the gate of a
