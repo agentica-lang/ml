@@ -1577,8 +1577,9 @@ static struct ggml_tensor *finite_check(struct entry *p, struct ggml_tensor *val
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
   struct entry *p = lease->e;
   int64_t outs[MAX_OUTPUTS];
-  struct ggml_tensor **inner, **views;
-  size_t slots;
+  struct ggml_tensor **inner, **views, **save_node, **save_src, **side_key;
+  signed char *leaf_side, *side_val;
+  size_t slots, side_cap;
   int nouts, r, i, j;
   char text[256];
 
@@ -1678,14 +1679,31 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     }
   }
 
-  p->leaf_side = (signed char *)calloc((size_t)p->leaf_count + 1, 1);
-  p->save_node = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) + 1, sizeof(struct ggml_tensor *));
-  p->save_src = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * GGML_MAX_SRC + 1, sizeof(struct ggml_tensor *));
-  if (p->leaf_side == NULL || p->save_node == NULL || p->save_src == NULL) return tg_error(env, "out of memory");
-  for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
-    p->save_node[i] = ggml_graph_node(p->graph, i);
-    for (j = 0; j < GGML_MAX_SRC; j++) p->save_src[i * GGML_MAX_SRC + j] = p->save_node[i]->src[j];
+  leaf_side = (signed char *)calloc((size_t)p->leaf_count + 1, 1);
+  save_node = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) + 1, sizeof(struct ggml_tensor *));
+  save_src = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * GGML_MAX_SRC + 1, sizeof(struct ggml_tensor *));
+  side_cap = 16;
+  while (side_cap < (size_t)ggml_graph_n_nodes(p->graph) * 2 + 16) side_cap *= 2;
+  side_key = (struct ggml_tensor **)calloc(side_cap, sizeof(struct ggml_tensor *));
+  side_val = (signed char *)calloc(side_cap, 1);
+  if (leaf_side == NULL || save_node == NULL || save_src == NULL || side_key == NULL || side_val == NULL) {
+    free(leaf_side);
+    free(save_node);
+    free(save_src);
+    free(side_key);
+    free(side_val);
+    return tg_error(env, "out of memory");
   }
+  for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
+    save_node[i] = ggml_graph_node(p->graph, i);
+    for (j = 0; j < GGML_MAX_SRC; j++) save_src[i * GGML_MAX_SRC + j] = save_node[i]->src[j];
+  }
+  p->leaf_side = leaf_side;
+  p->save_node = save_node;
+  p->save_src = save_src;
+  p->side_cap = side_cap;
+  p->side_key = side_key;
+  p->side_val = side_val;
 
   tg_lock_device();
   p->fill_buffer = ggml_backend_alloc_ctx_tensors(p->fill_ctx, p->backend);
@@ -1802,13 +1820,6 @@ static const char *place(struct entry *p) {
   /* the intermediates of an earlier plain run must not look like memory a node writes */
   if (devices[p->device + 1].planned == p) devices[p->device + 1].planned = NULL;
   forget(p);
-  if (p->side_key == NULL) {
-    p->side_cap = 16;
-    while (p->side_cap < (size_t)n * 2 + 16) p->side_cap *= 2;
-    p->side_key = (struct ggml_tensor **)calloc(p->side_cap, sizeof(struct ggml_tensor *));
-    p->side_val = (signed char *)calloc(p->side_cap, 1);
-    if (p->side_key == NULL || p->side_val == NULL) return "out of memory";
-  }
   memset(p->side_key, 0, p->side_cap * sizeof(struct ggml_tensor *));
   for (i = 0; i < n; i++) {
     struct ggml_tensor *node = ggml_graph_node(p->graph, i);
