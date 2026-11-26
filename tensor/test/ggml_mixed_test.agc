@@ -11,6 +11,7 @@ import Trace from "../trace"
 
 DEVICE = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
 HOME = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+WIDTH = 128
 
 ## Ggml and a Vulkan device are there.
 def mixed_present() -> Result[Bool]
@@ -172,7 +173,125 @@ def test_a_sum_of_a_device_row_and_a_cpu_product_runs_on_the_cpu() -> Result[Voi
   want = try values(try Trace.eval_many(try residual_inputs(DEVICE)) do |xs| residual(xs) end)
   got = try Trace.eval_many(try residual_inputs(HOME)) do |xs| residual(xs) end
   try Test.eq(try values(got), want)
-  Test.eq(Tensor.backend(got[0]), HOME)
+  try Test.eq(Tensor.backend(got[0]), HOME)
+  swapped = try Trace.eval_many(try residual_inputs(HOME)) do |xs|
+    e = try Tensor.gather(xs[0], xs[1])
+    ok([try Tensor.add(try Tensor.linear(e, xs[2], none, true), e)])
+  end
+
+  try Test.eq(try values(swapped), want)
+  Test.eq(Tensor.backend(swapped[0]), HOME)
+end
+
+## A model of `blocks` residual blocks and a head: inputs are the ids, the table, the head, then per block a norm weight
+## and a matrix. The first `on_device` blocks have their matrix on the device, the others on the CPU.
+def stack(xs: List[Tensor.Tensor], blocks: Int) -> Result[List[Tensor.Tensor]]
+  h = try Tensor.gather(xs[1], xs[0])
+  for k in 0...blocks
+    normed = try Tensor.mul(try Tensor.rms_norm(h, 0.00001), xs[3 + 2 * k])
+    h = try Tensor.add(h, try Tensor.linear(normed, xs[4 + 2 * k], none, true))
+  end
+
+  ok([try Tensor.linear(h, xs[2], none, true)])
+end
+
+def stack_inputs(blocks: Int, on_device: Int) -> Result[List[Tensor.Tensor]]
+  ids = try Tensor.from_list([Tensor.Values.Int(7)], [1], Tensor.Dtype.I32, DEVICE)
+  args = [
+    ids,
+    try floats(counting(300 * WIDTH), [300, WIDTH], DEVICE),
+    try floats(counting(300 * WIDTH), [300, WIDTH], DEVICE),
+  ]
+
+  for k in 0...blocks
+    side = HOME
+    if k < on_device
+      side = DEVICE
+    end
+
+    args = args.push(try floats(counting(WIDTH), [1, WIDTH], DEVICE))
+    args = args.push(try floats(counting(WIDTH * WIDTH), [WIDTH, WIDTH], side))
+  end
+
+  ok(args)
+end
+
+## The splits of the scheduler in one run of the stack, and its values against the same stack with all on the device.
+def stack_splits(blocks: Int, on_device: Int) -> Result[Int]
+  want = try values(try Trace.eval_many(try stack_inputs(blocks, blocks)) do |xs| stack(xs, blocks) end)
+  got = try Trace.eval_many(try stack_inputs(blocks, on_device)) do |xs| stack(xs, blocks) end
+  have = try values(got)
+  for t in 0...want.size
+    for k in 0...want[t].size
+      gap = have[t][k] - want[t][k]
+      if gap < 0.0
+        gap = 0.0 - gap
+      end
+
+      try Test.assert(
+        gap <= 0.001 * (1.0 + want[t][k].abs),
+        "value #{k} is #{have[t][k]}, the device gives #{want[t][k]}",
+      )
+    end
+  end
+
+  ok(GgmlRaw.mixed_splits())
+end
+
+## Layers on the CPU do not make the scheduler change backend at every layer: the splits are a few, whatever the number
+## of blocks, with all the blocks on the CPU (n of 0) and with the first ones on the device (n of 14 in the model).
+def test_the_splits_do_not_grow_with_the_blocks_on_the_cpu() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  four = try stack_splits(4, 0)
+  eight = try stack_splits(6, 0)
+  try Test.assert(four <= 4, "4 blocks on the CPU made #{four} splits")
+  try Test.eq(eight, four)
+  two_four = try stack_splits(4, 2)
+  two_eight = try stack_splits(6, 2)
+  try Test.assert(two_four <= 4, "2 blocks on the device and 2 on the CPU made #{two_four} splits")
+  Test.eq(two_eight, two_four)
+end
+
+def message(r: Result[List[Tensor.Tensor]]) -> String
+  case r
+    ok(_) -> ""
+    error(e) -> e.message
+  end
+end
+
+## A value that is not finite and an index outside the table are refused as they are on the device, whichever side makes
+## them.
+def test_the_checks_of_a_mixed_graph_refuse_what_a_device_graph_refuses() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  for side in [DEVICE, HOME]
+    logs = Trace.eval_many(try fn_inputs(3, side)) do |xs|
+      ok([try Tensor.log(try Tensor.linear(xs[0], xs[1], none, true))])
+    end
+
+    try Test.assert(message(logs) != "", "the log of a product with negative values was answered")
+    if side == HOME
+      same = Trace.eval_many(try fn_inputs(3, DEVICE)) do |xs|
+        ok([try Tensor.log(try Tensor.linear(xs[0], xs[1], none, true))])
+      end
+
+      try Test.eq(message(logs), message(same))
+    end
+  end
+
+  bad = [
+    try floats(counting(300 * 64), [300, 64], HOME),
+    try Tensor.from_list([Tensor.Values.Int(999)], [1], Tensor.Dtype.I32, DEVICE),
+  ]
+
+  from_cpu = Trace.eval_many(bad) do |xs| ok([try Tensor.gather(xs[0], xs[1])]) end
+  from_device = Trace.eval_many([try floats(counting(300 * 64), [300, 64], DEVICE), bad[1]]) do |xs|
+    ok([try Tensor.gather(xs[0], xs[1])])
+  end
+
+  try Test.assert(message(from_cpu) != "", "an index outside the table was answered")
+  Test.eq(message(from_cpu), message(from_device))
 end
 
 ## A graph with every leaf on the device never goes through the scheduler; one with a leaf on the CPU does.

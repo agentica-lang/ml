@@ -68,6 +68,8 @@ extern module "ggml"
   ## How many runs went through the scheduler (a graph on a device with a leaf in host memory, even every leaf), since
   ## the process started: a graph with every leaf in device memory never counts.
   def mixed_runs() -> Int
+  ## The splits of the scheduler in the last of those runs: each is a change of backend, with a submit, a wait and a copy.
+  def mixed_splits() -> Int
   ## Host readback: the row-major values as doubles, which the caller tags
   ## with the tensor's dtype.
   compute def readback(t: TensorHandle) -> Result[List[Float]]
