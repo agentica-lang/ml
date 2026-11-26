@@ -17,6 +17,9 @@ REL = 0.0001
 F32_ABS = 0.005
 F32_REL = 0.005
 
+## The `linear_key_head_dim` and `linear_value_head_dim` of the tiny model (`qwen35_golden.py`).
+DELTA_WIDTH = 4
+
 struct Golden
   config: String
   weights: Map[String, List[Float]]
@@ -120,7 +123,7 @@ end
 
 def test_cached_steps_and_greedy_generation_match_hugging_face_on_ggml() -> Result[Void]
   g = try golden()
-  for backend in try S.ggml_backends()
+  for backend in try S.ggml_backends_for_delta(DELTA_WIDTH)
     try cached_steps_match(g, backend)
     try greedy_matches(g, backend)
   end
@@ -131,7 +134,7 @@ end
 ## With `usable`, the ids from it on are never answered, greedy or sampled, and `step_top` cannot ask for more.
 def test_the_ids_the_tokenizer_cannot_decode_are_never_answered() -> Result[Void]
   g = try golden()
-  for backend in try S.ggml_backends()
+  for backend in try S.ggml_backends_for_delta(DELTA_WIDTH)
     try with_model(g) do |dir|
       m = try Qwen3_5.open(dir, backend)
       try Test.error?(Generate.open(m, 17))

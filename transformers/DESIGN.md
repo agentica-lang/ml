@@ -492,7 +492,9 @@ error row per config field.
   logits of every position of two rows match on the reference (1e-4) and on
   ggml CPU (1e-3); an untied head is the file's; a mixture-of-experts config,
   linear key and value widths that differ and weights other than `F32` are
-  errors.
+  errors. The tiny model's linear head width is 4, which ggml-vulkan's gated delta rule does not run (16, 32, 64 and 128
+  only), so these tests and `generate_qwen35_test.agc` leave Vulkan out (`Support.ggml_backends_for_delta`); the real
+  checkpoint checks below cover Vulkan.
 - `test/bpe_test.agc` on `fixtures/bpe_marks.json`, a tiny tokenizer with the
   split of Qwen3.5 (`test/tokenizer_golden.py marks`, `tokenizers` 0.23.3):
   the ids and text of `tokenizers` on the strings of the BPE test, 16 where a

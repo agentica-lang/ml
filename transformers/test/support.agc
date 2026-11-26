@@ -45,6 +45,15 @@ def ggml_backends() -> Result[List[Tensor.Backend]]
   ok([GGML])
 end
 
+## `ggml_backends` for a model with a gated delta rule of head width `width` (Qwen3.5): ggml-vulkan runs that op for
+## widths 16, 32, 64 and 128 only (`tensor/DESIGN.md`), so for another width Vulkan is left out, with a note.
+def ggml_backends_for_delta(width: Int) -> Result[List[Tensor.Backend]]
+  all = try ggml_backends()
+  return ok(all) if [16, 32, 64, 128].include?(width) or all.size < 2
+  IO.warn("SKIP Vulkan: its gated delta rule needs a head width of 16, 32, 64 or 128, the model has #{width}")
+  ok(all.take(1))
+end
+
 ## Runs `body` with the folder that `script` (run from `transformers/`)
 ## writes, named `prefix...`, and removes the folder after.
 def with_fixtures(script: String, prefix: String, body: Fn[String, Result[Void]]) -> Result[Void]

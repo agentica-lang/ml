@@ -12,6 +12,9 @@ import Tensor from "pkg/tensor/tensor"
 ABS = 0.0001
 REL = 0.0001
 
+## The `linear_key_head_dim` and `linear_value_head_dim` of the tiny model (`qwen35_golden.py`).
+DELTA_WIDTH = 4
+
 ## ggml computes in `F32` and sums in another order.
 F32_ABS = 0.001
 F32_REL = 0.001
@@ -65,7 +68,7 @@ end
 
 def test_every_position_matches_hugging_face_on_ggml() -> Result[Void]
   g = try golden()
-  for backend in try S.ggml_backends()
+  for backend in try S.ggml_backends_for_delta(DELTA_WIDTH)
     try matches(g, backend, F32_ABS, F32_REL)
   end
 
