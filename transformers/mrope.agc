@@ -46,6 +46,21 @@ def expand(ids: List[Int], pad_token: Int, grids: List[Grid], merge: Int) -> Res
   ok(out)
 end
 
+## The `Layout` of a model with plain rope positions (Idefics3): every token has its index on the three axes, `at` the
+## tokens equal to `image_token`, and no `delta`.
+def plain(ids: List[Int], image_token: Int) -> Layout
+  index: List[Int] = []
+  at: List[Int] = []
+  for i in 0...ids.size
+    index = index.push(i)
+    if ids[i] == image_token
+      at = at.push(i)
+    end
+  end
+
+  Layout(time: index, down: index, across: index, at: at, delta: 0)
+end
+
 ## The `Layout` of `ids`, whose tokens equal to `image_token` come in runs, one per grid of `grids` in order: each
 ## run has the `height / merge * width / merge` tokens of its image. Two images need the vision start and end tokens
 ## between them: adjacent runs are one run, and the count of its tokens then fails.

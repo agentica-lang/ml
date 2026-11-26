@@ -229,6 +229,10 @@ tower is closed before the text model opens, so the two never share the memory.
   columns, built in the graph from fills (`Nn.axis_masks`, once for each step: `Reading.axes`), picks each pair from its
   axis; the cost is three ropes for the queries and the keys of the full-attention layers, in a prompt with images only.
   Positions of `[seq]` are the plain rope, so text, and the tokens after an image, use no masks.
+- Qwen3, Qwen2.5 and Llama (`generate.agc`) are sighted too, for SmolVLM (Idefics3: no multimodal rope, plain positions,
+  so the image rows replace the embeddings and nothing else changes). Its `Sight` has `Mrope.plain(ids, image_token)`
+  as layout (an index on each axis, `delta` 0), and the step drops the three axes of `Request.rotary`, as the positions
+  of `xs[1]` are the same. `Qwen3.image_token(dir)` reads `image_token_id` of the folder.
 - Not supported: video, and a second `generate` that continues a sequence with another image (a `Sight` is for the
   prompt).
 
@@ -673,6 +677,19 @@ error row per config field.
   the golden holds the mean and the mean of absolute values of the 20 by 49280 logits, 501 of them at every 1971st
   place, and the top 10 of the last position. It does nothing unless `SMOLVLM_MODEL` names the folder. The largest gap
   is 4.7e-5 on ggml CPU and 1.1e-4 on Vulkan (logits of about 20 at the top); the test passes within 3e-4.
+- `test/smolvlm_image_test.agc` against `test/smolvlm_image_golden.py` (`torch` 2.15.0, `transformers` 5.22.2, manual): the
+  tiny SmolVLM of `smolvlm_text_test` (`image_token_id` 30) on a prompt of 10 ids with 4 image tokens and 4 random feature
+  rows (`test/fixtures/smolvlm_image_golden.json`, 135 KB). `Qwen3.open_idefics3` with a `KvDecoder.Sight` gives
+  Hugging Face's logits of the prompt and of a token fed after it (1e-5 on the reference, 2e-4 on ggml CPU, whose
+  cache is `F16`; the largest gap is 8e-5) and its 4 greedy ids; the same ids without a sight answer otherwise, and a
+  sight with too few rows or another image token is an error. Mutants, each failing it: no splice, the three axes of
+  `rotary` kept, and `sighted` off.
+- `vision/test/smolvlm_image_hf_test.agc` against `vision/test/smolvlm_image_hf_golden.py` (manual, as the others:
+  `vision/test/fixtures/smolvlm/image_golden.json`): the real `SmolVLM-256M-Instruct` on a prompt of 78 ids with the 64
+  `<image>` tokens of one tile. The tiles of `smolvlm_hf_test` go through the tower and the connector, and the rows
+  through `Generate.step_logits` over a `Sight`; the golden holds the last position's logits (mean, abs mean, 501
+  values and the top 10). The largest gap is 2.7e-5 on ggml CPU and 3.2e-5 on Vulkan; the test passes within 1e-4.
+  The prompt is a fixed list of ids: the processor, tile splitting and the chat template are later slices.
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and
