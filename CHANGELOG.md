@@ -6,6 +6,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- The XLA backend starts with a CUDA PJRT plugin: the client is made with the plugin's default options (the CPU-only `cpu_device_count` made the CUDA plugin refuse it) (ml#324).
 - `Dtype.Q4_K`, `Dtype.Q6_K` and the formats of the same names: `Tensor.from_file` dequantizes ggml's K blocks to `F32` on every backend, or keeps them as a weight on ggml (ml#126).
 - `Tensor.packed?(dtype)`: true for the dtypes that ggml keeps packed (`F16` and the quantized ones).
 - A graph on a Vulkan device may read tensors on `Ggml(Cpu)`: ggml's backend scheduler runs each node where its operands are and copies the activations between the two, and an output of a CPU node is a CPU tensor (ml#310).
