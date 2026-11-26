@@ -12,9 +12,15 @@ GOLDEN = "test/fixtures/hf_mel.json"
 ## The golden keeps 7 decimals of Hugging Face's float32 output.
 HF_CLOSE = 0.000001
 
-## Both sides compute in doubles; the FFT and the direct DFT round
-## differently (the gap is about 1e-13).
+## Both sides compute in doubles on the same binary32 samples and round the
+## result to binary32 (the peer's values are already rounded); the FFT and the
+## direct DFT differ by about 1e-13 before that.
 CLOSE = 0.000000001
+## A value within 1e-13 of a rounding tie may round the other way: one ulp, which
+## is at most 1.2e-7 below 2 (the values of the cases lie in -0.67..1.38).
+ONE_ULP = 0.00000012
+## How many values of a case may take it.
+TIES = 2
 
 ## The graph computes in `F32`; its gap to the doubles is about 1e-5.
 GRAPH_CLOSE = 0.00005
@@ -39,13 +45,19 @@ def test_the_log_mel_matches_the_peer() -> Result[Void]
   for c in cases
     mels = try JSON.int(try JSON.get(c, "mels"))
     frames = try JSON.int(try JSON.get(c, "frames"))
-    got = try Mel.log_mel(try floats(try JSON.get(c, "samples")), mels, frames)
+    got = try Mel.log_mel(try samples32(try JSON.get(c, "samples")), mels, frames)
     want = try floats(try JSON.get(c, "mel"))
     try Test.eq(got.size, mels * frames)
+    ties = 0
     for i in 0...want.size
-      gap = (got[i] - want[i]).abs
-      return error("#{mels} mels: value #{i} is #{got[i]}, expected #{want[i]}") if gap > CLOSE
+      gap = (got[i].to_f - want[i]).abs
+      if gap > CLOSE
+        ties += 1
+        return error("#{mels} mels: value #{i} is #{got[i]}, expected #{want[i]}") if gap > ONE_ULP
+      end
     end
+
+    try Test.assert(ties <= TIES, "#{mels} mels: #{ties} values are one ulp off")
   end
 
   ok()
@@ -56,10 +68,10 @@ end
 ## frames (trimmed; the padded one is the backend test below). The
 ## sizes are small: `Reference` runs the matmuls in the interpreter.
 def test_the_graph_matches_the_fft() -> Result[Void]
-  samples = (0...1000).map { |i| (0.5 * ((i * 7919) % 1000).to_f) / 1000.0 - 0.25 }
+  samples = (0...1000).map { |i| ((0.5 * ((i * 7919) % 1000).to_f) / 1000.0 - 0.25).to_float32 }
   out = try Mel.spectrogram(samples, 3, 2, REF)
   try Test.eq(Tensor.shape(out), [1, 3, 2])
-  expect_close(try tensor_floats(out), try Mel.log_mel(samples, 3, 2), "1000 samples")
+  expect_close(try tensor_floats(out), (try Mel.log_mel(samples, 3, 2)).map { |x| x.to_f }, "1000 samples")
 end
 
 ## The graph on every backend against the peer, for the signals that are not a multiple of 160 samples.
@@ -67,7 +79,7 @@ def test_the_graph_reads_the_samples_past_its_frames() -> Result[Void]
   cases = try JSON.list(try JSON.parse(try peer()))
   for backend in try backends()
     for c in cases.drop(2)
-      samples = try floats(try JSON.get(c, "samples"))
+      samples = try samples32(try JSON.get(c, "samples"))
       frames = try JSON.int(try JSON.get(c, "frames"))
       mels = try JSON.int(try JSON.get(c, "mels"))
       got = try Mel.features(samples, mels, frames, backend)
@@ -88,7 +100,7 @@ end
 def test_the_features_on_every_backend_match_hugging_face() -> Result[Void]
   golden = try JSON.parse(try String.from_bytes(try read_bytes(GOLDEN)))
   samples = (try pcm16(try read_bytes(WAV))).take(try JSON.int(try JSON.get(golden, "samples")))
-  inf = 1.0e308 * 10.0
+  inf = (1.0e308 * 10.0).to_float32
   nan = inf - inf
   all = try backends()
   for at in 0...all.size
@@ -178,16 +190,17 @@ end
 ## Silence is the floor everywhere: log10(1e-10) = -10, so (-10 + 4) / 4.
 def test_silence_is_the_floor() -> Result[Void]
   got = try Mel.log_mel([], 3, 4)
-  Test.eq(got, List.repeat(-1.5, 12))
+  want: List[Float32] = List.repeat(-1.5, 12)
+  Test.eq(got, want)
 end
 
 def test_bad_sizes_and_samples_are_errors() -> Result[Void]
   try Test.error?(Mel.log_mel([0.5], 0, 4))
   try Test.error?(Mel.log_mel([0.5], 80, 1))
-  inf = 1.0e308 * 10.0
+  inf = (1.0e308 * 10.0).to_float32
   try Test.error?(Mel.log_mel([0.5, inf], 3, 4))
-  try Test.error?(Mel.log_mel([0.5, -1.0e151], 3, 4))
-  try Test.ok?(Mel.log_mel([0.5, 1.0e150], 3, 4))
+  try Test.error?(Mel.log_mel([0.5, -inf], 3, 4))
+  try Test.ok?(Mel.log_mel([0.5, 3.0e38], 3, 4))
   Test.error?(Mel.log_mel([inf - inf, 0.5], 3, 4))
 end
 
@@ -202,7 +215,7 @@ def test_the_first_second_of_speech_matches_hugging_face() -> Result[Void]
       m = try JSON.int(try JSON.at(entry, 0))
       f = try JSON.int(try JSON.at(entry, 1))
       v = try JSON.float(try JSON.at(entry, 2))
-      value = got[m * Mel.FRAMES + f]
+      value = got[m * Mel.FRAMES + f].to_f
       return error("#{mels} mels: [#{m}, #{f}] is #{value}, Hugging Face has #{v}") if (value - v).abs > HF_CLOSE
     end
   end
@@ -214,7 +227,7 @@ end
 ## the last sample (from frame 52, at sample 8320 of the padded signal) is the
 ## floor, the smallest value.
 def test_half_a_second_fills_30_seconds_with_the_floor() -> Result[Void]
-  samples = (0...8000).map { |i| (0.5 * ((i * 7919) % 1000).to_f) / 1000.0 - 0.25 }
+  samples = (0...8000).map { |i| ((0.5 * ((i * 7919) % 1000).to_f) / 1000.0 - 0.25).to_float32 }
   got = try Mel.log_mel(samples, 4)
   try Test.eq(got.size, 4 * Mel.FRAMES)
   floor = got.reduce(got[0]) do |a, v| if_less(v, a) end
@@ -248,7 +261,17 @@ def floats(json: JSON.Value) -> Result[List[Float]]
   ok(out)
 end
 
-def if_less(a: Float, b: Float) -> Float
+## The peer's samples, already binary32 values.
+def samples32(json: JSON.Value) -> Result[List[Float32]]
+  out: List[Float32] = []
+  for v in try JSON.list(json)
+    out = out.push((try JSON.float(v)).to_float32)
+  end
+
+  ok(out)
+end
+
+def if_less(a: Float32, b: Float32) -> Float32
   return a if a < b
   b
 end
@@ -267,19 +290,19 @@ def read_bytes(path: String) -> Result[Bytes]
 end
 
 ## The samples of a 16-bit PCM WAV, scaled to -1..1.
-def pcm16(wav: Bytes) -> Result[List[Float]]
+def pcm16(wav: Bytes) -> Result[List[Float32]]
   at = 12
   while at + 8 <= wav.size
     size = u16(wav, at + 4) + u16(wav, at + 6) * 65536
     if wav.slice(at, 4) == "data".bytes
-      out: List[Float] = []
+      out: List[Float32] = []
       for i in 0...(size / 2)
         v = u16(wav, at + 8 + 2 * i)
         if v >= 32768
           v -= 65536
         end
 
-        out = out.push(v.to_f / 32768.0)
+        out = out.push((v.to_f / 32768.0).to_float32)
       end
 
       return ok(out)

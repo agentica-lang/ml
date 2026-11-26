@@ -9,12 +9,22 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Dtype.Q4_K`, `Dtype.Q6_K` and the formats of the same names: `Tensor.from_file` dequantizes ggml's K blocks to `F32` on every backend, or keeps them as a weight on ggml (ml#126).
 - `Tensor.packed?(dtype)`: true for the dtypes that ggml keeps packed (`F16` and the quantized ones).
 - A graph on a Vulkan device may read tensors on `Ggml(Cpu)`: ggml's backend scheduler runs each node where its operands are and copies the activations between the two, and an output of a CPU node is a CPU tensor (ml#310).
+- `Tensor.floats32(values, shape, backend)` makes an `F32` tensor from a packed `List[Float32]` (4 bytes an item, since Agentica 0.40.0); `floats` keeps its `List[Float]` (ml#316).
 - `tools/install_xla.agc` installs the XLA CPU plugin from our own build, a GitHub Release of this repository (Linux x86_64 and aarch64, with the licenses of what it links), instead of the PyPI wheel, and needs no `unzip`; the old `xla/<wheel-sha>/` folders of the cache can be deleted (ml#287).
+
+### asr
+
+- **Breaking:** the samples of `Asr.transcribe`, `Asr.features` and `Mel.features`/`Mel.spectrogram`, and the samples and the result of `Mel.log_mel`, are a packed `List[Float32]`, half the memory of a `List[Float]` (5 minutes of audio: 19 MB, not 38). `Mel.log_mel` still computes in doubles; it no longer refuses a sample past 1e150, which a `Float32` cannot hold (ml#316).
+
+### whisper
+
+- **Breaking:** `Wav.load`, `Wav.decode`, `Mic.capture`, `Mic.read`, `Mic.decode_s16le`, `Mic.Source.Samples`, `Stream.Window.samples`, `Stream.windows`, `Stream.has_speech`, `Stream.is_speech`, `Stream.frame_rms` and `Whisper.transcribe` hold the samples as a packed `List[Float32]`. `transcribe_with` and `transcribe_detailed` keep a `List[Float]`, because a native module cannot take a `Float32`: `Whisper.widen(pcm)` makes one. `Whisper.transcribe` widens the whole clip for the length of the call, 8 bytes a sample, so a long clip should go through `Stream.transcribe_stream`, which widens one window at a time (ml#316).
 
 ### nn
 
 - `ShortConv`, the gated short convolution of LFM3 (`pkg/nn/short_conv`), `Attention.head_gate` (a gate of one number per head) and a `window` in `Nn.causal_mask` and `Padded.padded_mask`, the mask of a sliding-window layer (ml#275).
 - `Rope.zero_tail`, the rotary of LFM3's global layers (a partial rotation with the frequencies of the whole head) (ml#275).
+- `Rope.sections`, the interleaved M-RoPE of Qwen3.5: positions of `[3, seq]` (time, height, width) turn each pair of columns by the row of its axis, with `Nn.axis_masks` for a decoder that makes the masks once; positions of `[seq]` are the plain rope (ml#151).
 
 ### transformers
 
@@ -26,6 +36,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `layers_on_device`: a decode step with the blocks on the CPU makes a few scheduler splits, not one or two per block: the residual stream stays on the CPU and the checks of the graph are copied together, about a third of the time of a step (ml#312).
 - `tools/profile_qwen.agc` reads `WEIGHTS` (`f16`, `q8_0`, `q4_k`), and `benchmarks/bench_qwen.sh` has the Q4_K_M rows against llama.cpp, at equal threads, with the peak GPU memory (ml#291).
 - `Qwen3_5Vision` (`pkg/transformers/qwen3_5_vision`): the vision tower of Qwen3.5 (`Qwen/Qwen3.5-0.8B`), `open` and `encode` of one image's patches to the features that the text model reads at the image tokens (ml#151).
+- Images in the Qwen3.5 text model: `Mrope.layout` (the 3-axis positions and `rope_deltas` of an image prompt), `Generate.start(sight)` and the `sight` of `Generate.generate` splice the features of `Qwen3_5Vision` in at the image tokens and turn the attention by the three axes, to Hugging Face's logits on a tiny model (ml#151).
 
 ### hub
 
@@ -33,6 +44,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### vision
 
+- `vision` needs `image-0.3.0`: an enlarged image has the pixel centres of Pillow's bicubic, so the pixels of an image under `min_pixels` are within one 8-bit level of Hugging Face's processor, as a shrunk one is (ml#306).
 - `Vision.smart_resize` (it gives a `Vision.Size`) and `Vision.Step.SmartResize(factor, min_pixels, max_pixels, kernel)`: the size that Hugging Face's `smart_resize` gives (Qwen2-VL's image processor); `Vision.patches`: the patches of a normalized 3-channel image in the order of the processor's `pixel_values` (ml#151).
 
 ## [0.6.0] - 2026-11-26

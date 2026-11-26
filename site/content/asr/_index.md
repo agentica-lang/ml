@@ -8,14 +8,14 @@ weight: 5
 
 ## Example
 
-Transcribe one clip in Spanish. The folder `whisper-tiny` holds `model.safetensors`, `config.json` and `tokenizer.json`, from a Hugging Face Whisper checkpoint. The samples are 16 kHz mono floats: one channel, 16 000 samples per second. You can read them with `Whisper.load` from the `whisper` package, which uses `Wav.load` from its `wav` module.
+Transcribe one clip in Spanish. The folder `whisper-tiny` holds `model.safetensors`, `config.json` and `tokenizer.json`, from a Hugging Face Whisper checkpoint. The samples are a `List[Float32]` of 16 kHz mono floats: one channel, 16 000 samples per second. You can read them with `Whisper.load` from the `whisper` package, which uses `Wav.load` from its `wav` module.
 
 ```agentica
 import Asr from "pkg/asr/asr"
 import Tensor from "pkg/tensor/tensor"
 import Tokenizer from "pkg/asr/tokenizer"
 
-def transcribe_file(pcm: List[Float]) -> Result[Void]
+def transcribe_file(pcm: List[Float32]) -> Result[Void]
   backend = Tensor.Backend.Reference
   model = try Asr.open("whisper-tiny/model.safetensors", backend)
   tok = try Tokenizer.open("whisper-tiny/tokenizer.json")
@@ -81,7 +81,7 @@ end
 
 `pkg/asr/mel` is the log-mel frontend:
 
-- `Mel.log_mel(samples, mels, frames)` gives the log-mel as a flat list, row-major `[mels, frames]`, computed with an exact FFT in doubles. `frames` defaults to 3000, which is 30 s. Non-finite samples, or samples far outside -1..1, are errors.
+- `Mel.log_mel(samples, mels, frames)` takes a `List[Float32]` and gives the log-mel as a flat `List[Float32]`, row-major `[mels, frames]`, computed with an exact FFT in doubles and rounded to `Float32` once at the end. `frames` defaults to 3000, which is 30 s. Non-finite samples are errors.
 - `Mel.spectrogram(samples, mels, frames, backend)` is the same computation as one traced graph on any backend. In F32 it is about 1e-5 from `log_mel`.
 - `Mel.features` picks between them: `Reference` gets `log_mel`, and every other backend the graph. `Asr.features` calls it.
 

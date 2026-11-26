@@ -129,7 +129,7 @@ def run(args: List[String]) -> Result[Bool]
 end
 
 ## `jfk` six times, with silence between, and 37 samples of silence more: 73.5 s, not a multiple of 160 samples.
-def jfk_long(jfk: List[Float]) -> List[Float]
+def jfk_long(jfk: List[Float32]) -> List[Float32]
   out = jfk
   for gap in [1.0, 3.0, 0.5, 2.0, 1.0]
     out = out + silence(gap) + jfk
@@ -139,8 +139,8 @@ def jfk_long(jfk: List[Float]) -> List[Float]
 end
 
 ## `es` 24 times, with half a second of silence after each: 75.5 s.
-def es_long(es: List[Float]) -> List[Float]
-  out: List[Float] = []
+def es_long(es: List[Float32]) -> List[Float32]
+  out: List[Float32] = []
   for _ in 0...24
     out = out + es + silence(0.5)
   end
@@ -148,7 +148,7 @@ def es_long(es: List[Float]) -> List[Float]
   out
 end
 
-def silence(seconds: Float) -> List[Float] = List.repeat(0.0, (seconds * 16000.0).to_i!)
+def silence(seconds: Float) -> List[Float32] = List.repeat(0.0, (seconds * 16000.0).to_i!)
 
 def spans_match(got: List[Span], want: List[Span], tolerance: Float) -> Bool
   return false if got.size != want.size
@@ -199,15 +199,15 @@ def read_bytes(path: String) -> Result[Bytes]
 end
 
 ## The samples of a 16-bit PCM WAV file, scaled to -1..1.
-def pcm16(wav: Bytes) -> Result[List[Float]]
+def pcm16(wav: Bytes) -> Result[List[Float32]]
   at = 12
   while at + 8 <= wav.size
     size = (try Binary.read_u32_le(wav, at + 4)).to_i
     return error("the WAV chunk at byte #{at} runs past the file") if at + 8 + size > wav.size
     if wav.slice(at, 4) == "data".bytes
-      out: List[Float] = []
+      out: List[Float32] = []
       for i in 0...(size / 2)
-        out = out.push((try Binary.read_i16_le(wav, at + 8 + 2 * i)).to_f / 32768.0)
+        out = out.push(((try Binary.read_i16_le(wav, at + 8 + 2 * i)).to_f / 32768.0).to_float32)
       end
 
       return ok(out)

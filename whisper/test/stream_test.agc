@@ -68,7 +68,7 @@ end
 
 def test_has_speech_needs_one_hot_frame() -> Result[Void]
   vad = Stream.VadOptions()
-  frame: List[Float] = []
+  frame: List[Float32] = []
   for _i in 0...480
     frame = frame.push(0.0)
   end
@@ -80,9 +80,9 @@ def test_has_speech_needs_one_hot_frame() -> Result[Void]
 end
 
 def test_windows_cover_the_pcm_with_overlap() -> Result[Void]
-  pcm: List[Float] = []
+  pcm: List[Float32] = []
   for i in 0...100
-    pcm = pcm.push(i.to_f)
+    pcm = pcm.push(i.to_float32)
   end
 
   wins = try Stream.windows(pcm, 30, 10)
@@ -95,9 +95,9 @@ def test_windows_cover_the_pcm_with_overlap() -> Result[Void]
 end
 
 def test_windows_keep_a_short_tail_and_a_short_stream() -> Result[Void]
-  pcm: List[Float] = []
+  pcm: List[Float32] = []
   for i in 0...10
-    pcm = pcm.push(i.to_f)
+    pcm = pcm.push(i.to_float32)
   end
 
   short = try Stream.windows(pcm, 30, 10)

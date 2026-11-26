@@ -124,7 +124,8 @@ cache; generation is `generate_qwen35.agc` (below).
   the first `head_dim * partial_rotary_factor` columns), by `layer_types`
   (every fourth is full attention in 0.8B). Both are followed by the gated MLP
   with `Silu`. Rope positions are the token index: the three M-RoPE sections
-  agree for text, so the plain `rotate_half` rope with `dims` is the same.
+  agree for text, so the plain `rotate_half` rope with `dims` is the same (the image prompt is "Qwen3.5 images in the
+  text model").
 - Every norm of the decoder and the `q_norm` and `k_norm` scale by
   `1 + weight`, not `weight`: the loader adds the 1 on the host
   (`centered`). The gated norm of the linear layer keeps its weight as it is.
@@ -171,12 +172,44 @@ which the text model reads at the image tokens (the wiring is the next step of m
   `preprocessor_config.json`: 65,536 and 16,777,216 pixels; 32 is `patch_size * spatial_merge_size`), `to_tensor`,
   `normalize` with the mean and std 0.5, and `Vision.patches(x, 16, 2)`, which lays the patches out as the processor does
   (the image repeated for the two frames of the temporal patch). The image must be sRGB with 3 bands: the processor
-  flattens an alpha band first and `vision` does not yet, so `patches` refuses a fourth channel. An image under `shortest_edge` is enlarged, and libvips
-  enlarges with another sub-pixel alignment than Pillow's bicubic, so the pixels of an enlarged image are not within a
-  level of the processor's (the evidence is in "Tests" below, the issue is agentica-lang/packages#266); a shrunk one is.
+  flattens an alpha band first and `vision` does not yet, so `patches` refuses a fourth channel. An image under `shortest_edge` is enlarged, and since
+  `image-0.3.0` (agentica-lang/packages#266) libvips aligns the centres of an enlarged pixel like Pillow's bicubic: the pixels are within
+  a level of the processor's, grown or shrunk (the evidence is in "Tests" below).
 - Not supported: video (the temporal patch of an image is the frame twice, which the processor makes), several images in
   one call (call it once for each), another `hidden_act`, deepstack (the config key is empty in Qwen3.5), and the
   `weights` and `with_weights` of a fine-tune.
+
+### Qwen3.5 images in the text model
+
+The features of `Qwen3_5Vision.encode` reach the text model at the image tokens (`generate_qwen35.agc`,
+`kv_decoder.agc`, `mrope.agc`). The call that wires the processor, the tower and the chat is the next step of ml#151.
+
+- `Mrope.layout(ids, image_token, grids, merge)` works out on the host what Hugging Face's `get_rope_index` does: a text
+  token has the same position on the three axes, counting up; an image (a run of image tokens, one run for each grid in
+  order) has its start as its time and the start plus its row or column of the merged grid as its down and across; the
+  text after it goes on from the start plus the larger side of the merged grid. `delta` is the position that follows the
+  prompt minus its length, which is how far the tokens after the prompt are from their index (`rope_deltas`). Two images
+  need the vision start and end tokens between them.
+- A prompt with images starts from `KvDecoder.start(sight)` (`Generate.start`), the one way to start a cache: a `Sight`
+  is the `features` `[n, d]` (the caller's, not closed by the step), the `image_token` and the `Layout`. The first step
+  checks that the layout is the prompt's (a position on each axis for every token, the image rows in increasing order at
+  tokens that are the image token, and no other image token), splices the rows into the embeddings (`KvDecoder.spliced`:
+  a one-hot of the image rows `at` by the features, added to the embeddings with those rows cleared) and gives the
+  attention layers `Request.rotary`, the three axes `[3, width]`. The cache it gives keeps `delta`, and each later step
+  feeds `rotary` `[width]`, the index plus the delta, on the three axes alike. A text prompt has neither: its graph is
+  the one of before. `Stepper.sighted` says that a model reads them; another model refuses a sight. `step`,
+  `step_logits` and `step_top` take the images from the cache they are given, and `generate` from its `sight`.
+- A step with images is another compiled graph, and each number of image tokens compiles its own graph for the prompt
+  (the key has it); a cap or a pool of graphs is for the chat with an image (PR 4).
+- The interleaved M-RoPE is `Nn.Rope.sections` (`[11, 11, 10]` in the checkpoint, and `mrope_interleaved: false` is
+  refused): the pair `i` of the rotated columns turns by the height row when `i % 3 == 1` and `i < 3 * 11`, by the width
+  row when `i % 3 == 2` and `i < 3 * 10`, by the time row otherwise; the height and the width need 1 or more.
+  `Tensor.rope` takes one position vector, so the rotation runs for each axis on the whole head and a 0/1 mask over the
+  columns, built in the graph from fills (`Nn.axis_masks`, once for each step: `Reading.axes`), picks each pair from its
+  axis; the cost is three ropes for the queries and the keys of the full-attention layers, in a prompt with images only.
+  Positions of `[seq]` are the plain rope, so text, and the tokens after an image, use no masks.
+- Not supported: video, and a second `generate` that continues a sequence with another image (a `Sight` is for the
+  prompt).
 
 ### Qwen3.5 generation
 
@@ -639,6 +672,29 @@ error row per config field.
 - `tools/qwen35_vision_check.agc` on the real tower of the same checkpoint (manual; `test/qwen35_vision_check_golden.py`
   reads only `model.visual.*`): a 6 by 8 grid of patches whose values are an integer formula, 12 rows of 1,024 features;
   the largest gap is 2.4e-5 on CPU and 2.0e-5 on Vulkan (it passes within 1e-4).
+- `test/generate_qwen35_image_test.agc` against `test/qwen35_image_golden.py` (manual, Hugging Face's
+  `Qwen3_5ForConditionalGeneration` in `float32`, eager attention, `fixtures/qwen35_image_golden.json`, sha256
+  `9c47c53ab6ba6d499ad686797a9989eb74ab05a1238a2da0fa308a09d8828b5c`): a tiny random model (the text model of
+  `qwen35_golden.py` with a head of 16 columns of which 12 turn, `mrope_section` `[2, 2, 1]`, and a tiny tower) on a
+  prompt of 18 ids with two images (grids 4 by 6 and 6 by 2, so 6 and 3 tokens, the second taller than wide).
+  `Mrope.layout` gives the positions and `rope_deltas` of `get_rope_index`; the logits of the prompt (the features of
+  the golden spliced in) and of each id after it match Hugging Face's scores on the reference (two steps) and on ggml
+  CPU (six, with the greedy ids; Vulkan is skipped for this head width, so the sectioned rope is checked on the CPU only
+  here); a prompt of one image runs its own compiled step in a generator that has compiled the two-image one; each way a
+  `Sight` can differ from the prompt, a model that reads no images, and a prompt that does not match its grids are
+  errors checked by phrase; an image at the very start and at the very end of a prompt has the positions worked out by
+  hand. `test/layers_test.agc` has the sectioned rope on its own against the plain rope of each axis row (and the masks
+  made once), `test/qwen35_test.agc` the refusal of `mrope_interleaved: false` and of bad sections. The tower is the one
+  tested above, its features are stored. Mutants, each killed (the tests that fail): the cycle order of the axes, no
+  limit of the sections, the time mask keeping the width pairs, the time and width rows swapped, no tail columns, a
+  height of 0 accepted, the given masks read as the first axis's (nn and the golden); the larger side of the merged grid
+  taken as the smaller, `delta` off by one, down and across swapped, the time of an image following its row (the layout
+  and the logits); the splice not clearing the placeholder rows, the decode ignoring the delta, the cache forgetting it,
+  the attention ignoring `rotary`, the compiled step not keyed by the number of image tokens, each of the checks of the
+  `Sight` (positions of another size, rows out of order, out of range, at a text token, a missed image token) removed, a
+  model that reads no images taking a sight, the sections of the config ignored, `mrope_interleaved: false` accepted,
+  the model skipping the splice. The attention not passing the masks to `project` survives: `project` makes the same
+  masks itself, only once for each layer.
 - `test/bpe_test.agc` on `fixtures/bpe_marks.json`, a tiny tokenizer with the
   split of Qwen3.5 (`test/tokenizer_golden.py marks`, `tokenizers` 0.23.3):
   the ids and text of `tokenizers` on the strings of the BPE test, 16 where a
@@ -763,9 +819,9 @@ error row per config field.
   input (`SmartResize`, `to_tensor`, `normalize`, `patches`) on drawn images of the ResNet test against the processor's
   values at about 500 places of each (one case with the checkpoint's own bounds, 352 by 480 to a grid of 22 by 30): a shrink
   is one 8-bit level apart (0.0078), two on the 64 by 32 image (0.0157; the tolerance is 0.016), the mean of all the
-  values 1e-5 to 1e-3 apart. A grow of area 2.5 times (1.5 and 1.67 per axis; an 8-bit crop enlarged) is not:
-  30 percent of the sampled values are 3 or more levels apart, up to 0.29 (37 levels), at the edges of the drawn discs, the
-  mean 0.0003; the tolerance of that case is 0.6, so it checks the grid and the rough alignment only. The cause is in the `image` package (agentica-lang/packages#266). The golden is
+  values 1e-5 to 1e-3 apart. A grow of area 2.5 times (1.5 and 1.67 per axis; an 8-bit crop enlarged) is too, since `image-0.3.0`:
+  one level (0.0078), no sampled value farther, the mean 0.0004 (with `image-0.2.0` 30 percent of the sampled values were 3 or more levels apart, up to
+  0.29, agentica-lang/packages#266, and the tolerance of that case was 0.6; ml#306). The golden is
   committed (`vision/test/fixtures/qwen/golden.json`, 23 KB, sha256 `23fabc27c5cdb1c93fac66f7c4db6771c2f5aa1ef7f8ab597ec0fdc37293ce11`). Mutants that fail it: the tie of
   `smart_resize` rounded up, the floor of its grow branch, the floor of its shrink branch as a ceil or a round, the height
   and width swapped, no minimum of one factor, an aspect ratio of 200 refused, the two frames of a patch not repeated, the

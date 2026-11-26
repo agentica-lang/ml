@@ -38,12 +38,16 @@ is copied, 4096 bytes at most.
 
 `transcribe_with(model, pcm, options)` runs one decode of `pcm` (16 kHz mono
 floats, 1 to 4 800 000 samples) and returns the `Segment`s the engine
-emitted, in time order:
+emitted, in time order. `Wav.load`, `Mic` and `Stream` hold their samples as a
+packed `List[Float32]` (4 bytes each); a native module cannot take a `Float32`,
+so `transcribe_with` and `transcribe_detailed` take a `List[Float]` and
+`Whisper.widen(pcm)` makes one (a copy of 8 bytes a sample for the length of the
+call; `Stream` widens one window at a time):
 
 ```agc
 model = try Whisper.load_model("models/ggml-small.bin")
 pcm = try Whisper.load("live/fixtures/es-hola.wav")
-segments = try Whisper.transcribe_with(model, pcm, Whisper.Options(language: "es"))
+segments = try Whisper.transcribe_with(model, Whisper.widen(pcm), Whisper.Options(language: "es"))
 for segment in segments
   puts("#{segment.start_ms} ms to #{segment.end_ms} ms: #{segment.text}")
 end
@@ -71,7 +75,7 @@ To get the segments and tokens that server gives, send its options:
 
 ```agc
 options = Whisper.Options(language: "auto", token_timestamps: true, max_len: 60, language_probabilities: true)
-transcript = try Whisper.transcribe_detailed(model, pcm, options)
+transcript = try Whisper.transcribe_detailed(model, Whisper.widen(pcm), options)
 puts(Whisper.language_name(transcript.language))   # some("english")
 ```
 
@@ -100,8 +104,10 @@ puts(Whisper.language_name(transcript.language))   # some("english")
 `language_name(code)` is the engine's English name of a code (`"es"` is
 `"spanish"`), none for a code it does not know.
 
-`transcribe(model, pcm)` is `transcribe_with` with `Options()` followed by
-`join_text`:
+`transcribe(model, pcm)` takes the `List[Float32]` of `Wav.load` and is
+`transcribe_with` of `widen(pcm)` with `Options()` followed by `join_text`. It
+widens the whole clip for the length of the call, so a long clip goes through
+`Stream.transcribe_stream`, which widens one window at a time:
 
 ```agc
 text = try Whisper.transcribe(model, pcm)   # "¡Hola! Esto es una prueba de audio en español."

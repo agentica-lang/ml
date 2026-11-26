@@ -31,6 +31,15 @@ def test_chained_training_steps_compiled_by_xla_match_the_reference() -> Result[
   close(got, want)
 end
 
+## `floats32` uploads a packed list: the tensor `floats` makes of the same values, widened.
+def test_floats32_uploads_a_packed_list_to_xla() -> Result[Void]
+  return ok() if !try present()
+  packed: List[Float32] = [1.5, -2.0, 3.0, 0.1]
+  got = try Tensor.floats32(packed, [2, 2], XLA)
+  try Test.eq(try Tensor.to_list(got), try Tensor.to_list(try Tensor.floats(packed.map { |x| x.to_f }, [2, 2], REF)))
+  Test.error?(Tensor.floats32(packed, [3], XLA))
+end
+
 ## `value_and_grad` on XLA compiles the graph for the call (`Trace.evaluate`).
 def test_value_and_grad_on_xla_matches_the_reference() -> Result[Void]
   return ok() if !try present()

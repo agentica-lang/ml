@@ -71,7 +71,7 @@ def main() -> Void
   model = Whisper.load_model("models/ggml-small.bin").unwrap!
   pcm = Whisper.load("clip.wav").unwrap!
   options = Whisper.Options(language: "es")
-  for segment in Whisper.transcribe_with(model, pcm, options).unwrap!
+  for segment in Whisper.transcribe_with(model, Whisper.widen(pcm), options).unwrap!
     puts("#{segment.start_ms} ms to #{segment.end_ms} ms: #{segment.text}")
   end
 end
@@ -80,6 +80,7 @@ end
 `whisper` is a project of its own: it builds the pinned whisper.cpp with `whisper/tools/build-engine.sh` (clone the
 ml repository at the tag, as `backends.md` does for ggml) and prints the exports to `eval`. One decode takes up to five
 minutes of audio, `Whisper.Options.language` `"auto"` detects the language, and `Stream.transcribe_stream` cuts longer
-audio into windows.
+audio into windows. `Whisper.load` gives a `List[Float32]`; `transcribe_with` takes the `List[Float]` of
+`Whisper.widen(pcm)`, a copy of the whole clip, so a long clip is better through `Stream.transcribe_stream`.
 
 Pages: `https://www.agentica-lang.com/ml/asr/` and `https://www.agentica-lang.com/ml/whisper/`.

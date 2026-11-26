@@ -59,7 +59,7 @@ end
 ## from: `Samples` holds synthetic PCM, `Command` runs a live capture once
 ## read.
 enum Source
-  Samples(List[Float])
+  Samples(List[Float32])
   Command(Capture)
 end
 
@@ -84,7 +84,7 @@ end
 ## exited 0 may leave partial audio, and the cap path kills deliberately, so
 ## its status is meaningless there). The process is closed on every path, so
 ## no call leaves one running.
-def capture(spec: Capture) -> Result[List[Float]]
+def capture(spec: Capture) -> Result[List[Float32]]
   if spec.max_samples < 1 or spec.max_samples > MAX_SAMPLES
     return error("mic: max_samples holds 1..4800000 samples (five minutes at 16000 Hz)")
   end
@@ -107,7 +107,7 @@ end
 
 ## Reads `source` to its samples: `Samples` as they are, `Command` through
 ## `capture`.
-def read(source: Source) -> Result[List[Float]]
+def read(source: Source) -> Result[List[Float32]]
   case source
     Source.Samples(samples) -> ok(samples)
     Source.Command(spec) -> capture(spec)
@@ -117,13 +117,13 @@ end
 ## Decodes raw s16le PCM `data` to floats from -1.0 to just below 1.0, as
 ## `Wav` decodes its `data` chunk; error on an odd byte, which is a truncated
 ## stream.
-def decode_s16le(data: Bytes) -> Result[List[Float]]
+def decode_s16le(data: Bytes) -> Result[List[Float32]]
   return error("mic: raw audio holds whole 16-bit samples") if data.size % 2 == 1
-  samples: List[Float] = []
+  samples: List[Float32] = []
   offset = 0
   while offset < data.size
     value = try Binary.read_i16_le(data, offset)
-    samples = samples.push(value.to_f / 32768.0)
+    samples = samples.push((value.to_f / 32768.0).to_float32)
     offset += 2
   end
 

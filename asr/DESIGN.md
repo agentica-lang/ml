@@ -24,7 +24,7 @@ struct Options      language (none: detect), translate, timestamps, max_tokens, 
 struct Transcript   text, language, language_probability, tokens, segments (start, stop, text),
                     avg_logprob, no_speech_prob, truncated
 Mel.features(samples, mels, frames, backend, plan = none) -> Result[Tensor]   [1, mels, frames] on the backend
-Mel.log_mel(samples, mels, frames = 3000) -> Result[List[Float]]   row-major [mels, frames], in doubles
+Mel.log_mel(samples, mels, frames = 3000) -> Result[List[Float32]]   row-major [mels, frames], computed in doubles
 Asr.features(model, samples, frames) -> Result[Tensor]             Mel.features with the model's plan
 Tokenizer.open(path) -> Result[Tokenizer]       a tokenizer.json
 Tokenizer.decode(tok, ids) -> Result[String]    text tokens only
@@ -92,9 +92,10 @@ last frame), as Hugging Face's feature extractor does → a reflect-padded STFT
 the Slaney mel filterbank → `log10(max(x, 1e-10))` → a floor at the maximum
 minus 8 → `(x + 4) / 4`. Fewer than 3000 frames are the spectrogram of that
 shorter segment (its own end reflection and maximum), not a prefix of the 30 s
-one. Samples are about -1..1: a non-finite one is an error, and so is one past
-1e150 for `log_mel` (doubles) or past about 1.8e19 for the graph (`F32`, whose
-power overflows there).
+one. Samples are about -1..1 and a packed `List[Float32]` (4 bytes each, so 5
+minutes of audio are 19 MB, not 38): a non-finite one is an error, and so is
+one past about 1.8e19 for the graph (`F32`, whose power overflows there).
+`log_mel` computes in doubles and rounds its result to `Float32` once.
 
 - **One graph of tensor ops** on every backend but `Reference`
   (`Mel.spectrogram`): the signal (padded by reflection) is read as blocks of
@@ -248,7 +249,7 @@ tokenizer before the audio costs anything.
   timestamps; `avg_logprob` is over all the windows' decoded ids and
   `no_speech_prob` and `language_probability` are the first window's. It needs
   timestamps, as Hugging Face's does (the seek reads them). The audio is a
-  `List[Float]` and the whole log-mel one tensor (80 * 100 floats a second).
+  `List[Float32]` and the whole log-mel one tensor (80 * 100 floats a second).
   The Hugging Face call matched is the feature extractor with
   `truncation=False, padding="longest"` (OpenAI's `log_mel_spectrogram` over
   the unpadded audio), not the default `processor(audio)`, which pads or cuts
