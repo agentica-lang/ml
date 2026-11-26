@@ -170,11 +170,11 @@ def idefics3_tiles(image: Image.Image, backend: Tensor.Backend = Tensor.Backend.
     weights: List[Tensor.Tensor] = []
     for r in steps
       if r.to_w != r.from_w
-        weights = weights.push(try lanczos_matrix(r.from_w, r.to_w, backend))
+        weights = weights + try lanczos_taps(r.from_w, r.to_w, backend)
       end
 
       if r.to_h != r.from_h
-        weights = weights.push(try lanczos_matrix(r.from_h, r.to_h, backend))
+        weights = weights + try lanczos_taps(r.from_h, r.to_h, backend)
       end
     end
 
@@ -324,25 +324,36 @@ struct Pixels
   pixel_format: Image.Format
 end
 
-## `[to, from]` weights of Pillow's Lanczos resize of a line of `from` samples to `to`: row `i` holds the weights of the
-## samples that output sample `i` adds, and zeros elsewhere.
-def lanczos_matrix(from: Int, to: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+## The weights of Pillow's Lanczos resize of a line of `from` samples to `to` that are not zero, as two graph inputs: the
+## place `i * from + x` in the matrix `[to, from]` that gives the weight of sample `x` in output sample `i`, and the weights
+## (`[n, 1]`). `matrix` scatters them.
+def lanczos_taps(from: Int, to: Int, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   scale = from.to_f / to.to_f
   spread = [scale, 1.0].max.unwrap!
   support = 3.0 * spread
-  rows: List[List[Float]] = []
+  places: List[Tensor.Values] = []
+  values: List[Float] = []
   for i in 0...to
     centre = (i.to_f + 0.5) * scale
     low = [(centre - support + 0.5).floor, 0].max.unwrap!
     high = [(centre + support + 0.5).floor, from].min.unwrap!
     weights = (low...high).to_a.map { |x| lanczos((x.to_f - centre + 0.5) / spread) }
     total = weights.sum
-    rows = rows.push(
-      (0...low).to_a.map { |_| 0.0 } + weights.map { |w| w / total } + (high...from).to_a.map { |_| 0.0 },
-    )
+    for k in 0...weights.size
+      places = places.push(Tensor.Values.Int(i * from + low + k))
+      values = values.push(weights[k] / total)
+    end
   end
 
-  Tensor.floats(rows.flat_map { |row| row }, [to, from], backend)
+  ok([
+    try Tensor.from_list(places, [places.size], Tensor.Dtype.I32, backend),
+    try Tensor.floats(values, [values.size, 1], backend),
+  ])
+end
+
+## The `[to, from]` matrix of `lanczos_taps`.
+def matrix(places: Tensor.Tensor, values: Tensor.Tensor, to: Int, from: Int) -> Result[Tensor.Tensor]
+  Tensor.reshape(try Tensor.scatter_add(places, values, to * from), [to, from])
 end
 
 ## The samples of a pass held to `0.0..255.0`, as Pillow's clip to 8 bits does (`relu` twice: ggml has no `clamp`). They are
@@ -372,13 +383,13 @@ def resized_by(x: Tensor.Tensor, r: Resize, xs: List[Tensor.Tensor], at: Int) ->
   out = x
   next_at = at
   if r.to_w != r.from_w
-    out = try across(out, xs[next_at])
-    next_at += 1
+    out = try across(out, try matrix(xs[next_at], xs[next_at + 1], r.to_w, r.from_w))
+    next_at += 2
   end
 
   if r.to_h != r.from_h
-    out = try down(out, xs[next_at])
-    next_at += 1
+    out = try down(out, try matrix(xs[next_at], xs[next_at + 1], r.to_h, r.from_h))
+    next_at += 2
   end
 
   ok(Resample(image: out, at: next_at))

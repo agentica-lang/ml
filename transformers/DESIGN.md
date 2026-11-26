@@ -745,8 +745,8 @@ error row per config field.
   missing, `"\n\n"` as one newline, a newline after the last row too, the bilinear, bicubic, Lanczos2 and nearest
   kernels, and the global image taken before the resize to the grid; in the Lanczos made here, the support not scaled
   when shrinking, the centre of an output pixel without the half, weights not normalized, no hold to 0..255 (each side
-  alone) and the kernel of Lanczos 2. The 3000 by 2000 image takes 8 s into 13 frames on the CPU, most of it the lists
-  of the weights.
+  alone) and the kernel of Lanczos 2. The 3000 by 2000 image takes 1.7 s into 13 frames on the CPU (the weights that are not zero are
+  the only ones made in the interpreter, the matrices are scattered in the graph).
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and
