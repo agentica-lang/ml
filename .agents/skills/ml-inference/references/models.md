@@ -124,6 +124,14 @@ end
 - Qwen3.5 (`Qwen/Qwen3.5-0.8B`, text only) is the same flow with `Qwen3_5.open`, `Chat.apply("qwen3_5", ...)` and
   `pkg/transformers/generate_qwen35` (`Generate.open(m, 248070)`: the ids above the tokenizer's 248,070 tokens, which have
   no text, are never answered; stop ids `[248046, 248044]`). `Qwen3_5` has no `weights`/`with_weights` (no fine-tune).
+- Granite MoE (`GraniteMoe.open(dir, backend)`, `ibm-granite/granite-3.1-1b-a400m-instruct`) generates with
+  `pkg/transformers/generate_granite_moe` (`Generate.open(m)`, the same calls); it has no tokenizer or chat template yet,
+  so a caller passes ids.
+- LFM3 (`Lfm3.open(dir, backend, Tensor.Dtype.F16)`, `LiquidAI/LFM3-1.7B`: the `F32` model is 6.9 GB) is the same flow with
+  `Chat.apply("lfm3", messages, true, none, tools, preserve_thinking)` (it takes `tools` and the roles `tool`),
+  `Bpe.open` and `pkg/transformers/generate_lfm3` (`Generate.open(m, tok.pieces.size)`; stop id `<|im_end|>` 124900).
+  `Lfm3` has no `weights`/`with_weights` (no fine-tune). Its cache holds K/V of the 11 attention layers and the state of
+  the 13 convolution layers.
 - The same seed draws the same ids. `top_k: 0` (the default) draws among the 256 largest logits.
 - The first call of a new prompt length compiles graphs, which takes a moment; later calls compile nothing.
 - The prompt and the new ids must fit `max_position_embeddings` (40960). One prompt at a time: there is no batching.

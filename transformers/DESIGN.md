@@ -6,12 +6,12 @@ with a KV cache (greedy or sampled), the tokenizers, and the weights by name
 for a fine-tune with `train/`. Qwen3.5 (text only) has its forward, its
 tokenizer, its chat template and generation (ml#150).
 Granite MoE (`granitemoe`) has its forward and generation (ml#274).
-LFM3 (`lfm3`) has its forward, its tokenizer and its chat template (ml#275).
+LFM3 (`lfm3`) has its forward, its tokenizer, its chat template and generation (ml#275).
 
 ## Generation
 
 `kv_decoder.agc` follows `asr/`'s decoder (the padded-cache helpers are shared, `nn/kv.agc`; each model keeps its own
-forward) and is the same for Qwen3 and Granite MoE: both model files (`generate.agc`, `generate_granite_moe.agc`) give
+forward) and is the same for Qwen3, Granite MoE and LFM3: the model files (`generate.agc`, `generate_granite_moe.agc`, `generate_lfm3.agc`) give
 it a `Stepper` (the sizes of the model, its token table, `traced` and the `stepped` graph of one step) and keep their
 `Generator`, `stepped` and `layer`. `Request.compiled` tells `stepped` that the step is traced for ggml: Qwen3 keeps
 its cache in `F16` then and Granite MoE in `F32` always. `Generate.open(m)` is the generator of a Qwen3 model, which
@@ -234,7 +234,8 @@ prompt's padding rows go through the router and the experts too, which changes n
 
 `lfm3.agc`: `Lfm3.open(dir, backend, weights = F32)` (the folder of an official `LiquidAI/LFM3-*` repository: `config.json`
 and `model.safetensors` or its `.index.json`; `weights` is `F32` or, on ggml, `F16`), `Lfm3.run(m, rows, last)`,
-`Lfm3.logits(m, ids, last)` and `Lfm3.close_model(m)`. The forward is over whole sequences, with no cache.
+`Lfm3.logits(m, ids, last)` and `Lfm3.close_model(m)`. The forward is over whole sequences, with no cache; generation is
+`generate_lfm3.agc` (below).
 
 - A layer is a mixer by `layer_types`: `ShortConv` (`nn/DESIGN.md`) for `conv`, and `Nn.Attention` for `full_attention`
   and `sliding_attention`, each followed by the SwiGLU MLP (`w1` the gate, `w3` the value, `w2` the output). Both branches
@@ -265,6 +266,40 @@ and `model.safetensors` or its `.index.json`; `weights` is `F32` or, on ggml, `F
   and a tool call whose arguments are a JSON string (the template refuses that one too).
 - The tiny golden (`test/lfm3_golden.py`, rows of 9 tokens, window 4, the real rotary factor and thetas) is the official
   code's `float32` eager run. `tools/lfm3_check.agc` is the manual check on the real checkpoint (`test/lfm3_check_golden.py`).
+
+### LFM3 generation
+
+`generate_lfm3.agc` gives `kv_decoder.agc` LFM3's layer: the API, the compiled steps, the padded prompt, the `usable` mask
+and the pick in the graph are those of [Qwen3.5 generation](#qwen35-generation) and Qwen3. The decoder learned two things
+for it, both off for the models without them: a `Stepper` may have `states` (tensors of a size that does not depend on the
+length, new at every step, kept in `Cache.states`) and `taps` (a prompt is then given the `Delta.Padding` of the
+convolutions, as in Qwen3.5, so the padding rows leave the state as the real rows did).
+
+- The cache holds the keys and values of the 11 attention layers, padded to a capacity of 8, 16, 32, ... (`F16` on ggml),
+  and the state of the 13 convolution layers, `[6, width]` in `F32`: the last 6 rows of the input of the convolution.
+- A sliding layer keeps every row and its mask hides the keys a window or more before the position
+  (`padded_mask` with `window`), so its cache grows like a global one's and a decode step reads as many rows in a sliding
+  layer as in a global one. A ring that drops the rows out of the window is not done: it would cut the reads of a sliding
+  layer to 256 rows and halve the cache of a very long sequence (the five sliding layers hold 10 KB a token in `F16`, 4 kv
+  heads of 128, against 12 KB for the six global ones), and nothing else.
+- The prompt step takes its own `Delta.Padding`; every later step is one token with no padding. The masks of the
+  prompt step are dense `[capacity, reach]` tensors and the attention scores of the whole prompt are too, so the cost of
+  a prompt grows with the square of its length: the practical context is a few thousand tokens, not the 256K of the
+  config (not measured above 601 tokens).
+- The tiny golden of generation is the same file (`fixtures/lfm3_golden.json` has the 14 ids and scores of the official
+  greedy `generate` from 7 ids, window 4): `test/generate_lfm3_test.agc` checks the logits of the cached steps against the
+  whole forward on the reference (one row) and on ggml (two rows), and the greedy ids and scores against the official ones
+  on ggml; a sliding layer that read the whole cache fails it.
+- `tools/generate_lfm3_check.agc` is the manual check on the real checkpoint (`test/generate_lfm3_check_golden.py`, the
+  official code's `float32` run layer by layer from the `bfloat16` file, which needed a 6 GB scope: 7.5 GB resident, mostly
+  the mapped file; 5 GB was killed): the 24 greedy ids after each of six prompts of 5, 5, 14, 19, 375 and 601 tokens are equal
+  with `F16` weights on ggml CPU and on Vulkan with `vulkan_fp16` off. The smallest gap between the
+  two largest logits of a step is 0.116 (0.222 for the 601 tokens). The tokens past 256 test the window; the 601-token
+  prompt leaves a cache of 1024 rows that a decode step reads 768 of (`Padded.reach`), the only test of a `reach` below the
+  capacity: the tiny test has at most 32 rows, where they are equal. The largest gap of a logit at the five ids the
+  official code found largest is 3.6e-3 on CPU with the `F16` cache and 2.9e-5 with an `F32` cache (the cache line of
+  `generate_lfm3.agc` changed for the run, not kept): the `F16` cache is the whole gap, `F16` weights are not. Peak 4.0 GB
+  on CPU at 601 tokens, nothing longer measured. `tools/bench_lfm3.agc` is the timing row of `benchmarks/README.md`.
 
 ## BERT
 

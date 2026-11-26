@@ -1,6 +1,6 @@
 # Benchmarks
 
-Local runs against the Python and C++ stacks, never in CI, all on the one machine below: Whisper against whisper.cpp, training against PyTorch and JAX, a DistilBERT fine-tune against PyTorch and PEFT, BERT and Qwen3 against llama.cpp, Qwen3.5-0.8B alone.
+Local runs against the Python and C++ stacks, never in CI, all on the one machine below: Whisper against whisper.cpp, training against PyTorch and JAX, a DistilBERT fine-tune against PyTorch and PEFT, BERT and Qwen3 against llama.cpp, Qwen3.5-0.8B and LFM3-1.7B alone.
 
 ## Whisper-tiny, ours against whisper.cpp
 
@@ -337,6 +337,24 @@ Correctness: the greedy ids match Hugging Face's `generate` on six prompts of 5 
 agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR cpu                          # ggml CPU
 VULKAN_FP16=0 agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR vulkan   # Vulkan, exact
 VULKAN_FP16=1 agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR vulkan   # Vulkan, fp16 products
+```
+
+## LFM3-1.7B (ml#275), ours only
+
+`LiquidAI/LFM3-1.7B` (revision in `transformers/DESIGN.md`, `F16` weights, 3.4 GB), greedy generation, one sequence, `Generate` of `pkg/transformers/generate_lfm3`. Ours is `transformers/tools/bench_lfm3.agc`, timed as the Qwen3.5 tool is (the load, one warm-up pass that compiles the steps, then a prompt of 128 token ids in one step and 64 one-token steps after it). Same machine as above, one run per row, with other jobs of the machine running (the load average was between 3.9 and 6.7); peak memory is `/usr/bin/time`'s maximum resident set. There is no llama.cpp row. The model has 13 convolution layers (a state that does not grow), 5 sliding-window layers and 6 global ones, which keep a cache that grows (the sliding ones read the whole cache under a window mask).
+
+| Row | Prompt, 128 tokens | 64 tokens after it | Load | Peak memory |
+|---|---|---|---|---|
+| ours, ggml CPU | 21.1 tokens/s | 5.9 tokens/s | 6.3 s | 3.78 GB |
+| ours, ggml Vulkan, exact (fp16 off) | 71.0 | 7.7 | 7.3 s | 0.85 GB |
+| ours, ggml Vulkan, fp16 products | 115.9 | 8.5 | 6.7 s | 0.86 GB |
+
+Correctness: the greedy ids match the official code's `generate` on prompts of 5 to 601 tokens (two are past the sliding window) on both backends (`transformers/tools/generate_lfm3_check.agc`).
+
+```sh
+agentica --max-steps 100000000000 transformers/tools/bench_lfm3.agc MODEL_DIR cpu                          # ggml CPU
+VULKAN_FP16=0 agentica --max-steps 100000000000 transformers/tools/bench_lfm3.agc MODEL_DIR vulkan   # Vulkan, exact
+VULKAN_FP16=1 agentica --max-steps 100000000000 transformers/tools/bench_lfm3.agc MODEL_DIR vulkan   # Vulkan, fp16 products
 ```
 
 ## Half weights (ml#86)
