@@ -153,6 +153,28 @@ def test_two_mixed_graphs_take_turns_on_the_scheduler() -> Result[Void]
   ok()
 end
 
+## The residual stream: a row looked up in a large table on the device, then added to the product with a weight on the
+## CPU. The sum belongs to the CPU, so the layers after it do not cross the bus at every step.
+def residual(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  e = try Tensor.gather(xs[0], xs[1])
+  y = try Tensor.linear(e, xs[2], none, true)
+  ok([try Tensor.add(e, y)])
+end
+
+def residual_inputs(weight_on: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  ids = try Tensor.from_list([Tensor.Values.Int(7)], [1], Tensor.Dtype.I32, DEVICE)
+  ok([try floats(counting(300 * 64), [300, 64], DEVICE), ids, try floats(counting(64 * 64), [64, 64], weight_on)])
+end
+
+def test_a_sum_of_a_device_row_and_a_cpu_product_runs_on_the_cpu() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  want = try values(try Trace.eval_many(try residual_inputs(DEVICE)) do |xs| residual(xs) end)
+  got = try Trace.eval_many(try residual_inputs(HOME)) do |xs| residual(xs) end
+  try Test.eq(try values(got), want)
+  Test.eq(Tensor.backend(got[0]), HOME)
+end
+
 ## A graph with every leaf on the device never goes through the scheduler; one with a leaf on the CPU does.
 def test_only_a_graph_with_a_cpu_leaf_goes_through_the_scheduler() -> Result[Void]
   return absent() if !try mixed_present()

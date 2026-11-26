@@ -1575,6 +1575,7 @@ static struct ggml_tensor *finite_check(struct entry *p, struct ggml_tensor *val
 }
 
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
+  struct ggml_tensor *finite[MAX_OUTPUTS]; /* the finiteness check of each output, copied to `checks` after all are made */
   struct entry *p = lease->e;
   int64_t outs[MAX_OUTPUTS];
   struct ggml_tensor **inner, **views;
@@ -1593,6 +1594,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     if (p->nodes[i].guard != NULL) p->guard_count++;
   }
   if (!room(p, (size_t)(nouts * 8 + p->guard_count + 1))) return tg_error(env, "the graph ran out of room for its outputs");
+  memset(finite, 0, sizeof finite);
   p->graph = ggml_new_graph_custom(p->ctx, graph_size(p->capacity), false);
   p->checks = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, nouts + p->guard_count);
   /* the positions of the ropes go first: a cast between a rope's norm and the rope keeps ggml-vulkan from fusing them */
@@ -1602,7 +1604,6 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   for (i = 0; i < nouts; i++) {
     struct gnode *n = &p->nodes[outs[i]];
     struct ggml_tensor *value;
-    struct ggml_tensor *check;
     struct ggml_tensor *own = NULL;
 
     if (!n->in_place && !n->lazy) own = own_output(p, n, dense(p, n));
@@ -1614,10 +1615,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
       /* the output is the leaf itself: nothing to copy, the node only has to run */
       p->outs[i].donated = true;
       ggml_build_forward_expand(p->graph, n->t);
-      if (n->op == OP_ADAM_PART && n->part == 2) {
-        check = finite_check(p, n->t);
-        ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
-      }
+      if (n->op == OP_ADAM_PART && n->part == 2) finite[i] = finite_check(p, n->t);
       continue;
     }
     value = dense(p, n);
@@ -1628,10 +1626,22 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     }
     /* sum_rows first, since one ggml_sum of a large tensor is a single slow workgroup on Vulkan; the check reads
        the value, so it runs after the node that makes it */
-    check = finite_check(p, value);
-    ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
+    finite[i] = finite_check(p, value);
   }
   p->output_count = nouts;
+  /* The checks and the guards are all made before the first is copied to `checks`: on a graph that runs on two
+     backends, the copies (device memory) between them (a layer on the CPU) would each be a split of the scheduler. */
+  for (i = 0; i < nouts; i++) {
+    if (finite[i] != NULL) ggml_build_forward_expand(p->graph, finite[i]);
+  }
+  for (i = 0; i < p->count; i++) {
+    if (p->nodes[i].guard != NULL) ggml_build_forward_expand(p->graph, p->nodes[i].guard);
+  }
+  for (i = 0; i < nouts; i++) {
+    if (finite[i] != NULL) {
+      ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, finite[i], ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
+    }
+  }
   for (i = 0, j = nouts; i < p->count; i++) {
     struct ggml_tensor *guard = p->nodes[i].guard;
 
@@ -1752,14 +1762,18 @@ static int side_of(const struct entry *p, const struct ggml_tensor *t) {
   return side >= 0 ? side : side_get(p, root);
 }
 
-/* The side of `node`: the side of the memory it writes when that is made (a view of a cache); the CPU when it reads a
-   tensor that lives there (a weight, a cache), whatever else it reads (a long prompt's activations are bigger than a
-   weight, and copying a weight on every run is what a layer on the CPU is there to avoid); else the side that holds
-   most of its operands' bytes, a tie going to the side of the first operand that an earlier node computed, else to the
-   device. */
+/* A device leaf below this many bytes (a norm weight, a position, a scalar) does not pull a node to the device. */
+#define SMALL_LEAF 65536
+
+/* The side of `node`, or -1 when nothing about its operands says (`place` then follows its consumers): the side of the
+   memory it writes when that is made (a view of a cache); the CPU when it reads a tensor that lives there (a weight, a
+   cache), whatever else it reads (a long prompt's activations are bigger than a weight, and copying a weight on every
+   run is what a layer on the CPU is there to avoid); else the side with most operand bytes, where a device leaf counts
+   only from SMALL_LEAF bytes up, a tie going to the side of the operand that an earlier node computed last, so that
+   the residual stream of a layer on the CPU stays there. */
 static int decide(const struct entry *p, const struct ggml_tensor *node) {
   int64_t bytes[2] = {0, 0};
-  int j, side, tie = -1;
+  int j, side, last = -1;
   bool host = false;
 
   if (node->buffer != NULL) return buffer_side(node->buffer);
@@ -1770,15 +1784,30 @@ static int decide(const struct entry *p, const struct ggml_tensor *node) {
 
     if (src == NULL) continue;
     root = src->view_src != NULL ? src->view_src : src;
-    if (root->buffer != NULL && buffer_side(root->buffer) == CPU_SIDE) host = true;
+    if (root->buffer != NULL) {
+      side = buffer_side(root->buffer);
+      if (side == CPU_SIDE) host = true;
+      else if (ggml_nbytes(src) >= SMALL_LEAF) bytes[DEVICE_SIDE] += (int64_t)ggml_nbytes(src);
+      continue;
+    }
     side = side_of(p, src);
     if (side < 0) continue;
     bytes[side] += (int64_t)ggml_nbytes(src);
-    if (tie < 0 && root->buffer == NULL) tie = side;
+    last = side;
   }
   if (host) return CPU_SIDE;
   if (bytes[CPU_SIDE] != bytes[DEVICE_SIDE]) return bytes[CPU_SIDE] > bytes[DEVICE_SIDE] ? CPU_SIDE : DEVICE_SIDE;
-  return tie >= 0 ? tie : DEVICE_SIDE;
+  return last;
+}
+
+/* Gives `node` the side `want`, or the other when its backend does not run the op. Returns false when neither does. */
+static bool put_side(struct entry *p, struct ggml_tensor *node, int want, ggml_backend_t cpu) {
+  if (!ggml_backend_supports_op(want == CPU_SIDE ? cpu : p->backend, node)) {
+    want = 1 - want;
+    if (!ggml_backend_supports_op(want == CPU_SIDE ? cpu : p->backend, node)) return false;
+  }
+  side_put(p, node, want);
+  return true;
 }
 
 /* The arrays of a mixed graph, made by the first `place` that finds a leaf in host memory (a graph that has none never
@@ -1849,11 +1878,30 @@ static const char *place(struct entry *p) {
 
     if (is_view_op(node->op)) continue;
     side = decide(p, node);
-    if (!ggml_backend_supports_op(side == CPU_SIDE ? cpu : p->backend, node)) {
-      side = 1 - side;
-      if (!ggml_backend_supports_op(side == CPU_SIDE ? cpu : p->backend, node)) return "no backend runs a node of the graph";
+    if (side >= 0 && !put_side(p, node, side, cpu)) return "no backend runs a node of the graph";
+  }
+  /* A node that nothing decided (a table made from constants) goes where its consumers are, so that it does not make
+     a trip of its own to the other backend; with no consumer it stays on the device. */
+  for (i = n - 1; i >= 0; i--) {
+    struct ggml_tensor *node = ggml_graph_node(p->graph, i);
+    int side, j;
+
+    if (is_view_op(node->op)) continue;
+    side = side_get(p, node);
+    if (side < 0) {
+      if (!put_side(p, node, DEVICE_SIDE, cpu)) return "no backend runs a node of the graph";
+      side = side_get(p, node);
     }
-    side_put(p, node, side);
+    for (j = 0; j < GGML_MAX_SRC; j++) {
+      struct ggml_tensor *src = node->src[j];
+
+      if (src == NULL) continue;
+      if (src->view_src != NULL) src = src->view_src;
+      if (src->buffer == NULL && !is_view_op(src->op) && src->op != GGML_OP_NONE && side_get(p, src) < 0 &&
+          !put_side(p, src, side, cpu)) {
+        return "no backend runs a node of the graph";
+      }
+    }
   }
   p->placed = true;
   p->mixed = true;

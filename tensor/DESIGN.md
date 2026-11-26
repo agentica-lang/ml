@@ -447,8 +447,16 @@ end
   source) is in host memory, a weight, a cache or any other tensor, whatever
   else it reads (a long prompt's activations outweigh a weight, and copying
   the weight on each run is what a CPU layer avoids); else the side with most
-  operand bytes, a tie going to the side of the first computed operand, else
-  the device. It checks that the backend of that side runs the op, and keeps
+  operand bytes (a device leaf under 64 KiB, a norm weight or a position,
+  counts for nothing), a tie going to the side of the operand that was computed
+  last, so the residual stream of a CPU layer stays on the CPU. A node that
+  nothing decides (a table made of constants) takes the side of its consumers,
+  from the end of the graph back, and the device when it has none; without
+  that rule every layer made two trips across the bus (the first measure of
+  ml#312: a decode step of 155 ms instead of 46). `compile` also builds the
+  finiteness checks and the index guards first and their copies into the
+  `checks` buffer (device memory) after, so the copies are one split and not
+  one between every pair of layers. It checks that the backend of that side runs the op, and keeps
   the sides until a leaf changes sides (`placed` is set only when every node
   has one, so a failed `place` is tried again on the next call). The key of
   the graph does not say where the leaves are, so two placements share an
