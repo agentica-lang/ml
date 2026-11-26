@@ -117,6 +117,10 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[V
   )
 end
 
+## The side of the square of patches that `encode` joins into one feature (`spatial_merge_size` of the checkpoint): the
+## `merge` of `Mrope.expand` and `Mrope.layout` and of `Vision.patches`.
+def merge(m: Vision) -> Int = m.config.spatial_merge_size
+
 ## The features of one image: `patches` is `[height * width, channels * frames * patch * patch]` (see the top of this
 ## file) for a grid of `height` by `width` patches, both a multiple of `spatial_merge_size`. The result is
 ## `[height * width / spatial_merge_size^2, out_hidden_size]` and belongs to the caller, who closes it (`Lift.close`).

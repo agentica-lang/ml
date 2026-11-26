@@ -30,6 +30,11 @@ struct InnerKind
   model_type: String
 end
 
+## The id that stands for an image in the prompt, from the top level of `config.json`.
+struct ImageIds
+  image_token_id: Int
+end
+
 ## `config.json` of a checkpoint: the text model is in `text_config`.
 struct Document
   model_type: String
@@ -123,6 +128,13 @@ def read_config(dir: String) -> Result[Text]
   end
 
   ok(file.text_config.with(tie_word_embeddings: tie))
+end
+
+## The id of the image token (`<|image_pad|>`) of the checkpoint in `dir`: the one that `Mrope.expand` repeats for
+## each image and that a `KvDecoder.Sight` names.
+def image_token(dir: String) -> Result[Int]
+  text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
+  ok((try Source.within("#{dir}/config.json", JSON.decode(text, ImageIds))).image_token_id)
 end
 
 ## An error when `config` is a model this file does not run.

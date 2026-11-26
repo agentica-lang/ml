@@ -111,7 +111,7 @@ def main():
         flat = rows.reshape(-1)
         stride = max(1, flat.size // SAMPLES) | 1
         cases.append({
-            "name": name, "image": image, "min_pixels": low, "max_pixels": high, "grid": [grid_h, grid_w], "crop": write, "grows": grid_h * grid_w * PATCH * PATCH > source.width * source.height,
+            "name": name, "image": image, "min_pixels": low, "max_pixels": high, "grid": [grid_h, grid_w], "crop": write,
             "stride": stride,
             "mean": round(float(rows.mean()), 6),
             "samples": [round(float(v), 6) for v in flat[::stride]],

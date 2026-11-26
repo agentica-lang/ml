@@ -21,6 +21,31 @@ struct Layout
   delta: Int
 end
 
+## `ids` with each `pad_token`, which the template writes once for an image (`Chat.IMAGE`), repeated as many times as
+## the image has tokens: the `height / merge * width / merge` of its grid, `grids[k]` for the `k`th pad. An error when
+## the number of pads is not that of `grids`, or a grid is not a multiple of `merge`.
+def expand(ids: List[Int], pad_token: Int, grids: List[Grid], merge: Int) -> Result[List[Int]]
+  return error("merge needs 1 or more, got #{merge}") if merge < 1
+  out: List[Int] = []
+  next = 0
+  for id in ids
+    if id != pad_token
+      out = out.push(id)
+    else
+      return error("the prompt has more image tokens than the #{grids.size} images") if next >= grids.size
+      try check_grid(grids[next], merge, next)
+      for _ in 0...tokens(grids[next], merge)
+        out = out.push(pad_token)
+      end
+
+      next += 1
+    end
+  end
+
+  return error("the prompt has #{next} images and #{grids.size} grids") if next != grids.size
+  ok(out)
+end
+
 ## The `Layout` of `ids`, whose tokens equal to `image_token` come in runs, one per grid of `grids` in order: each
 ## run has the `height / merge * width / merge` tokens of its image. Two images need the vision start and end tokens
 ## between them: adjacent runs are one run, and the count of its tokens then fails.
@@ -43,10 +68,7 @@ def layout(ids: List[Int], image_token: Int, grids: List[Grid], merge: Int) -> R
     else
       return error("the prompt has more images than the #{grids.size} grids") if next >= grids.size
       grid = grids[next]
-      if grid.height < 1 or grid.width < 1 or grid.height % merge != 0 or grid.width % merge != 0
-        return error("grid #{next}: #{grid.height} by #{grid.width} patches is not a multiple of the merge #{merge}")
-      end
-
+      try check_grid(grid, merge, next)
       rows = grid.height / merge
       columns = grid.width / merge
       run = 0
@@ -74,3 +96,21 @@ def layout(ids: List[Int], image_token: Int, grids: List[Grid], merge: Int) -> R
   return error("the prompt has #{next} images and #{grids.size} grids") if next != grids.size
   ok(Layout(time: time, down: down, across: across, at: at, delta: pos - ids.size))
 end
+
+private
+
+## An error when the sides of the `index`th grid are not 1 or more, or `merge` does not divide them.
+def check_grid(grid: Grid, merge: Int, index: Int) -> Result[Void]
+  if grid.height < 1 or grid.width < 1
+    return error("grid #{index}: #{grid.height} by #{grid.width} patches, a side needs 1 or more")
+  end
+
+  if grid.height % merge != 0 or grid.width % merge != 0
+    return error("grid #{index}: #{grid.height} by #{grid.width} patches is not a multiple of the merge #{merge}")
+  end
+
+  ok()
+end
+
+## The image tokens of a grid that `check_grid` accepted: its patches joined by `merge` on each axis.
+def tokens(grid: Grid, merge: Int) -> Int = (grid.height / merge) * (grid.width / merge)

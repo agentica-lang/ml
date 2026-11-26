@@ -78,7 +78,7 @@ x = Vision.normalize(Vision.to_tensor(image, backend).unwrap!, [0.5, 0.5, 0.5], 
 pixel_values = Vision.patches(x, 16, 2).unwrap!
 ```
 
-The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A resized image, shrunk or grown (under `min_pixels`), is at most one 8-bit level (0.0078 normalized) from the processor's, two for a shrink of several times, as for the other models; the grow needs `image-0.3.0`, which aligns the centres of an enlarged pixel like Pillow's bicubic.
+The tower of Qwen3.5 reads these patches, and the text model the features it gives: the chat with an image is in [Images with Qwen3.5](../transformers/models.md#images-with-qwen35). The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A resized image, shrunk or grown (under `min_pixels`), is at most one 8-bit level (0.0078 normalized) from the processor's, two for a shrink of several times, as for the other models; the grow needs `image-0.3.0`, which aligns the centres of an enlarged pixel like Pillow's bicubic.
 
 ## A folder per class
 
