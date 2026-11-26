@@ -296,7 +296,11 @@ conversation), the `</think>` split of an assistant message (Qwen3) and no
 tools (a `tool` role is an error). The golden is
 Hugging Face's own output (`test/chat_golden.py`). `lfm3` is the template of
 `LiquidAI/LFM3-1.7B` with tools (`test/chat_lfm3_golden.py`, 49 conversations of the
-official `chat_template.jinja`); see LFM3 below. `qwen3_5` follows the
+official `chat_template.jinja`); see LFM3 below. `idefics3` is the template of SmolVLM
+(`test/chat_smolvlm_golden.py`): `<|im_start|>` once, each message as `Role: content<end_of_utterance>\n` with the role
+capitalized, `Assistant:` last; the template reads the content as a list of parts, so `Chat.SMOLVLM_IMAGE` (`<image>`)
+where an image goes keeps what the template writes (a content that starts with it has no space after the colon, an empty
+one is refused), no message is trimmed and there is no thinking. `qwen3_5` follows the
 template of Qwen3.5 (`test/chat35_golden.py`, `fixtures/chat35_golden.json`):
 every message is stripped like Python's `str.strip` (White_Space and
 U+001C to U+001F), the system message must come first, a conversation needs a
@@ -864,6 +868,12 @@ error row per config field.
   49 conversations of the official LFM3 template, the Jinja run by Hugging Face, with tools (bare and under `function`,
   `defer_loading`), calls with arguments of every JSON kind (`json.dumps(ensure_ascii=False)` text, floats as `repr`), one or
   several answers per call, reasoning kept or dropped, `preserve_thinking`, `CONTINUE_FINAL_MESSAGE_TAG`, other roles.
+- `test/chat_test.agc` against `test/chat_smolvlm_golden.py` (`transformers` 5.22.2, the sha256 of `chat_template.json`,
+  `tokenizer_config.json` and `tokenizer.json` asserted): 21 conversations of the SmolVLM template (one to four images at
+  the start, the middle or the end of a message, in a user or an assistant message, a system message anywhere, white
+  space and non-ASCII text, an empty conversation or content refused by it, 2 of them). Mutants, each failing it: a space
+  always after the colon, the role not capitalized, `<|im_start|>` for every message, a space after `Assistant:` and an
+  empty content accepted.
 - `test/chat_test.agc` against `test/chat35_golden.py` (`transformers` 5.22.2,
   the sha256 of the template and of `tokenizer.json` asserted): 28
   conversations of the Qwen3.5 template (white space of every kind, one

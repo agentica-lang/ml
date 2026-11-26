@@ -69,8 +69,8 @@ struct Tiling
   cols: Int
 end
 
-## The tiles of an image (`idefics3_tiles`): `rows * cols` tensors of them, row by row, then the whole image resized to a
-## tile (the global image), each `[3, 512, 512]` in `F32` in `0.0..1.0`, as `to_tensor` makes them.
+## The tiles of an image (`idefics3_tiles`): `rows * cols` tensors of them, row by row, then the whole image resized to
+## a tile (the global image), each `[3, 512, 512]` in `F32` in `0.0..1.0`, as `to_tensor` makes them.
 struct Tiles
   tiles: List[Tensor.Tensor]
   rows: Int
@@ -143,15 +143,15 @@ def idefics3_tiling(height: Int, width: Int) -> Result[Tiling]
   ok(Tiling(resized: resized, grid: Size(height: gh, width: gw), rows: gh / IDEFICS3_TILE, cols: gw / IDEFICS3_TILE))
 end
 
-## The tiles of `image` as Hugging Face's `Idefics3ImageProcessor` cuts them (`idefics3_tiling`): the image resized to
-## `resized`, then to the `grid`, cut into tiles of 512 by 512 row by row, then the whole grid resized to one tile, as
-## tensors on `backend` (`Tiles`). The image is an sRGB `U8` one of 3 bands (`Image.colourspace` of the `image` package;
-## the processor converts to RGB itself, this function does not), else an error. Each resize is Pillow's Lanczos
-## (`ImagingResample`: the filter with its support scaled when shrinking, the centre of output pixel `i` at
-## `(i + 0.5) * scale`, weights normalized for each output pixel, a pass across and then one down, each held to 0..255), as products by matrices of
-## weights in one graph. libvips' resize is not used: it enlarges with bicubic
-## interpolation whatever the kernel. The passes are not rounded to 8 bits as Pillow's are (ggml has no rounding), so a sample is within a level
-## or two of the processor's.
+## The tiles of `image` as Hugging Face's `Idefics3ImageProcessor` cuts them (`idefics3_tiling`): the image resized
+## to `resized`, then to the `grid`, cut into tiles of 512 by 512 row by row, then the whole grid resized to one
+## tile, as tensors on `backend` (`Tiles`). The image is an sRGB `U8` one of 3 bands (`Image.colourspace` of the
+## `image` package; the processor converts to RGB itself, this function does not), else an error. Each resize is
+## Pillow's Lanczos (`ImagingResample`: the filter with its support scaled when shrinking, the centre of output
+## pixel `i` at `(i + 0.5) * scale`, weights normalized for each output pixel, a pass across and then one down,
+## each held to 0..255), as products by matrices of weights in one graph. libvips' resize is not used: it enlarges
+## with bicubic interpolation whatever the kernel. The passes are not rounded to 8 bits as Pillow's are (ggml has
+## no rounding), so a sample is within a level or two of the processor's.
 def idefics3_tiles(image: Image.Image, backend: Tensor.Backend = Tensor.Backend.Reference) -> Result[Tiles]
   return error("idefics3_tiles needs an sRGB image of 3 bands, got #{Image.bands(image)}") if Image.bands(image) != 3
   kind = Image.pixel_format(image)
@@ -324,9 +324,9 @@ struct Pixels
   pixel_format: Image.Format
 end
 
-## The weights of Pillow's Lanczos resize of a line of `from` samples to `to` that are not zero, as two graph inputs: the
-## place `i * from + x` in the matrix `[to, from]` that gives the weight of sample `x` in output sample `i`, and the weights
-## (`[n, 1]`). `matrix` scatters them.
+## The weights of Pillow's Lanczos resize of a line of `from` samples to `to` that are not zero, as two graph inputs:
+## the place `i * from + x` in the matrix `[to, from]` that gives the weight of sample `x` in output sample `i`, and
+## the weights (`[n, 1]`). `matrix` scatters them.
 def lanczos_taps(from: Int, to: Int, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   scale = from.to_f / to.to_f
   spread = [scale, 1.0].max.unwrap!
@@ -356,8 +356,8 @@ def matrix(places: Tensor.Tensor, values: Tensor.Tensor, to: Int, from: Int) -> 
   Tensor.reshape(try Tensor.scatter_add(places, values, to * from), [to, from])
 end
 
-## The samples of a pass held to `0.0..255.0`, as Pillow's clip to 8 bits does (`relu` twice: ggml has no `clamp`). They are
-## not rounded to a level: ggml has no rounding either.
+## The samples of a pass held to `0.0..255.0`, as Pillow's clip to 8 bits does (`relu` twice: ggml has no `clamp`).
+## They are not rounded to a level: ggml has no rounding either.
 def held(x: Tensor.Tensor) -> Result[Tensor.Tensor]
   top = try Tensor.full(Tensor.shape(x), Tensor.Values.Float(255.0), Tensor.Dtype.F32, Tensor.backend(x))
   Tensor.sub(try Tensor.relu(x), try Tensor.relu(try Tensor.sub(x, top)))

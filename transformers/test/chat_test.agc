@@ -1,6 +1,7 @@
 ## `Chat.apply` against Hugging Face's `apply_chat_template` (`chat_golden.py`, `fixtures/chat_golden.json`) for the
 ## templates of Qwen2.5-Instruct and Qwen3, against `chat35_golden.py` (`fixtures/chat35_golden.json`) for the one
-## of Qwen3.5 and against `chat_lfm3_golden.py` (`fixtures/chat_lfm3_golden.json`) for the one of LFM3, with tools.
+## of Qwen3.5, against `chat_lfm3_golden.py` (`fixtures/chat_lfm3_golden.json`) for the one of LFM3, with tools, and
+## against `chat_smolvlm_golden.py` (`fixtures/chat_smolvlm_golden.json`) for the one of SmolVLM, with images.
 ## Run from `transformers/`.
 
 import Chat from "../chat"
@@ -34,6 +35,17 @@ struct Golden35
   cases: List[Case35]
 end
 
+struct CaseVlm
+  messages: List[Turn]
+  add_generation_prompt: Bool
+  error: Bool
+  text: String
+end
+
+struct GoldenVlm
+  cases: List[CaseVlm]
+end
+
 def test_the_text_is_that_of_the_templates() -> Result[Void]
   golden = try JSON.decode(try File.read_text("test/fixtures/chat_golden.json"), Golden)
   try Test.eq(golden.cases.size, 27)
@@ -63,6 +75,26 @@ def test_the_text_is_that_of_the_template_of_qwen35() -> Result[Void]
   end
 
   ok()
+end
+
+## Hugging Face takes the images as parts of a message; here `Chat.SMOLVLM_IMAGE` is in the `content` where the part goes.
+def test_the_text_is_that_of_the_template_of_smolvlm() -> Result[Void]
+  golden = try JSON.decode(try File.read_text("test/fixtures/chat_smolvlm_golden.json"), GoldenVlm)
+  try Test.eq(golden.cases.size, 21)
+  try Test.eq(golden.cases[2].messages[0].content, Chat.SMOLVLM_IMAGE + "What is in the picture?")
+  for c in golden.cases
+    messages = c.messages.map { |t| Chat.Message(role: t.role, content: t.content) }
+    made = Chat.apply("idefics3", messages, c.add_generation_prompt)
+    if c.error
+      try Test.error?(made)
+    else
+      try Test.eq(try made, c.text)
+    end
+  end
+
+  try Test.error?(Chat.apply("idefics3", [Chat.Message(role: "user", content: "Hi")], true, some(false)))
+  try Test.error?(Chat.apply("idefics3", [Chat.Message(role: "tool", content: "Hi")], true))
+  Test.error?(Chat.apply("idefics3", [Chat.Message(role: "user", content: "Hi", thinking: some("x"))], true))
 end
 
 ## The golden of LFM3 is in the form Hugging Face takes: tools and calls as JSON objects.
