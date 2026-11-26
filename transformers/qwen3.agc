@@ -40,6 +40,11 @@ struct Config
   sliding_window: Optional[Int]
 end
 
+## The `image_token_id` of a `config.json`.
+struct ImageToken
+  image_token_id: Int
+end
+
 ## `config.json` of a SmolVLM folder: the text model is in `text_config`.
 struct Idefics3Document
   model_type: String
@@ -108,6 +113,13 @@ def open_idefics3(
   file = try Source.within("#{dir}/config.json", JSON.decode(text, Idefics3Document))
   return error("model_type is #{file.model_type}, not idefics3") if file.model_type != "idefics3"
   load(try checkpoint(dir), file.text_config, backend, weights, layers_on_device, "model.text_model")
+end
+
+## The id of the image token of the SmolVLM folder `dir` (`image_token_id` of its `config.json`), the one that a
+## `KvDecoder.Sight` names.
+def image_token(dir: String) -> Result[Int]
+  text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
+  ok((try Source.within("#{dir}/config.json", JSON.decode(text, ImageToken))).image_token_id)
 end
 
 ## The weights of the model folder `dir`: its `model.safetensors`, or the `model.safetensors.index.json` of a sharded one.

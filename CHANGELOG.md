@@ -43,6 +43,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `SmolVlmVision` (`pkg/transformers/smolvlm_vision`): the vision tower and the connector of SmolVLM (`HuggingFaceTB/SmolVLM-256M-Instruct`), `open` and `encode` of normalized 512 by 512 tiles to their 64 rows each for the text model, to Hugging Face's `get_image_features` on a tiny model and on the real checkpoint (ml#84, the first slice).
 - `Qwen3.open` reads `model_type` `llama` (SmolLM2, the text model of SmolVLM): the Qwen2 block with no biases, to Hugging Face's `LlamaForCausalLM` logits on a tiny model; `mlp_bias: true` is an error (ml#84).
 - `Qwen3.open_idefics3` reads the Llama text model of a SmolVLM folder (`model.text_model.*`, `text_config`), to Hugging Face's logits on the real SmolVLM-256M-Instruct (ml#84).
+- SmolVLM text with images: `Generate` over a `KvDecoder.plain_sight` (a stepper with `rotated: false`, `Qwen3.image_token`) splices the features of `SmolVlmVision` into the prompt, to Hugging Face's logits on the real SmolVLM-256M-Instruct (ml#84).
 
 ### hub
 
