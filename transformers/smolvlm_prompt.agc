@@ -12,8 +12,8 @@ import Source from "tokenizer/source"
 ## The rows and the columns of `<row_r_col_c>` tokens that the tokenizer has.
 ROW_COLS = 6
 
-## How many rows and columns of 512 by 512 tiles an image was split into (`Vision.Tiles`): both 0 for an image that was
-## not split, which has only its global image.
+## How many rows and columns of 512 by 512 tiles an image was split into (`Vision.Tiles`). The processor's
+## `do_image_splitting: false` (the global image alone, as 0 by 0) is not supported.
 struct Grid
   rows: Int
   cols: Int
@@ -31,24 +31,6 @@ struct Prompt
   newlines: Int
   ## The `<image>` ids of each image.
   seq_len: Int
-end
-
-struct Added
-  id: Int
-  content: String
-end
-
-struct Vocabulary
-  vocab: Map[String, Int]
-end
-
-struct Tokenizer
-  added_tokens: List[Added]
-  model: Vocabulary
-end
-
-struct Processor
-  image_seq_len: Int
 end
 
 ## The ids of the folder `dir` of an official SmolVLM repository: the special tokens of `tokenizer.json`, its ids for
@@ -85,7 +67,7 @@ def open(dir: String) -> Result[Prompt]
 end
 
 ## `ids` with each `<image>` replaced by the ids of the `k`th image of `grids`, in order. An error when the number of
-## `<image>` ids is not that of `grids`, or a grid is not 0 by 0 or from 1 by 1 up to 6 by 6.
+## `<image>` ids is not that of `grids`, or a grid is not from 1 by 1 up to 6 by 6.
 def expand(ids: List[Int], p: Prompt, grids: List[Grid]) -> Result[List[Int]]
   out: List[Int] = []
   next = 0
@@ -105,6 +87,24 @@ end
 
 private
 
+struct Added
+  id: Int
+  content: String
+end
+
+struct Vocabulary
+  vocab: Map[String, Int]
+end
+
+struct Tokenizer
+  added_tokens: List[Added]
+  model: Vocabulary
+end
+
+struct Processor
+  image_seq_len: Int
+end
+
 def named(ids: Map[String, Int], name: String) -> Result[Int]
   found = ids.get(name)
   return error("the tokenizer has no #{name}") if found.none?
@@ -122,9 +122,8 @@ end
 
 ## The ids that stand for one image: its tiles row by row, and its global image.
 def image_ids(p: Prompt, g: Grid, index: Int) -> Result[List[Int]]
-  fits = g.rows >= 1 and g.rows <= ROW_COLS and g.cols >= 1 and g.cols <= ROW_COLS
-  if not fits and (g.rows != 0 or g.cols != 0)
-    return error("image #{index}: #{g.rows} by #{g.cols} tiles, a side needs 1 to #{ROW_COLS} (or 0 by 0)")
+  if g.rows < 1 or g.rows > ROW_COLS or g.cols < 1 or g.cols > ROW_COLS
+    return error("image #{index}: #{g.rows} by #{g.cols} tiles, a side needs 1 to #{ROW_COLS}")
   end
 
   pixels = repeated(p.image, p.seq_len)
@@ -139,9 +138,5 @@ def image_ids(p: Prompt, g: Grid, index: Int) -> Result[List[Int]]
     end
   end
 
-  if g.rows > 0
-    out = out.push(p.newlines)
-  end
-
-  ok(out + [p.fake, p.global] + pixels + [p.fake])
+  ok(out + [p.newlines, p.fake, p.global] + pixels + [p.fake])
 end

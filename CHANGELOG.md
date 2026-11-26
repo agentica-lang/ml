@@ -53,7 +53,7 @@ All packages are released together at one version, each on its own tag, `<packag
 ### vision
 
 - `vision` needs `image-0.3.0`: an enlarged image has the pixel centres of Pillow's bicubic, so the pixels of an image under `min_pixels` are within one 8-bit level of Hugging Face's processor, as a shrunk one is (ml#306).
-- `Vision.idefics3_tiling` and `Vision.idefics3_tiles`: the sizes and the tiles (512 by 512, row by row, then the global image) that SmolVLM's image processor makes of an image, to Hugging Face's `pixel_values` within 3 levels of 8 bits (ml#84).
+- `Vision.idefics3_tiling` and `Vision.idefics3_tiles`: the sizes and the tiles (512 by 512, row by row, then the global image) that SmolVLM's image processor makes of an sRGB image; the frames are within 3 levels of 8 bits of Hugging Face's on smooth images and up to 36 on an enlarged one with hard edges (libvips enlarges with bicubic interpolation, Pillow with Lanczos) (ml#84).
 - `Vision.smart_resize` (it gives a `Vision.Size`) and `Vision.Step.SmartResize(factor, min_pixels, max_pixels, kernel)`: the size that Hugging Face's `smart_resize` gives (Qwen2-VL's image processor); `Vision.patches`: the patches of a normalized 3-channel image in the order of the processor's `pixel_values` (ml#151).
 
 ## [0.6.0] - 2026-11-26
