@@ -110,7 +110,6 @@ def stepped(m: GraniteMoe.GraniteMoe, req: KvDecoder.Request) -> Result[List[Ten
   room = req.room
   reach = req.reach
   mode = req.mode
-  in_place = req.in_place
   layers = m.config.num_hidden_layers
   width = Tensor.shape(xs[0])[0]
   d = m.config.hidden_size
@@ -121,11 +120,7 @@ def stepped(m: GraniteMoe.GraniteMoe, req: KvDecoder.Request) -> Result[List[Ten
   )
 
   mask = try Padded.padded_mask(slots.with(capacity: reach), Tensor.dtype(h))
-  spread: Optional[Tensor.Tensor] = none
-  if not in_place
-    spread = some(try Padded.spread_of(slots, Tensor.dtype(h)))
-  end
-
+  reading = try KvDecoder.reading(req, mask)
   keys: List[Tensor.Tensor] = []
   values: List[Tensor.Tensor] = []
   for i in 0...layers
@@ -134,7 +129,7 @@ def stepped(m: GraniteMoe.GraniteMoe, req: KvDecoder.Request) -> Result[List[Ten
       old = some(KvDecoder.Kv(key: xs[3 + i], value: xs[3 + layers + i]))
     end
 
-    r = try layer(m, m.layers[i], h, slots.positions, mask, spread, old, in_place, reach)
+    r = try layer(m, m.layers[i], h, reading, old, req)
     h = r.hidden
     keys = keys.push(r.key)
     values = values.push(r.value)
@@ -157,35 +152,14 @@ def layer(
   m: GraniteMoe.GraniteMoe,
   l: GraniteMoe.Layer,
   h: Tensor.Tensor,
-  positions: Tensor.Tensor,
-  mask: Tensor.Tensor,
-  spread: Optional[Tensor.Tensor],
+  reading: KvDecoder.Reading,
   old: Optional[KvDecoder.Kv],
-  in_place: Bool,
-  reach: Int,
+  req: KvDecoder.Request,
 ) -> Result[KvDecoder.Layer]
   x = try Nn.layer_norm(l.norm1, h)
-  heads = try Nn.project(l.attention, x, x, some(positions))
-  key = heads.key
-  value = heads.value
-  if in_place
-    key = try Tensor.set_rows(old.unwrap!.key, heads.key, positions)
-    value = try Tensor.set_rows(old.unwrap!.value, heads.value, positions)
-  else
-    key = try Padded.written(old.map { |kv| kv.key }, heads.key, spread.unwrap!, 2)
-    value = try Padded.written(old.map { |kv| kv.value }, heads.value, spread.unwrap!, 2)
-  end
-
-  seen = try Nn.attend(
-    l.attention,
-    heads.query,
-    try Padded.reached(key, reach),
-    try Padded.reached(value, reach),
-    some(mask),
-  )
-
-  mid = try Tensor.add(h, try GraniteMoe.times(seen, m.config.residual_multiplier))
+  kept = try KvDecoder.attend_cached(l.attention, x, old, reading, req)
+  mid = try Tensor.add(h, try GraniteMoe.times(kept.answer, m.config.residual_multiplier))
   routed = try Moe.moe(l.moe, try Nn.layer_norm(l.norm2, mid))
   out = try Tensor.add(mid, try GraniteMoe.times(routed, m.config.residual_multiplier))
-  ok(KvDecoder.Layer(hidden: out, key: key, value: value))
+  ok(KvDecoder.Layer(hidden: out, key: kept.key, value: kept.value))
 end
