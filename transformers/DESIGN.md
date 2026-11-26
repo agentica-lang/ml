@@ -476,8 +476,18 @@ error row per config field.
   `float32`, so it fits in 5 GB): five prompts of 5 to 217 tokens, the logits of the last position over the vocabulary
   and the five largest ids of every position (the long prompt at its last position only). Largest gap of a logit: 3.7e-5
   on ggml CPU (peak 5.6 GB), 9.3e-5 on Vulkan with `vulkan_fp16` off, the top five equal; with `vulkan_fp16` on, 0.34,
-  and the fifth id of two positions differs (logits are 14 to 28 at the top). That is Vulkan's fp16 `mul_mat` over all the
-  products of the model, `Tensor.expert_matmul` among them; the share of the experts is not isolated. For context,
+  and the fifth id of two positions differs (logits are 14 to 28 at the top). The cause is the router, not
+  `Tensor.expert_matmul` (ml#279; Vulkan, five prompts, 6552 pairs of a token and a layer). fp16 puts the router logits
+  1e-4 off in relative rms (0.003 at most, layer 0), and the 8th and 9th largest logit of a token are closer than
+  0.003 in 223 pairs (median gap 0.068), so the set of experts differs from the `F32` run's in 67 pairs (1.0%): none
+  on the prompts of 5 and 7 tokens (largest gap of a logit over the last positions 0.01), 3, 25 and 39 on the
+  prompts of 14, 30 and 217 tokens (1.35, 0.87 and 0.45 over their last positions, up to 30, and 0.34, 0.25 and 0.025
+  at the last position: 0.34 is the figure above). With the ids of the `F32` run fed to the fp16 run the gaps
+  are 0.033, 0.046 and 0.021 (0.018, 0.010 and 0.012 at the last position), the order of dense Qwen3-0.6B. On
+  layer 0's weights, 120 tokens, `expert_matmul` and a dense `matmul` of the same shape are the same product to
+  three digits: relative rms 2e-4 against `F32` on the CPU in fp16, 5e-7 with it off (gate_up and down, 8 experts).
+  So `mul_mat_id` is no worse per product than `mul_mat`, and a model with a hard top-k choice moves in steps
+  that the fp16 noise can flip. For context,
   `tools/qwen_check.agc` on Qwen3-0.6B (dense, five prompts of 5 to 50 tokens, logits up to 30) with `VULKAN_FP16=1`
   gives 0.028 (0.8e-4 with it off), the fifth id of two positions differing. The checkpoint:
 
