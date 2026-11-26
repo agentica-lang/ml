@@ -299,14 +299,8 @@ static bool load_plugin(const char *path, char *why, size_t size) {
     if (err == NULL) initialized = a;
   }
   if (err == NULL) {
-    PJRT_NamedValue options[1] = {{.struct_size = PJRT_NamedValue_STRUCT_SIZE,
-                                   .name = "cpu_device_count",
-                                   .name_size = 16,
-                                   .type = PJRT_NamedValue_kInt64,
-                                   .int64_value = 1,
-                                   .value_size = 1}};
-    PJRT_Client_Create_Args cc = {
-        .struct_size = PJRT_Client_Create_Args_STRUCT_SIZE, .create_options = options, .num_options = 1};
+    /* Use the plugin's default options: cpu_device_count is CPU-only, and we use only the first device anyway. */
+    PJRT_Client_Create_Args cc = {.struct_size = PJRT_Client_Create_Args_STRUCT_SIZE};
     err = a->PJRT_Client_Create(&cc);
     if (err == NULL) {
       PJRT_Client_AddressableDevices_Args ad = {.struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE,
