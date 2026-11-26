@@ -29,9 +29,10 @@
 # GPU column is the most that the GPU memory in use (VRAM and GTT, sampled every 0.1 s) rose above its value before the
 # row, in MB, for the Vulkan rows (llama.cpp's mapped weights are in it, not in the RSS); `-` on the CPU rows.
 # The rows `ours-vulkan-q4k-n27`, `-n14` and `-n0` run the Q4_K_M file with `AGENTICA_ML_LAYERS_ON_DEVICE` 27, 14 and 0
-# (the blocks from the 27th, the 14th or the first on the CPU with their KV cache, and the embedding table, the head and
-# the final norm too), against llama.cpp's `-ngl 27`, `-ngl 14` and `-ngl 0` on the Vulkan build: llama.cpp counts the
-# layers from the end and keeps the input embedding and the output layer on the CPU for every `-ngl` below its layer count.
+# (the blocks from the 27th, the 14th or the first on the CPU with their KV cache, the table on the CPU, and the head and
+# the final norm on the card for 27 and 14, on the CPU for 0), against llama.cpp's `-ngl 27`, `-ngl 14` and `-ngl 0` on
+# the Vulkan build: llama.cpp puts the output layer on the card for `-ngl` 1 or more and the first blocks on the CPU
+# (`i_gpu_start = n_layer + 1 - ngl`), so `-ngl N` holds N - 1 blocks on the card, one fewer than `n` = N.
 set -eu
 
 model=$1

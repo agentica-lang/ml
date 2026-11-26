@@ -80,12 +80,17 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
   Vulkan device (`layer_backend`); nothing else changes in the model. The traced step reads those weights as constants
   on the CPU, the graph is mixed (`tensor/DESIGN.md` §7) and the keys and values that a CPU block makes are `Ggml(Cpu)`
   tensors, which the next step takes as inputs and writes in place: `kv_decoder.agc` has no placement code. The
-  first `n` blocks stay on the device. With `n` below the number of blocks the embedding table, the head (the tied
-  table) and the final norm are on the CPU too, as in llama.cpp's `-ngl` (ml#320): the iGPU multiplies the table with
-  the vocabulary in 19 ms in a mixed step (3.8 ms in an all-device one, where its clock is up) and the CPU in 5, and
-  the table is the largest tensor of the model. The ids and `KvDecoder`'s inputs stay on the backend the model was
-  opened on (`Qwen3.device`, `Stepper.device`), because the first input of a trace is its backend. `n` of every block,
-  or `none`, is every tensor on the device and the graph of every step is the plain one.
+  first `n` blocks stay on the device. With `n` below the number of blocks the embedding table is on the CPU, as in
+  llama.cpp's `-ngl`, and from one block on the device the head and the final norm are on the device (ml#320, ml#327):
+  llama.cpp's rule is `i_gpu_start = n_layer + 1 - ngl` with the output layer as layer `n_layer`, so the output layer
+  is on the GPU for any `-ngl` of 1 or more, the first blocks and the input embedding are on the CPU, and only
+  `-ngl 0` puts the head on the CPU. A head on the CPU (the first ml#320 layout) leaves the card idle for the product
+  with the vocabulary, the last blocks and the pick: the card's governor holds its busy share near 70% and lowers the
+  clock when the share is lower, and a step of 20 ms became 49 ms at `n` = 27 (the kernels ran 3 times slower). A tied
+  head is a second copy of the table on the device, as in llama.cpp (the table is read twice at load). With `n` of 0
+  all three are on the CPU. The ids and `KvDecoder`'s inputs stay on the backend the model was opened on
+  (`Qwen3.device`, `Stepper.backend`), because the first input of a trace is its backend. `n` of every block, or
+  `none`, is every tensor on the device and the graph of every step is the plain one.
 - Blocks are `Nn.EncoderBlock`s with `norm_first: true` under a causal mask
   (`Nn.encoder_stack(..., causal: true)`): `input_layernorm` and
   `post_attention_layernorm` are `LayerNorm.rms` (the `beta` is zeros and

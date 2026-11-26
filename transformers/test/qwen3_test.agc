@@ -111,10 +111,11 @@ def test_layers_on_device_do_not_change_the_logits() -> Result[Void]
   end
 end
 
-## With `n` below the number of blocks the embedding table, the head (here the tied table) and the final norm are on the
-## CPU too, as in llama.cpp's `-ngl`; with `n` of every block they are on the device, and a run of that model never goes
-## through the scheduler (`mixed_runs`).
-def test_the_ends_of_the_model_follow_the_blocks_on_the_cpu() -> Result[Void]
+## With `n` below the number of blocks the embedding table is on the CPU and, from one block on the device, the head (here
+## a copy of the tied table) and the final norm are on the device, as in llama.cpp's `-ngl`; with `n` of 0 they are on the
+## CPU too, and with `n` of every block all of them are on the device and a run never goes through the scheduler
+## (`mixed_runs`).
+def test_the_table_is_on_the_cpu_and_the_head_on_the_device_with_blocks_there() -> Result[Void]
   with_peer do |dir|
     rows = try ids(dir)
     home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
@@ -123,12 +124,17 @@ def test_the_ends_of_the_model_follow_the_blocks_on_the_cpu() -> Result[Void]
       next if backend == home
 
       checked += 1
-      for n in [0, 1]
-        m = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(n))
-        try Test.eq(Tensor.backend(m.tokens.table), home)
-        try Test.eq(Tensor.backend(m.head.w), home)
-        try Test.eq(Tensor.backend(m.stack.final_norm.unwrap!.gamma), home)
-        try Test.eq(m.device, backend)
+      for name in ["tiny", "untied"]
+        some_on = try Qwen3.open("#{dir}/#{name}", backend, Tensor.Dtype.F32, some(1))
+        try Test.eq(Tensor.backend(some_on.tokens.table), home)
+        try Test.eq(Tensor.backend(some_on.head.w), backend)
+        try Test.eq(Tensor.backend(some_on.stack.final_norm.unwrap!.gamma), backend)
+        try Test.eq(some_on.device, backend)
+
+        none_on = try Qwen3.open("#{dir}/#{name}", backend, Tensor.Dtype.F32, some(0))
+        try Test.eq(Tensor.backend(none_on.tokens.table), home)
+        try Test.eq(Tensor.backend(none_on.head.w), home)
+        try Test.eq(Tensor.backend(none_on.stack.final_norm.unwrap!.gamma), home)
       end
 
       before = GgmlRaw.mixed_runs()
@@ -138,13 +144,10 @@ def test_the_ends_of_the_model_follow_the_blocks_on_the_cpu() -> Result[Void]
       _ = try Qwen3.run(all, rows)
       try Test.eq(GgmlRaw.mixed_runs(), before)
 
-      untied = try Qwen3.open("#{dir}/untied", backend, Tensor.Dtype.F32, some(0))
-      try Test.eq(Tensor.backend(untied.head.w), home)
-      try Test.eq(Tensor.backend(untied.tokens.table), home)
-      _ = try Qwen3.run(untied, rows)
+      _ = try Qwen3.run(try Qwen3.open("#{dir}/untied", backend, Tensor.Dtype.F32, some(1)), rows)
       try Test.assert(
         GgmlRaw.mixed_runs() > before,
-        "a model with its blocks on the CPU did not run through the scheduler",
+        "a model with a block on the CPU did not run through the scheduler",
       )
     end
 

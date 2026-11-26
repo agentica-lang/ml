@@ -48,10 +48,11 @@ struct Qwen3
   tokens: Nn.Embedding
   ## The blocks and the final RMS norm.
   stack: Nn.EncoderStack
-  ## `[vocab_size, hidden_size]` (`out_in`): the embedding table itself when tied.
+  ## `[vocab_size, hidden_size]` (`out_in`): the embedding table itself when tied, or a copy of it when the head is on
+  ## another backend than the table (`layers_on_device`).
   head: Nn.Dense
-  ## The backend the model was opened on: where the token ids and the first blocks are, whatever side the table and
-  ## the head are on (`layers_on_device`).
+  ## The backend the model was opened on: where the token ids and the first blocks are, whatever side the table is on
+  ## (`layers_on_device`).
   device: Tensor.Backend
 end
 
@@ -60,10 +61,11 @@ end
 ## `dir` names, whose key-values give the config.
 ## `layers_on_device: n` loads the weights of the blocks from the `n`th on on the CPU (`Ggml(Cpu)`), and a step runs
 ## those blocks there, with their KV cache in host memory (`kv_decoder.agc`); the first `n` blocks stay on the Vulkan
-## device. With `n` below the number of blocks the embedding table, the head and the final norm are on the CPU too, as in
-## llama.cpp's `-ngl` (the head's product with the vocabulary is slower on the iGPU than on the CPU, and the table is
-## the largest tensor of the model); with every block on the device they are there too. `none` keeps every block on the
-## device, and on any other backend, or with an `n` of the number of blocks or more, `n` changes nothing.
+## device. With `n` below the number of blocks the embedding table is on the CPU, as in llama.cpp's `-ngl`, and the head
+## and the final norm are on the device (a tied head is a second copy of the table there) so that the CPU does not do
+## the product with the vocabulary and the card is idle less; with `n` of 0 they are on the CPU too. `none` keeps every
+## block, the table and the head on the device, and on any other backend, or with an `n` of the number of blocks or
+## more, `n` changes nothing.
 def open(
   dir: String,
   backend: Tensor.Backend,
@@ -174,8 +176,9 @@ def load(
   end
 
   width = config.hidden_size
-  ends = layer_backend(backend, config.num_hidden_layers - 1, layers_on_device)
-  tokens = try Load.embedding(c, "model.embed_tokens.weight", ends, weights)
+  table_side = layer_backend(backend, config.num_hidden_layers - 1, layers_on_device)
+  head_side = layer_backend(backend, 0, layers_on_device)
+  tokens = try Load.embedding(c, "model.embed_tokens.weight", table_side, weights)
   try expect_shape("model.embed_tokens.weight", tokens.table, [config.vocab_size, width])
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
@@ -184,12 +187,15 @@ def load(
     )
   end
 
-  head = try head_of(c, config, tokens, ends, weights)
+  head = try head_of(c, config, tokens, head_side, weights)
   ok(
     Qwen3(
       config: config,
       tokens: tokens,
-      stack: Nn.EncoderStack(blocks: blocks, final_norm: some(try rms(c, "model.norm", config.rms_norm_eps, ends))),
+      stack: Nn.EncoderStack(
+        blocks: blocks,
+        final_norm: some(try rms(c, "model.norm", config.rms_norm_eps, head_side)),
+      ),
       head: head,
       device: backend,
     ),
@@ -414,8 +420,8 @@ def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void
   ok()
 end
 
-## The output head: the embedding table when the config ties them
-## (the file's `lm_head.weight`, if any, is then ignored), else `lm_head`.
+## The output head on `backend`: the embedding table when the config ties them and it is there (else a copy of it on
+## `backend`; the file's `lm_head.weight`, if any, is then ignored), else `lm_head`.
 def head_of(
   c: Hub.Checkpoint,
   config: Config,
@@ -423,7 +429,13 @@ def head_of(
   backend: Tensor.Backend,
   weights: Tensor.Dtype,
 ) -> Result[Nn.Dense]
-  return ok(Nn.Dense(w: tokens.table, b: none, out_in: true)) if config.tie_word_embeddings
+  if config.tie_word_embeddings
+    return ok(Nn.Dense(w: tokens.table, b: none, out_in: true)) if Tensor.backend(tokens.table) == backend
+
+    return ok(
+      Nn.Dense(w: (try Load.embedding(c, "model.embed_tokens.weight", backend, weights)).table, b: none, out_in: true),
+    )
+  end
 
   head = try Load.dense(c, "lm_head", backend, weights)
   try expect_shape("lm_head.weight", head.w, [config.vocab_size, config.hidden_size])
