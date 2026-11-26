@@ -7,7 +7,7 @@
 ## passes `stop_grad` through; every other primitive answers `compiled_only(op)`.
 ##
 ## The plugin is not built here and not linked: `native/xla.c` loads it with `dlopen` at the first use, from the ml
-## cache, where `tools/install_xla.agc` puts the pinned wheel of PyPI (`WHEELS`).
+## cache, where `tools/install_xla.agc` puts the plugin of our release (`RELEASE`).
 ##
 ## Storage: `F32`, `F64`, `I32`, `I64`, `I16`, `I8`, `U8` and `Bool`; `F16` and the quantized dtypes are refused. Lifetimes (§8):
 ## one `Native.arena` per call, as in `src/ggml.agc`.
@@ -16,13 +16,19 @@ import Reference from "reference"
 import Types from "types"
 import XlaRaw from "xla_native"
 
-## The member of a wheel that is the plugin.
-PLUGIN = "xla_plugins/xla_cpu_pjrt/xla_cpu_pjrt.so"
+## The release of agentica-lang/ml that holds the plugins: `xla-` and the first 12 characters of the openxla/xla commit
+## in `tensor/xla-commit`, which the `XLA plugin` workflow builds and publishes.
+RELEASE = "xla-c9276de87e15"
 
-## One wheel of `xla-cpu-pjrt` 0.0.1 on PyPI: the machine it is for, where it is and its sha256.
-struct Wheel
+## The name of the plugin in the cache.
+FILE = "pjrt_c_api_cpu_plugin.so"
+
+## One plugin of the release: the machine it is for, where it is, its size in bytes and its sha256 (the ones of the
+## release's files; `SHA256SUMS` has the sha256).
+struct Plugin
   arch: String
   url: String
+  size: Int
   sha256: String
 end
 
@@ -42,36 +48,39 @@ end
 
 ## The pinned plugins, one per machine (Linux only). `tools/install_xla.agc` downloads one, and `plugin_path` finds
 ## it by its sha256.
-def wheels() -> List[Wheel]
+def plugins() -> List[Plugin]
   [
-    Wheel(
+    Plugin(
       arch: "x86_64",
-      url: (
-        "https://files.pythonhosted.org/packages/5d/ca/5487881b30d07396c168749ead36f57dbc4538cafdc535943afc81b3e5a2/xla_cpu_pjrt-0.0.1-py3-none-manylinux_2_27_x86_64.whl"
-      ),
-      sha256: "55837b6b7b47daa717f2d9a5a03563ea0ceaa338d06a81a1e2d3f060d960decc",
+      url: asset_url("linux-x86_64"),
+      size: 164906544,
+      sha256: "f9fd5884f1592a5ea277410337471b8e90e2de6df60d4df51d4b48670eeaa16d",
     ),
-    Wheel(
+    Plugin(
       arch: "aarch64",
-      url: (
-        "https://files.pythonhosted.org/packages/c9/2d/2c6703356beded886d95f9e37adb49aeca7b21e7617f2ff59893f038f61e/xla_cpu_pjrt-0.0.1-py3-none-manylinux_2_27_aarch64.whl"
-      ),
-      sha256: "8f613be6e891858f40d64f9799319502fff42689661944fc18a6ffd8210b30c9",
+      url: asset_url("linux-aarch64"),
+      size: 118088344,
+      sha256: "7610eb83dae26f875b1487d0099c34006d3cec1040bbea5677379e008b6ac4e7",
     ),
   ]
 end
 
-## The wheel of this machine; an error on a system that has none.
-def wheel() -> Result[Wheel]
+## The plugin of this machine; an error on a system that has none.
+def plugin() -> Result[Plugin]
   return error("the XLA backend needs its native module, which is not built (#{loaded_message()})") if !loaded?()
   arch = XlaRaw.arch()
   if System.os() == "linux"
-    for w in wheels()
-      return ok(w) if w.arch == arch
+    for p in plugins()
+      return ok(p) if p.arch == arch
     end
   end
 
-  error("no XLA plugin for #{System.os()} #{arch}: the pinned wheel has Linux x86_64 and aarch64 only")
+  error("no XLA plugin for #{System.os()} #{arch}: the release #{RELEASE} has Linux x86_64 and aarch64 only")
+end
+
+## The download address of the plugin of `platform` in the release.
+def asset_url(platform: String) -> String
+  "https://github.com/agentica-lang/ml/releases/download/#{RELEASE}/pjrt_c_api_cpu_plugin-#{platform}.so"
 end
 
 ## The folder of the plugins: `xla/` of `AGENTICA_ML_CACHE`, else of `$XDG_CACHE_HOME/agentica-ml`, else of
@@ -92,11 +101,11 @@ def cache_dir() -> Result[String]
   Path.join([root, "xla"])
 end
 
-## The folder the wheel `w` is extracted into, named by its sha256.
-def wheel_dir(w: Wheel) -> Result[String] = Path.join([try cache_dir(), w.sha256])
+## The folder of the plugin `p` in the cache, named by its sha256.
+def plugin_dir(p: Plugin) -> Result[String] = Path.join([try cache_dir(), p.sha256])
 
 ## Where the plugin of this machine is once installed.
-def plugin_path() -> Result[String] = Path.join([try wheel_dir(try wheel()), PLUGIN])
+def plugin_path() -> Result[String] = Path.join([try plugin_dir(try plugin()), FILE])
 
 ## True when `device` can hold XLA tensors here: the module is built, the device is the CPU, and the plugin loads.
 def available(device: Types.Device) -> Bool

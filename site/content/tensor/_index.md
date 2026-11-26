@@ -89,13 +89,13 @@ On `Ggml`, a direct call to an op is an eager call: it runs the op right away. E
 
 `Tensor.to_device(t, Device.Vulkan(0))` moves a ggml tensor to another ggml device.
 
-`Xla` works like `Ggml`: eager calls only create and read tensors, and every other op is an error that names it. `Trace.compile` turns the function into StableHLO and XLA compiles it once, and `Trace.run` runs it. `Trace.eval`, `eval_many` and `value_and_grad` compile for each call, and a cache of the last 32 programs makes a function traced again compile once. As on ggml, the moments that `adam_step` updates in place are written over: on XLA the run consumes them, so read the new ones it returns. XLA comes as a plugin that the package loads when it first needs it and never links. Install it once, from the `tensor` folder (it needs `unzip`):
+`Xla` works like `Ggml`: eager calls only create and read tensors, and every other op is an error that names it. `Trace.compile` turns the function into StableHLO and XLA compiles it once, and `Trace.run` runs it. `Trace.eval`, `eval_many` and `value_and_grad` compile for each call, and a cache of the last 32 programs makes a function traced again compile once. As on ggml, the moments that `adam_step` updates in place are written over: on XLA the run consumes them, so read the new ones it returns. XLA comes as a plugin that the package loads when it first needs it and never links. Install it once, from the `tensor` folder:
 
 ```sh
 agentica tools/install_xla.agc
 ```
 
-It downloads the pinned `xla-cpu-pjrt` wheel from PyPI, checks its sha256 and keeps the plugin in `~/.cache/agentica-ml/xla/` (or under `AGENTICA_ML_CACHE`). PyPI has the plugin for Linux on x86_64 and aarch64 only, and CI tests x86_64 only. On x86_64 the plugin needs a CPU with AVX. On any other system, and before the install, `Tensor.available(Backend.Xla(Device.Cpu))` is `false` and an op answers an error that names the install step.
+It downloads the plugin of your machine from the release of agentica-lang/ml that the package pins (our build of XLA's PJRT CPU plugin, with the licenses of what it links), checks its sha256 and keeps it in `~/.cache/agentica-ml/xla/` (or under `AGENTICA_ML_CACHE`). The release has the plugin for Linux on x86_64 and aarch64 only, and CI tests x86_64 only; macOS and Windows are not supported yet. On x86_64 the plugin needs a CPU with AVX. On any other system, and before the install, `Tensor.available(Backend.Xla(Device.Cpu))` is `false` and an op answers an error that names the install step.
 
 The ggml CPU backend runs a graph on one thread per physical core of the machine, not per hardware thread: its threads wait for each other by spinning, so a second thread on a core adds stalls when the machine is busy. On Linux the cores are the ones this process may use (a cpuset limits them; a CPU quota does not). Set the environment variable `TENSOR_THREADS` to a positive integer, at most 512 (ggml's limit), to choose the number; any other value leaves the default.
 

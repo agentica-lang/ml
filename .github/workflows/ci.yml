@@ -302,8 +302,9 @@ jobs:
         run: make cchecker CCHECKER_FLAGS="--gcc gcc-14 --clang clang-19 --clang-tidy clang-tidy-19 --strict-baseline"
 
   # The XLA backend of tensor/ (Backend.Xla) on the pinned PJRT CPU plugin, in parallel with the packages. The plugin
-  # is a wheel of PyPI that tools/install_xla.agc downloads and checks by its sha256; the cache keeps the plugin, keyed
-  # by the file that pins it (src/xla.agc), so a run downloads it only when that file changes.
+  # is the Linux x86_64 build in our release xla-<commit> (the XLA plugin workflow) that tools/install_xla.agc
+  # downloads and checks by its sha256; the cache keeps the plugin, keyed by the file that pins it (src/xla.agc), so a
+  # run downloads it only when that file changes.
   xla:
     needs: plan
     if: needs.plan.outputs.xla == 'true'

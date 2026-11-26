@@ -1,13 +1,12 @@
-## Installs the XLA CPU plugin of `Backend.Xla` (`tensor/DESIGN.md` §7): downloads the pinned `xla-cpu-pjrt` wheel of
-## this machine from PyPI (`Xla.wheels`), checks its sha256, and extracts the plugin with `unzip` into the ml cache,
-## under a folder named by that sha256. A plugin already there is kept. From `tensor/`:
+## Installs the XLA CPU plugin of `Backend.Xla` (`tensor/DESIGN.md` §7): downloads the plugin of this machine from our
+## release of the XLA PJRT build (`Xla.RELEASE`, made by the `XLA plugin` workflow), checks its sha256 and keeps it in
+## the ml cache, in a folder named by that sha256. A plugin already there is kept. From `tensor/`:
 ##
 ## ```sh
 ## agentica tools/install_xla.agc
 ## ```
 ##
-## Prints the plugin's path. `AGENTICA_ML_CACHE` moves the cache (`Xla.cache_dir`). `std/archive` does not read the
-## wheel: its local headers are ZIP64.
+## Prints the plugin's path. `AGENTICA_ML_CACHE` moves the cache (`Xla.cache_dir`).
 
 import HTTP from "std/http"
 import Xla from "../src/xla"
@@ -26,56 +25,52 @@ end
 private
 
 def install() -> Result[String]
-  w = try Xla.wheel()
-  plugin = try Xla.plugin_path()
-  return ok(plugin) if File.stat(plugin).ok?
-  cache = try Xla.cache_dir()
-  try Dir.mkdir(cache)
-  whl = try Path.join([cache, "#{w.sha256}-#{System.pid()}.whl"])
-  fetched = fetch(w, whl)
+  p = try Xla.plugin()
+  path = try Xla.plugin_path()
+  return ok(path) if File.stat(path).ok?
+  try Dir.mkdir(try Xla.cache_dir())
+  part = try Path.join([try Xla.cache_dir(), "#{p.sha256}.part-#{System.pid()}"])
+  fetched = fetch(p, part)
   if !fetched.ok?
-    _ = Path.remove(whl)
+    _ = Path.remove(part)
     return error(fetched.message)
   end
 
-  part = try Path.join([cache, "#{w.sha256}.part-#{System.pid()}"])
-  extracted = unzip(whl, part)
-  _ = Path.remove(whl)
-  if !extracted.ok?
-    _ = Path.remove(part)
-    return error("cannot extract #{Xla.PLUGIN} with unzip: #{extracted.message}")
-  end
-
   # Another install may have finished first: its folder holds the same plugin.
-  if !Path.rename(part, try Xla.wheel_dir(w)).ok?
+  if !Path.rename(part, try Xla.plugin_dir(p)).ok?
     _ = Path.remove(part)
   end
 
-  return error("the plugin is not at #{plugin} after the install") if !File.stat(plugin).ok?
-  ok(plugin)
+  return error("the plugin is not at #{path} after the install") if !File.stat(path).ok?
+  ok(path)
 end
 
-## The wheel `w` at `path`, checked against its sha256.
-def fetch(w: Xla.Wheel, path: String) -> Result[Void]
+## The plugin `p` in the new private folder `dest`, checked against its sha256.
+def fetch(p: Xla.Plugin, dest: String) -> Result[Void]
+  try Dir.mkdir_private(dest)
   client = try HTTP.client()
-  options = HTTP.DownloadOptions(timeout_ms: some(TIMEOUT_MS), sha256: some(w.sha256))
-  got = HTTP.download(client, w.url, path, options)
+  url = resolve(client, p.url)
+  if !url.ok?
+    HTTP.close_client(client)
+    return error(url.message)
+  end
+
+  options = HTTP.DownloadOptions(timeout_ms: some(TIMEOUT_MS), max_total_bytes: some(p.size), sha256: some(p.sha256))
+  got = HTTP.download(client, try url, try Path.join([dest, Xla.FILE]), options)
   HTTP.close_client(client)
-  saved = try got
-  return error("#{w.url} answered #{saved.status}") if saved.status != 200
+  # A status that is not 200 has a body that does not have the digest, so it fails here too.
+  return error("#{p.url}: #{got.message}") if !got.ok?
   ok()
 end
 
-## The plugin of the wheel `whl` extracted into the new folder `dest`.
-def unzip(whl: String, dest: String) -> Result[Void]
-  try Dir.mkdir_private(dest)
-  p = try Process.spawn_captured("unzip", ["-q", whl, Xla.PLUGIN, "-d", dest])
-  out = Process.output(p, TIMEOUT_MS)
-  code = Process.wait(p, TIMEOUT_MS)
-  Process.close(p)
-  case code
-    ok(0) -> ok()
-    ok(_) -> error((try out).stderr.strip)
-    error(e) -> error(e.message)
-  end
+## Where the asset at `url` is: `url` itself, or the https address a GitHub release answers with (`HTTP.download` does
+## not follow a redirect).
+def resolve(client: HTTP.Client, url: String) -> Result[String]
+  head = try HTTP.request(client, "HEAD", url, "".bytes)
+  return ok(url) if head.status == 200
+  return error("#{url} answered #{head.status}") if ![301, 302, 307, 308].include?(head.status)
+  where = HTTP.header_values(head.headers, "location")
+  # The trust anchor is the sha256 of the file, not the host it comes from; https only keeps the transfer private.
+  return error("#{url} redirects somewhere that is not https") if where.empty? || !where[0].start_with?("https://")
+  ok(where[0])
 end
