@@ -6,9 +6,12 @@
 ##   python -I test/lfm3_check_golden.py MODEL_DIR > GOLDEN.json
 ##   WEIGHTS=f16 agentica tools/lfm3_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
 ##
-## `WEIGHTS=f16` is what a 12 GB machine runs: the `F32` model is 6.9 GB, the `F16` one 3.4 GB, and a `bfloat16` weight is
-## exactly an `F16` one, so the same gap passes. `VULKAN_FP16=1` runs Vulkan's `mul_mat` in fp16, which this gap does not
-## hold. On a shared machine run it as `flock LOCK systemd-run --user --scope -q -p MemoryMax=5G agentica ...`.
+## `WEIGHTS=f16` is what a 12 GB machine runs: the `F32` model is 6.9 GB, the `F16` one 3.4 GB. It rounds each weight once at
+## load: a `bfloat16` value from 6.1e-5 to 65504 is exact, a larger one is an error naming the tensor, a smaller one keeps
+## fewer digits, and one under 3e-8 becomes 0; the check prints how many weights of the `F16` matrices are in those two
+## ranges (the golden counts them). On the real checkpoint the logits stay within 4.7e-5 of the `float32` run, and that gap
+## passes. `VULKAN_FP16=1` runs Vulkan's `mul_mat` in fp16, which this gap does not hold. On a shared machine run it as
+## `flock LOCK systemd-run --user --scope -q -p MemoryMax=5G agentica ...`.
 
 import Lfm3 from "../lfm3"
 import Load from "pkg/hub/load"
@@ -29,8 +32,17 @@ struct Case
   top5: List[List[Int]]
 end
 
+## What `weights: F16` rounds away in the file: the values of the matrices it keeps in `F16`, those that are not 0 and
+## under 6.1e-5 (an `F16` subnormal, fewer digits), and those under 2.98e-8 (they become 0).
+struct Half
+  total: Int
+  small: Int
+  zeroed: Int
+end
+
 struct Golden
   cases: List[Case]
+  half: Half
 end
 
 def main() -> Void
@@ -58,7 +70,13 @@ private
 def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Float]
   want = try JSON.decode(try Source.read_text(golden), Golden)
   try Load.vulkan_fp16_from_env()
-  m = try Lfm3.open(dir, backend, try Load.weights_from_env())
+  weights = try Load.weights_from_env()
+  if weights == Tensor.Dtype.F16
+    h = want.half
+    puts("F16 matrices: #{h.total} weights, #{h.small} not 0 and under 6.1e-5, #{h.zeroed} under 2.98e-8")
+  end
+
+  m = try Lfm3.open(dir, backend, weights)
   gap = checked(m, want)
   Lfm3.close_model(m)
   gap

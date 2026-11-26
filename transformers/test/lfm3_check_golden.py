@@ -1,6 +1,7 @@
 """Prints what the official LFM3 code (`LiquidAI/LFM3-1.7B`) answers on a few prompts, for `tools/lfm3_check.agc` to
 compare: per prompt, the input ids (the check does not need our tokenizer), the logits of the last position over the
-whole vocabulary and, for every position, the ids of the five largest logits, in `float32`.
+whole vocabulary and, for every position, the ids of the five largest logits, in `float32`; and what `weights: F16`
+rounds away in the file (`half`).
 
 The `float32` model is 6.9 GB, more than a 12 GB machine shared with other work may give. So the checkpoint is loaded in
 `bfloat16` (3.4 GB, the way it is stored: every weight is exactly a `float32` number) and each decoder layer, with the
@@ -9,16 +10,22 @@ model. The last prompt is over 300 tokens, past the sliding window of 256.
 
 The code is `modeling_lfm3.py`, `configuration_lfm3.py` and `lfm3_conv.py` of the repository, revision
 1da06bec6a819da10b54c67e5c90972b46d81871, under the LFM Open License v1.0, which the script imports from MODEL_DIR and
-runs as code (`trust_remote_code`): read them first, run in a throwaway venv with no network, and it refuses files whose
-sha256 is not the one of that revision. MODEL_DIR holds the files of the official `LiquidAI/LFM3-1.7B` repository at that
-revision: `model.safetensors`, `config.json`, `tokenizer.json` and the three `.py` files. In `bfloat16` the process takes
-about 4 GB: on a shared machine run it as `flock LOCK systemd-run --user --scope -q -p MemoryMax=5G python ...`.
+runs as code (`trust_remote_code`): read them first, run in a throwaway venv (the script sets `HF_HUB_OFFLINE` and
+`TRANSFORMERS_OFFLINE`), and it refuses files whose sha256 is not the one of that revision. MODEL_DIR holds the files
+of the official `LiquidAI/LFM3-1.7B` repository at that revision: `model.safetensors`, `config.json`, `tokenizer.json`
+and the three `.py` files. In `bfloat16` the process takes about 4 GB: on a shared machine run it as
+`flock LOCK systemd-run --user --scope -q -p MemoryMax=5G python ...`.
 
 Manual, not run by the tests: it needs `torch` 2.15.0 and `transformers` 5.22.2 (the script stops on other versions)
 and no `triton` or `causal-conv1d`. Run it from `transformers/`, with Python's isolated mode:
 
     python -I test/lfm3_check_golden.py MODEL_DIR > GOLDEN.json
 """
+
+import os
+
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import hashlib
 import importlib
@@ -68,6 +75,21 @@ def load_remote(folder):
     return importlib.import_module("lfm3_code.modeling_lfm3")
 
 
+def f16_loss(model):
+    """What `weights: F16` rounds away: of the matrices it keeps in `F16` (rank 2, 100,000 values or more), how many
+    are there, how many non-zero ones are under 6.1e-5 (an `F16` subnormal: it keeps fewer digits) and how many are
+    under 2.98e-8, half the smallest subnormal (they become 0)."""
+    total = small = zeroed = 0
+    for p in model.parameters():
+        if p.ndim == 2 and p.numel() >= 100000:
+            a = p.detach().float().abs()
+            nonzero = a > 0
+            total += p.numel()
+            small += int((nonzero & (a < 6.103515625e-05)).sum())
+            zeroed += int((nonzero & (a < 2.98e-8)).sum())
+    return {"total": total, "small": small, "zeroed": zeroed}
+
+
 def main():
     path = sys.argv[1]
     check_environment(path)
@@ -80,8 +102,10 @@ def main():
     inner.embedding_norm.float()
     for layer in inner.layers:
         layer.register_forward_pre_hook(lambda module, args, kwargs: (module.float(), None)[1], with_kwargs=True)
-        layer.register_forward_hook(lambda module, args, kwargs, out: (module.to(torch.bfloat16), None)[1], with_kwargs=True)
+        layer.register_forward_hook(
+            lambda module, args, kwargs, out: (module.to(torch.bfloat16), None)[1], with_kwargs=True)
     cases = []
+    half = f16_loss(model)
     for prompt in PROMPTS:
         ids = tok(prompt, return_tensors="pt")["input_ids"]
         with torch.no_grad():
@@ -93,7 +117,7 @@ def main():
             "last": logits[-1].tolist(),
             "top5": logits.topk(5, dim=-1).indices.tolist(),
         })
-    json.dump({"cases": cases}, sys.stdout)
+    json.dump({"cases": cases, "half": half}, sys.stdout)
     sys.stdout.write("\n")
 
 

@@ -243,6 +243,9 @@ and `model.safetensors` or its `.index.json`; `weights` is `F32` or, on ggml, `F
   head, `sigmoid(gate_proj(x))` (`Attention.head_gate`). A sliding layer sees its own position and the `sliding_window - 1`
   before it (`Nn.causal_mask` with a window; the whole prompt when the window covers it) and rotates by `rope_theta` of
   its `rope_parameters` entry; a global one rotates a `partial_rotary_factor` of the head (0.5 in 1.7B, `Rope.zero_tail`).
+- The official code has no `hidden_act` and no bias in its config (its code fixes `silu` and `bias=False`), so the config
+  fields the loader does not read (`use_cache`, `pad_token_id`, ...) change no result; `Load.dense` would read a `.bias`
+  that a file had, which no official file does.
 - The convolution of a `conv` layer is stored `[width, 1, conv_L_cache]` and kept `[width, taps]`. The head is the
   embedding table (`tie_word_embeddings` defaults to true), else `lm_head`.
 - `model_type` other than `lfm3`, `conv_bias`, `use_sandwich_norm: false`, a `layer_types` entry other than `conv`,

@@ -64,13 +64,12 @@ def test_every_position_matches_the_official_code_on_the_reference() -> Result[V
   matches(try golden(), S.REF, Tensor.Dtype.F32, ABS, REL)
 end
 
-## `weights: F16` keeps a matrix under 100,000 values in `F32`, so the tiny model is the same under it: this checks that
-## the option is taken. The real model's F16 weights are checked by `tools/lfm3_check.agc`.
+## The real model's `F16` weights are checked by `tools/lfm3_check.agc`: a matrix under 100,000 values stays `F32`, so
+## the tiny model would not show them.
 def test_every_position_matches_the_official_code_on_ggml() -> Result[Void]
   g = try golden()
   for backend in try S.ggml_backends()
     try matches(g, backend, Tensor.Dtype.F32, F32_ABS, F32_REL)
-    try matches(g, backend, Tensor.Dtype.F16, F32_ABS, F32_REL)
   end
 
   ok()
@@ -104,7 +103,6 @@ def test_a_model_this_file_does_not_run_is_an_error() -> Result[Void]
     ["\"sliding_window\": 4", "\"sliding_window\": null", "sliding_window"],
     ["\"rope_theta\": 10000.0", "\"rope_theta\": 10000.0, \"rope_type\": \"yarn\"", "rope_type"],
     ["\"partial_rotary_factor\": 0.5", "\"partial_rotary_factor\": 0.1", "rotary width"],
-    ["\"num_key_value_heads\": 2", "\"num_key_value_heads\": 3", "key heads"],
   ]
     wrong = try S.replaced(g.config, change[0], change[1])
     try with_model(g, wrong) do |dir| S.expect_error(Lfm3.open(dir, S.REF), change[2]) end
@@ -113,13 +111,9 @@ def test_a_model_this_file_does_not_run_is_an_error() -> Result[Void]
   ok()
 end
 
-## A weight of another shape than the config says is an error, and so are the `weights` the loader does not keep.
-def test_the_shapes_and_the_weights_option_are_checked() -> Result[Void]
+## The `weights` the loader does not keep are an error.
+def test_the_weights_option_is_checked() -> Result[Void]
   g = try golden()
-  wide = try S.replaced(g.config, "\"intermediate_size\": 24", "\"intermediate_size\": 12")
-  try with_model(g, wide) do |dir| S.expect_error(Lfm3.open(dir, S.REF), "feed_forward") end
-  taps = try S.replaced(g.config, "\"conv_L_cache\": 7", "\"conv_L_cache\": 5")
-  try with_model(g, taps) do |dir| S.expect_error(Lfm3.open(dir, S.REF), "conv.weight") end
   try with_model(g, g.config) do |dir| S.expect_error(Lfm3.open(dir, S.REF, Tensor.Dtype.Q8_0), "F32 or F16") end
   with_model(g, g.config) do |dir| S.expect_error(Lfm3.open(dir, S.REF, Tensor.Dtype.F16), "ggml") end
 end

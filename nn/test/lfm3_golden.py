@@ -1,7 +1,7 @@
 """Writes `test/fixtures/lfm3_golden.json`: what the official LFM3 code answers for a tiny random model of one layer of
 each kind (`conv`, `sliding_attention` with a window of 3, `full_attention`), in `float32` and the eager attention, for
-`test/lfm3_test.agc` to compare with `ShortConv.short_conv`, `Nn.attention` with a `head_gate`, and `Nn.causal_mask` with
-a window:
+`test/lfm3_test.agc` to compare with `ShortConv.short_conv`, `Nn.attention` with a `head_gate` and `Nn.causal_mask`
+with a window:
 
 - the short convolution over 10 tokens with no cache, then a prefill of 6 and 4 decode steps with a `DynamicCache`, and
   the state the cache holds after them (`[width, taps]` in Hugging Face, the last `taps - 1` columns are ours);
@@ -24,6 +24,11 @@ and no `triton` or `causal-conv1d`. Run it from `nn/`, with Python's isolated mo
 
     python -I test/lfm3_golden.py ~/.cache/agentica-ml/hf/lfm3-1.7b-code > test/fixtures/lfm3_golden.json
 """
+
+import os
+
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import hashlib
 import importlib
@@ -120,15 +125,16 @@ def main():
             attentions.append({
                 "kind": kind, "tokens": TOKENS, "hidden": HIDDEN, "heads": 4, "kv_heads": 2, "head": 8,
                 "theta": ROPE[kind]["rope_theta"],
-                "zero_tail": int(ROPE[kind].get("partial_rotary_factor", 1.0) * 8) if kind == "full_attention" else 0, "window": WINDOW if kind == "sliding_attention" else 0,
+                "zero_tail": int(ROPE[kind].get("partial_rotary_factor", 1.0) * 8) if kind == "full_attention" else 0,
+                "window": WINDOW if kind == "sliding_attention" else 0,
                 "query": flat(layer.q_proj.weight), "key": flat(layer.k_proj.weight),
                 "value": flat(layer.v_proj.weight), "output": flat(layer.o_proj.weight),
                 "query_norm": flat(layer.q_norm.weight), "key_norm": flat(layer.k_norm.weight),
                 "gate": flat(layer.gate_proj.weight), "x": flat(x[0]), "out": flat(out[0]),
                 "eps": config.norm_eps,
             })
-        visible = (masks["sliding_attention"][0, 0] > -1.0).int() if masks["sliding_attention"].dtype.is_floating_point \
-            else masks["sliding_attention"][0, 0].int()
+        sliding = masks["sliding_attention"][0, 0]
+        visible = (sliding > -1.0).int() if sliding.dtype.is_floating_point else sliding.int()
     json.dump({"short_conv": short_conv, "attentions": attentions, "visible": visible.reshape(-1).tolist(),
                "window": WINDOW}, sys.stdout)
     sys.stdout.write("\n")

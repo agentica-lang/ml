@@ -351,8 +351,9 @@ def test_a_zero_tail_that_does_not_fit_is_an_error() -> Result[Void]
   l = (try golden()).attentions[1]
   p = try attention_of(l, S.REF)
   x = try S.f32(l.x, [1, l.tokens, l.hidden])
-  for bad in [Nn.Rope(base: l.theta, zero_tail: some(3)), Nn.Rope(base: l.theta, zero_tail: some(10))]
-    try Test.error?(Nn.self_attention(p.with(rope: some(bad)), x, none, true))
+  for bad in [3, 8, 10]
+    r = Nn.Rope(base: l.theta, zero_tail: some(bad))
+    try Test.error?(Nn.self_attention(p.with(rope: some(r)), x, none, true))
   end
 
   try Test.error?(Nn.self_attention(p.with(rope: some(Nn.Rope(zero_tail: some(4), neox: false))), x, none, true))

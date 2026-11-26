@@ -334,7 +334,8 @@ end
 ## too, which is self-attention (`q` is `k`). A decoder that keeps the keys and
 ## values of earlier tokens projects the new token alone, at its own position
 ## (`positions` of `[n]` for a token at position `n`, the keys cached already
-## rotated), and gives `attend` the cache.
+## rotated), and gives `attend` the cache. With a `Rope.zero_tail` the heads come out with their columns reordered (the
+## rotated ones first, the same for `query` and `key`), which `attend` does not mind and nothing else may read.
 def project(
   p: Attention,
   queries: Tensor.Tensor,
@@ -816,25 +817,24 @@ def rotate_tail(r: Rope, n: Int, x: Tensor.Tensor, positions: Optional[Tensor.Te
     return error("a zero_tail rope is the neox layout over the whole head: it takes no dims and no neox: false")
   end
 
+  return error("a zero_tail of the whole head #{head} is a plain rotation: use no zero_tail") if n == head
+
   if n < 2 or n % 2 != 0 or head % 2 != 0 or n > head
-    return error("zero_tail needs an even number of columns in 2 to #{head}, got #{n}")
+    return error("zero_tail needs an even number of columns in 2 to #{head - 2}, got #{n}")
   end
 
   half = head / 2
-  quarter = n / 2
+  pairs = n / 2
   cut = ->(from: Int, to: Int) { Tensor.slice(x, [0, 0, 0, from], [shape[0], shape[1], shape[2], to]) }
-  brought = x
-  if n < head
-    brought = try Tensor.concat(
-      [
-        try cut.call(0, quarter),
-        try cut.call(half, half + quarter),
-        try cut.call(quarter, half),
-        try cut.call(half + quarter, head),
-      ],
-      3,
-    )
-  end
+  brought = try Tensor.concat(
+    [
+      try cut.call(0, pairs),
+      try cut.call(half, half + pairs),
+      try cut.call(pairs, half),
+      try cut.call(half + pairs, head),
+    ],
+    3,
+  )
 
   base = Math.exp((Math.log(r.base) * n.to_f) / head.to_f)
   at = case positions

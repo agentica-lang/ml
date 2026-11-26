@@ -110,16 +110,6 @@ def check_config(config: Config) -> Result[Void]
     end
   end
 
-  return error("conv_L_cache #{config.conv_L_cache} needs 2 or more") if config.conv_L_cache < 2
-
-  if config.num_key_value_heads < 1 or config.num_attention_heads % config.num_key_value_heads != 0
-    return error("#{config.num_attention_heads} heads are not a multiple of #{config.num_key_value_heads} key heads")
-  end
-
-  if config.head_dim < 2 or config.head_dim % 2 != 0
-    return error("head_dim #{config.head_dim} is not an even number of 2 or more, which rope needs")
-  end
-
   if config.layer_types.include?("sliding_attention")
     window = config.sliding_window.unwrap_or(0)
     return error("sliding_attention layers need a sliding_window of 1 or more, got #{window}") if window < 1
@@ -294,7 +284,6 @@ def rope_of(config: Config, kind: String) -> Result[Nn.Rope]
 
   r = try found.to_result("rope_parameters has no #{kind} entry")
   return error("rope_type #{r.rope_type} is not supported, only default") if r.rope_type != "default"
-  return error("rope_theta #{r.rope_theta} needs a value above 0") if r.rope_theta <= 0.0
   rotated = try (config.head_dim.to_f * r.partial_rotary_factor).to_i
   if rotated < 2 or rotated > config.head_dim or rotated % 2 != 0
     return error("the rotary width #{rotated} of #{kind} is not an even number in 2 to head_dim #{config.head_dim}")

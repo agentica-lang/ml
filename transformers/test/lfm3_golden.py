@@ -8,8 +8,9 @@ outputs.
 
 The code is `modeling_lfm3.py`, `configuration_lfm3.py` and `lfm3_conv.py` of `LiquidAI/LFM3-1.7B`, revision
 1da06bec6a819da10b54c67e5c90972b46d81871, under the LFM Open License v1.0. It is not copied here. The script imports
-those files and runs them as code (`trust_remote_code`): read them first, run in a throwaway venv with no network, and it
-refuses files whose sha256 is not the one of that revision. Download them with:
+those files and runs them as code (`trust_remote_code`): read them first, run in a throwaway venv (the script sets
+`HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`), and it refuses files whose sha256 is not the one of that revision.
+Download them with:
 
     hf download LiquidAI/LFM3-1.7B modeling_lfm3.py configuration_lfm3.py lfm3_conv.py \\
         --revision 1da06bec6a819da10b54c67e5c90972b46d81871 --local-dir ~/.cache/agentica-ml/hf/lfm3-1.7b-code
@@ -19,6 +20,11 @@ and no `triton` or `causal-conv1d`. Run it from `transformers/`, with Python's i
 
     python -I test/lfm3_golden.py ~/.cache/agentica-ml/hf/lfm3-1.7b-code > test/fixtures/lfm3_golden.json
 """
+
+import os
+
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import hashlib
 import importlib

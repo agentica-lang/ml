@@ -246,7 +246,7 @@ end
 
 ## LFM3
 
-`Lfm3.open(dir, backend, weights)` loads Liquid AI's LFM3 (`lfm3`, `LiquidAI/LFM3-1.7B`) from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk, 3.4 GB, and `F32` in memory, or `F16` with `weights: Dtype.F16` on ggml, which is exact for a `bfloat16` weight). `Lfm3.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run` is; there is no generation and no tokenizer yet. The model is under the LFM Open License v1.0, which limits commercial use to entities under 10 million USD of annual revenue.
+`Lfm3.open(dir, backend, weights)` loads Liquid AI's LFM3 (`lfm3`, `LiquidAI/LFM3-1.7B`) from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk, 3.4 GB, and `F32` in memory, or `F16` with `weights: Dtype.F16` on ggml). `Lfm3.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run` is, so its cost grows with the square of the length; there is no generation and no tokenizer yet. The weights are Liquid AI's, under the [LFM Open License v1.0](https://huggingface.co/LiquidAI/LFM3-1.7B/blob/1da06bec6a819da10b54c67e5c90972b46d81871/LICENSE). Nothing of LFM3 is redistributed here: the tests use random weights, and the scripts that make their goldens import Liquid AI's code from a local download, whose license the person running them accepts.
 
 ```agentica
 import Lfm3 from "pkg/transformers/lfm3"
@@ -260,7 +260,7 @@ end
 ```
 
 - A layer is a gated short convolution (`ShortConv` of [nn](../nn/_index.md): 7 taps, with no bias), a sliding-window attention (the last 256 tokens, rotated by theta 1e4) or a global one (theta 1e6, half of each head rotated), by `layer_types`, then a SwiGLU MLP. Each of the two branches is normed before and after, and the attention has a gate of one number per head.
-- Against the official code (`trust_remote_code`, in `float32` layer by layer from the `bfloat16` file) on the real checkpoint, over five prompts of 5 to 375 tokens (the last is past the window), the largest gap of a logit with `F16` weights is 4.7e-5 on ggml CPU and 1.7e-4 on Vulkan with `vulkan_fp16` off, and the five largest logits of every position are the same ids. The CPU run holds 3.9 GB at the peak.
+- Against the official code (`trust_remote_code`, in `float32` layer by layer from the `bfloat16` file) on the real checkpoint, over five prompts of 5 to 375 tokens (the last is past the window), the largest gap of a logit with `F16` weights is 4.7e-5 on ggml CPU and 1.7e-4 on Vulkan with `vulkan_fp16` off, and the five largest logits of every position are the same ids. The CPU run holds 3.9 GB at the peak. `F16` rounds each weight once at load: a `bfloat16` value from 6.1e-5 to 65504 is exact, a larger one is an error that names the tensor, a smaller one keeps fewer digits and one under 3e-8 becomes 0 (in the checkpoint, 4.6 million of the 1.73 billion weights of the `F16` matrices are not 0 and under 6.1e-5, and 125,000 of them are under 3e-8).
 - A `model_type` other than `lfm3`, `conv_bias: true`, `use_sandwich_norm: false`, a `rope_type` other than `default` and a layer type other than `conv`, `full_attention` and `sliding_attention` are errors, and so are `weights` other than `F32` and `F16`. The model cannot be fine-tuned with `train/`.
 
 ## Generation

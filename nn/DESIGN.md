@@ -100,8 +100,9 @@ keeps the frequencies `base^(-2i / head)` of the whole head and zeroes those of 
 partial_rotary_factor`) brings those columns together (four slices and a `concat` of the head) and runs `Tensor.rope` over
 them with `dims: zero_tail` and the base `base^(zero_tail / head)`, which gives pair `i` the same angle. The head comes out
 reordered, the same for the queries and the keys, so `q k^T` is the one of Hugging Face; the values are not reordered, and
-nothing reads the reordered heads but the scores (a cache keeps the keys as they come out). Doing it in the graph, not in
-the weights at load, works for `F16` and quantized weights, which a host permutation of rows could not touch.
+nothing reads the reordered heads but the scores (a cache keeps the keys as they come out). A `zero_tail` of the whole
+head is an error (it is a plain rotation: leave it out). Doing it in the graph, not in the weights at load, works for `F16`
+and quantized weights, which a host permutation of rows could not touch.
 `test/lfm3_test.agc` checks the three layers and the rotary against the official code's tiny model (`test/lfm3_golden.py`).
 
 A compiled decode step has one shape for the prompts of a capacity, so a prompt is padded after its last real token.
