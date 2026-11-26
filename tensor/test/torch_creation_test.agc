@@ -30,6 +30,15 @@ def test_floats_agrees_with_the_reference() -> Result[Void]
   Conform.agrees(try Tensor.floats(data, [2, 2], Conform.TORCH), theirs, "floats")
 end
 
+def test_floats32_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  packed: List[Float32] = [1.5, -2.0, 3.0, 0.1]
+  theirs = try Tensor.floats32(packed, [2, 2], Conform.REF)
+  try Test.error?(Tensor.floats32(packed, [3], Conform.TORCH))
+  Conform.agrees(try Tensor.floats32(packed, [2, 2], Conform.TORCH), theirs, "floats32")
+end
+
 def test_empty_is_deterministic_zeros() -> Result[Void]
   return Conform.absent() if !Conform.available()
 

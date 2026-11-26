@@ -96,23 +96,19 @@ def test_floats_uploads_on_the_cpu_backend_and_checks_the_count() -> Result[Void
   Test.error?(Tensor.floats(data, [3], CPU))
 end
 
-## What `floats32` stores, `to_floats32` reads back unchanged, on the reference and on ggml, and the two agree with `floats`.
-def test_floats32_round_trips_a_packed_list() -> Result[Void]
+## `floats32` makes the tensor `floats` makes of the same values, widened, on the reference and on ggml.
+def test_floats32_uploads_a_packed_list() -> Result[Void]
   return ok() if !try present()
   packed: List[Float32] = [1.5, -2.0, 3.0, 0.1]
+  wide = packed.map { |x| x.to_f }
   for backend in [Tensor.Backend.Reference, CPU]
     t = try Tensor.floats32(packed, [2, 2], backend)
     try Test.eq(Tensor.dtype(t), Tensor.Dtype.F32)
-    try Test.eq(try Tensor.to_floats32(t), packed)
-    try Test.eq(
-      try Tensor.to_list(t),
-      try Tensor.to_list(try Tensor.floats(packed.map { |x| x.to_f }, [2, 2], backend)),
-    )
-
+    try Test.eq(try Tensor.to_list(t), try Tensor.to_list(try Tensor.floats(wide, [2, 2], backend)))
     try Test.error?(Tensor.floats32(packed, [3], backend))
   end
 
-  Test.error?(Tensor.to_floats32(try Tensor.from_list([Tensor.Values.Int(1)], [1], Tensor.Dtype.I32)))
+  ok()
 end
 
 def test_the_cpu_module_state_is_the_one_the_dispatch_answers() -> Result[Void]

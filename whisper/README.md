@@ -105,7 +105,9 @@ puts(Whisper.language_name(transcript.language))   # some("english")
 `"spanish"`), none for a code it does not know.
 
 `transcribe(model, pcm)` takes the `List[Float32]` of `Wav.load` and is
-`transcribe_with` of `widen(pcm)` with `Options()` followed by `join_text`:
+`transcribe_with` of `widen(pcm)` with `Options()` followed by `join_text`. It
+widens the whole clip for the length of the call, so a long clip goes through
+`Stream.transcribe_stream`, which widens one window at a time:
 
 ```agc
 text = try Whisper.transcribe(model, pcm)   # "¡Hola! Esto es una prueba de audio en español."

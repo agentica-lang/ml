@@ -430,27 +430,6 @@ def floats32(
   end
 end
 
-## Host readback of an `F32` tensor as a packed list, the counterpart of
-## `floats32`: what `to_list` gives without the `Values` tags, at 4 bytes an
-## item. Another dtype is an `error`.
-def to_floats32(t: Types.Tensor) -> Result[List[Float32]]
-  return error("to_floats32 reads an F32 tensor, got #{Types.dtype_name(t.dtype)}") if t.dtype != Types.Dtype.F32
-  case t.backend
-    Types.Backend.Ggml(_) -> Ggml.to_floats(t)
-    Types.Backend.Xla(_) -> Xla.to_floats(t)
-    _ ->
-      out: List[Float32] = []
-      for v in try to_list(t)
-        case v
-          Types.Values.Float(x) -> out = out.push(x.to_float32)
-          _ -> return error("to_floats32 found #{v} in an F32 tensor")
-        end
-      end
-
-      ok(out)
-  end
-end
-
 ## Host readback: the values tagged with the tensor's dtype.
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   case t.backend

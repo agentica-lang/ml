@@ -37,7 +37,7 @@ It also needs a ggml model file. `tools/fetch-model.sh` downloads one.
 - `load_model(path)` loads a ggml or gguf model (the model file formats of whisper.cpp) into a `Model`. The path is at most 4096 bytes.
 - `Whisper.load(path)` reads a WAV file as a `List[Float32]` of 16 kHz mono samples, 4 bytes each. Only PCM, mono, 16 kHz and 16-bit files are read.
 - `Whisper.decode(data)` reads WAV bytes that are already in memory, by the same rules.
-- `transcribe(model, pcm)` takes that `List[Float32]` and gives the text of one decode with the default options. A decode is one run of the model over the audio.
+- `transcribe(model, pcm)` takes that `List[Float32]` and gives the text of one decode with the default options. It widens the whole clip for the length of the call (8 bytes a sample), so for a long clip use `Stream.transcribe_stream`, which widens one window at a time. A decode is one run of the model over the audio.
 - `transcribe_with(model, pcm, options)` takes a `List[Float]`, because a native module cannot take a `Float32`: `Whisper.widen(pcm)` makes one from the samples of `load`, as a copy of 8 bytes a sample for the length of the call. It gives the timed `Segment`s of one decode, in time order. A `Segment` has `start_ms`, `end_ms` and `text`.
 - `transcribe_detailed(model, pcm, options)` takes a `List[Float]` as `transcribe_with` does and gives a `Transcript`: the language, the segments with their tokens, and the detected language when asked for.
 - `join_text(segments)` joins the texts of segments with single spaces.

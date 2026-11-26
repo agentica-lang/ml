@@ -204,7 +204,7 @@ end
 def right_context(samples: List[Float32], x: List[Float32], half: Int) -> List[Float32]
   return x.drop(x.size - half - 1).take(half).reverse if samples.size <= x.size
 
-  (samples.drop(x.size).take(half) + samples.drop(samples.size - half - 1).take(half).reverse).take(half)
+  (samples.drop(x.size) + samples.drop(samples.size - half - 1).take(half).reverse).take(half)
 end
 
 ## The `mels` triangular filters over the `N_FFT / 2 + 1` bins, on the Slaney

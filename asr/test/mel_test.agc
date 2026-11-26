@@ -12,10 +12,15 @@ GOLDEN = "test/fixtures/hf_mel.json"
 ## The golden keeps 7 decimals of Hugging Face's float32 output.
 HF_CLOSE = 0.000001
 
-## Both sides compute in doubles on the same binary32 samples (the peer rounds
-## them), and `log_mel` rounds its result to `Float32`: the gap is that rounding,
-## at most half an ulp of a value below 2, 6e-8.
-CLOSE = 0.0000001
+## Both sides compute in doubles on the same binary32 samples and round the
+## result to binary32 (the peer's values are already rounded); the FFT and the
+## direct DFT differ by about 1e-13 before that.
+CLOSE = 0.000000001
+## A value within 1e-13 of a rounding tie may round the other way: one ulp, which
+## is at most 1.2e-7 below 2 (the values of the cases lie in -0.67..1.38).
+ONE_ULP = 0.00000012
+## How many values of a case may take it.
+TIES = 2
 
 ## The graph computes in `F32`; its gap to the doubles is about 1e-5.
 GRAPH_CLOSE = 0.00005
@@ -43,10 +48,16 @@ def test_the_log_mel_matches_the_peer() -> Result[Void]
     got = try Mel.log_mel(try samples32(try JSON.get(c, "samples")), mels, frames)
     want = try floats(try JSON.get(c, "mel"))
     try Test.eq(got.size, mels * frames)
+    ties = 0
     for i in 0...want.size
       gap = (got[i].to_f - want[i]).abs
-      return error("#{mels} mels: value #{i} is #{got[i]}, expected #{want[i]}") if gap > CLOSE
+      if gap > CLOSE
+        ties += 1
+        return error("#{mels} mels: value #{i} is #{got[i]}, expected #{want[i]}") if gap > ONE_ULP
+      end
     end
+
+    try Test.assert(ties <= TIES, "#{mels} mels: #{ties} values are one ulp off")
   end
 
   ok()

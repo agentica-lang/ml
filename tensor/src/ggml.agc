@@ -139,12 +139,6 @@ def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   ok(out)
 end
 
-## Host readback of an `F32` tensor as packed floats.
-def to_floats(t: Types.Tensor) -> Result[List[Float32]]
-  _ = try usable("to_floats")
-  ok((try GgmlRaw.readback(try handle_of(t))).map { |x| x.to_float32 })
-end
-
 ## Appends the `F32` values of `t` to the file `path`, written by C.
 def append_file(t: Types.Tensor, path: String) -> Result[Void]
   _ = try usable("append_file")

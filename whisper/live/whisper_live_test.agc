@@ -107,6 +107,15 @@ def test_transcribe_errors_on_a_finite_sample_past_the_float_range() -> Result[V
   end
 end
 
+def test_transcribe_errors_on_a_float32_infinity() -> Result[Void]
+  model = try Whisper.load_model(MODEL_PATH)
+  inf = (1.0e308 * 10.0).to_float32
+  case Whisper.transcribe(model, [0.5, inf])
+    ok(_) -> Test.assert(false, "transcribe took an infinite sample")
+    error(e) -> Test.eq(e.message, "transcribe_with needs finite samples")
+  end
+end
+
 def test_transcribe_errors_on_a_language_code_with_a_nul_byte() -> Result[Void]
   code = try String.from_bytes(try Bytes.from_list([101, 0, 115]))
   model = try Whisper.load_model(MODEL_PATH)
