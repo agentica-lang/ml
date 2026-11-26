@@ -230,7 +230,7 @@ Lift.close([features])
 
 ## SmolVLM
 
-`SmolVlmVision.open(dir, backend)` loads the vision tower and the connector of SmolVLM (`Idefics3ForConditionalGeneration`, such as `HuggingFaceTB/SmolVLM-256M-Instruct`) from the folder of its official repository (`config.json` and `model.safetensors`; the weights are `bfloat16` on disk and `F32` in memory). `SmolVlmVision.encode(v, tiles)` turns tiles of 512 by 512 pixels, as the image processor normalizes them (`Vision.to_tensor`, then `Vision.normalize` with the mean and std 0.5), into the rows that the text model reads at the image tokens: `[tiles, 64, 576]` in the 256M model, 64 rows for each tile. The caller passes whole tiles only: no padded tile and none of the all-zero tiles that Hugging Face's processor pads a batch with (its model drops them, this one would compute them); padded tiles and the patch mask come with the processor. Only the 256M and 500M models (tiles of 512 pixels, a side of 32 patches, a pixel shuffle by 4) are checked against Hugging Face. The text model, the splitting of an image into tiles and the chat template are not here yet (ml#84): this is the first slice.
+`SmolVlmVision.open(dir, backend)` loads the vision tower and the connector of SmolVLM (`Idefics3ForConditionalGeneration`, such as `HuggingFaceTB/SmolVLM-256M-Instruct`) from the folder of its official repository (`config.json` and `model.safetensors`; the weights are `bfloat16` on disk and `F32` in memory). `SmolVlmVision.encode(v, tiles)` turns tiles of 512 by 512 pixels, as the image processor normalizes them (`Vision.to_tensor`, then `Vision.normalize` with the mean and std 0.5), into the rows that the text model reads at the image tokens: `[tiles, 64, 576]` in the 256M model, 64 rows for each tile. The caller passes whole tiles only: no padded tile and none of the all-zero tiles that Hugging Face's processor pads a batch with (its model drops them, this one would compute them); padded tiles and the patch mask come with the processor. Only the 256M and 500M models (tiles of 512 pixels, a side of 32 patches, a pixel shuffle by 4) are checked against Hugging Face.
 
 ```agentica {mode="fragment"}
 backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
@@ -243,6 +243,47 @@ Lift.close([tile, rows])
 SmolVlmVision.close_model(v)
 ```
 
+To describe an image, cut it into tiles, put the tiles through the tower one at a time (so one tile of the tower is in memory), close the tower, and generate with the features spliced in at the `<image>` ids. The 256M model fits in 5 GB this way. This is the path of `vision/test/smolvlm_chat_hf_test.agc`, whose greedy ids are Hugging Face's `generate` ones (24 and 12 new ids, two images, on Vulkan):
+
+```agentica {mode="fragment"}
+backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+dir = "SmolVLM-256M-Instruct"
+tok = Bpe.open("#{dir}/tokenizer.json").unwrap!
+made = Native.arena do
+  image = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
+  Vision.idefics3_tiles(image, backend)
+end
+tiles = made.unwrap!
+
+v = SmolVlmVision.open(dir, backend).unwrap!
+values: List[Tensor.Values] = []
+width = 0
+for t in tiles.tiles
+  x = Vision.normalize(t, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap!
+  rows = SmolVlmVision.encode(v, x).unwrap!
+  width = Tensor.shape(rows)[2]
+  values = values + Tensor.to_list(rows).unwrap!
+  Lift.close([x, rows])
+end
+SmolVlmVision.close_model(v)
+features = Tensor.from_list(values, [values.size / width, width], Tensor.Dtype.F32, backend).unwrap!
+
+question = Chat.SMOLVLM_IMAGE + "What is in this picture?"
+text = Chat.apply("idefics3", [Chat.Message(role: "user", content: question)]).unwrap!
+grids = [SmolVlmPrompt.Grid(rows: tiles.rows, cols: tiles.cols)]
+ids = SmolVlmPrompt.expand(Bpe.encode(tok, text).unwrap!, SmolVlmPrompt.open(dir).unwrap!, grids).unwrap!
+sight = KvDecoder.plain_sight(features, Qwen3.image_token(dir).unwrap!, ids)
+
+m = Qwen3.open_idefics3(dir, backend).unwrap!
+g = Generate.open(m).unwrap!
+made = Generate.generate(g, ids, 64, [2], none, some(sight)).unwrap!
+puts(Bpe.decode(tok, made).unwrap!)
+Generate.close(g)
+Qwen3.close_model(m)
+Lift.close([features])
+```
+
+- The stop id 2 is `<|im_end|>`, which the checkpoint's `generate` stops at (the model writes `<end_of_utterance>` before it). A photo that makes 3 by 4 tiles is 13 frames and some 880 ids of prompt; the CPU takes a while for that, Vulkan some 15 seconds.
 - The tower is SigLIP: a patch convolution, learned positions, 12 pre-norm blocks of full attention with an MLP of `gelu_pytorch_tanh`, and a final layer norm; the connector joins each 4 by 4 square of patches (`scale_factor`) into one vector with a pixel shuffle and takes it to the text width with one linear layer. Every tile is a whole square of `image_size` by `image_size` pixels: a tile of another size is an error.
 - Against Hugging Face's `Idefics3ForConditionalGeneration.get_image_features` in `float32` on the real `SmolVLM-256M-Instruct`, for two tiles, the rows (the mean, the mean of the absolute values and 505 values of each tile) are within 5.3e-5 on ggml CPU and 1.1e-4 on Vulkan, and a tiny random model is within 2e-5 on the reference and 1e-4 on ggml (`transformers/DESIGN.md`).
 - `SmolVlmPrompt.expand(ids, prompt, grids)` writes the prompt as Hugging Face's `Idefics3Processor` does: each `<image>` id of `ids` (the template writes one for each image) becomes the ids of its tiles, row by row (`<fake_token_around_image>`, `<row_r_col_c>` and 64 `<image>` ids, a newline after each row), then its global image (`<fake_token_around_image>`, `<global-img>`, 64 `<image>` ids and `<fake_token_around_image>`); `grids` is the `rows` and `cols` of each image (`Vision.idefics3_tiles`; 1 to 6 each, and `do_image_splitting: false` is not supported). `SmolVlmPrompt.open(dir)` reads the ids from `tokenizer.json` (the added tokens and the entries of the two newlines) and `processor_config.json` of the folder. The expanded ids are the processor's on prompts with one and two images. `Bpe.open("SmolVLM-256M-Instruct/tokenizer.json")` is the tokenizer of the text around them (the pre-tokenizer of SmolLM2: each digit is a piece, then the GPT-2 split), and gives `<image>` as one id; its ids and text are those of `tokenizers` on a tiny tokenizer and on the real one. `Chat.apply("idefics3", messages)` is its chat template: `User: ...<end_of_utterance>` and `Assistant:` at the end, with `Chat.SMOLVLM_IMAGE` (`<image>`) in the `content` where an image goes (at the start, the text follows the colon with no space, as Hugging Face's list of parts writes it). The features for the splice are those of `SmolVlmVision.encode` on each tile, in the order of the ids.

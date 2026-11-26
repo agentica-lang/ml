@@ -727,7 +727,19 @@ error row per config field.
   `<image>` tokens of one tile. The tiles of `smolvlm_hf_test` go through the tower and the connector, and the rows
   through `Generate.step_logits` over a `Sight`; the golden holds the last position's logits (mean, abs mean, 501
   values and the top 10). The largest gap is 2.7e-5 on ggml CPU and 3.2e-5 on Vulkan; the test passes within 1e-4.
-  The prompt is a fixed list of ids: the processor, tile splitting and the chat template are later slices.
+  The prompt is a fixed list of ids; the whole path is the next test.
+- `vision/test/smolvlm_chat_hf_test.agc` against `vision/test/smolvlm_chat_hf_golden.py` (manual: `torch` 2.15.0,
+  `transformers` 5.22.2, `pillow` 11.3.0, offline, the sha256 of the checkpoint's files asserted;
+  `vision/test/fixtures/smolvlm/chat_golden.json`, 11 KB): a chat with one image, from the file of the image to the new
+  ids. Hugging Face's template, `Idefics3ImageProcessorPil`, processor and `generate` (greedy, 24 new ids at most) give
+  the text, the 876 and 878 ids of the prompt and the new ids of two images of the ResNet test (4 by 3 tiles each: 13
+  frames); `Chat.apply`, `Bpe`, `Vision.idefics3_tiles`, the tower tile by tile, `SmolVlmPrompt.expand` and a greedy
+  `Generate` over a `Sight` give the same text, prompt ids and new ids (24 ids, and 12 for the answer that ends in
+  `<end_of_utterance>`, where Hugging Face stops at `<|im_end|>` and `generate` here stops before it). The first test needs no checkpoint (CI): the template's text and the prompt ids, collapsed to one `<image>` per
+  image and expanded with the small prompt fixture, are Hugging Face's. The two others run on Vulkan (some 15 s a case)
+  and skip on another device (on the CPU the case does not fit the 30 s of a test) or without `SMOLVLM_MODEL`;
+  `SMOLVLM_REQUIRE=1` turns a skip into an error. Mutants of the first test: the rows and columns of the grid swapped and the image after the question. Mutants,
+  each failing it: the tiles in the reverse order and the tiles not normalized.
 - `vision/test/smolvlm_processor_test.agc` against `vision/test/smolvlm_processor_golden.py` (manual: `torch` 2.15.0,
   `transformers` 5.22.2, `pillow` 11.3.0, offline; `vision/test/fixtures/smolvlm/processor_golden.json`, 187 KB, and
   `checker.png` and `prompt/`): the Pillow `Idefics3ImageProcessorPil` and the tokenizer on a table of 16 sizes (the
