@@ -10,12 +10,13 @@
 # llama.cpp's convert_hf_to_gguf.py --outtype f32|f16, run as python3 -I) and qwen3-0.6b-q4_k_m.gguf (llama-quantize of
 # the F16 file to Q4_K_M; the rows `*-q4k` and `*-q4km` run it, and the first ones load it with `WEIGHTS=q4_k`); the two
 # builds are llama.cpp's out-of-tree builds of llama-bench (CPU, and -DGGML_VULKAN=ON); a file COMMIT in a build folder
-# holds the llama.cpp commit and is printed. `agentica` must be on the PATH (each row builds or finds its ggml engine
+# holds the llama.cpp commit (the script fails without it) and is printed. `agentica` must be on the PATH (each row builds or finds its ggml engine
 # with `transformers/tools/build-engine.sh`, and the Vulkan one needs the SDK on the PATH when it is not cached) and
 # `/usr/bin/time` is GNU time. ROUNDS defaults to 5.
 #
-# Both sides run the same number of threads, `THREADS` (default: the physical cores): `TENSOR_THREADS` of ours and
-# `-t` of llama-bench. llama-bench runs `-fa 1` and the `F16` cache, as ours does, and its generation row starts at a
+# The CPU rows of both sides run the same number of threads, `THREADS` (default: the physical cores): `TENSOR_THREADS` of
+# ours and `-t` of llama-bench; ours prints the count it uses (`ggml_cpu_threads`) and llama-bench its `n_threads`. On
+# Vulkan the graph runs on the GPU, and ours has no CPU thread pool there. llama-bench runs `-fa 1` and the `F16` cache, as ours does, and its generation row starts at a
 # depth of 128 (`-d 128`), where ours is after the 128 tokens of its prompt: the prompt row is `-p 128 -n 0` from an
 # empty cache. Its own `n_threads`, `flash_attn`, `type_k` and `build_commit` are printed after the rows, and the
 # sha256 of every GGUF a row reads.
@@ -38,8 +39,7 @@ q4km=$ggufs/qwen3-0.6b-q4_k_m.gguf
 threads=${THREADS:-$(lscpu -p=CORE,SOCKET 2> /dev/null | grep -v '^#' | sort -u | wc -l)}
 [ "$threads" -gt 0 ] 2> /dev/null || threads=$(nproc)
 here=$(cd "$(dirname "$0")" && pwd)
-work=${TMPDIR:-/tmp}/bench_qwen.$$
-mkdir -p "$work"
+work=$(mktemp -d "${TMPDIR:-/tmp}/bench_qwen.XXXXXX")
 out=$work/rows.txt
 meta=$work/meta.txt
 : > "$out"
@@ -54,9 +54,13 @@ stop_sampler() {
   sampler=
   return 0
 }
-trap stop_sampler EXIT
-trap 'stop_sampler; exit 130' INT
-trap 'stop_sampler; exit 143' TERM
+cleanup() {
+  stop_sampler
+  rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 all_rows="ours-cpu ours-cpu-f16 ours-cpu-q4k llama-cpu-f32 llama-cpu-f16 llama-cpu-q4km ours-vulkan ours-vulkan-exact ours-vulkan-f16 ours-vulkan-q4k llama-vulkan-f32 llama-vulkan-f16 llama-vulkan-q4km"
 
@@ -67,7 +71,7 @@ want() { # name: true when ROWS is unset or one of its comma-separated words is 
   IFS=,
   found=1
   for word in $ROWS; do
-    case $1 in *"$word"*) found=0 ;; esac
+    [ -n "$word" ] && case $1 in *"$word"*) found=0 ;; esac
   done
   IFS=$oldifs
   set +f
@@ -80,10 +84,33 @@ for name in $all_rows; do
 done
 [ -n "$matched" ] || { echo "bench_qwen.sh: ROWS=$ROWS matches no row; the rows are: $all_rows" >&2; exit 2; }
 
-for b in "$cpu" "$vulkan"; do
-  echo "llama.cpp build $b: commit $(cat "$b/COMMIT" 2> /dev/null || echo unknown), cmake flags $(cat "$b/CMAKE_FLAGS" 2> /dev/null || echo unknown)" >&2
+needs_cpu=
+needs_vulkan=
+needs_f32=
+needs_f16=
+needs_q4km=
+for name in $matched; do
+  case $name in
+    llama-cpu-*) needs_cpu=1 ;;
+    llama-vulkan-*) needs_vulkan=1 ;;
+  esac
+  case $name in
+    llama-*-f32) needs_f32=1 ;;
+    llama-*-f16) needs_f16=1 ;;
+    *-q4k | *-q4km) needs_q4km=1 ;;
+  esac
 done
-echo "threads: $threads for both sides (TENSOR_THREADS and llama-bench -t)" >&2
+for b in ${needs_cpu:+"$cpu"} ${needs_vulkan:+"$vulkan"}; do
+  [ -s "$b/COMMIT" ] || { echo "bench_qwen.sh: $b has no COMMIT file (the llama.cpp commit the build came from)" >&2; exit 2; }
+  echo "llama.cpp build $b: commit $(cat "$b/COMMIT"), cmake flags $(cat "$b/CMAKE_FLAGS" 2> /dev/null || echo unknown)" >&2
+  grep -E '^GGML_(NATIVE|OPENMP|LLAMAFILE|BLAS|CPU_REPACK|VULKAN):' "$b/CMakeCache.txt" | tr '\n' ' ' | sed 's/^/  its CPU and GPU options: /' >&2
+  echo >&2
+done
+echo "ours: $(grep -o 'GGML_[A-Z]*=[A-Z]*' "$here/../tensor/tools/build-engine.sh" | sort -u | tr '\n' ' ')(ggml $(git -C "$here/../third_party/ggml" describe --tags --always 2> /dev/null || echo unknown), tensor/tools/build-engine.sh)" >&2
+echo "threads: $threads for the CPU rows of both sides (TENSOR_THREADS and llama-bench -t)" >&2
+for f in ${needs_f32:+"$ggufs/qwen3-0.6b-f32.gguf"} ${needs_f16:+"$ggufs/qwen3-0.6b-f16.gguf"} ${needs_q4km:+"$q4km"}; do
+  echo "sha256 $(sha256sum "$f" | cut -d' ' -f1) $f" | tee -a "$meta" >&2
+done
 cat /sys/class/drm/card*/device/mem_info_vram_used 2> /dev/null | sed 's/^/VRAM used before the run (bytes): /' >&2
 
 gpu_used() { # MB of VRAM and GTT in use, summed over the cards; nothing when the files are missing
@@ -141,8 +168,9 @@ run_ours() { # subject device name [VAR=value...]
   exports=$(cd "$here/../transformers" && sh tools/build-engine.sh "$device") || { echo "bench_qwen.sh: no engine for $device" >&2; return 1; }
   (cd "$here/../transformers" &&
     eval "$(printf '%s\n' "$exports" | grep '^export ')" &&
-    env WEIGHTS=f32 VULKAN_FP16=1 TENSOR_THREADS="$threads" "$@" /usr/bin/time -f "RSS %M" -o "$work/time" agentica --max-steps 100000000000 tools/bench_qwen.agc "$subject" "$device" 2> "$work/err" |
-    sed -n "s/^RESULT /$name /p") > "$work/line" || { cat "$work/err" >&2; return 1; }
+    env WEIGHTS=f32 VULKAN_FP16=1 TENSOR_THREADS="$threads" "$@" /usr/bin/time -f "RSS %M" -o "$work/time" agentica --max-steps 100000000000 tools/bench_qwen.agc "$subject" "$device" > "$work/ours.out" 2> "$work/err") || { cat "$work/err" >&2; return 1; }
+  sed -n "s/^RESULT /$name /p" "$work/ours.out" > "$work/line"
+  sed -n 's/^THREADS //p' "$work/ours.out" > "$work/ours-threads"
   [ -s "$work/line" ] || { echo "bench_qwen.sh: row $name printed no RESULT" >&2; cat "$work/err" >&2; return 1; }
 }
 
@@ -156,6 +184,7 @@ ours() { # name device subject [VAR=value...]: WEIGHTS=f32 and VULKAN_FP16=1 unl
   [ "$device" = vulkan ] && gpu=1
   measured "$gpu" run_ours "$subject" "$device" "$name" "$@" || exit 1
   read -r line < "$work/line"
+  read -r cpu_threads < "$work/ours-threads" && echo "ours $name: cpu_threads=$cpu_threads (ggml_cpu_threads)" >> "$meta"
   read -r rss < "$work/time" || true
   echo "$line ${rss#RSS } $(peak_gpu) $round" >> "$out"
 }
@@ -179,7 +208,6 @@ llama() { # name build gguf extra...
   shift 3
   gpu=0
   [ "$build" = "$vulkan" ] && gpu=1
-  grep -q " $gguf\$" "$meta" || echo "sha256 $(sha256sum "$gguf" | cut -d' ' -f1) $gguf" | tee -a "$meta" >&2
   measured "$gpu" run_llama "$build" "$gguf" "$@" || exit 1
   python3 -I - "$name" "$work/csv-pp" "$work/csv-tg" "$work/time-pp" "$work/time-tg" "$(peak_gpu)" "$round" "$meta" >> "$out" << 'PY'
 import csv, sys
