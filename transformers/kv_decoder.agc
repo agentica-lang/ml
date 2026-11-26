@@ -21,6 +21,10 @@
 ## and a prompt is given the `Delta.Padding` of its convolutions, so that the padding rows leave the state as the real
 ## ones did. A step that gives another number of tensors than the `Stepper` says is an error.
 ##
+## A model that reads images (Qwen3.5) says so in its `Stepper` (`sighted`): a prompt starts from `begin(sight)`, the
+## step splices the image rows into the embeddings (`spliced`) and turns the attention layers by the three axes of
+## `Sight.layout` (`Request.rotary`), and the later tokens turn by their index plus the `Cache.delta` of the prompt.
+##
 ## Batch of one. A prompt is fed in one step (`step` at length 0), then one token at a time. A `Generator` belongs to
 ## one task at a time, and `close` ends it before the weights its graphs read are freed.
 
@@ -30,6 +34,7 @@ import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 import Lift from "lift"
+import Mrope from "mrope"
 import Sample from "sample"
 import Stepping from "stepping"
 
@@ -47,6 +52,25 @@ struct Request
   mode: Stepping.Head
   in_place: Bool
   compiled: Bool
+  ## What the attention layers turn by when it is not `xs[1]`: `[3, width]`, the three axes of a prompt with images, or
+  ## `[width]` for the token after one (its index plus the `Cache.delta`).
+  rotary: Optional[Tensor.Tensor] = none
+  ## The image rows of a prompt with images (`spliced`).
+  splice: Optional[Splice] = none
+end
+
+## The rows of the images of a prompt: `at` (`[n]`, `I32`) the prompt rows that are image tokens, and the `n` rows
+## `features` (`[n, width]`) that take their place.
+struct Splice
+  at: Tensor.Tensor
+  features: Tensor.Tensor
+end
+
+## The images of a prompt: their `features` (`[n, width]`, the rows of the image tokens in the order of the prompt, which
+## the caller keeps and closes) and where `Mrope.layout` put the tokens.
+struct Sight
+  features: Tensor.Tensor
+  layout: Mrope.Layout
 end
 
 ## The old keys and values of one layer, which a step reads and (in place) writes.
@@ -64,12 +88,14 @@ end
 
 ## What the attention layers of one step read, built once per step (`reading`): the positions of the new rows, the mask
 ## over the cache (the first `Request.reach` rows) and, when the step is not in place, the `Padded.spread_of` the
-## positions that writes the new rows. A model whose layers have more than one mask (LFM3's sliding window) gives each
+## positions that writes the new rows, and the `rotary` positions of the rope when they are not the `positions`. A model whose layers have more than one mask (LFM3's sliding window) gives each
 ## layer its own `mask` (`with`).
 struct Reading
   positions: Tensor.Tensor
   mask: Tensor.Tensor
   spread: Optional[Tensor.Tensor]
+  ## What the rope turns by (`Request.rotary`), `positions` when none.
+  rotary: Optional[Tensor.Tensor] = none
 end
 
 ## What `attend_cached` gives: the answer of the attention (not yet added to the stream) and the keys and values of the
@@ -97,6 +123,8 @@ struct Stepper[M]
   ## The taps of the convolution of a model with states: a prompt (more than one row) is given a `Delta.Padding` for
   ## them (its `valid` is for the recurrent state of Qwen3.5; LFM3 reads only `keep`). 0 for a model with no convolution.
   taps: Int = 0
+  ## Whether `stepped` reads `Request.rotary` and `Request.splice`: only then may a prompt start from a `Sight`.
+  sighted: Bool = false
   traced: Fn[M, M]
   stepped: Fn[M, Request, Result[List[Tensor.Tensor]]]
 end
@@ -128,6 +156,10 @@ struct Cache
   length: Int
   ## The states of a model that has them, new tensors at every step.
   states: List[Tensor.Tensor] = []
+  ## How far the position of the next token is from its index, after a prompt with images (0 for a text prompt).
+  delta: Int = 0
+  ## The images of the prompt that the first step reads (`begin`); none after it.
+  sight: Optional[Sight] = none
 end
 
 ## `step_logits`: the logits after the last token fed, and the cache.
@@ -170,6 +202,11 @@ end
 
 ## The empty cache.
 def start() -> Cache = Cache(keys: [], values: [], length: 0)
+
+## The empty cache of a prompt with images: the first `step` splices their `features` in and positions the tokens by
+## their `layout`, and the cache it gives remembers the `delta` for the tokens after. A model that does not read images
+## (`Stepper.sighted`) refuses the step.
+def begin(sight: Sight) -> Cache = start().with(sight: some(sight))
 
 ## Feeds `ids` after the tokens of `cache`: a prompt of any length when the cache is empty, one id after that. The cache
 ## that `step` takes is dead afterwards, even when the step fails: on ggml a step of the same capacity writes the new
@@ -234,7 +271,38 @@ def reading(req: Request, mask: Tensor.Tensor) -> Result[Reading]
     spread = some(try Padded.spread_of(Padded.Slots(positions: positions, capacity: req.room), Tensor.dtype(mask)))
   end
 
-  ok(Reading(positions: positions, mask: mask, spread: spread))
+  ok(Reading(positions: positions, mask: mask, spread: spread, rotary: req.rotary))
+end
+
+## The embeddings `h` (`[1, width, d]`) with the rows of the images of `req.splice` in place of the rows `at` names: the
+## other rows are kept as they are.
+def spliced(h: Tensor.Tensor, req: Request) -> Result[Tensor.Tensor]
+  case req.splice
+    none -> ok(h)
+    some(images) ->
+      shape = Tensor.shape(h)
+      width = shape[1]
+      n = Tensor.shape(images.at)[0]
+      backend = Tensor.backend(h)
+      dtype = Tensor.dtype(h)
+      grid = [width, n]
+      rows = try Tensor.broadcast_to(
+        try Tensor.reshape(try Tensor.arange(0, width, 1, Tensor.Dtype.I32, backend), [width, 1]),
+        grid,
+      )
+
+      hit = try Tensor.to_dtype(
+        try Tensor.eq(rows, try Tensor.broadcast_to(try Tensor.reshape(images.at, [1, n]), grid)),
+        dtype,
+      )
+
+      covered = try Tensor.matmul(hit, try Tensor.ones([n, 1], dtype, backend))
+      keep = try Tensor.sub(try Tensor.ones([width, 1], dtype, backend), covered)
+      kept = try Tensor.mul(try Tensor.reshape(h, [width, shape[2]]), try Tensor.broadcast_to(keep, [width, shape[2]]))
+
+      placed = try Tensor.add(kept, try Tensor.matmul(hit, images.features))
+      Tensor.reshape(placed, [1, width, shape[2]])
+  end
 end
 
 ## The attention `a` of a layer over the new rows `x` `[1, width, d]` (its input, normed): the keys and values of the
@@ -248,7 +316,7 @@ def attend_cached(
   reading: Reading,
   req: Request,
 ) -> Result[Attended]
-  heads = try Nn.project(a, x, x, some(reading.positions))
+  heads = try Nn.project(a, x, x, some(reading.rotary.unwrap_or(reading.positions)))
   key = heads.key
   value = heads.value
   if req.in_place
@@ -274,15 +342,21 @@ end
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`).
 ## Greedy (the choice runs in the graph) unless `sampling` says how to draw (`Stepping.generate`): then each step reads
 ## the largest logits and `Sample.pick_top` draws among them. The prompt and the new ids must fit
-## `max_position_embeddings`.
+## `max_position_embeddings`. `sight` is the images of the prompt (`begin`).
 def generate[M](
   g: Core[M],
   ids: List[Int],
   max_new: Int,
   stop: List[Int] = [],
   sampling: Optional[Sample.Sampling] = none,
+  sight: Optional[Sight] = none,
 ) -> Result[List[Int]]
-  Stepping.generate(decoder(g), ids, max_new, stop, sampling)
+  first = case sight
+    some(s) -> begin(s)
+    none -> start()
+  end
+
+  Stepping.generate(decoder(g, first), ids, max_new, stop, sampling)
 end
 
 private
@@ -294,12 +368,55 @@ struct Advanced
   cache: Cache
 end
 
+## The inputs of a step beyond its ids: what the rope turns by when it is not the index (`rotary`), and the images to
+## splice in. `own` are the tensors the step made (closed after it), `tag` tells the compiled steps of another shape of
+## them apart.
+struct Feed
+  rotary: Optional[Tensor.Tensor]
+  splice: Optional[Splice]
+  own: List[Tensor.Tensor]
+  tag: String
+end
+
+## The tensors of `feed` that a compiled step takes after the cache, in the order that `traced` reads them.
+def feed_args(f: Feed) -> List[Tensor.Tensor]
+  args: List[Tensor.Tensor] = []
+  case f.rotary
+    some(r) -> args = args.push(r)
+    none -> nil
+  end
+
+  case f.splice
+    some(sp) -> args = args + [sp.at, sp.features]
+    none -> nil
+  end
+
+  args
+end
+
+## `f` over the traced tensors `tail` of a compiled step, which are its `args`.
+def feed_traced(f: Feed, tail: List[Tensor.Tensor]) -> Feed
+  rotary: Optional[Tensor.Tensor] = none
+  at = 0
+  if f.rotary.some?
+    rotary = some(tail[0])
+    at = 1
+  end
+
+  splice: Optional[Splice] = none
+  if f.splice.some?
+    splice = some(Splice(at: tail[at], features: tail[at + 1]))
+  end
+
+  f.with(rotary: rotary, splice: splice)
+end
+
 ## What `Stepping.generate` needs of `g`.
-def decoder[M](g: Core[M]) -> Stepping.Decoder[Cache]
+def decoder[M](g: Core[M], first: Cache) -> Stepping.Decoder[Cache]
   Stepping.Decoder(
     usable: g.usable,
     limit: g.stepper.limit,
-    empty: start(),
+    empty: first,
     pick: ->(c: Cache, ids: List[Int]) { step(g, c, ids) },
     top: ->(c: Cache, ids: List[Int], k: Int) { step_top(g, c, ids, k) },
     finish: ->(c: Cache) { finish(c) },
@@ -330,6 +447,14 @@ def advance[M](g: Core[M], cache: Cache, ids: List[Int], mode: Stepping.Head) ->
   end
 
   fed = made.unwrap!
+  seen = rotation(s, cache, ids, width, backend)
+  if not seen.ok?
+    Lift.close(fed)
+    finish(cache)
+    return error(seen.message)
+  end
+
+  feed = seen.unwrap!
   held = cache.keys + cache.values
   in_place = Stepping.in_place?(backend, cache.keys, width, room)
   reach = room
@@ -338,11 +463,12 @@ def advance[M](g: Core[M], cache: Cache, ids: List[Int], mode: Stepping.Head) ->
   end
 
   outs = case backend
-    Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, room, reach, mode, in_place)
-    _ -> eager_step(g, cache, fed, room, mode)
+    Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, feed, room, reach, mode, in_place)
+    _ -> eager_step(g, cache, fed, feed, room, mode)
   end
 
   Lift.close(fed)
+  Lift.close(feed.own)
   Lift.close(cache.states)
   # A step in place keeps the tensors of `cache` as the ones of the new cache; any other step is done with them (a
   # tensor closed twice is fine, as when the step failed after it closed its outputs).
@@ -351,7 +477,13 @@ def advance[M](g: Core[M], cache: Cache, ids: List[Int], mode: Stepping.Head) ->
   end
 
   r = try outs
-  ok(Advanced(head: r.head, cache: r.cache.with(length: cache.length + n)))
+  delta = cache.delta
+  case cache.sight
+    some(sight) -> delta = sight.layout.delta
+    none -> nil
+  end
+
+  ok(Advanced(head: r.head, cache: r.cache.with(length: cache.length + n, delta: delta)))
 end
 
 ## The graph of one step as a compiled function of its inputs on `Ggml`; `in_place` writes the new row into the cache's
@@ -363,13 +495,14 @@ def compiled_step[M](
   g: Core[M],
   cache: Cache,
   fed: List[Tensor.Tensor],
+  feed: Feed,
   room: Int,
   reach: Int,
   mode: Stepping.Head,
   in_place: Bool,
 ) -> Result[Advanced]
   s = g.stepper
-  args = fed + cache.keys + cache.values + cache.states
+  args = fed + cache.keys + cache.values + cache.states + feed_args(feed)
   rows = 0
   if not cache.keys.empty?
     rows = Tensor.shape(cache.keys[0])[2]
@@ -377,16 +510,29 @@ def compiled_step[M](
 
   width = Tensor.shape(fed[0])[0]
   keys = Stepping.reaches(width, rows, room, reach, mode)
+  tag = feed.tag
   plan = try Stepping.planned(
     g.plans,
-    keys.key,
-    keys.ahead,
-    keys.behind,
+    keys.key + tag,
+    keys.ahead.map { |k| k + tag },
+    keys.behind.map { |k| k + tag },
     args.map { |t| Trace.spec_of(t) },
     ->(xs: List[Tensor.Tensor]) {
+      split = xs.size - feed_args(feed).size
+      seen = feed_traced(feed, xs.drop(split))
       s.stepped.call(
         s.traced.call(g.model),
-        Request(usable: g.usable, xs: xs, room: room, reach: reach, mode: mode, in_place: in_place, compiled: true),
+        Request(
+          usable: g.usable,
+          xs: xs.take(split),
+          room: room,
+          reach: reach,
+          mode: mode,
+          in_place: in_place,
+          compiled: true,
+          rotary: seen.rotary,
+          splice: seen.splice,
+        ),
       )
     },
   )
@@ -447,11 +593,62 @@ def fed_inputs[M](
   ok(base + [pad.valid, pad.keep])
 end
 
+## The `Feed` of the step of `ids` after `cache`: the three axes and the image rows of a prompt that starts from a `Sight`,
+## the position of the token after one (its index plus the `delta`), or nothing for a text prompt.
+def rotation[M](s: Stepper[M], cache: Cache, ids: List[Int], width: Int, backend: Tensor.Backend) -> Result[Feed]
+  bare = Feed(rotary: none, splice: none, own: [], tag: "")
+  if cache.sight.none?
+    return ok(bare) if cache.delta == 0
+    at: List[Tensor.Values] = []
+    for i in 0...width
+      at = at.push(Tensor.Values.Int(cache.length + i + cache.delta))
+    end
+
+    rotary = try Tensor.from_list(at, [width], Tensor.Dtype.I32, backend)
+    return ok(Feed(rotary: some(rotary), splice: none, own: [rotary], tag: " delta"))
+  end
+
+  sight = cache.sight.unwrap!
+  return error("this model reads no images (Stepper.sighted)") if not s.sighted
+  return error("a Sight is for the prompt: the cache already has #{cache.length} tokens") if cache.length > 0
+  seen = sight.layout
+  if seen.time.size != ids.size
+    return error("the sight has the layout of #{seen.time.size} tokens, the prompt has #{ids.size}")
+  end
+
+  n = seen.at.size
+  return ok(bare) if n == 0
+  shape = Tensor.shape(sight.features)
+  return error("the sight has #{n} image tokens and features of #{shape}") if shape.size != 2 or shape[0] != n
+
+  rows: List[Tensor.Values] = []
+  for axis in [seen.time, seen.down, seen.across]
+    for i in 0...width
+      if i < axis.size
+        rows = rows.push(Tensor.Values.Int(axis[i]))
+      else
+        rows = rows.push(Tensor.Values.Int(0))
+      end
+    end
+  end
+
+  rotary = try Tensor.from_list(rows, [3, width], Tensor.Dtype.I32, backend)
+  where = Tensor.from_list(seen.at.map { |i| Tensor.Values.Int(i) }, [n], Tensor.Dtype.I32, backend)
+  if not where.ok?
+    Lift.close([rotary])
+    return error(where.message)
+  end
+
+  images = Splice(at: where.unwrap!, features: sight.features)
+  ok(Feed(rotary: some(rotary), splice: some(images), own: [rotary, images.at], tag: " sight #{n}"))
+end
+
 ## The same graph, run now and in an arena that keeps the new cache alone.
 def eager_step[M](
   g: Core[M],
   cache: Cache,
   fed: List[Tensor.Tensor],
+  feed: Feed,
   room: Int,
   mode: Stepping.Head,
 ) -> Result[Advanced]
@@ -467,6 +664,8 @@ def eager_step[M](
         mode: mode,
         in_place: false,
         compiled: false,
+        rotary: feed.rotary,
+        splice: feed.splice,
       ),
     )
 

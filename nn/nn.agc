@@ -83,11 +83,16 @@ end
 ## `0...zero_tail / 2` and `head / 2...head / 2 + zero_tail / 2`. It is `rope` over the first `zero_tail` columns after
 ## those are brought together, so the head comes out with its columns reordered (the rotated ones, then the rest). The
 ## queries and the keys get the same order and `q k^T` does not change, but the heads are not those of the input.
+## With `sections` (Qwen3.5's interleaved M-RoPE, `[time, height, width]`) the positions may be `[3, seq]`, one row per
+## axis, and the pair `i` of the rotated columns turns by the height row when `i % 3 == 1` and `i < 3 * height`, by the
+## width row when `i % 3 == 2` and `i < 3 * width`, and by the time row otherwise. Positions of `[seq]` (or none) are
+## the three rows alike: the plain rope.
 struct Rope
   base: Float = 10000.0
   neox: Bool = true
   dims: Optional[Int] = none
   zero_tail: Optional[Int] = none
+  sections: Optional[List[Int]] = none
 end
 
 ## Multi-head attention with its four projections: `query` projects to
@@ -770,6 +775,11 @@ def rotate(r: Rope, x: Tensor.Tensor, positions: Optional[Tensor.Tensor]) -> Res
     none -> nil
   end
 
+  case positions
+    some(at) -> return rotate_axes(r, x, at) if Tensor.shape(at).size == 2
+    none -> nil
+  end
+
   seq = Tensor.shape(x)[2]
   case positions
     some(at) -> Tensor.rope(x, at, base: r.base, dims: r.dims, neox: r.neox)
@@ -843,4 +853,83 @@ def rotate_tail(r: Rope, n: Int, x: Tensor.Tensor, positions: Optional[Tensor.Te
   end
 
   Tensor.rope(brought, at, base: base, dims: some(n), neox: true)
+end
+
+## `rotate` of a `Rope` with `sections` by `positions` of `[3, seq]`: `x` rotated by each row, and each pair of columns
+## taken from the rotation of its axis (a 0/1 mask over the columns, made from fills so that it is a graph constant).
+def rotate_axes(r: Rope, x: Tensor.Tensor, positions: Tensor.Tensor) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(x)
+  seq = shape[2]
+  width = shape[3]
+  return error("positions of [3, seq] need a Rope with sections") if r.sections.none?
+  sections = r.sections.unwrap!
+  if sections.size != 3 or sections.any? { |n| n < 0 }
+    return error("sections are [time, height, width], got #{sections}")
+  end
+
+  return error("a Rope with sections is the neox layout and takes no zero_tail") if r.zero_tail.some? or !r.neox
+
+  if Tensor.shape(positions) != [3, seq]
+    return error("rope positions of [3, #{seq}] are needed, got #{Tensor.shape(positions)}")
+  end
+
+  dims = r.dims.unwrap_or(width)
+  pairs = dims / 2
+  backend = Tensor.backend(x)
+  dtype = Tensor.dtype(x)
+  turned: List[Tensor.Tensor] = []
+  for axis in 0...3
+    row = try Tensor.reshape(try Tensor.slice(positions, [axis, 0], [axis + 1, seq]), [seq])
+    turned = turned.push(try Tensor.rope(x, row, base: r.base, dims: r.dims, neox: true))
+  end
+
+  height_mask = try axis_mask(1, sections[1], pairs, width, dtype, backend)
+  width_mask = try axis_mask(2, sections[2], pairs, width, dtype, backend)
+  time_mask = try Tensor.sub(try Tensor.ones([width], dtype, backend), try Tensor.add(height_mask, width_mask))
+  out = try Tensor.zeros(shape, dtype, backend)
+  for pick in [[turned[0], time_mask], [turned[1], height_mask], [turned[2], width_mask]]
+    columns = try Tensor.broadcast_to(try Tensor.reshape(pick[1], [1, 1, 1, width]), shape)
+    out = try Tensor.add(out, try Tensor.mul(pick[0], columns))
+  end
+
+  ok(out)
+end
+
+## The columns `[width]` that the pairs of `axis` (1 or 2) rotate: 1 for the columns `i` and `i + pairs` of each pair
+## `i` with `i % 3 == axis` below `3 * count`, 0 for all others, including the columns that rope leaves alone.
+def axis_mask(
+  axis: Int,
+  count: Int,
+  pairs: Int,
+  width: Int,
+  dtype: Tensor.Dtype,
+  backend: Tensor.Backend,
+) -> Result[Tensor.Tensor]
+  fill = ->(v: Float, n: Int) { Tensor.full([n], Tensor.Values.Float(v), dtype, backend) }
+  flags: List[Tensor.Tensor] = []
+  for i in 0...3
+    flags = flags.push(try fill.call(selects(axis, i), 1))
+  end
+
+  cycle = try Tensor.concat(flags, 0)
+
+  cycles = (pairs + 2) / 3
+  tiled = try Tensor.reshape(try Tensor.broadcast_to(try Tensor.reshape(cycle, [1, 3]), [cycles, 3]), [3 * cycles])
+  reach = [3 * count, pairs].min.unwrap!
+  kept = try Tensor.slice(tiled, [0], [reach])
+  per_pair = kept
+  if reach < pairs
+    per_pair = try Tensor.concat([kept, try fill.call(0.0, pairs - reach)], 0)
+  end
+
+  tail = width - 2 * pairs
+  return Tensor.concat([per_pair, per_pair, try fill.call(0.0, tail)], 0) if tail > 0
+
+  Tensor.concat([per_pair, per_pair], 0)
+end
+
+## 1 when the place `i` of a cycle of three is the one of `axis`, 0 otherwise.
+def selects(axis: Int, i: Int) -> Float
+  return 1.0 if axis == i
+  0.0
 end

@@ -114,7 +114,8 @@ cache; generation is `generate_qwen35.agc` (below).
   the first `head_dim * partial_rotary_factor` columns), by `layer_types`
   (every fourth is full attention in 0.8B). Both are followed by the gated MLP
   with `Silu`. Rope positions are the token index: the three M-RoPE sections
-  agree for text, so the plain `rotate_half` rope with `dims` is the same.
+  agree for text, so the plain `rotate_half` rope with `dims` is the same (the image prompt is "Qwen3.5 images in the
+  text model").
 - Every norm of the decoder and the `q_norm` and `k_norm` scale by
   `1 + weight`, not `weight`: the loader adds the 1 on the host
   (`centered`). The gated norm of the linear layer keeps its weight as it is.
@@ -167,6 +168,33 @@ which the text model reads at the image tokens (the wiring is the next step of m
 - Not supported: video (the temporal patch of an image is the frame twice, which the processor makes), several images in
   one call (call it once for each), another `hidden_act`, deepstack (the config key is empty in Qwen3.5), and the
   `weights` and `with_weights` of a fine-tune.
+
+### Qwen3.5 images in the text model
+
+The features of `Qwen3_5Vision.encode` reach the text model at the image tokens (`generate_qwen35.agc`, `kv_decoder.agc`,
+`mrope.agc`). The call that wires the processor, the tower and the chat is the next step of ml#151.
+
+- `Mrope.layout(ids, image_token, grids, merge)` works out on the host what Hugging Face's `get_rope_index` does: a text
+  token has the same position on the three axes, counting up; an image (a run of image tokens, one run for each grid in
+  order) has its start as its time and the start plus its row or column of the merged grid as its down and across; the
+  text after it goes on from the start plus the larger side of the merged grid. `delta` is the position that follows the
+  prompt minus its length, which is how far the tokens after the prompt are from their index (`rope_deltas`).
+- A prompt with images starts from `KvDecoder.begin(sight)` (`Generate.begin`): a `Sight` is the `features` `[n, d]`
+  (the caller's, not closed by the step) and the `Layout`. The first step splices the rows into the embeddings
+  (`KvDecoder.spliced`: a one-hot of the image rows `at` by the features, added to the embeddings with those rows
+  cleared) and gives the attention layers `Request.rotary`, the three axes `[3, width]` (`Reading.rotary`). The cache it
+  gives keeps `delta`, and each later step feeds `rotary` `[1]`, the index plus the delta, on the three axes alike. A text
+  prompt has neither: its graph is the one of before. A step that has them is another compiled graph (the key has the
+  number of image tokens). `Stepper.sighted` says that a model reads them; another model refuses a sight. `generate`
+  takes the `sight` of its prompt, the other entry points take it from the cache they are given.
+- The interleaved M-RoPE is `Nn.Rope.sections` (`[11, 11, 10]` in the checkpoint): the pair `i` of the rotated columns
+  turns by the height row when `i % 3 == 1` and `i < 3 * 11`, by the width row when `i % 3 == 2` and `i < 3 * 10`, by the
+  time row otherwise. `Tensor.rope` takes one position vector, so the rotation runs for each axis on the whole head and a
+  0/1 mask over the columns, built in the graph from fills, picks each pair from its axis; the cost is three ropes for the
+  queries and the keys of the full-attention layers, in a prompt with images only. Positions of `[seq]` are the plain
+  rope, so text, and the tokens after an image, use no masks.
+- Not supported: video, and a second `generate` that continues a sequence with another image (a `Sight` is for the
+  prompt).
 
 ### Qwen3.5 generation
 
@@ -629,6 +657,23 @@ error row per config field.
 - `tools/qwen35_vision_check.agc` on the real tower of the same checkpoint (manual; `test/qwen35_vision_check_golden.py`
   reads only `model.visual.*`): a 6 by 8 grid of patches whose values are an integer formula, 12 rows of 1,024 features;
   the largest gap is 2.4e-5 on CPU and 2.0e-5 on Vulkan (it passes within 1e-4).
+- `test/generate_qwen35_image_test.agc` against `test/qwen35_image_golden.py` (manual, Hugging Face's
+  `Qwen3_5ForConditionalGeneration` in `float32`, eager attention, `fixtures/qwen35_image_golden.json`, sha256
+  `9c47c53ab6ba6d499ad686797a9989eb74ab05a1238a2da0fa308a09d8828b5c`): a tiny random model (the text model of
+  `qwen35_golden.py` with a head of 16 columns of which 12 turn, `mrope_section` `[2, 2, 1]`, and a tiny tower) on a prompt
+  of 18 ids with two images (grids 4 by 6 and 6 by 2, so 6 and 3 tokens, the second taller than wide). `Mrope.layout`
+  gives the positions and `rope_deltas` of `get_rope_index`; the logits of the prompt (the features of the golden spliced
+  in) and of each id after it match Hugging Face's scores on the reference (two steps) and on ggml (six, with the greedy
+  ids); a prompt of one image runs its own compiled step in a generator that has compiled the two-image one; a sight that
+  does not fit (other layout, other number of rows, a cache that has tokens) is an error, checked by its phrase.
+  `test/layers_test.agc` has the sectioned rope on its own against the plain rope of
+  each axis row. The tower is the one tested above, its features are stored. Mutants, each killed (the tests that fail):
+  the cycle order of the axes, no limit of the sections, the time mask keeping the width pairs, the time and width rows
+  swapped, no tail columns (nn and the golden); the larger side of the merged grid taken as the smaller, `delta` off by
+  one, down and across swapped, the time of an image following its row (the layout and the logits); the splice not
+  clearing the placeholder rows, the decode ignoring the delta, the cache forgetting it, the attention ignoring `rotary`,
+  `Reading` dropping it, the sections of the config ignored, the model skipping the splice, the compiled step not keyed
+  by the number of image tokens.
 - `test/bpe_test.agc` on `fixtures/bpe_marks.json`, a tiny tokenizer with the
   split of Qwen3.5 (`test/tokenizer_golden.py marks`, `tokenizers` 0.23.3):
   the ids and text of `tokenizers` on the strings of the BPE test, 16 where a

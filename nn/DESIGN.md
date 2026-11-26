@@ -15,7 +15,7 @@ struct Embedding    { table: [rows, width] }
 struct Conv1d       { weight: [out, in, kernel], bias: Optional [out], stride, padding: Int }
 struct Conv2d       { weight: [out, in / groups, kh, kw], bias: Optional [out], stride = 1, padding = 0, groups = 1 }
 enum   Activation   = Relu | Gelu | GeluErf | Silu
-struct Rope         { base: Float = 10000.0, neox: Bool = true, dims: Optional[Int] = none, zero_tail: Optional[Int] = none }
+struct Rope         { base: Float = 10000.0, neox: Bool = true, dims: Optional[Int] = none, zero_tail: Optional[Int] = none, sections: Optional[List[Int]] = none }
 struct Attention    { query, key, value, output: Dense, heads: Int, kv_heads: Optional[Int] = none,
                       rope: Optional[Rope] = none, query_norm, key_norm: Optional[LayerNorm] = none,
                       gate: Bool = false, scale: Optional[Float] = none, head_gate: Optional[Dense] = none }
@@ -104,6 +104,14 @@ nothing reads the reordered heads but the scores (a cache keeps the keys as they
 head is an error (it is a plain rotation: leave it out). Doing it in the graph, not in the weights at load, works for `F16`
 and quantized weights, which a host permutation of rows could not touch.
 `test/lfm3_test.agc` checks the three layers and the rotary against the official code's tiny model (`test/lfm3_golden.py`).
+
+Qwen3.5 turns each pair of the rotated columns by one of three positions (the interleaved M-RoPE, `Rope.sections` =
+`[time, height, width]`): the pair `i` takes the height row when `i % 3 == 1` and `i < 3 * height`, the width row when
+`i % 3 == 2` and `i < 3 * width`, the time row otherwise. `Tensor.rope` takes one position vector, so with positions of
+`[3, seq]` the head is rotated three times, once by each row, and a 0/1 mask over the columns (a cycle of three, tiled,
+cut at the limit, built from fills so that it is a graph constant) picks each pair from its axis. Positions of `[seq]`
+are the plain rope, which is what the three rows are for text. `test/layers_test.agc` checks it against the plain rope of
+each row with the pairs picked by hand.
 
 A compiled decode step has one shape for the prompts of a capacity, so a prompt is padded after its last real token.
 `Padding` makes the padding leave the state as the real tokens left it: `valid` (1.0 real, 0.0 padding) multiplies

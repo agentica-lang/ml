@@ -2,7 +2,7 @@
 ## decoder layers that are either linear attention (Gated DeltaNet, `Delta.gated_delta_net`) or full attention with an
 ## output gate and rotary positions on part of each head (`Nn.Attention` with `gate`), each followed by a SwiGLU MLP,
 ## the final norm and the output head, tied to the embedding table when the config says so. This is the forward over
-## whole sequences, with no cache. The vision tower and the multi-token-prediction head of the checkpoint are not read.
+## whole sequences, with no cache (the rotary positions of an image prompt are in `generate_qwen35.agc`). The vision tower and the multi-token-prediction head of the checkpoint are not read.
 ## The norms of Qwen3.5 scale by `1 + weight`: the loader adds the 1.
 ##
 ## `Qwen/Qwen3.5-0.8B` is `bfloat16` on disk, its text weights under `model.language_model.`; they are `F32` in memory.
@@ -36,11 +36,14 @@ struct Document
   tie_word_embeddings: Optional[Bool]
 end
 
-## The rotary part of the text config.
+## The rotary part of the text config. `mrope_section` is how many pairs of the rotated columns each axis (time, height,
+## width) of an image prompt owns, interleaved (`Nn.Rope.sections`); `[11, 11, 10]` as in Hugging Face when the file has
+## none (`sections_of`).
 struct Rotary
   rope_theta: Float
   partial_rotary_factor: Float = 1.0
   rope_type: String = "default"
+  mrope_section: Optional[List[Int]] = none
 end
 
 ## The fields of `text_config` that the model reads.
@@ -162,6 +165,11 @@ def check_config(config: Text) -> Result[Void]
     return error("linear_conv_kernel_dim #{config.linear_conv_kernel_dim} needs 2 or more")
   end
 
+  sections = sections_of(config)
+  if sections.size != 3 or sections.any? { |n| n < 0 }
+    return error("mrope_section needs the 3 numbers of time, height and width, got #{sections}")
+  end
+
   dims = try rotary_dims(config)
   if dims < 1 or dims > config.head_dim or dims % 2 != 0
     return error("the rotary width #{dims} is not an even number in 2 to head_dim #{config.head_dim}")
@@ -169,6 +177,9 @@ def check_config(config: Text) -> Result[Void]
 
   ok()
 end
+
+## The `mrope_section` of the config.
+def sections_of(config: Text) -> List[Int] = config.rope_parameters.mrope_section.unwrap_or([11, 11, 10])
 
 ## How many columns of each head rope turns: `head_dim * partial_rotary_factor`.
 def rotary_dims(config: Text) -> Result[Int]
@@ -426,7 +437,13 @@ def full(
     output: try Load.dense(c, "#{a}o_proj", backend, weights),
     heads: heads,
     kv_heads: some(config.num_key_value_heads),
-    rope: some(Nn.Rope(base: config.rope_parameters.rope_theta, dims: some(try rotary_dims(config)))),
+    rope: some(
+      Nn.Rope(
+        base: config.rope_parameters.rope_theta,
+        dims: some(try rotary_dims(config)),
+        sections: some(sections_of(config)),
+      ),
+    ),
     query_norm: some(try centered(c, "#{a}q_norm", config.rms_norm_eps, backend)),
     key_norm: some(try centered(c, "#{a}k_norm", config.rms_norm_eps, backend)),
     gate: true,
