@@ -430,6 +430,39 @@ The GPU memory is the most that VRAM plus GTT in use (`mem_info_vram_used` and `
 
 The cheap gaps: none found in the weight products, so the code of the model is unchanged.
 
+## Layers on the CPU against llama.cpp `-ngl` (ml#310, ml#85)
+
+The Q4_K_M Qwen3-0.6B of the section above on Vulkan, with the blocks from the `n`th on on the CPU: ours `Qwen3.open(..., layers_on_device: n)` (`AGENTICA_ML_LAYERS_ON_DEVICE`, the first `n` blocks, the embedding table, the head and the final norm on the card), llama.cpp `llama-bench -ngl N` (its layers count from the end, and `-ngl 0` keeps the output layer on the CPU too). The 28 blocks of the model: `n` = 14 and `-ngl 14` put half on each side, `n` = 0 and `-ngl 0` none on the card. The all-device pair is the control: it shows the default path (no scheduler) next to the section above.
+
+- **Machine and tools.** The machine of the sections above, nothing else timing (only the long-running services), Agentica 0.39.1, ours at the code of the PR (ml#311, `d22fb30d1c05`) over ggml `v1.0.0` (`417a024b4fb6`), the same engines. llama.cpp commit `711f9f4c117042570ef66ef58fba1f15835a331b`, built with `-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DGGML_VULKAN=ON` (the CPU build without the Vulkan flag); `llama-bench` ran with 4 threads, flash attention on, F16 KV, generation at depth 128 (the script prints these lines), and ours with `cpu_threads=4`.
+- **Method.** `ROWS=vulkan-q4k THREADS=4 benchmarks/bench_qwen.sh QWEN3_DIR GGUF_DIR BUILD_CPU BUILD_VULKAN 5`: 5 rounds, each pair once per round, the two swapping places from one round to the next, under a lock and a 5 GB memory cap. The load average at the end of the last round was 1.8.
+
+Medians of the 5 rounds (128 prompt tokens, then 64 tokens after it):
+
+| Row | Prompt | Tokens | Load | Peak RSS | Peak GPU memory |
+|---|---|---|---|---|---|
+| ours, all blocks on the card (control) | 595.3 tokens/s | 48.74 tokens/s | 0.62 s | 0.45 GB | 565 MB |
+| llama.cpp, `-ngl 99` (control) | 738.9 | 59.73 | | 0.14 GB | 627 MB |
+| ours, `n` = 14 | 148.5 | 8.49 | 0.62 s | 0.57 GB | 386 MB |
+| llama.cpp, `-ngl 14` | 182.9 | 25.64 | | 0.15 GB | 592 MB |
+| ours, `n` = 0 | 92.8 | 6.22 | 0.64 s | 0.72 GB | 209 MB |
+| llama.cpp, `-ngl 0` | 91.7 | 47.26 | | 0.17 GB | 698 MB |
+
+The ratio of ours to llama.cpp in each round (the rounds in order), then its minimum and maximum:
+
+| Pair | Prompt | Tokens |
+|---|---|---|
+| all on the card | 0.84 0.73 0.82 0.80 0.80 (0.73 to 0.84) | 0.80 0.84 0.83 0.78 0.80 (0.78 to 0.84) |
+| 14 blocks | 0.81 0.81 0.81 0.75 0.81 (0.75 to 0.81) | 0.32 0.33 0.32 0.34 0.34 (0.32 to 0.34) |
+| 0 blocks | 1.01 1.01 1.07 0.95 1.02 (0.95 to 1.07) | 0.13 0.13 0.14 0.13 0.14 (0.13 to 0.14) |
+
+The GPU memory is measured as in the section above.
+
+- **The default is unchanged.** The all-device pair takes the plain path (`ggml_run` without a scheduler: `GgmlRaw.mixed_runs` stays at 0, which a test checks) and its ratios (0.73 to 0.84 on the prompt, 0.78 to 0.84 on the tokens) are those of the section above (0.82 to 0.85 and 0.82 to 0.84), within the noise of a run on another day.
+- **Memory is what the knob buys.** The GPU memory falls with `n`: 565, 386 and 209 MB, which is the weights and the KV cache of the blocks that moved. llama.cpp's GPU memory does not fall as much (627, 592 and 698 MB: at `-ngl 0` it is more than with every layer); the host RSS rises with `n` on both sides, ours from 0.45 to 0.72 GB.
+- **The prompt is at llama.cpp's speed on the CPU side, the tokens are not.** With 14 blocks on the CPU the prompt is at 0.81 of llama.cpp's and with none on the card at 1.0, while the tokens are at 0.33 and 0.13 of its: a token of ours costs 118 ms at `n` = 14 and 161 ms at `n` = 0, against 39 and 21 ms. The cost is not in the weights product (the prompt, which is the same product, is at par) but in what a step has per token on the CPU side; it has not been profiled here, and no change of the code is made for it in this PR. It is the first thing to look at for a model that does not fit the card.
+- **Where `n` pays.** The knob is for a model that does not fit in the memory of the card, not for speed: at `n` = 14 the tokens run at 8.5 per second instead of 48.7, and a half-sized card holds the model.
+
 ## ResNet-18 and ResNet-50 (ml#83), ours only
 
 `microsoft/resnet-50` and `microsoft/resnet-18` (revisions and hashes in `transformers/DESIGN.md`, `model.safetensors`, `float32`), one batch of 224 by 224 images of constant pixels, with the batch norms folded into the convolutions at load, as `ResNet.open` does. Ours is `transformers/tools/bench_resnet.agc` (Agentica 0.38.0), same machine as above, nothing else running (`--bench` slot): one warm-up run, then the median of 5 timed runs (3 for a training step). "forward" is `ResNet.run` (one graph), whose logits are read back; "forward and backward" is the forward and backward of the folded model, one `Trace.value_and_grad` of a loss (the mean square of the logits) over every weight and the images, all gradients read back, with no optimizer step. The weights are `F32`, Vulkan multiplies in exact `float32` (the tool calls `Tensor.vulkan_fp16(false)` first; the Vulkan rows were measured with that), and there is no peer row: PyTorch and llama.cpp were not run for this model.

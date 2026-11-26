@@ -223,7 +223,7 @@ def execute(
 
       case target
         some(t) ->
-          if t.shape != p.shapes[i] or t.dtype != p.dtypes[i] or t.backend != Types.Backend.Ggml(p.device)
+          if t.shape != p.shapes[i] or t.dtype != p.dtypes[i] or !Types.reads?(Types.Backend.Ggml(p.device), t.backend)
             return error(
               "#{op}: output #{i} is #{Types.dtype_name(p.dtypes[i])} #{p.shapes[i]}, the tensor given is #{Types.dtype_name(t.dtype)} #{t.shape}",
             )
@@ -235,7 +235,12 @@ def execute(
           out = out.push(t)
         none ->
           h = try GgmlRaw.output(lease, i, p.dtypes[i] == Types.Dtype.I32)
-          out = out.push(Ggml.tensor_of(p.device, p.shapes[i], p.dtypes[i], h))
+          home = p.device
+          if GgmlRaw.on_cpu(h)
+            home = Types.Device.Cpu
+          end
+
+          out = out.push(Ggml.tensor_of(home, p.shapes[i], p.dtypes[i], h))
       end
     end
 
@@ -672,9 +677,9 @@ def leaf_name(held: Int) -> String
   "F32"
 end
 
-## A leaf's tensor, which must live on the backend the graph runs on.
+## A leaf's tensor, which must live on the backend the graph runs on (or, on a Vulkan device, on the CPU: `Types.reads?`).
 def bound(t: Types.Tensor, backend: Types.Backend, what: String) -> Result[Types.Tensor]
-  if t.backend != backend
+  if !Types.reads?(backend, t.backend)
     return error("#{what} on #{Types.backend_name(t.backend)} in a trace run on #{Types.backend_name(backend)}")
   end
 
