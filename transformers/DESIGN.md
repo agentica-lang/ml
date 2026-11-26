@@ -433,8 +433,8 @@ file: the text side (a Llama), the splice, the processor and the chat template a
   global image); see the test below for the gaps.
   `SmolVlmPrompt.expand` works on ids, as `Mrope.expand` does: the template's one `<image>` per image becomes the ids of
   the processor, with `"\n"` after each row of tiles and `"\n\n"` (one id, 1116) after the last, as the tokenizer
-  merges them. The ids of the text around the images are the caller's: the tokenizer of SmolVLM (a different
-  pre-tokenizer) is the next slice. The special ids and those of the two newlines come from `tokenizer.json` (`SmolVlmPrompt.open`), and
+  merges them. The ids of the text around the images are the caller's: the tokenizer of SmolVLM is `Bpe` (the
+  `gpt2` pre-tokenizer), and `<image>` is one id of it. The special ids and those of the two newlines come from `tokenizer.json` (`SmolVlmPrompt.open`), and
   `image_seq_len` from `processor_config.json`.
 - The tower is SigLIP: a convolution of stride 16 without a class token, learned positions (one row for each patch of
   the tile, in row order), 12 pre-norm blocks of full attention (`layer_norm_eps` of the config, 1e-6 in the checkpoint, separate `q_proj`, `k_proj`, `v_proj` and
@@ -543,6 +543,14 @@ truncation, a fixed-length padding and `pad_to_multiple_of` above 1 stay
 errors. The `pad_id` of the file's padding is kept (`tok.pad_id`) and never
 used by `encode`: a model pads a batch with its config's `pad_token_id`, and
 `tools/distilbert_check.agc` fails when the two differ.
+
+The tokenizer of SmolLM2 and SmolVLM is `Bpe` too (`gpt2`): its pre-tokenizer is `Digits` with `individual_digits` and then
+ByteLevel with its own GPT-2 regex (`'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`, the
+contractions in lower case only), no normalizer and no post-processor. `Digits` makes every number a piece of its own and
+cuts the text between, and the regex runs on each of those runs, so a space never leads a digit (` ?\p{N}+` only ever
+sees one) and the run of white space at the end of a run counts as the end of the text for the lookahead. `check_pre_tokenizer`
+takes this shape (or the Qwen one) and any other is an error. The 49,152 pieces and 145 added tokens (`<image>` 49190,
+`<fake_token_around_image>` 49189, `<end_of_utterance>` 49279) are read as Qwen's are.
 
 The tokenizer of LFM3 is `Bpe` too: `PATTERN_GROUPS` is Qwen3's with `\p{N}{1,3}` for `\p{N}` (the field `digits`, the
 most numbers in a piece), it has no normalizer (the text is not NFC), and `ignore_merges` is on: a piece that is a token
@@ -831,6 +839,15 @@ error row per config field.
   mark decides the cut and 60 random ones. `tools/tokenizer_check.agc bpe` on the
   `tokenizer.json` of `Qwen/Qwen3.5-0.8B` (manual, 300 random strings more):
   1,827 cases agree.
+- `test/bpe_test.agc` on `fixtures/bpe_gpt2.json`, a tiny tokenizer with the pre-tokenizer of SmolLM2 and no normalizer
+  or post-processor (`test/tokenizer_golden.py gpt2`, `tokenizers` 0.23.3): the ids and text of `tokenizers` on the strings
+  of the BPE test, 66 where the digit split, the contractions, a leading space or the white space before a digit decide,
+  and 60 random ones; four pieces written by hand; the other shapes of the pre-tokenizer (`individual_digits` false,
+  `use_regex` false, a prefix space, another first step) are errors. Mutants, each failing it: a digit not a piece of its
+  own, the contractions in any case, the white space lookahead missing, and no leading space. `test/smolvlm_tokenizer_test.agc`
+  on the real `tokenizer.json` of `HuggingFaceTB/SmolVLM-256M-Instruct` (sha256 `5ece781dc8d2...`, gated by
+  `SMOLVLM_MODEL`; `test/fixtures/smolvlm_tokenizer_golden.json`, 74 KB, from `tokenizer_golden.py golden bpe_gpt2`): 165
+  strings (the BPE test's, natural text in several scripts, 66 of the digit split and 20 random) and 656 decodes agree.
 - `test/bpe_test.agc` on `fixtures/bpe_groups.json`, a tiny tokenizer with the split of LFM3, no normalizer and
   `ignore_merges` with its last 40 merges cut off, so that flipping the flag changes ids (`test/tokenizer_golden.py
   groups`, `tokenizers` 0.23.3): the ids and text of `tokenizers` on the strings of the BPE test, 30 of digit groups,

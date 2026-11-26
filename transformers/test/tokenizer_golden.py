@@ -24,11 +24,19 @@ in a piece, `\\p{N}{1,3}`), no normalizer, `ignore_merges` on and its last merge
 and that the merges no longer reach is still one token), and the ids of the strings below plus those of `GROUP_TEXTS`
 and 20 random ones (`tokenizers` 0.23.3, as above).
 
+    python -I test/tokenizer_golden.py gpt2 test/fixtures
+
+writes `bpe_gpt2.json` and `bpe_gpt2_golden.json`: the same tiny tokenizer with the pre-tokenizer of SmolLM2 and SmolVLM
+(`Digits` with `individual_digits`, then ByteLevel with its own GPT-2 split `use_regex`), no normalizer and no
+post-processor, and the ids of the strings below plus those of `GPT2_TEXTS` and 60 random ones (`tokenizers` 0.23.3, as
+above).
+
     python -I test/tokenizer_golden.py golden wordpiece TOKENIZER_JSON [N] > OUT.json
     python -I test/tokenizer_golden.py golden bpe TOKENIZER_JSON [N] > OUT.json
     python -I test/tokenizer_golden.py golden bpe_groups TOKENIZER_JSON [N] > OUT.json
+    python -I test/tokenizer_golden.py golden bpe_gpt2 TOKENIZER_JSON [N] > OUT.json
 
-writes the golden of a real tokenizer (`bert-base-uncased`, `Qwen3-0.6B`, `LFM3-1.7B` with `bpe_groups`, which adds `GROUP_TEXTS` and checks the version of `tokenizers` and the sha256 of the file),
+writes the golden of a real tokenizer (`bert-base-uncased`, `Qwen3-0.6B`, `LFM3-1.7B` with `bpe_groups`, which adds `GROUP_TEXTS`, and `SmolVLM-256M-Instruct` with `bpe_gpt2`, which adds `GPT2_TEXTS`; both check the version of `tokenizers` and the sha256 of the file),
 which `tools/tokenizer_check.agc` compares; it is not committed. `N` adds that
 many random strings (seeded) of the pieces in `FUZZ`.
 """
@@ -120,6 +128,21 @@ GROUP_TEXTS = [
     "1", "12", "123", "1234", "12345", "123456", "1234567", "0001", "a1234b", "x 1234567", "-1234", " 12", "$1,000,000",
     "1.234.567,89", "3.14159", "a 123\n456", "2024-11-26", "٣٤٥٦٧", "２０２４年", "²³⁴⁵", "½¼¾", "Ⅷ Ⅻ", "①②③④",
     "e\u0301 é", "1\u0301234", "12\u030134", "'s123", "x'123", "999 9999 99999", "abc123def456ghi789jkl",
+]
+
+# The `tokenizer.json` of `HuggingFaceTB/SmolVLM-256M-Instruct`, as it is in the cache of the tests.
+SMOLVLM_TOKENIZER_SHA256 = "5ece781dc8d2b2f3e2f289ca0ae50b17cfc27dd27bfe7971bb8241e0b964331a"
+
+# Strings where the split of the SmolLM2 pre-tokenizer decides the cut: a digit is its own piece and takes no space
+# (`Digits` cuts before the GPT-2 regex runs), contractions are lower case only, a space leads one letter run or one
+# symbol run, and the white space before a letter, a digit or the end.
+GPT2_TEXTS = [
+    "1", "12", "123", "a1", "1a", "a1b2", " 1", "  1", "a 12", "x  12", "\n1", "1\n", "'s1", "x'1", "3.14", "-1234",
+    "2024-11-26", "$1,000,000", "a 123\n456", "١٢٣", "٣٤٥٦٧", "²³", "½¼", "Ⅷ Ⅻ", "①②", "１２３",
+    "don't", "DON'T", "I'LL", "I'll", "we've", "It's", "'S", "'t'd", "x'", "'ſ",
+    "  two  spaces", "trailing   ", "a  1", "a   b", "  a", " \n a", "a \n b", "\n\n", " \n", "\t1", "!?1", "!!! 2",
+    "...x", " ...x", "(1)", "[2]", "e\u0301 x", "\u0301a", "a\u0301", " \u0301a", "1\u0301", "x \u0301 1",
+    "Hello 1234 world", "a\u00a0b", "a\u2003 b", "a\u3000\u3000b", "a\u0085b", "\r\n1", "end. 1", "snake_case_1",
 ]
 
 WORDPIECE_PAIRS = [("hello", "world"), ("", "world"), ("hello", ""), ("don't", "playing [SEP] x")]
@@ -219,22 +242,32 @@ def make_wordpiece(directory):
     tok.save(f"{directory}/wordpiece.json")
 
 
-def make_bpe(directory, name="bpe", split=QWEN_SPLIT, groups=False):
+def make_bpe(directory, name="bpe", split=QWEN_SPLIT, groups=False, gpt2=False):
     tok = Tokenizer(models.BPE())
-    if not groups:
+    if not groups and not gpt2:
         tok.normalizer = normalizers.NFC()
-    tok.pre_tokenizer = pre_tokenizers.Sequence(
-        [
-            pre_tokenizers.Split(Regex(split), behavior="isolated", invert=False),
-            pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
-        ]
-    )
+    if gpt2:
+        tok.pre_tokenizer = pre_tokenizers.Sequence(
+            [
+                pre_tokenizers.Digits(individual_digits=True),
+                pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=True),
+            ]
+        )
+    else:
+        tok.pre_tokenizer = pre_tokenizers.Sequence(
+            [
+                pre_tokenizers.Split(Regex(split), behavior="isolated", invert=False),
+                pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
+            ]
+        )
     tok.decoder = decoders.ByteLevel()
-    tok.post_processor = processors.ByteLevel(trim_offsets=False)
+    if not gpt2:
+        tok.post_processor = processors.ByteLevel(trim_offsets=False)
     trainer = trainers.BpeTrainer(
         vocab_size=420, initial_alphabet=pre_tokenizers.ByteLevel.alphabet(), show_progress=False
     )
-    corpus = [t for t in BPE_TEXTS + (GROUP_TEXTS if groups else []) if "<" not in t] * 3 + [
+    extra = GROUP_TEXTS if groups else GPT2_TEXTS if gpt2 else []
+    corpus = [t for t in BPE_TEXTS + extra if "<" not in t] * 3 + [
         "the quick brown fox jumps over the lazy dog, and the dog does not mind the fox at all.",
         "hello world, hello there, hello again; the world says hello to everyone in the world.",
         "def add(a, b):\n    return a + b\n\nprint(add(1, 2))\n",
@@ -322,6 +355,15 @@ def main():
         with open(f"{directory}/bpe_groups_golden.json", "w", encoding="utf-8") as f:
             json.dump(golden("bpe", f"{directory}/bpe_groups.json", 20, GROUP_TEXTS), f, ensure_ascii=False, indent=None)
             f.write("\n")
+    elif sys.argv[1] == "gpt2":
+        import tokenizers
+
+        assert tokenizers.__version__ == "0.23.3", tokenizers.__version__
+        directory = sys.argv[2]
+        make_bpe(directory, "bpe_gpt2", gpt2=True)
+        with open(f"{directory}/bpe_gpt2_golden.json", "w", encoding="utf-8") as f:
+            json.dump(golden("bpe", f"{directory}/bpe_gpt2.json", 60, GPT2_TEXTS), f, ensure_ascii=False, indent=None)
+            f.write("\n")
     elif sys.argv[1] == "fixtures":
         directory = sys.argv[2]
         make_wordpiece(directory)
@@ -331,8 +373,9 @@ def main():
                 json.dump(golden(kind, f"{directory}/{kind}.json"), f, ensure_ascii=False, indent=None)
                 f.write("\n")
     else:
-        kind = "bpe" if sys.argv[2] == "bpe_groups" else sys.argv[2]
-        if sys.argv[2] == "bpe_groups":
+        kind = "bpe" if sys.argv[2] in ("bpe_groups", "bpe_gpt2") else sys.argv[2]
+        pinned = {"bpe_groups": LFM3_TOKENIZER_SHA256, "bpe_gpt2": SMOLVLM_TOKENIZER_SHA256}
+        if sys.argv[2] in pinned:
             import hashlib
 
             import tokenizers
@@ -340,9 +383,9 @@ def main():
             if tokenizers.__version__ != "0.23.3":
                 raise SystemExit(f"tokenizers 0.23.3 is needed, got {tokenizers.__version__}")
             with open(sys.argv[3], "rb") as f:
-                if hashlib.sha256(f.read()).hexdigest() != LFM3_TOKENIZER_SHA256:
-                    raise SystemExit("the file is not the tokenizer.json of LFM3-1.7B at the pinned revision")
-        extra = GROUP_TEXTS if sys.argv[2] == "bpe_groups" else []
+                if hashlib.sha256(f.read()).hexdigest() != pinned[sys.argv[2]]:
+                    raise SystemExit("the file is not the tokenizer.json at the pinned revision")
+        extra = {"bpe_groups": GROUP_TEXTS, "bpe_gpt2": GPT2_TEXTS}.get(sys.argv[2], [])
         count = int(sys.argv[4]) if len(sys.argv) > 4 else 0
         json.dump(golden(kind, sys.argv[3], count, extra), sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")

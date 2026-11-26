@@ -58,6 +58,32 @@ def test_the_split_of_lfm3_groups_digits_and_ignores_merges() -> Result[Void]
   Test.error?(Bpe.parse(try S.replaced(text, "p{N}{1,3}", "p{N}{1,2}")))
 end
 
+## SmolLM2's (SmolVLM's) pre-tokenizer: `Digits` with `individual_digits`, then ByteLevel with its own GPT-2 regex
+## (`fixtures/bpe_gpt2.json`, no normalizer): a digit is a piece of its own and takes no space, a contraction is lower
+## case only, and the ids are those of `tokenizers`.
+def test_the_split_of_smollm2_is_digits_then_the_gpt2_regex() -> Result[Void]
+  tok = try Bpe.open("test/fixtures/bpe_gpt2.json")
+  try Test.assert(tok.gpt2 and not tok.nfc and not tok.ignore_merges, "the pattern flags were not read")
+  checked = try Golden.bpe_of(tok, "test/fixtures/bpe_gpt2_golden.json")
+  try Test.assert(checked > 100, "only #{checked} cases ran")
+  pieces = ->(text: String) { Bpe.split(Unicode.codepoints(text), false, 1, true).map { |w| Unicode.text_of(w) } }
+  try Test.eq(pieces.call("a 12 b"), ["a", " ", "1", "2", " b"])
+  try Test.eq(pieces.call("x  12"), ["x", "  ", "1", "2"])
+  try Test.eq(pieces.call("It's 'S don't"), ["It", "'s", " '", "S", " don", "'t"])
+  try Test.eq(pieces.call("'S'LL x"), ["'", "S", "'", "LL", " x"])
+  try Test.eq(pieces.call("a  \n b!?"), ["a", "  \n", " b", "!?"])
+  ok()
+end
+
+## The other shapes of the pre-tokenizer are errors, not silent differences.
+def test_a_pre_tokenizer_that_is_not_smollm2s_is_an_error() -> Result[Void]
+  text = try File.read_text("test/fixtures/bpe_gpt2.json")
+  try Test.error?(Bpe.parse(try S.replaced(text, "\"individual_digits\": true", "\"individual_digits\": false")))
+  try Test.error?(Bpe.parse(try S.replaced(text, "\"use_regex\": true", "\"use_regex\": false")))
+  try Test.error?(Bpe.parse(try S.replaced(text, "\"add_prefix_space\": false", "\"add_prefix_space\": true")))
+  Test.error?(Bpe.parse(try S.replaced(text, "\"type\": \"Digits\"", "\"type\": \"Punctuation\"")))
+end
+
 ## Qwen2.5's `tokenizer.json` writes a merge as "a b", Qwen3's as ["a", "b"]: both give the ids of `tokenizers`.
 def test_merges_written_as_lines_are_read_too() -> Result[Void]
   checked = try Golden.bpe("test/fixtures/bpe_lines.json", "test/fixtures/bpe_golden.json")
