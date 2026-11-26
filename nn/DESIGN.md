@@ -14,7 +14,7 @@ struct LayerNorm    { gamma: [width], beta: [width], eps: Float, rms: Bool = fal
 struct Embedding    { table: [rows, width] }
 struct Conv1d       { weight: [out, in, kernel], bias: Optional [out], stride, padding: Int }
 struct Conv2d       { weight: [out, in / groups, kh, kw], bias: Optional [out], stride = 1, padding = 0, groups = 1 }
-enum   Activation   = Relu | Gelu | GeluErf | Silu
+enum   Activation   = Relu | Gelu | GeluErf | GeluTanh | Silu
 struct Rope         { base: Float = 10000.0, neox: Bool = true, dims: Optional[Int] = none, zero_tail: Optional[Int] = none, sections: Optional[List[Int]] = none }
 struct Attention    { query, key, value, output: Dense, heads: Int, kv_heads: Optional[Int] = none,
                       rope: Optional[Rope] = none, query_norm, key_norm: Optional[LayerNorm] = none,
@@ -230,7 +230,10 @@ that are the layer's own (rank of `positional`, table length, heads).
   Layers themselves take any float dtype (the gradient test uses `F64`).
   The gradient tests need `agentica test --max-steps 10000000`: a bare
   `agentica test` runs out of its 1M steps (per file, times its tests + 1).
-- **Two GELUs**: `Gelu` is the tanh approximation (`Tensor.gelu`);
+- **Three GELUs**: `Gelu` is the tanh approximation (`Tensor.gelu`);
   `GeluErf` is the exact `erf` form Whisper and BERT use
-  (`Tensor.gelu_erf`). `Trace` differentiates both. The libtorch comparisons
-  use `relu` and `silu`.
+  (`Tensor.gelu_erf`); `GeluTanh` is the same function as `Gelu` from mul,
+  add and sigmoid, which ggml compiles (`Gelu` is not lowered to ggml yet,
+  ml#301), so a `gelu_pytorch_tanh` checkpoint that runs on ggml uses it.
+  `Trace` differentiates all three. The libtorch comparisons use `relu` and
+  `silu`.

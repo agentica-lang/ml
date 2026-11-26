@@ -56,7 +56,6 @@ end
 def matches(g: Golden, backend: Tensor.Backend, abs: Float, rel: Float) -> Result[Void]
   with_model(g, g.config, "") do |dir|
     m = try SmolVlmVision.open(dir, backend)
-    try Test.eq(SmolVlmVision.tokens(m), 4)
     tiles = try S.f32(g.pixels, [g.tiles, 3, 16, 16], backend)
     out = try SmolVlmVision.encode(m, tiles)
     try Test.eq(Tensor.shape(out), [g.tiles, 4, 12])

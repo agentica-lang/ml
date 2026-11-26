@@ -106,14 +106,8 @@ def load(
   )
 end
 
-## How many rows one tile gives: the image tokens of a tile in the prompt (`image_seq_len` of the processor).
-def tokens(m: Vision) -> Int
-  side = m.config.image_size / m.config.patch_size / m.scale_factor
-  side * side
-end
-
 ## The features of `tiles` (`[n, channels, size, size]`, normalized, or `[channels, size, size]` for one tile, which
-## `Vision.to_tensor` and `Vision.normalize` make): `[n, tokens(m), text_width]`. One graph on ggml. The caller closes
+## `Vision.to_tensor` and `Vision.normalize` make): `[n, (size / patch / scale_factor)^2, text_width]`. One graph on ggml. The caller closes
 ## the features (`Lift.close`) and the tiles.
 def encode(m: Vision, tiles: Tensor.Tensor) -> Result[Tensor.Tensor]
   want = [m.config.num_channels, m.config.image_size, m.config.image_size]
@@ -231,7 +225,7 @@ def specs_of(config: Config, scale_factor: Int, text_width: Int) -> List[Weights
   specs
 end
 
-## The tower and the connector on `tiles` `[n, channels, size, size]`: `[n, tokens, text_width]`.
+## The tower and the connector on `tiles` `[n, channels, size, size]`: `[n, rows, text_width]`.
 def graph(m: Vision, tiles: Tensor.Tensor) -> Result[Tensor.Tensor]
   size = m.config.image_size
   n = 1

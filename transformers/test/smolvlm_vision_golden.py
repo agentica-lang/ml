@@ -1,10 +1,11 @@
 """Writes `test/fixtures/smolvlm_vision_golden.json`: a tiny random SmolVLM (`Idefics3Model`: a SigLIP tower of 2 blocks,
-16 wide, 2 heads, patches of 4 over tiles of 16 by 16, a pixel shuffle by 2, and a connector to a text model 12 wide)
-as Hugging Face runs it in `float32`: the `config.json` as an official `HuggingFaceTB/SmolVLM-*` repository writes its
-fields (the text model is reduced to its width), the tower's and the connector's weights under the names of the
-official checkpoint (`model.vision_model.*`, `model.connector.*`), three tiles (the normalized `pixel_values`) and the
-rows that `get_image_features` gives for them. `test/smolvlm_vision_test.agc` writes the weights as a safetensors file,
-opens the folder with `SmolVlmVision.open` and compares the features. No model is stored, only this small file.
+16 wide, 2 heads, patches of 4 over tiles of 16 by 16 and a `layer_norm_eps` of 1e-2, so that reading it from the
+config is tested; a pixel shuffle by 2, and a connector to a text model 12 wide) as Hugging Face runs it in `float32`:
+the `config.json` as an official `HuggingFaceTB/SmolVLM-*` repository writes its fields (the text model is reduced to
+its width), the tower's and the connector's weights under the names of the official checkpoint (`model.vision_model.*`,
+`model.connector.*`), three tiles (the normalized `pixel_values`) and the rows that `get_image_features` gives for them.
+`test/smolvlm_vision_test.agc` writes the weights as a safetensors file, opens the folder with `SmolVlmVision.open` and
+compares the features. No model is stored, only this small file.
 
 Manual, not run by the tests: it needs `torch` 2.15.0 and `transformers` 5.22.2 (the script stops on other versions).
 Run it in a throwaway venv, from `transformers/`, with Python's isolated mode:
@@ -22,7 +23,7 @@ from transformers.models.idefics3.modeling_idefics3 import Idefics3Model
 
 VISION = dict(
     hidden_size=16, intermediate_size=24, num_hidden_layers=2, num_attention_heads=2, num_channels=3, image_size=16,
-    patch_size=4, hidden_act="gelu_pytorch_tanh", layer_norm_eps=1e-6,
+    patch_size=4, hidden_act="gelu_pytorch_tanh", layer_norm_eps=1e-2,
 )
 TEXT = dict(
     model_type="llama", hidden_size=12, intermediate_size=20, num_hidden_layers=1, num_attention_heads=2,

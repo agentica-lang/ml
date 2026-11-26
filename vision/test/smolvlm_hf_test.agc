@@ -17,7 +17,8 @@ import Vision from "../vision"
 
 SIZE = 512
 
-## What passes for a value or a mean: SAMPLE_PLACEHOLDER
+## What passes for a sampled value or a mean: about 2.7 times the largest gap measured (3.6e-5 and 5.3e-5 on the CPU,
+## 1.1e-4 and 9.2e-5 on Vulkan, for values of about 4 in absolute mean).
 SAMPLE_ABS = 0.0003
 
 struct Case

@@ -389,21 +389,23 @@ convolutions, as in Qwen3.5, so the padding rows leave the state as the real row
 (`Idefics3ForConditionalGeneration`, `HuggingFaceTB/SmolVLM-256M-Instruct`), `SmolVlmVision.open(dir, backend)` and
 `encode(v, tiles)`. A tile is `[3, 512, 512]` (or `[n, 3, 512, 512]`) as the image processor makes it (rescaled by
 1/255, mean and std 0.5: `Vision.to_tensor` and `Vision.normalize`), and the result is `[n, 64, 576]`: the rows of
-`get_image_features`, 64 for each tile (`SmolVlmVision.tokens(v)`), at the width of the text model. The tower and the
-text model are not in one file: the text side (a Llama), the splice, the processor and the chat template are the next
-slices of ml#84.
+`get_image_features`, 64 for each tile, at the width of the text model. The caller passes whole, unpadded tiles and no
+all-zero padding tiles (Hugging Face's model drops those, this one would compute them): padded tiles and patch masks
+are a non-goal until the processor slice. Only the 256M and 500M models (a side of 32 patches and a pixel shuffle by
+4) are checked against Hugging Face; another size is read, not tested. The tower and the text model are not in one
+file: the text side (a Llama), the splice, the processor and the chat template are the next slices of ml#84.
 
 - The tower is SigLIP: a convolution of stride 16 without a class token, learned positions (one row for each patch of
-  the tile, in row order), 12 pre-norm blocks of full attention (`eps` 1e-6, separate `q_proj`, `k_proj`, `v_proj` and
+  the tile, in row order), 12 pre-norm blocks of full attention (`layer_norm_eps` of the config, 1e-6 in the checkpoint, separate `q_proj`, `k_proj`, `v_proj` and
   `out_proj` with biases) and an MLP of `gelu_pytorch_tanh` (`Nn.Activation.GeluTanh`), then `post_layernorm`. They
   are the `Nn.EncoderStack` of ViT, read through `Weights` (the names and shapes are checked before any tensor is
   loaded).
 - Hugging Face's `Idefics3VisionEmbeddings` picks the position of a patch by the fraction of the tile it covers, so
   that a padded tile of another size has its own positions. For a whole tile every patch is valid and the position of
   a patch is its index, which is all this file does: a tile of another size, or a patch mask, is an error or not read.
-- The connector is `Idefics3Connector`: a pixel shuffle by `scale_factor` (4 in the 256M and 500M models, 2 in the
-  2.2B) joins each `scale_factor` by `scale_factor` square of patches into one vector (`width * scale^2` wide, the rows
-  of the square one after the other), and a linear layer without a bias takes it to the width of the text model.
+- The connector is `Idefics3Connector`: a pixel shuffle by `scale_factor` (4 in the 256M and 500M models) joins each
+  `scale_factor` by `scale_factor` square of patches into one vector (`width * scale^2` wide, the rows of the square one
+  after the other), and a linear layer without a bias takes it to the width of the text model.
 - `Nn.Activation.GeluTanh` is the function of `Gelu` written with mul, add and sigmoid, as ggml compiles them (`Gelu`
   is not lowered to ggml yet, ml#301). `Qwen3_5Vision` uses it too, in place of its own copy.
 
@@ -880,7 +882,8 @@ error row per config field.
   that does not divide the width, a patch size that does not divide the tile, a connector that does not fit the text
   width, and a tile of another size. Mutants, each failing it: either permute of the pixel shuffle dropped, the square
   taken along the other axis, the squares read in the other order, no `post_layernorm`, no learned positions, the exact
-  GELU for the tanh one, and the constant of the tanh GELU changed (this one fails `qwen35_vision_test` too).
+  GELU for the tanh one, the `layer_norm_eps` fixed at 1e-6 (the tiny config says 1e-2) in the blocks or in
+  `post_layernorm`, and the constant of the tanh GELU changed (this one fails `qwen35_vision_test` too).
 - `vision/test/smolvlm_hf_test.agc` against `vision/test/smolvlm_hf_golden.py` (manual: `torch` 2.15.0, `transformers`
   5.22.2, `pillow` 11.3.0 as for the pixels golden, the sha256 of the checkpoint files checked, offline;
   `vision/test/fixtures/smolvlm/golden.json`): the real `SmolVLM-256M-Instruct` in `float32`. Two tiles (the drawn images

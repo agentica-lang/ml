@@ -21,6 +21,8 @@ import json
 import sys
 from pathlib import Path
 
+if len(sys.argv) != 3:
+    sys.exit("usage: python -I test/smolvlm_hf_golden.py MODEL_DIR PILLOW_DIR > test/fixtures/smolvlm/golden.json")
 PILLOW_DIR = sys.argv[2]
 sys.path.insert(0, PILLOW_DIR)
 
