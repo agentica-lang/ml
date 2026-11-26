@@ -143,15 +143,15 @@ def idefics3_tiling(height: Int, width: Int) -> Result[Tiling]
   ok(Tiling(resized: resized, grid: Size(height: gh, width: gw), rows: gh / IDEFICS3_TILE, cols: gw / IDEFICS3_TILE))
 end
 
-## The tiles of `image` as Hugging Face's `Idefics3ImageProcessor` cuts them (`idefics3_tiling`): the image resized to
-## `resized`, then to the `grid`, cut into tiles of 512 by 512 row by row, then the whole grid resized to one tile, as
-## tensors on `backend` (`Tiles`). The image is an sRGB `U8` one of 3 bands (`Image.colourspace` of the `image`
-## package; the processor converts to RGB itself, this function does not), else an error. Each resize is Pillow's
-## Lanczos (`ImagingResample`: the filter with its support scaled when shrinking, the centre of output pixel `i` at
-## `(i + 0.5) * scale`, weights normalized for each output pixel, a pass across and then one down, each held to
-## 0..255), as products by matrices of weights in one graph. libvips' resize is not used: it enlarges with bicubic interpolation
-## whatever the kernel. The passes are not rounded to 8 bits as Pillow's are (ggml has no rounding), so a sample is
-## within a level or two of the processor's.
+## The tiles of `image` as Hugging Face's `Idefics3ImageProcessor` cuts them (`idefics3_tiling`): the image resized
+## to `resized`, then to the `grid`, cut into tiles of 512 by 512 row by row, then the whole grid resized to one
+## tile, as tensors on `backend` (`Tiles`). The image is an sRGB `U8` one of 3 bands (`Image.colourspace` of the
+## `image` package; the processor converts to RGB itself, this function does not), else an error. Each resize is
+## Pillow's Lanczos (`ImagingResample`: the filter with its support scaled when shrinking, the centre of output
+## pixel `i` at `(i + 0.5) * scale`, weights normalized for each output pixel, a pass across and then one down,
+## each held to 0..255), as products by matrices of weights in one graph. libvips' resize is not used: it enlarges
+## with bicubic interpolation whatever the kernel. The passes are not rounded to 8 bits as Pillow's are (ggml has
+## no rounding), so a sample is within a level or two of the processor's.
 def idefics3_tiles(image: Image.Image, backend: Tensor.Backend = Tensor.Backend.Reference) -> Result[Tiles]
   return error("idefics3_tiles needs an sRGB image of 3 bands, got #{Image.bands(image)}") if Image.bands(image) != 3
   kind = Image.pixel_format(image)
