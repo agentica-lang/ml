@@ -21,7 +21,16 @@ sampling)` decodes greedily, or by `sample.agc` (below); `start`, then `step` (t
 `Qwen3.close_model`. Batch of one, one task at a time. `Generate.open(m, usable = 0)` is how many ids a step may
 answer (below, "The ids the tokenizer cannot decode"): the embedding of Qwen3 has 151,936 rows and its tokenizer
 151,669 tokens, so a caller with a tokenizer opens with `tok.pieces.size` and the sampler never gives an id that
-`Bpe.decode` rejects. The default 0 is no mask, as in Hugging Face.
+`Bpe.decode` rejects. The default 0 is no mask, as in Hugging Face. `Generate.open(m, usable, kv)` takes a
+`Placement.Kv` (`placement.agc`): with `Host`, `KvDecoder.hosted` copies the keys and values that a compiled step gives
+on a Vulkan device to `Ggml(Cpu)` and closes the old ones (the next steps write in place into the host tensors, and the
+scheduler runs the attention on the CPU, as a node that reads host memory does); `Device`, the default, leaves them where
+the step made them. Only the step of the prompt copies: it makes the whole cache on the card, at the capacity of the
+prompt, so that is the card's peak with `Host`, and the copy is its cost; the one-token steps are in place, and the step
+that grows the capacity reads the old host tensors, so by the rule that a node which reads host memory runs on the CPU
+its new tensors are on the CPU already (a test checks it: no copy after the prompt). An output on the CPU, asked of the
+graph, would remove that peak; it is not done. On the CPU engine, or for blocks that are on the CPU already, `Host`
+changes nothing, and the states of a model with them (`Stepper.states`) stay where they are made.
 
 - The cache of a layer is `[1, kv_heads, rows, head_dim]`: the keys already
   normalized and rotated, so a step never rotates the past. Rows are padded

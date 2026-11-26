@@ -38,6 +38,7 @@ import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 import Lift from "lift"
 import Mrope from "mrope"
+import Placement from "placement"
 import Sample from "sample"
 import Stepping from "stepping"
 
@@ -131,6 +132,9 @@ struct Stepper[M]
   taps: Int = 0
   ## Whether `stepped` reads `Request.splice` (and `Request.rotary`, if `rotated`): only then may a cache start from a `Sight`.
   sighted: Bool = false
+  ## Where the cache is kept (`Placement.Kv`): `Host` moves the keys and the values of a step on a Vulkan device to
+  ## the CPU.
+  kv: Placement.Kv = Placement.Kv.Device
   ## Whether the rope of the model turns by more than the index of a token (Qwen3.5's three axes and `Cache.delta`). A
   ## model with one position per token (`false`) is given no `rotary`, and a `Sight` for it must be a plain one
   ## (`plain_sight`): any other layout is an error.
@@ -557,9 +561,37 @@ def compiled_step[M](
   Lift.close([outs[0]])
   if not head.ok?
     Lift.close(outs.drop(1))
+    return error(head.message)
   end
 
-  ok(Advanced(head: try head, cache: cache_of(s, outs.drop(1))))
+  kept = try hosted(s, outs.drop(1))
+  ok(Advanced(head: head.unwrap!, cache: cache_of(s, kept)))
+end
+
+## The keys and the values of `outs` (the cache of a step, then its states) in the memory that `Stepper.kv` says: a
+## tensor that is somewhere else is copied and the copy replaces it (the old one is closed); the tensors of a step in
+## place are already there. On an error every tensor of `outs` is closed.
+def hosted[M](s: Stepper[M], outs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  kept: List[Tensor.Tensor] = []
+  for i in 0...outs.size
+    t = outs[i]
+    on = Tensor.backend(t)
+    if i >= 2 * s.layers or Placement.cache_backend(s.kv, on) == on
+      kept = kept.push(t)
+      next
+    end
+
+    moved = Tensor.to_device(t, Tensor.Device.Cpu)
+    if not moved.ok?
+      Lift.close(kept + outs.drop(i))
+      return error(moved.message)
+    end
+
+    Lift.close([t])
+    kept = kept.push(moved.unwrap!)
+  end
+
+  ok(kept)
 end
 
 ## An error when a step gave other tensors than its `Stepper` says: the head, the keys and the values of every layer

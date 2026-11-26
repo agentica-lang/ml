@@ -49,3 +49,16 @@ def test_the_placement_of_the_table_and_the_head() -> Result[Void]
 
   ok()
 end
+
+## The keys and values of a cache are made where the block that makes them is; `Host` keeps them all in host memory
+## (llama.cpp's `--no-kv-offload`), `Device` leaves them where they are made.
+def test_the_cache_follows_its_block_or_stays_in_host_memory() -> Result[Void]
+  for backend in [HOME, CARD, Tensor.Backend.Reference]
+    try Test.eq(Placement.cache_backend(Placement.Kv.Device, backend), backend)
+  end
+
+  try Test.eq(Placement.cache_backend(Placement.Kv.Host, CARD), HOME)
+  try Test.eq(Placement.cache_backend(Placement.Kv.Host, HOME), HOME)
+  try Test.eq(Placement.cache_backend(Placement.Kv.Host, Tensor.Backend.Reference), Tensor.Backend.Reference)
+  ok()
+end

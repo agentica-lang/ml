@@ -10,6 +10,8 @@ weight: 2
 
 `Generate.open(m, usable)` sets how many ids a step may answer. The embedding of Qwen3 has more rows than its tokenizer has tokens (151,936 and 151,669), and the ids in between have no text, so a caller with a tokenizer passes its token count (`Generate.open(m, tok.pieces.size)`) and the sampler never gives an id that `Bpe.decode` rejects. The default 0 is Hugging Face's, no mask.
 
+`Generate.open(m, usable, kv: Placement.Kv.Host)` (`import Placement from "pkg/transformers/placement"`) keeps the keys and values of every layer in host memory when the model is on a Vulkan device, as llama.cpp's `--no-kv-offload` does: the attention reads them on the CPU and the cache grows in RAM. The step of the prompt makes the whole cache on the card first, at the capacity of the prompt, and copies it over, so the card's peak holds that cache once; the steps after it make no cache on the card. The default, `Placement.Kv.Device`, leaves each cache where its block is (the cache of a block that `layers_on_device` put on the CPU is in host memory already). The logits are the same. On the CPU engine, and for the blocks that are on the CPU already, `Host` changes nothing, and the recurrent states of Qwen3.5 and LFM3 stay where they are made (on the device).
+
 ```agentica
 import Bpe from "pkg/transformers/tokenizer/bpe"
 import Generate from "pkg/transformers/generate"
