@@ -7,6 +7,7 @@ import Qwen3 from "../qwen3"
 import Qwen3Gguf from "../qwen3_gguf"
 import Bpe from "../tokenizer/bpe"
 import Lift from "../lift"
+import Ggml from "pkg/tensor/src/ggml"
 import GgmlRaw from "pkg/tensor/src/ggml_native"
 import Gguf from "pkg/hub/gguf"
 import Hub from "pkg/hub/hub"
@@ -100,15 +101,55 @@ def test_layers_on_device_do_not_change_the_logits() -> Result[Void]
     rows = try ids(dir)
     try Test.error?(Qwen3.open("#{dir}/tiny", S.REF, Tensor.Dtype.F32, some(-1)))
     for backend in try S.ggml_backends()
-      want = try S.floats_of(try Qwen3.run(try Qwen3.open("#{dir}/tiny", backend), rows))
-      for n in [0, 1, 2]
-        m = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(n))
-        try S.expect_close(try S.floats_of(try Qwen3.run(m, rows)), want, F32_ABS, F32_REL, "layers_on_device #{n}")
+      for name in ["tiny", "untied"]
+        want = try S.floats_of(try Qwen3.run(try Qwen3.open("#{dir}/#{name}", backend), rows))
+        for n in [0, 1, 2]
+          m = try Qwen3.open("#{dir}/#{name}", backend, Tensor.Dtype.F32, some(n))
+          try S.expect_close(
+            try S.floats_of(try Qwen3.run(m, rows)),
+            want,
+            F32_ABS,
+            F32_REL,
+            "#{name} with layers_on_device #{n}",
+          )
+        end
       end
     end
 
     ok()
   end
+end
+
+## The sides of the table and of the head, whatever the machine: on a Vulkan device the table is on the CPU for an `n` below
+## the blocks, and the head is there only for 0; everything else, and every other backend, stays where the model opens.
+def test_the_placement_of_the_table_and_the_head() -> Result[Void]
+  home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+  card = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+  blocks = 28
+  unset: Optional[Int] = none
+  for n in [unset, some(blocks), some(blocks + 1)]
+    for backend in [home, card]
+      side = Qwen3.placement(backend, blocks, n)
+      try Test.eq(side.table, backend)
+      try Test.eq(side.head, backend)
+    end
+  end
+
+  for n in [0, 1, blocks - 1]
+    away = Qwen3.placement(card, blocks, some(n))
+    try Test.eq(away.table, home)
+    head = card
+    if n == 0
+      head = home
+    end
+
+    try Test.eq(away.head, head)
+    same = Qwen3.placement(home, blocks, some(n))
+    try Test.eq(same.table, home)
+    try Test.eq(same.head, home)
+  end
+
+  ok()
 end
 
 ## With `n` below the number of blocks the embedding table is on the CPU and, from one block on the device, the head (here
@@ -125,16 +166,16 @@ def test_the_table_is_on_the_cpu_and_the_head_on_the_device_with_blocks_there() 
 
       checked += 1
       for name in ["tiny", "untied"]
-        some_on = try Qwen3.open("#{dir}/#{name}", backend, Tensor.Dtype.F32, some(1))
-        try Test.eq(Tensor.backend(some_on.tokens.table), home)
-        try Test.eq(Tensor.backend(some_on.head.w), backend)
-        try Test.eq(Tensor.backend(some_on.stack.final_norm.unwrap!.gamma), backend)
-        try Test.eq(some_on.device, backend)
+        with_block = try Qwen3.open("#{dir}/#{name}", backend, Tensor.Dtype.F32, some(1))
+        try Test.eq(Tensor.backend(with_block.tokens.table), home)
+        try Test.eq(Tensor.backend(with_block.head.w), backend)
+        try Test.eq(Tensor.backend(with_block.stack.final_norm.unwrap!.gamma), backend)
+        try Test.eq(with_block.device, backend)
 
-        none_on = try Qwen3.open("#{dir}/#{name}", backend, Tensor.Dtype.F32, some(0))
-        try Test.eq(Tensor.backend(none_on.tokens.table), home)
-        try Test.eq(Tensor.backend(none_on.head.w), home)
-        try Test.eq(Tensor.backend(none_on.stack.final_norm.unwrap!.gamma), home)
+        without_block = try Qwen3.open("#{dir}/#{name}", backend, Tensor.Dtype.F32, some(0))
+        try Test.eq(Tensor.backend(without_block.tokens.table), home)
+        try Test.eq(Tensor.backend(without_block.head.w), home)
+        try Test.eq(Tensor.backend(without_block.stack.final_norm.unwrap!.gamma), home)
       end
 
       before = GgmlRaw.mixed_runs()
@@ -149,6 +190,30 @@ def test_the_table_is_on_the_cpu_and_the_head_on_the_device_with_blocks_there() 
         GgmlRaw.mixed_runs() > before,
         "a model with a block on the CPU did not run through the scheduler",
       )
+    end
+
+    try Test.assert(checked > 0 or !Tensor.available(S.VULKAN), "a Vulkan device was there and no model was checked")
+    ok()
+  end
+end
+
+## The tied head on the device is a copy of the table, its own tensor: closing the table leaves it readable, and
+## `close_model` closes it too.
+def test_the_head_copy_is_its_own_tensor_and_closes_with_the_model() -> Result[Void]
+  with_peer do |dir|
+    home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    checked = 0
+    for backend in try S.ggml_backends()
+      next if backend == home
+
+      checked += 1
+      m = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(1))
+      try Test.eq(Tensor.shape(m.head.w), Tensor.shape(m.tokens.table))
+      Lift.close([m.tokens.table])
+      try Test.eq(Native.closed?(try Ggml.handle_of(m.tokens.table)), true)
+      try Test.eq(Native.closed?(try Ggml.handle_of(m.head.w)), false)
+      Qwen3.close_model(m)
+      try Test.eq(Native.closed?(try Ggml.handle_of(m.head.w)), true)
     end
 
     try Test.assert(checked > 0 or !Tensor.available(S.VULKAN), "a Vulkan device was there and no model was checked")
