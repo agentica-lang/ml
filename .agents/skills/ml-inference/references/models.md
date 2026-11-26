@@ -21,6 +21,7 @@ curl -sIL "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/$rev/model.safetensors
 |---|---|---|---|
 | Qwen3-0.6B (text) | `Qwen/Qwen3-0.6B` | `model.safetensors`, `config.json`, `tokenizer.json` (and `tokenizer_config.json`) | `Qwen3.open` |
 | Qwen2.5-0.5B-Instruct | `Qwen/Qwen2.5-0.5B-Instruct` | the same | `Qwen3.open` |
+| Llama-architecture models (SmolLM2: `model_type` `llama`, no biases, no norms on the query and key) | `HuggingFaceTB/SmolLM2-135M` | the same | `Qwen3.open` (tested on a tiny model only) |
 | DistilBERT sentence embeddings | `sentence-transformers/msmarco-distilbert-cos-v5` | `model.safetensors`, `config.json`, `tokenizer.json` | `DistilBert.open` |
 | DistilBERT | `distilbert/distilbert-base-uncased` | the same | `DistilBert.open` |
 | BERT | `google-bert/bert-base-uncased` | the same | `Bert.open` |

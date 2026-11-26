@@ -103,11 +103,14 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
   `tie_word_embeddings` is true, with no copy of it, else `lm_head`. The `bfloat16` weights come as `F32` through `hub`.
 - The forward is one graph on ggml (`Lift.staged`). Every call traces and
   plans the graph again. Generation (below) keeps a cache and compiles its steps.
-- `model_type` `qwen3` or `qwen2` (Qwen2.5), `silu`, no `attention_bias`, no
-  `rope_scaling` and `use_sliding_window: false` are read; the rest is an
-  error. `qwen2` has no `q_norm` and `k_norm` and a bias on `q_proj`, `k_proj`
-  and `v_proj` (`Load.dense` takes a `.bias` when the file has one), and no
-  `head_dim` in its config (`hidden_size / num_attention_heads`, read once in
+- `model_type` `qwen3`, `qwen2` (Qwen2.5) or `llama` (SmolLM2), `silu`, no
+  `attention_bias`, no `mlp_bias`, no `rope_scaling` and
+  `use_sliding_window: false` are read; the rest is an error. `qwen2` has no
+  `q_norm` and `k_norm` and a bias on `q_proj`, `k_proj` and `v_proj`
+  (`Load.dense` takes a `.bias` when the file has one); `llama` has neither the
+  norms nor the biases, and is otherwise the same block (grouped-query
+  attention, rotary positions, a gated MLP with `silu`). Both may leave out
+  the `head_dim` of their config (`hidden_size / num_attention_heads`, read once in
   `load`). `tie_word_embeddings` defaults to `true`, as in Hugging Face, and
   then the file's `lm_head.weight` is ignored. On the reference backend
   attention needs `q * k` of at most 1,048,576 (about 1024 tokens, causal).
@@ -647,6 +650,13 @@ that prevent a silently wrong result. It gets no per-layer golden when the
 model golden exists, no node-by-node ggml test (the core covers it) and no
 error row per config field.
 
+- `test/llama_test.agc` against `test/llama_golden.py` (`torch` 2.15.0, `transformers` 5.22.2, manual): a tiny random
+  `LlamaForCausalLM` (2 blocks, 24 wide, 6 heads over 2 key heads of 4 columns, `rope_theta` 100000, an untied head,
+  no biases; `test/fixtures/llama_golden.json`, 136 KB) opened by `Qwen3.open` from a safetensors file under the names
+  of an official checkpoint: the logits of every position of two rows are Hugging Face's within 1e-5 on the reference
+  and 1e-4 on ggml CPU, and `mlp_bias`, `attention_bias`, a `rope_scaling` and another `model_type` are errors that
+  name the field. Mutants, each failing it: `mlp_bias` not checked, `llama` read with the norms of `qwen3`, the rope
+  base fixed at 10000, the key heads taken as the query heads, and `llama` refused.
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and
