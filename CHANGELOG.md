@@ -34,6 +34,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### vision
 
+- `vision` needs `image-0.3.0`: an enlarged image has the pixel centres of Pillow's bicubic, so the pixels of an image under `min_pixels` are within one 8-bit level of Hugging Face's processor, as a shrunk one is (ml#306).
 - `Vision.smart_resize` (it gives a `Vision.Size`) and `Vision.Step.SmartResize(factor, min_pixels, max_pixels, kernel)`: the size that Hugging Face's `smart_resize` gives (Qwen2-VL's image processor); `Vision.patches`: the patches of a normalized 3-channel image in the order of the processor's `pixel_values` (ml#151).
 
 ## [0.6.0] - 2026-11-26

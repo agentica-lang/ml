@@ -14,7 +14,7 @@ weight: 8
 [dependencies]
 vision = { git = "https://github.com/agentica-lang/ml", tag = "vision-0.6.0", subdir = "vision" }
 tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.6.0", subdir = "tensor" }
-image = { git = "https://github.com/agentica-lang/packages", tag = "image-0.2.0", subdir = "image" }
+image = { git = "https://github.com/agentica-lang/packages", tag = "image-0.3.0", subdir = "image" }
 ```
 
 ## Example
@@ -78,7 +78,7 @@ x = Vision.normalize(Vision.to_tensor(image, backend).unwrap!, [0.5, 0.5, 0.5], 
 pixel_values = Vision.patches(x, 16, 2).unwrap!
 ```
 
-The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A shrunk image is at most one 8-bit level (0.0078 normalized) from the processor's, two for a shrink of several times, as for the other models; an image that grows (under `min_pixels`) is not, because libvips enlarges with another sub-pixel alignment than Pillow's bicubic: at the edges the pixels can be several levels apart (see [the transformers page](../transformers/_index.md) and the [issue](https://github.com/agentica-lang/packages/issues/266)).
+The patches of an image that Hugging Face's processor resized are its `pixel_values` to float rounding. A resized image, shrunk or grown (under `min_pixels`), is at most one 8-bit level (0.0078 normalized) from the processor's, two for a shrink of several times, as for the other models; the grow needs `image-0.3.0`, which aligns the centres of an enlarged pixel like Pillow's bicubic.
 
 ## A folder per class
 
