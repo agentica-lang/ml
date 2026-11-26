@@ -94,6 +94,7 @@ def test_the_text_is_that_of_the_template_of_smolvlm() -> Result[Void]
 
   try Test.error?(Chat.apply("idefics3", [Chat.Message(role: "user", content: "Hi")], true, some(false)))
   try Test.error?(Chat.apply("idefics3", [Chat.Message(role: "tool", content: "Hi")], true))
+  try Test.error?(Chat.apply("idefics3", [Chat.Message(role: "narrator", content: "Hi")], true))
   Test.error?(Chat.apply("idefics3", [Chat.Message(role: "user", content: "Hi", thinking: some("x"))], true))
 end
 
