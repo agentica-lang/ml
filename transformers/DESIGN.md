@@ -178,7 +178,12 @@ which the text model reads at the image tokens (the wiring is the next step of m
 ### Qwen3.5 images in the text model
 
 The features of `Qwen3_5Vision.encode` reach the text model at the image tokens (`generate_qwen35.agc`,
-`kv_decoder.agc`, `mrope.agc`). The call that wires the processor, the tower and the chat is the next step of ml#151.
+`kv_decoder.agc`, `mrope.agc`). The chat wiring is a composition of small calls, with no one function that does it all
+(YAGNI): `Chat.IMAGE` is the text the template writes for an image (`<|vision_start|><|image_pad|><|vision_end|>`, in a
+user or assistant message, refused in a system one: its template cannot show images there); the tokenizer makes one
+`<|image_pad|>` of it, and `Mrope.expand(ids, pad, counts)` repeats it `Mrope.tokens(grid, merge)` times, as
+`Qwen3VLProcessor` does before it tokenizes (grid rows times columns over `merge` squared). `Qwen3_5.image_token(dir)`
+reads the id from `config.json`. The tower is closed before the text model opens, so the two never share the memory.
 
 - `Mrope.layout(ids, image_token, grids, merge)` works out on the host what Hugging Face's `get_rope_index` does: a text
   token has the same position on the three axes, counting up; an image (a run of image tokens, one run for each grid in
@@ -196,7 +201,8 @@ The features of `Qwen3_5Vision.encode` reach the text model at the image tokens 
   the one of before. `Stepper.sighted` says that a model reads them; another model refuses a sight. `step`,
   `step_logits` and `step_top` take the images from the cache they are given, and `generate` from its `sight`.
 - A step with images is another compiled graph, and each number of image tokens compiles its own graph for the prompt
-  (the key has it); a cap or a pool of graphs is for the chat with an image (PR 4).
+  (the key has it). Nothing caps the pool: a chat that shows many sizes of picture compiles a graph for each (the
+  `SmartResize` bounds are the way to keep the number of tokens, and so of sizes, small). A cap is for when a user asks.
 - The interleaved M-RoPE is `Nn.Rope.sections` (`[11, 11, 10]` in the checkpoint, and `mrope_interleaved: false` is
   refused): the pair `i` of the rotated columns turns by the height row when `i % 3 == 1` and `i < 3 * 11`, by the width
   row when `i % 3 == 2` and `i < 3 * 10`, by the time row otherwise; the height and the width need 1 or more.
@@ -802,6 +808,26 @@ error row per config field.
 - `vision/test/vit_hf_test.agc` against Hugging Face (the golden script `vision/test/vit_golden.py` is manual: it needs `torch` 2.6.0, `transformers` 4.57.6 and `pillow` 11.3.0, in a venv, run with `python -I`; the test does nothing unless `VIT_MODEL` names the checkpoint folder): the four drawn images of the ResNet test through `ResizeTo(224, 224, Linear)`, `normalize` and the model in `float32` on ggml CPU and Vulkan. The 224 by 224 images that the processor made are committed as 8-bit PNGs (`vision/test/fixtures/vit/crops`, 100 KB: `pixel_values` is exactly those samples over 255, normalized), so the model alone runs from committed files: the best 10 logits are Hugging Face's within 1e-4 (the largest gap measured is 1.2e-5 on CPU and 9.6e-6 on Vulkan) and the top 5 are identical, in the same order. Through our own resize (`Linear`) the pixels are 0.0078 from Hugging Face's and the logits 0.103 (0.0235 and 0.156 with Lanczos 3), from the pixels, on CPU and Vulkan; and the top 5 of the pipeline is Hugging Face's in the same order, on CPU and Vulkan (with Lanczos 3 the logits of these images, within 0.03 to 0.3 of each other, were reordered, and the check allowed for the ties). The tolerances are about twice the gaps measured: 0.016 for the pixels, 0.21 for the pipeline. The golden is committed (`vision/test/fixtures/vit/golden.json`) and never made in CI. Vulkan runs with `Tensor.vulkan_fp16(false)`.
 - `test/clip_test.agc` against `test/clip_peer.py` (standard library, doubles): a tiny random CLIP (vision tower of 8 wide, text tower of 6, 6 dimensions) on the reference (1e-9) and on ggml (1e-4): the embeddings of two images and of four rows of ids (one with the end token twice), the scaled cosines, the probabilities and the scale; plus the errors of a missing weight, an unsupported config (`quick_gelu`, a patch size that does not divide the image, another `projection_dim`), and an input that does not fit.
 - `test/clip_tokenizer_test.agc` against `test/clip_tokenizer_golden.py` (`transformers` 4.57.6, the slow `CLIPTokenizer`, manual): the ids of 66 strings (case, contractions, digits, accents, CJK, control characters, the special tokens in either case, truncation at 77) with a tiny tokenizer trained on a few prompts (`test/fixtures/clip`, 15 KB). `tools/tokenizer_check.agc clip` checks the real tokenizer of the checkpoint the same way: 466 strings, 400 of them random, agree.
+- `vision/test/qwen35_image_hf_test.agc` against `vision/test/qwen35_image_hf_golden.py` (manual: `torch` 2.15.0,
+  `transformers` 5.22.2, `pillow` 11.3.0 as for the pixels golden, no `flash-linear-attention` or `causal-conv1d`, the
+  sha256 of the checkpoint files and of `preprocessor_config.json` checked, offline; `vision/test/fixtures/qwen/chat_golden.json`,
+  sha256 `c9124179788c289de2bf5c4729e26cd06f338bd07e73681143e6be1cdc73f96c`): the real `Qwen/Qwen3.5-0.8B` in `float32`
+  with a picture, the chat of the user. It does nothing unless `QWEN35_MODEL` names the checkpoint folder
+  (`QWEN35_DEVICE=vulkan` for Vulkan), and each of its three cases is a test of its own, as a test has 30 seconds. Three
+  drawn images of the ResNet test: a wide one shrunk by `SmartResize` (a grid of 12 by 18), a tall one shrunk (18 by 12)
+  and an 8-bit crop enlarged (14 by 20). The prompt (the template with `Chat.IMAGE`, the tokenizer, `Mrope.expand`, 75
+  to 90 ids) is the one that Hugging Face's template and image processor make, and the 24 greedy ids of
+  `Generate.generate` with a `Sight` are Hugging Face's `generate` ids, equal on ggml CPU and on Vulkan (`vulkan_fp16`
+  off), for the three. The five largest logits of every step are within 0.14, 0.08 and 0.30 of Hugging Face's on CPU
+  and on Vulkan alike (the test passes within 0.6; the smallest gap between two logits of Hugging Face's is 0.05): the
+  gap is from the pixels, one 8-bit level from the processor's, which the towers and the text model alone do not have
+  (2.4e-5 and 2e-3). `test/chat_test.agc` has the chat template of Qwen3.5 with images against the golden
+  (`chat35_golden.py`, six conversations: one image, two in a message, an image with blanks around it, two turns
+  with images, and the system message that refuses one), `test/generate_qwen35_image_test.agc` the expansion of the pads and the
+  token count. Mutants, each killed: the counts not checked as 1 or more, a pad past the last count accepted, a count
+  left over accepted, a count off by one, the pad itself moved, the rows times columns of `tokens` a sum, each guard of a
+  grid that the merge does not divide (the height, the width, and a side of 0), the system image accepted, and `Chat.IMAGE`
+  without its end token.
 - `vision/test/qwen_pixels_test.agc` against Hugging Face's image processor of Qwen3.5 (the golden script
   `vision/test/qwen_pixels_golden.py` is manual: it needs `torch` 2.15.0 and `transformers` 5.22.2, in a venv, and
   `pillow` 11.3.0 from PyPI as the wheel `pillow-11.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`,
@@ -818,7 +844,7 @@ error row per config field.
   values 1e-5 to 1e-3 apart. A grow of area 2.5 times (1.5 and 1.67 per axis; an 8-bit crop enlarged) is too, since `image-0.3.0`:
   one level (0.0078), no sampled value farther, the mean 0.0004 (with `image-0.2.0` 30 percent of the sampled values were 3 or more levels apart, up to
   0.29, agentica-lang/packages#266, and the tolerance of that case was 0.6; ml#306). The golden is
-  committed (`vision/test/fixtures/qwen/golden.json`, 23 KB, sha256 `23fabc27c5cdb1c93fac66f7c4db6771c2f5aa1ef7f8ab597ec0fdc37293ce11`). Mutants that fail it: the tie of
+  committed (`vision/test/fixtures/qwen/golden.json`, 23 KB, sha256 `7f9bb1bac9e2e65fc53ad549849cea1b3b968d9b8d6836e764a8fa0f877e1a7f`). Mutants that fail it: the tie of
   `smart_resize` rounded up, the floor of its grow branch, the floor of its shrink branch as a ceil or a round, the height
   and width swapped, no minimum of one factor, an aspect ratio of 200 refused, the two frames of a patch not repeated, the
   rows of a merge square in the other order, the patch's rows and columns swapped, and its channels in another order. The

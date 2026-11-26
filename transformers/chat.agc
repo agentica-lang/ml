@@ -5,6 +5,11 @@
 import Unicode from "tokenizer/unicode"
 import Pyjson from "pyjson"
 
+## What the Qwen3.5 template writes for an image of a message: put it in the `content` where the image goes. The
+## tokenizer makes three ids of it (`<|vision_start|>`, `<|image_pad|>`, `<|vision_end|>`), and `Mrope.expand` gives
+## the middle one the tokens of the image.
+IMAGE = "<|vision_start|><|image_pad|><|vision_end|>"
+
 ## One turn: `role` is `system`, `user` or `assistant` (and `tool` for LFM3, which also reads the other fields).
 struct Message
   role: String
@@ -29,11 +34,12 @@ struct Reply
   content: String
 end
 
-## The prompt of `messages` for the model family of `model_type` (`qwen2`, `qwen3` or `qwen3_5`, the `model_type` of its
-## `config.json`). With `add_generation_prompt` it ends with the opening of the assistant's turn. `enable_thinking`
-## (Qwen3 and Qwen3.5) decides whether that turn opens with `<think>` (`some(true)`) or with an empty think block, so the
-## model answers without thinking (`some(false)`). Left at `none` it is what Hugging Face's template does when it is not
-## told: thinking for `qwen3`, no thinking for `qwen3_5` (whose template thinks only when the option is exactly true).
+## The prompt of `messages` for the model family of `model_type` (`qwen2`, `qwen3` or `qwen3_5`, the `model_type` of
+## its `config.json`). With `add_generation_prompt` it ends with the opening of the assistant's turn.
+## `enable_thinking` (Qwen3 and Qwen3.5) decides whether that turn opens with `<think>` (`some(true)`) or with an
+## empty think block, so the model answers without thinking (`some(false)`). Left at `none` it is what Hugging Face's
+## template does when it is not told: thinking for `qwen3`, no thinking for `qwen3_5` (whose template thinks only
+## when the option is exactly true).
 ##
 ## `qwen2` puts "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." as the system turn when the first
 ## message is not one, and writes every message as it is (a `<think>` in one is text). `qwen3` puts none, and reads an
@@ -41,10 +47,10 @@ end
 ## its leading newlines, its content. After the last user message the reasoning stays, in a think block (empty for the
 ## message that ends the conversation); before it the reasoning is dropped.
 ##
-## `qwen3_5` (text only) trims every message, wants the system message first, puts a think block in every assistant
-## message after the last user message (empty or not) and none in the earlier ones, and ends the prompt with
-## `<think>\n` under `some(true)` or with the empty think block otherwise. It is an error to have no user message (a tool
-## answer is not one).
+## `qwen3_5` trims every message, wants the system message first, puts a think block in every assistant message after
+## the last user message (empty or not) and none in the earlier ones, and ends the prompt with `<think>\n` under
+## `some(true)` or with the empty think block otherwise. It is an error to have no user message (a tool answer is not
+## one). An image is `IMAGE` in the `content` of a user or an assistant message, not of the system one.
 ##
 ## `lfm3` (`LiquidAI/LFM3-1.7B`) starts with `<|startoftext|>`, takes `tools` (each a function as the template reads it:
 ## `{"name": ..., "description": ..., "parameters": ...}`, or that under a `function` key) into the system turn, writes
@@ -133,7 +139,7 @@ CONTINUE_TAG = "CONTINUE_FINAL_MESSAGE_TAG "
 
 def lfm3_only?(m: Message) -> Bool = m.thinking.some? or not m.tool_calls.empty? or not m.tool_call_id.empty?
 
-## The prompt of the Qwen3.5 template: no tools and no images.
+## The prompt of the Qwen3.5 template: no tools; an image is the text `IMAGE`.
 def qwen35(messages: List[Message], add_generation_prompt: Bool, thinking: Bool) -> Result[String]
   query = -1
   for i in 0...messages.size
@@ -149,6 +155,7 @@ def qwen35(messages: List[Message], add_generation_prompt: Bool, thinking: Bool)
     content = strip(m.content)
     if m.role == "system"
       return error("the system message must be the first one") if i != 0
+      return error("a system message cannot contain images") if content.include?(IMAGE)
       text = text + turn("system", content)
     elsif m.role == "user"
       text = text + turn("user", content)

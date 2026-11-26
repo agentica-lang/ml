@@ -125,6 +125,29 @@ def test_the_layout_is_get_rope_index_of_hugging_face() -> Result[Void]
   ok()
 end
 
+## The template writes one `<|image_pad|>` for each image, and the tokens of the image are as many ids: the grid says
+## how many, and the id is the one of the config.
+def test_the_pad_of_each_image_is_expanded_to_its_tokens() -> Result[Void]
+  g = try golden()
+  grids = grids_of(g)
+  counts = [try Mrope.tokens(grids[0], 2), try Mrope.tokens(grids[1], 2)]
+  try Test.eq(counts, [6, 3])
+  pads = [5, 6, 29, IMAGE, 30, 7, 29, IMAGE, 30, 8, 9]
+  try Test.eq(try Mrope.expand(pads, IMAGE, counts), g.ids)
+  try Test.error?(Mrope.expand(pads, IMAGE, [6]))
+  try Test.error?(Mrope.expand(pads, IMAGE, [6, 3, 3]))
+  try Test.error?(Mrope.expand(pads, IMAGE, [6, 0]))
+  try Test.error?(Mrope.tokens(Mrope.Grid(height: 3, width: 6), 2))
+  try Test.error?(Mrope.tokens(Mrope.Grid(height: 4, width: 3), 2))
+  try Test.error?(Mrope.tokens(Mrope.Grid(height: 0, width: 4), 2))
+  try with_model(g) do |dir|
+    try Test.eq(try Qwen3_5.image_token(dir), IMAGE)
+    ok()
+  end
+
+  ok()
+end
+
 def test_a_prompt_that_does_not_match_its_grids_is_an_error() -> Result[Void]
   g = try golden()
   grids = grids_of(g)

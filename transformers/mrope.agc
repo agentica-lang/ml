@@ -21,6 +21,40 @@ struct Layout
   delta: Int
 end
 
+## How many image tokens the image of `grid` has in the prompt: its patches joined by `merge` on each axis.
+def tokens(grid: Grid, merge: Int) -> Result[Int]
+  return error("merge needs 1 or more, got #{merge}") if merge < 1
+  if grid.height < 1 or grid.width < 1 or grid.height % merge != 0 or grid.width % merge != 0
+    return error("#{grid.height} by #{grid.width} patches is not a multiple of the merge #{merge}")
+  end
+
+  ok((grid.height / merge) * (grid.width / merge))
+end
+
+## `ids` with each `pad_token`, which the template writes once for an image (`Chat.IMAGE`), repeated as many times as
+## the image has tokens: `counts[k]` for the `k`th one. An error when the number of `pad_token`s is not that of
+## `counts`.
+def expand(ids: List[Int], pad_token: Int, counts: List[Int]) -> Result[List[Int]]
+  out: List[Int] = []
+  next = 0
+  for id in ids
+    if id != pad_token
+      out = out.push(id)
+    else
+      return error("the prompt has more image tokens than the #{counts.size} images") if next >= counts.size
+      return error("image #{next} has #{counts[next]} tokens, it needs 1 or more") if counts[next] < 1
+      for _ in 0...counts[next]
+        out = out.push(pad_token)
+      end
+
+      next += 1
+    end
+  end
+
+  return error("the prompt has #{next} images and #{counts.size} counts") if next != counts.size
+  ok(out)
+end
+
 ## The `Layout` of `ids`, whose tokens equal to `image_token` come in runs, one per grid of `grids` in order: each
 ## run has the `height / merge * width / merge` tokens of its image. Two images need the vision start and end tokens
 ## between them: adjacent runs are one run, and the count of its tokens then fails.

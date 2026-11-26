@@ -181,13 +181,41 @@ def main() -> Void
 end
 ```
 
-- The model is hybrid: by `layer_types`, a layer is linear attention (a Gated DeltaNet, `Delta.gated_delta_net` of [nn](../nn/_index.md)) or full attention (grouped-query, with an output gate and rotary positions on part of each head, a quarter in 0.8B), followed by a gated MLP. The head is the embedding table. The vision tower and the multi-token-prediction head of the checkpoint are ignored.
+- The model is hybrid: by `layer_types`, a layer is linear attention (a Gated DeltaNet, `Delta.gated_delta_net` of [nn](../nn/_index.md)) or full attention (grouped-query, with an output gate and rotary positions on part of each head, a quarter in 0.8B), followed by a gated MLP. The head is the embedding table. `Qwen3_5.open` ignores the vision tower and the multi-token-prediction head of the checkpoint; `Qwen3_5Vision` reads the tower (see Images below).
 - The norms of Qwen3.5 scale by `1 + weight`; the loader adds the 1. Only `F32` weights are loaded, a batch is unrolled row by row in the graph, and the model cannot be fine-tuned with `train/`.
 - Against Hugging Face's `Qwen3_5ForCausalLM` in `float32` on ggml CPU, over five prompts of 5 to 50 tokens, the largest gap of a logit is 2.0e-5 (5.5e-5 on Vulkan with `vulkan_fp16` off) and the five largest logits of every position are the same ids. A tiny random model is tested on the reference and ggml.
 - Generation: `Generate.open(m)` of `pkg/transformers/generate_qwen35` is the generator of a Qwen3.5 model, with `generate`, `step`, `step_logits`, `step_top`, `finish` and `close` as in [Generation](generation.md#generation). The cache of a full-attention layer is the padded KV cache described there; a linear-attention layer keeps its two states (the last rows of the convolution's input and the recurrent state), which do not grow.
 - `Generate.open(m, usable)` is the one of Qwen3 above. The embedding of Qwen3.5 has more rows than its tokenizer has tokens (248,320 and 248,070 in 0.8B), and the ids in between have no text, so a caller with a tokenizer passes its token count (`Generate.open(m, tok.pieces.size)`) and the sampler never gives an id that `Bpe.decode` rejects. The default 0 is Hugging Face's, no mask.
 - Against Hugging Face's greedy `generate` for `Qwen/Qwen3.5-0.8B` in `float32`, the 24 new ids of each of six prompts (5 to 375 tokens) are equal on ggml CPU and on Vulkan (with `vulkan_fp16` off), at 8 to 9 tokens per second after the prompt (7.8 on CPU, 8.7 on Vulkan, `benchmarks/README.md`).
 - A `model_type` other than `qwen3_5`, an activation other than `silu`, `attention_bias: true`, a `rope_type` other than `default` and a layer type other than `linear_attention` and `full_attention` are errors.
+
+### Images with Qwen3.5
+
+`Qwen3_5Vision.open(dir, backend)` loads the vision tower of the same folder, and `Qwen3_5Vision.encode(v, patches, height, width)` turns the patches of one image (`Vision.patches`, `height` and `width` in patches) into its features, one row for each `merge_size` by `merge_size` square. `Chat.IMAGE` in the `content` of a user or assistant message is where the image goes (the template writes `<|vision_start|><|image_pad|><|vision_end|>`; a system message cannot hold one). The tokenizer makes one `<|image_pad|>` of it, which `Mrope.expand` repeats `Mrope.tokens(grid, 2)` times, and `Generate.generate(g, ids, n, stop, none, some(sight))` splices the features in at those ids, with the M-RoPE positions of Hugging Face's `get_rope_index` (`Mrope.layout`). A prompt with several images takes one `Mrope.Grid` for each, in the order of the pads, and the rows of all their features in one tensor (`features` of the `Sight`).
+
+```agentica {mode="fragment"}
+backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+vision = Qwen3_5Vision.open("Qwen3.5-0.8B", backend).unwrap!
+steps = [Vision.Step.SmartResize(32, 65536, 16777216, Vision.Kernel.Cubic)]
+srgb = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
+x = Vision.normalize(Vision.to_tensor(Vision.apply(srgb, steps).unwrap!, backend).unwrap!, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap!
+patches = Vision.patches(x, 16, 2).unwrap!
+grid = Mrope.Grid(height: Tensor.shape(x)[1] / 16, width: Tensor.shape(x)[2] / 16)
+features = Qwen3_5Vision.encode(vision, patches, grid.height, grid.width).unwrap!
+Qwen3_5Vision.close_model(vision)
+
+image_token = Qwen3_5.image_token("Qwen3.5-0.8B").unwrap!
+text = Chat.apply("qwen3_5", [Chat.Message(role: "user", content: Chat.IMAGE + "What is in this picture?")]).unwrap!
+ids = Mrope.expand(Bpe.encode(tok, text).unwrap!, image_token, [Mrope.tokens(grid, 2).unwrap!]).unwrap!
+layout = Mrope.layout(ids, image_token, [grid], 2).unwrap!
+sight = KvDecoder.Sight(features: features, image_token: image_token, layout: layout)
+reply = Generate.generate(g, ids, 64, [248046, 248044], none, some(sight)).unwrap!
+```
+
+- Close the tower before opening the text model (`Qwen3_5.open`) and the two never share the memory: the 0.8B model fits in 5 GB this way on CPU and on Vulkan. `Qwen3_5.image_token(dir)` reads the id from `config.json`.
+- `smart_resize` bounds the number of image tokens (`max_pixels / 1024`, 16,384 at the checkpoint's own bounds): pass smaller `min_pixels` and `max_pixels` to `SmartResize` for a short prompt. A picture with an alpha band is an error in `Vision.patches`: flatten it first.
+- Against Hugging Face's `Qwen3_5ForConditionalGeneration` in `float32` on the real `Qwen/Qwen3.5-0.8B`, for three pictures (two shrunk by `SmartResize`, one enlarged), the prompt ids (75 to 90 tokens) are the ones of Hugging Face's processor and chat template, and the 24 greedy ids are equal on ggml CPU and on Vulkan. The five largest logits of every step are within 0.14, 0.08 and 0.30 of Hugging Face's on both, which comes from the pixels (one 8-bit level from the processor's), not from the model.
+- Video and the numbered images of the chat template's `add_vision_id` are not supported.
 
 ## Granite MoE
 

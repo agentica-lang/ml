@@ -1,5 +1,5 @@
 """Writes `test/fixtures/chat35_golden.json`: what Hugging Face's `apply_chat_template` makes (as text, no tools) of a few
-conversations for the chat template of `Qwen/Qwen3.5-0.8B`, or that it refuses them. `test/chat_test.agc` compares
+conversations for the chat template of `Qwen/Qwen3.5-0.8B` (some with images), or that it refuses them. `test/chat_test.agc` compares
 `Chat.apply("qwen3_5", ...)` to it.
 
 Manual, not run by the tests: it needs `transformers` 5.22.2 (the script stops on another version) and the
@@ -25,8 +25,26 @@ SHA256 = {
 }
 
 
+# What `Chat.IMAGE` is: the template's text for an image.
+IMAGE = "<|vision_start|><|image_pad|><|vision_end|>"
+
+
 def m(role, content):
     return {"role": role, "content": content}
+
+
+def as_parts(messages):
+    """The messages as the template takes images: a list of parts, `{"type": "image"}` where `IMAGE` is."""
+    out = []
+    for message in messages:
+        parts = []
+        for k, piece in enumerate(message["content"].split(IMAGE)):
+            if k > 0:
+                parts.append({"type": "image"})
+            if piece:
+                parts.append({"type": "text", "text": piece})
+        out.append({"role": message["role"], "content": parts if IMAGE in message["content"] else message["content"]})
+    return out
 
 
 THINK = "<think>\nI should greet.\n</think>\n\nHello!"
@@ -69,6 +87,12 @@ CONVERSATIONS = [
     ([m("user", "a"), m("system", "Now be formal."), m("user", "b")], True, True),
     ([m("assistant", "I speak first.")], True, True),
     ([], True, True),
+    ([m("user", IMAGE + "Describe this picture.")], True, None),
+    ([m("user", "What is in " + IMAGE + " and in " + IMAGE + "?")], True, True),
+    ([m("user", "  " + IMAGE + "\n\nWhat color?\n")], True, False),
+    ([m("system", "Be brief."), m("user", IMAGE + IMAGE), m("assistant", "Two pictures."), m("user", "Which first?")], True, None),
+    ([m("user", IMAGE + "Describe."), m("assistant", "A disc."), m("user", IMAGE + "And this?")], False, None),
+    ([m("system", "Look: " + IMAGE), m("user", "Hi")], True, None),
 ]
 
 for name, digest in SHA256.items():
@@ -80,7 +104,7 @@ tok = AutoTokenizer.from_pretrained(sys.argv[1])
 for messages, generation, thinking in CONVERSATIONS:
     extra = {} if thinking is None else {"enable_thinking": thinking}
     try:
-        text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=generation, **extra)
+        text = tok.apply_chat_template(as_parts(messages), tokenize=False, add_generation_prompt=generation, **extra)
         error = False
     except Exception:
         text = ""
