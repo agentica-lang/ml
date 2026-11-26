@@ -410,6 +410,47 @@ def floats(
   end
 end
 
+## Creation: packed `values` (4 bytes an item) as an `F32` tensor of `shape`,
+## for large data that is `F32` already, such as audio. Torch, ggml and XLA take
+## `Float`s across their native calls, so they get the list widened, one
+## transient copy of 8 bytes an item; the reference converts as it builds.
+def floats32(
+  values: List[Float32],
+  shape: List[Int],
+  backend: Types.Backend = Types.Backend.Reference,
+) -> Result[Types.Tensor]
+  case backend
+    Types.Backend.Torch(_) -> floats(values.map { |x: Float32| x.to_f }, shape, backend)
+    Types.Backend.Ggml(_) -> floats(values.map { |x: Float32| x.to_f }, shape, backend)
+    Types.Backend.Xla(_) -> floats(values.map { |x: Float32| x.to_f }, shape, backend)
+    _ ->
+      n = try Types.volume(shape)
+      return error("floats32 needs #{n} values for #{shape}, got #{values.size}") if values.size != n
+      from_list(values.map { |x: Float32| Types.Values.Float(x.to_f) }, shape, Types.Dtype.F32, backend)
+  end
+end
+
+## Host readback of an `F32` tensor as a packed list, the counterpart of
+## `floats32`: what `to_list` gives without the `Values` tags, at 4 bytes an
+## item. Another dtype is an `error`.
+def to_floats32(t: Types.Tensor) -> Result[List[Float32]]
+  return error("to_floats32 reads an F32 tensor, got #{Types.dtype_name(t.dtype)}") if t.dtype != Types.Dtype.F32
+  case t.backend
+    Types.Backend.Ggml(_) -> Ggml.to_floats(t)
+    Types.Backend.Xla(_) -> Xla.to_floats(t)
+    _ ->
+      out: List[Float32] = []
+      for v in try to_list(t)
+        case v
+          Types.Values.Float(x) -> out = out.push(x.to_float32)
+          _ -> return error("to_floats32 found #{v} in an F32 tensor")
+        end
+      end
+
+      ok(out)
+  end
+end
+
 ## Host readback: the values tagged with the tensor's dtype.
 def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   case t.backend

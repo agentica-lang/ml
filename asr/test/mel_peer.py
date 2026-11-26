@@ -10,6 +10,7 @@ synthetic samples, mel count, frame count and expected `[mels, frames]` values
 import json
 import math
 import random
+import struct
 
 SAMPLE_RATE = 16000
 N_FFT = 400
@@ -67,14 +68,16 @@ def log_mel(samples, mels, frames):
 
 
 def signal(n, seed):
-    """Three tones and some noise, then silence for the last fifth."""
+    """Three tones and some noise, then silence for the last fifth, each sample
+    rounded to binary32, as the package takes them (a `List[Float32]`)."""
     rng = random.Random(seed)
     out = []
     for t in range(n):
         s = t / SAMPLE_RATE
         v = 0.3 * math.sin(2 * math.pi * 440 * s) + 0.2 * math.sin(2 * math.pi * 1234.5 * s)
         v += 0.1 * math.sin(2 * math.pi * 5000 * s) + rng.uniform(-0.05, 0.05)
-        out.append(v if t < n * 4 // 5 else 0.0)
+        v = v if t < n * 4 // 5 else 0.0
+        out.append(struct.unpack("f", struct.pack("f", v))[0])
     return out
 
 

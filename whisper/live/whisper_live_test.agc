@@ -22,7 +22,7 @@ private
 MODEL_PATH = "models/ggml-tiny.bin"
 
 def test_the_tiny_model_transcribes_silence_to_empty() -> Result[Void]
-  zeros: List[Float] = []
+  zeros: List[Float32] = []
   for _i in 0...1600
     zeros = zeros.push(0.0)
   end
@@ -33,13 +33,13 @@ def test_the_tiny_model_transcribes_silence_to_empty() -> Result[Void]
 end
 
 def test_silence_has_no_text_to_join() -> Result[Void]
-  zeros: List[Float] = []
+  zeros: List[Float32] = []
   for _i in 0...1600
     zeros = zeros.push(0.0)
   end
 
   model = try Whisper.load_model(MODEL_PATH)
-  segments = try Whisper.transcribe_with(model, zeros, Whisper.Options())
+  segments = try Whisper.transcribe_with(model, Whisper.widen(zeros), Whisper.Options())
   Test.eq(Whisper.join_text(segments), "")
 end
 
@@ -52,14 +52,14 @@ def test_transcribe_errors_without_samples() -> Result[Void]
 end
 
 def test_detailed_silence_detects_a_language_and_has_no_text() -> Result[Void]
-  zeros: List[Float] = []
+  zeros: List[Float32] = []
   for _i in 0...1600
     zeros = zeros.push(0.0)
   end
 
   model = try Whisper.load_model(MODEL_PATH)
   options = Whisper.Options(language: "auto", language_probabilities: true)
-  transcript = try Whisper.transcribe_detailed(model, zeros, options)
+  transcript = try Whisper.transcribe_detailed(model, Whisper.widen(zeros), options)
   case transcript.detection
     some(detection) ->
       try Test.eq(detection.probabilities.get(detection.language), some(detection.probability))
@@ -101,7 +101,7 @@ end
 
 def test_transcribe_errors_on_a_finite_sample_past_the_float_range() -> Result[Void]
   model = try Whisper.load_model(MODEL_PATH)
-  case Whisper.transcribe(model, [1.0e300])
+  case Whisper.transcribe_with(model, [1.0e300], Whisper.Options())
     ok(_) -> Test.assert(false, "transcribe took a sample no float holds")
     error(e) -> Test.eq(e.message, "transcribe_with needs finite samples")
   end

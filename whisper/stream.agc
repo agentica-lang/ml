@@ -66,7 +66,7 @@ end
 ## (in 16 kHz samples from the first sample of the stream).
 struct Window
   start_sample: Int
-  samples: List[Float]
+  samples: List[Float32]
 end
 
 ## The default walk: 30 s windows with 5 s of overlap, the 30 ms / 0.02 energy
@@ -94,10 +94,11 @@ end
 
 ## The RMS energy of one frame: 0.0 for no samples, otherwise the square root
 ## of the mean square. Never an error, never a halt.
-def frame_rms(frame: List[Float]) -> Float
+def frame_rms(frame: List[Float32]) -> Float
   return 0.0 if frame.empty?
   sum = 0.0
-  for x in frame
+  for s in frame
+    x = s.to_f
     sum += x * x
   end
 
@@ -105,11 +106,11 @@ def frame_rms(frame: List[Float]) -> Float
 end
 
 ## Whether one frame is speech: its RMS reaches the gate's threshold.
-def is_speech(frame: List[Float], vad: VadOptions) -> Bool = frame_rms(frame) >= vad.threshold
+def is_speech(frame: List[Float32], vad: VadOptions) -> Bool = frame_rms(frame) >= vad.threshold
 
 ## Whether any `frame_ms` frame of `pcm` is speech (a trailing partial frame
 ## counts whole): false for no samples.
-def has_speech(pcm: List[Float], vad: VadOptions) -> Bool
+def has_speech(pcm: List[Float32], vad: VadOptions) -> Bool
   frame_samples = (vad.frame_ms * Mic.RATE_HZ) / 1000
   start = 0
   while start < pcm.size
@@ -124,7 +125,7 @@ end
 ## `window_samples - overlap_samples` samples; the last window is shorter
 ## when the audio does not fill it. Error on an empty input or sizes outside
 ## 1..4800000 samples with the overlap inside its window.
-def windows(pcm: List[Float], window_samples: Int, overlap_samples: Int) -> Result[List[Window]]
+def windows(pcm: List[Float32], window_samples: Int, overlap_samples: Int) -> Result[List[Window]]
   return error("stream: a window holds 1..4800000 samples") if window_samples < 1 or window_samples > Mic.MAX_SAMPLES
   if overlap_samples < 0 or overlap_samples >= window_samples
     return error("stream: an overlap holds 0..window_samples-1 samples")
@@ -210,12 +211,16 @@ end
 
 # Decodes each speech window of `pcm` and offsets it onto the stream
 # timeline; silent windows are skipped without an engine call.
-def transcribe_windows(model: Whisper.Model, pcm: List[Float], options: StreamOptions) -> Result[List[Whisper.Segment]]
+def transcribe_windows(
+  model: Whisper.Model,
+  pcm: List[Float32],
+  options: StreamOptions,
+) -> Result[List[Whisper.Segment]]
   wins = try windows(pcm, options.window_s * Mic.RATE_HZ, options.overlap_s * Mic.RATE_HZ)
   found: List[Whisper.Segment] = []
   for win in wins
     if has_speech(win.samples, options.vad)
-      segments = try Whisper.transcribe_with(model, win.samples, options.options)
+      segments = try Whisper.transcribe_with(model, Whisper.widen(win.samples), options.options)
       found = found + offset_segments(segments, (win.start_sample * 1000) / Mic.RATE_HZ)
     end
   end

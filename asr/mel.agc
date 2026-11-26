@@ -18,30 +18,32 @@ FRAMES = 3000
 ## end of the signal, for the last frame), then a reflect-padded STFT (Hann
 ## window of 400, hop 160)
 ## gives `frames` power spectra, the Slaney mel filterbank, `log10`, a floor of
-## the maximum minus 8 and `(x + 4) / 4`, as Whisper and Hugging Face do.
+## the maximum minus 8 and `(x + 4) / 4`, as Whisper and Hugging Face do. The
+## samples and the result are packed `Float32`s; the transform computes in
+## doubles and the result is rounded to `Float32` once, at the end.
 ## 3000 frames are Hugging Face's input features; fewer are the spectrogram of
 ## that shorter segment (its own reflection and maximum), not a prefix of them.
-def log_mel(samples: List[Float], mels: Int, frames: Int = FRAMES) -> Result[List[Float]]
+def log_mel(samples: List[Float32], mels: Int, frames: Int = FRAMES) -> Result[List[Float32]]
   return error("log_mel needs mels >= 1, got #{mels}") if mels < 1
   return error("log_mel needs frames >= 2, got #{frames}") if frames < 2
   size = frames * HOP
   x = samples.take(size)
   heard = 0
   for i in 0...samples.size
-    # NaN fails `x - x == 0`; a bound far above the -1..1 range keeps the
-    # power spectrum from overflowing to Inf and then NaN.
-    if samples[i] - samples[i] != 0.0 or samples[i].abs > LIMIT
-      return error("log_mel needs finite samples of about -1..1, got #{samples[i]} at #{i}")
-    end
+    # NaN and the infinities fail `v - v == 0`; the largest `Float32` squared
+    # is far from overflowing a `Float`, so the power spectrum stays finite.
+    v = samples[i].to_f
+    return error("log_mel needs finite samples of about -1..1, got #{v} at #{i}") if v - v != 0.0
 
-    if samples[i] != 0.0 and i < size
+    if v != 0.0 and i < size
       heard = i + 1
     end
   end
 
-  x = x + List.repeat(0.0, size - x.size)
+  zeros: List[Float32] = List.repeat(0.0, size - x.size)
+  x = x + zeros
   half = N_FFT / 2
-  padded = x.drop(1).take(half).reverse + x + right_context(samples, x, half)
+  padded = (x.drop(1).take(half).reverse + x + right_context(samples, x, half)).map { |s| s.to_f }
   # `padded` is zero from `half + heard` on, unless the end reflection holds a
   # sample: then every frame that starts there or later is silent.
   silent = frames
@@ -86,10 +88,10 @@ def log_mel(samples: List[Float], mels: Int, frames: Int = FRAMES) -> Result[Lis
   end
 
   low = top - 8.0
-  out: List[Float] = []
+  out: List[Float32] = []
   for m in 0...mels
     for c in columns
-      out = out.push((larger(c[m], low) + 4.0) / 4.0)
+      out = out.push(((larger(c[m], low) + 4.0) / 4.0).to_float32)
     end
   end
 
@@ -104,14 +106,14 @@ end
 ## once, uncached (`keep: false`), so it does not evict the graphs of a
 ## decoder. The result is the caller's to close.
 def features(
-  samples: List[Float],
+  samples: List[Float32],
   mels: Int,
   frames: Int,
   backend: Tensor.Backend,
   plan: Optional[Trace.Compiled] = none,
 ) -> Result[Tensor.Tensor]
   case backend
-    Tensor.Backend.Reference -> Tensor.floats(try log_mel(samples, mels, frames), [1, mels, frames], backend)
+    Tensor.Backend.Reference -> Tensor.floats32(try log_mel(samples, mels, frames), [1, mels, frames], backend)
     # No arena here: the result must outlive the call, and `run` closes the
     # inputs and the check.
     Tensor.Backend.Ggml(_) -> run(samples, mels, frames, backend, plan)
@@ -126,7 +128,7 @@ end
 ## computes in the backend's `F32` (the gap to `log_mel` is about 1e-5), and
 ## an `Inf` or `NaN` sample, or one so large that the power overflows (about
 ## 1.8e19), is an error.
-def spectrogram(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+def spectrogram(samples: List[Float32], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
   run(samples, mels, frames, backend, none)
 end
 
@@ -179,8 +181,6 @@ C1 = 0.30901699437494745
 C2 = -0.8090169943749475
 S1 = 0.9510565162951535
 S2 = 0.5877852522924731
-## The largest sample magnitude `log_mel` takes.
-LIMIT = 1.0e150
 ## The power floor before `log10`.
 FLOOR = 0.0000000001
 ## `log10(e)`: `log10(x) = ln(x) * LOG10_E`.
@@ -201,10 +201,10 @@ end
 ## The `half` values after `x`, the samples as `log_mel` reads them: the
 ## samples that `x` cut off when there are some, then the reflection of the end
 ## of `samples`; the reflection of the end of `x` when nothing was cut off.
-def right_context(samples: List[Float], x: List[Float], half: Int) -> List[Float]
+def right_context(samples: List[Float32], x: List[Float32], half: Int) -> List[Float32]
   return x.drop(x.size - half - 1).take(half).reverse if samples.size <= x.size
 
-  (samples.drop(x.size) + samples.drop(samples.size - half - 1).take(half).reverse).take(half)
+  (samples.drop(x.size).take(half) + samples.drop(samples.size - half - 1).take(half).reverse).take(half)
 end
 
 ## The `mels` triangular filters over the `N_FFT / 2 + 1` bins, on the Slaney
@@ -276,7 +276,7 @@ end
 ## `features` once the plan is chosen: the three inputs, the graph (the plan,
 ## or traced and run once), and the check.
 def run(
-  samples: List[Float],
+  samples: List[Float32],
   mels: Int,
   frames: Int,
   backend: Tensor.Backend,
@@ -295,19 +295,20 @@ end
 ## The three inputs of `graph`, `F32` on `backend`: the reflection of the first
 ## samples, the `frames * HOP` samples (padded with zeros or trimmed), and the
 ## reflection of the last ones.
-def signal(samples: List[Float], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+def signal(samples: List[Float32], mels: Int, frames: Int, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   return error("log_mel needs mels >= 1, got #{mels}") if mels < 1
   return error("log_mel needs frames >= 2, got #{frames}") if frames < 2
   size = frames * HOP
   half = N_FFT / 2
   x = samples.take(size)
-  x = x + List.repeat(0.0, size - x.size)
+  zeros: List[Float32] = List.repeat(0.0, size - x.size)
+  x = x + zeros
   left = x.drop(1).take(half).reverse
   right = right_context(samples, x, half)
   ok([
-    try Tensor.floats(left, [half], backend),
-    try Tensor.floats(x, [size], backend),
-    try Tensor.floats(right, [half], backend),
+    try Tensor.floats32(left, [half], backend),
+    try Tensor.floats32(x, [size], backend),
+    try Tensor.floats32(right, [half], backend),
   ])
 end
 

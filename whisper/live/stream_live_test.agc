@@ -26,7 +26,7 @@ private
 MODEL_PATH = "models/ggml-tiny.bin"
 
 def test_stream_transcribes_silence_to_no_segments() -> Result[Void]
-  silence = List.repeat(0.0, 48_000)
+  silence: List[Float32] = List.repeat(0.0, 48_000)
   model = try Whisper.load_model(MODEL_PATH)
   options = Stream.default_options().with(window_s: 1, overlap_s: 0)
   segments = try Stream.transcribe_stream(model, Mic.Source.Samples(silence), options)
@@ -35,7 +35,7 @@ def test_stream_transcribes_silence_to_no_segments() -> Result[Void]
 end
 
 def test_stream_covers_overlapping_windows_and_a_short_tail() -> Result[Void]
-  silence = List.repeat(0.0, 80_000)
+  silence: List[Float32] = List.repeat(0.0, 80_000)
   model = try Whisper.load_model(MODEL_PATH)
   options = Stream.default_options().with(window_s: 2, overlap_s: 1)
   segments = try Stream.transcribe_stream(model, Mic.Source.Samples(silence), options)

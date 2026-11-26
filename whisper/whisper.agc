@@ -137,11 +137,17 @@ extern module "whisper"
   def language_name(code: String) -> Optional[String]
 end
 
+## The samples of `Wav`, `Mic` and `Stream` (packed `Float32`s, 4 bytes each) as
+## the `List[Float]` that `transcribe_with` takes: a native module cannot take
+## a `Float32`, so the engine's calls hold a widened copy, 8 bytes a sample, for
+## as long as they run. `Stream` widens one window at a time.
+def widen(pcm: List[Float32]) -> List[Float] = pcm.map { |x| x.to_f }
+
 ## Transcribes 16 kHz mono PCM audio with `Options()`: `join_text` of what
 ## `transcribe_with` returns, so plain text of a full decode. It delegates, so
 ## its errors name `transcribe_with`, not `transcribe`.
-def transcribe(model: Model, pcm: List[Float]) -> Result[String]
-  segments = try transcribe_with(model, pcm, Options())
+def transcribe(model: Model, pcm: List[Float32]) -> Result[String]
+  segments = try transcribe_with(model, widen(pcm), Options())
   ok(join_text(segments))
 end
 

@@ -190,6 +190,13 @@ def to_list(t: Types.Tensor) -> Result[List[Types.Values]]
   ok(out)
 end
 
+## Host readback of an `F32` tensor as packed floats.
+def to_floats(t: Types.Tensor) -> Result[List[Float32]]
+  read = XlaRaw.readback(try handle_of(t))
+  return error("to_floats: #{read.message}") if !read.ok?
+  ok(read.unwrap!.map { |x| x.to_float32 })
+end
+
 ## Appends the `F32` values of `t` to the file `path`, through the reference.
 def append_file(t: Types.Tensor, path: String) -> Result[Void]
   Reference.append_file(try Reference.from_list(try to_list(t), t.shape, t.dtype), path)

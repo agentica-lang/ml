@@ -65,7 +65,7 @@ end
 def phases(
   m: Asr.Model,
   tok: Tokenizer.Tokenizer,
-  pcm: List[Float],
+  pcm: List[Float32],
   tokens: List[Int],
   language: String,
 ) -> Result[Void]

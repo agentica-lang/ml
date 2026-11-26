@@ -130,7 +130,7 @@ def test_a_closed_model_is_an_error_to_use() -> Result[Void]
       m = try Asr.open(path, backend)
       mel = try f32((0...18).map { |i| (i % 5).to_f / 5.0 - 0.4 }, [1, 3, 6], backend)
       before = try floats_of(try Asr.encode(m, mel))
-      pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+      pcm = (0...960).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
       try Test.eq(Tensor.shape(try Asr.features(m, pcm, 6)), [1, 3, 6])
       Asr.close_model(m)
       Asr.close_model(m)
@@ -284,7 +284,7 @@ end
 ## is what a model without the plan does. Both have the window's shape.
 def test_on_ggml_the_log_mel_plan_and_the_traced_graph_agree() -> Result[Void]
   with_fixtures do |dir|
-    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    pcm = (0...960).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
     for backend in try ggml_backends()
       m = try Asr.open("#{dir}/speech/model.safetensors", backend)
       try Test.assert(!m.mel.none?, "a ggml model has no log-mel plan")
@@ -330,7 +330,7 @@ end
 def test_on_ggml_the_steps_and_transcribe_match() -> Result[Void]
   with_fixtures do |dir|
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
-    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    pcm = (0...960).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
     want = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", REF), tok, pcm)
     for backend in try ggml_backends()
       try kv_steps(try Asr.open("#{dir}/tiny/model.safetensors", backend), dir, backend, F32, F32)
@@ -355,7 +355,7 @@ end
 def test_on_ggml_the_pick_runs_in_the_graph() -> Result[Void]
   with_fixtures do |dir|
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
-    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    pcm = (0...960).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
     options = Asr.Options(timestamps: false)
     want = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", REF), tok, pcm, options)
     try Test.assert(want.tokens.size > 9, "the padded cache grows past 8 rows: #{want.tokens}")
@@ -656,9 +656,9 @@ def test_transcribe_matches_a_loop_over_the_full_decoder() -> Result[Void]
   with_fixtures do |dir|
     m = try Asr.open("#{dir}/speech/model.safetensors", REF)
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
-    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    pcm = (0...960).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
     t = try Asr.transcribe(m, tok, pcm)
-    audio = try Asr.encode(m, try f32(try Mel.log_mel(pcm, 3, 6), [1, 3, 6]))
+    audio = try Asr.encode(m, try f32((try Mel.log_mel(pcm, 3, 6)).map { |x| x.to_f }, [1, 3, 6]))
     first = try last_logits(m, [tok.sot], audio)
     scores = tok.languages.map { |l| first[l.id] }
     best = (0...scores.size).to_a.max_by { |i| scores[i] }.unwrap!
@@ -696,7 +696,7 @@ def test_transcribe_takes_options_and_refuses_bad_input() -> Result[Void]
   with_fixtures do |dir|
     m = try Asr.open("#{dir}/speech/model.safetensors", REF)
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
-    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    pcm = (0...960).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
     given = try Asr.transcribe(m, tok, pcm, Asr.Options(language: some("es"), translate: true, timestamps: false))
     try Test.eq([given.language, given.language_probability.to_s], ["es", "1.0"])
     try Test.eq((try Asr.transcribe(m, tok, pcm, Asr.Options(max_tokens: some(2)))).tokens.size, 2)
@@ -714,7 +714,7 @@ end
 def test_long_audio_is_read_in_windows_that_seek() -> Result[Void]
   with_fixtures do |dir|
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
-    pcm = (0...3000).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    pcm = (0...3000).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
     want = try Asr.transcribe(try Asr.open("#{dir}/speech/model.safetensors", REF), tok, pcm)
     try Test.eq(want.text, try Tokenizer.decode(tok, want.tokens))
     try Test.assert(not want.segments.empty?, "no segments")
@@ -746,10 +746,10 @@ def test_the_window_boundary_is_in_frames() -> Result[Void]
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
     off = Asr.Options(timestamps: false)
     for n in [960, 1119]
-      _ = try Asr.transcribe(m, tok, (0...n).map { |i| (i % 37).to_f / 37.0 - 0.5 }, off)
+      _ = try Asr.transcribe(m, tok, (0...n).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }, off)
     end
 
-    long = (0...1120).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    long = (0...1120).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
     try Test.error?(Asr.transcribe(m, tok, long, off))
     Test.eq((try Asr.transcribe(m, tok, long)).truncated, false)
   end
@@ -761,7 +761,7 @@ def test_a_budget_of_windows_stops_a_transcription_short() -> Result[Void]
   with_fixtures do |dir|
     m = try Asr.open("#{dir}/speech/model.safetensors", REF)
     tok = try Tokenizer.open("test/fixtures/tokenizer.json")
-    pcm = (0...3000).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    pcm = (0...3000).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
     whole = try Asr.transcribe(m, tok, pcm, Asr.Options(max_windows: some(100)))
     try Test.eq(whole.truncated, false)
     one = try Asr.transcribe(m, tok, pcm, Asr.Options(max_windows: some(1)))
@@ -779,7 +779,7 @@ def test_an_english_only_checkpoint_transcribes_english() -> Result[Void]
   with_fixtures do |dir|
     m = try Asr.open("#{dir}/english/model.safetensors", REF)
     tok = try Tokenizer.open("#{dir}/english/tokenizer.json")
-    pcm = (0...960).map { |i| (i % 37).to_f / 37.0 - 0.5 }
+    pcm = (0...960).map { |i| ((i % 37).to_f / 37.0 - 0.5).to_float32 }
     t = try Asr.transcribe(m, tok, pcm, Asr.Options(max_tokens: some(3)))
     try Test.eq([t.language, t.language_probability.to_s, t.tokens.size.to_s], ["en", "1.0", "3"])
     try Test.assert(t.no_speech_prob > 0.0 and t.no_speech_prob < 1.0, "no_speech_prob #{t.no_speech_prob}")

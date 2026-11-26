@@ -41,7 +41,7 @@ def main() -> Void
   end
 end
 
-def run(pcm: List[Float]) -> Void
+def run(pcm: List[Float32]) -> Void
   case Whisper.load_model(MODEL_PATH)
     ok(model) -> check(model, pcm)
     error(e) ->
@@ -50,7 +50,7 @@ def run(pcm: List[Float]) -> Void
   end
 end
 
-def check(model: Whisper.Model, pcm: List[Float]) -> Void
+def check(model: Whisper.Model, pcm: List[Float32]) -> Void
   case Whisper.transcribe(model, pcm)
     ok(text) ->
       if text == EXPECTED
