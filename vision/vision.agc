@@ -23,10 +23,12 @@ end
 ## whatever the aspect ratio. The `kernel` (`Vision.Kernel`: `Nearest`, `Linear`, `Cubic`, `Lanczos2`, `Lanczos3`) is the
 ## filter that libvips resizes with: the one of the model's image processor (bicubic is `Cubic`, bilinear `Linear`).
 ## `CenterCrop(width, height)` and `RandomCrop(width, height)` cut an area of that size.
-## `HorizontalFlip(p)` mirrors the image with probability `p` (`1.0` always).
+## `HorizontalFlip(p)` mirrors the image with probability `p` (`1.0` always). `SmartResize(factor, min_pixels,
+## max_pixels, kernel)` scales to the size that `smart_resize` gives (Qwen2-VL's image processor).
 enum Step
   Resize(Int, Image.Kernel)
   ResizeTo(Int, Int, Image.Kernel)
+  SmartResize(Int, Int, Int, Image.Kernel)
   CenterCrop(Int, Int)
   RandomCrop(Int, Int)
   HorizontalFlip(Float)
@@ -43,6 +45,41 @@ end
 struct Samples
   inputs: Tensor.Tensor
   targets: Tensor.Tensor
+end
+
+## A size in pixels.
+struct Size
+  height: Int
+  width: Int
+end
+
+## The size that Hugging Face's `smart_resize` (the image processor of Qwen2-VL and its successors) gives an image of
+## `height` by `width`: each side is the nearest multiple of `factor` (a half goes to the even multiple, as Python's
+## `round` does, and may be 0), and when that has more than `max_pixels` pixels the image shrinks, or when it has fewer
+## than `min_pixels` it grows, by the same ratio on both sides, to multiples of `factor`, keeping the aspect ratio as
+## closely as it can. An aspect ratio above 200 is an `error`.
+def smart_resize(height: Int, width: Int, factor: Int, min_pixels: Int, max_pixels: Int) -> Result[Size]
+  if height < 1 or width < 1 or factor < 1 or min_pixels < 1 or max_pixels < min_pixels
+    return error("smart_resize needs sizes of 1 or more and min_pixels <= max_pixels, got #{height}x#{width}")
+  end
+
+  if [height, width].max.unwrap! > 200 * [height, width].min.unwrap!
+    return error("smart_resize needs an aspect ratio of at most 200, got #{height}x#{width}")
+  end
+
+  h_bar = nearest_multiple(height, factor)
+  w_bar = nearest_multiple(width, factor)
+  if h_bar * w_bar > max_pixels
+    beta = Math.sqrt((height * width).to_f / max_pixels.to_f)
+    h_bar = [factor, (height.to_f / beta / factor.to_f).floor * factor].max.unwrap!
+    w_bar = [factor, (width.to_f / beta / factor.to_f).floor * factor].max.unwrap!
+  elsif h_bar * w_bar < min_pixels
+    beta = Math.sqrt(min_pixels.to_f / (height * width).to_f)
+    h_bar = ((height.to_f * beta) / factor.to_f).ceil * factor
+    w_bar = ((width.to_f * beta) / factor.to_f).ceil * factor
+  end
+
+  ok(Size(height: h_bar, width: w_bar))
 end
 
 ## The tensor of one image: the samples of a `U8` image scaled to `0..1` (a `U16` image by 65535, a `F32` one kept)
@@ -85,6 +122,30 @@ def normalize(
 
   return error("normalize needs stds above 0.0, got #{std}") if std.any? { |s| s <= 0.0 }
   Native.arena do scaled(x, mean, std, axis) end
+end
+
+## The patches of one normalized image `x` (`[channels, height, width]`, `F32`) as Qwen2-VL's image processor lays
+## them out for its vision tower (`pixel_values`): `[(height / patch_size) * (width / patch_size), channels *
+## temporal_patch_size * patch_size * patch_size]`. A row is one patch, as `channels`, `temporal_patch_size` frames (the
+## image repeated: a still image is its own frames) and the pixels of the patch. The patches come in the order of the
+## merge squares of `merge_size` by `merge_size` patches: the patches of one square together (by row, then column), the
+## squares row by row. `height` and `width` must be multiples of `patch_size * merge_size`, which `SmartResize` makes. `x`
+## has 3 channels: an image with an alpha band is an `error` (Hugging Face's processor flattens it first).
+def patches(x: Tensor.Tensor, patch_size: Int, merge_size: Int, temporal_patch_size: Int = 2) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(x)
+  return error("patches needs an F32 tensor, got #{Tensor.dtype(x)}") if Tensor.dtype(x) != Tensor.Dtype.F32
+  return error("patches needs [channels, height, width], got #{shape}") if shape.size != 3
+  return error("patches needs 3 channels (sRGB, no alpha), got #{shape[0]}") if shape[0] != 3
+  if patch_size < 1 or merge_size < 1 or temporal_patch_size < 1
+    return error("patches needs a patch_size, merge_size and temporal_patch_size of 1 or more")
+  end
+
+  square = patch_size * merge_size
+  if shape[1] % square != 0 or shape[2] % square != 0
+    return error("patches needs a height and width that are multiples of #{square}, got #{shape[1]}x#{shape[2]}")
+  end
+
+  Native.arena do patched(x, patch_size, merge_size, temporal_patch_size) end
 end
 
 ## The folders of `root` as classes, in name order, and the images in each (`png`, `jpg`, `jpeg`, `webp`, `tif`,
@@ -188,6 +249,36 @@ def scaled(x: Tensor.Tensor, mean: List[Float], std: List[Float], axis: Int) -> 
   end
 end
 
+## The rows of `patches`, one strip of patch rows at a time (a tensor holds four axes at most on ggml): the patches of
+## a row are `[columns, channels * patch * patch]`, and the rows of one merge square stack into `[squares, merge, merge,
+## ...]`.
+def patched(x: Tensor.Tensor, patch: Int, merge: Int, frames: Int) -> Result[Tensor.Tensor]
+  shape = Tensor.shape(x)
+  channels = shape[0]
+  columns = shape[2] / patch
+  depth = channels * patch * patch
+  Trace.eval([x]) do |xs|
+    strips: List[Tensor.Tensor] = []
+    for square_row in 0...(shape[1] / patch / merge)
+      rows: List[Tensor.Tensor] = []
+      for r in 0...merge
+        top = (square_row * merge + r) * patch
+        strip = try Tensor.slice(xs[0], [0, top, 0], [channels, top + patch, shape[2]])
+        cells = try Tensor.permute(try Tensor.reshape(strip, [channels, patch, columns, patch]), [2, 0, 1, 3])
+        rows = rows.push(try Tensor.reshape(cells, [columns / merge, 1, merge, depth]))
+      end
+
+      strips = strips.push(try Tensor.reshape(try Tensor.concat(rows, 1), [columns * merge, depth]))
+    end
+
+    flat = try Tensor.concat(strips, 0)
+    n = Tensor.shape(flat)[0]
+    framed = try Tensor.reshape(flat, [n, channels, 1, patch * patch])
+    repeated = try Tensor.broadcast_to(framed, [n, channels, frames, patch * patch])
+    Tensor.reshape(repeated, [n, channels * frames * patch * patch])
+  end
+end
+
 ## The batch of the images `parts` with their class `labels`.
 def batch(parts: List[Pixels], labels: List[Int], backend: Tensor.Backend) -> Result[Samples]
   ids = labels.map { |label| Tensor.Values.Int(label) }
@@ -243,6 +334,9 @@ def transformed(image: Image.Image, steps: List[Step], seed: Int) -> Result[Imag
     case step
       Step.Resize(shorter, kernel) -> current = try resize_shorter(current, shorter, kernel)
       Step.ResizeTo(width, height, kernel) -> current = try resize_to(current, width, height, kernel)
+      Step.SmartResize(factor, min_pixels, max_pixels, kernel) ->
+        size = try smart_resize(Image.height(current), Image.width(current), factor, min_pixels, max_pixels)
+        current = try resize_to(current, size.width, size.height, kernel)
       Step.CenterCrop(width, height) ->
         left = centered(Image.width(current), width)
         current = try crop_at(current, width, height, left, centered(Image.height(current), height))
@@ -286,6 +380,15 @@ def resize_to(image: Image.Image, width: Int, height: Int, kernel: Image.Kernel)
   return error("ResizeTo needs sides of 1 or more, got #{width}x#{height}") if width < 1 or height < 1
   return ok(image) if width == Image.width(image) and height == Image.height(image)
   Image.resize(image, width, height, kernel)
+end
+
+## The multiple of `factor` nearest to `length`, a half to the even multiple, as Python's `round` goes.
+def nearest_multiple(length: Int, factor: Int) -> Int
+  below = length / factor
+  twice = 2 * (length % factor)
+  return (below + 1) * factor if twice > factor
+  return (below + below % 2) * factor if twice == factor
+  below * factor
 end
 
 ## The offset that centers `size` in `length`, rounded to the even one when it falls between two, as Python rounds

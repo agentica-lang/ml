@@ -157,6 +157,13 @@ which the text model reads at the image tokens (the wiring is the next step of m
   image is one segment), then an MLP with `gelu_pytorch_tanh`, written with ops that ggml compiles (`Tensor.gelu` is not
   lowered to ggml yet, ml#301). The merger is a layer norm, the join of each square (4 consecutive rows), a dense layer, the exact
   GELU and a dense layer to the text model's width.
+- The input is made by `vision/`: `Step.SmartResize(32, shortest_edge, longest_edge, Cubic)` (the bounds of
+  `preprocessor_config.json`: 65,536 and 16,777,216 pixels; 32 is `patch_size * spatial_merge_size`), `to_tensor`,
+  `normalize` with the mean and std 0.5, and `Vision.patches(x, 16, 2)`, which lays the patches out as the processor does
+  (the image repeated for the two frames of the temporal patch). The image must be sRGB with 3 bands: the processor
+  flattens an alpha band first and `vision` does not yet, so `patches` refuses a fourth channel. An image under `shortest_edge` is enlarged, and libvips
+  enlarges with another sub-pixel alignment than Pillow's bicubic, so the pixels of an enlarged image are not within a
+  level of the processor's (the evidence is in "Tests" below, the issue is agentica-lang/packages#266); a shrunk one is.
 - Not supported: video (the temporal patch of an image is the frame twice, which the processor makes), several images in
   one call (call it once for each), another `hidden_act`, deepstack (the config key is empty in Qwen3.5), and the
   `weights` and `with_weights` of a fine-tune.
@@ -733,6 +740,27 @@ error row per config field.
 - `vision/test/vit_hf_test.agc` against Hugging Face (the golden script `vision/test/vit_golden.py` is manual: it needs `torch` 2.6.0, `transformers` 4.57.6 and `pillow` 11.3.0, in a venv, run with `python -I`; the test does nothing unless `VIT_MODEL` names the checkpoint folder): the four drawn images of the ResNet test through `ResizeTo(224, 224, Linear)`, `normalize` and the model in `float32` on ggml CPU and Vulkan. The 224 by 224 images that the processor made are committed as 8-bit PNGs (`vision/test/fixtures/vit/crops`, 100 KB: `pixel_values` is exactly those samples over 255, normalized), so the model alone runs from committed files: the best 10 logits are Hugging Face's within 1e-4 (the largest gap measured is 1.2e-5 on CPU and 9.6e-6 on Vulkan) and the top 5 are identical, in the same order. Through our own resize (`Linear`) the pixels are 0.0078 from Hugging Face's and the logits 0.103 (0.0235 and 0.156 with Lanczos 3), from the pixels, on CPU and Vulkan; and the top 5 of the pipeline is Hugging Face's in the same order, on CPU and Vulkan (with Lanczos 3 the logits of these images, within 0.03 to 0.3 of each other, were reordered, and the check allowed for the ties). The tolerances are about twice the gaps measured: 0.016 for the pixels, 0.21 for the pipeline. The golden is committed (`vision/test/fixtures/vit/golden.json`) and never made in CI. Vulkan runs with `Tensor.vulkan_fp16(false)`.
 - `test/clip_test.agc` against `test/clip_peer.py` (standard library, doubles): a tiny random CLIP (vision tower of 8 wide, text tower of 6, 6 dimensions) on the reference (1e-9) and on ggml (1e-4): the embeddings of two images and of four rows of ids (one with the end token twice), the scaled cosines, the probabilities and the scale; plus the errors of a missing weight, an unsupported config (`quick_gelu`, a patch size that does not divide the image, another `projection_dim`), and an input that does not fit.
 - `test/clip_tokenizer_test.agc` against `test/clip_tokenizer_golden.py` (`transformers` 4.57.6, the slow `CLIPTokenizer`, manual): the ids of 66 strings (case, contractions, digits, accents, CJK, control characters, the special tokens in either case, truncation at 77) with a tiny tokenizer trained on a few prompts (`test/fixtures/clip`, 15 KB). `tools/tokenizer_check.agc clip` checks the real tokenizer of the checkpoint the same way: 466 strings, 400 of them random, agree.
+- `vision/test/qwen_pixels_test.agc` against Hugging Face's image processor of Qwen3.5 (the golden script
+  `vision/test/qwen_pixels_golden.py` is manual: it needs `torch` 2.15.0 and `transformers` 5.22.2, in a venv, and
+  `pillow` 11.3.0 from PyPI as the wheel `pillow-11.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`,
+  sha256 `13f87d581e71d9189ab21fe0efb5a23e9f28552d5be6979e84001d3b8505abe8`, installed with `pip install --target` into a
+  folder of its own that the script puts first on `sys.path`; it stops on other versions; `AutoImageProcessor` gives
+  `Qwen2VLImageProcessorPil` for the checkpoint's `preprocessor_config.json`, revision
+  `2fc06364715b967f1860aea9cf38778875588b17`). It needs no checkpoint and runs in CI: `smart_resize` on 16 sizes (a
+  half that goes to the even multiple, a side that rounds to 0, the shrink, the grow, the floor of one factor and the
+  default bounds); `Vision.patches` on the two 8-bit images that the processor made (`vision/test/fixtures/qwen/crops`,
+  9 KB), whose `pixel_values` it must give to 1e-5 at 500 places of each (on the reference and on ggml CPU); and the whole
+  input (`SmartResize`, `to_tensor`, `normalize`, `patches`) on drawn images of the ResNet test against the processor's
+  values at about 500 places of each (one case with the checkpoint's own bounds, 352 by 480 to a grid of 22 by 30): a shrink
+  is one 8-bit level apart (0.0078), two on the 64 by 32 image (0.0157; the tolerance is 0.016), the mean of all the
+  values 1e-5 to 1e-3 apart. A grow of area 2.5 times (1.5 and 1.67 per axis; an 8-bit crop enlarged) is not:
+  30 percent of the sampled values are 3 or more levels apart, up to 0.29 (37 levels), at the edges of the drawn discs, the
+  mean 0.0003; the tolerance of that case is 0.6, so it checks the grid and the rough alignment only. The cause is in the `image` package (agentica-lang/packages#266). The golden is
+  committed (`vision/test/fixtures/qwen/golden.json`, 23 KB, sha256 `23fabc27c5cdb1c93fac66f7c4db6771c2f5aa1ef7f8ab597ec0fdc37293ce11`). Mutants that fail it: the tie of
+  `smart_resize` rounded up, the floor of its grow branch, the floor of its shrink branch as a ceil or a round, the height
+  and width swapped, no minimum of one factor, an aspect ratio of 200 refused, the two frames of a patch not repeated, the
+  rows of a merge square in the other order, the patch's rows and columns swapped, and its channels in another order. The
+  golden script asserts the processor's `size`, mean, std, rescale factor and bicubic resample.
 - `vision/test/clip_hf_test.agc` against Hugging Face (the golden script `vision/test/clip_golden.py` is manual: it needs `torch` 2.6.0, `transformers` 4.57.6 and `pillow` 11.3.0, in a venv, run with `python -I`; the test does nothing unless `CLIP_MODEL` names the checkpoint folder): the four drawn images of the ResNet test and six prompts. The ids of the prompts are Hugging Face's. On the 8-bit crops that the processor made (`vision/test/fixtures/clip/crops`, 112 KB), the largest gap is 5e-6 (text embeddings) and 2e-5 (image embeddings), 4e-5 for a logit (`logit_scale` makes the scale 100) and 2e-6 for a probability, on CPU and Vulkan, and the best prompt of each image is Hugging Face's. Through our own pipeline (`Resize(224, Cubic)`) the pixels are 0.015 from Pillow's and a logit 0.21 (0.43 with Lanczos 3; the pixel gap times the scale 100), on CPU and Vulkan; the best prompt is the same. The tolerances are about twice the gaps measured for the pipeline (0.03 and 0.43) and looser for the model alone (1e-4 for an embedding, 1e-3 for a logit). The golden is committed (`vision/test/fixtures/clip/golden.json`, 57 KB) and never made in CI. Vulkan runs with `Tensor.vulkan_fp16(false)`.
 - `test/bert_test.agc` against `test/bert_peer.py` (standard library, doubles):
   a tiny random BERT in both namings and a padded batch, on the reference and
