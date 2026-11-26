@@ -17,6 +17,7 @@ All packages are released together at one version, each on its own tag, `<packag
 ### transformers
 
 - `Lfm3`: LFM3-1.7B (`LiquidAI/LFM3-1.7B`) from its official safetensors, forward over whole sequences, `F32` or `F16` weights (ml#275).
+- `Bpe` reads LFM3's `tokenizer.json` (digits in groups of up to three, `ignore_merges`, no normalizer), and `Chat.apply("lfm3", ...)` is its chat template with tools (`tools`, `Message.tool_calls`, `thinking`, `tool_call_id`, `preserve_thinking`) (ml#275).
 
 ### hub
 

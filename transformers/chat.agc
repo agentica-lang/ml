@@ -1,13 +1,26 @@
-## The chat template of the Qwen2.5, Qwen3 and Qwen3.5 instruct models (ChatML), as text: what Hugging Face's
-## `apply_chat_template` makes of the same messages, without tools (`test/chat_golden.py`).
+## The chat template of the Qwen2.5, Qwen3 and Qwen3.5 instruct models and of LFM3 (ChatML), as text: what Hugging
+## Face's `apply_chat_template` makes of the same messages (`test/chat_golden.py`; with tools for LFM3 only).
 ## The text goes through the tokenizer, which knows `<|im_start|>` and `<|im_end|>`.
 
 import Unicode from "tokenizer/unicode"
+import Pyjson from "pyjson"
 
-## One turn: `role` is `system`, `user` or `assistant`.
+## One turn: `role` is `system`, `user` or `assistant` (and `tool` for LFM3, which also reads the other fields).
 struct Message
   role: String
   content: String
+  ## The reasoning of an assistant message, as the template's `thinking` (LFM3).
+  thinking: Optional[String] = none
+  ## The calls of an assistant message (LFM3).
+  tool_calls: List[ToolCall] = []
+  ## The id of the call a `tool` message answers: consecutive answers with one id are one `<tool_response>` (LFM3).
+  tool_call_id: String = ""
+end
+
+## A call of a tool: its name and its arguments in the order given.
+struct ToolCall
+  name: String
+  arguments: Map[String, JSON.Value] = {}
 end
 
 ## An assistant message of qwen3 cut at its last `</think>`.
@@ -33,19 +46,37 @@ end
 ## `<think>\n` under `some(true)` or with the empty think block otherwise. It is an error to have no user message (a tool
 ## answer is not one).
 ##
-## Errors: no messages, a role other than the three, a `tool` role (tools are not supported), `enable_thinking:
-## some(false)` for `qwen2`.
+## `lfm3` (`LiquidAI/LFM3-1.7B`) starts with `<|startoftext|>`, takes `tools` (each a function as the template reads it:
+## `{"name": ..., "description": ..., "parameters": ...}`, or that under a `function` key) into the system turn, writes
+## the calls of an assistant message and the answers of `tool` messages, and thinks unless `enable_thinking` is
+## `some(false)`. An assistant message keeps its reasoning (`thinking`, or an empty think block) after the last user
+## message, or in every message with `preserve_thinking`; before it the text up to a `</think>` is dropped. Any role is
+## written as it is, as the template does.
+##
+## Errors: no messages, a role other than the three, a `tool` role (except for `lfm3`), `enable_thinking:
+## some(false)` for `qwen2`, tools, `preserve_thinking`, reasoning, calls or a `tool_call_id` for a template other
+## than `lfm3`'s.
 def apply(
   model_type: String,
   messages: List[Message],
   add_generation_prompt: Bool = true,
   enable_thinking: Optional[Bool] = none,
+  tools: List[Map[String, JSON.Value]] = [],
+  preserve_thinking: Bool = false,
 ) -> Result[String]
-  if model_type != "qwen2" and model_type != "qwen3" and model_type != "qwen3_5"
-    return error("no chat template for model_type #{model_type}, only qwen2, qwen3 and qwen3_5")
+  if model_type != "qwen2" and model_type != "qwen3" and model_type != "qwen3_5" and model_type != "lfm3"
+    return error("no chat template for model_type #{model_type}, only qwen2, qwen3, qwen3_5 and lfm3")
   end
 
   return error("a conversation needs at least one message") if messages.empty?
+  if model_type == "lfm3"
+    return lfm3(messages, tools, add_generation_prompt, enable_thinking.unwrap_or(true), preserve_thinking)
+  end
+
+  if not tools.empty? or preserve_thinking or messages.any? { |m| lfm3_only?(m) }
+    return error("tools, tool calls, reasoning fields and preserve_thinking are options of lfm3")
+  end
+
   if model_type == "qwen2" and enable_thinking == some(false)
     return error("enable_thinking is an option of qwen3 and qwen3_5, not of qwen2")
   end
@@ -97,6 +128,10 @@ def apply(
 end
 
 private
+
+CONTINUE_TAG = "CONTINUE_FINAL_MESSAGE_TAG "
+
+def lfm3_only?(m: Message) -> Bool = m.thinking.some? or not m.tool_calls.empty? or not m.tool_call_id.empty?
 
 ## The prompt of the Qwen3.5 template: no tools and no images.
 def qwen35(messages: List[Message], add_generation_prompt: Bool, thinking: Bool) -> Result[String]
@@ -210,4 +245,173 @@ def last_user_index(messages: List[Message]) -> Int
   end
 
   found
+end
+
+## The prompt of LFM3's template.
+def lfm3(
+  messages: List[Message],
+  tools: List[Map[String, JSON.Value]],
+  add_generation_prompt: Bool,
+  thinking: Bool,
+  preserve_thinking: Bool,
+) -> Result[String]
+  turns = messages
+  system = ""
+  if messages[0].role == "system"
+    system = messages[0].content
+    turns = messages.drop(1)
+  end
+
+  lines: List[String] = []
+  for tool in tools
+    case try tool_line(tool)
+      some(line) -> lines = lines.push(line)
+      none -> 0
+    end
+  end
+
+  if not lines.empty?
+    if not system.empty?
+      system = system + "\n\n"
+    end
+
+    system = system + "<tools>\n" + lines.join("\n") + "\n</tools>"
+  end
+
+  text = "<|startoftext|>"
+  if not system.empty?
+    text = text + turn("system", system)
+  end
+
+  last_user = -1
+  for i in 0...turns.size
+    if turns[i].role == "user"
+      last_user = i
+    end
+  end
+
+  answers: List[String] = []
+  for i in 0...turns.size
+    m = turns[i]
+    items = answer_items(m)
+    if joined_answer?(turns, i)
+      answers = answers + items
+    elsif m.role == "assistant"
+      text = text + "<|im_start|>assistant\n" + assistant_text(m, preserve_thinking or i > last_user)
+    elsif m.role == "tool"
+      text = text + "<|im_start|>tool\n" + tool_response(m, answers) + "<|im_end|>\n"
+      answers = []
+    else
+      text = text + turn(m.role, m.content)
+    end
+  end
+
+  if add_generation_prompt
+    text = text + "<|im_start|>assistant\n<think>"
+    if not thinking
+      text = text + "</think>"
+    end
+  end
+
+  ok(text)
+end
+
+## The text of a tool as the template writes it, or none for a tool with `defer_loading`.
+def tool_line(tool: Map[String, JSON.Value]) -> Result[Optional[String]]
+  fn = tool
+  if tool.key?("function")
+    case JSON.node(tool["function"])
+      JSON.Node.Object(fields) -> fn = fields
+      _ -> return error("the function of a tool is not an object")
+    end
+  end
+
+  return ok(none) if try deferred?(tool) or try deferred?(fn)
+
+  ok(some(Pyjson.dumps(JSON.object(fn.delete("defer_loading")))))
+end
+
+## Whether a tool has `defer_loading: true`; a value that is not a Boolean is an error.
+def deferred?(fields: Map[String, JSON.Value]) -> Result[Bool]
+  case fields.get("defer_loading")
+    some(v) -> JSON.bool(v)
+    none -> ok(false)
+  end
+end
+
+## The text of a `tool` message as a list item for a joined answer: none for an empty one.
+def answer_items(m: Message) -> List[String]
+  return [] if m.role != "tool" or m.content.empty?
+  [m.content]
+end
+
+## Whether a `tool` message is the start or the middle of answers to one call, which are written as one.
+def joined_answer?(turns: List[Message], i: Int) -> Bool
+  m = turns[i]
+  return false if m.role != "tool" or m.tool_call_id.empty? or i + 1 >= turns.size
+  turns[i + 1].role == "tool" and turns[i + 1].tool_call_id == m.tool_call_id
+end
+
+## The `<tool_response>` of a message: its content, or the joined `pending` answers and its own when some are pending.
+def tool_response(m: Message, pending: List[String]) -> String
+  return "<tool_response>\n#{(pending + answer_items(m)).join("\n")}\n</tool_response>" if not pending.empty?
+
+  return m.content if m.content.include?("<tool_response>")
+  "<tool_response>\n#{m.content}\n</tool_response>"
+end
+
+## An assistant turn after its `<|im_start|>assistant\n`.
+def assistant_text(m: Message, keep_thinking: Bool) -> String
+  text = ""
+  if keep_thinking
+    case m.thinking
+      some(thought) -> text = "<think>#{thought}</think>"
+      none -> text = unthought(m.content)
+    end
+  end
+
+  content = m.content
+  if not keep_thinking
+    if content.include?("</think>")
+      parts = content.split("</think>")
+      content = strip(parts[parts.size - 1])
+    end
+
+    content = "<think></think>" + content
+  end
+
+  continued = content.end_with?(CONTINUE_TAG)
+  if continued
+    content = content.slice(0, content.size - CONTINUE_TAG.size)
+  end
+
+  text = text + content + m.tool_calls.map { |c| call_text(c) }.join("\n\n")
+  if continued
+    text = text + CONTINUE_TAG
+  end
+
+  text + "<|im_end|>\n"
+end
+
+def call_text(call: ToolCall) -> String
+  text = "<tool_call>\n<function=#{call.name}>\n"
+  for name in call.arguments.keys
+    text = text + "<parameter=#{name}>\n#{argument_text(call.arguments[name])}\n</parameter>\n"
+  end
+
+  text + "</function>\n</tool_call>"
+end
+
+## A string as it is, anything else as `json.dumps(ensure_ascii=False)` writes it.
+def argument_text(value: JSON.Value) -> String
+  case JSON.node(value)
+    JSON.Node.String(s) -> s
+    _ -> Pyjson.dumps(value)
+  end
+end
+
+## The empty think block of a message that has no reasoning and none in its text.
+def unthought(content: String) -> String
+  return "" if content.include?("</think>")
+  "<think></think>"
 end

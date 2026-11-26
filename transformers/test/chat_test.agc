@@ -1,6 +1,7 @@
 ## `Chat.apply` against Hugging Face's `apply_chat_template` (`chat_golden.py`, `fixtures/chat_golden.json`) for the
-## templates of Qwen2.5-Instruct and Qwen3, and against `chat35_golden.py` (`fixtures/chat35_golden.json`) for the one
-## of Qwen3.5. Run from `transformers/`.
+## templates of Qwen2.5-Instruct and Qwen3, against `chat35_golden.py` (`fixtures/chat35_golden.json`) for the one
+## of Qwen3.5 and against `chat_lfm3_golden.py` (`fixtures/chat_lfm3_golden.json`) for the one of LFM3, with tools.
+## Run from `transformers/`.
 
 import Chat from "../chat"
 
@@ -61,6 +62,38 @@ def test_the_text_is_that_of_the_template_of_qwen35() -> Result[Void]
   ok()
 end
 
+## The golden of LFM3 is in the form Hugging Face takes: tools and calls as JSON objects.
+def test_the_text_is_that_of_the_template_of_lfm3() -> Result[Void]
+  golden = try JSON.parse(try File.read_text("test/fixtures/chat_lfm3_golden.json"))
+  cases = try JSON.list(try JSON.get(golden, "cases"))
+  try Test.eq(cases.size, 49)
+  for c in cases
+    messages = try messages_of(try JSON.list(try JSON.get(c, "messages")))
+    tools: List[Map[String, JSON.Value]] = []
+    if given(c, "tools").some?
+      tools = try tools_of(try JSON.list(given(c, "tools").unwrap!))
+    end
+
+    thinking: Optional[Bool] = none
+    if given(c, "enable_thinking").some?
+      thinking = some(try JSON.bool(given(c, "enable_thinking").unwrap!))
+    end
+
+    made = try Chat.apply(
+      "lfm3",
+      messages,
+      try JSON.bool(try JSON.get(c, "add_generation_prompt")),
+      thinking,
+      tools,
+      try JSON.bool(try JSON.get(c, "preserve_thinking")),
+    )
+
+    try Test.eq(made, try JSON.string(try JSON.get(c, "text")))
+  end
+
+  ok()
+end
+
 ## Left alone, `enable_thinking` is what each template does when it is not told: Qwen3 thinks (the Qwen3.5 golden has
 ## the cases of `none` for its template).
 def test_the_default_of_enable_thinking_is_that_of_the_template() -> Result[Void]
@@ -77,4 +110,101 @@ def test_what_the_templates_do_not_cover_is_an_error() -> Result[Void]
   try Test.error?(Chat.apply("qwen2", hi, true, some(false)))
   try Test.error?(Chat.apply("qwen3", hi + [Chat.Message(role: "tool", content: "42")]))
   Test.error?(Chat.apply("qwen3", hi + [Chat.Message(role: "narrator", content: "42")]))
+end
+
+def test_what_only_lfm3_reads_is_an_error_for_the_others() -> Result[Void]
+  hi = [Chat.Message(role: "user", content: "Hi")]
+  try Test.error?(Chat.apply("qwen3", hi, true, none, [{"name": JSON.from("f")}]))
+  try Test.error?(Chat.apply("qwen3", hi, true, none, [], true))
+  try Test.error?(Chat.apply("qwen3_5", [Chat.Message(role: "user", content: "Hi", thinking: some("t"))]))
+  try Test.error?(Chat.apply("lfm3", []))
+  Test.error?(Chat.apply("lfm3", hi, true, none, [{"name": JSON.from("f"), "defer_loading": JSON.from("yes")}]))
+end
+
+private
+
+## The value at `key`, or none when the key is missing or null.
+def given(v: JSON.Value, key: String) -> Optional[JSON.Value]
+  case JSON.get(v, key)
+    ok(found) -> return none if JSON.null?(found)
+    error(_) -> return none
+  end
+
+  some(JSON.get(v, key).unwrap!)
+end
+
+def message_of(v: JSON.Value) -> Result[Chat.Message]
+  thinking: Optional[String] = none
+  if given(v, "thinking").some?
+    thinking = some(try JSON.string(given(v, "thinking").unwrap!))
+  end
+
+  calls: List[Chat.ToolCall] = []
+  if given(v, "tool_calls").some?
+    calls = try calls_of(try JSON.list(given(v, "tool_calls").unwrap!))
+  end
+
+  id = ""
+  if given(v, "tool_call_id").some?
+    id = try JSON.string(given(v, "tool_call_id").unwrap!)
+  end
+
+  ok(
+    Chat.Message(
+      role: try JSON.string(try JSON.get(v, "role")),
+      content: try JSON.string(try JSON.get(v, "content")),
+      thinking: thinking,
+      tool_calls: calls,
+      tool_call_id: id,
+    ),
+  )
+end
+
+## A call as Hugging Face writes it: `{"type": "function", "function": {...}}`, or the function alone.
+def call_of(v: JSON.Value) -> Result[Chat.ToolCall]
+  fn = v
+  if given(v, "function").some?
+    fn = given(v, "function").unwrap!
+  end
+
+  ok(
+    Chat.ToolCall(
+      name: try JSON.string(try JSON.get(fn, "name")),
+      arguments: try fields_of(try JSON.get(fn, "arguments")),
+    ),
+  )
+end
+
+def fields_of(v: JSON.Value) -> Result[Map[String, JSON.Value]]
+  case JSON.node(v)
+    JSON.Node.Object(fields) -> ok(fields)
+    _ -> error("not an object: #{v}")
+  end
+end
+
+def messages_of(items: List[JSON.Value]) -> Result[List[Chat.Message]]
+  out: List[Chat.Message] = []
+  for item in items
+    out = out.push(try message_of(item))
+  end
+
+  ok(out)
+end
+
+def calls_of(items: List[JSON.Value]) -> Result[List[Chat.ToolCall]]
+  out: List[Chat.ToolCall] = []
+  for item in items
+    out = out.push(try call_of(item))
+  end
+
+  ok(out)
+end
+
+def tools_of(items: List[JSON.Value]) -> Result[List[Map[String, JSON.Value]]]
+  out: List[Map[String, JSON.Value]] = []
+  for item in items
+    out = out.push(try fields_of(item))
+  end
+
+  ok(out)
 end
