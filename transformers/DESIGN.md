@@ -112,12 +112,19 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
   `tie_word_embeddings` is true, with no copy of it, else `lm_head`. The `bfloat16` weights come as `F32` through `hub`.
 - The forward is one graph on ggml (`Lift.staged`). Every call traces and
   plans the graph again. Generation (below) keeps a cache and compiles its steps.
-- `model_type` `qwen3` or `qwen2` (Qwen2.5), `silu`, no `attention_bias`, no
-  `rope_scaling` and `use_sliding_window: false` are read; the rest is an
-  error. `qwen2` has no `q_norm` and `k_norm` and a bias on `q_proj`, `k_proj`
-  and `v_proj` (`Load.dense` takes a `.bias` when the file has one), and no
-  `head_dim` in its config (`hidden_size / num_attention_heads`, read once in
-  `load`). `tie_word_embeddings` defaults to `true`, as in Hugging Face, and
+- `model_type` `qwen3`, `qwen2` (Qwen2.5) or `llama` (SmolLM2), `silu`, no
+  `attention_bias`, no `mlp_bias`, no `rope_scaling` and
+  `use_sliding_window: false` are read; the rest is an error. `qwen2` has no
+  `q_norm` and `k_norm` and a bias on `q_proj`, `k_proj` and `v_proj`
+  (`Load.dense` takes a `.bias` when the file has one); `llama` has neither the
+  norms nor the biases, and is otherwise the same block (grouped-query
+  attention, rotary positions, a gated MLP with `silu`). Both may leave out
+  the `head_dim` of their config (`hidden_size / num_attention_heads`, read once in
+  `load`). `open_idefics3` is the same loader on the text model of a SmolVLM
+  folder: `model_type` `idefics3`, the Llama config in `text_config`, the
+  tensors under `model.text_model.` (`load`'s `root`) and the head at the top
+  (`lm_head.weight`); `weights(m)` names them as a plain model's.
+  `tie_word_embeddings` defaults to `true`, as in Hugging Face, and
   then the file's `lm_head.weight` is ignored. On the reference backend
   attention needs `q * k` of at most 1,048,576 (about 1024 tokens, causal).
 
@@ -231,6 +238,12 @@ tower is closed before the text model opens, so the two never share the memory.
   columns, built in the graph from fills (`Nn.axis_masks`, once for each step: `Reading.axes`), picks each pair from its
   axis; the cost is three ropes for the queries and the keys of the full-attention layers, in a prompt with images only.
   Positions of `[seq]` are the plain rope, so text, and the tokens after an image, use no masks.
+- Qwen3, Qwen2.5 and Llama (`generate.agc`) are sighted too, for SmolVLM (Idefics3: no multimodal rope, plain positions,
+  so the image rows replace the embeddings and nothing else changes). Its stepper says `rotated: false`: the step is
+  given no `Request.rotary` (nothing is built or planned for the three axes), the attention turns by the index, and the
+  `Sight` must be `KvDecoder.plain_sight(features, image_token, ids)`, whose layout (`Mrope.indexed`) has the index of
+  each token on every axis and no `delta`. A layout of Qwen3.5's (a `delta`, or axes that differ from the index) is an
+  error for such a model, before any step runs. `Qwen3.image_token(dir)` reads `image_token_id` of the folder.
 - Not supported: video, and a second `generate` that continues a sequence with another image (a `Sight` is for the
   prompt).
 
@@ -656,6 +669,39 @@ that prevent a silently wrong result. It gets no per-layer golden when the
 model golden exists, no node-by-node ggml test (the core covers it) and no
 error row per config field.
 
+- `test/llama_test.agc` against `test/llama_golden.py` (`torch` 2.15.0, `transformers` 5.22.2, manual): a tiny random
+  `LlamaForCausalLM` (2 blocks, 24 wide, 6 heads over 2 key heads of 4 columns, `rope_theta` 100000, an untied head,
+  no biases; `test/fixtures/llama_golden.json`, 136 KB) opened by `Qwen3.open` from a safetensors file under the names
+  of an official checkpoint: the logits of every position of two rows are Hugging Face's within 1e-5 on the reference
+  and 1e-4 on ggml CPU, and `mlp_bias`, `attention_bias`, a `rope_scaling` and another `model_type` are errors that
+  name the field. Mutants, each failing it: `mlp_bias` not checked, `llama` read with the norms of `qwen3`, the rope
+  base fixed at 10000, the key heads taken as the query heads, and `llama` refused.
+- `test/smolvlm_text_test.agc` against `test/smolvlm_text_golden.py` (`torch` 2.15.0, `transformers` 5.22.2, manual): a
+  tiny random `Idefics3ForConditionalGeneration` (the Llama of `llama_test` in `text_config`, a 1-block tower beside it;
+  `test/fixtures/smolvlm_text_golden.json`, 137 KB) whose text weights and untied head are written under the names of
+  the official checkpoint (`model.text_model.*`, `lm_head.weight`) and opened by `Qwen3.open_idefics3`: the logits of
+  every position of two rows are Hugging Face's within 1e-5 on the reference and 1e-4 on ggml CPU; a missing tensor
+  (a block's, the head), another `model_type`, `mlp_bias` and a wrong `hidden_size` are errors that name the cause.
+  Mutant, failing it: the head taken as the embedding table.
+- `vision/test/smolvlm_text_hf_test.agc` against `vision/test/smolvlm_text_hf_golden.py` (manual, as the vision one:
+  `vision/test/fixtures/smolvlm/text_golden.json`): the real `SmolVLM-256M-Instruct` text model on 20 fixed token ids;
+  the golden holds the mean and the mean of absolute values of the 20 by 49280 logits, 501 of them at every 1971st
+  place, and the top 10 of the last position. It does nothing unless `SMOLVLM_MODEL` names the folder. The largest gap
+  is 4.7e-5 on ggml CPU and 1.1e-4 on Vulkan (logits of about 20 at the top); the test passes within 3e-4.
+- `test/smolvlm_image_test.agc` against `test/smolvlm_image_golden.py` (`torch` 2.15.0, `transformers` 5.22.2, manual): the
+  tiny SmolVLM of `smolvlm_text_test` (`image_token_id` 30) on a prompt of 10 ids with 4 image tokens and 4 random feature
+  rows (`test/fixtures/smolvlm_image_golden.json`, 135 KB). `Qwen3.open_idefics3` with a `KvDecoder.Sight` gives
+  Hugging Face's logits of the prompt and of a token fed after it (1e-5 on the reference, 2e-4 on ggml CPU, whose
+  cache is `F16`; the largest gap is 8e-5) and its 4 greedy ids; the same ids without a sight answer otherwise, and a
+  sight with too few rows or another image token is an error, as is a layout with a `delta` or a moved position; a text
+  prompt with no sight gives the logits of `Qwen3.run`. Mutants, each failing it: no splice, `rotated` true, `sighted`
+  off, and the plain layout not checked.
+- `vision/test/smolvlm_image_hf_test.agc` against `vision/test/smolvlm_image_hf_golden.py` (manual, as the others:
+  `vision/test/fixtures/smolvlm/image_golden.json`): the real `SmolVLM-256M-Instruct` on a prompt of 78 ids with the 64
+  `<image>` tokens of one tile. The tiles of `smolvlm_hf_test` go through the tower and the connector, and the rows
+  through `Generate.step_logits` over a `Sight`; the golden holds the last position's logits (mean, abs mean, 501
+  values and the top 10). The largest gap is 2.7e-5 on ggml CPU and 3.2e-5 on Vulkan; the test passes within 1e-4.
+  The prompt is a fixed list of ids: the processor, tile splitting and the chat template are later slices.
 - `test/qwen3_test.agc` against `test/qwen_peer.py` (standard library, doubles):
   a tiny random Qwen3 (4 heads, 2 key heads, `head_dim` 4 with hidden 8, so the
   projection is wider than the model) in `bfloat16` with tied embeddings and

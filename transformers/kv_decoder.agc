@@ -21,10 +21,12 @@
 ## and a prompt is given the `Delta.Padding` of its convolutions, so that the padding rows leave the state as the real
 ## ones did. A step that gives another number of tensors than the `Stepper` says is an error.
 ##
-## A model that reads images (Qwen3.5) says so in its `Stepper` (`sighted`): a prompt starts from `start(sight)`, the
-## step splices the image rows into the embeddings (`spliced`) and turns the attention layers by the three axes of
-## `Sight.layout` (`Request.rotary`), and the later tokens turn by their index plus the `Cache.delta` of the prompt.
-## Each number of image tokens compiles its own graph for the prompt.
+## A model that reads images (Qwen3.5, SmolVLM) says so in its `Stepper` (`sighted`): a prompt starts from
+## `start(sight)` and the step splices the image rows into the embeddings (`spliced`). A model with a multimodal rope
+## (Qwen3.5) turns the attention layers by the three axes of `Sight.layout` (`Request.rotary`), and the later tokens
+## by their index plus the `Cache.delta` of the prompt; a model with one position per token (`Stepper.rotated` false,
+## SmolVLM) turns them by the index and takes only a `plain_sight`. Each number of image tokens compiles its own graph
+## for the prompt.
 ##
 ## Batch of one. A prompt is fed in one step (`step` at length 0), then one token at a time. A `Generator` belongs to
 ## one task at a time, and `close` ends it before the weights its graphs read are freed.
@@ -128,11 +130,15 @@ struct Stepper[M]
   ## The taps of the convolution of a model with states: a prompt (more than one row) is given a `Delta.Padding` for
   ## them (its `valid` is for the recurrent state of Qwen3.5; LFM3 reads only `keep`). 0 for a model with no convolution.
   taps: Int = 0
-  ## Whether `stepped` reads `Request.rotary` and `Request.splice`: only then may a cache start from a `Sight`.
+  ## Whether `stepped` reads `Request.splice` (and `Request.rotary`, if `rotated`): only then may a cache start from a `Sight`.
   sighted: Bool = false
   ## Where the cache is kept (`Placement.Kv`): `Host` moves the keys and the values of a step on a Vulkan device to
   ## the CPU.
   kv: Placement.Kv = Placement.Kv.Device
+  ## Whether the rope of the model turns by more than the index of a token (Qwen3.5's three axes and `Cache.delta`). A
+  ## model with one position per token (`false`) is given no `rotary`, and a `Sight` for it must be a plain one
+  ## (`plain_sight`): any other layout is an error.
+  rotated: Bool = true
   traced: Fn[M, M]
   stepped: Fn[M, Request, Result[List[Tensor.Tensor]]]
 end
@@ -206,6 +212,12 @@ def close[M](g: Core[M]) -> Void
       _ = g.plans.send(Stepping.Plans(graphs: {}, compiles: p.compiles), 0)
     none -> nil
   end
+end
+
+## The `Sight` of a model with one position per token: the `features` (`[n, width]`) at the tokens of `ids` equal to
+## `image_token`, in order, positioned by their index.
+def plain_sight(features: Tensor.Tensor, image_token: Int, ids: List[Int]) -> Sight
+  Sight(features: features, image_token: image_token, layout: Mrope.indexed(ids, image_token))
 end
 
 ## The empty cache, or, with `sight`, the one of a prompt with images: the first `step` splices their `features` in and
@@ -642,6 +654,10 @@ def rotation[M](s: Stepper[M], cache: Cache, ids: List[Int], width: Int, backend
   return error("a Sight is for the prompt: the cache already has #{cache.length} tokens") if cache.length > 0
   seen = sight.layout
   try fits(sight, ids)
+  if not s.rotated
+    try plain?(seen)
+  end
+
   n = seen.at.size
   return ok(bare) if n == 0
   shape = Tensor.shape(sight.features)
@@ -658,15 +674,39 @@ def rotation[M](s: Stepper[M], cache: Cache, ids: List[Int], width: Int, backend
     end
   end
 
-  rotary = try Tensor.from_list(rows, [3, width], Tensor.Dtype.I32, backend)
+  rotary: Optional[Tensor.Tensor] = none
+  own: List[Tensor.Tensor] = []
+  if s.rotated
+    made = try Tensor.from_list(rows, [3, width], Tensor.Dtype.I32, backend)
+    rotary = some(made)
+    own = [made]
+  end
+
   where = Tensor.from_list(seen.at.map { |i| Tensor.Values.Int(i) }, [n], Tensor.Dtype.I32, backend)
   if not where.ok?
-    Lift.close([rotary])
+    Lift.close(own)
     return error(where.message)
   end
 
   images = Splice(at: where.unwrap!, features: sight.features)
-  ok(Feed(rotary: some(rotary), splice: some(images), own: [rotary, images.at], tag: " sight #{n}"))
+  ok(Feed(rotary: rotary, splice: some(images), own: own + [images.at], tag: " sight #{n}"))
+end
+
+## An error unless `seen` is the layout of `plain_sight`: the index of each token on every axis, and no `delta`.
+def plain?(seen: Mrope.Layout) -> Result[Void]
+  if seen.delta != 0
+    return error("this model has one position for each token, the layout has a delta of #{seen.delta}")
+  end
+
+  for axis in [seen.time, seen.down, seen.across]
+    for i in 0...axis.size
+      if axis[i] != i
+        return error("this model has one position for each token, the layout puts token #{i} at #{axis[i]}")
+      end
+    end
+  end
+
+  ok()
 end
 
 ## An error unless the layout of `sight` is the one of the prompt `ids`: a position on each axis for every token, and

@@ -21,6 +21,8 @@ curl -sIL "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/$rev/model.safetensors
 |---|---|---|---|
 | Qwen3-0.6B (text) | `Qwen/Qwen3-0.6B` | `model.safetensors`, `config.json`, `tokenizer.json` (and `tokenizer_config.json`) | `Qwen3.open` |
 | Qwen2.5-0.5B-Instruct | `Qwen/Qwen2.5-0.5B-Instruct` | the same | `Qwen3.open` |
+| Llama-architecture models (SmolLM2: `model_type` `llama`, no biases, no norms on the query and key) | `HuggingFaceTB/SmolLM2-135M` | the same | `Qwen3.open` (tested on a tiny model only) |
+| SmolVLM's text model (`model_type` `idefics3`, the Llama in `text_config`, tensors under `model.text_model.`) | `HuggingFaceTB/SmolVLM-256M-Instruct` | the same | `Qwen3.open_idefics3`; images: `Generate.start(some(KvDecoder.plain_sight(features, Qwen3.image_token(dir).unwrap!, ids)))` with the rows of `SmolVlmVision` (logits match Hugging Face on the real 256M) |
 | DistilBERT sentence embeddings | `sentence-transformers/msmarco-distilbert-cos-v5` | `model.safetensors`, `config.json`, `tokenizer.json` | `DistilBert.open` |
 | DistilBERT | `distilbert/distilbert-base-uncased` | the same | `DistilBert.open` |
 | BERT | `google-bert/bert-base-uncased` | the same | `Bert.open` |
@@ -131,8 +133,8 @@ end
   fragment is in `site/content/transformers/models.md`.
 - SmolVLM (`HuggingFaceTB/SmolVLM-256M-Instruct`), the vision side only so far: `SmolVlmVision.open(dir, backend)` and
   `encode(v, tile)` of a normalized 512 by 512 tile (`Vision.to_tensor`, `Vision.normalize` with mean and std 0.5) give its
-  64 rows of 576 for the text model, close the rows with `Lift.close` and the tower with `close_model`. No text model,
-  splitting or chat template yet (ml#84); the fragment is in `site/content/transformers/models.md`.
+  64 rows of 576 for the text model, close the rows with `Lift.close` and the tower with `close_model`. The text
+  model is `Qwen3.open_idefics3`; no splitting, processor or chat template yet (ml#84); the fragment is in `site/content/transformers/models.md`.
 - Granite MoE (`GraniteMoe.open(dir, backend)`, `ibm-granite/granite-3.1-1b-a400m-instruct`) generates with
   `pkg/transformers/generate_granite_moe` (`Generate.open(m)`, the same calls); it has no tokenizer or chat template yet,
   so a caller passes ids.

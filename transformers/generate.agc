@@ -45,8 +45,9 @@ def close(g: Generator) -> Void
   KvDecoder.close(core(g))
 end
 
-## The empty cache.
-def start() -> Cache = KvDecoder.start()
+## The empty cache, or with `sight` the one of a prompt with image features (`KvDecoder.start`): the rows are spliced
+## into the embeddings of the image tokens, and the positions stay the index of each token (`KvDecoder.plain_sight`).
+def start(sight: Optional[KvDecoder.Sight] = none) -> Cache = KvDecoder.start(sight)
 
 ## Feeds `ids` after the tokens of `cache`: a prompt of any length when the cache is empty, one id after that. The cache
 ## that `step` takes is dead afterwards, even when the step fails (`KvDecoder.step`).
@@ -71,15 +72,17 @@ def finish(cache: Cache) -> Void
 end
 
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`),
-## greedy or sampled (`Stepping.generate`). The prompt and the new ids must fit `max_position_embeddings`.
+## greedy or sampled (`Stepping.generate`). The prompt and the new ids must fit `max_position_embeddings`. `sight` is
+## the image features of the prompt.
 def generate(
   g: Generator,
   ids: List[Int],
   max_new: Int,
   stop: List[Int] = [],
   sampling: Optional[Sample.Sampling] = none,
+  sight: Optional[KvDecoder.Sight] = none,
 ) -> Result[List[Int]]
-  KvDecoder.generate(core(g), ids, max_new, stop, sampling)
+  KvDecoder.generate(core(g), ids, max_new, stop, sampling, sight)
 end
 
 private
@@ -95,6 +98,8 @@ def stepper(m: Qwen3.Qwen3, kv: Placement.Kv) -> KvDecoder.Stepper[Qwen3.Qwen3]
     limit: m.config.max_position_embeddings,
     vocab: m.config.vocab_size,
     backend: m.device,
+    sighted: true,
+    rotated: false,
     kv: kv,
     traced: ->(p: Qwen3.Qwen3) { Qwen3.traced(p) },
     stepped: ->(p: Qwen3.Qwen3, req: KvDecoder.Request) { stepped(p, req) },
@@ -116,7 +121,7 @@ def stepped(m: Qwen3.Qwen3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor
   width = Tensor.shape(xs[0])[0]
   d = m.config.hidden_size
   slots = Padded.Slots(positions: xs[1], capacity: room)
-  h = try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d])
+  h = try KvDecoder.spliced(try Tensor.reshape(try Nn.embedding(m.tokens, xs[0]), [1, width, d]), req)
   mask = try Padded.padded_mask(slots.with(capacity: reach), Tensor.dtype(h))
   reading = try KvDecoder.reading(req, mask)
   keys: List[Tensor.Tensor] = []

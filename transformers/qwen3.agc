@@ -34,9 +34,21 @@ struct Config
   hidden_act: String
   tie_word_embeddings: Bool = true
   attention_bias: Bool = false
+  mlp_bias: Bool = false
   use_sliding_window: Bool = false
   rope_scaling: Optional[Scaling]
   sliding_window: Optional[Int]
+end
+
+## The `image_token_id` of a `config.json`.
+struct ImageToken
+  image_token_id: Int
+end
+
+## `config.json` of a SmolVLM folder: the text model is in `text_config`.
+struct Idefics3Document
+  model_type: String
+  text_config: Config
 end
 
 ## Any `rope_scaling` object: the model has none.
@@ -85,6 +97,29 @@ end
 def read_config(dir: String) -> Result[Config]
   text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
   Source.within("#{dir}/config.json", JSON.decode(text, Config))
+end
+
+## The Llama text model of the folder `dir` of a SmolVLM (`Idefics3ForConditionalGeneration`, `model_type` `idefics3`):
+## the `text_config` of its `config.json`, its tensors under `model.text_model.` and its head `lm_head.weight`. The
+## tower and the connector in the same file are not read, and `weights(m)` still names the tensors of a plain model
+## (`model.layers...`).
+def open_idefics3(
+  dir: String,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+  layers_on_device: Optional[Int] = none,
+) -> Result[Qwen3]
+  text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
+  file = try Source.within("#{dir}/config.json", JSON.decode(text, Idefics3Document))
+  return error("model_type is #{file.model_type}, not idefics3") if file.model_type != "idefics3"
+  load(try checkpoint(dir), file.text_config, backend, weights, layers_on_device, "model.text_model")
+end
+
+## The id of the image token of the SmolVLM folder `dir` (`image_token_id` of its `config.json`), the one that a
+## `KvDecoder.Sight` names.
+def image_token(dir: String) -> Result[Int]
+  text = try Source.within("#{dir}/config.json", Source.read_text("#{dir}/config.json"))
+  ok((try Source.within("#{dir}/config.json", JSON.decode(text, ImageToken))).image_token_id)
 end
 
 ## The weights of the model folder `dir`: its `model.safetensors`, or the `model.safetensors.index.json` of a sharded one.
@@ -146,12 +181,13 @@ end
 ## An error when `config` is a model this file does not run: another type, activation, attention bias, rope scaling or
 ## sliding window, or head counts that do not divide.
 def check_config(config: Config) -> Result[Void]
-  if config.model_type != "qwen3" and config.model_type != "qwen2"
-    return error("model_type is #{config.model_type}, not qwen3 or qwen2")
+  if config.model_type != "qwen3" and config.model_type != "qwen2" and config.model_type != "llama"
+    return error("model_type is #{config.model_type}, not qwen3, qwen2 or llama")
   end
 
   return error("hidden_act #{config.hidden_act} is not supported, only silu") if config.hidden_act != "silu"
   return error("attention_bias is not supported") if config.attention_bias
+  return error("mlp_bias is not supported") if config.mlp_bias
   return error("rope_scaling is not supported") if config.rope_scaling.some?
   return error("sliding window attention is not supported") if config.use_sliding_window
   if config.num_key_value_heads < 1 or config.num_attention_heads % config.num_key_value_heads != 0
@@ -162,13 +198,15 @@ def check_config(config: Config) -> Result[Void]
   ok()
 end
 
-## The model of an open checkpoint, its shapes checked against `config`.
+## The model of an open checkpoint, its shapes checked against `config`. The tensors of the embedding table, the blocks
+## and the final norm are under `root` (`model.`), and the head is `lm_head` at the top.
 def load(
   c: Hub.Checkpoint,
   config: Config,
   backend: Tensor.Backend,
   weights: Tensor.Dtype = Tensor.Dtype.F32,
   layers_on_device: Optional[Int] = none,
+  root: String = "model",
 ) -> Result[Qwen3]
   config = try with_head_dim(config)
   try check_config(config)
@@ -178,23 +216,24 @@ def load(
 
   width = config.hidden_size
   side = Placement.placement(backend, config.num_hidden_layers, layers_on_device)
-  tokens = try Load.embedding(c, "model.embed_tokens.weight", side.table, weights)
-  try expect_shape("model.embed_tokens.weight", tokens.table, [config.vocab_size, width])
+  table = "#{root}.embed_tokens.weight"
+  tokens = try Load.embedding(c, table, side.table, weights)
+  try expect_shape(table, tokens.table, [config.vocab_size, width])
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
     blocks = blocks.push(
-      try block(c, "model.layers.#{i}.", config, Placement.layer_backend(backend, i, layers_on_device), weights),
+      try block(c, "#{root}.layers.#{i}.", config, Placement.layer_backend(backend, i, layers_on_device), weights),
     )
   end
 
-  head = try head_of(c, config, tokens, side.head, weights)
+  head = try head_of(c, config, tokens, side.head, weights, table)
   ok(
     Qwen3(
       config: config,
       tokens: tokens,
       stack: Nn.EncoderStack(
         blocks: blocks,
-        final_norm: some(try rms(c, "model.norm", config.rms_norm_eps, side.head)),
+        final_norm: some(try rms(c, "#{root}.norm", config.rms_norm_eps, side.head)),
       ),
       head: head,
       device: backend,
@@ -429,11 +468,12 @@ def head_of(
   tokens: Nn.Embedding,
   backend: Tensor.Backend,
   weights: Tensor.Dtype,
+  table: String,
 ) -> Result[Nn.Dense]
   if config.tie_word_embeddings
     return ok(Nn.Dense(w: tokens.table, b: none, out_in: true)) if Tensor.backend(tokens.table) == backend
 
-    copy = try Load.embedding(c, "model.embed_tokens.weight", backend, weights)
+    copy = try Load.embedding(c, table, backend, weights)
     return ok(Nn.Dense(w: copy.table, b: none, out_in: true))
   end
 
