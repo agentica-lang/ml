@@ -202,7 +202,22 @@ jobs:
         # instead of passing them through the absent path.
         env:
           TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "nn", "train", "asr", "transformers", "hub", "vision"]'), matrix.package) && '1' || '' }}
-        run: agentica test --max-steps 10000000
+        run: agentica test --coverage --max-steps 10000000
+
+      # The line coverage of the Test step: at least FLOOR percent (tools/coverage_check.py, where the floor and the
+      # files that CI cannot run are) of the package's own lines. The report is kept as an artifact, with no external
+      # service.
+      - name: Coverage
+        run: python3 ../tools/coverage_check.py coverage/lcov.info --package ${{ matrix.package }}
+
+      - name: Upload the coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lcov-${{ matrix.package }}
+          path: ${{ matrix.package }}/coverage/lcov.info
+          if-no-files-found: ignore
+          retention-days: 14
 
       # A package with a long/ folder runs its long-input tests here, with a
       # budget of their own: transformers/long/ sends 200k characters through

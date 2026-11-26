@@ -86,6 +86,21 @@ and `Backend.Torch` answers `error("backend not available")`.
 [`tensor/README.md`](tensor/README.md) has the setup, the coverage table, the
 tolerances and the measured cost of the dependency.
 
+## Coverage
+
+CI runs each package's tests with `--coverage` and fails the package when fewer than 80% of its own lines ran
+(`tools/coverage_check.py`, which holds the floor); the report, `coverage/lcov.info`, is a job artifact. The count is
+what CI can run, with no GPU and no real model. The lines of the workspace packages a package reads are not counted
+(their own job counts them), and a few files that only run with libtorch, Vulkan or a downloaded checkpoint are
+listed in the script, each with its reason. Locally, from the package folder:
+
+```sh
+agentica test --coverage --max-steps 10000000
+python3 ../tools/coverage_check.py coverage/lcov.info --package tensor
+```
+
+The check prints the total, the excluded files and, below the floor, the worst files first.
+
 ## Agent skills
 
 Two skills in [`.agents/skills/`](.agents/skills/) guide an agent that uses the packages from an app: `ml-inference`
