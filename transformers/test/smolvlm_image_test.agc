@@ -1,7 +1,7 @@
 ## A prompt with image features through `generate.agc` against Hugging Face's `Idefics3ForConditionalGeneration` on the
 ## tiny random SmolVLM of `smolvlm_image_golden.py` (`fixtures/smolvlm_image_golden.json`): the text model is opened by
 ## `Qwen3.open_idefics3`, the features of the golden are spliced in at the image tokens by a `KvDecoder.Sight` whose
-## layout is the plain positions of the prompt (`Mrope.plain`: Idefics3 has no multimodal rope), and the logits of the
+## layout is the index of each token (`KvDecoder.plain_sight`: Idefics3 has no multimodal rope), and the logits of the
 ## prompt and of the token fed after it, and the greedy ids, are Hugging Face's. Run from `transformers/`.
 
 import Write from "pkg/hub/safetensors_write"
@@ -40,13 +40,7 @@ private
 def golden() -> Result[Golden] = JSON.decode(try File.read_text("test/fixtures/smolvlm_image_golden.json"), Golden)
 
 def sight_of(g: Golden, backend: Tensor.Backend) -> Result[KvDecoder.Sight]
-  ok(
-    KvDecoder.Sight(
-      features: try S.f32(g.features, [g.features.size / HIDDEN, HIDDEN], backend),
-      image_token: IMAGE,
-      layout: Mrope.plain(g.ids, IMAGE),
-    ),
-  )
+  ok(KvDecoder.plain_sight(try S.f32(g.features, [g.features.size / HIDDEN, HIDDEN], backend), IMAGE, g.ids))
 end
 
 def with_model[T](g: Golden, body: Fn[String, Result[T]]) -> Result[T]
@@ -96,7 +90,7 @@ end
 
 def test_the_plain_layout_counts_the_tokens_and_marks_the_image_ones() -> Result[Void]
   g = try golden()
-  layout = Mrope.plain(g.ids, IMAGE)
+  layout = Mrope.indexed(g.ids, IMAGE)
   positions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
   try Test.eq(layout.time, positions)
   try Test.eq(layout.down, positions)
@@ -169,4 +163,54 @@ def test_a_sight_that_does_not_fit_the_prompt_is_an_error() -> Result[Void]
     Qwen3.close_model(m)
     ok()
   end
+end
+
+## A model with one position for each token turns by the index, so a layout that moves a token, or has a `delta` as
+## Qwen3.5's, is refused before any step runs.
+def test_a_layout_with_a_delta_is_an_error_for_a_plain_model() -> Result[Void]
+  g = try golden()
+  with_model(g) do |dir|
+    m = try Qwen3.open_idefics3(dir, S.REF)
+    gen = try Generate.open(m)
+    sight = try sight_of(g, S.REF)
+    layout = sight.layout
+    moved = layout.time.take(5) + [20] + layout.time.drop(6)
+    cases = [
+      sight.with(layout: layout.with(delta: 3)),
+      sight.with(layout: layout.with(time: moved)),
+      sight.with(layout: layout.with(down: moved)),
+      sight.with(layout: layout.with(across: moved)),
+    ]
+
+    for c in cases
+      try S.expect_error(Generate.step_logits(gen, Generate.start(some(c)), g.ids), "one position for each token")
+    end
+
+    Generate.close(gen)
+    Lift.close([sight.features])
+    Qwen3.close_model(m)
+    ok()
+  end
+end
+
+## A text prompt, with no sight, is the model of `Qwen3.run`: the logits of its last position are the same.
+def test_a_prompt_without_a_sight_is_what_run_gives() -> Result[Void]
+  g = try golden()
+  for backend in [S.REF] + try S.ggml_backends()
+    tol = tolerance(backend)
+    try with_model(g) do |dir|
+      m = try Qwen3.open_idefics3(dir, backend)
+      gen = try Generate.open(m)
+      ids = g.ids.take(6)
+      stepped = try Generate.step_logits(gen, Generate.start(), ids)
+      run = try Qwen3.run(m, [ids], true)
+      try S.expect_close(stepped.logits, try S.floats_of(run), tol[0], tol[1], "the last position")
+      Generate.finish(stepped.cache)
+      Generate.close(gen)
+      Qwen3.close_model(m)
+      ok()
+    end
+  end
+
+  ok()
 end

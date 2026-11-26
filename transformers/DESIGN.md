@@ -230,9 +230,11 @@ tower is closed before the text model opens, so the two never share the memory.
   axis; the cost is three ropes for the queries and the keys of the full-attention layers, in a prompt with images only.
   Positions of `[seq]` are the plain rope, so text, and the tokens after an image, use no masks.
 - Qwen3, Qwen2.5 and Llama (`generate.agc`) are sighted too, for SmolVLM (Idefics3: no multimodal rope, plain positions,
-  so the image rows replace the embeddings and nothing else changes). Its `Sight` has `Mrope.plain(ids, image_token)`
-  as layout (an index on each axis, `delta` 0), and the step drops the three axes of `Request.rotary`, as the positions
-  of `xs[1]` are the same. `Qwen3.image_token(dir)` reads `image_token_id` of the folder.
+  so the image rows replace the embeddings and nothing else changes). Its stepper says `rotated: false`: the step is
+  given no `Request.rotary` (nothing is built or planned for the three axes), the attention turns by the index, and the
+  `Sight` must be `KvDecoder.plain_sight(features, image_token, ids)`, whose layout (`Mrope.indexed`) has the index of
+  each token on every axis and no `delta`. A layout of Qwen3.5's (a `delta`, or axes that differ from the index) is an
+  error for such a model, before any step runs. `Qwen3.image_token(dir)` reads `image_token_id` of the folder.
 - Not supported: video, and a second `generate` that continues a sequence with another image (a `Sight` is for the
   prompt).
 
@@ -682,8 +684,9 @@ error row per config field.
   rows (`test/fixtures/smolvlm_image_golden.json`, 135 KB). `Qwen3.open_idefics3` with a `KvDecoder.Sight` gives
   Hugging Face's logits of the prompt and of a token fed after it (1e-5 on the reference, 2e-4 on ggml CPU, whose
   cache is `F16`; the largest gap is 8e-5) and its 4 greedy ids; the same ids without a sight answer otherwise, and a
-  sight with too few rows or another image token is an error. Mutants, each failing it: no splice, the three axes of
-  `rotary` kept, and `sighted` off.
+  sight with too few rows or another image token is an error, as is a layout with a `delta` or a moved position; a text
+  prompt with no sight gives the logits of `Qwen3.run`. Mutants, each failing it: no splice, `rotated` true, `sighted`
+  off, and the plain layout not checked.
 - `vision/test/smolvlm_image_hf_test.agc` against `vision/test/smolvlm_image_hf_golden.py` (manual, as the others:
   `vision/test/fixtures/smolvlm/image_golden.json`): the real `SmolVLM-256M-Instruct` on a prompt of 78 ids with the 64
   `<image>` tokens of one tile. The tiles of `smolvlm_hf_test` go through the tower and the connector, and the rows

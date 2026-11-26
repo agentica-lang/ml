@@ -43,7 +43,7 @@ def close(g: Generator) -> Void
 end
 
 ## The empty cache, or with `sight` the one of a prompt with image features (`KvDecoder.start`): the rows are spliced
-## into the embeddings of the image tokens, and the positions stay the plain ones (`Mrope.plain`).
+## into the embeddings of the image tokens, and the positions stay the index of each token (`KvDecoder.plain_sight`).
 def start(sight: Optional[KvDecoder.Sight] = none) -> Cache = KvDecoder.start(sight)
 
 ## Feeds `ids` after the tokens of `cache`: a prompt of any length when the cache is empty, one id after that. The cache
@@ -96,6 +96,7 @@ def stepper(m: Qwen3.Qwen3) -> KvDecoder.Stepper[Qwen3.Qwen3]
     vocab: m.config.vocab_size,
     backend: m.device,
     sighted: true,
+    rotated: false,
     traced: ->(p: Qwen3.Qwen3) { Qwen3.traced(p) },
     stepped: ->(p: Qwen3.Qwen3, req: KvDecoder.Request) { stepped(p, req) },
   )
@@ -106,7 +107,6 @@ end
 ## or the choice `[1]`), then the keys and the values of every layer. The cache it leaves has `room` rows, of which
 ## the attention reads the first `reach` (every row the new tokens may see is among them).
 def stepped(m: Qwen3.Qwen3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor]]
-  req = plain_positions(req)
   usable = req.usable
   xs = req.xs
   room = req.room
@@ -144,17 +144,6 @@ def stepped(m: Qwen3.Qwen3, req: KvDecoder.Request) -> Result[List[Tensor.Tensor
   head = try Stepping.headed(logits, mode)
 
   ok([head] + keys + values)
-end
-
-## `req` for a rope with one position per token: the three axes of a `Sight` (`KvDecoder.rotation`) are dropped, as the
-## positions of a plain layout are the indexes in `xs[1]`.
-def plain_positions(req: KvDecoder.Request) -> KvDecoder.Request
-  case req.rotary
-    some(r) ->
-      return req.with(rotary: none) if Tensor.shape(r).size == 2
-      req
-    none -> req
-  end
 end
 
 ## One block over the new tokens `h` `[1, width, d]`, as `Nn.encoder_block` with

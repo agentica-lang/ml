@@ -2,7 +2,7 @@
 ## `fixtures/smolvlm/image_golden.json`), on the real `HuggingFaceTB/SmolVLM-256M-Instruct` in `float32`: each 512 by 512
 ## tile of `fixtures/smolvlm/tiles` (the ones of `smolvlm_hf_test.agc`) goes through `to_tensor`, `normalize` and
 ## `SmolVlmVision.encode`; its 64 rows are spliced into the prompt of the golden at the 64 `<image>` tokens by a
-## `KvDecoder.Sight` over `Qwen3.open_idefics3` (the text model of the same folder), and the logits of the last
+## `KvDecoder.plain_sight` over `Qwen3.open_idefics3` (the text model of the same folder), and the logits of the last
 ## position are compared with Hugging Face's: the mean, the mean of the absolute values, one value of every `stride`th
 ## place and the ten largest with their ids.
 ##
@@ -15,7 +15,6 @@ import Image from "pkg/image/image"
 import Generate from "pkg/transformers/generate"
 import KvDecoder from "pkg/transformers/kv_decoder"
 import Lift from "pkg/transformers/lift"
-import Mrope from "pkg/transformers/mrope"
 import Qwen3 from "pkg/transformers/qwen3"
 import SmolVlmVision from "pkg/transformers/smolvlm_vision"
 import Tensor from "pkg/tensor/tensor"
@@ -99,11 +98,7 @@ end
 
 def check(dir: String, want: Golden, c: Case, backend: Tensor.Backend) -> Result[String]
   rows = try features(dir, c, backend)
-  sight = KvDecoder.Sight(
-    features: rows,
-    image_token: want.image_token,
-    layout: Mrope.plain(want.ids, want.image_token),
-  )
+  sight = KvDecoder.plain_sight(rows, want.image_token, want.ids)
 
   m = try Qwen3.open_idefics3(dir, backend)
   gen = try Generate.open(m)

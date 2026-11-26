@@ -46,9 +46,9 @@ def expand(ids: List[Int], pad_token: Int, grids: List[Grid], merge: Int) -> Res
   ok(out)
 end
 
-## The `Layout` of a model with plain rope positions (Idefics3): every token has its index on the three axes, `at` the
-## tokens equal to `image_token`, and no `delta`.
-def plain(ids: List[Int], image_token: Int) -> Layout
+## The `Layout` of a model with one position for each token (Idefics3): every token has its index on the three axes,
+## `at` the tokens equal to `image_token`, and no `delta`.
+def indexed(ids: List[Int], image_token: Int) -> Layout
   index: List[Int] = []
   at: List[Int] = []
   for i in 0...ids.size
