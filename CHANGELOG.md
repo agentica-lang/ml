@@ -41,6 +41,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Qwen3_5Vision` (`pkg/transformers/qwen3_5_vision`): the vision tower of Qwen3.5 (`Qwen/Qwen3.5-0.8B`), `open` and `encode` of one image's patches to the features that the text model reads at the image tokens (ml#151).
 - Images in the Qwen3.5 text model: `Mrope.layout` (the 3-axis positions and `rope_deltas` of an image prompt), `Generate.start(sight)` and the `sight` of `Generate.generate` splice the features of `Qwen3_5Vision` in at the image tokens and turn the attention by the three axes, to Hugging Face's logits on a tiny model (ml#151).
 - `SmolVlmVision` (`pkg/transformers/smolvlm_vision`): the vision tower and the connector of SmolVLM (`HuggingFaceTB/SmolVLM-256M-Instruct`), `open` and `encode` of normalized 512 by 512 tiles to their 64 rows each for the text model, to Hugging Face's `get_image_features` on a tiny model and on the real checkpoint (ml#84, the first slice).
+- `Qwen3.open` reads `model_type` `llama` (SmolLM2, the text model of SmolVLM): the Qwen2 block with no biases, to Hugging Face's `LlamaForCausalLM` logits on a tiny model; `mlp_bias: true` is an error (ml#84).
 
 ### hub
 

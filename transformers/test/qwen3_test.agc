@@ -346,7 +346,7 @@ def test_a_model_that_is_not_qwen3_is_refused() -> Result[Void]
   with_peer do |dir|
     config = try File.read_text("#{dir}/tiny/config.json")
     for wrong in [
-      try S.replaced(config, "\"qwen3\"", "\"llama\""),
+      try S.replaced(config, "\"qwen3\"", "\"mistral\""),
       try S.replaced(config, "\"silu\"", "\"gelu\""),
       try S.replaced(config, "\"attention_bias\": false", "\"attention_bias\": true"),
       try S.replaced(config, "\"use_sliding_window\": false", "\"use_sliding_window\": true"),

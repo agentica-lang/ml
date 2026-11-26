@@ -33,6 +33,7 @@ struct Config
   hidden_act: String
   tie_word_embeddings: Bool = true
   attention_bias: Bool = false
+  mlp_bias: Bool = false
   use_sliding_window: Bool = false
   rope_scaling: Optional[Scaling]
   sliding_window: Optional[Int]
@@ -151,12 +152,13 @@ end
 ## An error when `config` is a model this file does not run: another type, activation, attention bias, rope scaling or
 ## sliding window, or head counts that do not divide.
 def check_config(config: Config) -> Result[Void]
-  if config.model_type != "qwen3" and config.model_type != "qwen2"
-    return error("model_type is #{config.model_type}, not qwen3 or qwen2")
+  if config.model_type != "qwen3" and config.model_type != "qwen2" and config.model_type != "llama"
+    return error("model_type is #{config.model_type}, not qwen3, qwen2 or llama")
   end
 
   return error("hidden_act #{config.hidden_act} is not supported, only silu") if config.hidden_act != "silu"
   return error("attention_bias is not supported") if config.attention_bias
+  return error("mlp_bias is not supported") if config.mlp_bias
   return error("rope_scaling is not supported") if config.rope_scaling.some?
   return error("sliding window attention is not supported") if config.use_sliding_window
   if config.num_key_value_heads < 1 or config.num_attention_heads % config.num_key_value_heads != 0
