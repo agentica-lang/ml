@@ -311,18 +311,24 @@ naming it. Eagerly, `Xla` only creates tensors, reads them back and passes
 
 `.github/workflows/ci.yml` has one generic job per package folder. It runs
 `agentica check`, `agentica fmt --check`, the native-gen `--check` of
-`native/torch_native.h`, and `agentica test` on the pinned Agentica. It does
-**not** install libtorch (a 473 MB `libtorch_cpu.so` plus 51 MB of headers). So:
+`native/torch_native.h`, and `agentica test` on the pinned Agentica. That job
+does **not** install libtorch (a 473 MB `libtorch_cpu.so` plus 51 MB of
+headers; the repository never downloads it). So:
 
-- CI proves that the package checks and formats, that the committed header is
-  the one native-gen makes from `src/native.agc`, and that the suite runs
-  green with the module absent.
-- CI does **not** prove that `native/torch.c` compiles, that it still matches
-  libtorch's C++ API, or that the values agree with the reference. With
-  `optional = true`, a broken C++ file, a libtorch API drift and a missing
-  libtorch are the same one-line warning inside a green job.
-- The libtorch comparison runs locally, with libtorch 2.4.1+cpu at
-  `$HOME/opt/libtorch`.
+- That job proves that the package checks and formats, that the committed
+  header is the one native-gen makes from `src/native.agc`, and that the suite
+  runs green with the module absent.
+- The `torch` job installs Ubuntu's `libtorch-dev` (a system package; its
+  version is printed in the job log), builds `native/torch.c` and runs the whole
+  suite with `TENSOR_REQUIRE_TORCH=1`, so a module that did not build fails the
+  torch tests instead of passing them as absent. It proves that the C++ compiles
+  against that libtorch and that the values agree with the reference. It runs,
+  in parallel with the packages, when `tensor/`, `train/` or the workflow
+  changes. The line coverage of `src/torch.agc`, `src/torch_dtypes.agc` and
+  `src/native.agc` is counted from this job (`tools/coverage_check.py --only
+  libtorch`), not from the package job.
+- The release the tolerances and the numbers of this README were measured on is
+  libtorch 2.4.1+cpu at `$HOME/opt/libtorch`.
 - CI **does** build ggml's CPU backend (`tools/build-engine.sh`, the
   workflow's engine step), so `native/ggml.c` compiles and the ggml CPU
   checks run there; `TENSOR_REQUIRE_GGML=1` makes a module that did not build

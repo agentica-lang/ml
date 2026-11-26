@@ -7,8 +7,10 @@ Usage, from the package folder after `agentica test --coverage`:
 
 It counts the lines of the package's own files, and skips the files of the
 workspace packages it reads (`pkg/<name>@workspace/...`, covered by their own
-job) and the files in EXCLUDED, which CI cannot run. A package below the floor
-gets tests, not a lower floor or a longer list here.
+job) and the files in EXCLUDED, which the `packages` job cannot run. A job that
+can run some of them checks just those files, with `--only NEEDS` (the `torch`
+job: `--only libtorch`). A package below the floor gets tests, not a lower
+floor or a longer list here.
 """
 
 import argparse
@@ -16,18 +18,17 @@ import sys
 
 FLOOR = 80.0
 
-# Files that CI cannot run, by package, with the reason. Each is counted as not
-# there. Code that only runs with a GPU or a real model is listed here;
-# anything CI can run stays counted.
+# Files that the `packages` job cannot run, by package: what each needs, and why. Each is counted as not there. Code
+# that only runs with a GPU or a real model is listed here; anything CI can run stays counted.
 EXCLUDED = {
     "tensor": {
-        "src/torch.agc": "the libtorch backend: CI neither builds nor installs libtorch, so its tests skip",
-        "src/torch_dtypes.agc": "the dtype tables of the libtorch backend, used only by src/torch.agc",
-        "src/native.agc": "the FFI boundary of native/torch.c, which needs libtorch to build",
-        "test/vulkan_mlp.agc": "the helper program of the Vulkan tests: CI has no Vulkan device",
+        "src/torch.agc": ("libtorch", "the libtorch backend: the `packages` job does not install libtorch"),
+        "src/torch_dtypes.agc": ("libtorch", "the dtype tables of the libtorch backend, used only by src/torch.agc"),
+        "src/native.agc": ("libtorch", "the FFI boundary of native/torch.c, which needs libtorch to build"),
+        "test/vulkan_mlp.agc": ("vulkan", "the helper program of the Vulkan tests: CI has no Vulkan device"),
     },
     "vision": {
-        "test/hf.agc": "the helper of the *_hf_test.agc tests, which need a real Hugging Face checkpoint",
+        "test/hf.agc": ("checkpoint", "the helper of the *_hf_test.agc tests, which need a real Hugging Face checkpoint"),
     },
 }
 
@@ -62,6 +63,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("lcov", help="coverage/lcov.info of `agentica test --coverage`")
     parser.add_argument("--package", required=True, help="the package folder name")
+    parser.add_argument("--only", help="count only the EXCLUDED files that need this (libtorch), as a job that has it")
     args = parser.parse_args()
 
     try:
@@ -71,27 +73,37 @@ def main():
         return 2
 
     excluded = EXCLUDED.get(args.package, {})
-    counted = {
-        name: counts
-        for name, counts in files.items()
-        if WORKSPACE_MARK not in name and name not in excluded
-    }
-    skipped_deps = sum(1 for name in files if WORKSPACE_MARK in name)
-    lines = sum(counts[0] for counts in counted.values())
-    hit = sum(counts[1] for counts in counted.values())
-    if lines == 0:
-        print(f"coverage: {args.package}: no lines counted in {args.lcov}", file=sys.stderr)
-        return 2
-
-    total = percent(hit, lines)
-    print(f"coverage: {args.package} {hit}/{lines} lines ({total:.1f}%), floor {FLOOR:.0f}%")
-    print(f"  {skipped_deps} files of workspace packages not counted")
-    for name, reason in excluded.items():
+    for name in excluded:
         if name not in files:
             print(f"coverage: {args.package}: excluded {name} is not in the report; update EXCLUDED", file=sys.stderr)
             return 2
-        lines_x, hit_x = files[name]
-        print(f"  excluded {name} {hit_x}/{lines_x}: {reason}")
+
+    if args.only:
+        counted = {name: files[name] for name, (needs, _) in excluded.items() if needs == args.only}
+        label = f"{args.package} files that need {args.only}"
+    else:
+        counted = {
+            name: counts
+            for name, counts in files.items()
+            if WORKSPACE_MARK not in name and name not in excluded
+        }
+        label = args.package
+    lines = sum(counts[0] for counts in counted.values())
+    hit = sum(counts[1] for counts in counted.values())
+    if lines == 0:
+        print(f"coverage: {label}: no lines counted in {args.lcov}", file=sys.stderr)
+        return 2
+
+    total = percent(hit, lines)
+    print(f"coverage: {label} {hit}/{lines} lines ({total:.1f}%), floor {FLOOR:.0f}%")
+    if args.only:
+        for name, (lines_c, hit_c) in sorted(counted.items()):
+            print(f"  {name} {hit_c}/{lines_c}")
+    else:
+        print(f"  {sum(1 for name in files if WORKSPACE_MARK in name)} files of workspace packages not counted")
+        for name, (needs, reason) in excluded.items():
+            lines_x, hit_x = files[name]
+            print(f"  excluded {name} {hit_x}/{lines_x}, needs {needs}: {reason}")
 
     if total >= FLOOR:
         return 0
@@ -99,7 +111,7 @@ def main():
     under = sorted(
         ((percent(h, n), name, h, n) for name, (n, h) in counted.items() if n and percent(h, n) < FLOOR)
     )
-    print(f"coverage: {args.package} is below {FLOOR:.0f}%. Files under the floor, worst first:")
+    print(f"coverage: {label} is below {FLOOR:.0f}%. Files under the floor, worst first:")
     for pct, name, h, n in under[:WORST_SHOWN]:
         print(f"  {name} {h}/{n} ({pct:.1f}%), {n - h} lines not run")
     return 1
