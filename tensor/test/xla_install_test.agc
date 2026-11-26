@@ -33,16 +33,29 @@ def plugin(base: String, path: String, sha256: String) -> Xla.Plugin
   Xla.Plugin(arch: "x86_64", url: base + path, size: BODY.size, sha256: sha256)
 end
 
-## Runs `body` with a client, the server's address and an empty cache folder, then removes the folder.
+## Runs `body` with a client, the server's address and an empty cache folder, then removes the folder. The server and
+## its connection tasks have ended when this returns, whatever `body` did: a test that returns with a task running
+## fails with `RUNTIME-TEST-PENDING-TASKS`.
 def with_server(body: Fn[HTTP.Client, String, String, Result[Void]]) -> Result[Void]
   server = try HTTP.serve("127.0.0.1", 0, HTTP.app(&handle))
+  result = with_client(HTTP.local_port(server), body)
+  HTTP.close_server(server)
+  _ = HTTP.wait(server)
+  result
+end
+
+def with_client(port: Int, body: Fn[HTTP.Client, String, String, Result[Void]]) -> Result[Void]
   client = try HTTP.client()
+  result = with_cache(client, "http://127.0.0.1:#{port}", body)
+  HTTP.close_client(client)
+  result
+end
+
+def with_cache(client: HTTP.Client, base: String, body: Fn[HTTP.Client, String, String, Result[Void]]) -> Result[Void]
   cache = "/tmp/agentica-xla-install-#{Random.int(0, 999999999)}"
   try Dir.mkdir_private(cache, 5000)
-  result = body.call(client, "http://127.0.0.1:#{HTTP.local_port(server)}", cache)
+  result = body.call(client, base, cache)
   _ = Path.remove(cache, 5000)
-  HTTP.close_client(client)
-  HTTP.close_server(server)
   result
 end
 
