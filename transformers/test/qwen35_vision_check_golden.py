@@ -39,7 +39,7 @@ def main():
     path = sys.argv[1]
     config = json.load(open(f"{path}/config.json"))["vision_config"]
     config.pop("model_type", None)
-    model = Qwen3_5VisionModel(Qwen3_5VisionConfig(**config)).eval()
+    model = Qwen3_5VisionModel(Qwen3_5VisionConfig(**config, attn_implementation="eager")).eval()
     index = json.load(open(f"{path}/model.safetensors.index.json"))["weight_map"]
     weights = {}
     for file in sorted({f for name, f in index.items() if name.startswith(PREFIX)}):

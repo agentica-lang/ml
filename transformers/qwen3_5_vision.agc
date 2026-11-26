@@ -136,14 +136,7 @@ def encode(m: Vision, patches: Tensor.Tensor, height: Int, width: Int) -> Result
   side = try grid_side(m.config)
   layout = try layout_of(side, merge, height, width)
   backend = Tensor.backend(patches)
-  n = height * width
-  inputs = [
-    try Tensor.from_list(layout.rows.map { |i: Int| Tensor.Values.Int(i) }, [n], Tensor.Dtype.I32, backend),
-    try Tensor.from_list(layout.cols.map { |i: Int| Tensor.Values.Int(i) }, [n], Tensor.Dtype.I32, backend),
-    try Tensor.from_list(layout.taps.map { |i: Int| Tensor.Values.Int(i) }, [4 * n], Tensor.Dtype.I32, backend),
-    try Tensor.floats(layout.weights, [4 * n, 1], backend),
-  ]
-
+  inputs = try host_inputs(layout, backend)
   out = Lift.staged(
     m,
     ->(p: Vision) { traced(p) },
@@ -205,6 +198,27 @@ struct Axis
   first: Int
   second: Int
   weight: Float
+end
+
+## The rows, the columns and the taps (`I32`) and the tap weights (`F32`) as tensors. When one fails, the ones made
+## before it are closed.
+def host_inputs(layout: Layout, backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  made: List[Tensor.Tensor] = []
+  for ids in [layout.rows, layout.cols, layout.taps]
+    case Tensor.from_list(ids.map { |i: Int| Tensor.Values.Int(i) }, [ids.size], Tensor.Dtype.I32, backend)
+      ok(t) -> made = made.push(t)
+      error(e) ->
+        Lift.close(made)
+        return error(e)
+    end
+  end
+
+  case Tensor.floats(layout.weights, [layout.weights.size, 1], backend)
+    ok(t) -> ok(made.push(t))
+    error(e) ->
+      Lift.close(made)
+      error(e)
+  end
 end
 
 def traced_block(b: Block) -> Block
@@ -423,7 +437,7 @@ def projected(m: Vision, qkv: Tensor.Tensor, i: Int) -> Result[Tensor.Tensor]
 end
 
 ## `gelu_pytorch_tanh`, `x * sigmoid(2 * sqrt(2 / pi) * (x + 0.044715 * x^3))`, from the ops that ggml compiles: it has
-## no `Tensor.gelu` (the tanh form) yet.
+## no `Tensor.gelu` (the tanh form) yet (ml#301).
 def gelu_tanh(x: Tensor.Tensor) -> Result[Tensor.Tensor]
   shape = Tensor.shape(x)
   by = ->(v: Float) { Tensor.full(shape, Tensor.Values.Float(v), Tensor.dtype(x), Tensor.backend(x)) }

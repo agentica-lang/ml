@@ -155,11 +155,11 @@ which the text model reads at the image tokens (the wiring is the next step of m
   otherwise.
 - A block is pre-norm (layer norm, `eps` 1e-6) with a fused `qkv` projection and full attention over every patch (one
   image is one segment), then an MLP with `gelu_pytorch_tanh`, written with ops that ggml compiles (`Tensor.gelu` is not
-  lowered to ggml yet). The merger is a layer norm, the join of each square (4 consecutive rows), a dense layer, the exact
+  lowered to ggml yet, ml#301). The merger is a layer norm, the join of each square (4 consecutive rows), a dense layer, the exact
   GELU and a dense layer to the text model's width.
 - Not supported: video (the temporal patch of an image is the frame twice, which the processor makes), several images in
-  one call (call it once for each), deepstack (`deepstack_visual_indexes` of the larger checkpoints), another
-  `hidden_act`, and the `weights` and `with_weights` of a fine-tune.
+  one call (call it once for each), another `hidden_act`, deepstack (the config key is empty in Qwen3.5), and the
+  `weights` and `with_weights` of a fine-tune.
 
 ### Qwen3.5 generation
 
@@ -614,18 +614,19 @@ error row per config field.
   only), so these tests and `generate_qwen35_test.agc` leave Vulkan out (`Support.ggml_backends_for_delta`); the real
   checkpoint checks below cover Vulkan.
 - `test/qwen35_vision_test.agc` against `test/qwen35_vision_golden.py` (manual, Hugging Face's `Qwen3_5VisionModel` in
-  `float32`, `fixtures/qwen35_vision_golden.json`, sha256 `785e4dcc3279d3a7057bbbb33df8b7caf240b1740c1a8077d8bf28e5fc212e82`): a tiny random tower (2 blocks, 16 wide, 2
-  heads, patch 4, a table of 4 by 4 positions) written as a safetensors file under the official names; the merged features
-  of a 4 by 6 and a 6 by 2 grid match on the reference (1e-4) and on ggml CPU (1e-3). The grids are wider and taller,
-  and narrower, than the table, so a resampling that is wrong shows. Mutants that fail it: the rows and columns of the
-  rotary swapped, the other half of the pairs rotated, no bilinear weight, the corners not aligned, the patches of a
-  square in the wrong
-  order, and no cubic term in the GELU. A config the tower does not run (another model type or activation, a position table
-  that is not a square, a head width that is not a multiple of 4), a missing tensor and a grid the patches do not fit are
-  errors.
-- `tools/qwen35_vision_check.agc` on the real tower of `Qwen/Qwen3.5-0.8B` (manual; `test/qwen35_vision_check_golden.py`
+  `float32`, eager attention, `fixtures/qwen35_vision_golden.json`, sha256 `9192ce132509478ae62995ab0acc2c1584612e73aec477a6cb1d368adb8eb6f2`): a tiny random tower (2 blocks, 16
+  wide, 2 heads, patch 4, a table of 4 by 4 positions, `rope_parameters` with `rope_theta` 5000) written as a
+  safetensors file under the official names; the merged features of a 4 by 6 and a 6 by 2 grid match on the reference
+  (1e-4) and on ggml CPU (1e-3). The grids are wider and taller, and narrower, than the table, so a resampling that is
+  wrong shows. Mutants that fail it: the rows and columns of the rotary swapped, the other half of the pairs rotated, no
+  bilinear weight, the corners not aligned, the patches of a square in the wrong order, no cubic term in the GELU, a
+  `rope_theta` doubled, and the merger's exact GELU replaced by Silu or by the tanh form (the last two and the
+  `rope_theta` fail the reference test only: their gap is below ggml's 1e-3). A config the tower does not run (another
+  model type or activation, a position table that is not a square, a head width that is not a multiple of 4), a missing
+  tensor and a grid the patches do not fit are errors, each checked by its phrase.
+- `tools/qwen35_vision_check.agc` on the real tower of the same checkpoint (manual; `test/qwen35_vision_check_golden.py`
   reads only `model.visual.*`): a 6 by 8 grid of patches whose values are an integer formula, 12 rows of 1,024 features;
-  the largest gap is 2.4e-5 on CPU.
+  the largest gap is 2.4e-5 on CPU and 2.0e-5 on Vulkan (it passes within 1e-4).
 - `test/bpe_test.agc` on `fixtures/bpe_marks.json`, a tiny tokenizer with the
   split of Qwen3.5 (`test/tokenizer_golden.py marks`, `tokenizers` 0.23.3):
   the ids and text of `tokenizers` on the strings of the BPE test, 16 where a

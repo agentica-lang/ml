@@ -11,9 +11,9 @@ import Qwen3_5Vision from "../qwen3_5_vision"
 import Source from "../tokenizer/source"
 import Tensor from "pkg/tensor/tensor"
 
-## The gap that passes: `float32` through 12 blocks, features of about 0 to 10.
-ABS = 0.002
-REL = 0.0005
+## The gap that passes: about twice the largest measured (2.4e-5 on CPU), `float32` through 12 blocks.
+ABS = 0.0001
+REL = 0.0001
 
 struct Golden
   grid: List[Int]

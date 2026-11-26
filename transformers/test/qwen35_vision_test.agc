@@ -110,13 +110,16 @@ def test_a_checkpoint_the_tower_cannot_read_is_an_error_that_names_why() -> Resu
   end
 
   for change in [
-    ["\"model_type\": \"qwen3_5\", \"vision_config\"", "\"model_type\": \"qwen3_5_moe\", \"vision_config\""],
-    ["\"gelu_pytorch_tanh\"", "\"gelu\""],
-    ["\"num_position_embeddings\": 16", "\"num_position_embeddings\": 15"],
-    ["\"hidden_size\": 16", "\"hidden_size\": 18"],
+    [
+      "\"model_type\": \"qwen3_5\", \"vision_config\"", "\"model_type\": \"qwen3_5_moe\", \"vision_config\"",
+      "model_type",
+    ],
+    ["\"gelu_pytorch_tanh\"", "\"gelu\"", "hidden_act"],
+    ["\"num_position_embeddings\": 16", "\"num_position_embeddings\": 15", "not a square"],
+    ["\"num_heads\": 2", "\"num_heads\": 16", "multiple of 4"],
   ]
     wrong = try S.replaced(g.config, change[0], change[1])
-    try with_model(g, wrong, "") do |dir| Test.error?(Qwen3_5Vision.open(dir, S.REF)) end
+    try with_model(g, wrong, "") do |dir| S.expect_error(Qwen3_5Vision.open(dir, S.REF), change[2]) end
   end
 
   ok()
