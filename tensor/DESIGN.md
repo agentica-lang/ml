@@ -857,6 +857,25 @@ The price:
   values, shapes, dtypes, and error paths.
 - Every backend is checked against `reference` through that one suite, so a
   backend is correct by construction or not at all.
+- **The reference stores every value as a `Float`, `F32` included
+  ([ml#265](https://github.com/agentica-lang/ml/issues/265), measured on
+  Agentica 0.39).** A `List[Float]` keeps 8 raw bytes per item, but a
+  `List[Float32]` is a list of tagged 16-byte values (a binary32 held in a
+  double), and there is no 4-byte list. Peak RSS of a program that builds
+  10 million items: 125 MB for `Float`, 445 MB for `Float32` (49 MB is the
+  runtime). Decoding the 25 million floats of a 100 MB `from_file` range:
+  7.5 s and 419 MB with `Float`, 9.0 s and 1185 MB with `Float32` (the
+  checkpoint values are binary32 already, so the widening loses nothing).
+  A 256 x 256 `matmul` loop: 0.50 s with `Float`, 0.59 s with `Float32`
+  (binary32 `acc`), 0.75 s with `Float32` items widened for a `Float` `acc`.
+  `Bytes` is the one 4-byte store, and reading an item with `Binary.read_f32_le`
+  makes that loop 8.7 s. So `Float32` storage would use about 3.5 times the
+  memory and run 20 to 40% slower. Rounding every op to binary32 would not make
+  the oracle closer to ggml either (ggml sums in blocks, not in the order of
+  the loop) and would cost it digits: a dot product of 4096 items rounded at
+  each step is off the double one by up to 7e-5 (1e-5 at 1024), against
+  tolerances of 1e-4 to 1e-3. So the reference keeps doubles. Revisit it
+  when Agentica has a packed `Float32` list.
 
 ## 12. StableHLO
 
