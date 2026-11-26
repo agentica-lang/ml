@@ -90,8 +90,10 @@ struct Stepper[M]
   ## The positions of the model (`max_position_embeddings`).
   limit: Int
   vocab: Int
-  ## The token table, which tells the backend of the model.
+  ## The token table, which tells the backend of the model unless `device` does.
   table: Tensor.Tensor
+  ## The backend of the model when it is not the table's (a table on the CPU under a model on a Vulkan device).
+  device: Optional[Tensor.Backend] = none
   ## How many state tensors a step takes and gives, after the keys and the values (0 for a model with none).
   states: Int = 0
   ## The taps of the convolution of a model with states: a prompt (more than one row) is given a `Delta.Padding` for
@@ -322,7 +324,7 @@ def advance[M](g: Core[M], cache: Cache, ids: List[Int], mode: Stepping.Head) ->
     width = room
   end
 
-  backend = Tensor.backend(s.table)
+  backend = s.device.unwrap_or(Tensor.backend(s.table))
   made = fed_inputs(s, ids, cache.length, width, room, backend)
   if not made.ok?
     finish(cache)

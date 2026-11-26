@@ -447,9 +447,12 @@ end
   source) is in host memory, a weight, a cache or any other tensor, whatever
   else it reads (a long prompt's activations outweigh a weight, and copying
   the weight on each run is what a CPU layer avoids); else the side with most
-  operand bytes (a device leaf under 64 KiB, a norm weight or a position,
-  counts for nothing), a tie with an operand computed on the CPU going to the
-  CPU, so the residual stream of a CPU layer stays there. A node that nothing
+  operand bytes; a product or a row lookup that reads a matrix on the device
+  (a weight) runs on the device, and a device leaf below 64 KiB that is not
+  such a matrix (a norm weight, a position, a mask) counts for nothing. A tie
+  goes to the side of the product of a matrix that the node reads (the
+  residual stream follows the layer it passes through, whatever the order of
+  the operands), else to the CPU when an operand was computed there. A node that nothing
   decides (a table made of constants) takes the side of its consumers, from the
   end of the graph back, and the device when they are on both sides or it has
   none. It checks that the backend of that side runs the op, and keeps

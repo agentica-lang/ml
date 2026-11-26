@@ -50,15 +50,20 @@ struct Qwen3
   stack: Nn.EncoderStack
   ## `[vocab_size, hidden_size]` (`out_in`): the embedding table itself when tied.
   head: Nn.Dense
+  ## The backend the model was opened on: where the token ids and the first blocks are, whatever side the table and
+  ## the head are on (`layers_on_device`).
+  device: Tensor.Backend
 end
 
 ## The model in `dir`, which holds `config.json` and `model.safetensors` (or
 ## the `model.safetensors.index.json` of a sharded one), or in the `.gguf` file
 ## `dir` names, whose key-values give the config.
 ## `layers_on_device: n` loads the weights of the blocks from the `n`th on on the CPU (`Ggml(Cpu)`), and a step runs
-## those blocks there, with their KV cache in host memory (`kv_decoder.agc`); the first `n` blocks, the embedding table,
-## the head and the final norm stay on the Vulkan device. `none` keeps every block there, and on any other backend, or
-## with an `n` of the number of blocks or more, `n` changes nothing.
+## those blocks there, with their KV cache in host memory (`kv_decoder.agc`); the first `n` blocks stay on the Vulkan
+## device. With `n` below the number of blocks the embedding table, the head and the final norm are on the CPU too, as in
+## llama.cpp's `-ngl` (the head's product with the vocabulary is slower on the iGPU than on the CPU, and the table is
+## the largest tensor of the model); with every block on the device they are there too. `none` keeps every block on the
+## device, and on any other backend, or with an `n` of the number of blocks or more, `n` changes nothing.
 def open(
   dir: String,
   backend: Tensor.Backend,
@@ -169,7 +174,8 @@ def load(
   end
 
   width = config.hidden_size
-  tokens = try Load.embedding(c, "model.embed_tokens.weight", backend, weights)
+  ends = layer_backend(backend, config.num_hidden_layers - 1, layers_on_device)
+  tokens = try Load.embedding(c, "model.embed_tokens.weight", ends, weights)
   try expect_shape("model.embed_tokens.weight", tokens.table, [config.vocab_size, width])
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...config.num_hidden_layers
@@ -178,13 +184,14 @@ def load(
     )
   end
 
-  head = try head_of(c, config, tokens, backend, weights)
+  head = try head_of(c, config, tokens, ends, weights)
   ok(
     Qwen3(
       config: config,
       tokens: tokens,
-      stack: Nn.EncoderStack(blocks: blocks, final_norm: some(try rms(c, "model.norm", config.rms_norm_eps, backend))),
+      stack: Nn.EncoderStack(blocks: blocks, final_norm: some(try rms(c, "model.norm", config.rms_norm_eps, ends))),
       head: head,
+      device: backend,
     ),
   )
 end
@@ -203,7 +210,7 @@ def run(m: Qwen3, rows: List[List[Int]], last: Bool = false) -> Result[Tensor.Te
     end
   end
 
-  tensor = try Tensor.from_list(ids, [rows.size, seq], Tensor.Dtype.I32, Tensor.backend(m.tokens.table))
+  tensor = try Tensor.from_list(ids, [rows.size, seq], Tensor.Dtype.I32, m.device)
   out = logits(m, tensor, last)
   Lift.close([tensor])
   out

@@ -1770,19 +1770,21 @@ static int side_of(const struct entry *p, const struct ggml_tensor *t) {
   return side >= 0 ? side : side_get(p, root);
 }
 
-/* A device leaf below this many bytes (a norm weight, a position, a scalar) does not pull a node to the device. */
+/* A device leaf below this many bytes (a norm weight, a position, a scalar, a mask) does not pull a node to the device by
+   its bytes; a matrix that a product or a row lookup reads (a weight, however small) pins the node there. */
 #define SMALL_LEAF 65536
 
 /* The side of `node`, or -1 when nothing about its operands says (`place` then follows its consumers): the side of the
    memory it writes when that is made (a view of a cache); the CPU when it reads a tensor that lives there (a weight, a
    cache), whatever else it reads (a long prompt's activations are bigger than a weight, and copying a weight on every
-   run is what a layer on the CPU is there to avoid); else the side with most operand bytes, where a device leaf counts
-   only from SMALL_LEAF bytes up, and a tie goes to the CPU when an operand was computed there, so that the residual
-   stream of a layer on the CPU stays there whatever the order of the operands. */
+   run is what a layer on the CPU is there to avoid); else the device when a product or a row lookup reads a matrix that lives there (a weight);
+   else the side with most operand bytes, a tie going to the side of the product of a matrix (the layer's output: the
+   residual stream follows the layer it passes through, whatever the order of the operands) and else to the CPU when an
+   operand was computed there. */
 static int decide(const struct entry *p, const struct ggml_tensor *node) {
   int64_t bytes[2] = {0, 0};
-  int j, side;
-  bool host = false, on_cpu = false, known = false;
+  int j, side, product = -1;
+  bool host = false, weight = false, on_cpu = false, known = false, mixed_products = false;
 
   if (node->buffer != NULL) return buffer_side(node->buffer);
   if (node->view_src != NULL && node->view_src->buffer != NULL) return buffer_side(node->view_src->buffer);
@@ -1796,6 +1798,8 @@ static int decide(const struct entry *p, const struct ggml_tensor *node) {
       side = buffer_side(root->buffer);
       /* a view is as large as the tensor it reads from: a row of a large table is a large leaf */
       if (side == CPU_SIDE) host = true;
+      else if (j == 0 && (node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID || node->op == GGML_OP_GET_ROWS) &&
+               (root->ne[0] > 1 && root->ne[1] > 1)) weight = true;
       else if (ggml_nbytes(root) >= SMALL_LEAF) bytes[DEVICE_SIDE] += (int64_t)ggml_nbytes(src);
       continue;
     }
@@ -1804,10 +1808,16 @@ static int decide(const struct entry *p, const struct ggml_tensor *node) {
     bytes[side] += (int64_t)ggml_nbytes(src);
     if (side == CPU_SIDE) on_cpu = true;
     known = true;
+    if (root->op == GGML_OP_MUL_MAT || root->op == GGML_OP_MUL_MAT_ID) {
+      if (product >= 0 && product != side) mixed_products = true;
+      product = side;
+    }
   }
   if (host) return CPU_SIDE;
+  if (weight) return DEVICE_SIDE;
   if (bytes[CPU_SIDE] != bytes[DEVICE_SIDE]) return bytes[CPU_SIDE] > bytes[DEVICE_SIDE] ? CPU_SIDE : DEVICE_SIDE;
   if (!known) return -1;
+  if (product >= 0 && !mixed_products) return product;
   return on_cpu ? CPU_SIDE : DEVICE_SIDE;
 }
 

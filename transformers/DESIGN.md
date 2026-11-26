@@ -80,8 +80,12 @@ over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
   Vulkan device (`layer_backend`); nothing else changes in the model. The traced step reads those weights as constants
   on the CPU, the graph is mixed (`tensor/DESIGN.md` §7) and the keys and values that a CPU block makes are `Ggml(Cpu)`
   tensors, which the next step takes as inputs and writes in place: `kv_decoder.agc` has no placement code. The
-  embedding table, the head and the final norm stay on the device. `none` is every block on the device and the graph
-  of every step is the plain one.
+  first `n` blocks stay on the device. With `n` below the number of blocks the embedding table, the head (the tied
+  table) and the final norm are on the CPU too, as in llama.cpp's `-ngl` (ml#320): the iGPU multiplies the table with
+  the vocabulary in 19 ms in a mixed step (3.8 ms in an all-device one, where its clock is up) and the CPU in 5, and
+  the table is the largest tensor of the model. The ids and `KvDecoder`'s inputs stay on the backend the model was
+  opened on (`Qwen3.device`, `Stepper.device`), because the first input of a trace is its backend. `n` of every block,
+  or `none`, is every tensor on the device and the graph of every step is the plain one.
 - Blocks are `Nn.EncoderBlock`s with `norm_first: true` under a causal mask
   (`Nn.encoder_stack(..., causal: true)`): `input_layernorm` and
   `post_attention_layernorm` are `LayerNorm.rms` (the `beta` is zeros and

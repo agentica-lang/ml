@@ -7,6 +7,7 @@ import Qwen3 from "../qwen3"
 import Qwen3Gguf from "../qwen3_gguf"
 import Bpe from "../tokenizer/bpe"
 import Lift from "../lift"
+import GgmlRaw from "pkg/tensor/src/ggml_native"
 import Gguf from "pkg/hub/gguf"
 import Hub from "pkg/hub/hub"
 import S from "support"
@@ -104,6 +105,36 @@ def test_layers_on_device_do_not_change_the_logits() -> Result[Void]
         m = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(n))
         try S.expect_close(try S.floats_of(try Qwen3.run(m, rows)), want, F32_ABS, F32_REL, "layers_on_device #{n}")
       end
+    end
+
+    ok()
+  end
+end
+
+## With `n` below the number of blocks the embedding table, the head (here the tied table) and the final norm are on the
+## CPU too, as in llama.cpp's `-ngl`; with `n` of every block they are on the device, and a run of that model never goes
+## through the scheduler (`mixed_runs`).
+def test_the_ends_of_the_model_follow_the_blocks_on_the_cpu() -> Result[Void]
+  with_peer do |dir|
+    rows = try ids(dir)
+    home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    for backend in try S.ggml_backends()
+      next if backend == home
+
+      for n in [0, 1]
+        m = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(n))
+        try Test.eq(Tensor.backend(m.tokens.table), home)
+        try Test.eq(Tensor.backend(m.head.w), home)
+        try Test.eq(Tensor.backend(m.stack.final_norm.unwrap!.gamma), home)
+        try Test.eq(m.device, backend)
+      end
+
+      before = GgmlRaw.mixed_runs()
+      all = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(2))
+      try Test.eq(Tensor.backend(all.tokens.table), backend)
+      try Test.eq(Tensor.backend(all.head.w), backend)
+      _ = try Qwen3.run(all, rows)
+      try Test.eq(GgmlRaw.mixed_runs(), before)
     end
 
     ok()

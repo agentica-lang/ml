@@ -195,12 +195,12 @@ def stack(xs: List[Tensor.Tensor], blocks: Int) -> Result[List[Tensor.Tensor]]
   ok([try Tensor.linear(h, xs[2], none, true)])
 end
 
-def stack_inputs(blocks: Int, on_device: Int) -> Result[List[Tensor.Tensor]]
+def stack_inputs(blocks: Int, on_device: Int, ends: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   ids = try Tensor.from_list([Tensor.Values.Int(7)], [1], Tensor.Dtype.I32, DEVICE)
   args = [
     ids,
-    try floats(counting(300 * WIDTH), [300, WIDTH], DEVICE),
-    try floats(counting(300 * WIDTH), [300, WIDTH], DEVICE),
+    try floats(counting(300 * WIDTH), [300, WIDTH], ends),
+    try floats(counting(300 * WIDTH), [300, WIDTH], ends),
   ]
 
   for k in 0...blocks
@@ -217,9 +217,9 @@ def stack_inputs(blocks: Int, on_device: Int) -> Result[List[Tensor.Tensor]]
 end
 
 ## The splits of the scheduler in one run of the stack, and its values against the same stack with all on the device.
-def stack_splits(blocks: Int, on_device: Int) -> Result[Int]
-  want = try values(try Trace.eval_many(try stack_inputs(blocks, blocks)) do |xs| stack(xs, blocks) end)
-  got = try Trace.eval_many(try stack_inputs(blocks, on_device)) do |xs| stack(xs, blocks) end
+def stack_splits(blocks: Int, on_device: Int, ends: Tensor.Backend) -> Result[Int]
+  want = try values(try Trace.eval_many(try stack_inputs(blocks, blocks, DEVICE)) do |xs| stack(xs, blocks) end)
+  got = try Trace.eval_many(try stack_inputs(blocks, on_device, ends)) do |xs| stack(xs, blocks) end
   have = try values(got)
   for t in 0...want.size
     for k in 0...want[t].size
@@ -243,14 +243,31 @@ end
 def test_the_splits_do_not_grow_with_the_blocks_on_the_cpu() -> Result[Void]
   return absent() if !try mixed_present()
 
-  four = try stack_splits(4, 0)
-  eight = try stack_splits(6, 0)
+  four = try stack_splits(4, 0, DEVICE)
+  eight = try stack_splits(6, 0, DEVICE)
   try Test.assert(four <= 4, "4 blocks on the CPU made #{four} splits")
   try Test.eq(eight, four)
-  two_four = try stack_splits(4, 2)
-  two_eight = try stack_splits(6, 2)
+  two_four = try stack_splits(4, 2, DEVICE)
+  two_eight = try stack_splits(6, 2, DEVICE)
   try Test.assert(two_four <= 4, "2 blocks on the device and 2 on the CPU made #{two_four} splits")
   Test.eq(two_eight, two_four)
+end
+
+## The same with the table and the head on the CPU too (the model with `layers_on_device` below its blocks): the residual
+## stream starts on the CPU, goes over to the device blocks and back, and is a few splits whatever the blocks.
+def test_the_splits_do_not_grow_with_the_table_and_the_head_on_the_cpu() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  none_on_device = try stack_splits(4, 0, HOME)
+  try Test.assert(none_on_device <= 4, "4 blocks and the ends on the CPU made #{none_on_device} splits")
+  try Test.eq(try stack_splits(6, 0, HOME), none_on_device)
+  some_on_device = try stack_splits(4, 2, HOME)
+  try Test.assert(
+    some_on_device <= 6,
+    "2 blocks on the device, 2 and the ends on the CPU made #{some_on_device} splits",
+  )
+
+  Test.eq(try stack_splits(6, 2, HOME), some_on_device)
 end
 
 def message(r: Result[List[Tensor.Tensor]]) -> String
