@@ -205,11 +205,12 @@ struct entry {
   /* Layers across the device and the CPU (`place`). A graph whose leaves are all in device memory never uses any of
      this and runs on its backend alone. */
   signed char *leaf_side;        /* per leaf: 1 when its tensor was in host memory at the last `place` */
-  struct ggml_tensor **save_node; /* every node of the graph as `compile` left it, with its sources in `save_src`: the */
-  struct ggml_tensor **save_src;  /* scheduler rewrites the sources and its backends reorder the nodes of the graph */
+  struct ggml_tensor **save_node; /* every node of the graph as the first mixed run found it, with its sources in */
+  struct ggml_tensor **save_src;  /* `save_src`: the scheduler rewrites the sources and its backends reorder the nodes */
   struct ggml_tensor **side_key; /* node -> side, for the sources of the next node */
   signed char *side_val;
   size_t side_cap;
+  size_t sched_need;             /* the nodes of the graph and an upper bound of its leaves, for the scheduler's tables */
   bool placed;                   /* `leaf_side` and the sides of the nodes are of the leaves now bound */
   bool mixed;                    /* some leaf is in host memory under a device graph: the scheduler runs it */
 };
@@ -220,7 +221,9 @@ struct device_state {
   struct entry *planned;
   ggml_backend_sched_t sched; /* the device and the CPU, for the graphs that have leaves on both */
   size_t sched_size;
+  struct entry *sched_planned; /* the graph that the scheduler last reserved its memory for */
 };
+static int64_t mixed_run_count; /* the runs through a scheduler, for the tests */
 
 /* Lock order: the device lock (1), then cache_lock (2). Pins and the pin count of an entry are under cache_lock alone;
    the memory of a tensor that the last holder lets go of is queued (`tg_defer`, no lock) and freed at the next hold of
@@ -301,6 +304,7 @@ static void destroy(struct entry *e) {
   int64_t i;
 
   if (d >= 0 && d < 9 && devices[d].planned == e) devices[d].planned = NULL;
+  if (d >= 0 && d < 9 && devices[d].sched_planned == e) devices[d].sched_planned = NULL;
   drop_kept(e);
   for (i = 0; e->leaves != NULL && i < e->leaf_count; i++) {
     if (e->leaves[i].own != NULL) ggml_backend_buffer_free(e->leaves[i].own);
@@ -309,11 +313,8 @@ static void destroy(struct entry *e) {
     if (e->outs[i].own != NULL) ggml_backend_buffer_free(e->outs[i].own);
   }
   if (e->fill_buffer != NULL) ggml_backend_buffer_free(e->fill_buffer);
-  free(e->leaf_side);
-  free(e->save_node);
-  free(e->save_src);
-  free(e->side_key);
-  free(e->side_val);
+  free(e->leaf_side); /* with `side_val` */
+  free(e->save_node); /* with `save_src` and `side_key` */
   if (e->fill_ctx != NULL) ggml_free(e->fill_ctx);
   if (e->port_ctx != NULL) ggml_free(e->port_ctx);
   if (e->ctx != NULL) ggml_free(e->ctx);
@@ -1577,9 +1578,8 @@ static struct ggml_tensor *finite_check(struct entry *p, struct ggml_tensor *val
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
   struct entry *p = lease->e;
   int64_t outs[MAX_OUTPUTS];
-  struct ggml_tensor **inner, **views, **save_node, **save_src, **side_key;
-  signed char *leaf_side, *side_val;
-  size_t slots, side_cap;
+  struct ggml_tensor **inner, **views;
+  size_t slots;
   int nouts, r, i, j;
   char text[256];
 
@@ -1679,31 +1679,15 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     }
   }
 
-  leaf_side = (signed char *)calloc((size_t)p->leaf_count + 1, 1);
-  save_node = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) + 1, sizeof(struct ggml_tensor *));
-  save_src = (struct ggml_tensor **)calloc((size_t)ggml_graph_n_nodes(p->graph) * GGML_MAX_SRC + 1, sizeof(struct ggml_tensor *));
-  side_cap = 16;
-  while (side_cap < (size_t)ggml_graph_n_nodes(p->graph) * 2 + 16) side_cap *= 2;
-  side_key = (struct ggml_tensor **)calloc(side_cap, sizeof(struct ggml_tensor *));
-  side_val = (signed char *)calloc(side_cap, 1);
-  if (leaf_side == NULL || save_node == NULL || save_src == NULL || side_key == NULL || side_val == NULL) {
-    free(leaf_side);
-    free(save_node);
-    free(save_src);
-    free(side_key);
-    free(side_val);
-    return tg_error(env, "out of memory");
-  }
+  p->sched_need = 0;
   for (i = 0; i < ggml_graph_n_nodes(p->graph); i++) {
-    save_node[i] = ggml_graph_node(p->graph, i);
-    for (j = 0; j < GGML_MAX_SRC; j++) save_src[i * GGML_MAX_SRC + j] = save_node[i]->src[j];
+    for (j = 0; j < GGML_MAX_SRC; j++) {
+      const struct ggml_tensor *src = ggml_graph_node(p->graph, i)->src[j];
+
+      if (src != NULL && src->op == GGML_OP_NONE) p->sched_need++;
+    }
   }
-  p->leaf_side = leaf_side;
-  p->save_node = save_node;
-  p->save_src = save_src;
-  p->side_cap = side_cap;
-  p->side_key = side_key;
-  p->side_val = side_val;
+  p->sched_need = 2 * (size_t)ggml_graph_n_nodes(p->graph) + 2 * p->sched_need + 2 * MAX_OUTPUTS + 64;
 
   tg_lock_device();
   p->fill_buffer = ggml_backend_alloc_ctx_tensors(p->fill_ctx, p->backend);
@@ -1728,9 +1712,6 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
 #define CPU_SIDE 1
 
 static void forget(struct entry *e);
-
-/* The weight of a leaf operand in the vote of a node: a weight or a cache decides over the activations next to it. */
-#define LEAF_VOTE 4
 
 static bool is_view_op(enum ggml_op op) {
   return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
@@ -1772,12 +1753,14 @@ static int side_of(const struct entry *p, const struct ggml_tensor *t) {
   return side >= 0 ? side : side_get(p, root);
 }
 
-/* The side of `node`: the side of the memory it writes when that is made (a view of a cache), else the side that
-   holds most of its operands' bytes, a leaf's counting LEAF_VOTE times; a tie goes to the side of the first operand
-   that an earlier node computed, else to the device. */
+/* The side of `node`: the side of the memory it writes when that is made (a view of a cache); the CPU when it reads a
+   weight or a cache that lives there, whatever else it reads (a long prompt's activations are bigger than a weight, and
+   copying a weight on every run is what a layer on the CPU is there to avoid); else the side that holds most of its
+   operands' bytes, a tie going to the side of the first operand that an earlier node computed, else to the device. */
 static int decide(const struct entry *p, const struct ggml_tensor *node) {
   int64_t bytes[2] = {0, 0};
   int j, side, tie = -1;
+  bool host = false;
 
   if (node->buffer != NULL) return buffer_side(node->buffer);
   if (node->view_src != NULL && node->view_src->buffer != NULL) return buffer_side(node->view_src->buffer);
@@ -1787,36 +1770,77 @@ static int decide(const struct entry *p, const struct ggml_tensor *node) {
 
     if (src == NULL) continue;
     root = src->view_src != NULL ? src->view_src : src;
+    if (root->buffer != NULL && buffer_side(root->buffer) == CPU_SIDE) host = true;
     side = side_of(p, src);
     if (side < 0) continue;
-    bytes[side] += (int64_t)ggml_nbytes(src) * (root->buffer != NULL ? LEAF_VOTE : 1);
+    bytes[side] += (int64_t)ggml_nbytes(src);
     if (tie < 0 && root->buffer == NULL) tie = side;
   }
+  if (host) return CPU_SIDE;
   if (bytes[CPU_SIDE] != bytes[DEVICE_SIDE]) return bytes[CPU_SIDE] > bytes[DEVICE_SIDE] ? CPU_SIDE : DEVICE_SIDE;
   return tie >= 0 ? tie : DEVICE_SIDE;
+}
+
+static void save_sources(struct entry *p) {
+  int64_t i, j, n = ggml_graph_n_nodes(p->graph);
+
+  for (i = 0; i < n; i++) {
+    p->save_node[i] = ggml_graph_node(p->graph, i);
+    for (j = 0; j < GGML_MAX_SRC; j++) p->save_src[i * GGML_MAX_SRC + j] = p->save_node[i]->src[j];
+  }
 }
 
 /* Sets `mixed` and, for a mixed graph, the side of every node that is not a view (in `side_key`), from the leaves bound
    now. The sides are kept until a leaf changes sides. Call under the device lock. Returns NULL, or why it could not. */
 static const char *place(struct entry *p) {
   ggml_backend_t cpu;
-  char why[160];
+  const char *why;
+  char text[160];
   int64_t i, n = ggml_graph_n_nodes(p->graph);
-  bool changed = !p->placed, any = false;
+  bool changed = false, any = false;
 
   if (p->device < 0) return NULL;
+  for (i = 0; i < p->leaf_count && !any; i++) {
+    any = p->leaves[i].t->buffer != NULL && buffer_side(p->leaves[i].t->buffer) == CPU_SIDE;
+  }
+  if (!any) {
+    p->placed = false;
+    p->mixed = false;
+    return NULL;
+  }
+  if (p->leaf_side == NULL) {
+    /* the arrays of a mixed graph, made by the first `place` that finds a leaf in host memory: a graph that has none
+       never pays for them. One block of pointers and one of bytes. */
+    size_t nodes = (size_t)n, side_cap = 16;
+    struct ggml_tensor **pointers;
+    signed char *bytes;
+
+    while (side_cap < nodes * 2 + 16) side_cap *= 2;
+    pointers = (struct ggml_tensor **)calloc(nodes + nodes * GGML_MAX_SRC + side_cap, sizeof(struct ggml_tensor *));
+    bytes = (signed char *)calloc((size_t)p->leaf_count + side_cap, 1);
+    if (pointers == NULL || bytes == NULL) {
+      free(pointers);
+      free(bytes);
+      return "out of memory";
+    }
+    p->save_node = pointers;
+    p->save_src = pointers + nodes;
+    p->side_key = pointers + nodes + nodes * GGML_MAX_SRC;
+    p->leaf_side = bytes;
+    p->side_val = bytes + p->leaf_count;
+    p->side_cap = side_cap;
+    save_sources(p);
+  }
   for (i = 0; i < p->leaf_count; i++) {
     signed char side = p->leaves[i].t->buffer != NULL ? (signed char)buffer_side(p->leaves[i].t->buffer) : DEVICE_SIDE;
 
     if (side != p->leaf_side[i]) changed = true;
     p->leaf_side[i] = side;
-    any = any || side == CPU_SIDE;
   }
-  if (!changed) return NULL;
-  p->placed = true;
-  p->mixed = any;
-  if (!any) return NULL;
-  if ((cpu = tg_backend(-1, why, sizeof why)) == NULL) return "the CPU backend did not open";
+  if (!changed && p->placed) return NULL;
+  p->placed = false;
+  p->mixed = false;
+  if ((cpu = tg_backend(-1, text, sizeof text)) == NULL) return "the CPU backend did not open";
   /* the intermediates of an earlier plain run must not look like memory a node writes */
   if (devices[p->device + 1].planned == p) devices[p->device + 1].planned = NULL;
   forget(p);
@@ -1833,6 +1857,8 @@ static const char *place(struct entry *p) {
     }
     side_put(p, node, side);
   }
+  p->placed = true;
+  p->mixed = true;
   return NULL;
 }
 
@@ -1970,6 +1996,15 @@ an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t ou
   return ggml_result_Void_ok(env, an_void(env));
 }
 
+an_term ggml_mixed_runs(an_env *env) {
+  int64_t runs;
+
+  tg_lock_device();
+  runs = mixed_run_count;
+  tg_unlock_device();
+  return an_int(env, runs);
+}
+
 an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease) {
   struct entry *p = lease->e;
   an_term term;
@@ -2098,13 +2133,33 @@ static void forget(struct entry *e) {
    chose, the scheduler splits the graph where the sides meet and copies what crosses, and the intermediates of both
    sides are its own. It rewrites the sources of the nodes it copies for, so they are put back at the end. Call under
    the device lock, with the leaves bound. Returns NULL, or why it failed. */
+static void set_backends(struct entry *p, ggml_backend_sched_t sched, ggml_backend_t backends[2]) {
+  int64_t i, n = ggml_graph_n_nodes(p->graph);
+
+  for (i = 0; i < n; i++) {
+    struct ggml_tensor *node = ggml_graph_node(p->graph, i);
+    int side = side_get(p, node);
+
+    if (side >= 0) ggml_backend_sched_set_tensor_backend(sched, node, backends[side]);
+  }
+}
+
+static void restore_sources(struct entry *p) {
+  int64_t i, j, n = ggml_graph_n_nodes(p->graph);
+
+  for (i = 0; i < n; i++) {
+    for (j = 0; j < GGML_MAX_SRC; j++) p->save_node[i]->src[j] = p->save_src[i * GGML_MAX_SRC + j];
+  }
+}
+
 static const char *compute_mixed(struct entry *p, struct device_state *d) {
   ggml_backend_t backends[2];
   const char *why = NULL;
   char text[160];
-  int64_t i, j, n = ggml_graph_n_nodes(p->graph);
-  size_t need = (size_t)(2 * n + p->leaf_count) + 2 * MAX_OUTPUTS + 64;
+  int64_t i;
+  size_t need = p->sched_need;
 
+  mixed_run_count++;
   backends[0] = p->backend;
   if ((backends[1] = tg_backend(-1, text, sizeof text)) == NULL) return "the CPU backend did not open";
   for (i = 0; i < p->output_count; i++) {
@@ -2117,6 +2172,7 @@ static const char *compute_mixed(struct entry *p, struct device_state *d) {
   if (d->sched != NULL && d->sched_size < need) {
     ggml_backend_sched_free(d->sched);
     d->sched = NULL;
+    d->sched_planned = NULL;
   }
   if (d->sched == NULL) {
     d->sched_size = need < 4096 ? 4096 : need;
@@ -2126,17 +2182,20 @@ static const char *compute_mixed(struct entry *p, struct device_state *d) {
   if (d->planned == p) d->planned = NULL;
   forget(p);
   ggml_backend_sched_reset(d->sched);
-  for (i = 0; i < n; i++) {
-    struct ggml_tensor *node = ggml_graph_node(p->graph, i);
-    int side = side_get(p, node);
-
-    if (side >= 0) ggml_backend_sched_set_tensor_backend(d->sched, node, backends[side]);
+  set_backends(p, d->sched, backends);
+  if (d->sched_planned != p) {
+    /* one scheduler serves every mixed graph of the device: its memory is planned for this graph, or it would reuse
+       the offsets of another one (reserve resets the backends it was given, so they are set again) */
+    if (!ggml_backend_sched_reserve(d->sched, p->graph)) why = "reserving the scheduler failed";
+    restore_sources(p);
+    forget(p);
+    ggml_backend_sched_reset(d->sched);
+    set_backends(p, d->sched, backends);
+    d->sched_planned = why == NULL ? p : NULL;
   }
-  if (!ggml_backend_sched_alloc_graph(d->sched, p->graph)) why = "allocating the graph failed";
-  else if (ggml_backend_sched_graph_compute(d->sched, p->graph) != GGML_STATUS_SUCCESS) why = "ggml_backend_sched_graph_compute failed";
-  for (i = 0; i < n; i++) {
-    for (j = 0; j < GGML_MAX_SRC; j++) p->save_node[i]->src[j] = p->save_src[i * GGML_MAX_SRC + j];
-  }
+  if (why == NULL && !ggml_backend_sched_alloc_graph(d->sched, p->graph)) why = "allocating the graph failed";
+  if (why == NULL && ggml_backend_sched_graph_compute(d->sched, p->graph) != GGML_STATUS_SUCCESS) why = "ggml_backend_sched_graph_compute failed";
+  restore_sources(p);
   forget(p);
   ggml_backend_sched_reset(d->sched);
   return why;

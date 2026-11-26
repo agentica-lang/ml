@@ -57,8 +57,8 @@ end
 ## `dir` names, whose key-values give the config.
 ## `layers_on_device: n` loads the weights of the blocks from the `n`th on on the CPU (`Ggml(Cpu)`), and a step runs
 ## those blocks there, with their KV cache in host memory (`kv_decoder.agc`); the first `n` blocks, the embedding table,
-## the head and the final norm stay on the Vulkan device. `none` keeps every block there, and on any other backend
-## `n` changes nothing.
+## the head and the final norm stay on the Vulkan device. `none` keeps every block there, and on any other backend, or
+## with an `n` of the number of blocks or more, `n` changes nothing.
 def open(
   dir: String,
   backend: Tensor.Backend,

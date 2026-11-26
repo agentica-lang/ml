@@ -74,7 +74,11 @@ end
 ## The `layers_on_device` option the tools take from the environment: `AGENTICA_ML_LAYERS_ON_DEVICE=n` (`Qwen3.open`),
 ## `none` when it is not set.
 def layers_on_device_from_env() -> Result[Optional[Int]]
-  text = System.env("AGENTICA_ML_LAYERS_ON_DEVICE").unwrap_or("")
+  layers_on_device_of(System.env("AGENTICA_ML_LAYERS_ON_DEVICE").unwrap_or(""))
+end
+
+## The option of the text of that variable: `none` when it is empty, else a whole number.
+def layers_on_device_of(text: String) -> Result[Optional[Int]]
   return ok(none) if text == ""
   case text.to_i
     ok(n) -> ok(some(n))

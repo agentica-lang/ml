@@ -21,6 +21,13 @@ TORCH_REL = 0.0001
 
 private
 
+def test_the_layers_on_device_variable_is_a_whole_number_or_absent() -> Result[Void]
+  try Test.eq(try Load.layers_on_device_of(""), none)
+  try Test.eq(try Load.layers_on_device_of("14"), some(14))
+  try Test.eq(try Load.layers_on_device_of("0"), some(0))
+  Test.error?(Load.layers_on_device_of("many"))
+end
+
 def test_dense_and_layer_norm_match_the_peer() -> Result[Void]
   S.with_fixtures("layer") do |dir|
     c = try Hub.open("#{dir}/layer.safetensors")

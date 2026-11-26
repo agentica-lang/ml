@@ -65,6 +65,9 @@ extern module "ggml"
   ## True when `t` lives in host memory, made for the CPU backend (`device` -1): an output of a graph that runs on a
   ## Vulkan device and a CPU together may be one.
   def on_cpu(t: TensorHandle) -> Bool
+  ## How many runs went through the scheduler of a graph that has leaves on the device and on the CPU, since the process
+  ## started: a graph with every leaf on one side never counts.
+  def mixed_runs() -> Int
   ## Host readback: the row-major values as doubles, which the caller tags
   ## with the tensor's dtype.
   compute def readback(t: TensorHandle) -> Result[List[Float]]

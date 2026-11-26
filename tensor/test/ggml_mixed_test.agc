@@ -4,6 +4,7 @@
 ## is a CPU tensor, and a cache on the CPU is written in place. Without a Vulkan device these checks pass by asserting
 ## nothing.
 
+import GgmlRaw from "../src/ggml_native"
 import Support from "support"
 import Tensor from "../tensor"
 import Trace from "../trace"
@@ -15,6 +16,11 @@ HOME = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 def mixed_present() -> Result[Bool]
   return ok(false) if !try Support.ggml_present()
   ok(Tensor.available(DEVICE))
+end
+
+## What a test asserts where there is no Vulkan device.
+def absent() -> Result[Void]
+  Test.assert(!Tensor.available(DEVICE), "no Vulkan device: the mixed placement was not run")
 end
 
 private
@@ -47,7 +53,7 @@ def values(ts: List[Tensor.Tensor]) -> Result[List[List[Float]]]
 end
 
 def test_a_cpu_weight_gives_the_values_of_the_device_weight() -> Result[Void]
-  return ok() if !try mixed_present()
+  return absent() if !try mixed_present()
 
   args = try inputs(DEVICE)
   want = try values(try Trace.eval_many(args) do |xs| model(xs) end)
@@ -61,7 +67,7 @@ end
 ## One graph structure, run with its weight on the device, then on the CPU, then on the device: each run places itself
 ## by the weight it is given.
 def test_the_same_graph_is_placed_again_when_a_leaf_changes_sides() -> Result[Void]
-  return ok() if !try mixed_present()
+  return absent() if !try mixed_present()
 
   want = try values(try Trace.eval_many(try inputs(DEVICE)) do |xs| model(xs) end)
   for side in [HOME, DEVICE, HOME, HOME, DEVICE]
@@ -75,7 +81,7 @@ end
 
 ## `into` takes a tensor on the side of the node that writes the output, and refuses one on the other.
 def test_an_output_given_lives_on_the_side_of_its_node() -> Result[Void]
-  return ok() if !try mixed_present()
+  return absent() if !try mixed_present()
 
   args = try inputs(HOME)
   compiled = try Trace.compile(specs_of(args)) do |xs| model(xs) end
@@ -90,7 +96,7 @@ end
 
 ## A cache on the CPU is written in place by rows that come from the device, and the tensor given is the result.
 def test_a_cpu_cache_is_written_in_place_by_rows_from_the_device() -> Result[Void]
-  return ok() if !try mixed_present()
+  return absent() if !try mixed_present()
 
   args = [
     try floats(counting(24), [2, 4, 3], HOME),
@@ -107,4 +113,29 @@ def test_a_cpu_cache_is_written_in_place_by_rows_from_the_device() -> Result[Voi
   try Test.eq(got.take(6), counting(24).take(6))
   try Test.eq(Tensor.backend(out[0]), HOME)
   Test.eq(try Support.floats_of(out[0]), got)
+end
+
+## A long input against a small weight on the CPU: the activations are many times the bytes of the weight, and the node
+## still runs where the weight is, so the weight is never copied to the device.
+def test_a_long_input_does_not_pull_a_cpu_weight_to_the_device() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  longer = [try floats(counting(400), [100, 4], DEVICE), try floats(counting(32), [8, 4], HOME)]
+  want = try values(try Trace.eval_many([longer[0], try floats(counting(32), [8, 4], DEVICE)]) do |xs| model(xs) end)
+  got = try Trace.eval_many(longer) do |xs| model(xs) end
+  try Test.eq(try values(got), want)
+  try Test.eq(Tensor.backend(got[0]), HOME)
+  Test.eq(Tensor.backend(got[1]), DEVICE)
+end
+
+## An output that converts to I32 and is written by a node on the CPU lives on the CPU too.
+## A graph with every leaf on the device never goes through the scheduler; one with a leaf on the CPU does.
+def test_only_a_graph_with_a_cpu_leaf_goes_through_the_scheduler() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  before = GgmlRaw.mixed_runs()
+  try Trace.eval_many(try inputs(DEVICE)) do |xs| model(xs) end
+  try Test.eq(GgmlRaw.mixed_runs(), before)
+  try Trace.eval_many(try inputs(HOME)) do |xs| model(xs) end
+  Test.eq(GgmlRaw.mixed_runs(), before + 1)
 end
