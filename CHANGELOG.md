@@ -12,6 +12,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - A graph on a Vulkan device may read tensors on `Ggml(Cpu)`: ggml's backend scheduler runs each node where its operands are and copies the activations between the two, and an output of a CPU node is a CPU tensor (ml#310).
 - `Tensor.floats32(values, shape, backend)` makes an `F32` tensor from a packed `List[Float32]` (4 bytes an item, since Agentica 0.40.0); `floats` keeps its `List[Float]` (ml#316).
 - `tools/install_xla.agc` installs the XLA CPU plugin from our own build, a GitHub Release of this repository (Linux x86_64 and aarch64, with the licenses of what it links), instead of the PyPI wheel, and needs no `unzip`; the old `xla/<wheel-sha>/` folders of the cache can be deleted (ml#287).
+- CI checks every package on Agentica 0.40.0-beta.2, which has the native `List[Float32]` API 1.6 (`an_float32_run`, `an_float32s`); the manifests keep `agentica = "0.38.0"`.
 
 ### asr
 
