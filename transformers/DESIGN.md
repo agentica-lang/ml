@@ -676,8 +676,8 @@ error row per config field.
   is 1.66 over the five prompts (logits up to 30), within the noise of the rounding of the
   activations to Q8_K blocks: llama.cpp's Q4_K_M run against its own `F32` run of the dequantized
   file differs by 0.65 to 1.97. The run takes 1.6 GB at the peak of `qwen_check` against 3.2 GB
-  with `F32` weights; its prompts take as long as `F32`'s (0.2 to 1.0 s for 5 to 50 tokens): no
-  speed gain is claimed.
+  with `F32` weights. Speed and memory against llama.cpp on the same file are in
+  `benchmarks/README.md` (ml#291): at its speed on the CPU, 0.81 times its tokens on Vulkan.
 - `test/resnet_test.agc` against `test/resnet_peer.py` (standard library, doubles, the batch norms not folded): three
   tiny random ResNets (bottleneck, basic, and a bottleneck with `downsample_in_first_stage` and
   `downsample_in_bottleneck`) with batch norms that have statistics of their own, on the reference (1e-9) and on ggml
