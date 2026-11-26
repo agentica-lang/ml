@@ -200,12 +200,17 @@ def stack(xs: List[Tensor.Tensor], blocks: Int) -> Result[List[Tensor.Tensor]]
   ok([try Tensor.linear(h, xs[2], none, true), first, h])
 end
 
-def stack_inputs(blocks: Int, on_device: Int, ends: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+def stack_inputs(
+  blocks: Int,
+  on_device: Int,
+  table: Tensor.Backend,
+  head: Tensor.Backend,
+) -> Result[List[Tensor.Tensor]]
   ids = try Tensor.from_list([Tensor.Values.Int(7)], [1], Tensor.Dtype.I32, DEVICE)
   args = [
     ids,
-    try floats(counting(300 * WIDTH), [300, WIDTH], ends),
-    try floats(counting(300 * WIDTH), [300, WIDTH], ends),
+    try floats(counting(300 * WIDTH), [300, WIDTH], table),
+    try floats(counting(300 * WIDTH), [300, WIDTH], head),
   ]
 
   for k in 0...blocks
@@ -227,20 +232,27 @@ def test_the_stream_of_the_stack_is_on_the_side_of_its_blocks() -> Result[Void]
   return absent() if !try mixed_present()
 
   for ends in [DEVICE, HOME]
-    got = try Trace.eval_many(try stack_inputs(4, 2, ends)) do |xs| stack(xs, 4) end
+    got = try Trace.eval_many(try stack_inputs(4, 2, ends, ends)) do |xs| stack(xs, 4) end
     try Test.eq(Tensor.backend(got[0]), ends)
     try Test.eq(Tensor.backend(got[1]), DEVICE)
     try Test.eq(Tensor.backend(got[2]), HOME)
   end
 
-  none_on_device = try Trace.eval_many(try stack_inputs(4, 0, DEVICE)) do |xs| stack(xs, 4) end
+  llama = try Trace.eval_many(try stack_inputs(4, 2, HOME, DEVICE)) do |xs| stack(xs, 4) end
+  try Test.eq(Tensor.backend(llama[0]), DEVICE)
+  try Test.eq(Tensor.backend(llama[1]), DEVICE)
+  try Test.eq(Tensor.backend(llama[2]), HOME)
+  none_on_device = try Trace.eval_many(try stack_inputs(4, 0, DEVICE, DEVICE)) do |xs| stack(xs, 4) end
   Test.eq(Tensor.backend(none_on_device[1]), HOME)
 end
 
 ## The splits of the scheduler in one run of the stack, and its values against the same stack with all on the device.
-def stack_splits(blocks: Int, on_device: Int, ends: Tensor.Backend) -> Result[Int]
-  want = try values(try Trace.eval_many(try stack_inputs(blocks, blocks, DEVICE)) do |xs| stack(xs, blocks) end)
-  got = try Trace.eval_many(try stack_inputs(blocks, on_device, ends)) do |xs| stack(xs, blocks) end
+def stack_splits(blocks: Int, on_device: Int, table: Tensor.Backend, head: Tensor.Backend) -> Result[Int]
+  want = try values(
+    try Trace.eval_many(try stack_inputs(blocks, blocks, DEVICE, DEVICE)) do |xs| stack(xs, blocks) end,
+  )
+
+  got = try Trace.eval_many(try stack_inputs(blocks, on_device, table, head)) do |xs| stack(xs, blocks) end
   have = try values(got)
   for t in 0...want.size
     for k in 0...want[t].size
@@ -266,21 +278,35 @@ def test_the_splits_do_not_grow_with_the_blocks_on_the_cpu() -> Result[Void]
   return absent() if !try mixed_present()
 
   for blocks in [4, 6, 8]
-    try Test.eq(try stack_splits(blocks, 0, DEVICE), 5)
-    try Test.eq(try stack_splits(blocks, 2, DEVICE), 5)
+    try Test.eq(try stack_splits(blocks, 0, DEVICE, DEVICE), 5)
+    try Test.eq(try stack_splits(blocks, 2, DEVICE, DEVICE), 5)
   end
 
   ok()
 end
 
-## The same with the table and the head on the CPU too (the model with `layers_on_device` below its blocks): the residual
-## stream starts on the CPU, goes over to the device blocks and back, and is a few splits whatever the blocks.
+## The same with the table and the head on the CPU: the stack of a model with `layers_on_device` of 0 (no block on the
+## device), and some blocks on the device under a head on the CPU.
 def test_the_splits_do_not_grow_with_the_table_and_the_head_on_the_cpu() -> Result[Void]
   return absent() if !try mixed_present()
 
   for blocks in [4, 6, 8]
-    try Test.eq(try stack_splits(blocks, 0, HOME), 2)
-    try Test.eq(try stack_splits(blocks, 2, HOME), 6)
+    try Test.eq(try stack_splits(blocks, 0, HOME, HOME), 2)
+    try Test.eq(try stack_splits(blocks, 2, HOME, HOME), 6)
+  end
+
+  ok()
+end
+
+## The layout of a model with `layers_on_device` of 1 or more below its blocks: the table on the CPU, the head on the device,
+## the first blocks on the device. The stream starts on the CPU, goes to the device, to the CPU blocks and back to the head.
+def test_the_splits_do_not_grow_with_the_table_on_the_cpu_and_the_head_on_the_device() -> Result[Void]
+  return absent() if !try mixed_present()
+
+  for blocks in [4, 6, 8]
+    for on_device in [1, 2]
+      try Test.eq(try stack_splits(blocks, on_device, HOME, DEVICE), 6)
+    end
   end
 
   ok()
