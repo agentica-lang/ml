@@ -77,8 +77,8 @@ answer (below, "The ids the tokenizer cannot decode"): the embedding of Qwen3 ha
 over an `I32` `[batch, seq]` tensor, `Qwen3.close_model(m)`.
 
 - `layers_on_device: n` (ml#310) loads the blocks from the `n`th on with the backend `Ggml(Cpu)` when the model is on a
-  Vulkan device (`layer_backend`); nothing else changes in the model. The traced step reads those weights as constants
-  on the CPU, the graph is mixed (`tensor/DESIGN.md` §7) and the keys and values that a CPU block makes are `Ggml(Cpu)`
+  Vulkan device (`layer_backend` of `placement.agc`, which also has `placement`: the sides of the table and the head);
+  nothing else changes in the model. The traced step reads those weights as constants on the CPU, the graph is mixed (`tensor/DESIGN.md` §7) and the keys and values that a CPU block makes are `Ggml(Cpu)`
   tensors, which the next step takes as inputs and writes in place: `kv_decoder.agc` has no placement code. The
   first `n` blocks stay on the device. With `n` below the number of blocks the embedding table is on the CPU, as in
   llama.cpp's `-ngl`, and from one block on the device the head and the final norm are on the device (ml#320, ml#327):

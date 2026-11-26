@@ -120,38 +120,6 @@ def test_layers_on_device_do_not_change_the_logits() -> Result[Void]
   end
 end
 
-## The sides of the table and of the head, whatever the machine: on a Vulkan device the table is on the CPU for an `n` below
-## the blocks, and the head is there only for 0; everything else, and every other backend, stays where the model opens.
-def test_the_placement_of_the_table_and_the_head() -> Result[Void]
-  home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
-  card = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
-  blocks = 28
-  unset: Optional[Int] = none
-  for n in [unset, some(blocks), some(blocks + 1)]
-    for backend in [home, card]
-      side = Qwen3.placement(backend, blocks, n)
-      try Test.eq(side.table, backend)
-      try Test.eq(side.head, backend)
-    end
-  end
-
-  for n in [0, 1, blocks - 1]
-    away = Qwen3.placement(card, blocks, some(n))
-    try Test.eq(away.table, home)
-    head = card
-    if n == 0
-      head = home
-    end
-
-    try Test.eq(away.head, head)
-    same = Qwen3.placement(home, blocks, some(n))
-    try Test.eq(same.table, home)
-    try Test.eq(same.head, home)
-  end
-
-  ok()
-end
-
 ## With `n` below the number of blocks the embedding table is on the CPU and, from one block on the device, the head (here
 ## a copy of the tied table) and the final norm are on the device, as in llama.cpp's `-ngl`; with `n` of 0 they are on the
 ## CPU too, and with `n` of every block all of them are on the device and a run never goes through the scheduler

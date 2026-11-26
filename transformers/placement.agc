@@ -1,0 +1,32 @@
+## Where `layers_on_device` puts the blocks of a model, its embedding table and its head: the rule of llama.cpp's `-ngl`,
+## shared by the models that take the option.
+
+import Tensor from "pkg/tensor/tensor"
+
+## Where the embedding table is, and the head with the final norm.
+struct Placement
+  table: Tensor.Backend
+  head: Tensor.Backend
+end
+
+## The sides of the table and of the head (with the final norm) of a model of `blocks` blocks opened on `backend` with
+## `layers_on_device: n`, as llama.cpp's `-ngl` puts them: with `n` below `blocks` on a Vulkan device the table is on the
+## CPU, and the head is on the device for an `n` of 1 or more and on the CPU for 0; with `none` or an `n` of `blocks` or
+## more, or on any other backend, both are on `backend`.
+def placement(backend: Tensor.Backend, blocks: Int, layers_on_device: Optional[Int]) -> Placement
+  return Placement(table: backend, head: backend) if layers_on_device.none? or layers_on_device.unwrap! >= blocks
+
+  Placement(
+    table: layer_backend(backend, blocks - 1, layers_on_device),
+    head: layer_backend(backend, 0, layers_on_device),
+  )
+end
+
+## The backend of block `i`: the CPU from block `layers_on_device` on when the model is on a Vulkan device.
+def layer_backend(backend: Tensor.Backend, i: Int, layers_on_device: Optional[Int]) -> Tensor.Backend
+  return backend if layers_on_device.none? or i < layers_on_device.unwrap!
+  case backend
+    Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    _ -> backend
+  end
+end
