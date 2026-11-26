@@ -18,7 +18,8 @@ def test_the_ids_and_the_text_are_those_of_tokenizers() -> Result[Void]
   tok = try Bpe.open("#{try listed}/tokenizer.json")
   checked = try Golden.bpe_of(tok, "test/fixtures/smolvlm_tokenizer_golden.json")
   try Test.assert(checked > 800, "only #{checked} cases ran")
-  # The text of the processor golden of `vision/` (`ids_one` there): `<image>` and `<end_of_utterance>` are one id each.
+  # The text of the processor golden of `vision/` (`ids_one` there): `<image>` and `<end_of_utterance>` are one
+  # id each.
   ids = try Bpe.encode(tok, "User:<image>What is in the picture?<end_of_utterance>\nAssistant:")
   try Test.eq(ids, [11126, 42, 49190, 1780, 314, 281, 260, 4177, 47, 49279, 198, 9519, 9531, 42])
   ok()
