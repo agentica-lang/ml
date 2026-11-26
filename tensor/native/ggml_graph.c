@@ -223,6 +223,7 @@ struct device_state {
   size_t sched_size;
   struct entry *sched_planned; /* the graph that the scheduler last reserved its memory for */
 };
+static int64_t mixed_split_count; /* the splits of the scheduler in the last mixed run, atomic */
 static int64_t mixed_run_count; /* the runs through a scheduler, for the tests: atomic, so reading it never waits */
 
 /* Lock order: the device lock (1), then cache_lock (2). Pins and the pin count of an entry are under cache_lock alone;
@@ -1575,6 +1576,7 @@ static struct ggml_tensor *finite_check(struct entry *p, struct ggml_tensor *val
 }
 
 an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int outputs) {
+  struct ggml_tensor *finite[MAX_OUTPUTS]; /* the finiteness check of each output; its copy to `checks` is made after all of them */
   struct entry *p = lease->e;
   int64_t outs[MAX_OUTPUTS];
   struct ggml_tensor **inner, **views;
@@ -1593,6 +1595,7 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     if (p->nodes[i].guard != NULL) p->guard_count++;
   }
   if (!room(p, (size_t)(nouts * 8 + p->guard_count + 1))) return tg_error(env, "the graph ran out of room for its outputs");
+  memset(finite, 0, sizeof finite);
   p->graph = ggml_new_graph_custom(p->ctx, graph_size(p->capacity), false);
   p->checks = ggml_new_tensor_1d(p->fill_ctx, GGML_TYPE_F32, nouts + p->guard_count);
   /* the positions of the ropes go first: a cast between a rope's norm and the rope keeps ggml-vulkan from fusing them */
@@ -1602,7 +1605,6 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
   for (i = 0; i < nouts; i++) {
     struct gnode *n = &p->nodes[outs[i]];
     struct ggml_tensor *value;
-    struct ggml_tensor *check;
     struct ggml_tensor *own = NULL;
 
     if (!n->in_place && !n->lazy) own = own_output(p, n, dense(p, n));
@@ -1615,8 +1617,8 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
       p->outs[i].donated = true;
       ggml_build_forward_expand(p->graph, n->t);
       if (n->op == OP_ADAM_PART && n->part == 2) {
-        check = finite_check(p, n->t);
-        ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
+        finite[i] = finite_check(p, n->t);
+        ggml_build_forward_expand(p->graph, finite[i]);
       }
       continue;
     }
@@ -1628,10 +1630,18 @@ an_term ggml_compile(an_env *env, struct ggml_Lease_state *lease, ggml_list_Int 
     }
     /* sum_rows first, since one ggml_sum of a large tensor is a single slow workgroup on Vulkan; the check reads
        the value, so it runs after the node that makes it */
-    check = finite_check(p, value);
-    ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, check, ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
+    finite[i] = finite_check(p, value);
+    ggml_build_forward_expand(p->graph, finite[i]);
   }
   p->output_count = nouts;
+  /* The sums are made where each output is (so each ends its value's life there), and their 1-float copies into
+     `checks` (device memory) come after all of them: on a graph that runs on two backends, a copy between two layers on
+     the CPU would be a split of the scheduler of its own. */
+  for (i = 0; i < nouts; i++) {
+    if (finite[i] != NULL) {
+      ggml_build_forward_expand(p->graph, ggml_cpy(p->ctx, finite[i], ggml_view_1d(p->fill_ctx, p->checks, 1, i * sizeof(float))));
+    }
+  }
   for (i = 0, j = nouts; i < p->count; i++) {
     struct ggml_tensor *guard = p->nodes[i].guard;
 
@@ -1730,7 +1740,9 @@ static void side_put(struct entry *p, const struct ggml_tensor *t, int side) {
   p->side_val[i] = (signed char)side;
 }
 
-static int side_get(const struct entry *p, const struct ggml_tensor *t) {
+/* The value kept for `t`: 0 or 1 is its side, 2 and 3 are the sides that its consumers ask for (device, CPU) and 4 that
+   they ask for both, while `place` goes through the graph from the end; -1 is nothing. */
+static int side_raw(const struct entry *p, const struct ggml_tensor *t) {
   size_t i = side_slot(p, t);
 
   while (p->side_key[i] != NULL) {
@@ -1738,6 +1750,12 @@ static int side_get(const struct entry *p, const struct ggml_tensor *t) {
     i = (i + 1) & (p->side_cap - 1);
   }
   return -1;
+}
+
+static int side_get(const struct entry *p, const struct ggml_tensor *t) {
+  int raw = side_raw(p, t);
+
+  return raw < 2 ? raw : -1;
 }
 
 /* The side of a tensor that an earlier node or a leaf has: its own memory, else what `place` decided for it or for
@@ -1752,15 +1770,19 @@ static int side_of(const struct entry *p, const struct ggml_tensor *t) {
   return side >= 0 ? side : side_get(p, root);
 }
 
-/* The side of `node`: the side of the memory it writes when that is made (a view of a cache); the CPU when it reads a
-   tensor that lives there (a weight, a cache), whatever else it reads (a long prompt's activations are bigger than a
-   weight, and copying a weight on every run is what a layer on the CPU is there to avoid); else the side that holds
-   most of its operands' bytes, a tie going to the side of the first operand that an earlier node computed, else to the
-   device. */
+/* A device leaf below this many bytes (a norm weight, a position, a scalar) does not pull a node to the device. */
+#define SMALL_LEAF 65536
+
+/* The side of `node`, or -1 when nothing about its operands says (`place` then follows its consumers): the side of the
+   memory it writes when that is made (a view of a cache); the CPU when it reads a tensor that lives there (a weight, a
+   cache), whatever else it reads (a long prompt's activations are bigger than a weight, and copying a weight on every
+   run is what a layer on the CPU is there to avoid); else the side with most operand bytes, where a device leaf counts
+   only from SMALL_LEAF bytes up, and a tie goes to the CPU when an operand was computed there, so that the residual
+   stream of a layer on the CPU stays there whatever the order of the operands. */
 static int decide(const struct entry *p, const struct ggml_tensor *node) {
   int64_t bytes[2] = {0, 0};
-  int j, side, tie = -1;
-  bool host = false;
+  int j, side;
+  bool host = false, on_cpu = false, known = false;
 
   if (node->buffer != NULL) return buffer_side(node->buffer);
   if (node->view_src != NULL && node->view_src->buffer != NULL) return buffer_side(node->view_src->buffer);
@@ -1770,15 +1792,33 @@ static int decide(const struct entry *p, const struct ggml_tensor *node) {
 
     if (src == NULL) continue;
     root = src->view_src != NULL ? src->view_src : src;
-    if (root->buffer != NULL && buffer_side(root->buffer) == CPU_SIDE) host = true;
+    if (root->buffer != NULL) {
+      side = buffer_side(root->buffer);
+      /* a view is as large as the tensor it reads from: a row of a large table is a large leaf */
+      if (side == CPU_SIDE) host = true;
+      else if (ggml_nbytes(root) >= SMALL_LEAF) bytes[DEVICE_SIDE] += (int64_t)ggml_nbytes(src);
+      continue;
+    }
     side = side_of(p, src);
     if (side < 0) continue;
     bytes[side] += (int64_t)ggml_nbytes(src);
-    if (tie < 0 && root->buffer == NULL) tie = side;
+    if (side == CPU_SIDE) on_cpu = true;
+    known = true;
   }
   if (host) return CPU_SIDE;
   if (bytes[CPU_SIDE] != bytes[DEVICE_SIDE]) return bytes[CPU_SIDE] > bytes[DEVICE_SIDE] ? CPU_SIDE : DEVICE_SIDE;
-  return tie >= 0 ? tie : DEVICE_SIDE;
+  if (!known) return -1;
+  return on_cpu ? CPU_SIDE : DEVICE_SIDE;
+}
+
+/* Gives `node` the side `want`, or the other when its backend does not run the op. Returns false when neither does. */
+static bool put_side(struct entry *p, struct ggml_tensor *node, int want, ggml_backend_t cpu) {
+  if (!ggml_backend_supports_op(want == CPU_SIDE ? cpu : p->backend, node)) {
+    want = 1 - want;
+    if (!ggml_backend_supports_op(want == CPU_SIDE ? cpu : p->backend, node)) return false;
+  }
+  side_put(p, node, want);
+  return true;
 }
 
 /* The arrays of a mixed graph, made by the first `place` that finds a leaf in host memory (a graph that has none never
@@ -1849,11 +1889,31 @@ static const char *place(struct entry *p) {
 
     if (is_view_op(node->op)) continue;
     side = decide(p, node);
-    if (!ggml_backend_supports_op(side == CPU_SIDE ? cpu : p->backend, node)) {
-      side = 1 - side;
-      if (!ggml_backend_supports_op(side == CPU_SIDE ? cpu : p->backend, node)) return "no backend runs a node of the graph";
+    if (side >= 0 && !put_side(p, node, side, cpu)) return "no backend runs a node of the graph";
+  }
+  /* A node that nothing decided (a table made from constants) goes where its consumers are, so that it does not make
+     a trip of its own to the other backend: the device when they are on both sides, and when it has none. The graph is
+     gone through from its end, so a node comes after all its consumers. */
+  for (i = n - 1; i >= 0; i--) {
+    struct ggml_tensor *node = ggml_graph_node(p->graph, i);
+    int side, raw, j;
+
+    if (is_view_op(node->op)) continue;
+    raw = side_raw(p, node);
+    if (raw < 0 || raw >= 2) {
+      if (!put_side(p, node, raw == 3 ? CPU_SIDE : DEVICE_SIDE, cpu)) return "no backend runs a node of the graph";
     }
-    side_put(p, node, side);
+    side = side_get(p, node);
+    for (j = 0; j < GGML_MAX_SRC; j++) {
+      struct ggml_tensor *src = node->src[j];
+
+      if (src == NULL) continue;
+      if (src->view_src != NULL) src = src->view_src;
+      if (src->buffer != NULL || src->op == GGML_OP_NONE || is_view_op(src->op)) continue;
+      raw = side_raw(p, src);
+      if (raw == 0 || raw == 1) continue;
+      side_put(p, src, raw < 0 || raw == 2 + side ? 2 + side : 4);
+    }
   }
   p->placed = true;
   p->mixed = true;
@@ -1997,6 +2057,8 @@ an_term ggml_output_into(an_env *env, struct ggml_Lease_state *lease, int64_t ou
 an_term ggml_mixed_runs(an_env *env) {
   return an_int(env, __atomic_load_n(&mixed_run_count, __ATOMIC_RELAXED));
 }
+
+an_term ggml_mixed_splits(an_env *env) { return an_int(env, __atomic_load_n(&mixed_split_count, __ATOMIC_RELAXED)); }
 
 an_term ggml_pin(an_env *env, struct ggml_Lease_state *lease) {
   struct entry *p = lease->e;
@@ -2190,6 +2252,7 @@ static const char *compute_mixed(struct entry *p, struct device_state *d) {
   }
   if (why == NULL && !ggml_backend_sched_alloc_graph(d->sched, p->graph)) why = "allocating the graph failed";
   if (why == NULL && ggml_backend_sched_graph_compute(d->sched, p->graph) != GGML_STATUS_SUCCESS) why = "ggml_backend_sched_graph_compute failed";
+  if (why == NULL) __atomic_store_n(&mixed_split_count, ggml_backend_sched_get_n_splits(d->sched), __ATOMIC_RELAXED);
   restore_sources(p);
   forget(p);
   ggml_backend_sched_reset(d->sched);
