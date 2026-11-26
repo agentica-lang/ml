@@ -168,9 +168,9 @@ which the text model reads at the image tokens (the wiring is the next step of m
   `preprocessor_config.json`: 65,536 and 16,777,216 pixels; 32 is `patch_size * spatial_merge_size`), `to_tensor`,
   `normalize` with the mean and std 0.5, and `Vision.patches(x, 16, 2)`, which lays the patches out as the processor does
   (the image repeated for the two frames of the temporal patch). The image must be sRGB with 3 bands: the processor
-  flattens an alpha band first and `vision` does not yet, so `patches` refuses a fourth channel. An image under `shortest_edge` is enlarged, and libvips
-  enlarges with another sub-pixel alignment than Pillow's bicubic, so the pixels of an enlarged image are not within a
-  level of the processor's (the evidence is in "Tests" below, the issue is agentica-lang/packages#266); a shrunk one is.
+  flattens an alpha band first and `vision` does not yet, so `patches` refuses a fourth channel. An image under `shortest_edge` is enlarged, and since
+  `image-0.3.0` (agentica-lang/packages#266) libvips aligns the centres of an enlarged pixel like Pillow's bicubic: the pixels are within
+  a level of the processor's, grown or shrunk (the evidence is in "Tests" below).
 - Not supported: video (the temporal patch of an image is the frame twice, which the processor makes), several images in
   one call (call it once for each), another `hidden_act`, deepstack (the config key is empty in Qwen3.5), and the
   `weights` and `with_weights` of a fine-tune.
@@ -815,9 +815,9 @@ error row per config field.
   input (`SmartResize`, `to_tensor`, `normalize`, `patches`) on drawn images of the ResNet test against the processor's
   values at about 500 places of each (one case with the checkpoint's own bounds, 352 by 480 to a grid of 22 by 30): a shrink
   is one 8-bit level apart (0.0078), two on the 64 by 32 image (0.0157; the tolerance is 0.016), the mean of all the
-  values 1e-5 to 1e-3 apart. A grow of area 2.5 times (1.5 and 1.67 per axis; an 8-bit crop enlarged) is not:
-  30 percent of the sampled values are 3 or more levels apart, up to 0.29 (37 levels), at the edges of the drawn discs, the
-  mean 0.0003; the tolerance of that case is 0.6, so it checks the grid and the rough alignment only. The cause is in the `image` package (agentica-lang/packages#266). The golden is
+  values 1e-5 to 1e-3 apart. A grow of area 2.5 times (1.5 and 1.67 per axis; an 8-bit crop enlarged) is too, since `image-0.3.0`:
+  one level (0.0078), no sampled value farther, the mean 0.0004 (with `image-0.2.0` 30 percent of the sampled values were 3 or more levels apart, up to
+  0.29, agentica-lang/packages#266, and the tolerance of that case was 0.6; ml#306). The golden is
   committed (`vision/test/fixtures/qwen/golden.json`, 23 KB, sha256 `23fabc27c5cdb1c93fac66f7c4db6771c2f5aa1ef7f8ab597ec0fdc37293ce11`). Mutants that fail it: the tie of
   `smart_resize` rounded up, the floor of its grow branch, the floor of its shrink branch as a ceil or a round, the height
   and width swapped, no minimum of one factor, an aspect ratio of 200 refused, the two frames of a patch not repeated, the

@@ -22,14 +22,10 @@ STD = [0.5, 0.5, 0.5]
 ## The patches of the processor's own 8-bit images are its `pixel_values` up to the rounding of `float32`.
 EXACT = 0.00001
 
-## What passes for our own resize. A shrink is two 8-bit levels (1 / 255 / 0.5 = 0.0078 each) from Pillow's at the most
-## (the 64 by 32 case measured two, the others one). A grow (the image is under `min_pixels`) is not: libvips enlarges
-## with another sub-pixel alignment than Pillow (a step edge lands about a quarter of an input pixel apart at 2 times), so
-## at the edges of the drawn discs 30% of the sampled values are 3 or more levels apart and the largest gap is 0.29 (37
-## levels) on the grow of the test (area 2.5 times, 1.5 and 1.67 per axis); the mean of all the values is 0.0003 apart.
-## `GROW_ABS` is about twice that: tighten it to `PIXEL_ABS` when agentica-lang/packages#266 is fixed.
+## What passes for our own resize: two 8-bit levels (1 / 255 / 0.5 = 0.0078 each) from Pillow's at the most. The 64 by 32
+## case measured two and the others one, the grow (the image is under `min_pixels`: area 2.5 times, 1.5 and 1.67 per axis)
+## one too, since `image-0.3.0` aligns the centres of an enlarged pixel like Pillow (agentica-lang/packages#266).
 PIXEL_ABS = 0.016
-GROW_ABS = 0.6
 PIXEL_MEAN = 0.002
 
 struct Case
@@ -39,7 +35,6 @@ struct Case
   max_pixels: Int
   grid: List[Int]
   crop: Bool
-  grows: Bool
   stride: Int
   mean: Float
   samples: List[Float]
@@ -146,12 +141,7 @@ def test_the_whole_input_is_hugging_faces_within_the_resize_of_libvips() -> Resu
       try Test.eq(Tensor.shape(got), [c.grid[0] * c.grid[1], 3 * 2 * PATCH * PATCH])
       gap = try measure(got, c)
       puts("qwen_pixels #{c.name}: largest gap #{gap.largest}, #{gap.far * 100.0}% far, mean #{gap.mean}")
-      limit = PIXEL_ABS
-      if c.grows
-        limit = GROW_ABS
-      end
-
-      try Test.assert(gap.largest <= limit, "#{c.name}: the largest gap is #{gap.largest}")
+      try Test.assert(gap.largest <= PIXEL_ABS, "#{c.name}: the largest gap is #{gap.largest}")
       try Test.assert(gap.mean <= PIXEL_MEAN, "#{c.name}: the mean is #{gap.mean} from Hugging Face's")
     end
   end
