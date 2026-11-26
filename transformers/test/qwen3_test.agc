@@ -118,9 +118,11 @@ def test_the_ends_of_the_model_follow_the_blocks_on_the_cpu() -> Result[Void]
   with_peer do |dir|
     rows = try ids(dir)
     home = Tensor.Backend.Ggml(Tensor.Device.Cpu)
+    checked = 0
     for backend in try S.ggml_backends()
       next if backend == home
 
+      checked += 1
       for n in [0, 1]
         m = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F32, some(n))
         try Test.eq(Tensor.backend(m.tokens.table), home)
@@ -135,8 +137,18 @@ def test_the_ends_of_the_model_follow_the_blocks_on_the_cpu() -> Result[Void]
       try Test.eq(Tensor.backend(all.head.w), backend)
       _ = try Qwen3.run(all, rows)
       try Test.eq(GgmlRaw.mixed_runs(), before)
+
+      untied = try Qwen3.open("#{dir}/untied", backend, Tensor.Dtype.F32, some(0))
+      try Test.eq(Tensor.backend(untied.head.w), home)
+      try Test.eq(Tensor.backend(untied.tokens.table), home)
+      _ = try Qwen3.run(untied, rows)
+      try Test.assert(
+        GgmlRaw.mixed_runs() > before,
+        "a model with its blocks on the CPU did not run through the scheduler",
+      )
     end
 
+    try Test.assert(checked > 0 or !Tensor.available(S.VULKAN), "a Vulkan device was there and no model was checked")
     ok()
   end
 end

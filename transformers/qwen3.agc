@@ -219,7 +219,8 @@ end
 ## The logits `[batch, seq, vocab_size]` of the token ids `ids` (`I32`,
 ## `[batch, seq]`), each position reading the ones before it and itself; with
 ## `last`, only the last position's, `[batch, 1, vocab_size]` (the one that
-## picks the next token). `seq` may not pass `max_position_embeddings`.
+## picks the next token). `seq` may not pass `max_position_embeddings`. `ids` is on `m.device`, the backend the model
+## was opened on (its table may be on the CPU with `layers_on_device`).
 def logits(m: Qwen3, ids: Tensor.Tensor, last: Bool = false) -> Result[Tensor.Tensor]
   shape = Tensor.shape(ids)
   return error("logits needs ids of [batch, seq], got #{shape}") if shape.size != 2

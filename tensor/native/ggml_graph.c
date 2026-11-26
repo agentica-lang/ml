@@ -1770,17 +1770,17 @@ static int side_of(const struct entry *p, const struct ggml_tensor *t) {
   return side >= 0 ? side : side_get(p, root);
 }
 
-/* A device leaf below this many bytes (a norm weight, a position, a scalar, a mask) does not pull a node to the device by
-   its bytes; a matrix that a product or a row lookup reads (a weight, however small) pins the node there. */
+/* A device leaf below this many bytes (a norm weight, a position, a scalar, a mask) does not pull a node to the device
+   by its bytes; a matrix that a product or a row lookup reads (a weight, however small) pins the node there. */
 #define SMALL_LEAF 65536
 
 /* The side of `node`, or -1 when nothing about its operands says (`place` then follows its consumers): the side of the
    memory it writes when that is made (a view of a cache); the CPU when it reads a tensor that lives there (a weight, a
    cache), whatever else it reads (a long prompt's activations are bigger than a weight, and copying a weight on every
-   run is what a layer on the CPU is there to avoid); else the device when a product or a row lookup reads a matrix that lives there (a weight);
-   else the side with most operand bytes, a tie going to the side of the product of a matrix (the layer's output: the
-   residual stream follows the layer it passes through, whatever the order of the operands) and else to the CPU when an
-   operand was computed there. */
+   run is what a layer on the CPU is there to avoid); the device when a product or a row lookup reads a matrix that
+   lives there (a weight); else the side with most operand bytes, a tie going to the side of the product of a matrix
+   (the layer's output: the residual stream follows the layer it passes through, whatever the order of the operands)
+   and else to the CPU when an operand was computed there. */
 static int decide(const struct entry *p, const struct ggml_tensor *node) {
   int64_t bytes[2] = {0, 0};
   int j, side, product = -1;

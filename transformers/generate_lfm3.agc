@@ -124,7 +124,7 @@ def stepper(m: Lfm3.Lfm3) -> KvDecoder.Stepper[Lfm3.Lfm3]
     layers: m.layers.size - convs,
     limit: m.config.max_position_embeddings,
     vocab: m.config.vocab_size,
-    table: m.tokens.table,
+    backend: Tensor.backend(m.tokens.table),
     states: convs,
     taps: m.config.conv_L_cache,
     traced: ->(p: Lfm3.Lfm3) { Lfm3.traced(p) },
