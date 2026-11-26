@@ -4,9 +4,11 @@
 ##
 ##   agentica tools/layers_check.agc MODEL_DIR_OR_GGUF [cpu|vulkan]
 ##
-## `WEIGHTS` (`q4_k` for a Q4_K_M file) says how the matrices are held.
+## `WEIGHTS` (`q4_k` for a Q4_K_M file) says how the matrices are held, and `AGENTICA_ML_KV=host` keeps the KV cache in host
+## memory (`Placement.Kv.Host`).
 
 import Generate from "../generate"
+import Placement from "../placement"
 import Qwen3 from "../qwen3"
 import Load from "pkg/hub/load"
 import Tensor from "pkg/tensor/tensor"
@@ -61,7 +63,7 @@ end
 
 def generated(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype, n: Optional[Int]) -> Result[List[Int]]
   m = try Qwen3.open(dir, backend, weights, n)
-  g = try Generate.open(m)
+  g = try Generate.open(m, kv: try Placement.kv_from_env())
   ids = Generate.generate(g, PROMPT, NEW, STOP)
   Generate.close(g)
   Qwen3.close_model(m)

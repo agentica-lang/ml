@@ -1,6 +1,7 @@
 ## Where `layers_on_device` puts the blocks of a model, its embedding table and its head: the rule of llama.cpp's `-ngl`,
 ## shared by the models that take the option.
 
+import Load from "pkg/hub/load"
 import Tensor from "pkg/tensor/tensor"
 
 ## Where the embedding table is, and the head with the final norm.
@@ -39,6 +40,15 @@ def layer_backend(backend: Tensor.Backend, i: Int, layers_on_device: Optional[In
     Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> Tensor.Backend.Ggml(Tensor.Device.Cpu)
     _ -> backend
   end
+end
+
+## The `Kv` of the `AGENTICA_ML_KV` variable that the tools read (`host` or `device`, `device` when it is not set).
+def kv_from_env() -> Result[Kv] = ok(kv_of(try Load.kv_host_from_env()))
+
+## `Host` for true, `Device` for false.
+def kv_of(host: Bool) -> Kv
+  return Kv.Host if host
+  Kv.Device
 end
 
 ## The backend a cache tensor made on `backend` is kept on under `kv`: `Host` moves a tensor of a Vulkan device to the

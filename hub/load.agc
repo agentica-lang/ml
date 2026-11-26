@@ -86,6 +86,20 @@ def layers_on_device_of(text: String) -> Result[Optional[Int]]
   end
 end
 
+## Whether the tools keep the KV cache in host memory: `AGENTICA_ML_KV=host` (`Generate.open(..., kv: Placement.Kv.Host)`)
+## or `AGENTICA_ML_KV=device`, the default.
+def kv_host_from_env() -> Result[Bool] = kv_host_of(System.env("AGENTICA_ML_KV").unwrap_or(""))
+
+## The option of the text of that variable: true for `host`, false for `device` or when it is empty.
+def kv_host_of(text: String) -> Result[Bool]
+  case text
+    "" -> ok(false)
+    "device" -> ok(false)
+    "host" -> ok(true)
+    _ -> error("AGENTICA_ML_KV is host or device, got #{text}")
+  end
+end
+
 ## Vulkan's fp16 or F32 `mul_mat` (`Tensor.vulkan_fp16`) for a tool, before any ggml call: `VULKAN_FP16=1` or `0` says, and
 ## when it is not set `default` does. A check against Hugging Face or whisper.cpp leaves `default` false (exact `float32`);
 ## a benchmark passes true (the library default).
