@@ -6,12 +6,9 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
-- `tools/install_xla.agc` installs the XLA CPU plugin from our own build, published as a GitHub Release of this repository (`xla-c9276de87e15`, Linux x86_64 and aarch64, with the licenses of what it links), instead of the `xla-cpu-pjrt` wheel of PyPI; it no longer needs `unzip` (ml#287).
-
-### tensor
-
 - `Dtype.Q4_K`, `Dtype.Q6_K` and the formats of the same names: `Tensor.from_file` dequantizes ggml's K blocks to `F32` on every backend, or keeps them as a weight on ggml (ml#126).
 - `Tensor.packed?(dtype)`: true for the dtypes that ggml keeps packed (`F16` and the quantized ones).
+- `tools/install_xla.agc` installs the XLA CPU plugin from our own build, a GitHub Release of this repository (Linux x86_64 and aarch64, with the licenses of what it links), instead of the PyPI wheel, and needs no `unzip`; the old `xla/<wheel-sha>/` folders of the cache can be deleted (ml#287).
 
 ### nn
 
