@@ -2,8 +2,10 @@
 `sliding_attention` with a window of 4; 16 wide, a head of 16 and the real `partial_rotary_factor` 0.5 and thetas of
 the checkpoint, tied head) as the official code runs it in `float32` with the eager attention: its `config.json` (as
 the `LiquidAI/LFM3-*` repositories write it), its weights under the names of the official checkpoint, two sequences of 9
-token ids and the logits of every position. `test/lfm3_test.agc` writes the weights as a safetensors file, opens the
-folder with `Lfm3.open` and compares the logits. No model is stored, only this small file of random weights and its
+token ids and the logits of every position, and the 14 ids and scores of the official greedy `generate` from the first
+7 ids of the first sequence (the window of 4 is crossed, and so are the cache capacities 8, 16 and 32).
+`test/lfm3_test.agc` writes the weights as a safetensors file, opens the folder with `Lfm3.open` and compares the
+logits; `test/generate_lfm3_test.agc` does the same with `Generate` and the generated ids. No model is stored, only this small file of random weights and its
 outputs.
 
 The code is `modeling_lfm3.py`, `configuration_lfm3.py` and `lfm3_conv.py` of `LiquidAI/LFM3-1.7B`, revision
@@ -45,6 +47,8 @@ SHAPE = dict(
 ROPE = {"full_attention": {"rope_type": "default", "rope_theta": 1000000.0, "partial_rotary_factor": 0.5},
         "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0}}
 ROWS = [[3, 1, 4, 1, 5, 9, 2, 6, 5], [8, 9, 7, 9, 3, 2, 3, 8, 4]]
+PROMPT = 7
+NEW = 14
 SHA256 = {
     "configuration_lfm3.py": "176cced35657aedfea7d7002221360582d1c05fcaca882c21508bc3a73b282e5",
     "lfm3_conv.py": "80d4a985382a22774212759248a6b4c737bfbf9c2a47b3dd7f797dda748e4bb4",
@@ -90,6 +94,8 @@ def main():
             p.copy_(((1.0 + noise if "norm" in name else noise).double().round(decimals=8)).float())
         model.lm_head.weight = model.model.embed_tokens.weight
         logits = model(torch.tensor(ROWS)).logits
+        made = model.generate(torch.tensor(ROWS[:1])[:, :PROMPT], do_sample=False, max_new_tokens=NEW,
+                              output_scores=True, return_dict_in_generate=True, pad_token_id=0)
     weights = {}
     shapes = {}
     for name, p in model.state_dict().items():
@@ -99,7 +105,8 @@ def main():
         shapes[name] = list(p.shape)
     document = dict(SHAPE, architectures=["Lfm3ForCausalLM"], model_type="lfm3", rope_parameters=ROPE, dtype="bfloat16")
     json.dump({"config": json.dumps(document), "weights": weights, "shapes": shapes, "rows": ROWS,
-               "logits": flat(logits)}, sys.stdout)
+               "logits": flat(logits), "generated": made.sequences[0, PROMPT:].tolist(),
+               "scores": [flat(step[0]) for step in made.scores]}, sys.stdout)
     sys.stdout.write("\n")
 
 

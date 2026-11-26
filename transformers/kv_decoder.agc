@@ -1,4 +1,4 @@
-## The decoder that Qwen3 (`generate.agc`) and Granite MoE (`generate_granite_moe.agc`) share, over a key-value cache
+## The decoder that Qwen3 (`generate.agc`), Granite MoE (`generate_granite_moe.agc`) and LFM3 (`generate_lfm3.agc`) share, over a key-value cache
 ## (`transformers/DESIGN.md`), the design of `asr/`'s decoder (`asr/asr.agc`); the cache helpers are shared in
 ## `nn/kv.agc`. A model gives a `Stepper`: its sizes, its token table, `traced` and its `stepped` function, the graph of
 ## one step; everything else is here:
@@ -15,10 +15,15 @@
 ## - Elsewhere the same graph runs eagerly in an arena. On the reference backend attention needs `q * k` of at most
 ##   1,048,576, which the padded prompt counts (a prompt of 600 tokens is padded to 1024). libtorch is not tested.
 ##
+## A model with layers that keep a state (LFM3's short convolutions) says so in its `Stepper` (`states`, `taps`): the
+## states are tensors of a size that does not depend on the length, new at every step, and a prompt is given the
+## `Delta.Padding` of its convolutions, so that the padding rows leave the state as the real ones did.
+##
 ## Batch of one. A prompt is fed in one step (`step` at length 0), then one token at a time. A `Generator` belongs to
 ## one task at a time, and `close` ends it before the weights its graphs read are freed.
 
 import Padded from "pkg/nn/kv"
+import Delta from "pkg/nn/delta"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 import Lift from "lift"
@@ -26,7 +31,8 @@ import Sample from "sample"
 import Stepping from "stepping"
 
 ## One step to run: `xs` are the ids `[width]`, their positions, the one-hot `[1, width]` of the row whose prediction is
-## wanted, and per layer the keys then the values. The cache the step leaves has `room` rows, of which the attention
+## wanted, for a prompt of a model with `taps` the `valid` and `keep` of its `Delta.Padding`, and per layer the keys then
+## the values, then the states. The cache the step leaves has `room` rows, of which the attention
 ## reads the first `reach`; `in_place` writes the new row into the tensors of the old cache, and `compiled` says the
 ## step is traced for ggml (a model may keep its cache in `F16` then). `usable` and `mode` are those of the generator
 ## and of the call (`Stepping.Head`).
@@ -55,14 +61,20 @@ end
 
 ## What a model gives the decoder, `M` being its type. `stepped(model, request)` is the graph of a step: its outputs are
 ## the head (the logits `[vocab]`, the choice `[1]` or the candidates, by `request.mode`), then the keys and the values
-## of every layer. `traced` is the model with its tensors as `Trace` constants.
+## of every layer with a cache, then its states. `traced` is the model with its tensors as `Trace` constants.
 struct Stepper[M]
+  ## The layers with a cache of keys and values.
   layers: Int
   ## The positions of the model (`max_position_embeddings`).
   limit: Int
   vocab: Int
   ## The token table, which tells the backend of the model.
   table: Tensor.Tensor
+  ## How many state tensors a step takes and gives, after the keys and the values (0 for a model with none).
+  states: Int = 0
+  ## The taps of the convolution of a model with states: a prompt (more than one row) is given a `Delta.Padding` for
+  ## them. 0 for a model with no convolution.
+  taps: Int = 0
   traced: Fn[M, M]
   stepped: Fn[M, Request, Result[List[Tensor.Tensor]]]
 end
@@ -91,6 +103,8 @@ end
 struct Cache
   keys: List[Tensor.Tensor]
   values: List[Tensor.Tensor]
+  ## The states of a model that has them, new tensors at every step.
+  states: List[Tensor.Tensor] = []
   length: Int
 end
 
@@ -187,7 +201,7 @@ end
 
 ## Ends a sequence: closes the tensors of `cache`.
 def finish(cache: Cache) -> Void
-  Lift.close(cache.keys + cache.values)
+  Lift.close(cache.keys + cache.values + cache.states)
 end
 
 ## Decoding from the prompt `ids`: at most `max_new` ids, stopping before a stop id (`stop`, such as `<|im_end|>`).
@@ -242,7 +256,7 @@ def advance[M](g: Core[M], cache: Cache, ids: List[Int], mode: Stepping.Head) ->
   end
 
   backend = Tensor.backend(s.table)
-  made = Stepping.inputs(ids, cache.length, width, room, backend)
+  made = fed_inputs(s, ids, cache.length, width, room, backend)
   if not made.ok?
     finish(cache)
     return error(made.message)
@@ -262,6 +276,7 @@ def advance[M](g: Core[M], cache: Cache, ids: List[Int], mode: Stepping.Head) ->
   end
 
   Lift.close(fed)
+  Lift.close(cache.states)
   # A step in place keeps the tensors of `cache` as the ones of the new cache; any other step is done with them (a
   # tensor closed twice is fine, as when the step failed after it closed its outputs).
   if not in_place or not outs.ok?
@@ -287,7 +302,7 @@ def compiled_step[M](
   in_place: Bool,
 ) -> Result[Advanced]
   s = g.stepper
-  args = fed + cache.keys + cache.values
+  args = fed + cache.keys + cache.values + cache.states
   rows = 0
   if not cache.keys.empty?
     rows = Tensor.shape(cache.keys[0])[2]
@@ -316,12 +331,39 @@ def compiled_step[M](
     Lift.close(outs.drop(1))
   end
 
-  ok(
-    Advanced(
-      head: try head,
-      cache: Cache(keys: outs.drop(1).take(s.layers), values: outs.drop(1 + s.layers), length: 0),
-    ),
+  ok(Advanced(head: try head, cache: cache_of(s, outs.drop(1))))
+end
+
+## The cache of the outputs of a step after its head: the keys, the values and the states.
+def cache_of[M](s: Stepper[M], outs: List[Tensor.Tensor]) -> Cache
+  Cache(
+    keys: outs.take(s.layers),
+    values: outs.drop(s.layers).take(s.layers),
+    states: outs.drop(2 * s.layers),
+    length: 0,
   )
+end
+
+## The inputs of a step (`Stepping.inputs`) and, for a prompt of a model with convolutions, the `Delta.Padding` of
+## them.
+def fed_inputs[M](
+  s: Stepper[M],
+  ids: List[Int],
+  length: Int,
+  width: Int,
+  room: Int,
+  backend: Tensor.Backend,
+) -> Result[List[Tensor.Tensor]]
+  base = try Stepping.inputs(ids, length, width, room, backend)
+  return ok(base) if width == 1 or s.taps == 0
+  padded = Delta.padding(ids.size, width, s.taps, backend)
+  if not padded.ok?
+    Lift.close(base)
+    return error(padded.message)
+  end
+
+  pad = padded.unwrap!
+  ok(base + [pad.valid, pad.keep])
 end
 
 ## The same graph, run now and in an arena that keeps the new cache alone.
@@ -338,7 +380,7 @@ def eager_step[M](
       g.model,
       Request(
         usable: g.usable,
-        xs: fed + cache.keys + cache.values,
+        xs: fed + cache.keys + cache.values + cache.states,
         room: room,
         reach: room,
         mode: mode,
@@ -347,12 +389,7 @@ def eager_step[M](
       ),
     )
 
-    ok(
-      Advanced(
-        head: try Tensor.to_list(outs[0]),
-        cache: Cache(keys: outs.drop(1).take(s.layers), values: outs.drop(1 + s.layers), length: 0),
-      ),
-    )
+    ok(Advanced(head: try Tensor.to_list(outs[0]), cache: cache_of(s, outs.drop(1))))
   end
 
   ran
