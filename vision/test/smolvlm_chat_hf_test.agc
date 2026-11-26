@@ -6,12 +6,16 @@
 ## the ids of the prompt must be Hugging Face's, and the new ids too (24, or fewer when the model ends its turn, which
 ## `generate` of Hugging Face marks with `<|im_end|>` after the `<end_of_utterance>`).
 ##
-## It needs the checkpoint, which is not in the repository, so it runs only when `SMOLVLM_MODEL` names its folder
-## (`config.json`, `model.safetensors`, `tokenizer.json` and `processor_config.json`). It runs
-## on Vulkan (`SMOLVLM_DEVICE=vulkan`), where each case takes some 15 seconds; on the CPU the 13 tiles and the 876 ids
-## of the prompt do not fit the 30 seconds that a test has (`RUNTIME-TEST-TIMEOUT`), so with another device it is
-## skipped. Run from `vision/`: `SMOLVLM_MODEL=SmolVLM-256M-Instruct SMOLVLM_DEVICE=vulkan agentica test --max-steps
-## 1000000000000 test/smolvlm_chat_hf_test.agc`.
+## The first test needs no checkpoint: the text of the template and the ids of the prompt (the ids of the golden with each
+## image collapsed to one `<image>` and expanded again by `SmolVlmPrompt.expand` with `fixtures/smolvlm/prompt`) are
+## Hugging Face's. The two others need the checkpoint, which is not in the repository, so they run only when
+## `SMOLVLM_MODEL` names its folder (`config.json`, `model.safetensors`, `tokenizer.json` and `processor_config.json`),
+## and on Vulkan (`SMOLVLM_DEVICE=vulkan`), where each case takes some 15 seconds; on the CPU the 13 tiles and the 876
+## ids of the prompt do not fit the 30 seconds that a test has (`RUNTIME-TEST-TIMEOUT`). Otherwise they skip and say
+## so; `SMOLVLM_REQUIRE=1` turns that skip (no folder, another device, no ggml) into an error. Run from `vision/`:
+## `SMOLVLM_REQUIRE=1 SMOLVLM_MODEL=SmolVLM-256M-Instruct SMOLVLM_DEVICE=vulkan agentica test --max-steps 1000000000000
+## test/smolvlm_chat_hf_test.agc`. That budget is for this manual run only: CI runs the file with its own (10 million
+## steps) and the first test fits it.
 
 import Bpe from "pkg/transformers/tokenizer/bpe"
 import Chat from "pkg/transformers/chat"
@@ -48,6 +52,20 @@ private
 
 def golden() -> Result[Golden] = JSON.decode(try File.read_text("test/fixtures/smolvlm/chat_golden.json"), Golden)
 
+def test_the_text_and_the_ids_of_the_prompt_are_hugging_faces() -> Result[Void]
+  want = try golden()
+  prompt = try SmolVlmPrompt.open("test/fixtures/smolvlm/prompt")
+  for c in want.cases
+    question = Chat.SMOLVLM_IMAGE + c.question
+    try Test.eq(try Chat.apply("idefics3", [Chat.Message(role: "user", content: question)]), c.text)
+    t = try tiling_of(c)
+    grids = [SmolVlmPrompt.Grid(rows: t.rows, cols: t.cols)]
+    try Test.eq(try SmolVlmPrompt.expand(collapsed(c.prompt_ids, prompt), prompt, grids), c.prompt_ids)
+  end
+
+  ok()
+end
+
 def test_the_images_are_the_files_of_the_golden() -> Result[Void]
   want = try golden()
   try Test.eq(want.cases.size, 2)
@@ -63,21 +81,39 @@ def test_a_wide_image_is_described_with_hugging_faces_ids() -> Result[Void] = ch
 def test_a_tall_image_is_described_with_hugging_faces_ids() -> Result[Void] = checked("tall")
 
 ## The case `name` of the golden on the checkpoint of `SMOLVLM_MODEL`, or nothing when it names none.
+## The grid of the image of `c`, from its size alone.
+def tiling_of(c: Case) -> Result[Vision.Tiling]
+  Native.arena do
+    image = try Image.load("test/fixtures/#{c.image}")
+    Vision.idefics3_tiling(Image.height(image), Image.width(image))
+  end
+end
+
+## The ids of a prompt with one image as the template's text makes them: the expansion, from the first
+## `<fake_token_around_image>` to the last, is one `<image>`.
+def collapsed(ids: List[Int], prompt: SmolVlmPrompt.Prompt) -> List[Int]
+  first = ids.index(prompt.fake).unwrap!
+  last = ids.size - 1 - ids.reverse.index(prompt.fake).unwrap!
+  ids.take(first) + [prompt.image] + ids.drop(last + 1)
+end
+
+## Nothing to check: an error under `SMOLVLM_REQUIRE=1`, a line saying it was skipped otherwise.
+def skipped(why: String) -> Result[Void]
+  required = System.env("SMOLVLM_REQUIRE")
+  return error("smolvlm_chat_hf_test: #{why}, and SMOLVLM_REQUIRE is set") if required.ok? and try required != ""
+  puts("smolvlm_chat_hf_test: skipped, #{why}")
+  ok()
+end
+
 def checked(name: String) -> Result[Void]
   listed = System.env("SMOLVLM_MODEL")
-  if !listed.ok? or try listed == ""
-    puts("smolvlm_chat_hf_test: skipped, SMOLVLM_MODEL names no checkpoint folder")
-    return ok()
-  end
+  return skipped("SMOLVLM_MODEL names no checkpoint folder") if !listed.ok? or try listed == ""
 
   device = System.env("SMOLVLM_DEVICE")
-  if !device.ok? or try device != "vulkan"
-    puts("smolvlm_chat_hf_test: skipped, SMOLVLM_DEVICE is not vulkan")
-    return ok()
-  end
+  return skipped("SMOLVLM_DEVICE is not vulkan") if !device.ok? or try device != "vulkan"
 
   backend = try Hf.device_named("SMOLVLM_DEVICE")
-  return error("SMOLVLM_MODEL is set and ggml is not built") if !Tensor.available(backend)
+  return skipped("ggml on Vulkan is not built") if !Tensor.available(backend)
   want = try golden()
   c = try want.cases.find { |k| k.name == name }
   puts(try check(try listed, c, backend))

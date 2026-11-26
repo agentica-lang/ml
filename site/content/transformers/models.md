@@ -249,19 +249,24 @@ To describe an image, cut it into tiles, put the tiles through the tower one at 
 backend = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 dir = "SmolVLM-256M-Instruct"
 tok = Bpe.open("#{dir}/tokenizer.json").unwrap!
-image = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
-tiles = Vision.idefics3_tiles(image, backend).unwrap!
+made = Native.arena do
+  image = Image.colourspace(Image.load("photo.jpg").unwrap!, Image.Space.Srgb).unwrap!
+  Vision.idefics3_tiles(image, backend)
+end
+tiles = made.unwrap!
 
 v = SmolVlmVision.open(dir, backend).unwrap!
 values: List[Tensor.Values] = []
+width = 0
 for t in tiles.tiles
   x = Vision.normalize(t, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]).unwrap!
   rows = SmolVlmVision.encode(v, x).unwrap!
+  width = Tensor.shape(rows)[2]
   values = values + Tensor.to_list(rows).unwrap!
   Lift.close([x, rows])
 end
 SmolVlmVision.close_model(v)
-features = Tensor.from_list(values, [values.size / 576, 576], Tensor.Dtype.F32, backend).unwrap!
+features = Tensor.from_list(values, [values.size / width, width], Tensor.Dtype.F32, backend).unwrap!
 
 question = Chat.SMOLVLM_IMAGE + "What is in this picture?"
 text = Chat.apply("idefics3", [Chat.Message(role: "user", content: question)]).unwrap!

@@ -735,8 +735,10 @@ error row per config field.
   the text, the 876 and 878 ids of the prompt and the new ids of two images of the ResNet test (4 by 3 tiles each: 13
   frames); `Chat.apply`, `Bpe`, `Vision.idefics3_tiles`, the tower tile by tile, `SmolVlmPrompt.expand` and a greedy
   `Generate` over a `Sight` give the same text, prompt ids and new ids (24 ids, and 12 for the answer that ends in
-  `<end_of_utterance>`, where Hugging Face stops at `<|im_end|>` and `generate` here stops before it). It runs on Vulkan
-  (some 15 s a case) and is skipped on another device: on the CPU the case does not fit the 30 s of a test. Mutants,
+  `<end_of_utterance>`, where Hugging Face stops at `<|im_end|>` and `generate` here stops before it). The first test needs no checkpoint (CI): the template's text and the prompt ids, collapsed to one `<image>` per
+  image and expanded with the small prompt fixture, are Hugging Face's. The two others run on Vulkan (some 15 s a case)
+  and skip on another device (on the CPU the case does not fit the 30 s of a test) or without `SMOLVLM_MODEL`;
+  `SMOLVLM_REQUIRE=1` turns a skip into an error. Mutants of the first test: the rows and columns of the grid swapped and the image after the question. Mutants,
   each failing it: the tiles in the reverse order and the tiles not normalized.
 - `vision/test/smolvlm_processor_test.agc` against `vision/test/smolvlm_processor_golden.py` (manual: `torch` 2.15.0,
   `transformers` 5.22.2, `pillow` 11.3.0, offline; `vision/test/fixtures/smolvlm/processor_golden.json`, 187 KB, and

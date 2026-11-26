@@ -32,7 +32,7 @@ All packages are released together at one version, each on its own tag, `<packag
 ### transformers
 
 - `Lfm3`: LFM3-1.7B (`LiquidAI/LFM3-1.7B`) from its official safetensors, forward over whole sequences, `F32` or `F16` weights (ml#275).
-- SmolVLM-256M-Instruct describes an image (ml#84): `Chat.apply`, `Bpe`, `Vision.idefics3_tiles`, `SmolVlmVision`, `SmolVlmPrompt` and a greedy `Generate` give Hugging Face's `generate` ids for two images (fragment in the transformers models page).
+- SmolVLM-256M-Instruct describes an image (ml#84): `Chat.apply`, `Bpe`, `Vision.idefics3_tiles`, `SmolVlmVision`, `SmolVlmPrompt` and a greedy `Generate` give Hugging Face's `generate` ids for two images (checked by hand on Vulkan; fragment in the transformers models page).
 - `Bpe` reads the `tokenizer.json` of SmolLM2 and SmolVLM (`Digits` with individual digits, then ByteLevel's GPT-2 split), to the ids and text of `tokenizers` on a tiny tokenizer and on the real SmolVLM-256M-Instruct one (ml#84).
 - `Chat.apply("idefics3", ...)` is the chat template of SmolVLM (`Chat.SMOLVLM_IMAGE` is where an image goes), equal to Hugging Face's on 21 conversations (ml#84).
 - `Bpe` reads LFM3's `tokenizer.json` (digits in groups of up to three, `ignore_merges`, no normalizer), and `Chat.apply("lfm3", ...)` is its chat template with tools (`tools`, `Message.tool_calls`, `thinking`, `tool_call_id`, `preserve_thinking`) (ml#275).
