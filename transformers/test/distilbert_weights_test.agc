@@ -2,8 +2,8 @@
 ## (`DistilBert.pooled`), on the tiny models of `distilbert_peer.py`: the names are the checkpoint's, a model rebuilt
 ## from its own weights gives the same embedding, the cosine loss of two scored pairs and its gradient for every
 ## weight agree on the reference (in doubles) and ggml, the loss and the gradient of 14 values match the peer's
-## central difference, and `Train.fit` with AdamW lowers the loss on ggml. libtorch has no `batch_matmul`, which the
-## gradient of an attention needs, so it is not run (ml#203). Run from `transformers/`.
+## central difference, and `Train.fit` with AdamW lowers the loss on ggml. libtorch runs the same
+## gradient and `Train.fit` when it is built. Run from `transformers/`.
 
 import Data from "pkg/train/data"
 import DistilBert from "../distilbert"
@@ -170,7 +170,7 @@ def test_the_gradients_match_the_peers_central_difference_and_agree_on_ggml() ->
     end
 
     try Test.eq(ours.grads.size, 36)
-    for backend in try S.ggml_backends()
+    for backend in try S.ggml_backends() + try S.torch_backends()
       got = try graded(dir, backend)
       try S.expect_close([got.value], [ours.value], ABS, REL, "loss on #{backend}")
       for i in 0...ours.grads.size
@@ -206,10 +206,18 @@ def trains(dir: String, backend: Tensor.Backend) -> Result[Void]
   Test.eq(Tensor.shape(try DistilBert.forward(trained, try ids(backend, [4, 5]), mask)), [4, 5, 8])
 end
 
-## On ggml CPU alone: tracing three steps of the model takes most of a test's step budget.
+## On ggml CPU and on libtorch, each alone in its test: tracing three steps of the model takes most of a test's step
+## budget.
 def test_fit_with_adamw_lowers_the_loss() -> Result[Void]
   with_peer do |dir|
     return ok() if (try S.ggml_backends()).empty?
     trains(dir, S.GGML)
+  end
+end
+
+def test_fit_with_adamw_lowers_the_loss_on_libtorch() -> Result[Void]
+  with_peer do |dir|
+    return ok() if (try S.torch_backends()).empty?
+    trains(dir, S.TORCH)
   end
 end

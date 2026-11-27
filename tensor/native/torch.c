@@ -491,6 +491,32 @@ an_term torch_matmul(an_env *env, struct torch_TensorHandle_state *a, struct tor
   }
 }
 
+an_term torch_batch_matmul(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b) {
+  const torch::Tensor &left = *a->value;
+  const torch::Tensor &right = *b->value;
+
+  if (left.dim() < 2 || left.dim() != right.dim()) {
+    return error_text(env, "batch_matmul takes tensors of one rank of 2 or more, got " + shape_text(left) + " and " +
+                             shape_text(right));
+  }
+  for (int64_t i = 0; i + 2 < left.dim(); i++) {
+    if (left.size(i) != right.size(i)) {
+      return error_text(env, "batch_matmul needs one batch shape, got " + shape_text(left) + " and " +
+                               shape_text(right));
+    }
+  }
+  if (left.size(left.dim() - 1) != right.size(right.dim() - 2)) {
+    return error_text(env, "batch_matmul needs " + std::to_string(left.size(left.dim() - 1)) +
+                             " in the inner dimension, got " + std::to_string(right.size(right.dim() - 2)));
+  }
+
+  try {
+    return ok_tensor(env, torch::matmul(left, right));
+  } catch (...) {
+    return failed(env, "batch_matmul");
+  }
+}
+
 an_term torch_linear(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b) {
   const torch::Tensor &left = *a->value;
   const torch::Tensor &right = *b->value;

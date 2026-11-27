@@ -52,7 +52,7 @@ A tensor has a shape, a dtype (its number type, such as `F32`, a 32-bit float) a
 - Elementwise, one value at a time, floats only: `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `sqrt`, `pow`, `relu`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `gelu_erf`, `clamp`.
 - Comparisons: `eq` and `lt` (floats or integers) give `1.0` or `0.0`. `where(cond, a, b)` selects with a `Bool` tensor.
 - Reductions: `sum`, `mean`, `max`, `argmax`, each with `axes` (`none` for every axis, or a list) and `keep_dims`. `argmax` gives `I64`.
-- Matrix products: `matmul` (rank 2), `transpose` (reverses every axis), `batch_matmul` (not on `Torch`).
+- Matrix products: `matmul` (rank 2), `transpose` (reverses every axis), `batch_matmul` (rank 2 or more, one batch shape).
 - Axes: `permute(t, axes)` puts input axis `axes[i]` at output axis `i`.
 - Attention: `attention(q, k, v, mask: none, scale: none, causal: false)` is `softmax(scale * q k^T + mask) v` over `[batch, heads, q_len, head_dim]` tensors. `k` and `v` may have fewer heads, as long as they divide the heads of `q` (grouped-query attention). The mask is added to the scores and is `[q_len, k_len]` or `[batch, heads, q_len, k_len]`, with `1` allowed for `batch` and `heads`; it takes finite values and `-inf`, and it has a gradient. `causal: true` hides the keys after each query, with the last query on the last key, so it needs `q_len <= k_len`. A query with every key at `-inf`, or a `NaN` anywhere, is an error on every backend: to hide a padding position use a large finite negative number, as Hugging Face does. What a query whose every key is hidden by such a number returns is unspecified: the mean of `v` on `Reference` and in the fallback of ggml, the softmax of its scores on ggml's flash attention. On `Reference`, `q_len * k_len` of the causal mask stops at 1,048,576. The scale defaults to `1 / sqrt(head_dim)`.
 - Rotary embedding: `rope(x, positions, base: 10000.0, dims: none, neox: true, inverse: false)` turns the first `dims` columns of each row of `x` (`[..., seq, width]`) in pairs by the angle `positions[row] * base^(-2i/dims)`. `neox` pairs column `i` with `i + dims/2`, and `neox: false` pairs `2i` with `2i + 1`. `positions` is an integer vector with one position per row, shared by every batch and head, and `inverse: true` turns the pairs back.
@@ -84,7 +84,7 @@ A tensor carries its backend, so tensors on different backends can live in one p
 
 `Tensor.available(backend)` says whether a backend works on this machine. A backend needs its native module (compiled C or C++ code). Without it, the backend answers `error("backend not available")`.
 
-`Torch` has 50 of the 52 primitives (the basic ops). `batch_matmul` and `to_device` answer an error that names the op.
+`Torch` has 51 of the 52 primitives (the basic ops). `to_device` answers an error that names the op.
 
 On `Ggml`, a direct call to an op is an eager call: it runs the op right away. Eager calls only create, read and copy tensors. Every other op is an error that points to `Trace`, because ggml is fast when a whole computation is one graph.
 

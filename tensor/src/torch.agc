@@ -35,10 +35,9 @@
 ##   exactly as `../tensor.agc`'s wrappers do.
 ##
 ## Not implemented, and answered with `unsupported` below so the dispatch arm
-## says so in one place: `batch_matmul` and `to_device`.
-## Each is expressible in libtorch, none is among the ops this backend was
-## asked for, and nothing here claims it has one (`README.md`, "What is
-## implemented").
+## says so in one place: `to_device`. It is expressible in libtorch, it is not
+## among the ops this backend was asked for, and nothing here claims it has it
+## (`README.md`, "What is implemented").
 
 import FileRange from "file_range"
 import Raw from "native"
@@ -251,6 +250,30 @@ def matmul(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Typ
   ha = try handle_of(a)
   hb = try handle_of(b)
   one(device, a.dtype, [a.shape[0], b.shape[1]]) do Raw.matmul(ha, hb) end
+end
+
+## The batched product `[B..., m, k] . [B..., k, n]`, float only: one rank of 2 or more and one batch shape.
+def batch_matmul(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
+  _ = try ready(device, "batch_matmul")
+  _ = try same_dtype(a, b, "batch_matmul")
+  _ = try float_only(a, "batch_matmul")
+  rank = a.shape.size
+  if rank < 2 or b.shape.size != rank
+    return error("batch_matmul needs one rank of 2 or more, got #{a.shape} and #{b.shape}")
+  end
+
+  for i in 0...(rank - 2)
+    return error("batch_matmul needs one batch shape, got #{a.shape} and #{b.shape}") if a.shape[i] != b.shape[i]
+  end
+
+  if a.shape[rank - 1] != b.shape[rank - 2]
+    return error("batch_matmul needs #{a.shape[rank - 1]} in the inner dimension, got #{b.shape[rank - 2]}")
+  end
+
+  ha = try handle_of(a)
+  hb = try handle_of(b)
+  shape = a.shape.take(rank - 1) + [b.shape[rank - 1]]
+  one(device, a.dtype, shape) do Raw.batch_matmul(ha, hb) end
 end
 
 ## `a . bᵀ` for `a` `[rows, inner]` and `b` `[cols, inner]`, float only: `b` is read as it is, where `matmul` of a

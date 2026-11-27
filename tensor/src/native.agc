@@ -80,6 +80,9 @@ extern module "torch"
   ## The rank-2 product `[rows, inner] . [inner, cols]`.
   ## @fresh
   compute def matmul(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
+  ## The batched product `[B..., m, k] . [B..., k, n]`: one rank of 2 or more and one batch shape.
+  ## @fresh
+  compute def batch_matmul(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
   ## `a . bᵀ` for `a` `[rows, inner]` and `b` `[cols, inner]`: libtorch's `linear`
   ## without a bias, which reads `b` as it is (no transposed copy).
   ## @fresh

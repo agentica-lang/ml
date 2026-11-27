@@ -524,6 +524,45 @@ def test_the_mlp_gradient_on_torch_agrees_with_the_reference() -> Result[Void]
   ok()
 end
 
+## The loss of an attention over a group of heads with an additive mask that hides keys, on `Torch` and on the
+## reference: the gradient of `attention` is written with `batch_matmul`, which libtorch runs now.
+def test_the_attention_gradient_with_a_mask_on_torch_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  shapes = [[1, 4, 2, 2], [1, 2, 3, 2], [1, 2, 3, 2]]
+  data = [gen_floats(1, 16), gen_floats(2, 12), gen_floats(3, 12)]
+  mask = [0.0, -10000.0, 0.0, 0.0, 0.0, -10000.0]
+  mask = mask + mask + mask + mask
+  weights = gen_floats(4, 16)
+  ref_args: List[Tensor.Tensor] = []
+  torch_args: List[Tensor.Tensor] = []
+  for i in 0...3
+    ref_args = ref_args.push(try Conform.on_ref(data[i], shapes[i]))
+    torch_args = torch_args.push(try Conform.on_torch(data[i], shapes[i]))
+  end
+
+  ref_mask = try Conform.on_ref(mask, [1, 4, 2, 3])
+  ref_weights = try Conform.on_ref(weights, [1, 4, 2, 2])
+  torch_mask = try Conform.on_torch(mask, [1, 4, 2, 3])
+  torch_weights = try Conform.on_torch(weights, [1, 4, 2, 2])
+  want = try Trace.value_and_grad(ref_args) do |xs|
+    out = try Tensor.attention(xs[0], xs[1], xs[2], some(Trace.constant(ref_mask)))
+    Tensor.sum(try Tensor.mul(out, Trace.constant(ref_weights)))
+  end
+
+  got = try Trace.value_and_grad(torch_args) do |xs|
+    out = try Tensor.attention(xs[0], xs[1], xs[2], some(Trace.constant(torch_mask)))
+    Tensor.sum(try Tensor.mul(out, Trace.constant(torch_weights)))
+  end
+
+  try near(got.value, want.value, "the loss")
+  for i in 0...3
+    try near(got.grads[i], want.grads[i], "the gradient of #{["q", "k", "v"][i]}")
+  end
+
+  ok()
+end
+
 ## `data` as an `F64` tensor of `shape` on the reference backend.
 def f64(data: List[Float], shape: List[Int]) -> Result[Tensor.Tensor]
   floats = data.map do |x: Float| Tensor.Values.Float(x) end

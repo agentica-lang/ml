@@ -19,6 +19,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- `Tensor.batch_matmul` runs on `Backend.Torch(Cpu)`, so the gradient of `Tensor.attention` (written with it) runs on libtorch too: 51 of the 52 primitives (ml#203).
 - The StableHLO emitter (so `Backend.Xla`) compiles `sigmoid`, `pow`, `clamp`, `to_dtype`, `permute`, `concat`, `stack`, `squeeze`, `unsqueeze`, `batch_matmul` and `argmax` (ml#243).
 - The StableHLO emitter compiles `layer_norm`, `rms_norm`, `gelu_erf` and `rope` too (ml#243).
 - The StableHLO emitter compiles `attention` and `scatter_add` (the gradient of an embedding) too, and a program with a `scatter_add` checks its indices as one with a `gather` does (ml#243).

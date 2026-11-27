@@ -190,31 +190,78 @@ def test_the_gradient_matches_a_central_difference_and_reaches_the_encoder() -> 
   end
 end
 
-## `Train.fit_batches` with AdamW on ggml: the loss falls over three steps, and every weight with a gradient moved.
-def test_fit_batches_lowers_the_loss_and_moves_the_encoder() -> Result[Void]
-  with_peer do |dir|
-    return ok() if (try S.ggml_backends()).empty?
-    m = try Bert.open("#{dir}/tiny", S.GGML)
-    split = try Params.split(Bert.weights(m), ->(_name: String) { true })
-    before = split.trainable.map { |t: Tensor.Tensor| S.floats_of(t).unwrap! }
-    fit = try Train.fit_batches(
-      ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(m, split, ps, b) },
-      split.trainable,
-      ->(_e: Int, _i: Int) { batch(S.GGML, 2) },
-      1,
-      Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.01, weight_decay: 0.0)),
-      3,
-    )
+## The loss and the gradient of every weight for one pair on `backend`, by the order of `Params.split`.
+def graded(dir: String, backend: Tensor.Backend) -> Result[List[List[Float]]]
+  m = try Bert.open("#{dir}/tiny", backend)
+  split = try Params.split(Bert.weights(m), ->(_name: String) { true })
+  b = try batch(backend, 1)
+  both = try Trace.value_and_grad(
+    split.trainable,
+    ->(ps: List[Tensor.Tensor]) {
+      loss(m, split, ps, Data.Batch(inputs: Trace.constant(b.inputs), targets: Trace.constant(b.targets)))
+    },
+  )
 
-    try Test.assert(fit.history[2] < fit.history[0], "the loss went from #{fit.history[0]} to #{fit.history[2]}")
-    for i in 0...split.names.size
-      name = split.names[i]
-      moved = try S.floats_of(fit.params[i]) != before[i]
-      if !name.start_with?("pooler.") and !name.end_with?(".key.bias")
-        try Test.assert(moved, "#{name} did not move")
-      end
+  out: List[List[Float]] = [try S.floats_of(both.value)]
+  for g in both.grads
+    out = out.push(try S.floats_of(g))
+  end
+
+  ok(out)
+end
+
+## libtorch computes the loss and every gradient of the model as the reference does, in `F32`: the attention backward
+## runs on its `batch_matmul`.
+def test_the_gradient_agrees_on_libtorch() -> Result[Void]
+  with_peer do |dir|
+    return ok() if (try S.torch_backends()).empty?
+    want = try graded(dir, S.REF)
+    got = try graded(dir, S.TORCH)
+    try Test.eq(got.size, want.size)
+    for i in 0...want.size
+      try S.expect_close(got[i], want[i], 0.00001, 0.001, "output #{i} on libtorch")
     end
 
     ok()
+  end
+end
+
+## `Train.fit_batches` with AdamW: the loss falls over three steps, and every weight with a gradient moved.
+def fits(dir: String, backend: Tensor.Backend) -> Result[Void]
+  m = try Bert.open("#{dir}/tiny", backend)
+  split = try Params.split(Bert.weights(m), ->(_name: String) { true })
+  before = split.trainable.map { |t: Tensor.Tensor| S.floats_of(t).unwrap! }
+  fit = try Train.fit_batches(
+    ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(m, split, ps, b) },
+    split.trainable,
+    ->(_e: Int, _i: Int) { batch(backend, 2) },
+    1,
+    Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.01, weight_decay: 0.0)),
+    3,
+  )
+
+  try Test.assert(fit.history[2] < fit.history[0], "the loss went from #{fit.history[0]} to #{fit.history[2]}")
+  for i in 0...split.names.size
+    name = split.names[i]
+    moved = try S.floats_of(fit.params[i]) != before[i]
+    if !name.start_with?("pooler.") and !name.end_with?(".key.bias")
+      try Test.assert(moved, "#{name} did not move")
+    end
+  end
+
+  ok()
+end
+
+def test_fit_batches_lowers_the_loss_and_moves_the_encoder() -> Result[Void]
+  with_peer do |dir|
+    return ok() if (try S.ggml_backends()).empty?
+    fits(dir, S.GGML)
+  end
+end
+
+def test_fit_batches_lowers_the_loss_and_moves_the_encoder_on_libtorch() -> Result[Void]
+  with_peer do |dir|
+    return ok() if (try S.torch_backends()).empty?
+    fits(dir, S.TORCH)
   end
 end
