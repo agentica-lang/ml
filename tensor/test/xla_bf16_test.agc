@@ -120,6 +120,7 @@ def bf16_backends() -> Result[List[Tensor.Backend]]
     Tensor.Backend.Ggml(Tensor.Device.Vulkan(0)),
     Tensor.Backend.Torch(Tensor.Device.Cpu),
   ].select { |backend| Tensor.available(backend) }
+
   if try Support.present()
     backends = backends.push(Support.XLA)
   end

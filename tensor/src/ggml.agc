@@ -102,7 +102,9 @@ def from_file(
 ) -> Result[Types.Tensor]
   code = try ready(device, shape, Types.Dtype.F32, "from_file")
   if dtype != Types.Dtype.F32 and !Types.is_packed_dtype(dtype)
-    return error("from_file: a ggml tensor read from a file is F32, F16, BF16 or quantized, got #{Types.dtype_name(dtype)}")
+    return error(
+      "from_file: a ggml tensor read from a file is F32, F16, BF16 or quantized, got #{Types.dtype_name(dtype)}",
+    )
   end
 
   held = Types.held_code(dtype)

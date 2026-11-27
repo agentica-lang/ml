@@ -747,12 +747,16 @@ def half_operands(n: Types.Node) -> Result[Bool]
         Types.Op.Matmul -> i == 1 and (!Types.is_quantized_dtype(n.args[i].dtype) or try transposed(n.args[i]))
         Types.Op.Gather -> i == 0 and (!Types.is_quantized_dtype(n.args[i].dtype) or try leaf(n.args[i]))
         Types.Op.Transpose -> !Types.is_quantized_dtype(n.args[i].dtype) or try leaf(n.args[i])
-        Types.Op.ToDtype -> try gathered(n.args[0]) or (!Types.is_quantized_dtype(n.args[i].dtype) and try an_input(n.args[0]))
+        Types.Op.ToDtype ->
+          try gathered(n.args[0]) or (!Types.is_quantized_dtype(n.args[i].dtype) and try an_input(n.args[0]))
         Types.Op.SetRows -> i == 0 and n.args[i].dtype == Types.Dtype.F16 and try an_input(n.args[0])
         Types.Op.Attention(_) ->
-          (i == 1 or i == 2) and (
-            (n.args[i].dtype == Types.Dtype.F16 and try attended(n.args[i])) or
-            (n.args[i].dtype == Types.Dtype.BF16 and try leaf(n.args[i]))
+          (
+            (i == 1 or i == 2) and
+            (
+              (n.args[i].dtype == Types.Dtype.F16 and try attended(n.args[i])) or
+              (n.args[i].dtype == Types.Dtype.BF16 and try leaf(n.args[i]))
+            )
           )
         Types.Op.Slice(_, _) -> n.args[i].dtype == Types.Dtype.F16 and try cached(n.args[i])
         _ -> false

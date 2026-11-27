@@ -159,7 +159,13 @@ def from_file(
   _ = try ready(device, "from_file")
   if FileRange.agentica_read?()
     n = try Types.volume(shape)
-    return from_bytes(device, try FileRange.read_range(path, offset, try Types.file_bytes(format, n)), shape, format, dtype)
+    return from_bytes(
+      device,
+      try FileRange.read_range(path, offset, try Types.file_bytes(format, n)),
+      shape,
+      format,
+      dtype,
+    )
   end
 
   one(device, dtype, shape) do Raw.load(path, offset, shape, Types.file_code(format), TorchDtypes.code(dtype)) end

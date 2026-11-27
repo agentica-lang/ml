@@ -693,7 +693,7 @@ static bool ff_bf16_chunk(void *ctx, const float *values, int64_t first, int64_t
     uint32_t bits;
     if (value > 0x1.fep127f || value < -0x1.fep127f) {
       snprintf(why, why_len, "the value %g at element %lld is outside what BF16 holds",
-               (double)value, (long long)(first + i));
+               (double)value, (long long)first + (long long)i);
       return false;
     }
     memcpy(&bits, &value, sizeof bits);

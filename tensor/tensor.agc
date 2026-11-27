@@ -1710,10 +1710,11 @@ def attention(
   _ = try same_backend(q, k, "attention")
   _ = try same_backend(q, v, "attention")
   _ = try same_dtype(k, v, "attention")
-  mixed = q.dtype == Types.Dtype.F32 and (
-    (k.dtype == Types.Dtype.F16 and compiled?(q)) or
-    (k.dtype == Types.Dtype.BF16 and (compiled?(q) or torch?(q)))
+  mixed = (
+    q.dtype == Types.Dtype.F32 and
+    ((k.dtype == Types.Dtype.F16 and compiled?(q)) or (k.dtype == Types.Dtype.BF16 and (compiled?(q) or torch?(q))))
   )
+
   if k.dtype != q.dtype and !mixed
     return error("attention needs #{Types.dtype_name(q.dtype)} keys and values, got #{Types.dtype_name(k.dtype)}")
   end
