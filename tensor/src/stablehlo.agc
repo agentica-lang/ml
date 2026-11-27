@@ -172,6 +172,10 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
   sig = try signature(n.args, out)
   case n.op
     Types.Op.Full(v) -> ok([try splat(v, t.shape, t.dtype)])
+    Types.Op.Copy -> ok([])
+    Types.Op.Contiguous -> ok([])
+    Types.Op.ToDevice(Types.Device.Cpu) -> ok([])
+    Types.Op.ToDevice(device) -> error("XLA runs on the CPU only; cannot lower to_device to #{Types.device_name(device)}")
     Types.Op.Add -> ok(["stablehlo.add #{a[0]}, #{a[1]} : #{out}"])
     Types.Op.Sub -> ok(["stablehlo.subtract #{a[0]}, #{a[1]} : #{out}"])
     Types.Op.Mul -> ok(["stablehlo.multiply #{a[0]}, #{a[1]} : #{out}"])
@@ -220,6 +224,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Where -> ok(["stablehlo.select #{a[0]}, #{a[1]}, #{a[2]} : #{try type_of(n.args[0])}, #{out}"])
     Types.Op.Arange(start, _, step) -> arange(t, start, step, first)
     Types.Op.Gather -> gather(t, n.args, a, sig)
+    Types.Op.SetRows -> set_rows(t, n.args, a, first)
     Types.Op.TopK(k) -> top_k(t, n.args[0], a[0], k, first)
     Types.Op.ScatterAdd(_) -> scatter_add(t, n.args, a, first)
     Types.Op.Attention(scale) -> attention(t, n.args, a, scale, first)
@@ -473,8 +478,34 @@ def indexed(n: Types.Node) -> Optional[Bound]
     Types.Op.ExpertMatmul -> some(Bound(index: n.args[2], rows: n.args[0].shape[0]))
     Types.Op.Gather -> some(Bound(index: n.args[1], rows: n.args[0].shape[0]))
     Types.Op.ScatterAdd(rows) -> some(Bound(index: n.args[0], rows: rows))
+    Types.Op.SetRows -> some(Bound(index: n.args[2], rows: n.args[0].shape[n.args[0].shape.size - 2]))
     _ -> none
   end
+end
+
+# Replace rows along the penultimate dimension. Move that dimension to the front so the updates have the
+# scatter layout [indices, window...], then scatter-replace into the original cache.
+def set_rows(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
+  rank = t.shape.size
+  axis = rank - 2
+  axes = [axis] + (0...rank).select { |i| i != axis }
+  updates_shape = axes.map { |i| args[1].shape[i] }
+  indices_shape = [args[2].shape[0], 1]
+  indices_type = try tensor_type(indices_shape, args[2].dtype)
+  updates_type = try tensor_type(updates_shape, args[1].dtype)
+  cache_type = try type_of(t)
+  scalar = try tensor_type([], t.dtype)
+  window_dims = ints((1...rank).to_a)
+  region = [
+    "^bb0(%old: #{scalar}, %update: #{scalar}):",
+    "        stablehlo.return %update : #{scalar}",
+  ].join("\n      ")
+  types = "(#{cache_type}, #{indices_type}, #{updates_type}) -> #{cache_type}"
+  ok([
+    "stablehlo.reshape #{a[2]} : (#{try type_of(args[2])}) -> #{indices_type}",
+    "stablehlo.transpose #{a[1]}, dims = #{ints(axes)} : (#{try type_of(args[1])}) -> #{updates_type}",
+    "\"stablehlo.scatter\"(#{a[0]}, %#{first}, %#{first + 1}) ({\n      #{region}\n    }) {scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = #{window_dims}, inserted_window_dims = [#{axis}], scatter_dims_to_operand_dims = [#{axis}], index_vector_dim = 1>, indices_are_sorted = false, unique_indices = false} : #{types}",
+  ])
 end
 
 # Whether one of the indices `name` (the tensor `idx`) is outside `[0, rows)`: an `i1`, the last line. No lines when
