@@ -568,7 +568,32 @@ trained STEPS steps in MS ms, RATE pairs/s, RATE_AFTER_FIRST pairs/s after the f
 
 `MS` runs from the start of the training to the end of its last step, and the rates are the pairs of the steps divided by those times. The first step holds the compile and the warmup of the backend (XLA and libtorch compile there), so `pairs/s after the first step` leaves it out. Then come `training loss of each epoch: [...]` (the last epoch of a stopped run is the mean over the steps it ran), `after:` and `loaded:`, with the same two numbers as `before:`.
 
-`loaded` equals `after` to 1e-6 because the program fails when they differ, and `out` then holds `model.safetensors`, `config.json` and `tokenizer.json`. The numbers depend on the arguments, the backend and the machine, so this page gives none: they are the output of your run.
+`loaded` equals `after` to 1e-6 because the program fails when they differ, and `out` then holds `model.safetensors`, `config.json` and `tokenizer.json`. The numbers depend on the arguments, the backend and the machine: the table below is one machine's.
+
+## Four backends, 90 seconds
+
+Measured: the program on each backend, three runs of each one after another, with 500 training pairs (31 steps of 16 per epoch), 2 epochs, a validation sample of 500 pairs (the same pairs before, after and on reload, and on every backend) and a budget of 90 seconds, from `transformers/` with nothing else running:
+
+```sh
+/usr/bin/time -v agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out BACKEND 500 2 500 90
+```
+
+The seed is 1 (the `SEED` of the program: the shuffle of the pairs, so the same 500 pairs and the same order on every run). The machine is an AMD Ryzen 5 3550H (4 cores, 8 threads) with 12 GiB of RAM; `vulkan` ran on its integrated AMD Radeon Graphics (RADV RAVEN, Vega) with `F32` products, and every run was held to 2.5 GB of memory. Each cell is the mean over the three runs, with the minimum and the maximum when they differ in the digits shown.
+
+| Backend | Steps | Pairs/s after the first step | Training loss, last epoch | Spearman, before to after | Cosine loss, before to after | Peak memory |
+|---|---|---|---|---|---|---|
+| ggml CPU (`cpu`) | 43 | 7.62 (7.57 to 7.67) | 0.0171 | 0.8779 to 0.8781 | 0.0295 to 0.0213 | 1.17 GiB |
+| ggml Vulkan (`vulkan`) | 62 | 15.54 (15.50 to 15.57) | 0.0176 | 0.8779 to 0.8797 | 0.0295 to 0.0211 | 0.44 GiB |
+| XLA CPU (`xla`) | 62 | 12.24 (12.23 to 12.25) | 0.0176 | 0.8779 to 0.8797 | 0.0295 to 0.0211 | 2.38 GiB (2.37 to 2.39) |
+| libtorch CPU (`torch`) | 28.3 (28 to 29) | 4.95 (4.90 to 5.00) | 0.0314 (0.0312 to 0.0315) | 0.8779 to 0.8795 | 0.0295 to 0.0216 | 1.86 GiB (1.82 to 1.89) |
+
+Read the table with these in mind:
+
+- Two epochs are 62 steps. `vulkan` and `xla` ran all 62 in 64 s and 83 s, so the learning rate went through its whole schedule. `cpu` and `torch` were stopped by the budget at 43 and 28 steps, in the middle of the second epoch (`cpu`) and of the first (`torch`), so the learning rate had not decayed to 0 where they ended, and their `after` is the model at that step.
+- The training loss is the mean of the last epoch the run reached, over the steps it ran: for `cpu` the second epoch so far, for `torch` the first.
+- The first step holds the compile and the warmup of the backend, which `pairs/s after the first step` leaves out.
+- `before` agrees across the backends to 8 digits (Spearman 0.8779 and cosine loss 0.0295 on this sample). Where two backends ran the same number of steps, `vulkan` and `xla`, `after` agrees to 4 digits of Spearman and 7 of the loss; the last digits of a loss differ between backends, and on ggml between runs.
+- One sample of 500 pairs and 62 steps is a small test: a change of 0.002 in Spearman is not a result about the backends. The memory is the peak resident set of the whole process, the model and the compiled programs included.
 
 ## Next steps
 
