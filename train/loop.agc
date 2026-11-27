@@ -99,6 +99,7 @@ struct Trainer
   metrics: List[Metric] = []
   handlers: List[Handler] = []
   run: String = ""
+  resume: Optional[String] = none
 end
 
 def trainer(
@@ -219,12 +220,36 @@ def read_checkpoint(
   )
 end
 
+## The trainer that goes on from the last checkpoint of `dir` (`checkpoint`), if it has one, when it runs: with the
+## weights and the optimizer state of the checkpoint, at its step, from the batch after the one it was written at, with
+## the order of the data that the whole run has (the same seed and epoch). Without a checkpoint it starts from the
+## beginning. `run` and `run_batches` take the same `epochs` as the whole run: the checkpoint is `epoch`, `batch` and
+## `step` of it, and the loader must make the same batches (an error says when its seed or its size differ). The
+## `Fit` is of the steps that this run took: its history starts with the epoch the checkpoint was in, and for a
+## checkpoint in the middle of an epoch the mean of that epoch is over the steps that are left; `Fit.metrics` likewise.
+## The weights of the trainer are not changed. A resumed run that checkpoints into `dir` continues the same run.
+def resume(t: Trainer, dir: String) -> Trainer = t.with(resume: some(dir))
+
 ## `Train.fit` of the trainer over the batches of `data`, for `epochs` passes (one by default).
 def run(t: Trainer, data: Data.Loader, epochs: Int = 1) -> Result[Train.Fit]
   seen = measuring(t, epochs, data.seed)
   try started(t, seen)
-  fit = try Train.fit(t.loss, t.params, data, t.optimizer, epochs, seen.on_epoch, none, seen.on_step, run: t.run)
-  measured(fit, t, seen)
+  from = try resume_point(t, Data.count(data), epochs, data.seed)
+  fit = Train.fit(
+    t.loss,
+    from.params,
+    data,
+    t.optimizer,
+    epochs,
+    seen.on_epoch,
+    none,
+    seen.on_step,
+    start: from.start,
+    run: t.run,
+    skip: from.skip,
+  )
+
+  measured(try released(from, fit), t, seen)
 end
 
 ## `Train.fit_batches` of the trainer: `batch(epoch, i)` makes batch `i` (from 0) of `count` in epoch `epoch` (from
@@ -238,9 +263,10 @@ def run_batches(
 ) -> Result[Train.Fit]
   seen = measuring(t, epochs, 0)
   try started(t, seen)
-  fit = try Train.fit_batches(
+  from = try resume_point(t, count, epochs, 0)
+  fit = Train.fit_batches(
     t.loss,
-    t.params,
+    from.params,
     batch,
     count,
     t.optimizer,
@@ -249,10 +275,12 @@ def run_batches(
     none,
     prefetch,
     seen.on_step,
+    start: from.start,
     run: t.run,
+    skip: from.skip,
   )
 
-  measured(fit, t, seen)
+  measured(try released(from, fit), t, seen)
 end
 
 ## The mean of the first number of every row.
@@ -293,6 +321,16 @@ end
 
 private
 
+## Where a run starts: the parameters (the trainer's, or a checkpoint's, `loaded`), the state it starts from, and the
+## batches that are already run.
+struct Point
+  params: List[Tensor.Tensor]
+  start: Optional[Optim.State]
+  skip: Int
+  loaded: Bool
+  finished: Bool
+end
+
 ## What `checkpoint.json` holds. The loss is its IEEE bits, which JSON can hold whatever the loss is (a NaN or an
 ## infinity has no JSON number) and which come back exact.
 struct Meta
@@ -312,6 +350,61 @@ struct Seen
   values: Channel[List[Float]]
   halt: Channel[Bool]
   seed: Int
+end
+
+## The point of the last checkpoint of the trainer's `resume` folder, or the beginning. `count` batches make an epoch.
+def resume_point(t: Trainer, count: Int, epochs: Int, seed: Int) -> Result[Point]
+  beginning = Point(params: t.params, start: none, skip: 0, loaded: false, finished: false)
+  dir = case t.resume
+    some(d) -> d
+    none -> ""
+  end
+
+  return ok(beginning) if dir == ""
+
+  names = try checkpoints(dir)
+  return ok(beginning) if names.empty?
+
+  name = names[names.size - 1]
+  saved = try read_checkpoint(dir, name, t.optimizer, t.params)
+  skip = saved.epoch * count
+  if saved.event == "step"
+    skip = (saved.epoch - 1) * count + saved.batch + 1
+  end
+
+  fits = fits_data(name, saved, skip, count, seed)
+  if !fits.ok?
+    free_all(saved.params)
+    free_all(saved.state.first + saved.state.second)
+    return error(fits.message)
+  end
+
+  ok(Point(params: saved.params, start: some(saved.state), skip: skip, loaded: true, finished: skip >= count * epochs))
+end
+
+## The checkpoint was written by a run of this data: its seed, and a step count that the batches add up to.
+def fits_data(name: String, saved: Checkpoint, skip: Int, count: Int, seed: Int) -> Result[Void]
+  if saved.seed != seed
+    return error("#{name} was written with the loader seed #{saved.seed}, the loader has seed #{seed}")
+  end
+
+  if saved.step != skip
+    return error(
+      "#{name} is step #{saved.step}, but epoch #{saved.epoch} of #{count} batches ends at step #{skip}: the batches differ",
+    )
+  end
+
+  ok()
+end
+
+## `fit`, and the parameters of a checkpoint freed: they were the run's start, and a run keeps none of them unless it ran
+## nothing, when they are its answer.
+def released(from: Point, fit: Result[Train.Fit]) -> Result[Train.Fit]
+  if from.loaded and !(from.finished and fit.ok?)
+    free_all(from.params)
+  end
+
+  fit
 end
 
 def measuring(t: Trainer, epochs: Int, seed: Int) -> Seen

@@ -174,7 +174,10 @@ and `Optim.adamw` are the optimizers with their usual knobs). Both answer the sa
 `Loop.checkpoint(trainer, dir, every:, keep:)` writes the weights, the optimizer state and where the run was to
 `dir/step-NNNNNNNNNN`, whole or not at all (a kill, not a power loss), and keeps the last `keep`. One `dir` serves one run:
 a step that has a checkpoint is an error. `Loop.read_checkpoint(dir, name, optimizer, like)` reads one back, on the
-backend and in the dtype of the tensors `like`.
+backend and in the dtype of the tensors `like`. `Loop.resume(trainer, dir)` goes on from the last checkpoint of `dir`
+(none: from the start) at the batch after it, with the same loader seed and `epochs`; the `Fit` is of the steps it took.
+A mid-epoch checkpoint gives a first `history` value that is the mean of the steps that were left. Put `Loop.checkpoint`
+with the same `dir` after it to continue the run.
 
 ```agentica
 import Data from "pkg/train/data"
@@ -193,6 +196,7 @@ def trained(
     Loop.trainer(loss, params, Optim.adamw(lr: 0.0001))
     |> Loop.metric(spearman)
     |> Loop.checkpoint("runs/minilm", every: 100, keep: 3)
+    |> Loop.resume("runs/minilm")
     |> Loop.handle(Loop.Event.StepCompleted, ->(_) { ok() }, every: 50)
     |> Loop.handle(
       Loop.Event.StepCompleted,

@@ -69,6 +69,9 @@ end
 ## result are. With `start`, the run begins from that optimizer state (`Optim.load`): its step count goes on along the
 ## schedule. The run takes its moments and frees them, on every path, an error before the first step included: do not
 ## use `start` after `fit`.
+## `skip` batches (0 or more) are taken as already run: the run goes on from batch `skip` of the sequence of epochs, so the
+## shuffle of each epoch is the one the whole run has, and the first epoch it runs is a partial one, whose mean in the
+## history is over the batches it ran.
 def fit(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],
@@ -80,12 +83,13 @@ def fit(
   on_step: Optional[Fn[StepInfo, Result[Control]]] = none,
   start: Optional[Optim.State] = none,
   run: String = "",
+  skip: Int = 0,
 ) -> Result[Fit]
   if gathers_in_graph?(data, params)
-    return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, start, run)
+    return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, start, run, skip)
   end
 
-  fed = Data.feed(data, epochs)
+  fed = Data.feed(data, epochs, skip)
   return refused(start, fed.message) if !fed.ok?
 
   feed = fed.unwrap!
@@ -104,6 +108,7 @@ def fit(
       metrics: metrics,
       on_step: on_step,
       start: start,
+      skip: skip,
       name: run,
     ),
     params,
@@ -137,6 +142,7 @@ def fit_batches(
   on_step: Optional[Fn[StepInfo, Result[Control]]] = none,
   start: Optional[Optim.State] = none,
   run: String = "",
+  skip: Int = 0,
 ) -> Result[Fit]
   return refused(start, "fit_batches needs at least one batch, got #{count}") if count < 1
   return refused(start, "prefetch must be 0 or more, got #{prefetch}") if prefetch < 0
@@ -150,6 +156,7 @@ def fit_batches(
       metrics: metrics,
       on_step: on_step,
       start: start,
+      skip: skip,
       name: run,
     )
   }
@@ -158,7 +165,7 @@ def fit_batches(
     return trained(run_of.call(->(e: Int) { ->(i: Int) { fresh(batch.call(e, i), e, i) } }), params, optimizer)
   end
 
-  made = Data.ahead(batch, count, epochs, prefetch)
+  made = Data.ahead(batch, count, epochs, prefetch, skip)
   return refused(start, made.message) if !made.ok?
 
   stream = made.unwrap!
@@ -205,6 +212,7 @@ struct Run
   metrics: Optional[Metrics.Run]
   on_step: Optional[Fn[StepInfo, Result[Control]]]
   start: Optional[Optim.State] = none
+  skip: Int = 0
   name: String = ""
   indexed: Bool = false
 end
@@ -281,9 +289,10 @@ def fit_indexed(
   on_step: Optional[Fn[StepInfo, Result[Control]]],
   start: Optional[Optim.State],
   run: String,
+  skip: Int,
 ) -> Result[Fit]
   return refused(start, "prefetch must be 0 or more, got #{data.prefetch}") if data.prefetch < 0
-  fed = Data.feed(data.with(prefetch: 0), epochs)
+  fed = Data.feed(data.with(prefetch: 0), epochs, skip)
   return refused(start, fed.message) if !fed.ok?
 
   Data.stop(fed.unwrap!)
@@ -302,6 +311,7 @@ def fit_indexed(
       metrics: metrics,
       on_step: on_step,
       start: start,
+      skip: skip,
       name: run,
       indexed: true,
     ),
@@ -330,6 +340,15 @@ end
 
 ## The state the run starts from: `start` checked against `optimizer` and `params`, or a new one.
 def initial(r: Run, optimizer: Optim.Optimizer, params: List[Tensor.Tensor]) -> Result[Optim.State]
+  if r.skip < 0
+    case r.start
+      some(s) -> release(s, [], false)
+      none -> nil
+    end
+
+    return error("skip is 0 or more, got #{r.skip}")
+  end
+
   case r.start
     some(s) ->
       checked = Optim.resume(optimizer, s, params)
@@ -370,10 +389,16 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
   owned = false
   history: List[Float] = []
   programs: Map[String, Trace.Compiled] = {}
-  for e in 1..r.epochs
+  first = r.skip / r.count + 1
+  for e in first..r.epochs
     take = r.batches.call(e)
     total = 0.0
-    for i in 0...r.count
+    begin = 0
+    if e == first
+      begin = r.skip % r.count
+    end
+
+    for i in begin...r.count
       started = Time.monotonic_ns()
       grown = take_step(r, take, i, state, current, programs)
       programs = grown.programs
@@ -424,7 +449,7 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
       end
     end
 
-    mean = total / r.count.to_f
+    mean = total / (r.count - begin).to_f
     history = history.push(mean)
     announce_epoch(r.name, e, state.steps, mean)
     case r.on_epoch

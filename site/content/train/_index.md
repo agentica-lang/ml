@@ -143,6 +143,19 @@ fit = try (
 )
 ```
 
+`Loop.resume(trainer, dir)` goes on from the last checkpoint of `dir` when the trainer runs. It trains from the weights and the optimizer state of the checkpoint, at its step, with the batch that follows the one it was written at: the next batch of the same epoch, or the first of the next epoch for a checkpoint at the end of an epoch. Run it with the same loader and the same `epochs` as the whole run: the seed and the epoch give the order of the rows, so the batches that are left are the ones the whole run would have taken. Add `Loop.checkpoint(dir)` after it to keep writing to the same `dir`, which continues the same run. With no checkpoint in `dir` the run starts from the beginning, so one command serves the first start and every restart.
+
+```agentica
+fit = try (
+  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
+  |> Loop.checkpoint("runs/minilm", every: 100, keep: 3)
+  |> Loop.resume("runs/minilm")
+  |> Loop.run(data, epochs: 3)
+)
+```
+
+The `Fit` is of the steps this run took: for a checkpoint in the middle of an epoch the first value of `history` is the mean of the steps that were left of it. The weights of the trainer are not changed. A checkpoint of another loader seed, or whose step does not match its epoch and batch (a loader with another `batch_size` or number of rows), is an error that names it. The weights come back through F32 files, so a resumed run matches the whole run to the rounding of F32 (the reference backend keeps doubles between steps, so it drifts by about 1e-8), and the batches it takes are the same ones. `Loop.run_batches` resumes the same way with the same `batch` function and `count`; `Train.fit(..., skip: n)` and `Train.fit_batches(..., skip: n)` are the engine's form of it, `n` batches taken as run.
+
 ## Train.fit
 
 `Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, run)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).

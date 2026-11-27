@@ -168,16 +168,16 @@ def batch(loader: Loader, rows: List[Int], i: Int) -> Result[Batch]
   ok(Batch(inputs: both[0], targets: both[1], index: some(at)))
 end
 
-## Starts the batches of `epochs` epochs; with `prefetch > 0` a task builds
-## them ahead. `stop` must follow, on every path.
-def feed(loader: Loader, epochs: Int) -> Result[Feed]
+## Starts the batches of `epochs` epochs, without the first `skip` of them (a run that goes on from a checkpoint); with
+## `prefetch > 0` a task builds them ahead. `stop` must follow, on every path.
+def feed(loader: Loader, epochs: Int, skip: Int = 0) -> Result[Feed]
   return error("batch_size must be at least 1, got #{loader.batch_size}") if loader.batch_size < 1
   return error("prefetch must be 0 or more, got #{loader.prefetch}") if loader.prefetch < 0
   return error("a loader takes fewer than #{MODULUS - 1} rows") if size(loader.dataset) >= MODULUS - 1
   return error("the loader makes no batch from #{size(loader.dataset)} rows") if count(loader) == 0
   return ok(Feed(loader: loader, order: [], ahead: none)) if loader.prefetch == 0
   batches: Channel[Result[Batch]] = Channel.new(loader.prefetch)
-  producer = Task.spawn(&produce, Job(loader: loader, epochs: epochs, batches: batches))
+  producer = Task.spawn(&produce, Job(loader: loader, epochs: epochs, skip: skip, batches: batches))
   Task.monitor(producer, batches) do |down| error("the prefetch task ended: #{down.code} #{down.message}") end
   ok(Feed(loader: loader, order: [], ahead: some(Ahead(batches: batches, producer: producer))))
 end
@@ -193,11 +193,11 @@ end
 ## The batches that `batch(epoch, i)` makes, `count` for each of `epochs` epochs in order, built by a task that stays at
 ## most `prefetch + 1` ahead (`prefetch` at least 1): what a feed does for a loader, for a batch that a function makes, such as the
 ## decoding of image files. The task runs `batch`, so it overlaps whatever the caller does between `next` calls.
-## `finish` must follow, on every path.
-def ahead(batch: Fn[Int, Int, Result[Batch]], count: Int, epochs: Int, prefetch: Int) -> Result[Ahead]
+## `finish` must follow, on every path. The first `skip` batches are not built.
+def ahead(batch: Fn[Int, Int, Result[Batch]], count: Int, epochs: Int, prefetch: Int, skip: Int = 0) -> Result[Ahead]
   return error("prefetch must be at least 1, got #{prefetch}") if prefetch < 1
   batches: Channel[Result[Batch]] = Channel.new(prefetch)
-  producer = Task.spawn(&produce_made, Made(batch: batch, count: count, epochs: epochs, batches: batches))
+  producer = Task.spawn(&produce_made, Made(batch: batch, count: count, epochs: epochs, skip: skip, batches: batches))
   Task.monitor(producer, batches) do |down| error("the prefetch task ended: #{down.code} #{down.message}") end
   ok(Ahead(batches: batches, producer: producer))
 end
@@ -258,6 +258,7 @@ private
 struct Job
   loader: Loader
   epochs: Int
+  skip: Int
   batches: Channel[Result[Batch]]
 end
 
@@ -265,6 +266,7 @@ struct Made
   batch: Fn[Int, Int, Result[Batch]]
   count: Int
   epochs: Int
+  skip: Int
   batches: Channel[Result[Batch]]
 end
 
@@ -312,6 +314,7 @@ end
 def send_made(job: Made) -> Result[Void]
   for e in 1..job.epochs
     for i in 0...job.count
+      next if (e - 1) * job.count + i < job.skip
       b = try job.batch.call(e, i)
       return ok() if !hand(job.batches, ok(b))
     end
@@ -324,6 +327,7 @@ def send_all(job: Job) -> Result[Void]
   for e in 1..job.epochs
     rows = order(job.loader, e)
     for i in 0...count(job.loader)
+      next if (e - 1) * count(job.loader) + i < job.skip
       b = try batch(job.loader, rows, i)
       return ok() if !hand(job.batches, ok(b))
     end
