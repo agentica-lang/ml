@@ -24,6 +24,10 @@ STEP = 0.00001
 SLOPE_ABS = 0.00000001
 SLOPE_REL = 0.00001
 
+## How close the gradients of XLA (`F32`) must be to the reference's.
+XLA_ABS = 0.00001
+XLA_REL = 0.001
+
 private
 
 struct Pick
@@ -217,4 +221,62 @@ def test_fit_batches_lowers_the_loss_and_moves_the_encoder() -> Result[Void]
 
     ok()
   end
+end
+
+## The gradients of the cosine loss on XLA (a compiled `value_and_grad`) match those of the reference.
+def test_the_gradients_on_xla_match_the_reference() -> Result[Void]
+  with_peer do |dir|
+    for xla in try S.xla_backends()
+      want = try gradients("#{dir}/tiny", S.REF)
+      got = try gradients("#{dir}/tiny", xla)
+      try Test.eq(got.size, want.size)
+      for i in 0...want.size
+        try S.expect_close(got[i], want[i], XLA_ABS, XLA_REL, "gradient #{i}")
+      end
+    end
+
+    ok()
+  end
+end
+
+## `Train.fit_batches` with AdamW on XLA: the loss falls over three steps, as on ggml.
+def test_fit_batches_lowers_the_loss_on_xla() -> Result[Void]
+  with_peer do |dir|
+    for xla in try S.xla_backends()
+      m = try Bert.open("#{dir}/tiny", xla)
+      split = try Params.split(Bert.weights(m), ->(_name: String) { true })
+      fit = try Train.fit_batches(
+        ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(m, split, ps, b) },
+        split.trainable,
+        ->(_e: Int, _i: Int) { batch(xla, 2) },
+        1,
+        Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.01, weight_decay: 0.0)),
+        3,
+      )
+
+      try Test.assert(fit.history[2] < fit.history[0], "the loss went from #{fit.history[0]} to #{fit.history[2]}")
+    end
+
+    ok()
+  end
+end
+
+## The gradients of the loss of the first two pairs, one list of values per weight.
+def gradients(dir: String, backend: Tensor.Backend) -> Result[List[List[Float]]]
+  m = try Bert.open(dir, backend)
+  split = try Params.split(Bert.weights(m), ->(_name: String) { true })
+  b = try batch(backend, 2)
+  both = try Trace.value_and_grad(
+    split.trainable,
+    ->(ps: List[Tensor.Tensor]) {
+      loss(m, split, ps, Data.Batch(inputs: Trace.constant(b.inputs), targets: Trace.constant(b.targets)))
+    },
+  )
+
+  out: List[List[Float]] = []
+  for g in both.grads
+    out = out.push(try S.floats_of(g))
+  end
+
+  ok(out)
 end

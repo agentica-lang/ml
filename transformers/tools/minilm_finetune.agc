@@ -1,4 +1,4 @@
-## A short fine-tune of sentence-transformers/all-MiniLM-L6-v2 (6 layers, width 384) on scored sentence pairs, on ggml, as
+## A short fine-tune of sentence-transformers/all-MiniLM-L6-v2 (6 layers, width 384) on scored sentence pairs, on ggml or XLA, as
 ## a check that a BERT-family model loads and trains: its embeddings put a paraphrase closer than an unrelated sentence,
 ## the cosine loss falls over a few `Train.fit_batches` steps, and a sample of its weights moved. CI checks
 ## and formats this file but does not run it: it runs by hand, as it needs the network (the checkpoint).
@@ -6,7 +6,7 @@
 ##
 ## ```sh
 ## sh tools/fetch_minilm.sh                       # the pinned checkpoint, into ~/.cache/agentica-ml/hf/all-minilm-l6-v2
-## agentica --max-steps 1000000000000 tools/minilm_finetune.agc MODEL_DIR [cpu|vulkan [STEPS [LR]]]
+## agentica --max-steps 1000000000000 tools/minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla [STEPS [LR]]]
 ## ```
 ##
 ## It trains every weight (AdamW, no weight decay, no dropout, `F32`) on eight pairs, all of them in each step, so the
@@ -45,7 +45,7 @@ end
 def main() -> Void
   args = System.args
   if args.empty?
-    puts("usage: minilm_finetune.agc MODEL_DIR [cpu|vulkan [STEPS [LR]]]")
+    puts("usage: minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla [STEPS [LR]]]")
     System.exit(2)
   end
 
@@ -78,6 +78,11 @@ def run(args: List[String]) -> Result[Void]
     device = Tensor.Device.Vulkan(0)
   end
 
+  backend = Tensor.Backend.Ggml(device)
+  if args.size > 1 and args[1] == "xla"
+    backend = Tensor.Backend.Xla(Tensor.Device.Cpu)
+  end
+
   steps = DEFAULT_STEPS
   if args.size > 2
     steps = try args[2].to_i
@@ -88,7 +93,6 @@ def run(args: List[String]) -> Result[Void]
     lr = try args[3].to_f
   end
 
-  backend = Tensor.Backend.Ggml(device)
   m = try Bert.open(args[0], backend)
   tok = try WordPiece.open("#{args[0]}/tokenizer.json")
   puts("loaded #{m.config.num_hidden_layers} layers of width #{m.config.hidden_size} on #{backend}")
