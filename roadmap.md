@@ -58,8 +58,7 @@ By milestone (`gh issue list -R agentica-lang/ml -m <version>`).
   ([ml#181](https://github.com/agentica-lang/ml/issues/181)), one weight layout
   for `Dense` ([ml#125](https://github.com/agentica-lang/ml/issues/125)), dropout on
   the LoRA path ([ml#209](https://github.com/agentica-lang/ml/issues/209)),
-  `batch_matmul` on libtorch
-  ([ml#203](https://github.com/agentica-lang/ml/issues/203)), the CPU gap of
+  the CPU gap of
   training against PyTorch
   ([ml#192](https://github.com/agentica-lang/ml/issues/192)), backward rules
   for the ops the site lists as having none, downloading checkpoints from

@@ -37,8 +37,8 @@ end
 - On ggml the forward is one graph with the weights as constants; the other backends run it eagerly. The weights are `F32` in memory (about 0.4 GB for `bert-base-uncased`).
 - The sequence length may not pass `max_position_embeddings` (512), and every encoding needs a token.
 - `Bert.weights(m)` gives the weights by their names in the checkpoint (`encoder.layer.0.attention.self.query.weight`; under `bert.` when the file has that prefix, the layer norms as `weight` and `bias` even when the file says `gamma` and `beta`, the pooler when there is one), and `Bert.with_weights(m, weights)` gives the model with those tensors in their place, as `DistilBert` does. `Bert.pooled(m, ids, type_ids, mask, normalize)` is the mean embedding as plain tensor calls, for a loss with `Params` and `Train.fit`: the pooler is not in it, so it has no gradient there. Freeze it, or train a head over `Bert.forward`, to use it.
-- `tools/minilm_finetune.agc` is a check that `sentence-transformers/all-MiniLM-L6-v2` (6 layers, width 384) loads and trains: `sh tools/fetch_minilm.sh` downloads the pinned revision and checks its sha256, and `agentica --max-steps 1000000000000 tools/minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla|torch]` fine-tunes it for a few steps on eight scored pairs on ggml (CPU or Vulkan), XLA or libtorch, with the word table frozen. Its embeddings match Hugging Face's within 1e-4, measured 2.5e-6 (`tools/bert_check.agc`).
-- Reference and ggml are tested; libtorch is not. `Bert.open` reads `model.safetensors` only, not a sharded checkpoint.
+- `tools/minilm_finetune.agc` is a check that `sentence-transformers/all-MiniLM-L6-v2` (6 layers, width 384) loads and trains: `sh tools/fetch_minilm.sh` downloads the pinned revision and checks its sha256, and `agentica --max-steps 1000000000000 tools/minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla|torch]` fine-tunes it for a few steps on eight scored pairs on ggml (CPU or Vulkan), XLA or libtorch. On libtorch the word table (12M of the 22M weights) stays frozen: a step there held about 2.5 GB at its peak (2,505,192 kB, 4 pairs) and more with the table trained, which went over a 2.5 GB cap ([ml#394](https://github.com/agentica-lang/ml/issues/394)); the other backends train every weight. Its embeddings match Hugging Face's within 1e-4, measured 2.5e-6 (`tools/bert_check.agc`).
+- Reference, ggml and libtorch are tested (libtorch for the gradient and `Train.fit`). `Bert.open` reads `model.safetensors` only, not a sharded checkpoint.
 
 ## DistilBERT
 
@@ -70,7 +70,7 @@ end
 - A LoRA adapter (`Lora` of the [train page](../train/_index.md#lora)) goes on these names (`targets: ["q_lin", "v_lin"]`), and a PEFT adapter of a `DistilBertModel` loads as it is; for a checkpoint with the `distilbert.` prefix the names carry it. `DistilBert.embeddings(m)` names the two embedding tables, for `Lora.save`.
 - The results belong to the caller (`Lift.close`), and `DistilBert.close_model(m)` frees the weights. Nothing may use a closed model.
 - A checkpoint with the `distilbert.` prefix (`DistilBertFor...`) loads too, and its head is ignored. The layer-norm `eps` is 1e-12, as in Hugging Face's code. A `model_type` other than `distilbert`, an activation other than `gelu` and sinusoidal positions are errors.
-- Only `model.safetensors` is read, never `pytorch_model.bin`. Reference and ggml are tested; libtorch is not.
+- Only `model.safetensors` is read, never `pytorch_model.bin`. Reference, ggml and libtorch are tested (libtorch for the gradient and `Train.fit`).
 
 `Sentence` (`pkg/transformers/sentence`) holds the pieces a sentence-embedding model adds to an encoder, each usable inside a trace:
 

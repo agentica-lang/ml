@@ -13,7 +13,8 @@ A tensor carries its backend. An op over tensors of two backends is an error.
 Which to use:
 
 - A model (Qwen3, BERT, DistilBERT, Whisper): ggml, on Vulkan when the machine has a GPU, else on the CPU. These
-  models are tested on `Reference` and ggml; libtorch is not tested for them.
+  models are tested on `Reference` and ggml; libtorch is tested for the gradient and `Train.fit` of BERT and
+  DistilBERT only.
 - A test or a check against a known answer: `Reference`.
 - Training an MLP-sized model on the CPU: XLA (`ml-training`). XLA runs only what the StableHLO emitter covers (the ops
   of an MLP and its gradients), so it does not run the model packages.

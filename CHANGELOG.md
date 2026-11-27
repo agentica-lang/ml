@@ -29,6 +29,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
+- `tools/minilm_finetune.agc` takes `torch`, which fine-tunes MiniLM on libtorch with the word table frozen (ml#203, ml#394).
 - `WordPiece` reads a tokenizer file with a fixed padding (`"strategy": {"Fixed": 128}`) as the padding to the longest, so `sentence-transformers/all-MiniLM-L6-v2` opens; no tokenizer here pads (ml#377).
 - `tools/fetch_minilm.sh` fetches all-MiniLM-L6-v2 at a pinned revision and sha256, and `tools/minilm_finetune.agc` loads it and fine-tunes it for a few steps on ggml CPU or Vulkan (ml#377).
 - A BERT fine-tunes on `Backend.Xla(Device.Cpu)`: the gradients of the cosine loss match the reference and `Train.fit_batches` lowers the loss, and `tools/minilm_finetune.agc` takes `xla` (all-MiniLM-L6-v2: the loss falls from 0.01137 to 0.00236 in six steps, as on ggml) (ml#243).

@@ -9,9 +9,10 @@
 ## agentica --max-steps 1000000000000 tools/minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla|torch [STEPS [LR [PAIRS]]]]
 ## ```
 ##
-## It trains every weight but the word table (AdamW, no weight decay, no dropout, `F32`) on PAIRS of its eight pairs
-## (default all), all of them in each step, so the loss must fall. The word table is 12M of the 22M weights: frozen, it
-## keeps the run small on libtorch, which holds the intermediates of a step until it ends (about 2.4 GB at the peak).
+## It trains every weight (AdamW, no weight decay, no dropout, `F32`) on PAIRS of its eight pairs (default all), all of
+## them in each step, so the loss must fall. Only on libtorch the word table (12M of the 22M weights) stays frozen: a
+## step there held about 2.5 GB at its peak (2,505,192 kB, 4 pairs, table frozen) and more with the table trained, which
+## went over a 2.5 GB cap (https://github.com/agentica-lang/ml/issues/394).
 
 import Bert from "../bert"
 import Data from "pkg/train/data"
@@ -112,7 +113,17 @@ def run(args: List[String]) -> Result[Void]
   tok = try WordPiece.open("#{args[0]}/tokenizer.json")
   puts("loaded #{m.config.num_hidden_layers} layers of width #{m.config.hidden_size} on #{backend}")
   try expect_paraphrase_closer(m, tok)
-  split = try Params.split(Bert.weights(m), ->(name: String) { !name.end_with?("word_embeddings.weight") })
+  train_table = true
+  case backend
+    Tensor.Backend.Torch(_) -> train_table = false
+    _ -> nil
+  end
+
+  split = try Params.split(
+    Bert.weights(m),
+    ->(name: String) { train_table or !name.end_with?("word_embeddings.weight") },
+  )
+
   watched = WATCHED.map { |name: String| split.names.index(name).unwrap! }
   before = try snapshot(watched.map { |i: Int| split.trainable[i] })
   ids = try encoded(m, tok, count)
