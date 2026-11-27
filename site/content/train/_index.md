@@ -129,6 +129,16 @@ fit = try (
 )
 ```
 
+`Loop.checkpoint(trainer, dir, every: 100, keep: 3)` is a handler that is ready made: every `every` steps (or every `every` epochs with `event: Loop.Event.EpochCompleted`) it writes a checkpoint to the new folder `dir/step-NNNNNNNNNN` (the step, to ten digits) and keeps the last `keep`. A checkpoint holds `model.safetensors` (the weights as `param.I`), `optim.safetensors` (`Optim.save`) and `checkpoint.json` (the event, the epoch, the batch, the step, the seed of the loader and the loss). It is written in `dir/.tmp-step-NNNNNNNNNN` and renamed whole, so a run killed or failing while it writes leaves the earlier checkpoints as they were: a temporary folder is not a checkpoint, and the next checkpoint removes it. An error while writing ends the run. `Loop.checkpoints(dir)` lists the names, oldest first, and `Loop.read_checkpoint(dir, name, optimizer, params)` reads one on the backend and in the dtype of `params` (the weights it has now), answering a `Loop.Checkpoint` with `params`, `state` (give it to `Train.fit` as `start`) and where the run was; what it read is freed when the checkpoint does not load.
+
+```agentica
+fit = try (
+  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
+  |> Loop.checkpoint("runs/minilm", every: 100, keep: 3)
+  |> Loop.run(data, epochs: 3)
+)
+```
+
 ## Train.fit
 
 `Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).

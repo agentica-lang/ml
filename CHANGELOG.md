@@ -6,6 +6,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### train
 
+- `Loop.checkpoint(dir, every:, keep:)` writes the weights, the optimizer state and the position of a run to a new folder, whole or not at all, and keeps the last few; `Loop.checkpoints` and `Loop.read_checkpoint` read them, and `Loop.Info` carries the `state` and the `seed` (ml#402).
 - `Optim.save` and `Optim.load` write and read the step count and the moments of an optimizer state, `Train.fit` and `fit_batches` take a `start` state that the schedule goes on from, and `Train.Epoch` and `StepInfo` carry the run's `state` (ml#402).
 - `Loop.handle(event, f, every:)` calls a function at `Started`, `StepCompleted` or `EpochCompleted`, and `Loop.stop(info)` ends a run early with its `Fit`, and `Train.fit` takes an optional `on_step`. **Breaking:** `on_epoch` and `on_step` answer a `Result[Train.Control]` (`Continue`, `Stop` or an `error`), and a failed metric stops the run at the end of its epoch (ml#397).
 - `Loop.trainer` and `Loop.run` (`Loop.run_batches` for a batch function) run a training as a pipe over `Train.fit`, and `Optim.sgd`, `Optim.adam` and `Optim.adamw` are short optimizer constructors (ml#397).

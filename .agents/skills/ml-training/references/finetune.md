@@ -171,6 +171,8 @@ and `Optim.adamw` are the optimizers with their usual knobs). Both answer the sa
 `Loop.metric` measures a `Loop.Metric` (its own batches, `observe`, `reduce`) at the end of every epoch, into
 `fit.metrics[name]`. `Loop.handle(event, f, every: n)` calls `f(Loop.Info)` at `Loop.Event.Started`, `StepCompleted` or
 `EpochCompleted`, in order. An `error` from it ends the run; `return Loop.stop(info)` ends it without one, with the `Fit` so far.
+`Loop.checkpoint(dir, every:, keep:)` writes the weights, the optimizer state and where the run was to `dir/step-N`, whole
+or not at all, and keeps the last `keep`; `Loop.read_checkpoint(dir, name, optimizer, params)` reads one back.
 
 ```agentica
 import Data from "pkg/train/data"
@@ -188,6 +190,7 @@ def trained(
   (
     Loop.trainer(loss, params, Optim.adamw(lr: 0.0001))
     |> Loop.metric(spearman)
+    |> Loop.checkpoint("runs/minilm", every: 100, keep: 3)
     |> Loop.handle(Loop.Event.StepCompleted, ->(_) { ok() }, every: 50)
     |> Loop.handle(
       Loop.Event.StepCompleted,
