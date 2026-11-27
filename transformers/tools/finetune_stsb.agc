@@ -84,7 +84,7 @@ def run(args: List[String]) -> Result[Void]
   validation = try pairs(tok, "#{args[1]}/validation.parquet", none)
   puts("#{train.size} training pairs, #{validation.size} validation pairs, on #{backend}")
 
-  split = try trainable(base, backend)
+  split = try trainable(base)
   net = Net(base: base, split: split)
   before = try evaluate(net, split.trainable, validation)
   puts("before: Spearman #{before.spearman}, cosine loss #{before.loss}, mean cosine #{before.cosine}")
@@ -104,11 +104,8 @@ def run(args: List[String]) -> Result[Void]
   ok()
 end
 
-# Every weight, but on libtorch the word table: a step that trains it holds more than 2.5 GB there (ml#394).
-def trainable(base: Bert.Bert, backend: Tensor.Backend) -> Result[Params.Split]
-  frozen = backend == Tensor.Backend.Torch(Tensor.Device.Cpu)
-  Params.split(Bert.weights(base), ->(name: String) { !(frozen and name.end_with?("word_embeddings.weight")) })
-end
+# Every weight.
+def trainable(base: Bert.Bert) -> Result[Params.Split] = Params.split(Bert.weights(base), ->(_name: String) { true })
 
 def backend_of(name: String) -> Result[Tensor.Backend]
   case name
@@ -280,7 +277,7 @@ end
 # The score of the model that `save` wrote, opened from its folder as the original is.
 def reloaded(dir: String, backend: Tensor.Backend, rows: List[Pair]) -> Result[Score]
   base = try Bert.open(dir, backend)
-  split = try trainable(base, backend)
+  split = try trainable(base)
   evaluate(Net(base: base, split: split), split.trainable, rows)
 end
 

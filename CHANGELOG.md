@@ -21,6 +21,8 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- A traced run on `Backend.Torch` frees each node's tensor after its last reader, and the Adam step of a computing backend makes one statement at a time: a MiniLM step with every weight trained peaks at 1.4 GiB of resident memory (it was killed at 2.5 GB), and a `Trace.eval` of 16 sentences of 64 tokens no longer keeps 660 MB per call (ml#394).
+- `Torch.memory` reads the bytes of the live libtorch tensors and their peak, for the tests of what a run frees (ml#394).
 - `Tensor.batch_matmul` runs on `Backend.Torch(Cpu)`, so the gradient of `Tensor.attention` (written with it) runs on libtorch too: 51 of the 52 primitives (ml#203).
 - The StableHLO emitter (so `Backend.Xla`) compiles `sigmoid`, `pow`, `clamp`, `to_dtype`, `permute`, `concat`, `stack`, `squeeze`, `unsqueeze`, `batch_matmul` and `argmax` (ml#243).
 - The StableHLO emitter compiles `layer_norm`, `rms_norm`, `gelu_erf` and `rope` too (ml#243).
@@ -31,11 +33,11 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
-- `tools/minilm_finetune.agc` takes `torch`, which fine-tunes MiniLM on libtorch with the word table frozen (ml#203, ml#394).
+- `tools/minilm_finetune.agc` takes `torch`, which fine-tunes MiniLM on libtorch, every weight (ml#203, ml#394).
 - `WordPiece` reads a tokenizer file with a fixed padding (`"strategy": {"Fixed": 128}`) as the padding to the longest, so `sentence-transformers/all-MiniLM-L6-v2` opens; no tokenizer here pads (ml#377).
 - `tools/fetch_minilm.sh` fetches all-MiniLM-L6-v2 at a pinned revision and sha256, and `tools/minilm_finetune.agc` loads it and fine-tunes it for a few steps on ggml CPU or Vulkan (ml#377).
 - A BERT fine-tunes on `Backend.Xla(Device.Cpu)`: the gradients of the cosine loss match the reference and `Train.fit_batches` lowers the loss, and `tools/minilm_finetune.agc` takes `xla` (all-MiniLM-L6-v2: the loss falls from 0.01137 to 0.00236 in six steps, as on ggml) (ml#243).
-- `tools/finetune_stsb.agc` fine-tunes all-MiniLM-L6-v2 on the scored pairs of STS-B on `cpu`, `vulkan`, `xla` or `torch`, with `tools/fetch_stsb.sh` for the pinned files; the guide is the page `train/finetune-minilm.md`.
+- `tools/finetune_stsb.agc` fine-tunes all-MiniLM-L6-v2 on the scored pairs of STS-B on `cpu`, `vulkan`, `xla` or `torch`, with `tools/fetch_stsb.sh` for the pinned files; the guide is the page `train/finetune-minilm.md`. It trains every weight on libtorch too (ml#394).
 - `Generate` of Qwen3 runs on `Backend.Xla(Device.Cpu)`: the steps of the cache are compiled by XLA, and `Lift.staged` compiles the forward there too (ml#243). Checked on the tiny model of the tests; the check against Hugging Face on Qwen3-0.6B and the speed are not done yet.
 - `Bert.weights`, `Bert.with_weights` and `Bert.pooled` name the weights of a BERT as the checkpoint does and run its mean embedding inside a trace, so `Train.fit` and `Params` fine-tune it (`sentence-transformers/all-MiniLM-L6-v2` sized models); `DistilBert` shares the helpers (ml#377).
 - `GraniteMoe.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their experts and keys, run on the CPU under a Vulkan device, as for Qwen3 (ml#331).
