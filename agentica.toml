@@ -2,4 +2,4 @@
 # another member from its folder, with no fetch and no copy.
 [workspace]
 repository = "https://github.com/agentica-lang/ml"
-members = ["tensor", "nn", "train", "hub", "asr", "transformers", "vision"]
+members = ["agc-ir", "tensor", "nn", "train", "hub", "asr", "transformers", "vision"]

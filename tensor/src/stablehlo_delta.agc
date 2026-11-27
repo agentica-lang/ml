@@ -1,5 +1,5 @@
 # StableHLO dialect builders for the gated-delta kernel. The recurrence uses SSA values, not textual names.
-import IR from "mlir_builder"
+import IR from "pkg/agc-ir/ir"
 
 I32 = IR.TensorType(shape: [], element: IR.Element.I32)
 BOOL = IR.TensorType(shape: [], element: IR.Element.I1)

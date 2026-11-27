@@ -1,6 +1,13 @@
 version = 1
 
 [[package]]
+name = "agc-ir"
+git = "https://github.com/agentica-lang/ml"
+subdir = "agc-ir"
+tag = "agc-ir-0.1.0"
+workspace = true
+
+[[package]]
 name = "native-gen"
 git = "https://github.com/agentica-lang/packages"
 subdir = "native-gen"
