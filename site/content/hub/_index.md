@@ -47,6 +47,7 @@ Each `Load` function reads a layer by the prefix of its tensor names. It gives a
 - `Load.layer_norm(c, prefix, eps, backend)` reads `{prefix}.weight` and `{prefix}.bias`, or `{prefix}.gamma` and `{prefix}.beta` when the checkpoint has no `{prefix}.weight` (the names `bert-base-uncased` keeps).
 - `Load.embedding(c, name, backend, weights)` reads one table by its full name.
 - `Load.weight(c, name, rank, backend)` reads one float tensor by its full name as `F32`, and checks that it has `rank` dimensions.
+- `Load.held_bytes(c, name, weights)` counts the bytes that the tensor `name` takes on a ggml device under `weights` (4 a value, 2 for a matrix kept `F16`, the blocks of `Q8_0`, `Q4_K` and `Q6_K`), from the shape and dtype of the file, without reading a value.
 - `Load.conv1d(c, prefix, stride, padding, backend)` reads a `[out, in, kernel]` weight and an optional bias.
 - `Load.encoder_block` and `Load.decoder_block` take the names of one block (`BlockNames` or `DecoderBlockNames`), the head count, the activation, `eps`, the backend and `weights` (as in `dense`).
 - `BlockNames` has the prefixes `norm1`, `query`, `key`, `value`, `output`, `norm2`, `up` and `down`. `DecoderBlockNames` has the same self-attention and `up` and `down` names, plus `cross_query`, `cross_key`, `cross_value` and `cross_output` for the cross-attention and `norm3`.

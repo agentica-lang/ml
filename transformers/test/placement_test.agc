@@ -1,7 +1,9 @@
 ## Where `layers_on_device` puts the blocks, the table and the head: pure, so it runs on any machine.
 
 import Placement from "../placement"
+import Hub from "pkg/hub/hub"
 import Tensor from "pkg/tensor/tensor"
+import Write from "pkg/hub/safetensors_write"
 
 HOME = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 CARD = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
@@ -112,4 +114,71 @@ def test_the_budget_is_the_free_memory_less_the_reserve_up_to_the_cap() -> Resul
   try Test.eq(Placement.budget(1000 * MB, 200 * MB, some(900 * MB)), 800 * MB)
   try Test.eq(Placement.budget(100 * MB, 200 * MB, none), 0)
   ok()
+end
+
+## A checkpoint of two blocks (the second twice the first), a table of 10 x 4 and a norm, with a head of its own when
+## `tied` is false, and a block `10` that the second must not count.
+def with_checkpoint(tied: Bool, body: Fn[Hub.Checkpoint, Result[Void]]) -> Result[Void]
+  dir = "/tmp/agentica-placement-#{Random.int(0, 999999999)}"
+  try Dir.mkdir_private(dir, 5000)
+  zeros = ->(shape: List[Int]) { Tensor.zeros(shape, Tensor.Dtype.F32, Tensor.Backend.Reference) }
+  tensors = {
+    "model.embed_tokens.weight": try zeros.call([10, 4]),
+    "model.norm.weight": try zeros.call([4]),
+    "model.layers.0.up.weight": try zeros.call([3, 4]),
+    "model.layers.0.norm.weight": try zeros.call([4]),
+    "model.layers.1.up.weight": try zeros.call([6, 4]),
+    "model.layers.1.norm.weight": try zeros.call([4]),
+    "model.layers.10.up.weight": try zeros.call([100, 4]),
+  }
+
+  if not tied
+    tensors = Map.put(tensors, "lm_head.weight", try zeros.call([10, 4]))
+  end
+
+  try Write.write("#{dir}/model.safetensors", tensors)
+  result = body.call(try Hub.open("#{dir}/model.safetensors"))
+  _ = Path.remove(dir, 5000)
+  result
+end
+
+## The footprint of a checkpoint is its blocks by their prefix (a block `1` is not block `10`), the KV cache of each one added,
+## the table, and the head with the final norm: of its own when the checkpoint has one, the size of the table when tied.
+def test_the_footprint_counts_the_tensors_of_each_block_the_table_and_the_head() -> Result[Void]
+  f32 = Tensor.Dtype.F32
+  try with_checkpoint(false) do |c|
+    got = try Placement.footprint(
+      c,
+      "model.layers.",
+      2,
+      "model.embed_tokens.weight",
+      "lm_head.weight",
+      "model.norm.weight",
+      f32,
+      1000,
+    )
+
+    try Test.eq(got.blocks, [(12 + 4) * 4 + 1000, (24 + 4) * 4 + 1000])
+    try Test.eq(got.table, 10 * 4 * 4)
+    try Test.eq(got.head, 10 * 4 * 4 + 4 * 4)
+    try Test.eq(got.tied, false)
+    ok()
+  end
+
+  with_checkpoint(true) do |c|
+    got = try Placement.footprint(
+      c,
+      "model.layers.",
+      2,
+      "model.embed_tokens.weight",
+      "lm_head.weight",
+      "model.norm.weight",
+      f32,
+      0,
+    )
+
+    try Test.eq(got.blocks, [(12 + 4) * 4, (24 + 4) * 4])
+    try Test.eq(got.head, 10 * 4 * 4 + 4 * 4)
+    Test.eq(got.tied, true)
+  end
 end

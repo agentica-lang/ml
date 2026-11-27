@@ -144,6 +144,19 @@ def test_a_q8_0_tensor_reads_as_the_peer_dequantizes_it() -> Result[Void]
   end
 end
 
+## `held_bytes` of a Q8_0 matrix under `weights: Q8_0` is its blocks (34 bytes for 32 values); under F32 it is the values
+## it is read as, and a norm is F32 in both.
+def test_held_bytes_of_q8_0_blocks() -> Result[Void]
+  S.with_fixtures("gguf_q8") do |dir|
+    c = try Hub.open("#{dir}/q8.gguf")
+    q = "model.layers.0.self_attn.q_proj.weight"
+    try Test.eq(try Load.held_bytes(c, q, Tensor.Dtype.Q8_0), ((3 * 96) / 32) * 34)
+    try Test.eq(try Load.held_bytes(c, q, Tensor.Dtype.F32), 3 * 96 * 4)
+    try Test.eq(try Load.held_bytes(c, "model.layers.0.input_layernorm.weight", Tensor.Dtype.Q8_0), 64 * 4)
+    ok()
+  end
+end
+
 ## With `weights: Q8_0` the Q8_0 matrices of a file stay as blocks on ggml (they hold the same values), and nothing else
 ## changes: a norm stays F32, a Q8_0 matrix read as F32 or F16 is F32, and another backend or another dtype is refused.
 def test_weights_q8_0_keeps_the_blocks_of_a_q8_0_file() -> Result[Void]
