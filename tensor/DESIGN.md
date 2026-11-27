@@ -983,8 +983,21 @@ The price:
   and `unsqueeze` (`reshape`), `batch_matmul` (`dot_general` with the leading
   axes as batching dimensions) and `argmax` (the reduced axes moved last and
   flattened, the maximum, then the smallest index of the positions that hold
-  it: a tie keeps the lowest, as the reference does). Any other op is an error
-  naming it. The quantized dtypes have no MLIR element type; `Bool` is `i1`, `U8` is `ui8`.
+  it: a tie keeps the lowest, as the reference does; a block with a NaN has no
+  maximum that equals any value, so its answer is `block`, out of range, and
+  is not defined), `layer_norm` and `rms_norm` (a mean of the squares over the
+  last axis, a `sqrt` and a division, as `layer_norm_composed` and
+  `rms_norm_composed` write them), `gelu_erf` (CHLO's `erf`, which XLA lowers)
+  and `rope` (the cosines and sines of the angles are written in the program
+  from constant frequencies and the positions; the pairs `(i, i + dims/2)` or
+  `(2i, 2i + 1)` are rotated; `inverse` negates the sines). Any other op is an
+  error naming it. A program checks no values: a `to_dtype` out of the range
+  of its integer type wraps, a `pow` with a base at or below 0 gives what XLA
+  gives (a NaN): the reference refuses these with an error, and only the index
+  of a `gather` is checked (`checked`). The backward rules of `pow`, `clamp`, `batch_matmul` and
+  `to_dtype` do not exist yet (`trace.agc`), so a gradient does not pass
+  through them on any backend; the backward of `attention` is written with
+  `batch_matmul`, which it uses forward only. The quantized dtypes have no MLIR element type; `Bool` is `i1`, `U8` is `ui8`.
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,
   then the inputs of the step (`Optim.step_inputs`: SGD's learning rate as a

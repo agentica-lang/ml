@@ -151,6 +151,10 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Sqrt -> ok(["stablehlo.sqrt #{a[0]} : #{out}"])
     Types.Op.Tanh -> ok(["stablehlo.tanh #{a[0]} : #{out}"])
     Types.Op.Sigmoid -> ok(["stablehlo.logistic #{a[0]} : #{out}"])
+    Types.Op.GeluErf -> gelu_erf(t, a[0], first)
+    Types.Op.LayerNorm(eps) -> normalized(t, a[0], eps, true, first)
+    Types.Op.RmsNorm(eps) -> normalized(t, a[0], eps, false, first)
+    Types.Op.Rope(base, dims, neox, inverse) -> rope(t, n.args, a, base, dims, neox, inverse, first)
     Types.Op.Pow -> ok(["stablehlo.power #{a[0]}, #{a[1]} : #{out}"])
     Types.Op.Clamp(lo, hi) ->
       ok([try fill(lo, t), try fill(hi, t), "stablehlo.clamp %#{first}, #{a[0]}, %#{first + 1} : #{out}"])
@@ -326,6 +330,189 @@ def matmul(args: List[Types.Tensor], a: List[String], sig: String) -> Result[Lis
   end
 
   ok(["stablehlo.dot_general #{a[0]}, #{a[1]}, contracting_dims = [1] x [0] : #{sig}"])
+end
+
+# The exact GELU, `0.5 x (1 + erf(x / sqrt(2)))`, the form `Reference` computes: `erf` is CHLO's (XLA lowers it).
+def gelu_erf(t: Types.Tensor, x: String, first: Int) -> Result[List[String]]
+  out = try type_of(t)
+  ok([
+    try fill(Reference.INV_SQRT2, t),
+    "stablehlo.multiply #{x}, %#{first} : #{out}",
+    "\"chlo.erf\"(%#{first + 1}) : (#{out}) -> #{out}",
+    try fill(1.0, t),
+    "stablehlo.add %#{first + 3}, %#{first + 2} : #{out}",
+    try fill(0.5, t),
+    "stablehlo.multiply %#{first + 5}, #{x} : #{out}",
+    "stablehlo.multiply %#{first + 6}, %#{first + 4} : #{out}",
+  ])
+end
+
+# A layer norm (`center`) or an RMS norm of `x` over its last axis, no affine: `centered / sqrt(mean(centered^2)
+# + eps)`,
+# where `centered` is `x - mean(x)` for the layer norm and `x` for the RMS norm, as `Tensor.layer_norm_composed` and
+# `rms_norm_composed` write them.
+def normalized(t: Types.Tensor, x: String, eps: Float, center: Bool, first: Int) -> Result[List[String]]
+  out = try type_of(t)
+  q = t.shape.size - 1
+  dims = ints((0...q).to_a)
+  lead = try tensor_type(t.shape.take(q), t.dtype)
+  l = Lines(first: first, defs: [])
+  centered = x
+  if center
+    l = try last_mean(l, x, t)
+    l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{out}")
+    l = put(l, "stablehlo.subtract #{x}, #{last(l)} : #{out}")
+    centered = last(l)
+  end
+
+  l = put(l, "stablehlo.multiply #{centered}, #{centered} : #{out}")
+  l = try last_mean(l, last(l), t)
+  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{out}")
+  var = last(l)
+  l = put(l, try fill(eps, t))
+  l = put(l, "stablehlo.add #{var}, #{last(l)} : #{out}")
+  l = put(l, "stablehlo.sqrt #{last(l)} : #{out}")
+  l = put(l, "stablehlo.divide #{centered}, #{last(l)} : #{out}")
+  ok(l.defs)
+end
+
+# The mean of `name` (of the shape of `like`) over the last axis, as the last line of `l`: the shape without that axis.
+def last_mean(l: Lines, name: String, like: Types.Tensor) -> Result[Lines]
+  q = like.shape.size - 1
+  lead = like.shape.take(q)
+  scalar = try tensor_type([], like.dtype)
+  reduced = try tensor_type(lead, like.dtype)
+  l = put(l, try fill_scalar("add", like.dtype))
+  l = put(
+    l,
+    "stablehlo.reduce(#{name} init: #{last(l)}) applies stablehlo.add across dimensions = [#{q}] : (#{try type_of(like)}, #{scalar}) -> #{reduced}",
+  )
+
+  total = last(l)
+  l = put(l, try splat(Types.Values.Float(like.shape[q].to_f), lead, like.dtype))
+  ok(put(l, "stablehlo.divide #{total}, #{last(l)} : #{reduced}"))
+end
+
+# Rotary embedding of `x` `[..., seq, width]` by the integer `positions` `[seq]`. The cosines and sines of the angles
+# `position * base^(-2i/dims)` are written in the program (the frequencies are constants), then the pairs are
+# rotated as
+# `Reference.rope` does: `(i, i + dims/2)` with `neox`, `(2i, 2i + 1)` without; the columns past `dims` pass through.
+def rope(
+  t: Types.Tensor,
+  args: List[Types.Tensor],
+  a: List[String],
+  base: Float,
+  dims: Int,
+  neox: Bool,
+  inverse: Bool,
+  first: Int,
+) -> Result[List[String]]
+  x = args[0]
+  rank = x.shape.size
+  seq = x.shape[rank - 2]
+  width = x.shape[rank - 1]
+  half = dims / 2
+  grid = try tensor_type([seq, half], x.dtype)
+  table = try tensor_type([half], x.dtype)
+  l = Lines(first: first, defs: [])
+  l = put(l, "stablehlo.convert #{a[1]} : (#{try type_of(args[1])}) -> #{try tensor_type([seq], x.dtype)}")
+  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = [0] : (#{try tensor_type([seq], x.dtype)}) -> #{grid}")
+  turns = (0...half).map { |i| decimal(Math.exp(-((2.0 * i.to_f) / dims.to_f) * Math.log(base))) }
+  l = put(l, "stablehlo.constant dense<[#{turns.join(", ")}]> : #{table}")
+  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = [1] : (#{table}) -> #{grid}")
+  l = put(l, "stablehlo.multiply #{"%#{first + 1}"}, #{last(l)} : #{grid}")
+  angle = last(l)
+  l = put(l, "stablehlo.cosine #{angle} : #{grid}")
+  cosine = last(l)
+  l = put(l, "stablehlo.sine #{angle} : #{grid}")
+  if inverse
+    l = put(l, "stablehlo.negate #{last(l)} : #{grid}")
+  end
+
+  sine = last(l)
+  lead = x.shape.take(rank - 1)
+  pairs = try tensor_type(lead + [half], x.dtype)
+  spread = "dims = [#{rank - 2}, #{rank - 1}] : (#{grid}) -> #{pairs}"
+  l = put(l, "stablehlo.broadcast_in_dim #{cosine}, #{spread}")
+  cosine = last(l)
+  l = put(l, "stablehlo.broadcast_in_dim #{sine}, #{spread}")
+  sine = last(l)
+  parts: List[String] = []
+  part_types: List[String] = []
+  if neox
+    columns = [[0, half], [half, dims]]
+    halves: List[String] = []
+    for c in columns
+      l = put(l, try columns_of(x, a[0], c[0], c[1]))
+      halves = halves.push(last(l))
+    end
+
+    l = put(l, "stablehlo.multiply #{halves[0]}, #{cosine} : #{pairs}")
+    l = put(l, "stablehlo.multiply #{halves[1]}, #{sine} : #{pairs}")
+    l = put(l, "stablehlo.subtract %#{first + l.defs.size - 2}, #{last(l)} : #{pairs}")
+    parts = parts.push(last(l))
+    l = put(l, "stablehlo.multiply #{halves[1]}, #{cosine} : #{pairs}")
+    l = put(l, "stablehlo.multiply #{halves[0]}, #{sine} : #{pairs}")
+    l = put(l, "stablehlo.add %#{first + l.defs.size - 2}, #{last(l)} : #{pairs}")
+    parts = parts.push(last(l))
+    part_types = [pairs, pairs]
+  else
+    twos = try tensor_type(lead + [half, 2], x.dtype)
+    l = put(l, try columns_of(x, a[0], 0, dims))
+    l = put(l, "stablehlo.reshape #{last(l)} : (#{try tensor_type(lead + [dims], x.dtype)}) -> #{twos}")
+    folded = last(l)
+    cells: List[String] = []
+    for k in 0...2
+      starts = lead.map { |_| 0 } + [0, k]
+      ends = lead + [half, k + 1]
+      one = try tensor_type(lead + [half, 1], x.dtype)
+      l = put(l, "stablehlo.slice #{folded} #{extents(starts, ends)} : (#{twos}) -> #{one}")
+      l = put(l, "stablehlo.reshape #{last(l)} : (#{one}) -> #{pairs}")
+      cells = cells.push(last(l))
+    end
+
+    l = put(l, "stablehlo.multiply #{cells[0]}, #{cosine} : #{pairs}")
+    l = put(l, "stablehlo.multiply #{cells[1]}, #{sine} : #{pairs}")
+    l = put(l, "stablehlo.subtract %#{first + l.defs.size - 2}, #{last(l)} : #{pairs}")
+    even = last(l)
+    l = put(l, "stablehlo.multiply #{cells[1]}, #{cosine} : #{pairs}")
+    l = put(l, "stablehlo.multiply #{cells[0]}, #{sine} : #{pairs}")
+    l = put(l, "stablehlo.add %#{first + l.defs.size - 2}, #{last(l)} : #{pairs}")
+    odd = last(l)
+    one = try tensor_type(lead + [half, 1], x.dtype)
+    rows: List[String] = []
+    for r in [even, odd]
+      l = put(l, "stablehlo.reshape #{r} : (#{pairs}) -> #{one}")
+      rows = rows.push(last(l))
+    end
+
+    l = put(l, "stablehlo.concatenate #{rows.join(", ")}, dim = #{rank} : (#{one}, #{one}) -> #{twos}")
+    l = put(l, "stablehlo.reshape #{last(l)} : (#{twos}) -> #{try tensor_type(lead + [dims], x.dtype)}")
+    parts = [last(l)]
+    part_types = [try tensor_type(lead + [dims], x.dtype)]
+  end
+
+  if dims < width
+    l = put(l, try columns_of(x, a[0], dims, width))
+    parts = parts.push(last(l))
+    part_types = part_types.push(try tensor_type(lead + [width - dims], x.dtype))
+  end
+
+  l = put(
+    l,
+    "stablehlo.concatenate #{parts.join(", ")}, dim = #{rank - 1} : (#{part_types.join(", ")}) -> #{try type_of(t)}",
+  )
+
+  ok(l.defs)
+end
+
+# The columns `from...to` of the last axis of `x`.
+def columns_of(x: Types.Tensor, name: String, from: Int, to: Int) -> Result[String]
+  rank = x.shape.size
+  starts = x.shape.map { |_| 0 }.take(rank - 1) + [from]
+  ends = x.shape.take(rank - 1) + [to]
+  shape = x.shape.take(rank - 1) + [to - from]
+  ok("stablehlo.slice #{name} #{extents(starts, ends)} : (#{try type_of(x)}) -> #{try tensor_type(shape, x.dtype)}")
 end
 
 # The batched product `[B..., m, k] . [B..., k, n]`: the leading axes are the batch, the rest is `matmul`.
