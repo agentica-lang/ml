@@ -19,6 +19,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- The StableHLO emitter (so `Backend.Xla`) compiles `sigmoid`, `pow`, `clamp`, `to_dtype`, `permute`, `concat`, `stack`, `squeeze`, `unsqueeze`, `batch_matmul` and `argmax` (ml#243).
 - `Tensor.device_memory(backend)` gives the free and total bytes of the device of a ggml backend (`ggml_backend_dev_memory`), for a memory budget of `layers_on_device` (ml#331).
 
 ### transformers
