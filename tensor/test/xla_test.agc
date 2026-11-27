@@ -44,8 +44,8 @@ end
 def test_value_and_grad_on_xla_matches_the_reference() -> Result[Void]
   return ok() if !try Support.present()
   ys = [0, 3, 1, 2, 3, 0]
-  got = try Trace.value_and_grad(try mlp_args(Support.XLA), mlp_loss(try labels(ys, Support.XLA)))
-  want = try Trace.value_and_grad(try mlp_args(Support.REF), mlp_loss(try labels(ys, Support.REF)))
+  got = try Trace.value_and_grad(try mlp_args(Support.XLA), mlp_loss(try Support.labels(ys, Support.XLA)))
+  want = try Trace.value_and_grad(try mlp_args(Support.REF), mlp_loss(try Support.labels(ys, Support.REF)))
   Support.close([got.value] + got.grads, [want.value] + want.grads)
 end
 
@@ -54,7 +54,7 @@ def test_steps_that_close_old_tensors_keep_no_buffer_alive() -> Result[Void]
   return ok() if !try Support.present()
   a = try mlp_args(Support.XLA)
   params = a.drop(1)
-  fixed = [try Support.floats([0.5], [], Support.XLA), a[0], try labels([0, 3, 1, 2, 3, 0], Support.XLA)]
+  fixed = [try Support.floats([0.5], [], Support.XLA), a[0], try Support.labels([0, 3, 1, 2, 3, 0], Support.XLA)]
   step = try Trace.compile((params + fixed).map { |t| Trace.spec_of(t) }, &sgd_step)
   first = 0
   for i in 0...20
@@ -107,7 +107,11 @@ def test_a_gather_index_outside_the_rows_is_an_error() -> Result[Void]
   return ok() if !try Support.present()
   table = try Support.floats(Support.uniform(15, 31, 1.0), [5, 3], Support.XLA)
   for bad in [[1, 5], [-1, 0]]
-    r = Trace.eval([table, try labels(bad, Support.XLA)], ->(xs: List[Tensor.Tensor]) { Tensor.gather(xs[0], xs[1]) })
+    r = Trace.eval(
+      [table, try Support.labels(bad, Support.XLA)],
+      ->(xs: List[Tensor.Tensor]) { Tensor.gather(xs[0], xs[1]) },
+    )
+
     try Test.assert(!r.ok?, "gather at #{bad} of 5 rows ran on XLA")
     try Test.assert(r.message.include?("outside the rows"), r.message)
   end
@@ -225,7 +229,7 @@ def adam(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]] = Tensor.adam_s
 ## The rows of a `[5, 3]` table at `[4, 0, 4, 2]`, then an Adam step: one compiled program each.
 def gather_and_adam(backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   table = try Support.floats(Support.uniform(15, 31, 1.0), [5, 3], backend)
-  ids = try labels([4, 0, 4, 2], backend)
+  ids = try Support.labels([4, 0, 4, 2], backend)
   rows = try Trace.compile(
     [Trace.spec_of(table), Trace.spec_of(ids)],
     ->(xs: List[Tensor.Tensor]) { ok([try Tensor.gather(xs[0], xs[1])]) },
@@ -234,10 +238,6 @@ def gather_and_adam(backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   args = try adam_args(backend)
   step = try Trace.compile(args.map { |t| Trace.spec_of(t) }, &adam)
   ok(try Trace.run(rows, [table, ids]) + try Trace.run(step, args))
-end
-
-def labels(xs: List[Int], backend: Tensor.Backend) -> Result[Tensor.Tensor]
-  Tensor.from_list(xs.map { |x| Tensor.Values.Int(x) }, [xs.size], Tensor.Dtype.I32, backend)
 end
 
 ## x `[6, 8]`, then w1, b1, w2, b2 of an 8 → 16 → 4 network.
@@ -306,7 +306,7 @@ def train(backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
   params = a.drop(1)
   rate = try Support.floats([0.5], [], backend)
   x = a[0]
-  y = try labels([0, 3, 1, 2, 3, 0], backend)
+  y = try Support.labels([0, 3, 1, 2, 3, 0], backend)
   step = try Trace.compile((params + [rate, x, y]).map { |t| Trace.spec_of(t) }, &sgd_step)
   losses: List[Tensor.Tensor] = []
   for _ in 0...3

@@ -18,14 +18,14 @@ struct Module
   ## The positions of the inputs the program updates in place (`emit` with `donate`), each aliased to its output.
   donated: List[Int] = []
   ## True when the program returns one more output after the traced ones (`emit` with `checked`): an `i1` that is
-  ## true when an index of a `gather` is outside the rows of its source.
+  ## true when an index of a `gather` or a `scatter_add` is outside its rows.
   checked: Bool = false
 end
 
 ## The module of the traced tensors `outs` over the input nodes `inputs` (traced `Input` tensors, in argument order).
 ## With `donate`, the moments an `adam_step` updates in place (`Lower.adam_moments`) are aliased to their outputs
 ## (`tf.aliasing_output`), so XLA writes the new moment over the old one: a run consumes those inputs. With `checked`,
-## a program with a `gather` also answers whether one of its indices is outside the rows (`Module.checked`), which
+## a program with a `gather` or a `scatter_add` also answers whether one of its indices is outside the rows (`Module.checked`), which
 ## XLA would clamp: the caller makes that the error the other backends give.
 def emit(
   inputs: List[Types.Tensor],
@@ -90,8 +90,10 @@ def emit(
           names = names.put(n.id, "%#{next - 1}")
         end
 
-        if checked and gather?(n)
-          lines = try outside(n.args[1], names[Graph.id_of(n.args[1])], n.args[0].shape[0], next)
+        bound = indexed(n, t)
+        if checked and !bound.none?
+          at = bound.unwrap!
+          lines = try outside(at.index, names[Graph.id_of(at.index)], at.rows, next)
           for i in 0...lines.size
             body = body.push("    %#{next + i} = #{lines[i]}")
           end
@@ -128,6 +130,12 @@ def emit(
 end
 
 private
+
+# The indices of a node that reads or writes rows (`gather`, `scatter_add`) and how many rows there are.
+struct Bound
+  index: Types.Tensor
+  rows: Int
+end
 
 # The lines of an op that takes several, the first named `%first`.
 struct Lines
@@ -182,6 +190,8 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Where -> ok(["stablehlo.select #{a[0]}, #{a[1]}, #{a[2]} : #{try type_of(n.args[0])}, #{out}"])
     Types.Op.Arange(start, _, step) -> arange(t, start, step, first)
     Types.Op.Gather -> gather(t, n.args, a, sig)
+    Types.Op.ScatterAdd(_) -> scatter_add(t, n.args, a, first)
+    Types.Op.Attention(scale) -> attention(t, n.args, a, scale, first)
     Types.Op.AdamStep -> adam(t, n.args, a, first)
     Types.Op.AdamPart(i) -> adam_part(t, n.args[0], a[0], i, first)
     _ -> error("StableHLO has no emitter for #{Types.op_name(n.op)} yet")
@@ -275,10 +285,11 @@ def adam_part(t: Types.Tensor, stacked: Types.Tensor, name: String, i: Int, firs
   ])
 end
 
-def gather?(n: Types.Node) -> Bool
+def indexed(n: Types.Node, t: Types.Tensor) -> Optional[Bound]
   case n.op
-    Types.Op.Gather -> true
-    _ -> false
+    Types.Op.Gather -> some(Bound(index: n.args[1], rows: n.args[0].shape[0]))
+    Types.Op.ScatterAdd(rows) -> some(Bound(index: n.args[0], rows: rows))
+    _ -> none
   end
 end
 
@@ -332,6 +343,137 @@ def matmul(args: List[Types.Tensor], a: List[String], sig: String) -> Result[Lis
   ok(["stablehlo.dot_general #{a[0]}, #{a[1]}, contracting_dims = [1] x [0] : #{sig}"])
 end
 
+# `scatter_add`: the rows of `updates` added into zeros `[rows, ...]` at `indices`, duplicates summing. An
+# index outside
+# the rows is dropped by XLA, so for `Xla` the program also answers a flag that one is (`checked`).
+def scatter_add(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
+  k = args[0].shape.size
+  rest = t.shape.drop(1)
+  fields = ["inserted_window_dims = [0]", "scatter_dims_to_operand_dims = [0]", "index_vector_dim = #{k}"]
+  if !rest.empty?
+    fields = ["update_window_dims = #{ints((0...rest.size).to_a.map { |i| k + i })}"] + fields
+  end
+
+  scalar = try tensor_type([], t.dtype)
+  body = [
+    "^bb0(%acc: #{scalar}, %upd: #{scalar}):",
+    "        %sum = stablehlo.add %acc, %upd : #{scalar}",
+    "        stablehlo.return %sum : #{scalar}",
+  ].join("\n      ")
+
+  attrs = "scatter_dimension_numbers = #stablehlo.scatter<#{fields.join(", ")}>, indices_are_sorted = false"
+  types = try signature([t, args[0], args[1]], try type_of(t))
+  ok([
+    try fill(0.0, t),
+    "\"stablehlo.scatter\"(%#{first}, #{a[0]}, #{a[1]}) ({\n      #{body}\n    }) {#{attrs}, unique_indices = false} : #{types}",
+  ])
+end
+
+# Attention over `[batch, heads, seq, width]` queries, keys and values (the keys and values may have fewer heads, each
+# serving a group of consecutive query heads): `softmax(q k^T scale + mask) v`, with the softmax over the keys
+# written as
+# the maximum, `exp` and a sum, as `Reference.attention` does. A key of another dtype than the query is converted.
+def attention(
+  t: Types.Tensor,
+  args: List[Types.Tensor],
+  a: List[String],
+  scale: Float,
+  first: Int,
+) -> Result[List[String]]
+  q = args[0]
+  heads = q.shape[1]
+  group = heads / args[1].shape[1]
+  l = Lines(first: first, defs: [])
+  keys = a[1]
+  values = a[2]
+  l = try attention_side(l, args[1], q, group, keys)
+  keys = last(l)
+  l = try attention_side(l, args[2], q, group, values)
+  values = last(l)
+  shape = [q.shape[0], heads, q.shape[2], args[1].shape[2]]
+  scores = try tensor_type(shape, q.dtype)
+  qt = try type_of(q)
+  kt = try tensor_type([q.shape[0], heads, args[1].shape[2], q.shape[3]], q.dtype)
+  vt = try tensor_type([q.shape[0], heads, args[2].shape[2], args[2].shape[3]], q.dtype)
+  batch = "batching_dims = [0, 1] x [0, 1]"
+  l = put(
+    l,
+    "stablehlo.dot_general #{a[0]}, #{keys}, #{batch}, contracting_dims = [3] x [3] : (#{qt}, #{kt}) -> #{scores}",
+  )
+
+  l = put(l, try splat(Types.Values.Float(scale), shape, q.dtype))
+  l = put(l, "stablehlo.multiply %#{first + l.defs.size - 2}, #{last(l)} : #{scores}")
+  if args.size == 4
+    mask = args[3]
+    if mask.shape != shape
+      spread = ints((0...mask.shape.size).to_a.map { |i| shape.size - mask.shape.size + i })
+      l = put(l, "stablehlo.broadcast_in_dim #{a[3]}, dims = #{spread} : (#{try type_of(mask)}) -> #{scores}")
+      l = put(l, "stablehlo.add %#{first + l.defs.size - 2}, #{last(l)} : #{scores}")
+    else
+      l = put(l, "stablehlo.add #{last(l)}, #{a[3]} : #{scores}")
+    end
+  end
+
+  l = try softmax_last(l, last(l), shape, q.dtype)
+  l = put(
+    l,
+    "stablehlo.dot_general #{last(l)}, #{values}, #{batch}, contracting_dims = [3] x [2] : (#{scores}, #{vt}) -> #{try type_of(t)}",
+  )
+
+  ok(l.defs)
+end
+
+# `x` (keys or values of fewer heads) as one tensor of the query's heads, in the dtype of the query: each head repeated
+# for its group. The last line of the result.
+def attention_side(l: Lines, x: Types.Tensor, q: Types.Tensor, group: Int, name: String) -> Result[Lines]
+  source = name
+  shown = try type_of(x)
+  if x.dtype != q.dtype
+    shown = try tensor_type(x.shape, q.dtype)
+    l = put(l, "stablehlo.convert #{source} : (#{try type_of(x)}) -> #{shown}")
+    source = last(l)
+  end
+
+  return ok(put(l, "stablehlo.reshape #{source} : (#{shown}) -> #{shown}")) if group == 1
+  b = x.shape[0]
+  kv = x.shape[1]
+  spread = try tensor_type([b, kv, group, x.shape[2], x.shape[3]], q.dtype)
+  l = put(l, "stablehlo.broadcast_in_dim #{source}, dims = [0, 1, 3, 4] : (#{shown}) -> #{spread}")
+  ok(
+    put(
+      l,
+      "stablehlo.reshape #{last(l)} : (#{spread}) -> #{try tensor_type([b, q.shape[1], x.shape[2], x.shape[3]], q.dtype)}",
+    ),
+  )
+end
+
+# The softmax over the last axis of `name` (of `shape`): `exp(x - max) / sum(exp(x - max))`. The last line.
+def softmax_last(l: Lines, name: String, shape: List[Int], dtype: Types.Dtype) -> Result[Lines]
+  q = shape.size - 1
+  full = try tensor_type(shape, dtype)
+  lead = try tensor_type(shape.take(q), dtype)
+  scalar = try tensor_type([], dtype)
+  dims = ints((0...q).to_a)
+  l = put(l, try fill_scalar("maximum", dtype))
+  l = put(
+    l,
+    "stablehlo.reduce(#{name} init: #{last(l)}) applies stablehlo.maximum across dimensions = [#{q}] : (#{full}, #{scalar}) -> #{lead}",
+  )
+
+  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{full}")
+  l = put(l, "stablehlo.subtract #{name}, #{last(l)} : #{full}")
+  l = put(l, "stablehlo.exponential #{last(l)} : #{full}")
+  powers = last(l)
+  l = put(l, try fill_scalar("add", dtype))
+  l = put(
+    l,
+    "stablehlo.reduce(#{powers} init: #{last(l)}) applies stablehlo.add across dimensions = [#{q}] : (#{full}, #{scalar}) -> #{lead}",
+  )
+
+  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{full}")
+  ok(put(l, "stablehlo.divide #{powers}, #{last(l)} : #{full}"))
+end
+
 # The exact GELU, `0.5 x (1 + erf(x / sqrt(2)))`, the form `Reference` computes: `erf` is CHLO's (XLA lowers it).
 def gelu_erf(t: Types.Tensor, x: String, first: Int) -> Result[List[String]]
   out = try type_of(t)
@@ -350,7 +492,7 @@ end
 # A layer norm (`center`) or an RMS norm of `x` over its last axis, no affine: `centered / sqrt(mean(centered^2)
 # + eps)`,
 # where `centered` is `x - mean(x)` for the layer norm and `x` for the RMS norm, as `Tensor.layer_norm_composed` and
-# `rms_norm_composed` write them.
+# `rms_norm_composed` write them. The sums run in the dtype of `x`.
 def normalized(t: Types.Tensor, x: String, eps: Float, center: Bool, first: Int) -> Result[List[String]]
   out = try type_of(t)
   q = t.shape.size - 1
@@ -420,7 +562,7 @@ def rope(
   turns = (0...half).map { |i| decimal(Math.exp(-((2.0 * i.to_f) / dims.to_f) * Math.log(base))) }
   l = put(l, "stablehlo.constant dense<[#{turns.join(", ")}]> : #{table}")
   l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = [1] : (#{table}) -> #{grid}")
-  l = put(l, "stablehlo.multiply #{"%#{first + 1}"}, #{last(l)} : #{grid}")
+  l = put(l, "stablehlo.multiply %#{first + 1}, #{last(l)} : #{grid}")
   angle = last(l)
   l = put(l, "stablehlo.cosine #{angle} : #{grid}")
   cosine = last(l)

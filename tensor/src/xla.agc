@@ -41,7 +41,7 @@ struct Program
   ## The StableHLO text and the inputs it updates in place: a run after `Trace.close` compiles it again.
   text: String
   donated: List[Int]
-  ## The program answers one more output, true when an index of a `gather` is outside its rows
+  ## The program answers one more output, true when an index of a `gather` or a `scatter_add` is outside its rows
   ## (`Stablehlo.Module.checked`).
   checked: Bool
 end
@@ -256,7 +256,7 @@ def execute(p: Program, args: List[Types.Tensor]) -> Result[List[Types.Tensor]]
         Native.close(b)
       end
 
-      return error("gather: an index is outside the rows of its source") if read.ok?
+      return error("gather or scatter_add: an index is outside the rows") if read.ok?
       return error("run: #{read.message}")
     end
   end

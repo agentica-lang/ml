@@ -987,10 +987,18 @@ The price:
   maximum that equals any value, so its answer is `block`, out of range, and
   is not defined), `layer_norm` and `rms_norm` (a mean of the squares over the
   last axis, a `sqrt` and a division, as `layer_norm_composed` and
-  `rms_norm_composed` write them), `gelu_erf` (CHLO's `erf`, which XLA lowers)
+  `rms_norm_composed` write them; the sums run in the dtype of `x`, and only
+  `F32` is used so far), `gelu_erf` (CHLO's `erf`, which XLA lowers)
   and `rope` (the cosines and sines of the angles are written in the program
   from constant frequencies and the positions; the pairs `(i, i + dims/2)` or
-  `(2i, 2i + 1)` are rotated; `inverse` negates the sines). Any other op is an
+  `(2i, 2i + 1)` are rotated; `inverse` negates the sines), `attention` (the
+  keys and values are repeated for their group of heads, a `dot_general` with
+  the batch and the heads as batching dimensions gives the scores, then the
+  scale, the mask broadcast to the scores, the softmax as the maximum, `exp`
+  and a sum, and a second `dot_general`; a key in another dtype than the query
+  is converted) and `scatter_add` (a `stablehlo.scatter` that adds into zeros;
+  a duplicate index sums, and an index outside the rows would be dropped by
+  XLA, so `checked` covers it as it does a `gather`). Any other op is an
   error naming it. A program checks no values: a `to_dtype` out of the range
   of its integer type wraps, a `pow` with a base at or below 0 gives what XLA
   gives (a NaN): the reference refuses these with an error, and only the index

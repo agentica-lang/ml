@@ -141,3 +141,62 @@ def counted(x: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
     try Tensor.add(try Tensor.mean(x, some([1]), true), tiny),
   ])
 end
+
+## The ops of a transformer step are written without a plugin (`xla_ops_test.agc` runs them): the text names each one.
+def test_the_ops_of_a_transformer_step_are_written() -> Result[Void]
+  specs = [
+    spec([2, 4, 3, 8], Tensor.Dtype.F32),
+    spec([2, 2, 5, 8], Tensor.Dtype.F32),
+    spec([3, 5], Tensor.Dtype.F32),
+    spec([3], Tensor.Dtype.I32),
+    spec([4], Tensor.Dtype.I32),
+    spec([4, 3], Tensor.Dtype.F32),
+  ]
+
+  m = try Trace.stablehlo(specs, ->(xs: List[Tensor.Tensor]) { transformer_ops(xs) })
+  wanted = [
+    "stablehlo.logistic",
+    "stablehlo.power",
+    "stablehlo.clamp",
+    "stablehlo.compare NE",
+    "stablehlo.transpose",
+    "stablehlo.concatenate",
+    "batching_dims = [0, 1] x [0, 1], contracting_dims = [3] x [3]",
+    "contracting_dims = [1] x [0]",
+    "applies stablehlo.minimum",
+    "\"chlo.erf\"",
+    "stablehlo.cosine",
+    "stablehlo.sine",
+    "stablehlo.negate",
+    "stablehlo.exponential",
+    "\"stablehlo.scatter\"",
+    "stablehlo.add %acc, %upd",
+  ]
+
+  for w in wanted
+    try Test.assert(m.text.include?(w), "the program has no #{w}")
+  end
+
+  ok()
+end
+
+def transformer_ops(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  q = xs[0]
+  small = try Tensor.reshape(q, [24, 8])
+  flat = try Tensor.reshape(q, [2, 4, 24])
+  ok([
+    try Tensor.pow(try Tensor.sigmoid(q), try Tensor.clamp(q, -1.0, 1.0)),
+    try Tensor.to_dtype(try Tensor.to_dtype(q, Tensor.Dtype.I32), Tensor.Dtype.Bool),
+    try Tensor.permute(try Tensor.stack([q, q], 1), [1, 0, 2, 3, 4]),
+    try Tensor.concat([try Tensor.squeeze(try Tensor.unsqueeze(small, 0), some(0)), small], 1),
+    try Tensor.batch_matmul(flat, try Tensor.permute(flat, [0, 2, 1])),
+    try Tensor.batch_matmul(small, try Tensor.permute(small, [1, 0])),
+    try Tensor.argmax(q, some([1, 3]), true),
+    try Tensor.layer_norm(try Tensor.gelu_erf(small), 0.00001),
+    try Tensor.rms_norm(small, 0.000001),
+    try Tensor.rope(q, xs[3]),
+    try Tensor.rope(q, xs[3], 10000.0, some(4), false, true),
+    try Tensor.attention(q, xs[1], xs[1], mask: some(xs[2])),
+    try Tensor.scatter_add(xs[4], xs[5], 5),
+  ])
+end
