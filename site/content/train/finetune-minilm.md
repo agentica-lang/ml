@@ -4,15 +4,15 @@ description: A whole program that fine-tunes a sentence-embedding model on score
 weight: 4
 ---
 
-This page is one program, `transformers/tools/finetune_stsb.agc` of the ml repository, that fine-tunes `sentence-transformers/all-MiniLM-L6-v2` on STS-B. STS-B is a set of sentence pairs, each with a score from 0 (unrelated) to 1 (the same meaning), and the model is a sentence-embedding model: it turns a sentence into a vector, and two sentences that mean the same should have vectors with a high cosine. The program reads the pairs, tokenizes them, cuts them into batches, trains with AdamW and the cosine loss of sentence-transformers, measures Spearman's correlation of the cosines with the scores before and after, saves the model, loads it back and measures again. The backend is one argument: `cpu`, `vulkan`, `xla` or `torch`. It uses the pieces of the [train](_index.md), [data loader](data.md) and [transformers](../transformers/_index.md) pages.
+This page is one program, `transformers/tools/finetune_stsb.agc` of the ml repository, that fine-tunes `sentence-transformers/all-MiniLM-L6-v2` on STS-B. STS-B is a set of sentence pairs, each with a score from 0 (unrelated) to 1 (the same meaning), and the model is a sentence-embedding model: it turns a sentence into a vector, and two sentences that mean the same should have vectors with a high cosine. The program reads the pairs, tokenizes them, cuts them into batches, trains with AdamW and the cosine loss of sentence-transformers, measures Spearman's correlation of the cosines with the scores on a validation sample before, after every epoch and after, saves the model, loads it back and measures again. The training is a [`Loop`](_index.md#loop): a trainer, two metrics and two handlers, run over batches. The backend, the number of training pairs, the epochs, the size of the validation sample and a time budget are arguments; the backend is `cpu`, `vulkan`, `xla` or `torch`. It uses the pieces of the [train](_index.md), [data loader](data.md) and [transformers](../transformers/_index.md) pages.
 
-The code on this page is the program: CI joins the code blocks of the page in order and fails when they differ from the program, ignoring blank lines. The numbers are not: they are what the program printed in the runs described next to them, with the ggml engine, XLA plugin and libtorch of the machine of that day, and they change in the last digits from machine to machine.
+The code on this page is the program: CI joins the code blocks of the page in order and fails when they differ from the program, ignoring blank lines.
 
 The data is `sentence-transformers/stsb`: 5,749 training pairs and 1,500 validation pairs, with columns `sentence1`, `sentence2` and `score`. The model is `sentence-transformers/all-MiniLM-L6-v2` (6 layers, width 384, 91 MB of weights).
 
 ## What it is not
 
-This is the loop, not a recipe for the best score. The program trains one epoch on the first rows of a seeded shuffle of the training split, with no gradient clipping and no dropout. The learning rate is 2e-5 with a linear warmup over the first tenth of the steps and a linear decay to 0 (`Optim.Schedule.WarmupLinear`, the schedule of Hugging Face's `get_linear_schedule_with_warmup`), and the weight decay is 0.01. It measures on all 1,500 validation pairs. A run is reproducible from the files and the seed, but not bit for bit: the last digits of a loss change between backends and, on ggml, between runs.
+This is the loop, not a recipe for the best score. The program trains on the first rows of a seeded shuffle of the training split, in a new seeded order each epoch, with no gradient clipping and no dropout. The learning rate is 2e-5 with a linear warmup over the first tenth of all the steps and a linear decay to 0 at the last (`Optim.Schedule.WarmupLinear`, the schedule of Hugging Face's `get_linear_schedule_with_warmup`), and the weight decay is 0.01. It measures on a sample of the validation split: the first rows of a seeded shuffle of it, 1,500 (all of it) by default, the same sample before, after every epoch, after and on reload. A run is reproducible from the files and the seed, but not bit for bit: the last digits of a loss change between backends and, on ggml, between runs.
 
 ## Fetch
 
@@ -25,11 +25,12 @@ sh tools/fetch_stsb.sh data
 
 ## The program
 
-The imports and the knobs. The program trains on `TRAIN_ROWS` pairs of the training split (or the number given as its last argument, at least `BATCH`), for one epoch, in batches of `BATCH` pairs. Every sentence is cut or padded to `LENGTH` ids, the same width for every batch, so that a backend that compiles a step for each shape (XLA) compiles it once. In STS-B the longest sentence is 70 tokens in the training split and 53 in the validation split, so 64 cuts only the longest few of the training split; 32 would cut about 4% of its sentences.
+The imports and the knobs. The program trains on `TRAIN_ROWS` pairs of the training split for `EPOCHS` epochs, in batches of `BATCH` pairs, and measures on `VALIDATION_ROWS` validation pairs (each can be given as an argument, below); it prints the step and its loss every `LOG_EVERY` steps. Every sentence is cut or padded to `LENGTH` ids, the same width for every batch, so that a backend that compiles a step for each shape (XLA) compiles it once. In STS-B the longest sentence is 70 tokens in the training split and 53 in the validation split, so 64 cuts only the longest few of the training split; 32 would cut about 4% of its sentences.
 
 ```agentica
 import Bert from "../bert"
 import Data from "pkg/train/data"
+import Loop from "pkg/train/loop"
 import Optim from "pkg/train/optim"
 import Params from "pkg/train/params"
 import SafetensorsWrite from "pkg/hub/safetensors_write"
@@ -41,6 +42,9 @@ import Train from "pkg/train/train"
 import WordPiece from "../tokenizer/wordpiece"
 
 TRAIN_ROWS = 1000
+EPOCHS = 1
+VALIDATION_ROWS = 1500
+LOG_EVERY = 10
 SEED = 1
 BATCH = 16
 EVAL_BATCH = 32
@@ -50,9 +54,9 @@ WEIGHT_DECAY = 0.01
 TOLERANCE = 0.000001
 ```
 
-`main` runs `run` and turns an `error` into a message and an exit status. Everything below `private` is the program. `run` reads the arguments, opens the model and the data, measures the model, trains for one epoch, measures it again, saves it, loads it back and fails unless the loaded model scores what the trained one did. The backend is chosen by its name before anything is loaded, and a backend that is not available on the machine is an `error` that names it. `vulkan` asks for `F32` products (`Tensor.vulkan_fp16(false)`), the exact arithmetic that the checks against Hugging Face run.
+`main` runs `run` and turns an `error` into a message and an exit status. Everything below `private` is the program. `run` reads the arguments (`options_of`), opens the model and the data, measures the model, trains, measures it again, saves it, loads it back and fails unless the loaded model scores what the trained one did. The backend is chosen by its name before anything is loaded, and a backend that is not available on the machine is an `error` that names it. `vulkan` asks for `F32` products (`Tensor.vulkan_fp16(false)`), the exact arithmetic that the checks against Hugging Face run.
 
-`trainable` says which weights the optimizer changes: all of them, on every backend.
+`Options` holds the arguments after the three folders: the backend, the number of training pairs, the epochs, the size of the validation sample and, when given, a time budget in seconds. `trainable` says which weights the optimizer changes: all of them, on every backend.
 
 ```agentica
 def main() -> Void
@@ -78,54 +82,83 @@ struct Net
   split: Params.Split
 end
 
-# On the validation pairs: Spearman's correlation of the cosines with the scores, the mean squared gap between
-# them, and the mean cosine.
+# On the validation sample: Spearman's correlation of the cosines with the scores, and the mean squared gap between
+# them.
 struct Score
   spearman: Float
   loss: Float
-  cosine: Float
+end
+
+# What the arguments after the three folders say.
+struct Options
+  backend: String
+  rows: Int
+  epochs: Int
+  validation: Int
+  seconds: Optional[Int]
 end
 
 def run(args: List[String]) -> Result[Void]
-  return error("usage: MODEL_DIR DATA_DIR OUT_DIR [cpu|vulkan|xla|torch [ROWS]]") if args.size < 3 or args.size > 5
-
-  name = "cpu"
-  if args.size > 3
-    name = args[3]
+  if args.size < 3 or args.size > 8
+    return error("usage: MODEL_DIR DATA_DIR OUT_DIR [cpu|vulkan|xla|torch [ROWS [EPOCHS [VALIDATION [SECONDS]]]]]")
   end
 
-  rows = TRAIN_ROWS
-  if args.size > 4
-    rows = try args[4].to_i
-  end
-
-  backend = try backend_of(name)
-  return error("ROWS is at least BATCH (#{BATCH}), got #{rows}") if rows < BATCH
-
+  options = try options_of(args)
+  backend = try backend_of(options.backend)
   base = try Bert.open(args[0], backend)
   tok = try WordPiece.open("#{args[0]}/tokenizer.json")
-  train = try pairs(tok, "#{args[1]}/train.parquet", some(rows))
-  validation = try pairs(tok, "#{args[1]}/validation.parquet", none)
-  puts("#{train.size} training pairs, #{validation.size} validation pairs, on #{backend}")
+  train = try pairs(tok, "#{args[1]}/train.parquet", options.rows)
+  validation = try pairs(tok, "#{args[1]}/validation.parquet", options.validation)
+  puts("#{train.size} training pairs, #{validation.size} validation pairs, #{options.epochs} epochs, on #{backend}")
 
   split = try trainable(base)
   net = Net(base: base, split: split)
   before = try evaluate(net, split.trainable, validation)
-  puts("before: Spearman #{before.spearman}, cosine loss #{before.loss}, mean cosine #{before.cosine}")
+  puts("before: Spearman #{before.spearman}, cosine loss #{before.loss}")
 
-  fit = try train_epoch(net, train)
-  puts("training loss #{fit.history[0]}")
+  fit = try train_epochs(net, train, validation, options)
+  puts("training loss of each epoch: #{fit.history}")
   after = try evaluate(net, fit.params, validation)
-  puts("after: Spearman #{after.spearman}, cosine loss #{after.loss}, mean cosine #{after.cosine}")
+  puts("after: Spearman #{after.spearman}, cosine loss #{after.loss}")
 
   try save(args[2], args[0], net, fit.params)
   again = try reloaded(args[2], backend, validation)
-  puts("loaded: Spearman #{again.spearman}, cosine loss #{again.loss}, mean cosine #{again.cosine}")
+  puts("loaded: Spearman #{again.spearman}, cosine loss #{again.loss}")
   if (again.spearman - after.spearman).abs > TOLERANCE or (again.loss - after.loss).abs > TOLERANCE
     return error("the loaded model gives #{again}, the trained one #{after}")
   end
 
   ok()
+end
+
+def options_of(args: List[String]) -> Result[Options]
+  options = Options(
+    backend: text_at(args, 3, "cpu"),
+    rows: try int_at(args, 4, TRAIN_ROWS),
+    epochs: try int_at(args, 5, EPOCHS),
+    validation: try int_at(args, 6, VALIDATION_ROWS),
+    seconds: none,
+  )
+
+  return error("ROWS is at least BATCH (#{BATCH}), got #{options.rows}") if options.rows < BATCH
+  return error("EPOCHS is at least 1, got #{options.epochs}") if options.epochs < 1
+  return error("VALIDATION is at least 1, got #{options.validation}") if options.validation < 1
+
+  return ok(options.with(seconds: some(try args[7].to_i))) if args.size > 7
+
+  ok(options)
+end
+
+def text_at(args: List[String], at: Int, fallback: String) -> String
+  return args[at] if args.size > at
+
+  fallback
+end
+
+def int_at(args: List[String], at: Int, fallback: Int) -> Result[Int]
+  return args[at].to_i if args.size > at
+
+  ok(fallback)
 end
 
 # Every weight.
@@ -152,35 +185,29 @@ end
 
 ## Read and tokenize
 
-`Table.read` reads a Parquet (or CSV) file, and `Table.texts` and `Table.floats` give its columns. The validation pairs are all read in file order. The training pairs are the first rows of a seeded shuffle of the whole split (`shuffled` uses the order that a `Data.Loader` of the same seed gives), so they are not the head of a file that may be ordered by genre. A sentence goes through the checkpoint's WordPiece tokenizer, with the special tokens and a limit of `LENGTH` ids. `padded` fills the rest of a sentence with the model's pad id.
+`Table.read` reads a Parquet (or CSV) file, and `Table.texts` and `Table.floats` give its columns. The training pairs and the validation sample are the first rows of a seeded shuffle of the whole split (`shuffled` uses the order that a `Data.Loader` of the same seed gives), so they are not the head of a file that may be ordered by genre, and the same number of rows always gives the same pairs. A sentence goes through the checkpoint's WordPiece tokenizer, with the special tokens and a limit of `LENGTH` ids. `padded` fills the rest of a sentence with the model's pad id.
 
 ```agentica
-# The pairs of a Parquet file with the columns `sentence1`, `sentence2` and `score`: all of them in the order of the
-# file, or the first `limit` rows of a seeded shuffle of the file.
-def pairs(tok: WordPiece.WordPiece, path: String, limit: Optional[Int]) -> Result[List[Pair]]
+# The pairs of a Parquet file with the columns `sentence1`, `sentence2` and `score`: the first `limit` rows of a seeded
+# shuffle of the file (all of them when the file has fewer), so the same `limit` always gives the same pairs.
+def pairs(tok: WordPiece.WordPiece, path: String, limit: Int) -> Result[List[Pair]]
   table = try Table.read(path)
   left = try Table.texts(table, "sentence1")
   right = try Table.texts(table, "sentence2")
   scores = try Table.floats(table, "score")
-  picks = (0...table.rows).to_a
-  case limit
-    some(n) -> picks = (try shuffled(table.rows)).take(n)
-    none -> nil
-  end
-
   out: List[Pair] = []
-  for i in picks
+  for i in (try shuffled(table.rows, 1)).take(limit)
     out = out.push(Pair(left: try ids(tok, left[i]), right: try ids(tok, right[i]), score: scores[i]))
   end
 
   ok(out)
 end
 
-# The rows `0...count` in the seeded order that a `Data.Loader` of this seed gives its first epoch.
-def shuffled(count: Int) -> Result[List[Int]]
+# The rows `0...count` in the seeded order that a `Data.Loader` of this seed gives its epoch `epoch`.
+def shuffled(count: Int, epoch: Int) -> Result[List[Int]]
   rows = try Tensor.zeros([count], Tensor.Dtype.F32)
   loader = Data.Loader(dataset: try Data.dataset(rows, rows), batch_size: BATCH, seed: SEED)
-  ok(Data.order(loader, 1))
+  ok(Data.order(loader, epoch))
 end
 
 def ids(tok: WordPiece.WordPiece, text: String) -> Result[List[Int]]
@@ -208,7 +235,7 @@ end
 
 ## Batches, loss and AdamW
 
-A batch is the ids of `n` pairs as an `I32` tensor `[n, 2, LENGTH]` and the `n` scores. `Train.fit_batches` takes a loss, the parameters, a function that makes batch `i`, the number of batches, the optimizer and the number of epochs. The optimizer is AdamW with the schedule above and a weight decay that skips the biases and the layer norms. A last partial batch is left out.
+A batch is the ids of `n` pairs as an `I32` tensor `[n, 2, LENGTH]` and the `n` scores. `train_epochs` is the whole training as one pipe. `Loop.trainer` takes the loss, the parameters and the optimizer: AdamW (`Optim.adamw`) with the schedule above and a weight decay that skips the biases and the layer norms. `Loop.metric` adds the two numbers that the loop measures at the end of every epoch on the validation sample (`gauge`, below). The first `Loop.handle` prints the step and its loss every `LOG_EVERY` steps, and the second prints the epoch with its metrics: each is a function of a `Loop.Info`, with the types of its arguments inferred. `within` adds a handler that stops the run, with `Loop.stop`, at the first step past the time budget, if there is one: `run_batches` then answers what the run trained so far, without an error. `Loop.run_batches` takes the function that makes batch `i` of epoch `epoch` (`picked` takes the pairs of that batch from the order of the epoch), the number of batches and the epochs. A last partial batch is left out.
 
 The loss sends both sentences of every pair through the model as one batch of `2 n` rows. `embeddings` is the sentence embedding of sentence-transformers: the mean of the token vectors, the padding masked out, then each vector divided by its length. The mask is a constant of the step, made from the ids, and the model is rebuilt from the parameters (`Bert.with_weights`), so that the gradient reaches every weight. The loss is the mean of the squared gap between the cosine of a pair and its score (`Sentence.cosine_similarity_loss`).
 
@@ -227,18 +254,76 @@ def batch(m: Bert.Bert, rows: List[Pair]) -> Result[Data.Batch]
   ok(Data.Batch(inputs: inputs, targets: try Tensor.from_list(scores, [rows.size], Tensor.Dtype.F32, backend)))
 end
 
-def train_epoch(net: Net, rows: List[Pair]) -> Result[Train.Fit]
+# The training: `Loop` runs `epochs` passes of batches of `BATCH` pairs, in a new seeded order each epoch (a
+# last partial
+# batch is left out). The schedule warms up over the first tenth of all the steps and decays to 0 at the last. At the
+# end of each epoch the validation sample is measured, and every `LOG_EVERY` steps the step and its loss are printed.
+def train_epochs(net: Net, rows: List[Pair], validation: List[Pair], options: Options) -> Result[Train.Fit]
   steps = rows.size / BATCH
-  schedule = Optim.Schedule.WarmupLinear(steps / 10, steps)
+  total = steps * options.epochs
+  orders: List[List[Int]] = []
+  for e in 1..options.epochs
+    orders = orders.push(try shuffled(rows.size, e))
+  end
+
   decay = net.split.names.map { |name: String| !(name.end_with?(".bias") or name.include?("LayerNorm")) }
-  Train.fit_batches(
-    ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(net, ps, b) },
-    net.split.trainable,
-    ->(_epoch: Int, i: Int) { batch(net.base, rows.drop(i * BATCH).take(BATCH)) },
-    steps,
-    Optim.Optimizer.AdamW(Optim.AdamW(lr: LR, weight_decay: WEIGHT_DECAY, decay: decay, schedule: schedule)),
-    1,
+  optimizer = Optim.adamw(
+    lr: LR,
+    weight_decay: WEIGHT_DECAY,
+    decay: decay,
+    schedule: Optim.Schedule.WarmupLinear(total / 10, total),
   )
+
+  (
+    Loop.trainer(->(ps, b) { loss(net, ps, b) }, net.split.trainable, optimizer)
+    |> Loop.metric(gauge("spearman", &Loop.spearman, net, validation))
+    |> Loop.metric(gauge("cosine loss", &squared_gap, net, validation))
+    |> Loop.handle(
+      Loop.Event.StepCompleted,
+      ->(info) {
+        puts("step #{info.step} loss #{info.loss}")
+        ok()
+      },
+      every: LOG_EVERY,
+    )
+    |> Loop.handle(
+      Loop.Event.EpochCompleted,
+      ->(info) {
+        puts("epoch #{info.epoch}: Spearman #{info.metrics["spearman"]}, cosine loss #{info.metrics["cosine loss"]}")
+        ok()
+      },
+    )
+    |> within(options.seconds, Time.monotonic_ms())
+    |> Loop.run_batches(
+      ->(epoch, i) { batch(net.base, picked(rows, orders[epoch - 1], i)) },
+      steps,
+      epochs: options.epochs,
+    )
+  )
+end
+
+# With a budget of `seconds`, the trainer that stops after the first step past it, answering what it has trained.
+def within(t: Loop.Trainer, seconds: Optional[Int], started: Int) -> Loop.Trainer
+  case seconds
+    some(s) ->
+      (
+        t
+        |> Loop.handle(
+          Loop.Event.StepCompleted,
+          ->(info) {
+            return Loop.stop(info) if Time.monotonic_ms() - started > s * 1000
+
+            ok()
+          },
+        )
+      )
+    none -> t
+  end
+end
+
+# The pairs of batch `i` of an epoch whose rows are in `order`.
+def picked(rows: List[Pair], order: List[Int], i: Int) -> List[Pair]
+  order.drop(i * BATCH).take(BATCH).map { |k: Int| rows[k] }
 end
 
 # The mean-pooled, normalized embeddings of `ids` `[rows, LENGTH]` under the weights `ps`: padding is masked out.
@@ -267,40 +352,53 @@ end
 
 ## Measure
 
-`evaluate` embeds the sentences of the validation pairs, a fixed number at a time, takes the cosine of each pair, and returns Spearman's correlation of the cosines with the scores (the Pearson correlation of their ranks), the mean squared gap between the cosines and the scores, which is the loss, and the mean cosine. The embeddings go through `Trace.eval` with the parameters as inputs, so the same function measures the model before the training (with its own weights) and after it (with the trained ones), on every backend. A last short batch repeats its first sentence to keep the shape.
+A `Loop.Metric` is a number measured on batches of its own: `gauge` makes one from the validation sample, with a `reduce` function. For each batch `cosines` gives one row per pair, the cosine of its two sentences and its score, and `reduce` turns all the rows into the number: `Loop.spearman` is Spearman's correlation of the cosines with the scores (the Pearson correlation of their ranks), and `squared_gap` is the mean squared gap between them, the loss. The embeddings go through `Trace.eval` with the parameters as inputs, so the loop measures the model with the weights of each epoch, and `evaluate` (`Loop.measure`) the model before the training (with its own weights), after it and on reload, on every backend. The last batch of the sample may be shorter than the others.
 
 ```agentica
-# The cosine of the two sentences of each pair against its score.
-def evaluate(net: Net, ps: List[Tensor.Tensor], rows: List[Pair]) -> Result[Score]
-  vectors = try vectors_of(net, ps, rows.flat_map { |p: Pair| [p.left, p.right] })
-  cosines = (0...rows.size).map { |i: Int| dot(vectors[2 * i], vectors[2 * i + 1]) }
-  scores = rows.map { |p: Pair| p.score }
-  gaps = (0...rows.size).map { |i: Int| (cosines[i] - scores[i]) * (cosines[i] - scores[i]) }
-  mean = cosines.sum / rows.size.to_f
-  ok(Score(spearman: pearson(ranks(cosines), ranks(scores)), loss: gaps.sum / rows.size.to_f, cosine: mean))
+# A number measured on the validation pairs at the end of each epoch: `observe` gives the cosine of each pair and its
+# score, in batches of `EVAL_BATCH` pairs, and `reduce` turns all those rows into the number.
+def gauge(name: String, reduce: Fn[List[List[Float]], Float], net: Net, rows: List[Pair]) -> Loop.Metric
+  Loop.Metric(
+    name: name,
+    count: (rows.size + EVAL_BATCH - 1) / EVAL_BATCH,
+    batch: ->(i) { batch(net.base, rows.drop(i * EVAL_BATCH).take(EVAL_BATCH)) },
+    observe: ->(ps, b) { cosines(net, ps, b) },
+    reduce: reduce,
+  )
 end
 
-# The unit embedding of each sentence, `EVAL_BATCH` pairs at a time; a last short batch repeats its first sentence.
-def vectors_of(net: Net, ps: List[Tensor.Tensor], sentences: List[List[Int]]) -> Result[List[List[Float]]]
+# The cosine of the two sentences of each pair of a batch under the weights `ps`, with its score: `[cosine, score]`.
+def cosines(net: Net, ps: List[Tensor.Tensor], b: Data.Batch) -> Result[List[List[Float]]]
+  n = Tensor.shape(b.inputs)[0]
   width = net.base.config.hidden_size
-  size = 2 * EVAL_BATCH
-  backend = Tensor.backend(net.base.words.table)
-  out: List[List[Float]] = []
-  at = 0
-  while at < sentences.size
-    part = sentences.drop(at).take(size)
-    full = part + List.repeat(part[0], size - part.size)
-    ids = try Tensor.from_list(padded(full, net.base.config.pad_token_id), [size, LENGTH], Tensor.Dtype.I32, backend)
-    unit = try Trace.eval(ps + [ids]) do |xs| embeddings(net, xs.take(ps.size), xs[ps.size]) end
-    flat = try floats(unit)
-    for i in 0...part.size
-      out = out.push(flat.drop(i * width).take(width))
-    end
+  unit = try Trace.eval(ps + [b.inputs]) do |xs| both_sides(net, xs.take(ps.size), xs[ps.size], n) end
+  vectors = try floats(unit)
+  scores = try floats(b.targets)
+  ok(
+    (0...n).map { |i: Int|
+      [dot(vectors.drop(2 * i * width).take(width), vectors.drop((2 * i + 1) * width).take(width)), scores[i]]
+    },
+  )
+end
 
-    at = at + size
-  end
+# The embeddings of both sentences of the `n` pairs of `ids` `[n, 2, LENGTH]`, one row each: `[2 n, width]`.
+def both_sides(net: Net, ps: List[Tensor.Tensor], ids: Tensor.Tensor, n: Int) -> Result[Tensor.Tensor]
+  embeddings(net, ps, try Tensor.reshape(ids, [2 * n, LENGTH]))
+end
 
-  ok(out)
+# The mean squared gap between the cosine and the score.
+def squared_gap(rows: List[List[Float]]) -> Float
+  rows.map { |row: List[Float]| (row[0] - row[1]) * (row[0] - row[1]) }.sum / rows.size.to_f
+end
+
+# The validation measures of the weights `ps`.
+def evaluate(net: Net, ps: List[Tensor.Tensor], rows: List[Pair]) -> Result[Score]
+  ok(
+    Score(
+      spearman: try Loop.measure(gauge("spearman", &Loop.spearman, net, rows), ps),
+      loss: try Loop.measure(gauge("cosine loss", &squared_gap, net, rows), ps),
+    ),
+  )
 end
 ```
 
@@ -332,7 +430,7 @@ def reloaded(dir: String, backend: Tensor.Backend, rows: List[Pair]) -> Result[S
 end
 ```
 
-The rest is arithmetic: the dot product, the ranks of a list (equal values share the mean of their ranks), Pearson's correlation, which is 0 for a list whose values are all equal, and the floats of a tensor.
+The rest is the dot product and the floats of a tensor.
 
 ```agentica
 def dot(a: List[Float], b: List[Float]) -> Float
@@ -342,46 +440,6 @@ def dot(a: List[Float], b: List[Float]) -> Float
   end
 
   total
-end
-
-# The rank of each value from 1, equal values sharing the mean of their ranks.
-def ranks(values: List[Float]) -> List[Float]
-  order = (0...values.size).to_a.sort_by { |i: Int| values[i] }
-  out = List.repeat(0.0, values.size)
-  at = 0
-  while at < order.size
-    stop = at
-    while stop + 1 < order.size and values[order[stop + 1]] == values[order[at]]
-      stop = stop + 1
-    end
-
-    shared = (at + stop).to_f / 2.0 + 1.0
-    for k in at..stop
-      out = out.set(order[k], shared)
-    end
-
-    at = stop + 1
-  end
-
-  out
-end
-
-def pearson(a: List[Float], b: List[Float]) -> Float
-  n = a.size.to_f
-  mean_a = a.sum / n
-  mean_b = b.sum / n
-  both = 0.0
-  aa = 0.0
-  bb = 0.0
-  for i in 0...a.size
-    both = both + (a[i] - mean_a) * (b[i] - mean_b)
-    aa = aa + (a[i] - mean_a) * (a[i] - mean_a)
-    bb = bb + (b[i] - mean_b) * (b[i] - mean_b)
-  end
-
-  return 0.0 if aa == 0.0 or bb == 0.0
-
-  both / Math.sqrt(aa * bb)
 end
 
 def floats(t: Tensor.Tensor) -> Result[List[Float]]
@@ -406,46 +464,25 @@ mkdir -p out
 agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out
 ```
 
-The optional fourth and fifth arguments are the backend and the number of training pairs. The backend is the only thing that changes:
+The optional arguments after the model, the data and the output folders are, in order, the backend, the number of training pairs, the epochs, the size of the validation sample and a training time budget in seconds. The backend is the only thing that changes between machines:
 
 ```sh
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out cpu 1000
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out vulkan 1000
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out xla 1000
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out torch 1000
+agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out cpu 2000 2 1500
+agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out vulkan 2000 2 1500
+agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out xla 2000 2 1500
+agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out torch 2000 2 1500
 ```
+
+With a last argument the run stops after the first step past that many seconds and goes on to measure, save and reload what it has trained: `... out cpu 2000 2 1500 90` trains for 90 seconds at most. Without it, it runs all the epochs.
 
 `cpu` and `vulkan` are ggml on the CPU and on the first Vulkan device, `xla` is XLA on the CPU (`tensor/tools/install_xla.agc` installs its plugin) and `torch` is libtorch on the CPU (`tensor/tools/build-torch.sh`). A backend that is not on the machine is an `error` that names it.
 
-## What it printed
+## What it prints
 
-Measured: a run on 1,000 training pairs (62 steps of 16) drawn by the seeded shuffle, with the ggml CPU backend, scored on all 1,500 validation pairs.
-
-```text
-1000 training pairs, 1500 validation pairs, on Backend.Ggml(Device.Cpu)
-before: Spearman 0.8670, cosine loss 0.0315, mean cosine 0.5699
-training loss 0.0268
-after: Spearman 0.8738, cosine loss 0.0221, mean cosine 0.5108
-loaded: Spearman 0.8738, cosine loss 0.0221, mean cosine 0.5108
-```
-
-Over the 62 steps the cosine loss on the validation pairs falls from 0.0316 to 0.0222, Spearman's correlation of the cosines with the scores rises from 0.8671 to 0.8738, and the mean cosine goes from 0.5699 to 0.5109. This is one run with one seed, and a change of 0.007 in Spearman on 1,500 pairs is small: read it as the loop working, not as a benchmark. `loaded` equals `after` to 1e-6 because the program fails when they differ, and `out` then holds `model.safetensors`, `config.json` and `tokenizer.json`.
-
-## One argument for the backend
-
-Measured: the same program on 160 training pairs (10 steps), once for each backend, scored on all 1,500 validation pairs. The numbers agree to the digits that float arithmetic leaves, which is the point of this table: the loop does not change with the backend.
-
-| Backend | Spearman before | Spearman after | Cosine loss before | Cosine loss after |
-|---|---|---|---|---|
-| ggml CPU | 0.8671 | 0.8691 | 0.0316 | 0.0280 |
-| ggml Vulkan | 0.8671 | 0.8691 | 0.0316 | 0.0280 |
-| XLA CPU | 0.8671 | 0.8691 | 0.0316 | 0.0280 |
-| libtorch CPU | 0.8671 | 0.8691 | 0.0316 | 0.0280 |
-
-The libtorch run peaked at 1.8 GiB of resident memory (1,896,712 kB).
+`N training pairs, M validation pairs, E epochs, on BACKEND`, then `before:` with Spearman's correlation and the cosine loss of the model as it comes, a line `step S loss L` every `LOG_EVERY` steps, a line `epoch E: Spearman ..., cosine loss ...` at the end of every epoch, `training loss of each epoch: [...]`, and `after:` and `loaded:` with the same two numbers. `loaded` equals `after` to 1e-6 because the program fails when they differ, and `out` then holds `model.safetensors`, `config.json` and `tokenizer.json`. The numbers depend on the arguments, the backend and the machine, so this page gives none: they are the output of your run.
 
 ## Next steps
 
-- More rows or epochs. `Train.fit_batches` takes the number of epochs, and the loss it returns has one entry per epoch; with more rows the schedule has more steps to follow the scores.
+- More rows or epochs: the second and third arguments. The loss of the run has one entry per epoch, and with more steps the schedule has more to follow.
 - Another dataset. Any table with two text columns and a score from 0 to 1 fits the loop; `Table.read` reads a CSV file too.
 - Fewer trained weights. [LoRA](_index.md#lora) trains an adapter on the attention projections instead of every weight.
