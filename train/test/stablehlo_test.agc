@@ -69,7 +69,11 @@ def test_an_adam_step_of_a_user_function_emits() -> Result[Void]
   hyper = try Tensor.floats(Optim.step_inputs(state)[0], [7])
   specs = [p, p, p, p, hyper].map { |t| Trace.spec_of(t) }
   m = try Trace.stablehlo(specs, ->(xs: List[Tensor.Tensor]) { adam_of(state, xs) })
-  try Test.assert(m.text.include?("stablehlo.slice %arg4 [0:1]"), "the 7 numbers are read by slices")
+  try Test.assert(
+    m.text.include?("\"stablehlo.slice\"(%arg4) {start_indices = array<i64: 0>, limit_indices = array<i64: 1>"),
+    "the 7 numbers are read by slices",
+  )
+
   try Test.assert(m.text.include?("stablehlo.sqrt"), "the composition has the square root")
   Test.assert(m.text.include?("-> (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>)"), "the weight and the two moments")
 end

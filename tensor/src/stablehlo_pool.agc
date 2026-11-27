@@ -64,6 +64,41 @@ def avg_pool2d(b: IR.Block, input: IR.Value, kernel: Int, stride: Int, padding: 
   )
 end
 
+def max_pool2d(
+  b: IR.Block,
+  input: IR.Value,
+  init: IR.Value,
+  kernel: Int,
+  stride: Int,
+  padding: Int,
+) -> Result[IR.Added]
+  shape = input.type.shape
+  element = input.type.element
+  scalar = IR.TensorType(shape: [], element: element)
+  return error("max_pool2d IR needs rank 4") if shape.size != 4
+  return error("max_pool2d IR needs a floating-point input") if !float?(element)
+  return error("max_pool2d IR needs a scalar init of the input's element type") if init.type != scalar
+  if kernel < 1 or stride < 1 or padding < 0
+    return error("max_pool2d IR needs a positive kernel and stride, and valid padding")
+  end
+
+  h = shape[2] + 2 * padding - kernel
+  w = shape[3] + 2 * padding - kernel
+  return error("max_pool2d kernel exceeds the padded input") if h < 0 or w < 0
+  region = IR.block([scalar, scalar])
+  largest = try IR.append(region, "stablehlo.maximum", region.args, [scalar])
+  yielded = try IR.append(largest.block, "stablehlo.return", largest.values, [])
+  pad_type = IR.TensorType(shape: [4, 2], element: IR.Element.I64)
+  attrs = [
+    attr("window_dimensions", IR.Attr.I64Array([1, 1, kernel, kernel])),
+    attr("window_strides", IR.Attr.I64Array([1, 1, stride, stride])),
+    attr("padding", IR.Attr.DenseIntRows([[0, 0], [0, 0], [padding, padding], [padding, padding]], pad_type)),
+  ]
+
+  output = IR.TensorType(shape: [shape[0], shape[1], h / stride + 1, w / stride + 1], element: element)
+  IR.append(b, "stablehlo.reduce_window", [input, init], [output], attrs, [yielded.block])
+end
+
 private
 
 def reduce_window(
