@@ -129,6 +129,20 @@ fit = try (
 )
 ```
 
+`Loop.checkpoint(trainer, dir, every: 100, keep: 3)` is a handler that is ready made: every `every` steps (or every `every` epochs with `event: Loop.Event.EpochCompleted`) it writes a checkpoint to the new folder `dir/step-NNNNNNNNNN` (the step, to ten digits) and keeps the last `keep`. A checkpoint holds `model.safetensors` (the weights as `param.I`), `optim.safetensors` (`Optim.save`) and `checkpoint.json` (the event, the epoch, the batch, the step, the seed of the loader and the loss). It is written in `dir/.tmp-step-NNNNNNNNNN` and renamed whole, so a run killed or failing while it writes leaves the earlier checkpoints as they were: a temporary folder is not a checkpoint. There is no `fsync`: a checkpoint survives a kill of the process, not a power loss.
+
+One `dir` serves one run. Before its first step a run checks `keep`, makes `dir` and removes the folders `.tmp-step-*` that a killed run left; no other folder of `dir` is touched, and a folder that is not `step-` and ten digits is never listed or pruned. A step that has a checkpoint already is an error that ends the run (`checkpoint step-N exists in DIR`), and so is an error while writing. The checkpoints beyond `keep` are moved to `.tmp-step-old-N` and deleted; a deletion that fails is not an error of the run, and what it left is swept at the next start.
+
+`Loop.checkpoints(dir)` lists the names, oldest first. `Loop.read_checkpoint(dir, name, optimizer, like)` reads one on the backend and in the dtype of the tensors `like` (the weights the run has now, which give the shapes), answering a `Loop.Checkpoint` with `params`, `state` (give it to `Train.fit` as `start`) and where the run was (`event`, `epoch`, `batch`, `step`, `seed`, `loss`, all exact). An error names the file or the weight that does not fit, and what was read is freed.
+
+```agentica
+fit = try (
+  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
+  |> Loop.checkpoint("runs/minilm", every: 100, keep: 3)
+  |> Loop.run(data, epochs: 3)
+)
+```
+
 ## Train.fit
 
 `Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, run)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).

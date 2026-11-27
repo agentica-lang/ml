@@ -15,10 +15,17 @@
 ## padded text of a sentence model, whose batches are built from lists and not cut from a loader).
 
 import Data from "data"
+import Hub from "pkg/hub/hub"
 import Optim from "optim"
+import SafetensorsWrite from "pkg/hub/safetensors_write"
 import Telemetry from "pkg/telemetry/telemetry"
 import Tensor from "pkg/tensor/tensor"
 import Train from "train"
+
+TEMPORARY = ".tmp-step-"
+WEIGHTS = "model.safetensors"
+OPTIM = "optim.safetensors"
+META = "checkpoint.json"
 
 ## A number measured at the end of every epoch, on the batches of its own data (a validation set, or the training
 ## one). `batch(i)` makes batch `i` (from 0) of `count`; the loop frees it after `observe(params, batch)`, which answers
@@ -45,8 +52,9 @@ end
 ## the run, from 1 (the steps so far at `EpochCompleted`, 0 at `Started`); `batch` is 0 at `Started` and `EpochCompleted`.
 ## `loss` is the loss of the step, or the mean loss of the epoch at `EpochCompleted` (0 at `Started`).
 ## `params` are the parameters the step or the epoch made, the run's own: use them inside the handler (the next step
-## frees them). `metrics` holds the values measured at the end of this epoch, by name, at `EpochCompleted`. `halt` is
-## what `Loop.stop` writes.
+## frees them). `metrics` holds the values measured at the end of this epoch, by name, at `EpochCompleted`. `state` is the
+## optimizer state the same way (`none` at `Started`), and `seed` the seed of the loader of `run` (0 for `run_batches`).
+## `halt` is what `Loop.stop` writes.
 struct Info
   event: Event
   epoch: Int
@@ -55,6 +63,8 @@ struct Info
   loss: Float
   params: List[Tensor.Tensor]
   metrics: Map[String, Float] = {}
+  state: Optional[Optim.State] = none
+  seed: Int = 0
   halt: Channel[Bool]
 end
 
@@ -63,6 +73,21 @@ struct Handler
   event: Event
   every: Int
   call: Fn[Info, Result[Void]]
+end
+
+## What `checkpoint` wrote: the weights and the optimizer state (`params` and `state`, to give back to `run`), and where
+## the run was. `event` is `step` or `epoch`; `epoch` counts from 1, `batch` is the last batch run in that epoch (0 for
+## an `epoch` checkpoint, which is its epoch's end), `step` the steps of the run, `seed` the seed of the loader and
+## `loss` the loss of the step, or the mean of the epoch.
+struct Checkpoint
+  event: String
+  epoch: Int
+  batch: Int
+  step: Int
+  seed: Int
+  loss: Float
+  params: List[Tensor.Tensor]
+  state: Optim.State
 end
 
 ## What a run trains: the loss of a parameter list and a batch (inside it the parameters and the batch are `Trace`
@@ -110,9 +135,93 @@ def stop(info: Info) -> Result[Void]
   ok()
 end
 
+## The trainer that writes a checkpoint to a new folder `dir/step-NNNNNNNNNN` (the step, to ten digits) every `every`
+## steps (or every `every` epochs, with `event: Event.EpochCompleted`), and keeps the last `keep`. A checkpoint holds
+## `model.safetensors` (the weights as `param.I`), `optim.safetensors` (`Optim.save`) and `checkpoint.json`. It is
+## written in `dir/.tmp-step-NNNNNNNNNN` and renamed whole, so a run killed or failing while it writes leaves the earlier
+## checkpoints as they were: a temporary folder is not a checkpoint. There is no `fsync`: a checkpoint survives a kill
+## of the process, not a power loss.
+##
+## One `dir` serves one run. Before the first step the run checks `keep`, makes `dir`, and removes the folders
+## `.tmp-step-*` that a run killed before it left (no other folder of `dir` is touched, and no folder that is not
+## `step-` and ten digits is listed or pruned). A step that has a checkpoint already is an error, and ends the run. An
+## error while writing ends the run too. The checkpoints beyond `keep` are moved to `.tmp-step-old-N` and deleted; a
+## deletion that fails is not an error of the run, and what it left is swept at the next start.
+def checkpoint(t: Trainer, dir: String, every: Int = 100, keep: Int = 3, event: Event = Event.StepCompleted) -> Trainer
+  (
+    t
+    |> handle(Event.Started, ->(_) { prepare(dir, keep) })
+    |> handle(event, ->(info) { write_checkpoint(dir, info, keep) }, every: every)
+  )
+end
+
+## The names of the checkpoints of `dir`, oldest first: the folders `step-` and ten digits that hold a `checkpoint.json`;
+## no other folder is listed, so none is pruned.
+def checkpoints(dir: String) -> Result[List[String]]
+  out: List[String] = []
+  for name in try Dir.list(dir)
+    if checkpoint_name?(name) and File.stat("#{dir}/#{name}/#{META}").ok?
+      out = out.push(name)
+    end
+  end
+
+  ok(out)
+end
+
+## The checkpoint `name` of `dir` for `optimizer` and the parameters `like`: the weights on the backend and in the dtype
+## of each of `like`, which must have their shapes, and the optimizer state (`Optim.load`). What was read is freed when
+## the checkpoint does not load.
+def read_checkpoint(
+  dir: String,
+  name: String,
+  optimizer: Optim.Optimizer,
+  like: List[Tensor.Tensor],
+) -> Result[Checkpoint]
+  path = "#{dir}/#{name}"
+  meta = try read_meta("#{path}/#{META}")
+  c = try Hub.open("#{path}/#{WEIGHTS}")
+  return error("#{path} has #{Hub.names(c).size} weights, #{like.size} are needed") if Hub.names(c).size != like.size
+
+  params: List[Tensor.Tensor] = []
+  for i in 0...like.size
+    read = Hub.tensor(c, "param.#{i}", Tensor.backend(like[i]), Tensor.dtype(like[i]))
+    if !read.ok?
+      free_all(params)
+      return error(read.message)
+    end
+
+    params = params.push(read.unwrap!)
+    if Tensor.shape(params[i]) != Tensor.shape(like[i])
+      free_all(params)
+      return error(
+        "param.#{i} of #{path} has the shape #{Tensor.shape(params[i])}, its parameter #{Tensor.shape(like[i])}",
+      )
+    end
+  end
+
+  state = Optim.load(optimizer, params, "#{path}/#{OPTIM}")
+  if !state.ok?
+    free_all(params)
+    return error(state.message)
+  end
+
+  ok(
+    Checkpoint(
+      event: meta.event,
+      epoch: meta.epoch,
+      batch: meta.batch,
+      step: meta.step,
+      seed: meta.seed,
+      loss: Float.from_bits(meta.loss_bits),
+      params: params,
+      state: state.unwrap!,
+    ),
+  )
+end
+
 ## `Train.fit` of the trainer over the batches of `data`, for `epochs` passes (one by default).
 def run(t: Trainer, data: Data.Loader, epochs: Int = 1) -> Result[Train.Fit]
-  seen = measuring(t, epochs)
+  seen = measuring(t, epochs, data.seed)
   try started(t, seen)
   fit = try Train.fit(t.loss, t.params, data, t.optimizer, epochs, seen.on_epoch, none, seen.on_step, run: t.run)
   measured(fit, t, seen)
@@ -127,7 +236,7 @@ def run_batches(
   epochs: Int = 1,
   prefetch: Int = 0,
 ) -> Result[Train.Fit]
-  seen = measuring(t, epochs)
+  seen = measuring(t, epochs, 0)
   try started(t, seen)
   fit = try Train.fit_batches(
     t.loss,
@@ -184,6 +293,17 @@ end
 
 private
 
+## What `checkpoint.json` holds. The loss is its IEEE bits, which JSON can hold whatever the loss is (a NaN or an
+## infinity has no JSON number) and which come back exact.
+struct Meta
+  event: String
+  epoch: Int
+  batch: Int
+  step: Int
+  seed: Int
+  loss_bits: UInt64
+end
+
 ## What a run hands to the engine: the closures of `on_epoch` and `on_step`, the channel that `on_epoch` sends the
 ## metric values of an epoch to, and the channel that `Loop.stop` writes to.
 struct Seen
@@ -191,23 +311,24 @@ struct Seen
   on_step: Optional[Fn[Train.StepInfo, Result[Train.Control]]]
   values: Channel[List[Float]]
   halt: Channel[Bool]
+  seed: Int
 end
 
-def measuring(t: Trainer, epochs: Int) -> Seen
+def measuring(t: Trainer, epochs: Int, seed: Int) -> Seen
   values: Channel[List[Float]] = Channel.new(epochs)
   halt: Channel[Bool] = Channel.new(1)
   steps = handlers_at(t, Event.StepCompleted)
   on_step: Optional[Fn[Train.StepInfo, Result[Train.Control]]] = none
   if !t.handlers.empty? or !t.metrics.empty?
-    on_step = some(->(s) { after_step(steps, s, halt) })
+    on_step = some(->(s) { after_step(steps, s, halt, seed) })
   end
 
   on_epoch: Optional[Fn[Train.Epoch, Result[Train.Control]]] = none
   if !t.metrics.empty? or !handlers_at(t, Event.EpochCompleted).empty?
-    on_epoch = some(->(e) { after_epoch(t, e, values, halt) })
+    on_epoch = some(->(e) { after_epoch(t, e, values, halt, seed) })
   end
 
-  Seen(on_epoch: on_epoch, on_step: on_step, values: values, halt: halt)
+  Seen(on_epoch: on_epoch, on_step: on_step, values: values, halt: halt, seed: seed)
 end
 
 ## `fit` with the metric values of every epoch that ended.
@@ -247,7 +368,17 @@ def started(t: Trainer, seen: Seen) -> Result[Void]
     return error("handle: every is 1 or more, got #{h.every}") if h.every < 1
   end
 
-  info = Info(event: Event.Started, epoch: 0, batch: 0, step: 0, loss: 0.0, params: t.params, halt: seen.halt)
+  info = Info(
+    event: Event.Started,
+    epoch: 0,
+    batch: 0,
+    step: 0,
+    loss: 0.0,
+    params: t.params,
+    seed: seen.seed,
+    halt: seen.halt,
+  )
+
   for h in handlers_at(t, Event.Started)
     called = h.call.call(info)
     return error("before the first step: #{called.message}") if !called.ok?
@@ -257,7 +388,7 @@ def started(t: Trainer, seen: Seen) -> Result[Void]
 end
 
 ## What `on_step` does after a step: calls the step handlers that are due, then stops if one of them asked to.
-def after_step(steps: List[Handler], s: Train.StepInfo, halt: Channel[Bool]) -> Result[Train.Control]
+def after_step(steps: List[Handler], s: Train.StepInfo, halt: Channel[Bool], seed: Int) -> Result[Train.Control]
   info = Info(
     event: Event.StepCompleted,
     epoch: s.epoch,
@@ -265,6 +396,8 @@ def after_step(steps: List[Handler], s: Train.StepInfo, halt: Channel[Bool]) -> 
     step: s.step,
     loss: s.loss,
     params: s.params,
+    state: some(s.state),
+    seed: seed,
     halt: halt,
   )
 
@@ -278,7 +411,13 @@ def after_step(steps: List[Handler], s: Train.StepInfo, halt: Channel[Bool]) -> 
 end
 
 ## The metrics of the epoch, then its handlers with them. The values go to `measured`.
-def after_epoch(t: Trainer, e: Train.Epoch, values: Channel[List[Float]], halt: Channel[Bool]) -> Result[Train.Control]
+def after_epoch(
+  t: Trainer,
+  e: Train.Epoch,
+  values: Channel[List[Float]],
+  halt: Channel[Bool],
+  seed: Int,
+) -> Result[Train.Control]
   measured = try measure_all(t.metrics, e.params)
   named: Map[String, Float] = {}
   for k in 0...t.metrics.size
@@ -294,6 +433,8 @@ def after_epoch(t: Trainer, e: Train.Epoch, values: Channel[List[Float]], halt: 
     loss: e.loss,
     params: e.params,
     metrics: named,
+    state: some(e.state),
+    seed: seed,
     halt: halt,
   )
 
@@ -327,6 +468,116 @@ def measure_all(metrics: List[Metric], params: List[Tensor.Tensor]) -> Result[Li
   end
 
   ok(out)
+end
+
+## Before the first step: `keep` is 1 or more, `dir` exists, and what an earlier run left half written (the folders
+## `.tmp-step-*`, and nothing else) is gone.
+def read_meta(file: String) -> Result[Meta]
+  text = File.read_text(file)
+  return error("#{file}: #{text.message}") if !text.ok?
+
+  meta = JSON.decode(text.unwrap!, Meta)
+  return error("#{file}: #{meta.message}") if !meta.ok?
+
+  meta
+end
+
+def prepare(dir: String, keep: Int) -> Result[Void]
+  return error("checkpoint: keep is 1 or more, got #{keep}") if keep < 1
+
+  if !Dir.list(dir).ok?
+    try Dir.mkdir(dir)
+  end
+
+  remove_unfinished(dir)
+end
+
+def remove_unfinished(dir: String) -> Result[Void]
+  for name in try Dir.list(dir)
+    if name.start_with?(TEMPORARY)
+      try Path.remove("#{dir}/#{name}")
+    end
+  end
+
+  ok()
+end
+
+## The checkpoint of the step of `info`: written whole in a temporary folder, then renamed, then the old ones beyond
+## `keep` are removed. A checkpoint of that step that exists is an error.
+def write_checkpoint(dir: String, info: Info, keep: Int) -> Result[Void]
+  state = try info.state.to_result("checkpoint: no optimizer state at this event")
+  name = format("step-%010d", info.step)
+  return error("checkpoint #{name} exists in #{dir}") if (try checkpoints(dir)).include?(name)
+
+  temporary = "#{dir}/#{TEMPORARY}#{info.step}"
+  try Dir.mkdir(temporary)
+  written = fill_checkpoint(temporary, info, state)
+  if !written.ok?
+    _ = Path.remove(temporary)
+    return error("checkpoint #{name}: #{written.message}")
+  end
+
+  placed = Path.rename(temporary, "#{dir}/#{name}")
+  if !placed.ok?
+    _ = Path.remove(temporary)
+    return error("checkpoint #{name}: #{placed.message}")
+  end
+
+  prune(dir, keep)
+end
+
+def fill_checkpoint(folder: String, info: Info, state: Optim.State) -> Result[Void]
+  weights: Map[String, Tensor.Tensor] = {}
+  for i in 0...info.params.size
+    weights = weights.put("param.#{i}", info.params[i])
+  end
+
+  try SafetensorsWrite.write("#{folder}/#{WEIGHTS}", weights)
+  try Optim.save(state, "#{folder}/#{OPTIM}")
+  event = "step"
+  if info.event == Event.EpochCompleted
+    event = "epoch"
+  end
+
+  meta = Meta(
+    event: event,
+    epoch: info.epoch,
+    batch: info.batch,
+    step: info.step,
+    seed: info.seed,
+    loss_bits: Float.to_bits(info.loss),
+  )
+
+  File.write_text("#{folder}/#{META}", JSON.encode(meta))
+end
+
+## The oldest checkpoints beyond the last `keep` removed: each is renamed to `.tmp-step-old-N` first, which takes it out of
+## the list in one step, and then deleted. A deletion that fails is not an error of the run (the checkpoint is already
+## gone from the list): what is left is swept at the next `Started`.
+def prune(dir: String, keep: Int) -> Result[Void]
+  names = try checkpoints(dir)
+  if names.size > keep
+    for name in names.take(names.size - keep)
+      gone = "#{dir}/#{TEMPORARY}old-#{name.slice(5, 10)}"
+      try Path.rename("#{dir}/#{name}", gone)
+      _ = Path.remove(gone)
+    end
+  end
+
+  ok()
+end
+
+## `step-` and exactly ten digits.
+def checkpoint_name?(name: String) -> Bool
+  return false if name.length != 15 or !name.start_with?("step-")
+
+  name.slice(5, 10).split("").all? { |c: String| "0123456789".include?(c) }
+end
+
+def free_all(tensors: List[Tensor.Tensor]) -> Void
+  for t in tensors
+    Data.free(t)
+  end
 end
 
 ## The rank of each value from 1, equal values sharing the mean of their ranks.
