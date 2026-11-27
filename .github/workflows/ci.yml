@@ -383,10 +383,11 @@ jobs:
   # and TENSOR_REQUIRE_TORCH=1 makes a module that did not build fail the torch tests instead of passing them as absent.
   # The whole tensor suite runs, since much of it also compares against libtorch; coverage_check.py counts the torch
   # files of this report (src/torch.agc and the others that the packages job cannot run). Same rule as the xla job.
+  # It runs on ubuntu-26.04, not ubuntu-latest: libtorch-dev is in Ubuntu 25.04 and later, not in 24.04.
   torch:
     needs: plan
     if: needs.plan.outputs.torch == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     defaults:
       run:
