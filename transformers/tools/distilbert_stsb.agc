@@ -326,7 +326,12 @@ def fit(s: Setup) -> Result[DistilBert.DistilBert]
     1,
     Optim.Optimizer.AdamW(Optim.AdamW(lr: s.trained.lr, weight_decay: s.weight_decay, decay: s.trained.decay)),
     steps,
-    some(->(_e: Train.Epoch) { _ = ends.send(Time.monotonic_ns(), 0) }),
+    some(
+      ->(_) {
+        _ = ends.send(Time.monotonic_ns(), 0)
+        ok(Train.Control.Continue)
+      },
+    ),
   )
 
   seen: List[Int] = []

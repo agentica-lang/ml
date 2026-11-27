@@ -170,7 +170,7 @@ true
 and `Optim.adamw` are the optimizers with their usual knobs). Both answer the same `Train.Fit`.
 `Loop.metric` measures a `Loop.Metric` (its own batches, `observe`, `reduce`) at the end of every epoch, into
 `fit.metrics[name]`. `Loop.handle(event, f, every: n)` calls `f(Loop.Info)` at `Loop.Event.Started`, `StepCompleted` or
-`EpochCompleted`, in order, and an `error` from it ends the run (a step handler's at that step; an epoch handler's, named by its epoch, at the next step).
+`EpochCompleted`, in order. An `error` from it ends the run; `return Loop.stop(info)` ends it without one, with the `Fit` so far.
 
 ```agentica
 import Data from "pkg/train/data"
@@ -193,6 +193,8 @@ def trained(
       Loop.Event.StepCompleted,
       ->(info) {
         puts("step #{info.step} loss #{info.loss}")
+        return Loop.stop(info) if info.step == 1000
+
         ok()
       },
       every: 50,
@@ -339,7 +341,12 @@ def main() -> Void
     1,
     Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.0002, weight_decay: 0.01)),
     10,
-    some(->(e: Train.Epoch) { puts("step #{e.epoch}: #{e.loss}") }),
+    some(
+      ->(e) {
+        puts("step #{e.epoch}: #{e.loss}")
+        ok(Train.Control.Continue)
+      },
+    ),
   ).unwrap!
 
   puts("validation loss after: #{validated(m, weights, adapter, fit.params, held).unwrap!}")

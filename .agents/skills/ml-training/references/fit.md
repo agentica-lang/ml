@@ -69,9 +69,10 @@ true
 ## Progress, metrics, checkpoints
 
 - `on_epoch` gets `Train.Epoch(epoch:, loss:, steps:, params:)` (the epoch counts from 1; `params` are the parameters the epoch
-  ended with, valid only inside `on_epoch`: the next step frees them).
-- `on_step` gets `Train.StepInfo(epoch:, batch:, step:, loss:, params:)` after each step and answers `Result[Void]`; an
-  `error` stops the fit at once, naming the epoch and the batch.
+  ended with, valid only inside `on_epoch`: the next step frees them). It answers `Result[Train.Control]`:
+  `ok(Train.Control.Continue)`, `ok(Train.Control.Stop)` (ends the fit after the epoch, with its `Fit`) or an `error`.
+- `on_step` gets `Train.StepInfo(epoch:, batch:, step:, loss:, params:)` after each step and answers `Result[Train.Control]`;
+  `Stop` ends the fit after the step, with its `Fit`, and an `error` stops it, naming the epoch and the batch.
 - `metrics` is an open `Metrics.Run`: every step writes `train/loss`, `train/lr` and `train/step_ms` to
   `runs/NAME/metrics.jsonl` and a TensorBoard event file (`tensorboard --logdir runs`). `fit` does not open or close
   the run. A loss that is not finite stops the fit with an error naming the epoch and the batch.
@@ -107,7 +108,12 @@ def main() -> Void
     loader,
     sgd,
     5,
-    some(->(e: Train.Epoch) { puts("epoch #{e.epoch}") }),
+    some(
+      ->(e) {
+        puts("epoch #{e.epoch}")
+        ok(Train.Control.Continue)
+      },
+    ),
     some(run),
   )
 

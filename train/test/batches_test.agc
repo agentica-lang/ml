@@ -260,7 +260,7 @@ def test_on_step_stops_a_prefetching_fit_at_once() -> Result[Void]
       _ = seen.send("#{s.epoch}/#{s.batch}/#{s.step}", 0)
       return error("stop") if s.step == 3 and last.send(s.params[0], 0).ok?
 
-      ok()
+      ok(Train.Control.Continue)
     }
 
     r = Train.fit_batches(
@@ -285,6 +285,34 @@ def test_on_step_stops_a_prefetching_fit_at_once() -> Result[Void]
         "the run's own weights are freed on #{backend}",
       )
     end
+  end
+
+  ok()
+end
+
+## `Stop` from `on_step` mid-epoch ends a prefetching fit with its `Fit`: the weights so far, usable, and a history
+## whose last epoch is the mean over the steps it ran (one here).
+def test_stop_from_on_step_answers_the_fit_so_far() -> Result[Void]
+  for backend in try backends()
+    stop = ->(s: Train.StepInfo) {
+      return ok(Train.Control.Stop) if s.step == 3
+
+      ok(Train.Control.Continue)
+    }
+
+    fit = try Train.fit_batches(
+      &linear,
+      try weights(backend),
+      ->(_e: Int, i: Int) { pair(backend, i) },
+      2,
+      adam(),
+      3,
+      prefetch: 2,
+      on_step: some(stop),
+    )
+
+    try Test.eq(fit.history.size, 2)
+    try Test.eq((try S.floats_of(fit.params[0])).size, 2)
   end
 
   ok()
