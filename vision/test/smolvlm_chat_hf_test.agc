@@ -10,9 +10,9 @@
 ## image collapsed to one `<image>` and expanded again by `SmolVlmPrompt.expand` with `fixtures/smolvlm/prompt`) are
 ## Hugging Face's. The two others need the checkpoint, which is not in the repository, so they run only when
 ## `SMOLVLM_MODEL` names its folder (`config.json`, `model.safetensors`, `tokenizer.json` and `processor_config.json`),
-## and on Vulkan (`SMOLVLM_DEVICE=vulkan`), where each case takes some 15 seconds; on the CPU the 13 tiles and the 876
-## ids of the prompt do not fit the 30 seconds that a test has (`RUNTIME-TEST-TIMEOUT`). Otherwise they skip and say
-## so; `SMOLVLM_REQUIRE=1` turns that skip (no folder, another device, no ggml) into an error. Run from `vision/`:
+## and with `SMOLVLM_DEVICE=vulkan` or `SMOLVLM_DEVICE=xla` (with a PJRT plugin installed). Each case takes some 15
+## seconds on Vulkan; on ggml CPU the 13 tiles and the 876 ids of the prompt exceed the test timeout. Otherwise they
+## skip and say so; `SMOLVLM_REQUIRE=1` makes a missing checkpoint or backend an error. Run from `vision/`:
 ## `SMOLVLM_REQUIRE=1 SMOLVLM_MODEL=SmolVLM-256M-Instruct SMOLVLM_DEVICE=vulkan agentica test --max-steps 1000000000000
 ## test/smolvlm_chat_hf_test.agc`. That budget is for this manual run only: CI runs the file with its own (10 million
 ## steps) and the first test fits it.
@@ -110,10 +110,16 @@ def checked(name: String) -> Result[Void]
   return skipped("SMOLVLM_MODEL names no checkpoint folder") if !listed.ok? or try listed == ""
 
   device = System.env("SMOLVLM_DEVICE")
-  return skipped("SMOLVLM_DEVICE is not vulkan") if !device.ok? or try device != "vulkan"
+  return skipped("SMOLVLM_DEVICE must be vulkan or xla") if !device.ok?
+  name_of_device = try device
+  return skipped("SMOLVLM_DEVICE must be vulkan or xla") if name_of_device != "vulkan" and name_of_device != "xla"
 
-  backend = try Hf.device_named("SMOLVLM_DEVICE")
-  return skipped("ggml on Vulkan is not built") if !Tensor.available(backend)
+  backend = case name_of_device
+    "vulkan" -> try Hf.device_named("SMOLVLM_DEVICE")
+    _ -> Tensor.Backend.Xla(Tensor.Device.Cpu)
+  end
+
+  return skipped("the requested backend is not available") if !Tensor.available(backend)
   want = try golden()
   c = try want.cases.find { |k| k.name == name }
   puts(try check(try listed, c, backend))

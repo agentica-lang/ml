@@ -6,9 +6,13 @@
 ## text needs no implicit broadcast: `broadcast_to` is a `broadcast_in_dim`, and a scalar of an op is a splat constant.
 ## An op the emitter does not know is an error naming it.
 
+import IR from "pkg/agc-ir/src/ir"
+import Conv from "stablehlo_conv"
 import Graph from "graph"
 import Lower from "lower"
 import Reference from "reference"
+import Pool from "stablehlo_pool"
+import Delta from "stablehlo_delta"
 import Types from "types"
 
 ## Starts the text of a node that has two results.
@@ -69,6 +73,7 @@ def emit(
   constants: List[Types.Tensor] = []
   body: List[String] = []
   flags: List[String] = []
+  helpers: List[String] = []
   next = 0
   for t in try Lower.walk(outs, positions)
     n = try Graph.node_of(t)
@@ -87,7 +92,15 @@ def emit(
         end
 
         next = next + wide.lines.size
-        defs = try define(t, n.with(args: wide.args), wide.names, next)
+        wn = n.with(args: wide.args)
+        case wn.op
+          Types.Op.GatedDeltaRule ->
+            shape = wn.args[0].shape
+            helpers = helpers.push(try Delta.emit("gated_delta_#{next}", shape[0], shape[1], shape[2]))
+          _ -> nil
+        end
+
+        defs = try define(t, wn, wide.names, next)
         for i in 0...defs.size
           body = body.push(numbered(next + i, defs[i]))
         end
@@ -132,7 +145,9 @@ def emit(
   text = (
     ["module {", "  func.func public @main(#{params.join(", ")}) -> (#{types.join(", ")}) {"] +
     body +
-    ["    func.return #{results.join(", ")} : #{types.join(", ")}", "  }", "}", ""]
+    ["    func.return #{results.join(", ")} : #{types.join(", ")}", "  }"] +
+    helpers +
+    ["}", ""]
   ).join("\n")
 
   ok(Module(text: text, constants: constants, donated: aliased.keys.sort, checked: !flags.empty?))
@@ -201,6 +216,11 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
   sig = try signature(n.args, out)
   case n.op
     Types.Op.Full(v) -> ok([try splat(v, t.shape, t.dtype)])
+    Types.Op.Copy -> ok([])
+    Types.Op.Contiguous -> ok([])
+    Types.Op.ToDevice(Types.Device.Cpu) -> ok([])
+    Types.Op.ToDevice(device) ->
+      error("XLA runs on the CPU only; cannot lower to_device to #{Types.device_name(device)}")
     Types.Op.Add -> ok(["stablehlo.add #{a[0]}, #{a[1]} : #{out}"])
     Types.Op.Sub -> ok(["stablehlo.subtract #{a[0]}, #{a[1]} : #{out}"])
     Types.Op.Mul -> ok(["stablehlo.multiply #{a[0]}, #{a[1]} : #{out}"])
@@ -231,6 +251,13 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Concat(axis) -> ok(["stablehlo.concatenate #{a.join(", ")}, dim = #{axis} : #{sig}"])
     Types.Op.Stack(axis) -> stack(t, n.args, a, axis, first)
     Types.Op.BatchMatmul -> batch_matmul(n.args, a, sig)
+    Types.Op.Conv1d(stride, padding) -> conv1d(t, n.args, a, stride, padding, first)
+    Types.Op.Conv2d(stride, padding, groups) -> conv2d(t, n.args, a, stride, padding, groups, first)
+    Types.Op.GatedDeltaRule -> ok(["func.call @gated_delta_#{first}(#{a.join(", ")}) : #{sig}"])
+    Types.Op.MaxPool2d(kernel, stride, padding) -> max_pool2d(t, n.args[0], a[0], kernel, stride, padding, first)
+    Types.Op.AvgPool1d(kernel, stride, padding) -> avg_pool1d(t, n.args[0], a[0], kernel, stride, padding, first)
+    Types.Op.AvgPool2d(kernel, stride, padding) -> avg_pool2d(t, n.args[0], a[0], kernel, stride, padding, first)
+    Types.Op.ExpertMatmul -> expert_matmul(t, n.args, a, first)
     Types.Op.Argmax(axes, keep_dims) -> argmax(t, n.args[0], a[0], axes, keep_dims, first)
     Types.Op.Slice(starts, ends) -> ok(["stablehlo.slice #{a[0]} #{extents(starts, ends)} : #{sig}"])
     Types.Op.BroadcastTo -> broadcast(t, n.args[0], a[0])
@@ -242,12 +269,117 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Where -> ok(["stablehlo.select #{a[0]}, #{a[1]}, #{a[2]} : #{try type_of(n.args[0])}, #{out}"])
     Types.Op.Arange(start, _, step) -> arange(t, start, step, first)
     Types.Op.Gather -> gather(t, n.args, a, sig)
+    Types.Op.SetRows -> set_rows(t, n.args, a, first)
     Types.Op.TopK(k) -> top_k(t, n.args[0], a[0], k, first)
     Types.Op.ScatterAdd(_) -> scatter_add(t, n.args, a, first)
     Types.Op.Attention(scale) -> attention(t, n.args, a, scale, first)
     Types.Op.AdamStep -> adam(t, n.args, a, first)
     Types.Op.AdamPart(i) -> adam_part(t, n.args[0], a[0], i, first)
     _ -> error("StableHLO has no emitter for #{Types.op_name(n.op)} yet")
+  end
+end
+
+def avg_pool1d(
+  t: Types.Tensor,
+  input: Types.Tensor,
+  a: String,
+  kernel: Int,
+  stride: Int,
+  padding: Int,
+  first: Int,
+) -> Result[List[String]]
+  entry = IR.block([try float_ir_type(input)])
+  built = try Pool.avg_pool1d(entry, entry.args[0], kernel, stride, padding)
+  return error("avg_pool1d IR result type does not match the graph") if built.values[0].type != try float_ir_type(t)
+  pool_lines(built.block, built.block.ops, a, first)
+end
+
+def avg_pool2d(
+  t: Types.Tensor,
+  input: Types.Tensor,
+  a: String,
+  kernel: Int,
+  stride: Int,
+  padding: Int,
+  first: Int,
+) -> Result[List[String]]
+  entry = IR.block([try float_ir_type(input)])
+  built = try Pool.avg_pool2d(entry, entry.args[0], kernel, stride, padding)
+  return error("avg_pool2d IR result type does not match the graph") if built.values[0].type != try float_ir_type(t)
+  pool_lines(built.block, built.block.ops, a, first)
+end
+
+def pool_lines(b: IR.Block, ops: List[IR.Operation], source: String, first: Int) -> Result[List[String]]
+  entry_value = b.args[0]
+  names: Map[Ref, String] = {}
+  names = names.put(entry_value.id, source)
+  lines: List[String] = []
+  for i in 0...ops.size
+    op = ops[i]
+    lines = lines.push(try IR.operation(op, names, "pool#{first}_#{i}"))
+    for value in op.results
+      names = names.put(value.id, "%#{first + i}")
+    end
+  end
+
+  ok(lines)
+end
+
+def conv1d(
+  t: Types.Tensor,
+  args: List[Types.Tensor],
+  a: List[String],
+  stride: Int,
+  padding: Int,
+  first: Int,
+) -> Result[List[String]]
+  entry = IR.block([try float_ir_type(args[0]), try float_ir_type(args[1])])
+  input = entry.args[0]
+  weight = entry.args[1]
+  built = try Conv.conv1d(entry, input, weight, stride, padding)
+  out = try float_ir_type(t)
+  return error("conv1d IR result type does not match the graph") if built.values[0].type != out
+  names: Map[Ref, String] = {}
+  names = names.put(input.id, a[0]).put(weight.id, a[1])
+  lines: List[String] = []
+  for i in 0...built.block.ops.size
+    op = built.block.ops[i]
+    lines = lines.push(try IR.operation(op, names, "conv1d_#{first}_#{i}"))
+    for value in op.results
+      names = names.put(value.id, "%#{first + i}")
+    end
+  end
+
+  ok(lines)
+end
+
+# Bind the typed builder arguments to the SSA names already assigned by the graph emitter.
+def conv2d(
+  t: Types.Tensor,
+  args: List[Types.Tensor],
+  a: List[String],
+  stride: Int,
+  padding: Int,
+  groups: Int,
+  first: Int,
+) -> Result[List[String]]
+  entry = IR.block([try float_ir_type(args[0]), try float_ir_type(args[1])])
+  input = entry.args[0]
+  weight = entry.args[1]
+  built = try Conv.conv2d(entry, input, weight, stride, padding, groups)
+  out = try float_ir_type(t)
+  return error("conv2d IR result type does not match the graph") if built.values[0].type != out
+  names: Map[Ref, String] = {}
+  names = names.put(input.id, a[0]).put(weight.id, a[1])
+  ok([try IR.operation(built.block.ops[0], names, "conv#{first}_")])
+end
+
+def float_ir_type(t: Types.Tensor) -> Result[IR.TensorType]
+  case t.dtype
+    Types.Dtype.F16 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F16))
+    Types.Dtype.F32 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F32))
+    Types.Dtype.F64 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F64))
+    _ -> error("StableHLO IR needs a floating-point tensor")
   end
 end
 
@@ -264,6 +396,117 @@ def gather(t: Types.Tensor, args: List[Types.Tensor], a: List[String], sig: Stri
   sizes = ([1] + rest).map { |d| d.to_s }.join(", ")
   attrs = "dimension_numbers = #stablehlo.gather<#{fields.join(", ")}>, slice_sizes = array<i64: #{sizes}>"
   ok(["\"stablehlo.gather\"(#{a[0]}, #{a[1]}) {#{attrs}, indices_are_sorted = false} : #{sig}"])
+end
+
+# See StableHLO reduce_window: padding takes the initial value, so padded cells must not win over negative inputs.
+def max_pool2d(
+  t: Types.Tensor,
+  x: Types.Tensor,
+  a: String,
+  kernel: Int,
+  stride: Int,
+  pad: Int,
+  first: Int,
+) -> Result[List[String]]
+  scalar = try tensor_type([], t.dtype)
+  dims = (
+    "window_dimensions = array<i64: 1, 1, #{kernel}, #{kernel}>, window_strides = array<i64: 1, 1, #{stride}, #{stride}>"
+  )
+
+  padding = "padding = dense<[[0, 0], [0, 0], [#{pad}, #{pad}], [#{pad}, #{pad}]]> : tensor<4x2xi64>"
+  ok([
+    try fill_scalar("maximum", t.dtype),
+    "\"stablehlo.reduce_window\"(#{a}, %#{first}) ({\n      ^bb0(%lhs: #{scalar}, %rhs: #{scalar}):\n        %max = stablehlo.maximum %lhs, %rhs : #{scalar}\n        stablehlo.return %max : #{scalar}\n    }) {#{dims}, #{padding}} : (#{try type_of(x)}, #{scalar}) -> #{try type_of(t)}",
+  ])
+end
+
+# Gather the selected expert matrices, then contract each input row with its own expert. The ops are built with
+# `agc-ir` and printed in order by `ir_lines`.
+def expert_matmul(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
+  weights = args[0]
+  x = args[1]
+  ids = args[2]
+  rows = weights.shape[1]
+  inner = weights.shape[2]
+  entry = IR.block([
+    try ir_type(weights.shape, weights.dtype),
+    try ir_type(x.shape, x.dtype),
+    try ir_type(ids.shape, ids.dtype),
+  ])
+
+  selected = try ir_type(ids.shape + [rows, inner], weights.dtype)
+  broadcast_x = try ir_type(ids.shape + [inner], x.dtype)
+  out = try ir_type(t.shape, t.dtype)
+  gathered = try IR.append(
+    entry,
+    "stablehlo.gather",
+    [entry.args[0], entry.args[2]],
+    [selected],
+    gather_attrs(weights.shape, ids.shape.size),
+  )
+
+  spread = try IR.append(
+    gathered.block,
+    "stablehlo.broadcast_in_dim",
+    [entry.args[1]],
+    [broadcast_x],
+    [IR.Attribute(key: "broadcast_dimensions", value: IR.Attr.I64Array([0, 1, 2]))],
+  )
+
+  product = try IR.append(
+    spread.block,
+    "stablehlo.dot_general",
+    [spread.values[0], gathered.values[0]],
+    [out],
+    [
+      IR.Attribute(
+        key: "dot_dimension_numbers",
+        value: IR.Attr.DialectAttr(
+          "stablehlo",
+          "dot",
+          "lhs_batching_dimensions = [0, 1], rhs_batching_dimensions = [0, 1], lhs_contracting_dimensions = [2], rhs_contracting_dimensions = [3]",
+        ),
+      ),
+    ],
+  )
+
+  ir_lines(product.block, [a[0], a[1], a[2]], first)
+end
+
+# The attributes of the gather of rows of an expert table `source`, by indices of rank `index_rank`: one row slice per
+# index, the index axes first, as `gather` writes them.
+def gather_attrs(source: List[Int], index_rank: Int) -> List[IR.Attribute]
+  rest = source.drop(1)
+  fields = ["collapsed_slice_dims = [0]", "start_index_map = [0]", "index_vector_dim = #{index_rank}"]
+  if !rest.empty?
+    fields = ["offset_dims = #{ints((0...rest.size).to_a.map { |i| index_rank + i })}"] + fields
+  end
+
+  [
+    IR.Attribute(key: "dimension_numbers", value: IR.Attr.DialectAttr("stablehlo", "gather", fields.join(", "))),
+    IR.Attribute(key: "slice_sizes", value: IR.Attr.I64Array([1] + rest)),
+    IR.Attribute(key: "indices_are_sorted", value: IR.Attr.Bool(false)),
+  ]
+end
+
+# The lines of the ops of `b` in order, each with one result: the entry argument `i` is the SSA name `sources[i]`, and
+# the result of op `i` is `%first + i`.
+def ir_lines(b: IR.Block, sources: List[String], first: Int) -> Result[List[String]]
+  names: Map[Ref, String] = {}
+  for i in 0...sources.size
+    names = names.put(b.args[i].id, sources[i])
+  end
+
+  lines: List[String] = []
+  for i in 0...b.ops.size
+    op = b.ops[i]
+    lines = lines.push(try IR.operation(op, names, "ir#{first}_#{i}"))
+    for value in op.results
+      names = names.put(value.id, "%#{first + i}")
+    end
+  end
+
+  ok(lines)
 end
 
 # `adam_step` over `[p, g, m, v, hyper]`: the new `[p, m, v]` stacked on a new first axis, from the ops of
@@ -340,9 +583,72 @@ end
 
 def indexed(n: Types.Node) -> Optional[Bound]
   case n.op
+    Types.Op.ExpertMatmul -> some(Bound(index: n.args[2], rows: n.args[0].shape[0]))
     Types.Op.Gather -> some(Bound(index: n.args[1], rows: n.args[0].shape[0]))
     Types.Op.ScatterAdd(rows) -> some(Bound(index: n.args[0], rows: rows))
+    Types.Op.SetRows -> some(Bound(index: n.args[2], rows: n.args[0].shape[n.args[0].shape.size - 2]))
     _ -> none
+  end
+end
+
+# Replace rows along the penultimate dimension. Move that dimension to the front so the updates have the
+# scatter layout [indices, window...], then scatter-replace into the original cache. The scatter is built with
+# `agc-ir`; the reshape and the transpose stay as text.
+def set_rows(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
+  rank = t.shape.size
+  axis = rank - 2
+  axes = [axis] + (0...rank).select { |i| i != axis }
+  updates_shape = axes.map { |i| args[1].shape[i] }
+  indices_shape = [args[2].shape[0], 1]
+  indices_type = try tensor_type(indices_shape, args[2].dtype)
+  updates_type = try tensor_type(updates_shape, args[1].dtype)
+  entry = IR.block([
+    try ir_type(t.shape, t.dtype),
+    try ir_type(indices_shape, args[2].dtype),
+    try ir_type(updates_shape, args[1].dtype),
+  ])
+
+  scalar = IR.TensorType(shape: [], element: entry.args[0].type.element)
+  region = IR.block([scalar, scalar])
+  ended = try IR.append(region, "stablehlo.return", [region.args[1]], [])
+  dims = (
+    "update_window_dims = #{ints((1...rank).to_a)}, inserted_window_dims = [#{axis}], scatter_dims_to_operand_dims = [#{axis}], index_vector_dim = 1"
+  )
+
+  attrs = [
+    IR.Attribute(key: "scatter_dimension_numbers", value: IR.Attr.DialectAttr("stablehlo", "scatter", dims)),
+    IR.Attribute(key: "indices_are_sorted", value: IR.Attr.Bool(false)),
+    IR.Attribute(key: "unique_indices", value: IR.Attr.Bool(false)),
+  ]
+
+  scattered = try IR.append(
+    entry,
+    "stablehlo.scatter",
+    entry.args,
+    [entry.args[0].type],
+    attrs,
+    regions: [ended.block],
+  )
+
+  names: Map[Ref, String] = {}
+  names = names.put(entry.args[0].id, a[0]).put(entry.args[1].id, "%#{first}").put(entry.args[2].id, "%#{first + 1}")
+  scatter = try IR.operation(scattered.block.ops[0], names, "set_rows#{first}_", "    ")
+  ok([
+    "stablehlo.reshape #{a[2]} : (#{try type_of(args[2])}) -> #{indices_type}",
+    "stablehlo.transpose #{a[1]}, dims = #{ints(axes)} : (#{try type_of(args[1])}) -> #{updates_type}",
+    scatter,
+  ])
+end
+
+# The `agc-ir` type of a tensor of `shape` and `dtype`: the element types the scatter of `set_rows` takes.
+def ir_type(shape: List[Int], dtype: Types.Dtype) -> Result[IR.TensorType]
+  case dtype
+    Types.Dtype.F16 -> ok(IR.TensorType(shape: shape, element: IR.Element.F16))
+    Types.Dtype.F32 -> ok(IR.TensorType(shape: shape, element: IR.Element.F32))
+    Types.Dtype.F64 -> ok(IR.TensorType(shape: shape, element: IR.Element.F64))
+    Types.Dtype.I32 -> ok(IR.TensorType(shape: shape, element: IR.Element.I32))
+    Types.Dtype.I64 -> ok(IR.TensorType(shape: shape, element: IR.Element.I64))
+    _ -> error("StableHLO IR has no element type for #{Types.dtype_name(dtype)}")
   end
 end
 

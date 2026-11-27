@@ -10,6 +10,160 @@ import Trace from "../trace"
 
 private
 
+def test_padded_max_pool_does_not_choose_zero_over_negative_pixels() -> Result[Void]
+  return ok() if !try Support.present()
+  agrees(
+    ->(b: Tensor.Backend) {
+      xs = Support.uniform(60, 1, 1.0).map { |x| -1.0 - x.abs }
+      ok([try Support.floats(xs, [1, 2, 5, 6], b)])
+    },
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.max_pool2d(xs[0], 3, 2, 1)]) },
+  )
+end
+
+def test_expert_matmul_matches_the_reference_with_shared_and_per_expert_inputs() -> Result[Void]
+  return ok() if !try Support.present()
+  for uses in [1, 2]
+    try agrees(
+      ->(b: Tensor.Backend) {
+        ok([
+          try Support.floats(Support.uniform(24, 1, 0.5), [3, 2, 4], b),
+          try Support.floats(Support.uniform(8 * uses, 2, 0.5), [2, uses, 4], b),
+          try Tensor.from_list([2, 0, 1, 1].map { |i| Tensor.Values.Int(i) }, [2, 2], Tensor.Dtype.I32, b),
+        ])
+      },
+      ->(xs: List[Tensor.Tensor]) { ok([try Tensor.expert_matmul(xs[0], xs[1], xs[2])]) },
+    )
+  end
+
+  ok()
+end
+
+def test_expert_matmul_rejects_invalid_expert_ids() -> Result[Void]
+  return ok() if !try Support.present()
+  weights = try Support.floats(Support.uniform(12, 1, 0.5), [3, 2, 2], Support.XLA)
+  x = try Support.floats([1.0, 2.0], [1, 1, 2], Support.XLA)
+  for bad in [-1, 3]
+    ids = try Tensor.from_list([Tensor.Values.Int(bad)], [1, 1], Tensor.Dtype.I32, Support.XLA)
+    r = Trace.eval([weights, x, ids], ->(xs: List[Tensor.Tensor]) { Tensor.expert_matmul(xs[0], xs[1], xs[2]) })
+    try Test.error?(r)
+    try Test.assert(r.message.include?("outside the rows"), r.message)
+  end
+
+  ok()
+end
+
+def test_gated_delta_output_and_state_match_the_reference() -> Result[Void]
+  return ok() if !try Support.present()
+  for tokens in [1, 5]
+    try agrees(
+      ->(b: Tensor.Backend) {
+        shape = [tokens, 2, 3]
+        count = tokens * 6
+        ok([
+          try Support.floats(Support.uniform(count, 1, 0.5), shape, b),
+          try Support.floats(Support.uniform(count, 2, 0.5), shape, b),
+          try Support.floats(Support.uniform(count, 3, 0.5), shape, b),
+          try Support.floats(Support.uniform(tokens * 2, 4, 0.5).map { |x| -x.abs }, [tokens, 2], b),
+          try Support.floats(Support.uniform(tokens * 2, 5, 0.5).map { |x| x + 0.5 }, [tokens, 2], b),
+          try Support.floats(Support.uniform(18, 6, 0.5), [2, 3, 3], b),
+        ])
+      },
+      ->(xs: List[Tensor.Tensor]) {
+        r = try Tensor.gated_delta_rule(xs[0], xs[1], xs[2], xs[3], xs[4], xs[5])
+        return ok([r.out, r.state]) if tokens == 1
+        left = try delta_rows(xs, 0, 2)
+        right = try delta_rows(xs, 2, tokens)
+        prefix = try Tensor.gated_delta_rule(left[0], left[1], left[2], left[3], left[4], xs[5])
+        suffix = try Tensor.gated_delta_rule(right[0], right[1], right[2], right[3], right[4], prefix.state)
+        ok([r.out, r.state, try Tensor.concat([prefix.out, suffix.out], 0), suffix.state])
+      },
+    )
+  end
+
+  ok()
+end
+
+def delta_rows(xs: List[Tensor.Tensor], start: Int, stop: Int) -> Result[List[Tensor.Tensor]]
+  rows: List[Tensor.Tensor] = []
+  for x in xs.take(5)
+    tail = Tensor.shape(x).drop(1)
+    rows = rows.push(try Tensor.slice(x, [start] + tail.map { |_| 0 }, [stop] + tail))
+  end
+
+  ok(rows)
+end
+
+def test_grouped_conv2d_with_stride_and_padding_matches_the_reference() -> Result[Void]
+  return ok() if !try Support.present()
+  agrees(
+    ->(b: Tensor.Backend) {
+      ok([
+        try Support.floats(Support.uniform(2 * 4 * 5 * 7, 1, 1.0), [2, 4, 5, 7], b),
+        try Support.floats(Support.uniform(6 * 2 * 2 * 3, 2, 1.0), [6, 2, 2, 3], b),
+      ])
+    },
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.conv2d(xs[0], xs[1], 2, 1, 2)]) },
+  )
+end
+
+def test_conv1d_matches_the_reference_for_batched_and_unbatched_inputs() -> Result[Void]
+  return ok() if !try Support.present()
+  for unbatched in [false, true]
+    try agrees(
+      ->(b: Tensor.Backend) {
+        shape = [2, 3, 12]
+        count = 2 * 3 * 12
+        if unbatched
+          shape = [3, 12]
+          count = 3 * 12
+        end
+
+        ok([
+          try Support.floats(Support.uniform(count, 81, 1.0), shape, b),
+          try Support.floats(Support.uniform(5 * 3 * 3, 82, 1.0), [5, 3, 3], b),
+        ])
+      },
+      ->(xs: List[Tensor.Tensor]) { ok([try Tensor.conv1d(xs[0], xs[1], 2, 1)]) },
+    )
+  end
+
+  ok()
+end
+
+def test_avg_pool1d_includes_zero_padding_in_the_divisor() -> Result[Void]
+  return ok() if !try Support.present()
+  for unbatched in [false, true]
+    try agrees(
+      ->(b: Tensor.Backend) {
+        shape = [2, 3, 8]
+        count = 2 * 3 * 8
+        if unbatched
+          shape = [3, 8]
+          count = 3 * 8
+        end
+
+        xs = Support.uniform(count, 83, 1.0).map { |x| -x.abs - 0.1 }
+        ok([try Support.floats(xs, shape, b)])
+      },
+      ->(xs: List[Tensor.Tensor]) { ok([try Tensor.avg_pool1d(xs[0], 3, 2, 1)]) },
+    )
+  end
+
+  ok()
+end
+
+def test_avg_pool2d_includes_zero_padding_in_the_divisor() -> Result[Void]
+  return ok() if !try Support.present()
+  agrees(
+    ->(b: Tensor.Backend) {
+      xs = Support.uniform(2 * 3 * 5 * 6, 84, 1.0).map { |x| -x.abs - 0.1 }
+      ok([try Support.floats(xs, [2, 3, 5, 6], b)])
+    },
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.avg_pool2d(xs[0], 3, 2, 1)]) },
+  )
+end
+
 def test_elementwise_ops_and_dtype_conversions_match_the_reference() -> Result[Void]
   return ok() if !try Support.present()
   agrees(
@@ -270,17 +424,59 @@ def test_top_ids_match_the_reference() -> Result[Void]
   )
 end
 
-def test_an_op_the_emitter_still_lacks_is_an_error_naming_it() -> Result[Void]
+def test_set_rows_matches_the_reference_for_ranks_two_to_four() -> Result[Void]
   return ok() if !try Support.present()
-  xs = [try wide(Support.XLA)]
-  r = Trace.compile(
-    xs.map { |t| Trace.spec_of(t) },
-    ->(ys: List[Tensor.Tensor]) { ok([try Tensor.avg_pool1d(ys[0], 2)]) },
+  for shape in [[4, 3], [2, 4, 3], [2, 1, 4, 3]]
+    rank = shape.size
+    fresh_shape = shape.set(rank - 2, 2)
+    try agrees(
+      ->(b: Tensor.Backend) {
+        ok([
+          try Support.floats(Support.uniform(volume(shape), 85 + rank, 1.0), shape, b),
+          try Support.floats(Support.uniform(volume(fresh_shape), 89 + rank, 1.0), fresh_shape, b),
+          try Support.labels([3, 0], b),
+        ])
+      },
+      ->(xs: List[Tensor.Tensor]) { ok([try Tensor.set_rows(xs[0], xs[1], xs[2])]) },
+    )
+  end
+
+  cache = try Support.floats(Support.uniform(12, 94, 1.0), [4, 3], Support.XLA)
+  fresh = try Support.floats(Support.uniform(3, 95, 1.0), [1, 3], Support.XLA)
+  for bad in [[4], [-1]]
+    positions = try Support.labels(bad, Support.XLA)
+    r = Trace.eval([cache, fresh, positions], ->(xs: List[Tensor.Tensor]) { Tensor.set_rows(xs[0], xs[1], xs[2]) })
+
+    try Test.error?(r)
+    try Test.assert(r.message.include?("outside the rows"), r.message)
+  end
+
+  ok()
+end
+
+def test_identity_ops_match_the_reference_and_unsupported_xla_device_is_rejected() -> Result[Void]
+  return ok() if !try Support.present()
+  try agrees(
+    ->(b: Tensor.Backend) { ok([try Support.floats(Support.uniform(24, 96, 1.0), [2, 3, 4], b)]) },
+    ->(xs: List[Tensor.Tensor]) {
+      on_cpu = try Tensor.to_device(xs[0], Tensor.Device.Cpu)
+      copied = try Tensor.copy(on_cpu)
+      contiguous = try Tensor.contiguous(copied)
+      ok([on_cpu, copied, contiguous, try Tensor.add(contiguous, xs[0])])
+    },
   )
 
-  try Test.assert(!r.ok?, "avg_pool1d compiled")
-  Test.assert(r.message.include?("avg_pool1d"), r.message)
+  x = try Support.floats(Support.uniform(6, 97, 1.0), [2, 3], Support.XLA)
+  r = Trace.compile(
+    [Trace.spec_of(x)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.to_device(xs[0], Tensor.Device.Vulkan(0))]) },
+  )
+
+  try Test.assert(!r.ok?, "XLA accepted a Vulkan to_device target")
+  Test.assert(r.message.include?("CPU only"), r.message)
 end
+
+def volume(shape: List[Int]) -> Int = shape.reduce(1) do |acc, d| acc * d end
 
 ## A sigmoid, a permute, a concat, a squeeze, the norms, a gelu and a rope, then a weighted sum.
 def block_loss(xs: List[Tensor.Tensor], positions: Tensor.Tensor) -> Result[Tensor.Tensor]

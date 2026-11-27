@@ -74,15 +74,15 @@ def test_an_arange_a_kept_mean_and_a_small_fill() -> Result[Void]
   )
 end
 
-def test_an_op_without_an_emitter_is_an_error_naming_it() -> Result[Void]
+def test_xla_rejects_a_device_other_than_cpu() -> Result[Void]
   r = Trace.stablehlo(
     [spec([2, 2], Tensor.Dtype.F32)],
-    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.avg_pool1d(xs[0], 2)]) },
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.to_device(xs[0], Tensor.Device.Vulkan(0))]) },
   )
 
   case r
-    ok(_) -> error("avg_pool1d was emitted")
-    error(e) -> Test.eq(e.message, "StableHLO has no emitter for avg_pool1d yet")
+    ok(_) -> error("XLA accepted a Vulkan to_device target")
+    error(e) -> Test.assert(e.message.include?("XLA runs on the CPU only"), e.message)
   end
 end
 
@@ -140,6 +140,80 @@ def test_an_f16_weight_is_widened_where_an_f32_result_reads_it() -> Result[Void]
 
   try Test.assert(!r.ok?, "a matmul of F32 by I32 was emitted")
   ok()
+end
+
+## The text of `set_rows` on a rank-2 cache: the positions as a column, the rows moved to the scatter layout, and one
+## scatter that replaces the rows. This golden is the one the emitter must keep when it builds the scatter with `agc-ir`.
+def test_set_rows_text_of_rank_two_is_a_scatter_of_the_rows() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([4, 3], Tensor.Dtype.F32), spec([2, 3], Tensor.Dtype.F32), spec([2], Tensor.Dtype.I32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.set_rows(xs[0], xs[1], xs[2])]) },
+  )
+
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<4x3xf32>, %arg1: tensor<2x3xf32>, %arg2: tensor<2xi32>) -> (tensor<4x3xf32>) {
+          %0 = stablehlo.reshape %arg2 : (tensor<2xi32>) -> tensor<2x1xi32>
+          %1 = stablehlo.transpose %arg1, dims = [0, 1] : (tensor<2x3xf32>) -> tensor<2x3xf32>
+          %2 = "stablehlo.scatter"(%arg0, %0, %1) ({
+          ^bb0(%set_rows0_r0_a0: tensor<f32>, %set_rows0_r0_a1: tensor<f32>):
+            "stablehlo.return"(%set_rows0_r0_a1) : (tensor<f32>) -> ()
+          }) {scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [1], inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, indices_are_sorted = false, unique_indices = false} : (tensor<4x3xf32>, tensor<2x1xi32>, tensor<2x3xf32>) -> (tensor<4x3xf32>)
+          func.return %2 : tensor<4x3xf32>
+        }
+      }
+    MLIR
+  )
+end
+
+## The text of `set_rows` on a rank-3 cache: the rows axis is the one before the width, so the updates move it to the front.
+def test_set_rows_text_of_rank_three_moves_the_rows_axis() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([2, 4, 3], Tensor.Dtype.F32), spec([2, 2, 3], Tensor.Dtype.F32), spec([2], Tensor.Dtype.I32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.set_rows(xs[0], xs[1], xs[2])]) },
+  )
+
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<2x4x3xf32>, %arg1: tensor<2x2x3xf32>, %arg2: tensor<2xi32>) -> (tensor<2x4x3xf32>) {
+          %0 = stablehlo.reshape %arg2 : (tensor<2xi32>) -> tensor<2x1xi32>
+          %1 = stablehlo.transpose %arg1, dims = [1, 0, 2] : (tensor<2x2x3xf32>) -> tensor<2x2x3xf32>
+          %2 = "stablehlo.scatter"(%arg0, %0, %1) ({
+          ^bb0(%set_rows0_r0_a0: tensor<f32>, %set_rows0_r0_a1: tensor<f32>):
+            "stablehlo.return"(%set_rows0_r0_a1) : (tensor<f32>) -> ()
+          }) {scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [1, 2], inserted_window_dims = [1], scatter_dims_to_operand_dims = [1], index_vector_dim = 1>, indices_are_sorted = false, unique_indices = false} : (tensor<2x4x3xf32>, tensor<2x1xi32>, tensor<2x2x3xf32>) -> (tensor<2x4x3xf32>)
+          func.return %2 : tensor<2x4x3xf32>
+        }
+      }
+    MLIR
+  )
+end
+
+## The text of `expert_matmul`: the selected expert matrices gathered, the input broadcast over them, then one batched
+## product per row. The golden is the emitter's text before it is built with `agc-ir`.
+def test_expert_matmul_text_gathers_then_contracts_each_row() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([3, 2, 4], Tensor.Dtype.F32), spec([2, 1, 4], Tensor.Dtype.F32), spec([2, 2], Tensor.Dtype.I32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.expert_matmul(xs[0], xs[1], xs[2])]) },
+  )
+
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<3x2x4xf32>, %arg1: tensor<2x1x4xf32>, %arg2: tensor<2x2xi32>) -> (tensor<2x2x2xf32>) {
+          %0 = "stablehlo.gather"(%arg0, %arg2) {dimension_numbers = #stablehlo.gather<offset_dims = [2, 3], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 2>, slice_sizes = array<i64: 1, 2, 4>, indices_are_sorted = false} : (tensor<3x2x4xf32>, tensor<2x2xi32>) -> (tensor<2x2x2x4xf32>)
+          %1 = "stablehlo.broadcast_in_dim"(%arg1) {broadcast_dimensions = array<i64: 0, 1, 2>} : (tensor<2x1x4xf32>) -> (tensor<2x2x4xf32>)
+          %2 = "stablehlo.dot_general"(%1, %0) {dot_dimension_numbers = #stablehlo.dot<lhs_batching_dimensions = [0, 1], rhs_batching_dimensions = [0, 1], lhs_contracting_dimensions = [2], rhs_contracting_dimensions = [3]>} : (tensor<2x2x4xf32>, tensor<2x2x2x4xf32>) -> (tensor<2x2x2xf32>)
+          func.return %2 : tensor<2x2x2xf32>
+        }
+      }
+    MLIR
+  )
 end
 
 def spec(shape: List[Int], dtype: Tensor.Dtype) -> Trace.Spec

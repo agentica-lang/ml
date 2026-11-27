@@ -89,6 +89,17 @@ def test_a_tile_of_another_size_is_an_error() -> Result[Void]
   end
 end
 
+def test_the_rows_match_hugging_face_on_xla() -> Result[Void]
+  backend = Tensor.Backend.Xla(Tensor.Device.Cpu)
+  if !Tensor.available(backend)
+    required = System.env("TENSOR_REQUIRE_XLA")
+    return error("the XLA backend is required but not available") if required.ok? and try required != ""
+    return ok()
+  end
+
+  matches(try golden(), backend, F32_ABS, F32_REL)
+end
+
 def test_a_checkpoint_the_tower_cannot_read_is_an_error_that_names_why() -> Result[Void]
   g = try golden()
   try with_model(g, g.config, "model.vision_model.encoder.layers.1.self_attn.q_proj.bias") do |dir|
