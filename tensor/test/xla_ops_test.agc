@@ -32,18 +32,28 @@ def test_shape_ops_match_the_reference() -> Result[Void]
   return ok() if !try Support.present()
   agrees(
     ->(b: Tensor.Backend) {
-      ok([try cube(2, b), try cube(3, b), try Support.floats(Support.uniform(6, 5, 1.0), [1, 3, 1, 2], b)])
+      ok([
+        try cube(2, b),
+        try cube(3, b),
+        try Support.floats(Support.uniform(6, 5, 1.0), [1, 3, 1, 2], b),
+        try Support.floats([2.5], [1], b),
+      ])
     },
     ->(xs: List[Tensor.Tensor]) {
       ok([
         try Tensor.permute(xs[0], [2, 0, 1]),
         try Tensor.concat([xs[0], xs[1], xs[0]], 0),
         try Tensor.concat([xs[0], xs[0]], 1),
+        try Tensor.concat([xs[0], xs[0]], 2),
         try Tensor.stack([xs[0], xs[0]], 2),
+        try Tensor.stack([xs[0], xs[0]], 0),
+        try Tensor.stack([xs[0], xs[0]], 3),
         try Tensor.squeeze(xs[2]),
+        try Tensor.squeeze(xs[2], some(2)),
         try Tensor.squeeze(xs[2], some(0)),
         try Tensor.unsqueeze(xs[0], 3),
         try Tensor.unsqueeze(xs[0], 0),
+        try Tensor.unsqueeze(try Tensor.squeeze(xs[3]), 0),
       ])
     },
   )
@@ -89,12 +99,80 @@ def test_argmax_matches_the_reference_on_one_axis_many_axes_and_ties() -> Result
   )
 end
 
+def test_norms_gelu_and_rope_match_the_reference() -> Result[Void]
+  return ok() if !try Support.present()
+  agrees(
+    ->(b: Tensor.Backend) {
+      ok([
+        try Support.floats(Support.uniform(2 * 3 * 8, 21, 2.0), [2, 3, 8], b),
+        try Support.floats(Support.uniform(2 * 2 * 3 * 8, 22, 1.0), [2, 2, 3, 8], b),
+        try Tensor.from_list(
+          [Tensor.Values.Int(0), Tensor.Values.Int(5), Tensor.Values.Int(17)],
+          [3],
+          Tensor.Dtype.I32,
+          b,
+        ),
+      ])
+    },
+    ->(xs: List[Tensor.Tensor]) {
+      ok([
+        try Tensor.layer_norm(xs[0], 0.00001),
+        try Tensor.rms_norm(xs[0], 0.000001),
+        try Tensor.gelu_erf(xs[0]),
+        try Tensor.rope(xs[1], xs[2]),
+        try Tensor.rope(xs[1], xs[2], 500.0, some(4), false),
+        try Tensor.rope(xs[1], xs[2], 10000.0, some(8), false, true),
+        try Tensor.rope(xs[1], xs[2], 1000000.0, some(6), true, true),
+      ])
+    },
+  )
+end
+
+## The gradient of a loss through the ops of a transformer's block, by the rules of `trace.agc`, compiled by XLA.
+def test_value_and_grad_through_the_new_ops_matches_the_reference() -> Result[Void]
+  return ok() if !try Support.present()
+  got = try gradients(Support.XLA)
+  want = try gradients(Support.REF)
+  Support.close(got, want)
+end
+
 def test_an_op_the_emitter_still_lacks_is_an_error_naming_it() -> Result[Void]
   return ok() if !try Support.present()
   xs = [try wide(Support.XLA)]
-  r = Trace.compile(xs.map { |t| Trace.spec_of(t) }, ->(ys: List[Tensor.Tensor]) { ok([try Tensor.gelu_erf(ys[0])]) })
-  try Test.assert(!r.ok?, "gelu_erf compiled")
-  Test.assert(r.message.include?("gelu_erf"), r.message)
+  r = Trace.compile(
+    xs.map { |t| Trace.spec_of(t) },
+    ->(ys: List[Tensor.Tensor]) { ok([try Tensor.avg_pool1d(ys[0], 2)]) },
+  )
+
+  try Test.assert(!r.ok?, "avg_pool1d compiled")
+  Test.assert(r.message.include?("avg_pool1d"), r.message)
+end
+
+## A sigmoid, a permute, a concat, a squeeze, the norms, a gelu and a rope, then a weighted sum.
+def block_loss(xs: List[Tensor.Tensor], positions: Tensor.Tensor) -> Result[Tensor.Tensor]
+  moved = try Tensor.permute(try Tensor.sigmoid(xs[0]), [0, 2, 1, 3])
+  s = try Tensor.squeeze(try Tensor.concat([moved, moved], 2), some(0))
+  n = try Tensor.rms_norm(try Tensor.gelu_erf(try Tensor.layer_norm(s, 0.00001)), 0.000001)
+  r = try Tensor.rope(n, Trace.constant(positions))
+  Tensor.sum(try Tensor.mul(r, xs[1]))
+end
+
+def gradients(b: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  args = [
+    try Support.floats(Support.uniform(1 * 2 * 4 * 8, 31, 1.0), [1, 2, 4, 8], b),
+    try Support.floats(Support.uniform(4 * 4 * 8, 32, 1.0), [4, 4, 8], b),
+  ]
+
+  positions = try Tensor.from_list(
+    [Tensor.Values.Int(0), Tensor.Values.Int(1), Tensor.Values.Int(2), Tensor.Values.Int(3)],
+    [4],
+    Tensor.Dtype.I32,
+    b,
+  )
+
+  loss = ->(xs: List[Tensor.Tensor]) { block_loss(xs, positions) }
+  got = try Trace.value_and_grad(args, loss)
+  ok([got.value] + got.grads)
 end
 
 ## `make` the inputs on a backend, `f` over them compiled by XLA, and `f` over the same inputs on the reference: every
