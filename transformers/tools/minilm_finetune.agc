@@ -6,7 +6,7 @@
 ##
 ## ```sh
 ## sh tools/fetch_minilm.sh                       # the pinned checkpoint, into ~/.cache/agentica-ml/hf/all-minilm-l6-v2
-## agentica --max-steps 1000000000000 tools/minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla|torch [STEPS [LR [PAIRS]]]]
+## agentica tools/minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla|torch [STEPS [LR [PAIRS]]]]
 ## ```
 ##
 ## It trains every weight (AdamW, no weight decay, no dropout, `F32`) on PAIRS of its eight pairs (default all), all of

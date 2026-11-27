@@ -334,9 +334,9 @@ Not measured again: the CPU rows, the prompt, the load, the peak memory and the 
 Correctness: the greedy ids match Hugging Face's `generate` on six prompts of 5 to 375 tokens on both backends (`transformers/tools/generate_qwen35_check.agc`).
 
 ```sh
-agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR cpu                          # ggml CPU
-VULKAN_FP16=0 agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR vulkan   # Vulkan, exact
-VULKAN_FP16=1 agentica --max-steps 100000000000 transformers/tools/bench_qwen35.agc MODEL_DIR vulkan   # Vulkan, fp16 products
+agentica transformers/tools/bench_qwen35.agc MODEL_DIR cpu                          # ggml CPU
+VULKAN_FP16=0 agentica transformers/tools/bench_qwen35.agc MODEL_DIR vulkan   # Vulkan, exact
+VULKAN_FP16=1 agentica transformers/tools/bench_qwen35.agc MODEL_DIR vulkan   # Vulkan, fp16 products
 ```
 
 ## LFM3-1.7B (ml#275), ours only
@@ -352,9 +352,9 @@ VULKAN_FP16=1 agentica --max-steps 100000000000 transformers/tools/bench_qwen35.
 Correctness: the greedy ids match the official code's `generate` on prompts of 5 to 601 tokens (two are past the sliding window) on both backends (`transformers/tools/generate_lfm3_check.agc`).
 
 ```sh
-agentica --max-steps 100000000000 transformers/tools/bench_lfm3.agc MODEL_DIR cpu                          # ggml CPU
-VULKAN_FP16=0 agentica --max-steps 100000000000 transformers/tools/bench_lfm3.agc MODEL_DIR vulkan   # Vulkan, exact
-VULKAN_FP16=1 agentica --max-steps 100000000000 transformers/tools/bench_lfm3.agc MODEL_DIR vulkan   # Vulkan, fp16 products
+agentica transformers/tools/bench_lfm3.agc MODEL_DIR cpu                          # ggml CPU
+VULKAN_FP16=0 agentica transformers/tools/bench_lfm3.agc MODEL_DIR vulkan   # Vulkan, exact
+VULKAN_FP16=1 agentica transformers/tools/bench_lfm3.agc MODEL_DIR vulkan   # Vulkan, fp16 products
 ```
 
 ## Half weights (ml#86)
@@ -491,7 +491,7 @@ The GPU memory is measured as in the section above.
 Loading takes 0.1 to 0.5 s on the CPU and 0.4 to 1.1 s on Vulkan. At batch 32 the backward takes 9 to 13 times the forward on the CPU. ResNet-50 on Vulkan at batch 1 is the odd row: forward and backward take 2.8 s, a fifth of the 12.6 s of 32 images (ResNet-18 takes 0.34 s at batch 1); it was measured three times (2818, 2862 and 2827 ms) and not profiled. Before ml#83 the bias gradient of a convolution (a sum over the batch and the plane) was not lowered to ggml at a batch above 1; `Trace.unbroadcast` now sums the two blocks one after the other.
 
 ```sh
-agentica --max-steps 1000000000000 transformers/tools/bench_resnet.agc MODEL_DIR cpu|vulkan BATCH REPS forward|backward
+agentica transformers/tools/bench_resnet.agc MODEL_DIR cpu|vulkan BATCH REPS forward|backward
 ```
 
 ## ViT-B/16 (ml#83), ours only
@@ -506,7 +506,7 @@ agentica --max-steps 1000000000000 transformers/tools/bench_resnet.agc MODEL_DIR
 Loading takes 0.25 to 0.27 s on both.
 
 ```sh
-agentica --max-steps 1000000000000 transformers/tools/bench_vit.agc MODEL_DIR cpu|vulkan BATCH REPS
+agentica transformers/tools/bench_vit.agc MODEL_DIR cpu|vulkan BATCH REPS
 ```
 
 ## CLIP ViT-B/32 (ml#83), ours only
@@ -523,7 +523,7 @@ agentica --max-steps 1000000000000 transformers/tools/bench_vit.agc MODEL_DIR cp
 Loading takes 0.45 to 0.47 s on both.
 
 ```sh
-agentica --max-steps 1000000000000 transformers/tools/bench_clip.agc MODEL_DIR cpu|vulkan BATCH REPS image|text
+agentica transformers/tools/bench_clip.agc MODEL_DIR cpu|vulkan BATCH REPS image|text
 ```
 
 ## Decoding in front of a model, with and without the prefetch task (ml#252), ours only

@@ -3,7 +3,7 @@
 ## run first, then the median of `REPS` runs). Vulkan multiplies in `F32`, as the checks do
 ## (`Tensor.vulkan_fp16(false)`). Manual; run from `transformers/`:
 ##
-##   agentica --max-steps 1000000000000 tools/bench_clip.agc MODEL_DIR [cpu|vulkan] [BATCH] [REPS] [image|text]
+##   agentica tools/bench_clip.agc MODEL_DIR [cpu|vulkan] [BATCH] [REPS] [image|text]
 
 import Clip from "../clip"
 import Tensor from "pkg/tensor/tensor"
