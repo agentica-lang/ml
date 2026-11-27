@@ -129,7 +129,7 @@ def batch_of(
 end
 ```
 
-The batch function is the one that `fit_batches` calls as `->(_epoch: Int, i: Int) { batch_of(tok, sentences, labels, 32, i, backend) }`. The guide `finetune-distilbert.md` is the whole loop for a Hugging Face dataset: model, loss, optimizer and the metrics.
+The batch function is the one that `fit_batches` calls as `->(_epoch: Int, i: Int) { batch_of(tok, sentences, labels, 32, i, backend) }`. The guide [fine-tune DistilBERT](finetune-distilbert.md) is the whole loop for a Hugging Face dataset: model, loss, optimizer and the metrics.
 
 ## Loader
 

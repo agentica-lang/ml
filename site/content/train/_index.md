@@ -8,6 +8,8 @@ weight: 3
 
 The batches come from a data loader, which has [its own page](data.md). `fit` can report its loss, learning rate and step time to [metrics](metrics.md).
 
+A whole fine-tune of DistilBERT for sentiment, with the pinned downloads and a run's numbers, is in [fine-tune DistilBERT](finetune-distilbert.md).
+
 ## Example
 
 Linear regression on eight rows, with SGD (stochastic gradient descent, a simple optimizer) and the loader's default shuffle. The loss is the mean squared error of `x w`:

@@ -164,6 +164,10 @@ true
   `modules_to_save`, a regular-expression `target_modules`, an adapter of an embedding) is an error that names it.
 - On Qwen3 the output head is tied to the embedding table, so an adapter on the table also changes the head here.
 
+## Fine-tune DistilBERT for a classification task
+
+A whole program that fine-tunes `distilbert-base-uncased` on SST-2 (a linear head on the mean-pooled output, AdamW, saving and loading the weights) is at `https://www.agentica-lang.com/ml/train/finetune-distilbert/`, with the pinned downloads and the run's numbers.
+
 ## Fine-tune DistilBERT with LoRA
 
 The recipe for a Hub model: load it as `F32`, take its weights by name, make an adapter on its attention projections,
