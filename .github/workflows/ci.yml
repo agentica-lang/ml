@@ -446,17 +446,23 @@ jobs:
           retention-days: 14
 
   # The ggml engine of tensor/ on linux-arm64 (GitHub's ubuntu-24.04-arm, the architecture of AWS Graviton): the pinned
-  # ggml built by tools/build-engine.sh for the CPU the runner has, and the whole tensor suite with TENSOR_REQUIRE_GGML=1,
-  # so an engine that did not build fails the ggml tests instead of passing them as absent. The Agentica archive is the
-  # linux-arm64 one: its sha256 is the third column of tensor/AGENTICA_VERSION (the second is the x86_64 one).
+  # ggml built by tools/build-engine.sh for the CPU the runner has, and the whole suite of tensor/ and of transformers/
+  # (the models, Qwen3 among them, on Backend.Ggml) with TENSOR_REQUIRE_GGML=1, so an engine that did not build fails the
+  # ggml tests instead of passing them as absent. The Agentica archive is the linux-arm64 one: its sha256 is the third
+  # column of the package's AGENTICA_VERSION (the second is the x86_64 one).
   ggml-arm64:
     needs: plan
     if: needs.plan.outputs.ggml_arm64 == 'true'
+    name: ggml-arm64 (${{ matrix.package }})
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [tensor, transformers]
     defaults:
       run:
-        working-directory: tensor
+        working-directory: ${{ matrix.package }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -469,7 +475,7 @@ jobs:
           set -euo pipefail
           read -r version _ sha256 < AGENTICA_VERSION
           [ -n "$version" ] && [ -n "$sha256" ] || {
-            echo "tensor/AGENTICA_VERSION must hold the version, the sha256 of its linux-x86_64 archive and the sha256 of its linux-arm64 one" >&2
+            echo "AGENTICA_VERSION must hold the version, the sha256 of its linux-x86_64 archive and the sha256 of its linux-arm64 one" >&2
             exit 1
           }
           echo "version=$version" >> "$GITHUB_OUTPUT"
