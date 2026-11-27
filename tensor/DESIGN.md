@@ -564,6 +564,9 @@ end
   to `F32` exactly and `bf16_bits` narrows it back, keeping the top 7 mantissa bits of a NaN (setting the quiet bit only
   if they are all zero). Any other source (`from_list`, an `F32` or `F16` file) rounds to nearest even once from the
   double, and a value beyond 3.3895313892515355e38, an infinity included, is an error naming its element; a NaN stays.
+  On the CUDA plugin, Qwen3-0.6B's decode step fuses the converts of its block matrices into the loops that read
+  them, but converts the tied head (the token table) into an `F32` buffer of 622 MB on every step before the cuBLAS
+  product, so the peak device memory falls by less than the weights do (`benchmarks/README.md`).
   StableHLO spells it `bf16`, and the emitter widens a `BF16` operand of an `F32` result as it widens an `F16` one: a
   product converts the weight, a lookup gathers the rows first and converts only them, and `attention` reads `BF16`
   keys and values with an `F32` query.

@@ -391,6 +391,41 @@ Tiny gains 6 percent on jfk and nothing on es-hola from F16 weights alone: its d
 
 The load. The conversion of a BF16 or F32 file to F16 runs on up to 8 threads (one run of whole chunks of the tensor each, `tensor/native/float_file.h`). Loading on the CPU takes 3.1 s for whisper-medium (2.3 to 2.6 s with F32 weights) and 1.5 s for Qwen3-0.6B (about 1.5 s with F32 weights).
 
+### BF16 weights on XLA CUDA
+
+`WEIGHTS=bf16` keeps the same big matrices as `WEIGHTS=f16` in `BF16`, on XLA only. Qwen3-0.6B, `tools/bench_qwen.agc
+MODEL_DIR xla` with the `jax-cuda13-pjrt` 0.12.0.1 plugin in the cache, `XLA_FLAGS=--xla_gpu_enable_triton_gemm=false
+NVIDIA_TF32_OVERRIDE=0`, on an RTX 4060 Laptop GPU (driver 615.71.09), Agentica 0.40.0-beta.2; two runs each, the
+range shown. The weight bytes are counted by `Load.held_bytes` from the checkpoint's shapes.
+
+| Weights | Weight bytes | Prompt, 128 tokens | 64 tokens after it | Load |
+|---|---|---|---|---|
+| F32 | 3.01 GB | 3459 tokens/s | 58.6 tokens/s | 1.26 to 1.30 s |
+| F16 | 1.50 GB | 3048 to 3122 | 56.4 to 57.5 | 2.09 to 2.10 s |
+| BF16 | 1.50 GB | 3122 to 3368 | 56.7 to 57.0 | 1.80 to 1.82 s |
+
+Half weights halve the bytes of the weights and do not speed up decoding here: a 0.6B model's step on this card waits
+on something other than the weights' bandwidth.
+
+Peak device memory. As shipped, the PJRT client is created without options, so the CUDA plugin reserves about 75% of
+the card (6.06 GB in every row) whatever the weights. To see what is really used, one run per row was made with a
+local, uncommitted patch of `native/xla.c` that creates the client with `preallocate=false` and
+`allocator=platform`, and `nvidia-smi` sampled every 0.2 s (a shorter peak can be missed); the numbers are above the
+161 MiB the card used before:
+
+| Weights | Peak device memory | 64 tokens after the prompt (platform allocator) |
+|---|---|---|
+| F32 | 3108 MiB | 44.4 tokens/s |
+| F16 | 2564 MiB | 30.9 |
+| BF16 | 2564 MiB | 30.3 |
+
+The weights save 1434 MiB but the peak only 544 MiB, because a step does not read every weight in 16 bits. In the
+optimized program of a decode step (`--xla_dump_to`), the converts of the block matrices are fused into the loops that
+read them, but the tied head, the `[151936, 1024]` token table, is converted by a fusion of its own into an `F32`
+buffer of 622 MB before the cuBLAS product, on every step. That copy is most of the gap, and its writes are why the
+half rows decode slower with the platform allocator. The decode speeds of this table are for the patched client
+and are not comparable with the table above.
+
 ## Q4_K_M against llama.cpp (ml#291)
 
 Qwen3-0.6B as a Q4_K_M GGUF (456 MiB, Q4_K and Q6_K matrices, `F32` norms), read by both sides: ours with `weights: Dtype.Q4_K` (`WEIGHTS=q4_k`, ml#126: the blocks stay packed on ggml) and llama.cpp's `llama-bench`. The F16 rows are the same model in half weights.

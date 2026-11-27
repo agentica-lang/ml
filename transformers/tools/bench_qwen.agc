@@ -1,11 +1,12 @@
-## Times Qwen3 generation on ggml for `benchmarks/bench_qwen.sh`: the load, then one warm-up pass
+## Times Qwen3 generation on ggml (or XLA) for `benchmarks/bench_qwen.sh`: the load, then one warm-up pass
 ## (which compiles the steps), then one timed pass: a prompt of 128 token ids in one step, and 64 one-token
 ## steps after it. Prints `RESULT load_ms prompt_tokens_per_s decode_tokens_per_s`, and on the CPU `THREADS n` first (the
 ## threads of the ggml CPU backend: `TENSOR_THREADS`, else the physical cores). Run from `transformers/`:
 ##
-##   agentica tools/bench_qwen.agc MODEL_DIR [cpu|vulkan]
+##   agentica tools/bench_qwen.agc MODEL_DIR [cpu|vulkan|xla]
 ##
-## `WEIGHTS=f16` loads the big matrices as half weights (off by default) and `VULKAN_FP16=0` makes Vulkan multiply in
+## `xla` runs on `Backend.Xla` with the plugin of the cache (the CPU one, or a CUDA one put there). `WEIGHTS=f16`
+## (or `bf16`, XLA only) loads the big matrices as half weights (off by default) and `VULKAN_FP16=0` makes Vulkan multiply in
 ## exact `float32` (fp16 is the default). `AGENTICA_ML_KV=host` keeps the KV cache in host memory (`Placement.Kv.Host`).
 ## `AGENTICA_ML_MAX_DEVICE_BYTES=n` puts on a Vulkan device the most blocks that fit `n` bytes of it (`Qwen3.layers_that_fit`,
 ## printed as `LAYERS`), and it excludes `AGENTICA_ML_LAYERS_ON_DEVICE`.
@@ -23,7 +24,7 @@ NEW = 64
 def main() -> Void
   args = System.args
   if args.size < 1
-    puts("usage: bench_qwen.agc MODEL_DIR [cpu|vulkan]")
+    puts("usage: bench_qwen.agc MODEL_DIR [cpu|vulkan|xla]")
     System.exit(2)
   end
 
@@ -32,7 +33,12 @@ def main() -> Void
     device = Tensor.Device.Vulkan(0)
   end
 
-  case run(args[0], Tensor.Backend.Ggml(device), device == Tensor.Device.Cpu)
+  backend = Tensor.Backend.Ggml(device)
+  if args.size > 1 and args[1] == "xla"
+    backend = Tensor.Backend.Xla(Tensor.Device.Cpu)
+  end
+
+  case run(args[0], backend, backend == Tensor.Backend.Ggml(Tensor.Device.Cpu))
     ok(line) -> puts(line)
     error(e) ->
       puts("bench_qwen: #{e.message}")

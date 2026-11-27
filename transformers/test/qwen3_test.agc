@@ -215,6 +215,31 @@ def test_f16_weights_keep_the_big_matrices_half_and_the_logits_close() -> Result
   end
 end
 
+## `weights: BF16` keeps the table (the tied head too) and the big MLP matrices of a `bfloat16` checkpoint in `BF16` on
+## XLA, as the file stores them, and the logits are those of the same checkpoint read as `F32`. Off XLA it is an error.
+def test_bf16_weights_keep_the_file_words_on_xla() -> Result[Void]
+  with_peer do |dir|
+    refused = Qwen3.open("#{dir}/half_bf16", S.REF, Tensor.Dtype.BF16)
+    try Test.assert(!refused.ok?, "the reference held BF16 weights")
+    try Test.assert(refused.message.include?("BF16"), refused.message)
+    rows = [[1, 5, 2, 7, 3, 12], [399, 200, 9, 0, 6, 11]]
+    for backend in try S.xla_backends()
+      half = try Qwen3.open("#{dir}/half_bf16", backend, Tensor.Dtype.BF16)
+      whole = try Qwen3.open("#{dir}/half_bf16", backend)
+      block = half.stack.blocks[0]
+      try Test.eq(Tensor.dtype(half.tokens.table), Tensor.Dtype.BF16)
+      try Test.eq(Tensor.dtype(half.head.w), Tensor.Dtype.BF16)
+      try Test.eq(Tensor.dtype(block.mlp.up.w), Tensor.Dtype.BF16)
+      try Test.eq(Tensor.dtype(block.attention.query.w), Tensor.Dtype.F32)
+      got = try S.floats_of(try Qwen3.run(half, rows))
+      want = try S.floats_of(try Qwen3.run(whole, rows))
+      try S.expect_close(got, want, F32_ABS, F32_REL, "BF16 against the same weights in F32")
+    end
+
+    ok()
+  end
+end
+
 ## The same models as GGUF files (llama.cpp's names; the tied one with `output.weight` as llama.cpp writes it, and
 ## without) give the peer's logits, from the key-values alone: no `config.json`.
 def test_a_gguf_gives_the_same_logits_as_the_safetensors() -> Result[Void]

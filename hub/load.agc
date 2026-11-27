@@ -11,6 +11,8 @@
 ## per value at load (`Tensor.from_file`, `tensor/DESIGN.md` §7). Everything
 ## else stays `F32`, and so does a matrix under `HALF_MIN_ELEMENTS`, where
 ## halving gains nothing. Any other backend answers an error naming the option.
+## `weights: BF16` keeps the same matrices in `BF16` on the XLA backend only: a `bfloat16` checkpoint's words as they
+## are, an `F32` or `F16` one rounded once.
 ##
 ## With `weights: Q8_0` a rank-2 weight that the file stores as Q8_0 (a GGUF file) is kept as its blocks on the ggml
 ## backend, about a quarter of the memory of `F32` (`tensor/DESIGN.md` §7); everything else stays `F32` (a Q8_0
@@ -23,7 +25,7 @@ import Hub from "hub"
 import Nn from "pkg/nn/nn"
 import Tensor from "pkg/tensor/tensor"
 
-## A rank-2 weight with fewer elements than this stays `F32` under `weights: F16`.
+## A rank-2 weight with fewer elements than this stays `F32` under `weights: F16` or `BF16`.
 HALF_MIN_ELEMENTS = 100000
 
 ## The prefix of every layer of one encoder block.
@@ -57,16 +59,17 @@ struct DecoderBlockNames
   down: String
 end
 
-## The `weights` option the tools take from the environment: `WEIGHTS=f32` (the default), `WEIGHTS=f16`, `WEIGHTS=q8_0`
-## or `WEIGHTS=q4_k`.
+## The `weights` option the tools take from the environment: `WEIGHTS=f32` (the default), `WEIGHTS=f16`,
+## `WEIGHTS=bf16`, `WEIGHTS=q8_0` or `WEIGHTS=q4_k`.
 def weights_from_env() -> Result[Tensor.Dtype]
   name = System.env("WEIGHTS").unwrap_or("f32")
   case name
     "f32" -> ok(Tensor.Dtype.F32)
     "f16" -> ok(Tensor.Dtype.F16)
+    "bf16" -> ok(Tensor.Dtype.BF16)
     "q8_0" -> ok(Tensor.Dtype.Q8_0)
     "q4_k" -> ok(Tensor.Dtype.Q4_K)
-    _ -> error("WEIGHTS is f32, f16, q8_0 or q4_k, got #{name}")
+    _ -> error("WEIGHTS is f32, f16, bf16, q8_0 or q4_k, got #{name}")
   end
 end
 
@@ -259,6 +262,7 @@ def held_bytes(c: Hub.Checkpoint, name: String, weights: Tensor.Dtype) -> Result
 
   case try held_dtype(c, name, shape.size, weights)
     Tensor.Dtype.F16 -> ok(values * 2)
+    Tensor.Dtype.BF16 -> ok(values * 2)
     Tensor.Dtype.Q8_0 -> ok((values / 32) * 34)
     Tensor.Dtype.Q4_K -> ok((values / 256) * 144)
     Tensor.Dtype.Q6_K -> ok((values / 256) * 210)
@@ -268,7 +272,7 @@ end
 
 private
 
-## The weight `name` of `rank`: `F32`, or `F16` when `weights` asks for it, it is a float file of rank 2 and it has
+## The weight `name` of `rank`: `F32`, or `F16` or `BF16` when `weights` asks for it, it is a float file of rank 2 and it has
 ## `HALF_MIN_ELEMENTS` or more (an F64 file stays `F32`), or `Q8_0` when `weights` asks for it, the file stores it as
 ## Q8_0 and it has rank 2, or the Q4_K or Q6_K of the file when `weights` is Q4_K (the same conditions).
 def matrix(
@@ -299,10 +303,10 @@ def held_dtype(c: Hub.Checkpoint, name: String, rank: Int, weights: Tensor.Dtype
     dtype = kept(weights, try Hub.dtype(c, name))
   end
 
-  if weights == Tensor.Dtype.F16 and rank == 2
+  if (weights == Tensor.Dtype.F16 or weights == Tensor.Dtype.BF16) and rank == 2
     shape = try Hub.shape(c, name)
     if shape.size == 2 and shape[0] * shape[1] >= HALF_MIN_ELEMENTS
-      dtype = Tensor.Dtype.F16
+      dtype = weights
     end
   end
 
@@ -339,7 +343,7 @@ def kept(weights: Tensor.Dtype, stored: String) -> Tensor.Dtype
   Tensor.Dtype.F32
 end
 
-## `weights` is an `F32`, `F16`, `Q8_0` or `Q4_K` request that this backend can keep.
+## `weights` is an `F32`, `F16`, `BF16`, `Q8_0` or `Q4_K` request that this backend can keep.
 def checked(weights: Tensor.Dtype, backend: Tensor.Backend) -> Result[Bool]
   case weights
     Tensor.Dtype.F32 -> ok(true)
@@ -348,6 +352,12 @@ def checked(weights: Tensor.Dtype, backend: Tensor.Backend) -> Result[Bool]
         Tensor.Backend.Ggml(_) -> ok(true)
         Tensor.Backend.Xla(_) -> ok(true)
         _ -> error("weights: F16 needs the ggml or the XLA backend (half weights are only held by those)")
+      end
+
+    Tensor.Dtype.BF16 ->
+      case backend
+        Tensor.Backend.Xla(_) -> ok(true)
+        _ -> error("weights: BF16 needs the XLA backend (BF16 weights are only held by XLA)")
       end
 
     Tensor.Dtype.Q8_0 ->
@@ -362,7 +372,7 @@ def checked(weights: Tensor.Dtype, backend: Tensor.Backend) -> Result[Bool]
         _ -> error("weights: Q4_K needs the ggml backend (quantized weights are only held by ggml)")
       end
 
-    _ -> error("weights is F32, F16, Q8_0 or Q4_K")
+    _ -> error("weights is F32, F16, BF16, Q8_0 or Q4_K")
   end
 end
 

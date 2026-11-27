@@ -18,7 +18,7 @@ path, and leaves:
   in doubles from what the blocks dequantize to (`q8`, for the rows `ids_q8`);
 - `half/`: `float32`, tied, one layer of width 256, so that the table and the
   MLP matrices reach the half-weight threshold (no expected logits: the test
-  compares it with itself loaded as `F32`);
+  compares it with itself loaded as `F32`), and `half_bf16/` the same model in `bfloat16`;
 - `roomy/`: `float32`, tied, one layer with heads of 8 and up to 4096 positions, for a cache of more than 256 rows
   (no expected logits: the test compares two ways of reading its cache);
 - `expected.json`: for the batch `IDS`, the logits of every position of every
@@ -201,9 +201,9 @@ HALF_CONFIG = dict(CONFIG, hidden_size=256, num_hidden_layers=1, head_dim=64, in
                    vocab_size=400)
 
 
-def plain(c, seed):
-    """A `float32`, tied model of the config `c`."""
-    m = Model(seed, "F32", "model.embed_tokens.weight", c)
+def plain(c, seed, dtype="F32"):
+    """A tied model of the config `c`, `float32` unless `dtype` says otherwise."""
+    m = Model(seed, dtype, "model.embed_tokens.weight", c)
     d, hd = c["hidden_size"], c["head_dim"]
     m.add("model.embed_tokens.weight", [c["vocab_size"], d])
     p = "model.layers.0."
@@ -378,6 +378,9 @@ def write(out):
     (out / "half").mkdir()
     half().save(out / "half" / "model.safetensors")
     (out / "half" / "config.json").write_text(json.dumps(HALF_CONFIG))
+    (out / "half_bf16").mkdir()
+    plain(HALF_CONFIG, 2027, "BF16").save(out / "half_bf16" / "model.safetensors")
+    (out / "half_bf16" / "config.json").write_text(json.dumps(HALF_CONFIG))
     (out / "roomy").mkdir()
     plain(ROOMY_CONFIG, 2029).save(out / "roomy" / "model.safetensors")
     (out / "roomy" / "config.json").write_text(json.dumps(ROOMY_CONFIG))
