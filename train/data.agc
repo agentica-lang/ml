@@ -82,7 +82,7 @@ end
 ## A dataset of the columns of `table`: the numeric columns `inputs` are the features, `[rows, features]` row by row, and
 ## the numeric column `target` the targets `[rows]`, as `F32` or, with `target_dtype: I32`, whole numbers (class ids for
 ## `Loss.cross_entropy`; a target that is not whole is an error). A column that is text, or holds a null, is an error that
-## names it. The tensors are made on `backend`.
+## names it, and so is a table with no rows. The tensors are made on `backend`.
 def from_table(
   table: Table.Table,
   inputs: List[String],
@@ -91,6 +91,7 @@ def from_table(
   target_dtype: Tensor.Dtype = Tensor.Dtype.F32,
 ) -> Result[Dataset]
   return error("a dataset needs at least one input column") if inputs.empty?
+  return error("the table has no rows") if table.rows == 0
   if target_dtype != Tensor.Dtype.F32 and target_dtype != Tensor.Dtype.I32
     return error("target_dtype is F32 or I32, got #{target_dtype}")
   end
@@ -109,9 +110,13 @@ def from_table(
 
   goals = try Table.floats(table, target)
   aimed: List[Tensor.Values] = []
-  for goal in goals
+  for i in 0...goals.size
+    goal = goals[i]
     if target_dtype == Tensor.Dtype.I32
-      return error("column #{target} holds #{goal}, not a whole number") if goal != goal.round.to_f
+      if goal < -2147483648.0 or goal > 2147483647.0 or goal != goal or goal != goal.round.to_f
+        return error("column #{target} row #{i + 1} holds #{goal}, not a whole number of the I32 range")
+      end
+
       aimed = aimed.push(Tensor.Values.Int(goal.round))
     else
       aimed = aimed.push(Tensor.Values.Float(goal))

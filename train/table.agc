@@ -1,7 +1,10 @@
 ## A table of named columns read from a file, for `Data.from_table`: a CSV file (the `csv` package of
-## agentica-lang/packages) with a header row, read whole and decoded one column at a time, when the column is asked for.
-## A column is numbers when every cell is a number, else text (so an empty cell makes its column text); a column read as
-## the other kind is an error that names the first cell that does not fit.
+## agentica-lang/packages) with a header row, read whole. A column is decoded when it is asked for, through the `load`
+## function of the table and not into a field of each column: that is the shape a format that holds its columns apart
+## (Parquet) fits, which decodes only the columns a dataset uses and, later, a part of the rows. A column is numbers when
+## every cell is a finite number, else text (so an empty cell, or `1e400`, makes its column text); a column read as the
+## other kind is an error that names the first cell that does not fit. Rows are counted from 1: row 1 is the first one
+## after the header.
 
 import Csv from "pkg/csv/csv"
 
@@ -18,7 +21,8 @@ struct Table
 end
 
 ## The table of the CSV file at `path`: the first row names the columns, every row has as many cells, and a name is
-## used once. A text that ends the file with a line break has no extra row.
+## used once. A file that ends with a line break has no extra row, a byte order mark at its start is dropped, and a line
+## with nothing on it is skipped when the table has more than one column.
 def read(path: String) -> Result[Table]
   return error("#{path}: a table is a .csv file") if not path.end_with?(".csv")
 
@@ -28,10 +32,10 @@ def read(path: String) -> Result[Table]
   names = lines[0]
   return error("#{path}: a column name is used twice in #{names}") if names.uniq.size != names.size
 
-  rows = lines.drop(1)
+  rows = lines.drop(1).select { |row| names.size == 1 or row != [""] }
   for i in 0...rows.size
     if rows[i].size != names.size
-      return error("#{path}: row #{i + 2} has #{rows[i].size} cells, the header #{names.size}")
+      return error("#{path}: row #{i + 1} has #{rows[i].size} cells, the header #{names.size}")
     end
   end
 
@@ -42,7 +46,7 @@ end
 def floats(t: Table, name: String) -> Result[List[Float]]
   case try loaded(t, name)
     Column.Numbers(xs) -> ok(xs)
-    Column.Texts(xs) -> error("column #{name} is text, not numbers (#{first_cell(xs)})")
+    Column.Texts(xs) -> error("column #{name} has a non-number cell (#{first_cell(xs)})")
   end
 end
 
@@ -67,10 +71,9 @@ def column_of(names: List[String], rows: List[List[String]], name: String) -> Re
   cells = rows.map { |row| row[at] }
   numbers: List[Float] = []
   for cell in cells
-    case cell.strip.to_f
-      ok(x) -> numbers = numbers.push(x)
-      error(_) -> return ok(Column.Texts(cells))
-    end
+    x = number(cell)
+    return ok(Column.Texts(cells)) if x.none?
+    numbers = numbers.push(x.unwrap!)
   end
 
   ok(Column.Numbers(numbers))
@@ -79,8 +82,18 @@ end
 ## The first cell of a text column that is not a number, with its row: the one that made the column text.
 def first_cell(cells: List[String]) -> String
   for i in 0...cells.size
-    return "row #{i + 1} is #{cells[i].inspect}" if not cells[i].strip.to_f.ok?
+    return "row #{i + 1} is #{cells[i].inspect}" if number(cells[i]).none?
   end
 
   "no cell"
+end
+
+## The finite number in `cell`, if there is one.
+def number(cell: String) -> Optional[Float]
+  case cell.strip.to_f
+    ok(x) ->
+      return none if x - x != 0.0
+      some(x)
+    error(_) -> none
+  end
 end

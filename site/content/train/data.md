@@ -50,9 +50,9 @@ end
 
 ## Tables
 
-`Table.read(path)` (`import Table from "pkg/train/table"`) reads a CSV file (the `csv` package) whose first row names the columns: every row must have as many cells as the header, and a name may be used once. The file is read whole, and a column is decoded when it is asked for. A column is numbers when every cell is a number, else text (so one empty cell makes a column text). `Table.floats(table, name)` and `Table.texts(table, name)` give a column; asking for the other kind is an error that names the column and the first cell that does not fit. `table.names` are the columns in file order and `table.rows` the number of rows.
+`Table.read(path)` (`import Table from "pkg/train/table"`) reads a CSV file (the `csv` package) whose first row names the columns: every row must have as many cells as the header and a name may be used once. A byte order mark at the start is dropped, a line with nothing on it is skipped when there is more than one column, and a quoted cell may hold a comma, quotes and line breaks. The file is read whole, and a column is decoded when it is asked for. A column is numbers when every cell is a finite number, else text (so one empty cell makes a column text). `Table.floats(table, name)` and `Table.texts(table, name)` give a column; asking for the other kind is an error that names the column and the first cell that does not fit (`column gap has a non-number cell (row 3 is "")`). Rows are counted from 1: row 1 is the first one after the header. `table.names` are the columns in file order and `table.rows` the number of rows.
 
-`Data.from_table(table, inputs, target, backend, target_dtype)` takes the numeric columns `inputs` as the features, `inputs` of `[rows, features]` row by row, and the numeric column `target` as the targets `[rows]`: `F32` by default, or with `target_dtype: Tensor.Dtype.I32` whole numbers, the class ids that `Loss.cross_entropy` takes (a target that is not whole is an error). A column that is text is an error that names it, so the text columns of a file are left out of `inputs`. The result is a `Dataset` for a `Loader`.
+`Data.from_table(table, inputs, target, backend, target_dtype)` takes the numeric columns `inputs` as the features, `[rows, features]` row by row, and the numeric column `target` as the targets `[rows]`: `F32` by default, or with `target_dtype: Tensor.Dtype.I32` whole numbers in the I32 range, the class ids that `Loss.cross_entropy` takes (a target that is not whole is an error that names the column and the row). A column that is text is an error that names it, so the text columns of a file are left out of `inputs`, and a table with no rows is an error. The result is a `Dataset` for a `Loader`.
 
 ```agentica
 import Data from "pkg/train/data"
@@ -60,6 +60,8 @@ import Table from "pkg/train/table"
 import Tensor from "pkg/tensor/tensor"
 
 def main() -> Void
+  text = "x1,x2,label\n0.5,1.0,0\n-1.25,0.25,1\n2.0,-0.5,1\n3.5,2.0,0\n0.0,4.0,2\n1.0,8.0,2\n"
+  File.write_text("scores.csv", text).unwrap!
   table = Table.read("scores.csv").unwrap!
   puts(table.names)
   dataset = Data.from_table(table, ["x1", "x2"], "label", Tensor.Backend.Reference, Tensor.Dtype.I32).unwrap!
@@ -72,13 +74,13 @@ end
 ```
 
 ```output
-["x1", "x2", "count", "label", "name", "gap"]
+["x1", "x2", "label"]
 2
 [4, 2]
 [Values.Int(0), Values.Int(1), Values.Int(1), Values.Int(0)]
 ```
 
-with `scores.csv` as `train/test/fixtures/table/scores.csv`. Parquet files are not read yet.
+Parquet files are not read yet.
 
 ## Loader
 

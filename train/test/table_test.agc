@@ -31,6 +31,21 @@ def words(name: String) -> Result[List[String]]
   ok(out)
 end
 
+## `body` over a new folder, removed after it whatever `body` gave.
+def with_dir(body: Fn[String, Result[Void]]) -> Result[Void]
+  dir = "/tmp/agentica-table-#{Random.int(0, 999999999)}"
+  try Dir.mkdir_private(dir, 5000)
+  result = body.call(dir)
+  _ = Path.remove(dir, 5000)
+  result
+end
+
+## The table of a CSV file that holds `text`.
+def written(dir: String, text: String) -> Result[Table.Table]
+  try File.write_text("#{dir}/t.csv", text)
+  Table.read("#{dir}/t.csv")
+end
+
 def error_text[T](r: Result[T]) -> String
   case r
     ok(_) -> ""
@@ -53,8 +68,13 @@ end
 def test_a_column_that_cannot_be_read_as_asked_is_an_error_that_names_it() -> Result[Void]
   t = try Table.read(FILE)
   gap = error_text(Table.floats(t, "gap"))
-  try Test.assert(gap.include?("gap") and gap.include?("row 3"), "the error said: #{gap}")
-  try Test.assert(error_text(Table.floats(t, "name")).include?("name"), "a text column read as numbers")
+  try Test.assert(
+    gap.include?("gap") and gap.include?("non-number") and gap.include?("row 3 is \"\""),
+    "the error said: #{gap}",
+  )
+
+  name = error_text(Table.floats(t, "name"))
+  try Test.assert(name.include?("name") and name.include?("row 1 is \"ann\""), "the error said: #{name}")
   try Test.assert(error_text(Table.texts(t, "x1")).include?("x1"), "a numeric column read as text")
   try Test.assert(error_text(Table.floats(t, "nope")).include?("nope"), "a missing column")
   try Test.assert(error_text(Table.read("test/fixtures/table/scores.txt")).include?(".csv"), "an unknown format")
@@ -98,27 +118,65 @@ def test_a_dataset_of_a_file_goes_through_the_loader() -> Result[Void]
   ok()
 end
 
+## Each refusal names what is wrong.
 def test_a_dataset_needs_columns_it_can_read() -> Result[Void]
   t = try Table.read(FILE)
-  try Test.error?(Data.from_table(t, ["x1", "gap"], "label", S.REF))
-  try Test.error?(Data.from_table(t, ["x1", "name"], "label", S.REF))
-  try Test.error?(Data.from_table(t, ["x1", "nope"], "label", S.REF))
-  try Test.error?(Data.from_table(t, [], "label", S.REF))
-  Test.error?(Data.from_table(t, ["x1"], "name", S.REF))
+  for bad in [["x1", "gap"], ["x1", "name"], ["x1", "nope"]]
+    said = error_text(Data.from_table(t, bad, "label", S.REF))
+    try Test.assert(said.include?(bad[1]), "an input #{bad[1]}: #{said}")
+  end
+
+  bare = error_text(Data.from_table(t, [], "label", S.REF))
+  try Test.assert(bare.include?("input"), "no input: #{bare}")
+  text = error_text(Data.from_table(t, ["x1"], "name", S.REF))
+  Test.assert(text.include?("name"), "a text target: #{text}")
 end
 
-## A target that is not whole cannot be class ids, and a file that is not a rectangle of one header is refused at read.
-def test_ragged_rows_and_repeated_names_and_fractional_classes_are_errors() -> Result[Void]
+## A target that is not whole, or too large, cannot be class ids: the error names the column and the row.
+def test_a_target_that_is_not_a_class_id_is_an_error_that_names_its_row() -> Result[Void]
   t = try Table.read(FILE)
-  broken = error_text(Data.from_table(t, ["x2"], "x1", S.REF, Tensor.Dtype.I32))
-  try Test.assert(broken.include?("x1") and broken.include?("whole"), "the error said: #{broken}")
-  dir = "/tmp/agentica-table-#{Random.int(0, 999999999)}"
-  try Dir.mkdir_private(dir, 5000)
-  try File.write_text("#{dir}/short.csv", "a,b\n1,2\n3\n")
-  try File.write_text("#{dir}/twice.csv", "a,a\n1,2\n")
-  short = error_text(Table.read("#{dir}/short.csv"))
-  twice = error_text(Table.read("#{dir}/twice.csv"))
-  _ = Path.remove(dir, 5000)
-  try Test.assert(short.include?("row 3"), "the error said: #{short}")
-  Test.assert(twice.include?("a"), "the error said: #{twice}")
+  fraction = error_text(Data.from_table(t, ["x2"], "x1", S.REF, Tensor.Dtype.I32))
+  try Test.assert(
+    fraction.include?("x1") and fraction.include?("row 1") and fraction.include?("whole"),
+    "said: #{fraction}",
+  )
+
+  with_dir do |dir|
+    huge = try written(dir, "a,b\n1,2\n3,1e30\n")
+    said = error_text(Data.from_table(huge, ["a"], "b", S.REF, Tensor.Dtype.I32))
+    try Test.assert(said.include?("b") and said.include?("row 2") and said.include?("I32"), "said: #{said}")
+    try Test.eq(Tensor.shape((try Data.from_table(huge, ["a"], "b", S.REF)).targets), [2])
+    over = try written(dir, "a,b\n1,1e400\n")
+    both = error_text(Table.floats(over, "b"))
+    try Test.assert(both.include?("b") and both.include?("row 1"), "an infinite cell is text: #{both}")
+    ok()
+  end
+end
+
+## What a CSV file may look like: CRLF line ends, a byte order mark, a quoted line break, a blank line between rows, and no
+## row at all; and what it may not: a short row (counted from the first row after the header), a name used twice.
+def test_the_shapes_of_a_csv_file_are_read_or_refused() -> Result[Void]
+  with_dir do |dir|
+    crlf = try written(dir, "a,b\r\n1,x\r\n2,y\r\n")
+    try Test.eq(crlf.rows, 2)
+    try Test.eq(try Table.floats(crlf, "a"), [1.0, 2.0])
+    try Test.eq(try Table.texts(crlf, "b"), ["x", "y"])
+    mark = try String.from_bytes(try Bytes.from_list([239, 187, 191]))
+    bom = try written(dir, mark + "a,b\n1,x\n")
+    try Test.eq(bom.names, ["a", "b"])
+    quoted = try written(dir, "a,b\n1,\"two\nlines\"\n2,y\n")
+    try Test.eq(try Table.texts(quoted, "b"), ["two\nlines", "y"])
+    blank = try written(dir, "a,b\n1,x\n\n2,y\n")
+    try Test.eq(blank.rows, 2)
+    try Test.eq(try Table.floats(blank, "a"), [1.0, 2.0])
+    header_only = try written(dir, "a,b\n")
+    try Test.eq(header_only.rows, 0)
+    empty = error_text(Data.from_table(header_only, ["a"], "b", S.REF))
+    try Test.assert(empty.include?("no rows"), "said: #{empty}")
+    try Test.assert(error_text(written(dir, "")).include?("no header"), "an empty file")
+    short = error_text(written(dir, "a,b\n1,2\n3\n"))
+    try Test.assert(short.include?("row 2") and short.include?("1 cells"), "said: #{short}")
+    twice = error_text(written(dir, "a,a\n1,2\n"))
+    Test.assert(twice.include?("used twice"), "said: #{twice}")
+  end
 end
