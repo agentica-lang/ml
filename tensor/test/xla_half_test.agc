@@ -78,6 +78,38 @@ def test_f16_values_made_from_a_list_round_to_nearest_even() -> Result[Void]
   )
 end
 
+## A list value beyond 65504 (or an infinity) is an error naming its element, as in a file; 65520 would round to an
+## infinity, so it is refused too.
+def test_a_list_value_beyond_f16_is_an_error_naming_its_element() -> Result[Void]
+  return ok() if !try Support.present()
+  for bad in [70000.0, 65520.0, -70000.0, Float.from_bits(9218868437227405312)]
+    r = Tensor.from_list(values_of([1.0, bad]), [2], Tensor.Dtype.F16, Support.XLA)
+    try Test.assert(!r.ok?, "#{bad} was held as F16")
+    try Test.assert(r.message.include?("outside what F16 holds"), r.message)
+    try Test.assert(r.message.include?("element 1 "), r.message)
+  end
+
+  ok()
+end
+
+## What F16 holds comes back exactly, with the sign of a zero; a NaN stays a NaN; a subnormal tie goes to the even
+## neighbour (3 * 2^-25 is half way between 1 and 2 of the smallest steps, so it goes up); and a value just above a tie
+## rounds up (one rounding from the double: through an `F32` it would land on the tie and round down).
+def test_f16_values_round_trip_and_round_once() -> Result[Void]
+  return ok() if !try Support.present()
+  exact = [1.0, -2.0, 65504.0, -0.0]
+  t = try Tensor.from_list(values_of(exact), [4], Tensor.Dtype.F16, Support.XLA)
+  got = try floats(t)
+  try Test.eq(got, exact)
+  try Test.eq(Float.to_bits(got[3]), Float.to_bits(-0.0))
+  nan = try Tensor.from_list(values_of([Float.from_bits(9221120237041090560)]), [1], Tensor.Dtype.F16, Support.XLA)
+  back = (try floats(nan))[0]
+  try Test.assert(back != back, "a NaN came back as #{back}")
+  ties = [3.0 / 33554432.0, 1.0 + 1.0 / 2048.0 + 1.0 / 1099511627776.0, 1.0 + 1.0 / 2048.0]
+  rounded = try Tensor.from_list(values_of(ties), [3], Tensor.Dtype.F16, Support.XLA)
+  Test.eq(try floats(rounded), [1.0 / 8388608.0, 1.0009765625, 1.0])
+end
+
 ## 12 weights, each a multiple of 1/8: row `j` of the `[4, 3]` weight is `weights()[3 j...3 j + 3]`.
 def weights() -> List[Float]
   out: List[Float] = []
@@ -153,4 +185,17 @@ def test_a_rounded_half_weight_stays_within_one_f16_step_of_the_f32_product() ->
   end
 
   ok()
+end
+
+## A half weight is for inference: a gradient over one is an error, as on ggml.
+def test_a_gradient_over_an_f16_weight_is_an_error() -> Result[Void]
+  return ok() if !try Support.present()
+  w = try Tensor.from_list(values_of([1.0, 2.0]), [2], Tensor.Dtype.F16, Support.XLA)
+  r = Trace.value_and_grad(
+    [w],
+    ->(xs: List[Tensor.Tensor]) { Tensor.sum(try Tensor.to_dtype(xs[0], Tensor.Dtype.F32), none, false) },
+  )
+
+  try Test.assert(!r.ok?, "a gradient was taken over an F16 weight")
+  Test.assert(r.message.include?("no gradient is taken"), r.message)
 end

@@ -548,10 +548,15 @@ end
   it the lowering transposes (copies) the half weight on every run.
 - **Half weights on XLA.** `Tensor.from_file(..., dtype: F16)` and `from_list(..., F16)` on `Backend.Xla` keep the weight in
   a PJRT `F16` buffer (`native/xla.c`: the file is read and widened in C, and a value beyond 65504 is an error naming
-  its element, as on ggml). The load holds the widened `F32` values of the tensor for a moment before it converts them.
-  StableHLO has no mixed-type `dot_general`, so the emitter (`src/stablehlo.agc`) converts each `F16` operand of a node
-  whose result is `F32` (a `matmul`, a `gather`, an `attention`) with a `stablehlo.convert` inside the program, and the
-  weight stays 16 bits as an argument. An `F16` result (a `transpose` or a `slice` of a weight) is left as it is. Whether
+  its element, as on ggml; `from_list` refuses the same, an infinity included, and keeps a NaN). The load widens the
+  range to `F32` first, so for the length of one load a tensor takes 6 bytes a value (4 of `F32` and 2 of `F16`);
+  `store` rounds from the double, once. The rules of the ggml paragraph above (an `F16` node only as the weight of a
+  product or the table of a lookup, or a cache) are ggml's lowering; on XLA an `F16` tensor is an ordinary one: an op on
+  `F16` operands computes in half and answers `F16`, and `to_dtype` widens it. StableHLO has no mixed-type
+  `dot_general`, so the emitter (`src/stablehlo.agc`) converts each `F16` operand of a node whose result is `F32` (a
+  `matmul`, a `gather`, an `attention`) with a `stablehlo.convert` inside the program, and the weight stays 16 bits as
+  an argument. An `F16` result (a `transpose` or a `slice` of a weight) is left as it is. `Trace.value_and_grad` refuses
+  an `F16` weight on XLA as on ggml. Whether
   XLA's CPU plugin fuses the convert into the product or makes an `F32` copy of the weight on each run is not measured
   here (the memory numbers belong to the benchmark of ml#390). `BF16` has no `Dtype` yet, so it is not held.
 - **Quantized weights.** `Tensor.from_file(..., format: Q8_0, dtype: Q8_0)` on

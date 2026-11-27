@@ -256,7 +256,8 @@ def scalar_to_tensor(value: Types.Values, dtype: Types.Dtype, backend: Types.Bac
   end
 end
 
-## Creation: row-major `data` of `shape`; the count must match.
+## Creation: row-major `data` of `shape`; the count must match. On XLA an `F16` value is rounded to nearest even and
+## one beyond 65504, an infinity included, is an `error` naming its element; a NaN stays one.
 def from_list(
   data: List[Types.Values],
   shape: List[Int],
@@ -2182,7 +2183,7 @@ end
 
 ## `x` and the weight `w` of a product share their dtype, or `w` is a half or
 ## quantized weight (`F16`, `Q8_0`, `Q4_K` or `Q6_K`, from `from_file` with that `dtype`) of an
-## `F32` `x` in a trace: ggml reads the weight and answers `F32`.
+## `F32` `x` in a trace: ggml reads the weight and answers `F32`, and XLA widens it in the program.
 def weight_dtype(x: Types.Tensor, w: Types.Tensor, op: String) -> Result[Bool]
   case x.backend
     Types.Backend.Trace -> return ok(true) if x.dtype == Types.Dtype.F32 and Types.is_packed_dtype(w.dtype)

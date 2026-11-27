@@ -376,34 +376,34 @@ static bool dims_of(an_env *env, xla_list_Int *shape, int64_t *dims, size_t *ran
   return true;
 }
 
-/* The IEEE binary16 bits of `f`, rounded to nearest even; a value past 65504 rounds to an infinity. */
-static uint16_t half_bits(float f) {
-  uint32_t x, sign, m, half, rem;
-  int32_t e, he;
+/* The IEEE binary16 bits of `x`, rounded to nearest even straight from the double (one rounding); a value past 65504
+   rounds to an infinity, and a NaN stays one. */
+static uint16_t half_bits(double x) {
+  uint64_t bits, m, half, rem, mid;
+  uint32_t sign;
+  int e, he, shift;
 
-  memcpy(&x, &f, sizeof x);
-  sign = (x >> 16) & 0x8000u;
-  e = (int32_t)((x >> 23) & 0xFFu);
-  m = x & 0x7FFFFFu;
-  if (e == 0xFF) return (uint16_t)(sign | 0x7C00u | (m != 0 ? 0x200u | (m >> 13) : 0));
-  he = e - 112;
+  memcpy(&bits, &x, sizeof bits);
+  sign = (uint32_t)(bits >> 48) & 0x8000u;
+  e = (int)((bits >> 52) & 0x7FFu);
+  m = bits & 0xFFFFFFFFFFFFFull;
+  if (e == 0x7FF) return (uint16_t)(sign | 0x7C00u | (m != 0 ? 0x200u : 0));
+  he = e - 1008; /* the exponent biased for binary16: e - 1023 + 15 */
   if (he >= 31) return (uint16_t)(sign | 0x7C00u);
   if (he <= 0) {
-    int shift;
-    uint32_t mid;
-
     if (he < -10) return (uint16_t)sign;
-    m |= 0x800000u;
-    shift = 14 - he;
+    m |= 0x10000000000000ull;
+    shift = 43 - he;
     half = m >> shift;
-    rem = m & ((1u << shift) - 1);
-    mid = 1u << (shift - 1);
+    rem = m & ((1ull << shift) - 1);
+    mid = 1ull << (shift - 1);
     if (rem > mid || (rem == mid && (half & 1u))) half++;
     return (uint16_t)(sign | half);
   }
-  half = ((uint32_t)he << 10) | (m >> 13);
-  rem = m & 0x1FFFu;
-  if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) half++;
+  half = ((uint64_t)he << 10) | (m >> 42);
+  rem = m & 0x3FFFFFFFFFFull;
+  mid = 0x20000000000ull;
+  if (rem > mid || (rem == mid && (half & 1u))) half++;
   return (uint16_t)(sign | half);
 }
 
@@ -416,7 +416,7 @@ static void store(void *bytes, int dtype, int64_t i, double x) {
   case DT_I16: ((int16_t *)bytes)[i] = (int16_t)x; break;
   case DT_I8: ((int8_t *)bytes)[i] = (int8_t)x; break;
   case DT_U8: ((uint8_t *)bytes)[i] = (uint8_t)x; break;
-  case DT_F16: ((uint16_t *)bytes)[i] = half_bits((float)x); break;
+  case DT_F16: ((uint16_t *)bytes)[i] = half_bits(x); break;
   default: ((uint8_t *)bytes)[i] = x != 0.0; break;
   }
 }
@@ -559,8 +559,6 @@ static an_term loaded_floats(an_env *env, xla_list_Int *shape, const char *path,
     }
     for (i = 0; i < count; i++) {
       if (values[i] > 65504.0f || values[i] < -65504.0f) {
-        char why[96];
-
         snprintf(why, sizeof why, "the value %g at element %lld is outside what F16 holds (up to 65504)",
                  (double)values[i], (long long)i);
         free(values);

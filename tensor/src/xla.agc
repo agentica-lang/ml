@@ -145,7 +145,8 @@ def floats(device: Types.Device, values: List[Float], shape: List[Int]) -> Resul
   made("from_list", shape, Types.Dtype.F32) do XlaRaw.upload(shape, values, code) end
 end
 
-## Creation: row-major `data` of `shape`; the wrapper checked the count.
+## Creation: row-major `data` of `shape`; the wrapper checked the count. An `F16` value is rounded to nearest even, and
+## one beyond 65504 (an infinity too) is an error naming its element, as in a file; a NaN stays a NaN.
 def from_list(
   device: Types.Device,
   data: List[Types.Values],
@@ -155,7 +156,12 @@ def from_list(
   code = try ready(device, dtype, "from_list")
   values: List[Float] = []
   for v in data
-    values = values.push(try Types.value_to_float(v, dtype))
+    x = try Types.value_to_float(v, dtype)
+    if dtype == Types.Dtype.F16 and x.abs > 65504.0
+      return error("from_list: the value #{x} at element #{values.size} is outside what F16 holds (up to 65504)")
+    end
+
+    values = values.push(x)
   end
 
   made("from_list", shape, dtype) do XlaRaw.upload(shape, values, code) end

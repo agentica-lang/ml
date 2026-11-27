@@ -77,7 +77,7 @@ end
 
 ## `weights: F16` is an error off ggml and XLA, and on them a model whose matrices are all under `Load.HALF_MIN_ELEMENTS` is the
 ## same model (a tiny one: the half path itself is `hub/test/load_test.agc` and the checkpoints of `tools/`).
-def test_f16_weights_need_ggml_and_leave_a_tiny_model_alone() -> Result[Void]
+def test_f16_weights_need_ggml_or_xla_and_leave_a_tiny_model_alone() -> Result[Void]
   with_peer do |dir|
     refused = Qwen3.open("#{dir}/tiny", S.REF, Tensor.Dtype.F16)
     try Test.error?(refused)
