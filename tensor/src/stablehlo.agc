@@ -478,73 +478,75 @@ end
 # `adam_step` over `[p, g, m, v, hyper]`: the new `[p, m, v]` stacked on a new first axis, from the ops of
 # `Tensor.adam_composed` over the 7 numbers of `hyper` (`lr, beta1, beta2, eps, decay, correct1, correct2`).
 def adam(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
-  shape = try type_of(args[0])
-  scalar = try tensor_type([], args[0].dtype)
-  row = try tensor_type([1], args[0].dtype)
-  hyper = try type_of(args[4])
+  dtype = args[0].dtype
+  shape = try ir_type(args[0].shape, dtype)
+  scalar = try ir_type([], dtype)
+  row = try ir_type([1], dtype)
+  hyper = try ir_type(args[4].shape, args[4].dtype)
   l = Lines(first: first, defs: [])
   at: List[String] = []
   for i in 0...7
-    l = put(l, "stablehlo.slice #{a[4]} #{extents([i], [i + 1])} : (#{hyper}) -> #{row}")
-    l = put(l, "stablehlo.reshape #{last(l)} : (#{row}) -> #{scalar}")
-    l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = [] : (#{scalar}) -> #{shape}")
+    l = try put_slice(l, a[4], hyper, [i], [i + 1])
+    l = try put_ir(l, "stablehlo.reshape", [last(l)], [row], scalar)
+    l = try put_ir(l, "stablehlo.broadcast_in_dim", [last(l)], [scalar], shape, broadcast_dims([]))
     at = at.push(last(l))
   end
 
   l = put(l, try fill(1.0, args[0]))
   one = last(l)
-  l = put(l, "stablehlo.subtract #{one}, #{at[1]} : #{shape}")
+  l = try put_binary(l, "subtract", one, at[1], shape)
   keep1 = last(l)
-  l = put(l, "stablehlo.subtract #{one}, #{at[2]} : #{shape}")
+  l = try put_binary(l, "subtract", one, at[2], shape)
   keep2 = last(l)
-  l = put(l, "stablehlo.multiply #{at[0]}, #{at[4]} : #{shape}")
-  l = put(l, "stablehlo.subtract #{one}, #{last(l)} : #{shape}")
+  l = try put_binary(l, "multiply", at[0], at[4], shape)
+  l = try put_binary(l, "subtract", one, last(l), shape)
   shrink = last(l)
-  l = put(l, "stablehlo.multiply #{a[2]}, #{at[1]} : #{shape}")
+  l = try put_binary(l, "multiply", a[2], at[1], shape)
   mb = last(l)
-  l = put(l, "stablehlo.multiply #{a[1]}, #{keep1} : #{shape}")
-  l = put(l, "stablehlo.add #{mb}, #{last(l)} : #{shape}")
+  l = try put_binary(l, "multiply", a[1], keep1, shape)
+  l = try put_binary(l, "add", mb, last(l), shape)
   m = last(l)
-  l = put(l, "stablehlo.multiply #{a[3]}, #{at[2]} : #{shape}")
+  l = try put_binary(l, "multiply", a[3], at[2], shape)
   vb = last(l)
-  l = put(l, "stablehlo.multiply #{a[1]}, #{a[1]} : #{shape}")
-  l = put(l, "stablehlo.multiply #{last(l)}, #{keep2} : #{shape}")
-  l = put(l, "stablehlo.add #{vb}, #{last(l)} : #{shape}")
+  l = try put_binary(l, "multiply", a[1], a[1], shape)
+  l = try put_binary(l, "multiply", last(l), keep2, shape)
+  l = try put_binary(l, "add", vb, last(l), shape)
   v = last(l)
-  l = put(l, "stablehlo.multiply #{v}, #{at[6]} : #{shape}")
-  l = put(l, "stablehlo.sqrt #{last(l)} : #{shape}")
-  l = put(l, "stablehlo.add #{last(l)}, #{at[3]} : #{shape}")
+  l = try put_binary(l, "multiply", v, at[6], shape)
+  l = try put_unary(l, "sqrt", last(l), shape)
+  l = try put_binary(l, "add", last(l), at[3], shape)
   denominator = last(l)
-  l = put(l, "stablehlo.multiply #{m}, #{at[5]} : #{shape}")
-  l = put(l, "stablehlo.divide #{last(l)}, #{denominator} : #{shape}")
-  l = put(l, "stablehlo.multiply #{at[0]}, #{last(l)} : #{shape}")
+  l = try put_binary(l, "multiply", m, at[5], shape)
+  l = try put_binary(l, "divide", last(l), denominator, shape)
+  l = try put_binary(l, "multiply", at[0], last(l), shape)
   step = last(l)
-  l = put(l, "stablehlo.multiply #{a[0]}, #{shrink} : #{shape}")
-  l = put(l, "stablehlo.subtract #{last(l)}, #{step} : #{shape}")
+  l = try put_binary(l, "multiply", a[0], shrink, shape)
+  l = try put_binary(l, "subtract", last(l), step, shape)
   p = last(l)
-  layer = try tensor_type([1] + args[0].shape, args[0].dtype)
+  layer = try ir_type([1] + args[0].shape, dtype)
   rows: List[String] = []
   for x in [p, m, v]
-    l = put(l, "stablehlo.reshape #{x} : (#{shape}) -> #{layer}")
+    l = try put_ir(l, "stablehlo.reshape", [x], [shape], layer)
     rows = rows.push(last(l))
   end
 
-  l = put(
-    l,
-    "stablehlo.concatenate #{rows.join(", ")}, dim = 0 : (#{[layer, layer, layer].join(", ")}) -> #{try type_of(t)}",
-  )
-
+  l = try put_ir(l, "stablehlo.concatenate", rows, [layer, layer, layer], try ir_type(t.shape, t.dtype), concat_dim(0))
   ok(l.defs)
 end
 
 # Part `i` of an `adam_step`: its layer `i` of the stacked result.
 def adam_part(t: Types.Tensor, stacked: Types.Tensor, name: String, i: Int, first: Int) -> Result[List[String]]
-  layer = try tensor_type([1] + t.shape, t.dtype)
-  window = extents([i] + t.shape.map { |_| 0 }, [i + 1] + t.shape)
-  ok([
-    "stablehlo.slice #{name} #{window} : (#{try type_of(stacked)}) -> #{layer}",
-    "stablehlo.reshape %#{first} : (#{layer}) -> #{try type_of(t)}",
-  ])
+  layer = try ir_type([1] + t.shape, t.dtype)
+  l = try put_slice(
+    Lines(first: first, defs: []),
+    name,
+    try ir_type(stacked.shape, stacked.dtype),
+    [i] + t.shape.map { |_| 0 },
+    [i + 1] + t.shape,
+  )
+
+  l = try put_ir(l, "stablehlo.reshape", [last(l)], [layer], try ir_type(t.shape, t.dtype))
+  ok(l.defs)
 end
 
 def indexed(n: Types.Node) -> Optional[Bound]
@@ -633,6 +635,20 @@ def put_ir(
 ) -> Result[Lines]
   ok(put(l, try ir_op(name, sources, types, result, attributes, l.first + l.defs.size, regions)))
 end
+
+def put_unary(l: Lines, op: String, x: String, t: IR.TensorType) -> Result[Lines]
+  put_ir(l, "stablehlo.#{op}", [x], [t], t)
+end
+
+def put_binary(l: Lines, op: String, x: String, y: String, t: IR.TensorType) -> Result[Lines]
+  put_ir(l, "stablehlo.#{op}", [x, y], [t, t], t)
+end
+
+def put_slice(l: Lines, name: String, x: IR.TensorType, starts: List[Int], ends: List[Int]) -> Result[Lines]
+  ok(put(l, try slice_op(name, x, starts, ends, l.first + l.defs.size)))
+end
+
+def concat_dim(axis: Int) -> List[IR.Attribute] = [IR.Attribute(key: "dimension", value: IR.Attr.I64(axis))]
 
 def broadcast_dims(dims: List[Int]) -> List[IR.Attribute]
   [IR.Attribute(key: "broadcast_dimensions", value: IR.Attr.I64Array(dims))]
@@ -996,107 +1012,104 @@ def rope(
   seq = x.shape[rank - 2]
   width = x.shape[rank - 1]
   half = dims / 2
-  grid = try tensor_type([seq, half], x.dtype)
-  table = try tensor_type([half], x.dtype)
+  grid = try ir_type([seq, half], x.dtype)
+  table = try ir_type([half], x.dtype)
+  line = try ir_type([seq], x.dtype)
   l = Lines(first: first, defs: [])
-  l = put(l, "stablehlo.convert #{a[1]} : (#{try type_of(args[1])}) -> #{try tensor_type([seq], x.dtype)}")
-  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = [0] : (#{try tensor_type([seq], x.dtype)}) -> #{grid}")
+  l = try put_ir(l, "stablehlo.convert", [a[1]], [try ir_type(args[1].shape, args[1].dtype)], line)
+  l = try put_ir(l, "stablehlo.broadcast_in_dim", [last(l)], [line], grid, broadcast_dims([0]))
+  positions = last(l)
   turns = (0...half).map { |i| decimal(Math.exp(-((2.0 * i.to_f) / dims.to_f) * Math.log(base))) }
-  l = put(l, try constant_op("[#{turns.join(", ")}]", try ir_type([half], x.dtype)))
-  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = [1] : (#{table}) -> #{grid}")
-  l = put(l, "stablehlo.multiply %#{first + 1}, #{last(l)} : #{grid}")
+  l = put(l, try constant_op("[#{turns.join(", ")}]", table))
+  l = try put_ir(l, "stablehlo.broadcast_in_dim", [last(l)], [table], grid, broadcast_dims([1]))
+  l = try put_binary(l, "multiply", positions, last(l), grid)
   angle = last(l)
-  l = put(l, "stablehlo.cosine #{angle} : #{grid}")
+  l = try put_unary(l, "cosine", angle, grid)
   cosine = last(l)
-  l = put(l, "stablehlo.sine #{angle} : #{grid}")
+  l = try put_unary(l, "sine", angle, grid)
   if inverse
-    l = put(l, "stablehlo.negate #{last(l)} : #{grid}")
+    l = try put_unary(l, "negate", last(l), grid)
   end
 
   sine = last(l)
   lead = x.shape.take(rank - 1)
-  pairs = try tensor_type(lead + [half], x.dtype)
-  spread = "dims = [#{rank - 2}, #{rank - 1}] : (#{grid}) -> #{pairs}"
-  l = put(l, "stablehlo.broadcast_in_dim #{cosine}, #{spread}")
+  pairs = try ir_type(lead + [half], x.dtype)
+  spread = broadcast_dims([rank - 2, rank - 1])
+  l = try put_ir(l, "stablehlo.broadcast_in_dim", [cosine], [grid], pairs, spread)
   cosine = last(l)
-  l = put(l, "stablehlo.broadcast_in_dim #{sine}, #{spread}")
+  l = try put_ir(l, "stablehlo.broadcast_in_dim", [sine], [grid], pairs, spread)
   sine = last(l)
+  full = try ir_type(lead + [dims], x.dtype)
   parts: List[String] = []
-  part_types: List[String] = []
+  part_types: List[IR.TensorType] = []
   if neox
-    columns = [[0, half], [half, dims]]
     halves: List[String] = []
-    for c in columns
-      l = put(l, try columns_of(x, a[0], c[0], c[1]))
+    for c in [[0, half], [half, dims]]
+      l = try put_columns(l, x, a[0], c[0], c[1])
       halves = halves.push(last(l))
     end
 
-    l = put(l, "stablehlo.multiply #{halves[0]}, #{cosine} : #{pairs}")
-    l = put(l, "stablehlo.multiply #{halves[1]}, #{sine} : #{pairs}")
-    l = put(l, "stablehlo.subtract %#{first + l.defs.size - 2}, #{last(l)} : #{pairs}")
+    l = try put_binary(l, "multiply", halves[0], cosine, pairs)
+    turned = last(l)
+    l = try put_binary(l, "multiply", halves[1], sine, pairs)
+    l = try put_binary(l, "subtract", turned, last(l), pairs)
     parts = parts.push(last(l))
-    l = put(l, "stablehlo.multiply #{halves[1]}, #{cosine} : #{pairs}")
-    l = put(l, "stablehlo.multiply #{halves[0]}, #{sine} : #{pairs}")
-    l = put(l, "stablehlo.add %#{first + l.defs.size - 2}, #{last(l)} : #{pairs}")
+    l = try put_binary(l, "multiply", halves[1], cosine, pairs)
+    turned = last(l)
+    l = try put_binary(l, "multiply", halves[0], sine, pairs)
+    l = try put_binary(l, "add", turned, last(l), pairs)
     parts = parts.push(last(l))
     part_types = [pairs, pairs]
   else
-    twos = try tensor_type(lead + [half, 2], x.dtype)
-    l = put(l, try columns_of(x, a[0], 0, dims))
-    l = put(l, "stablehlo.reshape #{last(l)} : (#{try tensor_type(lead + [dims], x.dtype)}) -> #{twos}")
+    twos = try ir_type(lead + [half, 2], x.dtype)
+    one = try ir_type(lead + [half, 1], x.dtype)
+    l = try put_columns(l, x, a[0], 0, dims)
+    l = try put_ir(l, "stablehlo.reshape", [last(l)], [full], twos)
     folded = last(l)
     cells: List[String] = []
     for k in 0...2
-      starts = lead.map { |_| 0 } + [0, k]
-      ends = lead + [half, k + 1]
-      one = try tensor_type(lead + [half, 1], x.dtype)
-      l = put(l, "stablehlo.slice #{folded} #{extents(starts, ends)} : (#{twos}) -> #{one}")
-      l = put(l, "stablehlo.reshape #{last(l)} : (#{one}) -> #{pairs}")
+      l = try put_slice(l, folded, twos, lead.map { |_| 0 } + [0, k], lead + [half, k + 1])
+      l = try put_ir(l, "stablehlo.reshape", [last(l)], [one], pairs)
       cells = cells.push(last(l))
     end
 
-    l = put(l, "stablehlo.multiply #{cells[0]}, #{cosine} : #{pairs}")
-    l = put(l, "stablehlo.multiply #{cells[1]}, #{sine} : #{pairs}")
-    l = put(l, "stablehlo.subtract %#{first + l.defs.size - 2}, #{last(l)} : #{pairs}")
+    l = try put_binary(l, "multiply", cells[0], cosine, pairs)
+    turned = last(l)
+    l = try put_binary(l, "multiply", cells[1], sine, pairs)
+    l = try put_binary(l, "subtract", turned, last(l), pairs)
     even = last(l)
-    l = put(l, "stablehlo.multiply #{cells[1]}, #{cosine} : #{pairs}")
-    l = put(l, "stablehlo.multiply #{cells[0]}, #{sine} : #{pairs}")
-    l = put(l, "stablehlo.add %#{first + l.defs.size - 2}, #{last(l)} : #{pairs}")
+    l = try put_binary(l, "multiply", cells[1], cosine, pairs)
+    turned = last(l)
+    l = try put_binary(l, "multiply", cells[0], sine, pairs)
+    l = try put_binary(l, "add", turned, last(l), pairs)
     odd = last(l)
-    one = try tensor_type(lead + [half, 1], x.dtype)
     rows: List[String] = []
     for r in [even, odd]
-      l = put(l, "stablehlo.reshape #{r} : (#{pairs}) -> #{one}")
+      l = try put_ir(l, "stablehlo.reshape", [r], [pairs], one)
       rows = rows.push(last(l))
     end
 
-    l = put(l, "stablehlo.concatenate #{rows.join(", ")}, dim = #{rank} : (#{one}, #{one}) -> #{twos}")
-    l = put(l, "stablehlo.reshape #{last(l)} : (#{twos}) -> #{try tensor_type(lead + [dims], x.dtype)}")
+    l = try put_ir(l, "stablehlo.concatenate", rows, [one, one], twos, concat_dim(rank))
+    l = try put_ir(l, "stablehlo.reshape", [last(l)], [twos], full)
     parts = [last(l)]
-    part_types = [try tensor_type(lead + [dims], x.dtype)]
+    part_types = [full]
   end
 
   if dims < width
-    l = put(l, try columns_of(x, a[0], dims, width))
+    l = try put_columns(l, x, a[0], dims, width)
     parts = parts.push(last(l))
-    part_types = part_types.push(try tensor_type(lead + [width - dims], x.dtype))
+    part_types = part_types.push(try ir_type(lead + [width - dims], x.dtype))
   end
 
-  l = put(
-    l,
-    "stablehlo.concatenate #{parts.join(", ")}, dim = #{rank - 1} : (#{part_types.join(", ")}) -> #{try type_of(t)}",
-  )
-
+  l = try put_ir(l, "stablehlo.concatenate", parts, part_types, try ir_type(t.shape, t.dtype), concat_dim(rank - 1))
   ok(l.defs)
 end
 
 # The columns `from...to` of the last axis of `x`.
-def columns_of(x: Types.Tensor, name: String, from: Int, to: Int) -> Result[String]
+def put_columns(l: Lines, x: Types.Tensor, name: String, from: Int, to: Int) -> Result[Lines]
   rank = x.shape.size
   starts = x.shape.map { |_| 0 }.take(rank - 1) + [from]
-  ends = x.shape.take(rank - 1) + [to]
-  shape = x.shape.take(rank - 1) + [to - from]
-  ok("stablehlo.slice #{name} #{extents(starts, ends)} : (#{try type_of(x)}) -> #{try tensor_type(shape, x.dtype)}")
+  put_slice(l, name, try ir_type(x.shape, x.dtype), starts, x.shape.take(rank - 1) + [to])
 end
 
 # The batched product `[B..., m, k] . [B..., k, n]`: the leading axes are the batch, the rest is `matmul`.

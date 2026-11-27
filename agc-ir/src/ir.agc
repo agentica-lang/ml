@@ -174,12 +174,17 @@ def boolean(x: Bool) -> String
   "false"
 end
 
+def i64_array(xs: List[Int]) -> String
+  return "array<i64>" if xs.empty?
+  "array<i64: #{xs.map { |x| "#{x}" }.join(", ")}>"
+end
+
 def types_of(values: List[Value]) -> String = values.map { |v| show_type(v.type) }.join(", ")
 
 def attribute(a: Attribute) -> String
   value = case a.value
     Attr.I64(x) -> "#{x} : i64"
-    Attr.I64Array(xs) -> "array<i64: #{xs.map { |x| "#{x}" }.join(", ")}>"
+    Attr.I64Array(xs) -> i64_array(xs)
     Attr.Bool(x) -> boolean(x)
     Attr.DenseInt(x, t) -> "dense<#{x}> : #{show_type(t)}"
     Attr.DenseIntRows(rows, t) ->
