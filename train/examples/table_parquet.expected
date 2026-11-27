@@ -1,0 +1,7 @@
+["x1", "x2", "count", "label", "flag", "name", "gap", "wild"]
+["ann", "bob, jr", "café", "", "dee", "eve \"x\""]
+error("column gap has a null at row 3")
+[1.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+2
+[4, 2]
+[Values.Int(0), Values.Int(1), Values.Int(1), Values.Int(0)]
