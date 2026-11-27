@@ -15,6 +15,7 @@ blank_line_after_end = true
 # `List[Float32]`, which `asr` takes). A release of whisper moves this line to
 # the new tag, after the tags exist.
 [dependencies]
+agc-ir = { path = "../../agc-ir", override = true }
 tensor = { path = "../../tensor", override = true }
 nn = { path = "../../nn", override = true }
 hub = { path = "../../hub", override = true }

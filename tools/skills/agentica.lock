@@ -1,6 +1,11 @@
 version = 1
 
 [[package]]
+name = "agc-ir"
+path = "../../agc-ir"
+override = true
+
+[[package]]
 name = "asr"
 path = "../../asr"
 override = true
