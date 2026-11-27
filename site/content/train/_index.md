@@ -129,16 +129,25 @@ fit = try (
 
 ## Train.fit
 
-`Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).
+`Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, run)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).
 
 - `loss` has the type `Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]]`. It gets the parameters and a batch, and it returns a float scalar.
 - Inside `loss`, the batch `inputs` and `targets` are traced inputs, so the loss is written once, as plain code. `fit` traces and compiles the step once for each batch shape (a smaller last batch is a second one) and runs it on every batch of that shape.
 - `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1), `loss`, `steps` (the step count of the run so far) and `params`, the parameters the epoch ended with (use them inside `on_epoch`: the next step frees them), and answers a `Result[Train.Control]`: `ok(Train.Control.Continue)`, `ok(Train.Control.Stop)` (ends `fit` after the epoch, answering its `Fit`) or an `error` (stops `fit` with an error that names the epoch). `fit` prints nothing.
 - `on_step` is optional. It gets a `StepInfo` after each step, with `epoch` (from 1), `batch` (from 0), `step` (the count of the run, from 1), `loss` and `params` (valid only inside `on_step`), and answers a `Result[Train.Control]` as `on_epoch` does: `Stop` ends `fit` after the step, answering its `Fit` (the history's last epoch is the mean over the steps it ran), and an `error` stops it with an error that names the epoch and the batch.
+- `run` is the name of the run (empty by default): the `run` of the metadata of the telemetry events below, and `Loop.trainer(loss, params, optimizer, run: "name")` sets it.
 - `metrics` is optional. It is an open [`Metrics.Run`](metrics.md) that gets `train/loss`, `train/lr` and `train/step_ms` for every step. A value it refuses, such as a loss that is not finite, stops `fit` too.
 - A failed step stops `fit` with an error that names the epoch and the batch, for example `epoch 1, batch 0: ...`.
 
-`Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics, prefetch, on_step)` is `fit` over batches that a function makes, for data that is not two tensors of one shape: `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `epoch` (from 1) as a `Data.Batch(inputs:, targets:)`.
+A run emits [telemetry](https://github.com/agentica-lang/packages/tree/main/telemetry) events, which a program attaches handlers to (`Telemetry.start()`, then `Telemetry.attach(id, ["train"], handler)`) to log, count or export them without touching the loop. They are delivered in handlers' own tasks and may be dropped when a handler is slow, so they observe and do not control: stopping a run stays with `on_step`, `on_epoch` and `Loop.handle`. With no handler attached a step builds nothing. Every event has the name of the run as `run` in its metadata, and its measurements are plain numbers: the loss and the learning rate have no unit, so they are outside the unit suffixes of the telemetry conventions.
+
+| Event | `ints` | `floats` | `metadata` |
+|---|---|---|---|
+| `train.step`, after each step | `step_count` (from 1), `epoch_count` | `loss`, `lr` (the rate of the step) | `run` |
+| `train.epoch`, after each epoch | `epoch_count`, `step_count` (so far) | `loss` (the mean of the epoch) | `run` |
+| `train.metric`, after each `Loop.metric` of an epoch | `epoch_count` | `value` | `run`, `metric` (its name) |
+
+`Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics, prefetch, on_step, run)` is `fit` over batches that a function makes, for data that is not two tensors of one shape: `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `epoch` (from 1) as a `Data.Batch(inputs:, targets:)`.
 
 ```agentica
 fit = try Train.fit_batches(&loss, params, ->(_epoch: Int, i: Int) { padded(sentences, i) }, 63, optimizer, 1)
