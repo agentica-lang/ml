@@ -164,6 +164,10 @@ true
   `modules_to_save`, a regular-expression `target_modules`, an adapter of an embedding) is an error that names it.
 - On Qwen3 the output head is tied to the embedding table, so an adapter on the table also changes the head here.
 
+## Fine-tune a sentence-embedding model on a dataset
+
+A whole program that fine-tunes `all-MiniLM-L6-v2` on the scored pairs of STS-B (Parquet through `Table.read`, batches of one shape, AdamW with the cosine loss, Spearman before and after, saving and loading the weights, the backend as one argument) is `transformers/tools/finetune_stsb.agc`, with the pinned downloads in `tools/fetch_stsb.sh`; the page is `https://www.agentica-lang.com/ml/train/finetune-minilm/`.
+
 ## Fine-tune DistilBERT with LoRA
 
 The recipe for a Hub model: load it as `F32`, take its weights by name, make an adapter on its attention projections,
