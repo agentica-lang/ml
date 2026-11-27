@@ -113,7 +113,7 @@ fit = try (
 
 - `loss` has the type `Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]]`. It gets the parameters and a batch, and it returns a float scalar.
 - Inside `loss`, the batch `inputs` and `targets` are traced inputs, so the loss is written once, as plain code. `fit` traces and compiles the step once for each batch shape (a smaller last batch is a second one) and runs it on every batch of that shape.
-- `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1) and `loss`. `fit` prints nothing.
+- `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1), `loss` and `params`, the parameters the epoch ended with (use them inside `on_epoch`: the next step frees them). `fit` prints nothing.
 - `metrics` is optional. It is an open [`Metrics.Run`](metrics.md) that gets `train/loss`, `train/lr` and `train/step_ms` for every step. A value it refuses, such as a loss that is not finite, stops `fit` too.
 - A failed step stops `fit` with an error that names the epoch and the batch, for example `epoch 1, batch 0: ...`.
 
