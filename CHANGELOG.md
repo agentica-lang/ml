@@ -10,6 +10,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - `Table.read` reads a `.parquet` file too (the `parquet` package), and `Data.from_table` makes a `Dataset` of its columns (ml#318).
 - A Parquet column with a NaN or an infinity is an error that names the column and the row, as a CSV cell that is not finite keeps its column text; `train/examples/` has a CSV and a Parquet example with goldens, and `train/data.md` the text-column path with `Train.fit_batches` (ml#318).
 - **Breaking:** train, transformers, vision and tools/skills ask for Agentica 0.40.0-beta.2 (the `parquet` package needs it); CI already ran on it (ml#318).
+- `Table.read` reads a CSV or Parquet file over 1 MiB, in chunks (ml#378).
 
 ### hub
 
