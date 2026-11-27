@@ -1492,6 +1492,7 @@ an_term torch_adam_step(an_env *env, struct torch_TensorHandle_state *p, struct 
     torch::Tensor out = torch::empty(dims, torch::TensorOptions().dtype(torch::kFloat32));
 
     const int64_t n = pc.numel();
+    if (n == 0) return ok_tensor(env, out);
     const float *pp = pc.data_ptr<float>(), *gp = gc.data_ptr<float>(), *mp = mc.data_ptr<float>(),
                 *vp = vc.data_ptr<float>();
     float *np = out.data_ptr<float>(), *nm = np + n, *nv = np + 2 * n;

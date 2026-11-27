@@ -184,8 +184,8 @@ an_term torch_where(an_env *env, struct torch_TensorHandle_state *cond, struct t
 
 /* One step of Adam over `F32` tensors of one shape, in one pass: the weight `p`, its gradient `g` and its moments `m`
    and `v` are read, and the new weight and moments come out stacked, `[3, ...shape]`, in one new tensor. The
-   arithmetic is that of `Tensor.adam_composed`, operation by operation in `F32`. A result that is not finite is an
-   error. */
+   arithmetic is that of `Tensor.adam_composed`, operation by operation in `F32`. A new weight or moment that is not
+   finite is an error (the composition computes it and the trace's check refuses it later). */
 an_term torch_adam_step(an_env *env, struct torch_TensorHandle_state *p, struct torch_TensorHandle_state *g, struct torch_TensorHandle_state *m, struct torch_TensorHandle_state *v, double lr, double beta1, double beta2, double eps, double decay, double correct1, double correct2);
 
 /* Elementwise clamp to `[lo, hi]`, `lo <= hi`. */

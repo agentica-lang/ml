@@ -128,3 +128,23 @@ def test_the_step_chains_through_the_views_it_made() -> Result[Void]
 
   ok()
 end
+
+def test_a_double_weight_and_an_empty_one_step() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  for dtype in [Tensor.Dtype.F64, Tensor.Dtype.F16]
+    ones = try Tensor.full([2, 3], Tensor.Values.Float(0.5), dtype, Conform.TORCH)
+    values = ADAMW.map { |x: Float| Tensor.Values.Float(x) }
+    hyper = try Tensor.from_list(values, [7], dtype, Conform.TORCH)
+    got = try Tensor.adam_step(ones, ones, ones, ones, hyper)
+    try Test.eq(Tensor.dtype(got[0]), dtype)
+    want = try Tensor.adam_composed(ones, ones, ones, ones, hyper)
+    try same(got[0], want[0], "a #{dtype} weight")
+  end
+
+  empty = try Tensor.zeros([0], Tensor.Dtype.F32, Conform.TORCH)
+  hyper = try Tensor.floats(ADAMW, [7], Conform.TORCH)
+  got = try Tensor.adam_step(empty, empty, empty, empty, hyper)
+  try Test.eq(Tensor.shape(got[0]), [0])
+  Test.eq(Tensor.shape(got[2]), [0])
+end
