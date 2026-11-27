@@ -173,11 +173,12 @@ and `Optim.adamw` are the optimizers with their usual knobs). Both answer the sa
 `EpochCompleted`, in order. An `error` from it ends the run; `return Loop.stop(info)` ends it without one, with the `Fit` so far.
 `Loop.checkpoint(trainer, dir, every:, keep:)` writes the weights, the optimizer state and where the run was to
 `dir/step-NNNNNNNNNN`, whole or not at all (a kill, not a power loss), and keeps the last `keep`. One `dir` serves one run:
-a step that has a checkpoint is an error. `Loop.read_checkpoint(dir, name, optimizer, like)` reads one back, on the
+a step that has a checkpoint is an error (a resumed run in the same `dir` continues it). `Loop.read_checkpoint(dir, name, optimizer, like)` reads one back, on the
 backend and in the dtype of the tensors `like`. `Loop.resume(trainer, dir)` goes on from the last checkpoint of `dir`
 (none: from the start) at the batch after it, with the same loader seed and `epochs`; the `Fit` is of the steps it took.
 A mid-epoch checkpoint gives a first `history` value that is the mean of the steps that were left. Put `Loop.checkpoint`
-with the same `dir` after it to continue the run.
+with the same `dir` (in either order) to continue the run there. It checks the seed, the batches of an epoch and the step
+count (`run_batches` can check no more); `Started` handlers see step 0.
 
 ```agentica
 import Data from "pkg/train/data"

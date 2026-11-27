@@ -85,6 +85,8 @@ def fit(
   run: String = "",
   skip: Int = 0,
 ) -> Result[Fit]
+  return refused(start, "skip is 0 or more, got #{skip}") if skip < 0
+
   if gathers_in_graph?(data, params)
     return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, start, run, skip)
   end
@@ -146,6 +148,8 @@ def fit_batches(
 ) -> Result[Fit]
   return refused(start, "fit_batches needs at least one batch, got #{count}") if count < 1
   return refused(start, "prefetch must be 0 or more, got #{prefetch}") if prefetch < 0
+  return refused(start, "skip is 0 or more, got #{skip}") if skip < 0
+
   run_of = ->(batches: Fn[Int, Fn[Int, Result[Data.Batch]]]) {
     Run(
       loss: loss,
@@ -340,15 +344,6 @@ end
 
 ## The state the run starts from: `start` checked against `optimizer` and `params`, or a new one.
 def initial(r: Run, optimizer: Optim.Optimizer, params: List[Tensor.Tensor]) -> Result[Optim.State]
-  if r.skip < 0
-    case r.start
-      some(s) -> release(s, [], false)
-      none -> nil
-    end
-
-    return error("skip is 0 or more, got #{r.skip}")
-  end
-
   case r.start
     some(s) ->
       checked = Optim.resume(optimizer, s, params)
@@ -441,7 +436,7 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
 
           if called.unwrap! == Control.Stop
             release(state, [], false)
-            history = history.push(total / (i + 1).to_f)
+            history = history.push(total / (i - begin + 1).to_f)
             return Ran(result: ok(Fit(params: current, history: history)), programs: programs)
           end
 

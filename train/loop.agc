@@ -53,7 +53,7 @@ end
 ## `loss` is the loss of the step, or the mean loss of the epoch at `EpochCompleted` (0 at `Started`).
 ## `params` are the parameters the step or the epoch made, the run's own: use them inside the handler (the next step
 ## frees them). `metrics` holds the values measured at the end of this epoch, by name, at `EpochCompleted`. `state` is the
-## optimizer state the same way (`none` at `Started`), and `seed` the seed of the loader of `run` (0 for `run_batches`).
+## optimizer state the same way (`none` at `Started`), `seed` the seed of the loader of `run` (0 for `run_batches`) and `count` the batches of an epoch.
 ## `halt` is what `Loop.stop` writes.
 struct Info
   event: Event
@@ -65,6 +65,7 @@ struct Info
   metrics: Map[String, Float] = {}
   state: Optional[Optim.State] = none
   seed: Int = 0
+  count: Int = 0
   halt: Channel[Bool]
 end
 
@@ -77,14 +78,15 @@ end
 
 ## What `checkpoint` wrote: the weights and the optimizer state (`params` and `state`, to give back to `run`), and where
 ## the run was. `event` is `step` or `epoch`; `epoch` counts from 1, `batch` is the last batch run in that epoch (0 for
-## an `epoch` checkpoint, which is its epoch's end), `step` the steps of the run, `seed` the seed of the loader and
-## `loss` the loss of the step, or the mean of the epoch.
+## an `epoch` checkpoint, which is its epoch's end), `step` the steps of the run, `seed` the seed of the loader, `count` the batches
+## of an epoch and `loss` the loss of the step, or the mean of the epoch.
 struct Checkpoint
   event: String
   epoch: Int
   batch: Int
   step: Int
   seed: Int
+  count: Int
   loss: Float
   params: List[Tensor.Tensor]
   state: Optim.State
@@ -213,6 +215,7 @@ def read_checkpoint(
       batch: meta.batch,
       step: meta.step,
       seed: meta.seed,
+      count: meta.count,
       loss: Float.from_bits(meta.loss_bits),
       params: params,
       state: state.unwrap!,
@@ -223,16 +226,18 @@ end
 ## The trainer that goes on from the last checkpoint of `dir` (`checkpoint`), if it has one, when it runs: with the
 ## weights and the optimizer state of the checkpoint, at its step, from the batch after the one it was written at, with
 ## the order of the data that the whole run has (the same seed and epoch). Without a checkpoint it starts from the
-## beginning. `run` and `run_batches` take the same `epochs` as the whole run: the checkpoint is `epoch`, `batch` and
-## `step` of it, and the loader must make the same batches (an error says when its seed or its size differ). The
+## beginning. `run` and `run_batches` take the same `epochs` as the whole run, and the loader must make the same
+## batches: an error says when the seed, the batches of an epoch or the step count of the checkpoint do not fit (a run
+## that began from a `Train.fit` `start` state has a step count that does not). `run_batches` cannot check what its
+## `batch` function makes, only those three. `Started` handlers see step 0 and the trainer's own parameters. The
 ## `Fit` is of the steps that this run took: its history starts with the epoch the checkpoint was in, and for a
 ## checkpoint in the middle of an epoch the mean of that epoch is over the steps that are left; `Fit.metrics` likewise.
-## The weights of the trainer are not changed. A resumed run that checkpoints into `dir` continues the same run.
+## The weights of the trainer are not changed. `Loop.checkpoint` with the same `dir` (before or after `resume`) continues the same run there.
 def resume(t: Trainer, dir: String) -> Trainer = t.with(resume: some(dir))
 
 ## `Train.fit` of the trainer over the batches of `data`, for `epochs` passes (one by default).
 def run(t: Trainer, data: Data.Loader, epochs: Int = 1) -> Result[Train.Fit]
-  seen = measuring(t, epochs, data.seed)
+  seen = measuring(t, epochs, data.seed, Data.count(data))
   try started(t, seen)
   from = try resume_point(t, Data.count(data), epochs, data.seed)
   fit = Train.fit(
@@ -261,7 +266,7 @@ def run_batches(
   epochs: Int = 1,
   prefetch: Int = 0,
 ) -> Result[Train.Fit]
-  seen = measuring(t, epochs, 0)
+  seen = measuring(t, epochs, 0, count)
   try started(t, seen)
   from = try resume_point(t, count, epochs, 0)
   fit = Train.fit_batches(
@@ -339,6 +344,7 @@ struct Meta
   batch: Int
   step: Int
   seed: Int
+  count: Int
   loss_bits: UInt64
 end
 
@@ -350,6 +356,7 @@ struct Seen
   values: Channel[List[Float]]
   halt: Channel[Bool]
   seed: Int
+  count: Int
 end
 
 ## The point of the last checkpoint of the trainer's `resume` folder, or the beginning. `count` batches make an epoch.
@@ -388,9 +395,17 @@ def fits_data(name: String, saved: Checkpoint, skip: Int, count: Int, seed: Int)
     return error("#{name} was written with the loader seed #{saved.seed}, the loader has seed #{seed}")
   end
 
+  if saved.count != count
+    return error("#{name} was written with #{saved.count} batches an epoch, the run has #{count}")
+  end
+
+  if saved.batch < 0 or saved.batch >= count
+    return error("#{name} is at batch #{saved.batch}, outside the #{count} batches of an epoch")
+  end
+
   if saved.step != skip
     return error(
-      "#{name} is step #{saved.step}, but epoch #{saved.epoch} of #{count} batches ends at step #{skip}: the batches differ",
+      "#{name} is step #{saved.step}, but epoch #{saved.epoch} of #{count} batches ends at step #{skip}: the batches differ, or the run began from a `Train.fit` start state, whose steps this resume does not count",
     )
   end
 
@@ -407,21 +422,21 @@ def released(from: Point, fit: Result[Train.Fit]) -> Result[Train.Fit]
   fit
 end
 
-def measuring(t: Trainer, epochs: Int, seed: Int) -> Seen
+def measuring(t: Trainer, epochs: Int, seed: Int, count: Int) -> Seen
   values: Channel[List[Float]] = Channel.new(epochs)
   halt: Channel[Bool] = Channel.new(1)
   steps = handlers_at(t, Event.StepCompleted)
   on_step: Optional[Fn[Train.StepInfo, Result[Train.Control]]] = none
   if !t.handlers.empty? or !t.metrics.empty?
-    on_step = some(->(s) { after_step(steps, s, halt, seed) })
+    on_step = some(->(s) { after_step(steps, s, halt, seed, count) })
   end
 
   on_epoch: Optional[Fn[Train.Epoch, Result[Train.Control]]] = none
   if !t.metrics.empty? or !handlers_at(t, Event.EpochCompleted).empty?
-    on_epoch = some(->(e) { after_epoch(t, e, values, halt, seed) })
+    on_epoch = some(->(e) { after_epoch(t, e, values, halt, seed, count) })
   end
 
-  Seen(on_epoch: on_epoch, on_step: on_step, values: values, halt: halt, seed: seed)
+  Seen(on_epoch: on_epoch, on_step: on_step, values: values, halt: halt, seed: seed, count: count)
 end
 
 ## `fit` with the metric values of every epoch that ended.
@@ -469,6 +484,7 @@ def started(t: Trainer, seen: Seen) -> Result[Void]
     loss: 0.0,
     params: t.params,
     seed: seen.seed,
+    count: seen.count,
     halt: seen.halt,
   )
 
@@ -481,7 +497,13 @@ def started(t: Trainer, seen: Seen) -> Result[Void]
 end
 
 ## What `on_step` does after a step: calls the step handlers that are due, then stops if one of them asked to.
-def after_step(steps: List[Handler], s: Train.StepInfo, halt: Channel[Bool], seed: Int) -> Result[Train.Control]
+def after_step(
+  steps: List[Handler],
+  s: Train.StepInfo,
+  halt: Channel[Bool],
+  seed: Int,
+  count: Int,
+) -> Result[Train.Control]
   info = Info(
     event: Event.StepCompleted,
     epoch: s.epoch,
@@ -491,6 +513,7 @@ def after_step(steps: List[Handler], s: Train.StepInfo, halt: Channel[Bool], see
     params: s.params,
     state: some(s.state),
     seed: seed,
+    count: count,
     halt: halt,
   )
 
@@ -510,6 +533,7 @@ def after_epoch(
   values: Channel[List[Float]],
   halt: Channel[Bool],
   seed: Int,
+  count: Int,
 ) -> Result[Train.Control]
   measured = try measure_all(t.metrics, e.params)
   named: Map[String, Float] = {}
@@ -528,6 +552,7 @@ def after_epoch(
     metrics: named,
     state: some(e.state),
     seed: seed,
+    count: count,
     halt: halt,
   )
 
@@ -638,6 +663,7 @@ def fill_checkpoint(folder: String, info: Info, state: Optim.State) -> Result[Vo
     batch: info.batch,
     step: info.step,
     seed: info.seed,
+    count: info.count,
     loss_bits: Float.to_bits(info.loss),
   )
 

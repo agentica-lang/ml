@@ -324,10 +324,11 @@ def send_made(job: Made) -> Result[Void]
 end
 
 def send_all(job: Job) -> Result[Void]
-  for e in 1..job.epochs
+  per = count(job.loader)
+  for e in (job.skip / per + 1)..job.epochs
     rows = order(job.loader, e)
-    for i in 0...count(job.loader)
-      next if (e - 1) * count(job.loader) + i < job.skip
+    for i in 0...per
+      next if (e - 1) * per + i < job.skip
       b = try batch(job.loader, rows, i)
       return ok() if !hand(job.batches, ok(b))
     end
