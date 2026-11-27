@@ -97,7 +97,7 @@ fit = try (
 
 `Loop.run_batches(trainer, batch, count, epochs: 1, prefetch: 0)` is `Train.fit_batches`: `batch(epoch, i)` makes batch `i` of `count`.
 
-`Loop.metric(trainer, metric)` adds a number that the loop measures at the end of every epoch, on the batches of its own data (a validation set, say), with the parameters of that epoch. A `Loop.Metric` has a `name`, the `count` and the function `batch(i)` of its batches, `observe(params, batch)`, which answers one row of numbers for each example, and `reduce`, which turns all the rows into the value: `&Loop.mean` is the mean of the first number of each row, and `&Loop.spearman` Spearman's correlation of the first two. The values are in `fit.metrics[name]`, one per epoch; a metric that fails ends the run with an error that names it.
+`Loop.metric(trainer, metric)` adds a number that the loop measures at the end of every epoch, on the batches of its own data (a validation set, say), with the parameters of that epoch. A `Loop.Metric` has a `name`, the `count` and the function `batch(i)` of its batches, `observe(params, batch)`, which answers one row of numbers for each example, and `reduce`, which turns all the rows into the value: `&Loop.mean` is the mean of the first number of each row, and `&Loop.spearman` Spearman's correlation of the first two. The values are in `fit.metrics[name]`, one per epoch; a metric that fails is not measured again, and the run ends with an error that names it after its last epoch. `observe` is forward only: a `Trace.eval` of the model, with no gradient.
 
 ```agentica
 fit = try (

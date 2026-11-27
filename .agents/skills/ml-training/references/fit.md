@@ -68,7 +68,8 @@ true
 
 ## Progress, metrics, checkpoints
 
-- `on_epoch` gets `Train.Epoch(epoch:, loss:)` (the epoch counts from 1).
+- `on_epoch` gets `Train.Epoch(epoch:, loss:, params:)` (the epoch counts from 1; `params` are the parameters the epoch
+  ended with, valid only inside `on_epoch`: the next step frees them).
 - `metrics` is an open `Metrics.Run`: every step writes `train/loss`, `train/lr` and `train/step_ms` to
   `runs/NAME/metrics.jsonl` and a TensorBoard event file (`tensorboard --logdir runs`). `fit` does not open or close
   the run. A loss that is not finite stops the fit with an error naming the epoch and the batch.

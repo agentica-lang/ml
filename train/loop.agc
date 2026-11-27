@@ -20,8 +20,9 @@ import Train from "train"
 
 ## A number measured at the end of every epoch, on the batches of its own data (a validation set, or the training
 ## one). `batch(i)` makes batch `i` (from 0) of `count`; the loop frees it after `observe(params, batch)`, which answers
-## one row of numbers for each example, with the parameters the epoch ended with; `reduce` turns the rows of all the
-## batches into the value (`Loop.mean`, `Loop.spearman`, or your own).
+## one row of numbers for each example, with the parameters the epoch ended with: it is forward only, a `Trace.eval` of
+## the model with no gradient. `reduce` turns the rows of all the batches into the value (`Loop.mean`,
+## `Loop.spearman`, or your own).
 struct Metric
   name: String
   count: Int
@@ -48,7 +49,8 @@ def trainer(
 end
 
 ## The trainer with `metric` measured at the end of every epoch of its run; the values are in `Fit.metrics` under the
-## name of the metric, one per epoch.
+## name of the metric, one per epoch. A metric that fails is not measured again: the run goes on, and ends with its
+## error after the last epoch.
 def metric(t: Trainer, m: Metric) -> Trainer = t.with(metrics: t.metrics.push(m))
 
 ## `Train.fit` of the trainer over the batches of `data`, for `epochs` passes (one by default). Until `Loop.handle`, a
@@ -90,11 +92,18 @@ end
 def measure(m: Metric, params: List[Tensor.Tensor]) -> Result[Float]
   rows: List[List[Float]] = []
   for i in 0...m.count
-    batch = try m.batch.call(i)
+    made = m.batch.call(i)
+    return error("metric #{m.name}: #{made.message}") if !made.ok?
+
+    batch = made.unwrap!
     observed = m.observe.call(params, batch)
     Data.release(batch)
     case observed
-      ok(more) -> rows = rows + more
+      ok(more) ->
+        for row in more
+          rows = rows.push(row)
+        end
+
       error(e) -> return error("metric #{m.name}: #{e.message}")
     end
   end
@@ -109,13 +118,16 @@ private
 struct Seen
   on_epoch: Optional[Fn[Train.Epoch, Void]]
   values: Channel[Result[List[Float]]]
+  failed: Channel[Bool]
 end
 
 def measuring(t: Trainer, epochs: Int) -> Seen
   values: Channel[Result[List[Float]]] = Channel.new(epochs)
-  return Seen(on_epoch: none, values: values) if t.metrics.empty?
+  failed: Channel[Bool] = Channel.new(1)
+  return Seen(on_epoch: none, values: values, failed: failed) if t.metrics.empty?
 
-  Seen(on_epoch: some(->(e: Train.Epoch) { _ = values.send(measure_all(t.metrics, e.params), 0) }), values: values)
+  on_epoch = ->(e: Train.Epoch) { _ = values.send(after_epoch(t.metrics, e.params, failed), 0) }
+  Seen(on_epoch: some(on_epoch), values: values, failed: failed)
 end
 
 ## `fit` with the metric values of every epoch, or the error of the first metric that failed.
@@ -124,9 +136,17 @@ def measured(fit: Train.Fit, t: Trainer, seen: Seen) -> Result[Train.Fit]
 
   columns: List[List[Float]] = t.metrics.map { |_m: Metric| [] }
   for _ in fit.history
-    values = try seen.values.recv(0)
+    values = next_values(seen)
+    if !values.ok?
+      for p in fit.params
+        Data.free(p)
+      end
+
+      return error(values.message)
+    end
+
     for k in 0...t.metrics.size
-      columns = columns.set(k, columns[k].push((try values)[k]))
+      columns = columns.set(k, columns[k].push(values.unwrap![k]))
     end
   end
 
@@ -136,6 +156,30 @@ def measured(fit: Train.Fit, t: Trainer, seen: Seen) -> Result[Train.Fit]
   end
 
   ok(fit.with(metrics: named))
+end
+
+## The values of the metrics for one epoch, or the error of the first that fails; once one has failed, later epochs
+## measure nothing.
+def after_epoch(metrics: List[Metric], params: List[Tensor.Tensor], failed: Channel[Bool]) -> Result[List[Float]]
+  if failed.recv(0).ok?
+    _ = failed.send(true, 0)
+    return error("an earlier epoch's metric failed")
+  end
+
+  measured = measure_all(metrics, params)
+  if !measured.ok?
+    _ = failed.send(true, 0)
+  end
+
+  measured
+end
+
+## What the next epoch's `on_epoch` sent: its values or its error.
+def next_values(seen: Seen) -> Result[List[Float]]
+  case seen.values.recv(0)
+    ok(values) -> values
+    error(e) -> error(e.message)
+  end
 end
 
 def measure_all(metrics: List[Metric], params: List[Tensor.Tensor]) -> Result[List[Float]]

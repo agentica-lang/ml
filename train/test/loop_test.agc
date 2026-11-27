@@ -152,6 +152,81 @@ def test_a_failing_metric_is_an_error_that_names_it() -> Result[Void]
   S.expect_error(r, "metric broken: no luck")
 end
 
+## A metric that fails is not measured again: with three epochs its function is called once, and the run ends with its
+## error after the last epoch.
+def test_a_failed_metric_is_not_measured_again() -> Result[Void]
+  calls: Channel[Int] = Channel.new(3)
+  failing = Loop.Metric(
+    name: "broken",
+    count: 1,
+    batch: ->(i: Int) { pair(S.REF, i) },
+    observe: ->(_ps: List[Tensor.Tensor], _b: Data.Batch) {
+      _ = calls.send(1, 0)
+      error("no luck")
+    },
+    reduce: &Loop.mean,
+  )
+
+  loader = Data.Loader(dataset: try rows(S.REF), batch_size: 2, shuffle: false)
+  r = (
+    Loop.trainer(&linear, try weights(S.REF), adam())
+    |> Loop.metric(failing)
+    |> Loop.run(loader, epochs: 3)
+  )
+
+  try S.expect_error(r, "metric broken: no luck")
+  try Test.eq(try calls.recv(0), 1)
+  Test.error?(calls.recv(0))
+end
+
+## The parameters of each epoch are the ones that epoch ended with: a metric that reads a weight sees it change, and
+## `Loop.spearman` through a run is the correlation of the trained parameters' predictions with the targets.
+def test_a_metric_sees_the_parameters_of_its_epoch() -> Result[Void]
+  for backend in try backends()
+    loader = Data.Loader(dataset: try rows(backend), batch_size: 2, shuffle: false)
+    weight = Loop.Metric(
+      name: "weight",
+      count: 1,
+      batch: ->(i: Int) { pair(backend, i) },
+      observe: ->(ps: List[Tensor.Tensor], _b: Data.Batch) { first_weight(ps) },
+      reduce: &Loop.mean,
+    )
+
+    order = Loop.Metric(
+      name: "spearman",
+      count: 2,
+      batch: ->(i: Int) { pair(backend, i) },
+      observe: &predictions_and_targets,
+      reduce: &Loop.spearman,
+    )
+
+    fit = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.metric(weight)
+      |> Loop.metric(order)
+      |> try Loop.run(loader, epochs: 3)
+    )
+
+    seen = fit.metrics["weight"]
+    try Test.assert(seen[0] != seen[1] and seen[1] != seen[2], "the weight did not change on #{backend}: #{seen}")
+    try S.expect_close([seen[2]], (try S.floats_of(fit.params[0])).take(1), 0.000001, 0.00001, "the last weight")
+    last = try Loop.measure(order, fit.params)
+    try S.expect_close([last], [fit.metrics["spearman"][2]], 0.000001, 0.00001, "spearman on #{backend}")
+  end
+
+  ok()
+end
+
+def first_weight(ps: List[Tensor.Tensor]) -> Result[List[List[Float]]] = ok([[(try S.floats_of(ps[0]))[0]]])
+
+## The prediction of the linear model and the target of every row of a batch.
+def predictions_and_targets(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[List[List[Float]]]
+  predicted = try Trace.eval(ps + [b.inputs], ->(xs: List[Tensor.Tensor]) { Tensor.linear(xs[2], xs[0], some(xs[1])) })
+  got = try S.floats_of(predicted)
+  want = try S.floats_of(b.targets)
+  ok((0...want.size).map { |i: Int| [got[i], want[i]] })
+end
+
 ## The reducers: the mean of the first number, Spearman's correlation of the first two (ties share their ranks, a
 ## constant column is 0).
 def test_the_reducers() -> Result[Void]
