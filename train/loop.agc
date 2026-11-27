@@ -22,6 +22,7 @@ import Telemetry from "pkg/telemetry/telemetry"
 import Tensor from "pkg/tensor/tensor"
 import Train from "train"
 
+TEMPORARY = ".tmp-step-"
 WEIGHTS = "model.safetensors"
 OPTIM = "optim.safetensors"
 META = "checkpoint.json"
@@ -138,9 +139,14 @@ end
 ## steps (or every `every` epochs, with `event: Event.EpochCompleted`), and keeps the last `keep`. A checkpoint holds
 ## `model.safetensors` (the weights as `param.I`), `optim.safetensors` (`Optim.save`) and `checkpoint.json`. It is
 ## written in `dir/.tmp-step-NNNNNNNNNN` and renamed whole, so a run killed or failing while it writes leaves the earlier
-## checkpoints as they were: a temporary folder is not a checkpoint, and the next checkpoint removes it. An error while
-## writing ends the run; a step that has a checkpoint already is not written again. `keep` is checked, and `dir` made,
-## before the first step.
+## checkpoints as they were: a temporary folder is not a checkpoint. There is no `fsync`: a checkpoint survives a kill
+## of the process, not a power loss.
+##
+## One `dir` serves one run. Before the first step the run checks `keep`, makes `dir`, and removes the folders
+## `.tmp-step-*` that a run killed before it left (no other folder of `dir` is touched, and no folder that is not
+## `step-` and ten digits is listed or pruned). A step that has a checkpoint already is an error, and ends the run. An
+## error while writing ends the run too. The checkpoints beyond `keep` are moved to `.tmp-step-old-N` and deleted; a
+## deletion that fails is not an error of the run, and what it left is swept at the next start.
 def checkpoint(t: Trainer, dir: String, every: Int = 100, keep: Int = 3, event: Event = Event.StepCompleted) -> Trainer
   (
     t
@@ -149,11 +155,12 @@ def checkpoint(t: Trainer, dir: String, every: Int = 100, keep: Int = 3, event: 
   )
 end
 
-## The names of the checkpoints of `dir`, oldest first: the folders `step-NNNNNNNNNN` that hold a `checkpoint.json`.
+## The names of the checkpoints of `dir`, oldest first: the folders `step-` and ten digits that hold a `checkpoint.json`;
+## no other folder is listed, so none is pruned.
 def checkpoints(dir: String) -> Result[List[String]]
   out: List[String] = []
   for name in try Dir.list(dir)
-    if name.start_with?("step-") and File.stat("#{dir}/#{name}/#{META}").ok?
+    if checkpoint_name?(name) and File.stat("#{dir}/#{name}/#{META}").ok?
       out = out.push(name)
     end
   end
@@ -171,7 +178,7 @@ def read_checkpoint(
   like: List[Tensor.Tensor],
 ) -> Result[Checkpoint]
   path = "#{dir}/#{name}"
-  meta = try JSON.decode(try File.read_text("#{path}/#{META}"), Meta)
+  meta = try read_meta("#{path}/#{META}")
   c = try Hub.open("#{path}/#{WEIGHTS}")
   return error("#{path} has #{Hub.names(c).size} weights, #{like.size} are needed") if Hub.names(c).size != like.size
 
@@ -205,7 +212,7 @@ def read_checkpoint(
       batch: meta.batch,
       step: meta.step,
       seed: meta.seed,
-      loss: meta.loss,
+      loss: Float.from_bits(meta.loss_bits),
       params: params,
       state: state.unwrap!,
     ),
@@ -286,14 +293,15 @@ end
 
 private
 
-## What `checkpoint.json` holds.
+## What `checkpoint.json` holds. The loss is its IEEE bits, which JSON can hold whatever the loss is (a NaN or an
+## infinity has no JSON number) and which come back exact.
 struct Meta
   event: String
   epoch: Int
   batch: Int
   step: Int
   seed: Int
-  loss: Float
+  loss_bits: UInt64
 end
 
 ## What a run hands to the engine: the closures of `on_epoch` and `on_step`, the channel that `on_epoch` sends the
@@ -462,7 +470,18 @@ def measure_all(metrics: List[Metric], params: List[Tensor.Tensor]) -> Result[Li
   ok(out)
 end
 
-## Before the first step: `keep` is 1 or more, `dir` exists, and what an earlier run left half written is gone.
+## Before the first step: `keep` is 1 or more, `dir` exists, and what an earlier run left half written (the folders
+## `.tmp-step-*`, and nothing else) is gone.
+def read_meta(file: String) -> Result[Meta]
+  text = File.read_text(file)
+  return error("#{file}: #{text.message}") if !text.ok?
+
+  meta = JSON.decode(text.unwrap!, Meta)
+  return error("#{file}: #{meta.message}") if !meta.ok?
+
+  meta
+end
+
 def prepare(dir: String, keep: Int) -> Result[Void]
   return error("checkpoint: keep is 1 or more, got #{keep}") if keep < 1
 
@@ -475,7 +494,7 @@ end
 
 def remove_unfinished(dir: String) -> Result[Void]
   for name in try Dir.list(dir)
-    if name.start_with?(".tmp-")
+    if name.start_with?(TEMPORARY)
       try Path.remove("#{dir}/#{name}")
     end
   end
@@ -483,15 +502,14 @@ def remove_unfinished(dir: String) -> Result[Void]
   ok()
 end
 
-## The checkpoint of the step of `info`, unless there is one: written whole in a temporary folder, then renamed, then the
-## old ones beyond `keep` are removed.
+## The checkpoint of the step of `info`: written whole in a temporary folder, then renamed, then the old ones beyond
+## `keep` are removed. A checkpoint of that step that exists is an error.
 def write_checkpoint(dir: String, info: Info, keep: Int) -> Result[Void]
   state = try info.state.to_result("checkpoint: no optimizer state at this event")
   name = format("step-%010d", info.step)
-  return ok() if (try checkpoints(dir)).include?(name)
+  return error("checkpoint #{name} exists in #{dir}") if (try checkpoints(dir)).include?(name)
 
-  try remove_unfinished(dir)
-  temporary = "#{dir}/.tmp-#{name}"
+  temporary = "#{dir}/#{TEMPORARY}#{info.step}"
   try Dir.mkdir(temporary)
   written = fill_checkpoint(temporary, info, state)
   if !written.ok?
@@ -521,20 +539,39 @@ def fill_checkpoint(folder: String, info: Info, state: Optim.State) -> Result[Vo
     event = "epoch"
   end
 
-  meta = Meta(event: event, epoch: info.epoch, batch: info.batch, step: info.step, seed: info.seed, loss: info.loss)
+  meta = Meta(
+    event: event,
+    epoch: info.epoch,
+    batch: info.batch,
+    step: info.step,
+    seed: info.seed,
+    loss_bits: Float.to_bits(info.loss),
+  )
+
   File.write_text("#{folder}/#{META}", JSON.encode(meta))
 end
 
-## The oldest checkpoints beyond the last `keep` removed.
+## The oldest checkpoints beyond the last `keep` removed: each is renamed to `.tmp-step-old-N` first, which takes it out of
+## the list in one step, and then deleted. A deletion that fails is not an error of the run (the checkpoint is already
+## gone from the list): what is left is swept at the next `Started`.
 def prune(dir: String, keep: Int) -> Result[Void]
   names = try checkpoints(dir)
   if names.size > keep
     for name in names.take(names.size - keep)
-      try Path.remove("#{dir}/#{name}")
+      gone = "#{dir}/#{TEMPORARY}old-#{name.slice(5, 10)}"
+      try Path.rename("#{dir}/#{name}", gone)
+      _ = Path.remove(gone)
     end
   end
 
   ok()
+end
+
+## `step-` and exactly ten digits.
+def checkpoint_name?(name: String) -> Bool
+  return false if name.length != 15 or !name.start_with?("step-")
+
+  name.slice(5, 10).split("").all? { |c: String| "0123456789".include?(c) }
 end
 
 def free_all(tensors: List[Tensor.Tensor]) -> Void

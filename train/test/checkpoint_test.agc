@@ -56,31 +56,86 @@ def trained(backend: Tensor.Backend, dir: String, epochs: Int, every: Int, keep:
   )
 end
 
+def bytes(path: String) -> Result[Bytes]
+  File.open(path) do |f|
+    parts: List[Bytes] = []
+    while true
+      chunk = try File.read_bytes(f, 1048576)
+      break if chunk.empty?
+      parts = parts.push(chunk)
+    end
+
+    ok(Bytes.concat(parts))
+  end
+end
+
+## The values of `t` as the bits of an `F32`, which is what a checkpoint holds.
+def bits(t: Tensor.Tensor) -> Result[List[Int]]
+  ok((try S.floats_of(t)).map { |x: Float| Float32.to_bits(x.to_float32).to_i })
+end
+
+def rewrite(dir: String, name: String, file: String, text: String) -> Result[Void]
+  File.write_text("#{dir}/#{name}/#{file}", text)
+end
+
 ## Three epochs of two steps, a checkpoint every 2 steps and the last 2 kept: the checkpoints of steps 4 and 6. The one
-## of step 4 holds the weights and the state of a run of two epochs, and where it was: epoch 2, its last batch, the
-## data seed.
+## of step 4 holds, exactly, the weights of a run of two epochs (as `F32`), its position, the seed and the loss of the
+## step; written again it is the same bytes; and a fit that starts from its state goes on at step 5.
 def test_a_run_keeps_its_last_checkpoints() -> Result[Void]
   for backend in try backends()
     try with_folder(
       ->(dir: String) {
-        try trained(backend, dir, 3, 2, 2)
+        losses: Channel[Float] = Channel.new(8)
+        keep_loss = ->(info: Loop.Info) {
+          _ = losses.send(info.loss, 0)
+          ok()
+        }
+
+        r = (
+          Loop.trainer(&linear, try weights(backend), adam())
+          |> Loop.handle(Loop.Event.StepCompleted, keep_loss)
+          |> Loop.checkpoint(dir, every: 2, keep: 2)
+          |> Loop.run(try loader(backend), epochs: 3)
+        )
+
+        try r
         try Test.eq(try Loop.checkpoints(dir), ["step-0000000004", "step-0000000006"])
-        like = try weights(backend)
-        saved = try Loop.read_checkpoint(dir, "step-0000000004", adam(), like)
+        saved = try Loop.read_checkpoint(dir, "step-0000000004", adam(), try weights(backend))
         try Test.eq([saved.step, saved.epoch, saved.batch, saved.seed], [4, 2, 1, 7])
+        try Test.eq(saved.event, "step")
         try Test.eq(saved.state.steps, 4)
+        stepped = [try losses.recv(0), try losses.recv(0), try losses.recv(0), try losses.recv(0)]
+        try Test.eq(saved.loss, stepped[3])
         two = try Train.fit(&linear, try weights(backend), try loader(backend), adam(), 2)
         for i in 0...2
-          try S.expect_close(
-            try S.floats_of(saved.params[i]),
-            try S.floats_of(two.params[i]),
-            0.000001,
-            0.00001,
-            "weights of the step 4 checkpoint on #{backend}",
-          )
+          try Test.eq(try bits(saved.params[i]), try bits(two.params[i]))
         end
 
-        Test.eq(try Loop.checkpoints(dir), ["step-0000000004", "step-0000000006"])
+        folder = "#{dir}/step-0000000004"
+        again = "#{dir}/again"
+        try Dir.mkdir(again)
+        try Write.write("#{again}/model.safetensors", {"param.0": saved.params[0], "param.1": saved.params[1]})
+        try Test.eq(try bytes("#{folder}/model.safetensors"), try bytes("#{again}/model.safetensors"))
+        try Optim.save(saved.state, "#{again}/optim.safetensors")
+        try Test.eq(try bytes("#{folder}/optim.safetensors"), try bytes("#{again}/optim.safetensors"))
+
+        first: Channel[Int] = Channel.new(1)
+        note = ->(s: Train.StepInfo) {
+          _ = first.send(s.step, 0)
+          ok(Train.Control.Continue)
+        }
+
+        _ = try Train.fit(
+          &linear,
+          saved.params,
+          try loader(backend),
+          adam(),
+          1,
+          on_step: some(note),
+          start: some(saved.state),
+        )
+
+        Test.eq(try first.recv(0), 5)
       },
     )
   end
@@ -88,21 +143,21 @@ def test_a_run_keeps_its_last_checkpoints() -> Result[Void]
   ok()
 end
 
-## A checkpoint at the end of each epoch is named by its step, and says it was written there.
-def test_a_checkpoint_at_the_end_of_an_epoch() -> Result[Void]
+## A checkpoint every 2 epochs of 4: the steps 4 and 8, written at the end of an epoch, and said so.
+def test_a_checkpoint_every_two_epochs() -> Result[Void]
   with_folder(
     ->(dir: String) {
       r = (
         Loop.trainer(&linear, try weights(S.REF), adam())
-        |> Loop.checkpoint(dir, every: 1, event: Loop.Event.EpochCompleted)
-        |> Loop.run(try loader(S.REF), epochs: 2)
+        |> Loop.checkpoint(dir, every: 2, event: Loop.Event.EpochCompleted)
+        |> Loop.run(try loader(S.REF), epochs: 4)
       )
 
       try r
-      try Test.eq(try Loop.checkpoints(dir), ["step-0000000002", "step-0000000004"])
-      saved = try Loop.read_checkpoint(dir, "step-0000000004", adam(), try weights(S.REF))
+      try Test.eq(try Loop.checkpoints(dir), ["step-0000000004", "step-0000000008"])
+      saved = try Loop.read_checkpoint(dir, "step-0000000008", adam(), try weights(S.REF))
       try Test.eq(saved.event, "epoch")
-      Test.eq([saved.epoch, saved.step], [2, 4])
+      Test.eq([saved.epoch, saved.batch, saved.step], [4, 0, 8])
     },
   )
 end
@@ -123,19 +178,36 @@ def test_a_checkpoint_that_fails_half_way_leaves_the_previous_one() -> Result[Vo
 end
 
 ## What a process killed while writing leaves is a temporary folder with some of the files: it is not a checkpoint, the
-## readers do not see it, and the next checkpoint removes it.
-def test_a_killed_write_is_not_a_checkpoint() -> Result[Void]
+## readers do not see it, and the next run removes it at its start. Only `.tmp-step-*` is the run's to remove: another
+## `.tmp-*` folder, a `notes` folder and a `step-*` folder that is not `step-` and ten digits are left alone, and never
+## listed or pruned.
+def test_only_its_own_folders_are_swept_and_pruned() -> Result[Void]
+  with_folder(
+    ->(dir: String) {
+      for name in [
+        ".tmp-step-0000000004", ".tmp-step-old-0000000001", ".tmp-keep", "notes", "step-12", "step-000000000x",
+      ]
+        try Dir.mkdir("#{dir}/#{name}")
+        try File.write_text("#{dir}/#{name}/#{"checkpoint.json"}", "{}")
+      end
+
+      try Test.eq(try Loop.checkpoints(dir), [])
+      try trained(S.REF, dir, 3, 2, 1)
+      try Test.eq(try Loop.checkpoints(dir), ["step-0000000006"])
+      Test.eq(try Dir.list(dir), [".tmp-keep", "notes", "step-0000000006", "step-000000000x", "step-12"])
+    },
+  )
+end
+
+## One folder serves one run: a second run that reaches a step that has a checkpoint stops there with an error that says
+## so, and the checkpoint is as it was.
+def test_a_second_run_in_the_same_folder_is_an_error() -> Result[Void]
   with_folder(
     ->(dir: String) {
       try trained(S.REF, dir, 1, 2, 3)
-      partial = "#{dir}/.tmp-step-0000000004"
-      try Dir.mkdir(partial)
-      try File.write_text("#{partial}/model.safetensors", "half")
-      try Test.eq(try Loop.checkpoints(dir), ["step-0000000002"])
-      saved = try Loop.read_checkpoint(dir, "step-0000000002", adam(), try weights(S.REF))
-      try Test.eq(saved.step, 2)
-      try trained(S.REF, dir, 2, 2, 3)
-      Test.eq(try Dir.list(dir), ["step-0000000002", "step-0000000004"])
+      before = try bytes("#{dir}/step-0000000002/model.safetensors")
+      try S.expect_error(trained(S.REF, dir, 1, 2, 3), "step-0000000002 exists in #{dir}")
+      Test.eq(try bytes("#{dir}/step-0000000002/model.safetensors"), before)
     },
   )
 end
@@ -146,6 +218,40 @@ def test_keep_is_one_or_more() -> Result[Void]
       r = trained(S.REF, dir, 1, 1, 0)
       try S.expect_error(r, "keep")
       Test.eq(try Dir.list(dir), [])
+    },
+  )
+end
+
+## A checkpoint that cannot be read is an error that names it: a corrupt or incomplete `checkpoint.json`, a different
+## number of weights, a weight of another shape, a weight that is not there. A loss of NaN comes back as NaN.
+def test_a_checkpoint_that_cannot_be_read_is_an_error() -> Result[Void]
+  with_folder(
+    ->(dir: String) {
+      try trained(S.REF, dir, 1, 2, 1)
+      name = "step-0000000002"
+      like = try weights(S.REF)
+      meta = try File.read_text("#{dir}/#{name}/checkpoint.json")
+      try rewrite(dir, name, "checkpoint.json", "not json")
+      try S.expect_error(Loop.read_checkpoint(dir, name, adam(), like), "#{dir}/#{name}/checkpoint.json")
+      try rewrite(dir, name, "checkpoint.json", "{\"event\": \"step\"}")
+      try S.expect_error(Loop.read_checkpoint(dir, name, adam(), like), "#{dir}/#{name}/checkpoint.json")
+      try Path.remove("#{dir}/#{name}/checkpoint.json")
+      try S.expect_error(Loop.read_checkpoint(dir, name, adam(), like), "checkpoint.json")
+      try rewrite(dir, name, "checkpoint.json", meta)
+      try S.expect_error(Loop.read_checkpoint(dir, name, adam(), [like[0]]), "2 weights, 1 are needed")
+      wide = [try S.tensor([0.0, 0.0, 0.0], [3, 1], Tensor.Dtype.F32, S.REF), like[1]]
+      try S.expect_error(Loop.read_checkpoint(dir, name, adam(), wide), "param.0")
+      try Write.write("#{dir}/#{name}/model.safetensors", {"param.0": like[0], "param.7": like[1]})
+
+      try S.expect_error(Loop.read_checkpoint(dir, name, adam(), like), "param.1")
+      nan = (
+        "{\"event\": \"step\", \"epoch\": 1, \"batch\": 0, \"step\": 2, \"seed\": 7, \"loss_bits\": 9221120237041090560}"
+      )
+
+      try rewrite(dir, name, "checkpoint.json", nan)
+      try Write.write("#{dir}/#{name}/model.safetensors", {"param.0": like[0], "param.1": like[1]})
+      saved = try Loop.read_checkpoint(dir, name, adam(), like)
+      Test.assert(saved.loss != saved.loss, "the loss is #{saved.loss}")
     },
   )
 end
