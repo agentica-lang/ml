@@ -54,7 +54,7 @@ private
 def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Void]
   want = try JSON.decode(try Source.read_text(golden), Golden)
   try Load.vulkan_fp16_from_env()
-  m = try Lfm3.open(dir, backend, try Load.weights_from_env())
+  m = try Lfm3.open(dir, backend, try Load.weights_from_env(), try Load.layers_on_device_from_env())
   puts("model_type #{m.config.model_type}, #{m.layers.size} layers")
   g = try Generate.open(m, System.env("USABLE").unwrap_or("0").to_i.unwrap_or(0))
   done = checked(g, want)
