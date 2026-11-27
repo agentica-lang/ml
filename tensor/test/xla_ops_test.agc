@@ -131,6 +131,39 @@ def test_conv1d_matches_the_reference_for_batched_and_unbatched_inputs() -> Resu
   ok()
 end
 
+def test_avg_pool1d_includes_zero_padding_in_the_divisor() -> Result[Void]
+  return ok() if !try Support.present()
+  for unbatched in [false, true]
+    try agrees(
+      ->(b: Tensor.Backend) {
+        shape = [2, 3, 8]
+        count = 2 * 3 * 8
+        if unbatched
+          shape = [3, 8]
+          count = 3 * 8
+        end
+
+        xs = Support.uniform(count, 83, 1.0).map { |x| -x.abs - 0.1 }
+        ok([try Support.floats(xs, shape, b)])
+      },
+      ->(xs: List[Tensor.Tensor]) { ok([try Tensor.avg_pool1d(xs[0], 3, 2, 1)]) },
+    )
+  end
+
+  ok()
+end
+
+def test_avg_pool2d_includes_zero_padding_in_the_divisor() -> Result[Void]
+  return ok() if !try Support.present()
+  agrees(
+    ->(b: Tensor.Backend) {
+      xs = Support.uniform(2 * 3 * 5 * 6, 84, 1.0).map { |x| -x.abs - 0.1 }
+      ok([try Support.floats(xs, [2, 3, 5, 6], b)])
+    },
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.avg_pool2d(xs[0], 3, 2, 1)]) },
+  )
+end
+
 def test_elementwise_ops_and_dtype_conversions_match_the_reference() -> Result[Void]
   return ok() if !try Support.present()
   agrees(
@@ -393,14 +426,18 @@ end
 
 def test_an_op_the_emitter_still_lacks_is_an_error_naming_it() -> Result[Void]
   return ok() if !try Support.present()
-  xs = [try wide(Support.XLA)]
+  xs = [
+    try Support.floats(Support.uniform(6, 85, 1.0), [3, 2], Support.XLA),
+    try Support.floats(Support.uniform(2, 86, 1.0), [1, 2], Support.XLA),
+    try Support.labels([1], Support.XLA),
+  ]
   r = Trace.compile(
     xs.map { |t| Trace.spec_of(t) },
-    ->(ys: List[Tensor.Tensor]) { ok([try Tensor.avg_pool1d(ys[0], 2)]) },
+    ->(ys: List[Tensor.Tensor]) { ok([try Tensor.set_rows(ys[0], ys[1], ys[2])]) },
   )
 
-  try Test.assert(!r.ok?, "avg_pool1d compiled")
-  Test.assert(r.message.include?("avg_pool1d"), r.message)
+  try Test.assert(!r.ok?, "set_rows compiled")
+  Test.assert(r.message.include?("set_rows"), r.message)
 end
 
 ## A sigmoid, a permute, a concat, a squeeze, the norms, a gelu and a rope, then a weighted sum.

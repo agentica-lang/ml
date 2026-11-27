@@ -11,6 +11,7 @@ import Conv from "stablehlo_conv"
 import Graph from "graph"
 import Lower from "lower"
 import Reference from "reference"
+import Pool from "stablehlo_pool"
 import Delta from "stablehlo_delta"
 import Types from "types"
 
@@ -205,6 +206,8 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Conv2d(stride, padding, groups) -> conv2d(t, n.args, a, stride, padding, groups, first)
     Types.Op.GatedDeltaRule -> ok(["func.call @gated_delta_#{first}(#{a.join(", ")}) : #{sig}"])
     Types.Op.MaxPool2d(kernel, stride, padding) -> max_pool2d(t, n.args[0], a[0], kernel, stride, padding, first)
+    Types.Op.AvgPool1d(kernel, stride, padding) -> avg_pool1d(t, n.args[0], a[0], kernel, stride, padding, first)
+    Types.Op.AvgPool2d(kernel, stride, padding) -> avg_pool2d(t, n.args[0], a[0], kernel, stride, padding, first)
     Types.Op.ExpertMatmul -> expert_matmul(t, n.args, a, first)
     Types.Op.Argmax(axes, keep_dims) -> argmax(t, n.args[0], a[0], axes, keep_dims, first)
     Types.Op.Slice(starts, ends) -> ok(["stablehlo.slice #{a[0]} #{extents(starts, ends)} : #{sig}"])
@@ -226,6 +229,52 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
   end
 end
 
+def avg_pool1d(
+  t: Types.Tensor,
+  input: Types.Tensor,
+  a: String,
+  kernel: Int,
+  stride: Int,
+  padding: Int,
+  first: Int,
+) -> Result[List[String]]
+  entry = IR.block([try float_ir_type(input)])
+  built = try Pool.avg_pool1d(entry, entry.args[0], kernel, stride, padding)
+  return error("avg_pool1d IR result type does not match the graph") if built.values[0].type != (try float_ir_type(t))
+  pool_lines(built.block, built.block.ops, a, first)
+end
+
+def avg_pool2d(
+  t: Types.Tensor,
+  input: Types.Tensor,
+  a: String,
+  kernel: Int,
+  stride: Int,
+  padding: Int,
+  first: Int,
+) -> Result[List[String]]
+  entry = IR.block([try float_ir_type(input)])
+  built = try Pool.avg_pool2d(entry, entry.args[0], kernel, stride, padding)
+  return error("avg_pool2d IR result type does not match the graph") if built.values[0].type != (try float_ir_type(t))
+  pool_lines(built.block, built.block.ops, a, first)
+end
+
+def pool_lines(b: IR.Block, ops: List[IR.Operation], source: String, first: Int) -> Result[List[String]]
+  entry_value = b.args[0]
+  names: Map[Ref, String] = {}
+  names = names.put(entry_value.id, source)
+  lines: List[String] = []
+  for i in 0...ops.size
+    op = ops[i]
+    lines = lines.push(try IR.operation(op, names, "pool#{first}_#{i}"))
+    for value in op.results
+      names = names.put(value.id, "%#{first + i}")
+    end
+  end
+
+  ok(lines)
+end
+
 def conv1d(
   t: Types.Tensor,
   args: List[Types.Tensor],
@@ -234,11 +283,11 @@ def conv1d(
   padding: Int,
   first: Int,
 ) -> Result[List[String]]
-  entry = IR.block([try conv_type(args[0]), try conv_type(args[1])])
+  entry = IR.block([try float_ir_type(args[0]), try float_ir_type(args[1])])
   input = entry.args[0]
   weight = entry.args[1]
   built = try Conv.conv1d(entry, input, weight, stride, padding)
-  out = try conv_type(t)
+  out = try float_ir_type(t)
   return error("conv1d IR result type does not match the graph") if built.values[0].type != out
   names: Map[Ref, String] = {}
   names = names.put(input.id, a[0]).put(weight.id, a[1])
@@ -264,23 +313,23 @@ def conv2d(
   groups: Int,
   first: Int,
 ) -> Result[List[String]]
-  entry = IR.block([try conv_type(args[0]), try conv_type(args[1])])
+  entry = IR.block([try float_ir_type(args[0]), try float_ir_type(args[1])])
   input = entry.args[0]
   weight = entry.args[1]
   built = try Conv.conv2d(entry, input, weight, stride, padding, groups)
-  out = try conv_type(t)
+  out = try float_ir_type(t)
   return error("conv2d IR result type does not match the graph") if built.values[0].type != out
   names: Map[Ref, String] = {}
   names = names.put(input.id, a[0]).put(weight.id, a[1])
   ok([try IR.operation(built.block.ops[0], names, "conv#{first}_")])
 end
 
-def conv_type(t: Types.Tensor) -> Result[IR.TensorType]
+def float_ir_type(t: Types.Tensor) -> Result[IR.TensorType]
   case t.dtype
     Types.Dtype.F16 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F16))
     Types.Dtype.F32 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F32))
     Types.Dtype.F64 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F64))
-    _ -> error("conv2d IR needs a floating-point tensor")
+    _ -> error("StableHLO IR needs a floating-point tensor")
   end
 end
 

@@ -24,6 +24,7 @@ enum Attr
   I64(Int)
   I64Array(List[Int])
   DenseInt(Int, TensorType)
+  DenseIntRows(List[List[Int]], TensorType)
   DenseF32(Float, TensorType)
   DialectEnum(String, String, String)
   DialectAttr(String, String, String)
@@ -167,6 +168,8 @@ def attribute(a: Attribute) -> String
     Attr.I64(x) -> "#{x} : i64"
     Attr.I64Array(xs) -> "array<i64: #{xs.map { |x| "#{x}" }.join(", ")}>"
     Attr.DenseInt(x, t) -> "dense<#{x}> : #{show_type(t)}"
+    Attr.DenseIntRows(rows, t) ->
+      "dense<[#{rows.map { |row| "[#{row.map { |x| "#{x}" }.join(", ")}]" }.join(", ")}]> : #{show_type(t)}"
     Attr.DenseF32(x, t) -> "dense<#{x}> : #{show_type(t)}"
     Attr.DialectEnum(dialect, kind, x) -> "##{dialect}<#{kind} #{x}>"
     Attr.DialectAttr(dialect, kind, payload) -> "##{dialect}.#{kind}<#{payload}>"

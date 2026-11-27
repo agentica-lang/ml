@@ -40,6 +40,10 @@ def test_a_function_prints_region_arguments_captures_and_attributes() -> Result[
     IR.Attribute(key: "count", value: IR.Attr.I64(2)),
     IR.Attribute(key: "axes", value: IR.Attr.I64Array([0, 1])),
     IR.Attribute(key: "pad", value: IR.Attr.DenseInt(1, IR.TensorType(shape: [2, 2], element: IR.Element.I64))),
+    IR.Attribute(
+      key: "padding",
+      value: IR.Attr.DenseIntRows([[0, 0], [1, 1]], IR.TensorType(shape: [2, 2], element: IR.Element.I64)),
+    ),
     IR.Attribute(key: "scale", value: IR.Attr.DenseF32(0.5, IR.TensorType(shape: [], element: IR.Element.F32))),
     IR.Attribute(key: "mode", value: IR.Attr.DialectEnum("test", "mode", "SIGNED")),
     IR.Attribute(key: "layout", value: IR.Attr.DialectAttr("test", "layout", "[0, 1]")),
@@ -50,6 +54,7 @@ def test_a_function_prints_region_arguments_captures_and_attributes() -> Result[
   try Test.assert(text.include?("^bb0(%v0r0_a0: tensor<i32>):"), text)
   try Test.assert(text.include?("\"test.yield\"(%v0r0_a0, %arg0)"), text)
   try Test.assert(text.include?("count = 2 : i64, axes = array<i64: 0, 1>, pad = dense<1> : tensor<2x2xi64>"), text)
+  try Test.assert(text.include?("padding = dense<[[0, 0], [1, 1]]> : tensor<2x2xi64>"), text)
   try Test.assert(text.include?("scale = dense<0.5> : tensor<f32>, mode = #test<mode SIGNED>, layout = #test.layout<[0, 1]>"), text)
   Test.assert(text.include?("\"func.return\"(%v0_0)"), text)
 end
