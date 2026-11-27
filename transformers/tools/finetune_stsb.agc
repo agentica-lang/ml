@@ -12,7 +12,6 @@
 
 import Bert from "../bert"
 import Data from "pkg/train/data"
-import Hub from "pkg/hub/hub"
 import Optim from "pkg/train/optim"
 import Params from "pkg/train/params"
 import SafetensorsWrite from "pkg/hub/safetensors_write"
@@ -24,7 +23,7 @@ import Train from "pkg/train/train"
 import WordPiece from "../tokenizer/wordpiece"
 
 TRAIN_ROWS = 1000
-VALID_ROWS = 500
+SEED = 1
 BATCH = 16
 EVAL_BATCH = 32
 LENGTH = 64
@@ -55,11 +54,12 @@ struct Net
   split: Params.Split
 end
 
-# On the validation pairs: Spearman's correlation of the cosines with the scores, and the mean squared gap
-# between them.
+# On the validation pairs: Spearman's correlation of the cosines with the scores, the mean squared gap between
+# them, and the mean cosine.
 struct Score
   spearman: Float
   loss: Float
+  cosine: Float
 end
 
 def run(args: List[String]) -> Result[Void]
@@ -80,23 +80,23 @@ def run(args: List[String]) -> Result[Void]
 
   base = try Bert.open(args[0], backend)
   tok = try WordPiece.open("#{args[0]}/tokenizer.json")
-  train = try pairs(tok, "#{args[1]}/train.parquet", rows)
-  validation = try pairs(tok, "#{args[1]}/validation.parquet", VALID_ROWS)
+  train = try pairs(tok, "#{args[1]}/train.parquet", some(rows))
+  validation = try pairs(tok, "#{args[1]}/validation.parquet", none)
   puts("#{train.size} training pairs, #{validation.size} validation pairs, on #{backend}")
 
   split = try trainable(base, backend)
   net = Net(base: base, split: split)
   before = try evaluate(net, split.trainable, validation)
-  puts("before: Spearman #{before.spearman}, cosine loss #{before.loss}")
+  puts("before: Spearman #{before.spearman}, cosine loss #{before.loss}, mean cosine #{before.cosine}")
 
   fit = try train_epoch(net, train)
   puts("training loss #{fit.history[0]}")
   after = try evaluate(net, fit.params, validation)
-  puts("after: Spearman #{after.spearman}, cosine loss #{after.loss}")
+  puts("after: Spearman #{after.spearman}, cosine loss #{after.loss}, mean cosine #{after.cosine}")
 
-  try save(args[2], net, fit.params)
-  again = try reloaded(args[2], base.config, backend, validation)
-  puts("loaded: Spearman #{again.spearman}, cosine loss #{again.loss}")
+  try save(args[2], args[0], net, fit.params)
+  again = try reloaded(args[2], backend, validation)
+  puts("loaded: Spearman #{again.spearman}, cosine loss #{again.loss}, mean cosine #{again.cosine}")
   if (again.spearman - after.spearman).abs > TOLERANCE or (again.loss - after.loss).abs > TOLERANCE
     return error("the loaded model gives #{again}, the trained one #{after}")
   end
@@ -128,18 +128,32 @@ def available(backend: Tensor.Backend, name: String) -> Result[Tensor.Backend]
   ok(backend)
 end
 
-# The first `limit` rows of a Parquet file with the columns `sentence1`, `sentence2` and `score`.
-def pairs(tok: WordPiece.WordPiece, path: String, limit: Int) -> Result[List[Pair]]
+# The pairs of a Parquet file with the columns `sentence1`, `sentence2` and `score`: all of them in the order of the
+# file, or the first `limit` rows of a seeded shuffle of the file.
+def pairs(tok: WordPiece.WordPiece, path: String, limit: Optional[Int]) -> Result[List[Pair]]
   table = try Table.read(path)
   left = try Table.texts(table, "sentence1")
   right = try Table.texts(table, "sentence2")
   scores = try Table.floats(table, "score")
+  picks = (0...table.rows).to_a
+  case limit
+    some(n) -> picks = (try shuffled(table.rows)).take(n)
+    none -> nil
+  end
+
   out: List[Pair] = []
-  for i in 0...[limit, table.rows].min.unwrap!
+  for i in picks
     out = out.push(Pair(left: try ids(tok, left[i]), right: try ids(tok, right[i]), score: scores[i]))
   end
 
   ok(out)
+end
+
+# The rows `0...count` in the seeded order that a `Data.Loader` of this seed gives its first epoch.
+def shuffled(count: Int) -> Result[List[Int]]
+  rows = try Tensor.zeros([count], Tensor.Dtype.F32)
+  loader = Data.Loader(dataset: try Data.dataset(rows, rows), batch_size: BATCH, seed: SEED)
+  ok(Data.order(loader, 1))
 end
 
 def ids(tok: WordPiece.WordPiece, text: String) -> Result[List[Int]]
@@ -179,13 +193,15 @@ def batch(m: Bert.Bert, rows: List[Pair]) -> Result[Data.Batch]
 end
 
 def train_epoch(net: Net, rows: List[Pair]) -> Result[Train.Fit]
+  steps = rows.size / BATCH
+  schedule = Optim.Schedule.WarmupLinear(steps / 10, steps)
   decay = net.split.names.map { |name: String| !(name.end_with?(".bias") or name.include?("LayerNorm")) }
   Train.fit_batches(
     ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(net, ps, b) },
     net.split.trainable,
     ->(_epoch: Int, i: Int) { batch(net.base, rows.drop(i * BATCH).take(BATCH)) },
-    rows.size / BATCH,
-    Optim.Optimizer.AdamW(Optim.AdamW(lr: LR, weight_decay: WEIGHT_DECAY, decay: decay)),
+    steps,
+    Optim.Optimizer.AdamW(Optim.AdamW(lr: LR, weight_decay: WEIGHT_DECAY, decay: decay, schedule: schedule)),
     1,
   )
 end
@@ -219,7 +235,8 @@ def evaluate(net: Net, ps: List[Tensor.Tensor], rows: List[Pair]) -> Result[Scor
   cosines = (0...rows.size).map { |i: Int| dot(vectors[2 * i], vectors[2 * i + 1]) }
   scores = rows.map { |p: Pair| p.score }
   gaps = (0...rows.size).map { |i: Int| (cosines[i] - scores[i]) * (cosines[i] - scores[i]) }
-  ok(Score(spearman: pearson(ranks(cosines), ranks(scores)), loss: gaps.sum / rows.size.to_f))
+  mean = cosines.sum / rows.size.to_f
+  ok(Score(spearman: pearson(ranks(cosines), ranks(scores)), loss: gaps.sum / rows.size.to_f, cosine: mean))
 end
 
 # The unit embedding of each sentence, `EVAL_BATCH` pairs at a time; a last short batch repeats its first sentence.
@@ -245,13 +262,24 @@ def vectors_of(net: Net, ps: List[Tensor.Tensor], sentences: List[List[Int]]) ->
   ok(out)
 end
 
-def save(dir: String, net: Net, ps: List[Tensor.Tensor]) -> Result[Void]
-  SafetensorsWrite.write("#{dir}/model.safetensors", try Params.join(net.split, ps))
+# `dir` gets the weights, and the config and the tokenizer of `model_dir`, so that it loads as the original does.
+def save(dir: String, model_dir: String, net: Net, ps: List[Tensor.Tensor]) -> Result[Void]
+  try SafetensorsWrite.write("#{dir}/model.safetensors", try Params.join(net.split, ps))
+  for name in ["config.json", "tokenizer.json"]
+    try copy("#{model_dir}/#{name}", "#{dir}/#{name}")
+  end
+
+  ok()
 end
 
-# The score of the model that `save` wrote.
-def reloaded(dir: String, config: Bert.Config, backend: Tensor.Backend, rows: List[Pair]) -> Result[Score]
-  base = try Bert.load(try Hub.open("#{dir}/model.safetensors"), config, backend)
+def copy(from: String, to: String) -> Result[Void]
+  text = try File.read_text(from)
+  File.open(to, "write") do |f| File.write(f, text) end
+end
+
+# The score of the model that `save` wrote, opened from its folder as the original is.
+def reloaded(dir: String, backend: Tensor.Backend, rows: List[Pair]) -> Result[Score]
+  base = try Bert.open(dir, backend)
   split = try trainable(base, backend)
   evaluate(Net(base: base, split: split), split.trainable, rows)
 end
@@ -299,6 +327,8 @@ def pearson(a: List[Float], b: List[Float]) -> Float
     aa = aa + (a[i] - mean_a) * (a[i] - mean_a)
     bb = bb + (b[i] - mean_b) * (b[i] - mean_b)
   end
+
+  return 0.0 if aa == 0.0 or bb == 0.0
 
   both / Math.sqrt(aa * bb)
 end
