@@ -131,7 +131,7 @@ fit = try (
 
 `Loop.checkpoint(trainer, dir, every: 100, keep: 3)` is a handler that is ready made: every `every` steps (or every `every` epochs with `event: Loop.Event.EpochCompleted`) it writes a checkpoint to the new folder `dir/step-NNNNNNNNNN` (the step, to ten digits) and keeps the last `keep`. A checkpoint holds `model.safetensors` (the weights as `param.I`), `optim.safetensors` (`Optim.save`) and `checkpoint.json` (the event, the epoch, the batch, the step, the seed of the loader and the loss). It is written in `dir/.tmp-step-NNNNNNNNNN` and renamed whole, so a run killed or failing while it writes leaves the earlier checkpoints as they were: a temporary folder is not a checkpoint. There is no `fsync`: a checkpoint survives a kill of the process, not a power loss.
 
-One `dir` serves one run. Before its first step a run checks `keep`, makes `dir` and removes the folders `.tmp-step-*` that a killed run left; no other folder of `dir` is touched, and a folder that is not `step-` and ten digits is never listed or pruned. A step that has a checkpoint already is an error that ends the run (`checkpoint step-N exists in DIR`), and so is an error while writing. The checkpoints beyond `keep` are moved to `.tmp-step-old-N` and deleted; a deletion that fails is not an error of the run, and what it left is swept at the next start.
+One `dir` serves one run (a resumed run that checkpoints into the same `dir` continues it). Before its first step a run checks `keep`, makes `dir` and removes the folders `.tmp-step-*` that a killed run left; no other folder of `dir` is touched, and a folder that is not `step-` and ten digits is never listed or pruned. A step that has a checkpoint already is an error that ends the run (`checkpoint step-N exists in DIR`), and so is an error while writing. The checkpoints beyond `keep` are moved to `.tmp-step-old-N` and deleted; a deletion that fails is not an error of the run, and what it left is swept at the next start.
 
 `Loop.checkpoints(dir)` lists the names, oldest first. `Loop.read_checkpoint(dir, name, optimizer, like)` reads one on the backend and in the dtype of the tensors `like` (the weights the run has now, which give the shapes), answering a `Loop.Checkpoint` with `params`, `state` (give it to `Train.fit` as `start`) and where the run was (`event`, `epoch`, `batch`, `step`, `seed`, `loss`, all exact). An error names the file or the weight that does not fit, and what was read is freed.
 
@@ -142,6 +142,19 @@ fit = try (
   |> Loop.run(data, epochs: 3)
 )
 ```
+
+`Loop.resume(trainer, dir)` goes on from the last checkpoint of `dir` when the trainer runs. It trains from the weights and the optimizer state of the checkpoint, at its step, with the batch that follows the one it was written at: the next batch of the same epoch, or the first of the next epoch for a checkpoint at the end of an epoch. Run it with the same loader and the same `epochs` as the whole run: the seed and the epoch give the order of the rows, so the batches that are left are the ones the whole run would have taken. Add `Loop.checkpoint` with the same `dir` (before or after `resume`) to keep writing to it, which continues the same run. With no checkpoint in `dir` the run starts from the beginning, so one command serves the first start and every restart.
+
+```agentica
+fit = try (
+  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
+  |> Loop.checkpoint("runs/minilm", every: 100, keep: 3)
+  |> Loop.resume("runs/minilm")
+  |> Loop.run(data, epochs: 3)
+)
+```
+
+The `Fit` is of the steps this run took: for a checkpoint in the middle of an epoch the first value of `history` is the mean of the steps that were left of it. The weights of the trainer are not changed. A checkpoint of another loader seed, or of another number of batches in an epoch (a loader with another `batch_size` or number of rows), is an error that names it, and so is a step count that does not fit its epoch and batch (a run that began from a `Train.fit` `start` state has one). `Loop.run_batches` can check only those three, not what its `batch` function makes. The weights and the moments are kept in F32 files, so a resumed run matches the whole run to the rounding of F32 (the reference backend keeps doubles between steps, so it drifts by about 1e-8), and the batches it takes are the same ones. `Started` handlers see step 0 and the weights of the trainer, not the checkpoint's. `Loop.run_batches` resumes the same way with the same `batch` function and `count`; `Train.fit(..., skip: n)` and `Train.fit_batches(..., skip: n)` are the engine's form of it, `n` batches taken as run.
 
 ## Train.fit
 
