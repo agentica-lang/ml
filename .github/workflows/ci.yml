@@ -504,9 +504,61 @@ jobs:
           TENSOR_REQUIRE_GGML: '1'
         run: agentica test --max-steps 10000000
 
+  # The XLA backend of tensor/ on linux-arm64 (ubuntu-24.04-arm): the aarch64 plugin of our release xla-<commit>, which
+  # tools/install_xla.agc downloads and checks by its sha256 as in the xla job, and the same XLA tests of tensor/ with
+  # TENSOR_REQUIRE_XLA=1, so a plugin that is missing or does not load fails them instead of skipping. The Agentica
+  # archive is the linux-arm64 one (third column of tensor/AGENTICA_VERSION).
+  xla-arm64:
+    needs: plan
+    if: needs.plan.outputs.xla == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    env:
+      AGENTICA_ML_CACHE: /home/runner/.cache/agentica-ml
+    defaults:
+      run:
+        working-directory: tensor
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the pinned Agentica version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version _ sha256 < AGENTICA_VERSION
+          [ -n "$version" ] && [ -n "$sha256" ] || {
+            echo "AGENTICA_VERSION must hold the version, the sha256 of its linux-x86_64 archive and the sha256 of its linux-arm64 one" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Agentica release
+        uses: agentica-lang/setup-agentica@v1
+        with:
+          version: ${{ steps.pin.outputs.version }}
+          sha256: ${{ steps.pin.outputs.sha256 }}
+
+      - uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /home/runner/.cache/agentica-ml/xla
+          key: xla-plugin-arm64-${{ hashFiles('tensor/src/xla.agc') }}
+
+      - name: Install the locked dependencies
+        run: agentica install
+
+      - name: Install the XLA plugin
+        run: agentica tools/install_xla.agc
+
+      - name: Test
+        env:
+          TENSOR_REQUIRE_XLA: '1'
+        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_missing_test.agc
+
   # `test` is the required check, so it carries the result of the other jobs.
   test:
-    needs: [plan, packages, cchecker, xla, torch, ggml-arm64]
+    needs: [plan, packages, cchecker, xla, torch, ggml-arm64, xla-arm64]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -519,8 +571,9 @@ jobs:
           XLA: ${{ needs.xla.result }}
           TORCH: ${{ needs.torch.result }}
           GGML_ARM64: ${{ needs.ggml-arm64.result }}
+          XLA_ARM64: ${{ needs.xla-arm64.result }}
         run: |
-          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER, xla: $XLA, torch: $TORCH, ggml-arm64: $GGML_ARM64"
+          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER, xla: $XLA, torch: $TORCH, ggml-arm64: $GGML_ARM64, xla-arm64: $XLA_ARM64"
           [ "$PLAN" = success ] && [[ "$PACKAGES" =~ ^(success|skipped)$ ]] && [ "$CCHECKER" = success ] &&
             [[ "$XLA" =~ ^(success|skipped)$ ]] && [[ "$TORCH" =~ ^(success|skipped)$ ]] &&
-            [[ "$GGML_ARM64" =~ ^(success|skipped)$ ]]
+            [[ "$GGML_ARM64" =~ ^(success|skipped)$ ]] && [[ "$XLA_ARM64" =~ ^(success|skipped)$ ]]
