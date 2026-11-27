@@ -637,7 +637,7 @@ def ir_type(shape: List[Int], dtype: Types.Dtype) -> Result[IR.TensorType]
     Types.Dtype.I64 -> ok(IR.TensorType(shape: shape, element: IR.Element.I64))
     Types.Dtype.U8 -> ok(IR.TensorType(shape: shape, element: IR.Element.U8))
     Types.Dtype.Bool -> ok(IR.TensorType(shape: shape, element: IR.Element.I1))
-    _ -> error("StableHLO IR has no element type for #{Types.dtype_name(dtype)}")
+    _ -> error("StableHLO has no element type for #{Types.dtype_name(dtype)}")
   end
 end
 
@@ -1408,26 +1408,6 @@ end
 
 def type_of(t: Types.Tensor) -> Result[String] = tensor_type(t.shape, t.dtype)
 
-def tensor_type(shape: List[Int], dtype: Types.Dtype) -> Result[String]
-  element = try element_type(dtype)
-  ok("tensor<#{(shape.map { |d| d.to_s } + [element]).join("x")}>")
-end
-
-def element_type(dtype: Types.Dtype) -> Result[String]
-  case dtype
-    Types.Dtype.F32 -> ok("f32")
-    Types.Dtype.F16 -> ok("f16")
-    Types.Dtype.F64 -> ok("f64")
-    Types.Dtype.I8 -> ok("i8")
-    Types.Dtype.I16 -> ok("i16")
-    Types.Dtype.I32 -> ok("i32")
-    Types.Dtype.I64 -> ok("i64")
-    Types.Dtype.U8 -> ok("ui8")
-    Types.Dtype.Bool -> ok("i1")
-    Types.Dtype.Q8_0 -> error("StableHLO has no element type for Q8_0")
-    Types.Dtype.Q4_K -> error("StableHLO has no element type for Q4_K")
-    Types.Dtype.Q6_K -> error("StableHLO has no element type for Q6_K")
-  end
-end
+def tensor_type(shape: List[Int], dtype: Types.Dtype) -> Result[String] = ok(IR.show_type(try ir_type(shape, dtype)))
 
 def ints(xs: List[Int]) -> String = "[#{xs.map { |x| x.to_s }.join(", ")}]"
