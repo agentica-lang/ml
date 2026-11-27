@@ -126,6 +126,24 @@ extern module "torch"
   ## tensors it picks between.
   ## @fresh
   compute def where(cond: TensorHandle, a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]
+  ## One step of Adam over `F32` tensors of one shape, in one pass: the weight `p`, its gradient `g` and its moments `m`
+  ## and `v` are read, and the new weight and moments come out stacked, `[3, ...shape]`, in one new tensor. The
+  ## arithmetic is that of `Tensor.adam_composed`, operation by operation in `F32`. A result that is not finite is an
+  ## error.
+  ## @fresh
+  compute def adam_step(
+    p: TensorHandle,
+    g: TensorHandle,
+    m: TensorHandle,
+    v: TensorHandle,
+    lr: Float,
+    beta1: Float,
+    beta2: Float,
+    eps: Float,
+    decay: Float,
+    correct1: Float,
+    correct2: Float,
+  ) -> Result[TensorHandle]
   ## Elementwise clamp to `[lo, hi]`, `lo <= hi`.
   ## @fresh
   compute def clamp(a: TensorHandle, lo: Float, hi: Float) -> Result[TensorHandle]

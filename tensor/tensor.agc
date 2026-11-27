@@ -2001,6 +2001,29 @@ def adam_eager(
   hyper: Types.Tensor,
 ) -> Result[List[Types.Tensor]]
   x = try host_floats(hyper)
+  case p.backend
+    Types.Backend.Torch(device) ->
+      stack = try Torch.adam_step(device, p, g, m, v, x)
+      ok([try part_of(stack, 0, p.shape), try part_of(stack, 1, p.shape), try part_of(stack, 2, p.shape)])
+    _ -> adam_staged(p, g, m, v, x)
+  end
+end
+
+## Output `i` of a stacked step, as the view of its rows.
+def part_of(stack: Types.Tensor, i: Int, shape: List[Int]) -> Result[Types.Tensor]
+  starts = [i] + shape.map { |_: Int| 0 }
+  ends = [i + 1] + shape
+  reshape(try slice(stack, starts, ends), shape)
+end
+
+## `adam_composed` one statement at a time, each in its own arena, so a step holds a few tensors, not one per node.
+def adam_staged(
+  p: Types.Tensor,
+  g: Types.Tensor,
+  m: Types.Tensor,
+  v: Types.Tensor,
+  x: List[Float],
+) -> Result[List[Types.Tensor]]
   first = try staged do
     keep = try scaled_by(m, x[1])
     add(keep, try scaled_by(g, 1.0 - x[1]))

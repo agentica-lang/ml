@@ -736,8 +736,10 @@ Usage for tensors:
 - `Trace.evaluate` on a backend that computes opens an arena per node and closes a value after its last reader (the
   inputs, the outputs, the constants and the answers of `stop_grad` and `to_device` stay), so a run holds the live
   edge of its graph, not every node: MiniLM on libtorch, one `Trace.eval` of 16 sentences of 64 tokens leaves nothing
-  behind, where it kept 660 MB per call. The composed Adam step of a computing backend (`adam_eager`) makes one
-  statement at a time in an arena of its own, so the word table of MiniLM does not hold nine coefficients at once.
+  behind, where it kept 660 MB per call. The Adam step of a computing backend (`adam_eager`) is one native pass on libtorch (`Torch.adam_step`: the
+  three outputs stacked in one allocation, `F32` rounded as the composition does, within 1e-6 of it) and, on the
+  others, the composition one statement at a time in an arena of its own, so the word table of MiniLM does not hold
+  nine coefficients at once.
   `Torch.memory` reads the bytes of the live libtorch storages for `test/torch_memory_test.agc`.
 - Only the returned `Tensor`(s) leave the arena; views keep their buffers
   through the rule above, so there is no explicit `keep` call.

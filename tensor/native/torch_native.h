@@ -182,6 +182,12 @@ an_term torch_lt(an_env *env, struct torch_TensorHandle_state *a, struct torch_T
    tensors it picks between. */
 an_term torch_where(an_env *env, struct torch_TensorHandle_state *cond, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b);
 
+/* One step of Adam over `F32` tensors of one shape, in one pass: the weight `p`, its gradient `g` and its moments `m`
+   and `v` are read, and the new weight and moments come out stacked, `[3, ...shape]`, in one new tensor. The
+   arithmetic is that of `Tensor.adam_composed`, operation by operation in `F32`. A result that is not finite is an
+   error. */
+an_term torch_adam_step(an_env *env, struct torch_TensorHandle_state *p, struct torch_TensorHandle_state *g, struct torch_TensorHandle_state *m, struct torch_TensorHandle_state *v, double lr, double beta1, double beta2, double eps, double decay, double correct1, double correct2);
+
 /* Elementwise clamp to `[lo, hi]`, `lo <= hi`. */
 an_term torch_clamp(an_env *env, struct torch_TensorHandle_state *a, double lo, double hi);
 
@@ -709,6 +715,33 @@ static an_term torch_native_where(an_env *env, int argc, const an_term *argv) {
   return torch_where(env, a0, a1, a2);
 }
 
+static an_term torch_native_adam_step(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
+  if (!a0) return an_badarg(env, 0);
+  struct torch_TensorHandle_state *a1 = torch_TensorHandle_get(env, argv[1]);
+  if (!a1) return an_badarg(env, 1);
+  struct torch_TensorHandle_state *a2 = torch_TensorHandle_get(env, argv[2]);
+  if (!a2) return an_badarg(env, 2);
+  struct torch_TensorHandle_state *a3 = torch_TensorHandle_get(env, argv[3]);
+  if (!a3) return an_badarg(env, 3);
+  double a4;
+  if (!an_get_float(env, argv[4], &a4)) return an_badarg(env, 4);
+  double a5;
+  if (!an_get_float(env, argv[5], &a5)) return an_badarg(env, 5);
+  double a6;
+  if (!an_get_float(env, argv[6], &a6)) return an_badarg(env, 6);
+  double a7;
+  if (!an_get_float(env, argv[7], &a7)) return an_badarg(env, 7);
+  double a8;
+  if (!an_get_float(env, argv[8], &a8)) return an_badarg(env, 8);
+  double a9;
+  if (!an_get_float(env, argv[9], &a9)) return an_badarg(env, 9);
+  double a10;
+  if (!an_get_float(env, argv[10], &a10)) return an_badarg(env, 10);
+  return torch_adam_step(env, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+}
+
 static an_term torch_native_clamp(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
@@ -1070,6 +1103,7 @@ static const an_function torch_native_functions[] = {
   {"eq", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_eq, AN_DIRTY | AN_FRESH},
   {"lt", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_lt, AN_DIRTY | AN_FRESH},
   {"where", "(TensorHandle, TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_where, AN_DIRTY | AN_FRESH},
+  {"adam_step", "(TensorHandle, TensorHandle, TensorHandle, TensorHandle, Float, Float, Float, Float, Float, Float, Float) -> Result[TensorHandle]", torch_native_adam_step, AN_DIRTY | AN_FRESH},
   {"clamp", "(TensorHandle, Float, Float) -> Result[TensorHandle]", torch_native_clamp, AN_DIRTY | AN_FRESH},
   {"sum", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_sum, AN_DIRTY | AN_FRESH},
   {"mean", "(TensorHandle, List[Int], Bool) -> Result[TensorHandle]", torch_native_mean, AN_DIRTY | AN_FRESH},
@@ -1107,5 +1141,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 53, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 54, NULL, 0, torch_native_resources, 1, LOAD)
 #endif

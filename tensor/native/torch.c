@@ -32,6 +32,7 @@
 #include <torch/torch.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1467,6 +1468,65 @@ an_term torch_readback(an_env *env, struct torch_TensorHandle_state *a) {
     return torch_result_list_Float_ok(env, torch_list_Float_end(env, &out));
   } catch (...) {
     return failed(env, "readback");
+  }
+}
+
+/* One step of Adam in one pass over `F32` tensors of one shape: the arithmetic of the composition in `tensor.agc`, each
+   operation rounded to `F32` and in its order. The coefficients are made in doubles and cast, as `full` does. The
+   answer is the new weight, first moment and second moment stacked. */
+an_term torch_adam_step(an_env *env, struct torch_TensorHandle_state *p, struct torch_TensorHandle_state *g,
+                        struct torch_TensorHandle_state *m, struct torch_TensorHandle_state *v, double lr, double beta1,
+                        double beta2, double eps, double decay, double correct1, double correct2) {
+  try {
+    const torch::Tensor *inputs[4] = {p->value, g->value, m->value, v->value};
+
+    for (const torch::Tensor *t : inputs) {
+      if (t->scalar_type() != torch::kFloat32) return error_text(env, "adam_step takes F32 tensors");
+      if (t->sizes() != p->value->sizes()) return error_text(env, "adam_step takes tensors of one shape");
+    }
+
+    torch::Tensor pc = p->value->contiguous(), gc = g->value->contiguous(), mc = m->value->contiguous(),
+                  vc = v->value->contiguous();
+    std::vector<int64_t> dims = {3};
+    for (int64_t d : p->value->sizes()) dims.push_back(d);
+    torch::Tensor out = torch::empty(dims, torch::TensorOptions().dtype(torch::kFloat32));
+
+    const int64_t n = pc.numel();
+    const float *pp = pc.data_ptr<float>(), *gp = gc.data_ptr<float>(), *mp = mc.data_ptr<float>(),
+                *vp = vc.data_ptr<float>();
+    float *np = out.data_ptr<float>(), *nm = np + n, *nv = np + 2 * n;
+    const float b1 = (float)beta1, ob1 = (float)(1.0 - beta1), b2 = (float)beta2, ob2 = (float)(1.0 - beta2);
+    const float c1 = (float)correct1, c2 = (float)correct2, e = (float)eps, rate = (float)lr;
+    const float keep = (float)(1.0 - lr * decay);
+    std::atomic<bool> finite(true);
+
+    at::parallel_for(0, n, 16384, [&](int64_t begin, int64_t end) {
+      bool ok = true;
+      for (int64_t i = begin; i < end; i++) {
+        const float first_m = mp[i] * b1;
+        const float first_g = gp[i] * ob1;
+        const float first = first_m + first_g;
+        const float gg = gp[i] * gp[i];
+        const float second_v = vp[i] * b2;
+        const float second_g = gg * ob2;
+        const float second = second_v + second_g;
+        const float denominator = std::sqrt(second * c2) + e;
+        const float ratio = (first * c1) / denominator;
+        const float decayed = pp[i] * keep;
+        const float step = ratio * rate;
+        const float weight = decayed - step;
+        np[i] = weight;
+        nm[i] = first;
+        nv[i] = second;
+        ok = ok && std::isfinite(weight) && std::isfinite(first) && std::isfinite(second);
+      }
+      if (!ok) finite = false;
+    });
+
+    if (!finite) return error_text(env, "adam_step needs finite values, got a non-finite one");
+    return ok_tensor(env, out);
+  } catch (...) {
+    return failed(env, "adam_step");
   }
 }
 
