@@ -131,7 +131,7 @@ end
 def test_an_f32_file_beyond_bf16_is_an_error_on_every_backend() -> Result[Void]
   big = [1.0, 3.4e38].flat_map { |x: Float| Files.f32_bytes(x) }
   for backend in try bf16_backends()
-    Files.with_file("bf16-range", try Bytes.from_list(big)) do |path|
+    try Files.with_file("bf16-range", try Bytes.from_list(big)) do |path|
       r = Tensor.from_file(path, 0, [2], Tensor.FloatFormat.F32, backend, Tensor.Dtype.BF16)
       try Test.assert(!r.ok?, "3.4e38 was loaded as BF16")
       try Test.assert(r.message.include?("outside what BF16 holds"), r.message)
