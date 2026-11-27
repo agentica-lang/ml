@@ -10,6 +10,47 @@ import Trace from "../trace"
 
 private
 
+def test_gated_delta_output_and_state_match_the_reference() -> Result[Void]
+  return ok() if !try Support.present()
+  for tokens in [1, 5]
+    try agrees(
+      ->(b: Tensor.Backend) {
+        shape = [tokens, 2, 3]
+        count = tokens * 6
+        ok([
+          try Support.floats(Support.uniform(count, 1, 0.5), shape, b),
+          try Support.floats(Support.uniform(count, 2, 0.5), shape, b),
+          try Support.floats(Support.uniform(count, 3, 0.5), shape, b),
+          try Support.floats(Support.uniform(tokens * 2, 4, 0.5).map { |x| -x.abs }, [tokens, 2], b),
+          try Support.floats(Support.uniform(tokens * 2, 5, 0.5).map { |x| x + 0.5 }, [tokens, 2], b),
+          try Support.floats(Support.uniform(18, 6, 0.5), [2, 3, 3], b),
+        ])
+      },
+      ->(xs: List[Tensor.Tensor]) {
+        r = try Tensor.gated_delta_rule(xs[0], xs[1], xs[2], xs[3], xs[4], xs[5])
+        return ok([r.out, r.state]) if tokens == 1
+        left = try delta_rows(xs, 0, 2)
+        right = try delta_rows(xs, 2, tokens)
+        prefix = try Tensor.gated_delta_rule(left[0], left[1], left[2], left[3], left[4], xs[5])
+        suffix = try Tensor.gated_delta_rule(right[0], right[1], right[2], right[3], right[4], prefix.state)
+        ok([r.out, r.state, try Tensor.concat([prefix.out, suffix.out], 0), suffix.state])
+      },
+    )
+  end
+
+  ok()
+end
+
+def delta_rows(xs: List[Tensor.Tensor], start: Int, stop: Int) -> Result[List[Tensor.Tensor]]
+  rows: List[Tensor.Tensor] = []
+  for x in xs.take(5)
+    tail = Tensor.shape(x).drop(1)
+    rows = rows.push(try Tensor.slice(x, [start] + tail.map { |_| 0 }, [stop] + tail))
+  end
+
+  ok(rows)
+end
+
 def test_grouped_conv2d_with_stride_and_padding_matches_the_reference() -> Result[Void]
   return ok() if !try Support.present()
   agrees(

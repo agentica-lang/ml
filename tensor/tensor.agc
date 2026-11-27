@@ -1157,8 +1157,8 @@ end
 ##   `i` the key axis), the layout ggml has: the zeros to start, or the `state` of an earlier call to go on.
 ## - `F32` only. A token with `g = 0` and `beta = 0` leaves the state as it was, which is how a padded prompt keeps the
 ##   state of its last real token.
-## In a trace it is one node, which `Ggml` runs as `ggml_gated_delta_net` (CPU, and Vulkan for widths 16, 32, 64 and
-## 128); `XLA` has no lowering.
+## In a trace it is one node: `Ggml` runs `ggml_gated_delta_net` (CPU, and Vulkan for widths 16, 32, 64 and 128),
+## while `XLA` compiles a StableHLO loop.
 ## The other backends run the recurrence token by token over the ops of this module, so a long sequence is slow there.
 ## No gradient.
 def gated_delta_rule(

@@ -13,6 +13,7 @@ import Types from "types"
 
 ## Starts the text of a node that has two results.
 TWO = "<2>"
+THREE = "<3>"
 
 ## The program: its text, and the tensors of its constants in the order of the arguments that follow the inputs.
 struct Module
@@ -189,6 +190,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Stack(axis) -> stack(t, n.args, a, axis, first)
     Types.Op.BatchMatmul -> batch_matmul(n.args, a, sig)
     Types.Op.Conv2d(stride, padding, groups) -> conv2d(a, sig, stride, padding, groups)
+    Types.Op.GatedDeltaRule -> gated_delta(t, n.args, a, first)
     Types.Op.Argmax(axes, keep_dims) -> argmax(t, n.args[0], a[0], axes, keep_dims, first)
     Types.Op.Slice(starts, ends) -> ok(["stablehlo.slice #{a[0]} #{extents(starts, ends)} : #{sig}"])
     Types.Op.BroadcastTo -> broadcast(t, n.args[0], a[0])
@@ -215,6 +217,79 @@ def conv2d(a: List[String], sig: String, stride: Int, padding: Int, groups: Int)
   window = "window_strides = array<i64: #{stride}, #{stride}>, padding = dense<#{padding}> : tensor<2x2xi64>"
   counts = "batch_group_count = 1 : i64, feature_group_count = #{groups} : i64"
   ok(["\"stablehlo.convolution\"(#{a[0]}, #{a[1]}) {#{dims}, #{window}, #{counts}} : #{sig}"])
+end
+
+# The same recurrence as Tensor.gated_delta_composed, without unrolling the prompt. The two reductions
+# contract the last (key) axis of the state; the penultimate axis holds values.
+def gated_delta(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
+  shape = args[0].shape
+  tokens = shape[0]
+  heads = shape[1]
+  width = shape[2]
+  seq = try type_of(args[0])
+  gates = try type_of(args[3])
+  state = try type_of(args[5])
+  row = try tensor_type([1, heads, width], t.dtype)
+  vectors = try tensor_type([heads, width], t.dtype)
+  gate_row = try tensor_type([1, heads], t.dtype)
+  head = try tensor_type([heads], t.dtype)
+  out_rows = try tensor_type([tokens, heads * width], t.dtype)
+  state_rows = try tensor_type([width, heads * width], t.dtype)
+  loop_types = "tensor<i32>, #{state}, #{seq}"
+  scale = try splat(Types.Values.Float(1.0 / Math.sqrt(width.to_f)), [heads, width], t.dtype)
+  loop = [
+    "\"stablehlo.while\"(%#{first}, #{a[5]}, %#{first + 1}) ({",
+    "      ^bb0(%cond_i: tensor<i32>, %cond_state: #{state}, %cond_out: #{seq}):",
+    "        %limit = stablehlo.constant dense<#{tokens}> : tensor<i32>",
+    "        %more = stablehlo.compare LT, %cond_i, %limit, SIGNED : (tensor<i32>, tensor<i32>) -> tensor<i1>",
+    "        stablehlo.return %more : tensor<i1>",
+    "    }, {",
+    "      ^bb0(%i: tensor<i32>, %held: #{state}, %out: #{seq}):",
+    "        %zero = stablehlo.constant dense<0> : tensor<i32>",
+    "        %one = stablehlo.constant dense<1> : tensor<i32>",
+    "        %zero_f = stablehlo.constant dense<0.0> : tensor<f32>",
+    "        %q_row = stablehlo.dynamic_slice #{a[0]}, %i, %zero, %zero, sizes = [1, #{heads}, #{width}] : (#{seq}, tensor<i32>, tensor<i32>, tensor<i32>) -> #{row}",
+    "        %k_row = stablehlo.dynamic_slice #{a[1]}, %i, %zero, %zero, sizes = [1, #{heads}, #{width}] : (#{seq}, tensor<i32>, tensor<i32>, tensor<i32>) -> #{row}",
+    "        %v_row = stablehlo.dynamic_slice #{a[2]}, %i, %zero, %zero, sizes = [1, #{heads}, #{width}] : (#{seq}, tensor<i32>, tensor<i32>, tensor<i32>) -> #{row}",
+    "        %g_row = stablehlo.dynamic_slice #{a[3]}, %i, %zero, sizes = [1, #{heads}] : (#{gates}, tensor<i32>, tensor<i32>) -> #{gate_row}",
+    "        %beta_row = stablehlo.dynamic_slice #{a[4]}, %i, %zero, sizes = [1, #{heads}] : (#{gates}, tensor<i32>, tensor<i32>) -> #{gate_row}",
+    "        %q = stablehlo.reshape %q_row : (#{row}) -> #{vectors}",
+    "        %k = stablehlo.reshape %k_row : (#{row}) -> #{vectors}",
+    "        %v = stablehlo.reshape %v_row : (#{row}) -> #{vectors}",
+    "        %g = stablehlo.reshape %g_row : (#{gate_row}) -> #{head}",
+    "        %beta = stablehlo.reshape %beta_row : (#{gate_row}) -> #{head}",
+    "        %decay = stablehlo.exponential %g : #{head}",
+    "        %decay_matrix = stablehlo.broadcast_in_dim %decay, dims = [0] : (#{head}) -> #{state}",
+    "        %decayed = stablehlo.multiply %held, %decay_matrix : #{state}",
+    "        %key = stablehlo.broadcast_in_dim %k, dims = [0, 2] : (#{vectors}) -> #{state}",
+    "        %read_key = stablehlo.multiply %decayed, %key : #{state}",
+    "        %seen = stablehlo.reduce(%read_key init: %zero_f) applies stablehlo.add across dimensions = [2] : (#{state}, tensor<f32>) -> #{vectors}",
+    "        %rate = stablehlo.broadcast_in_dim %beta, dims = [0] : (#{head}) -> #{vectors}",
+    "        %diff = stablehlo.subtract %v, %seen : #{vectors}",
+    "        %change = stablehlo.multiply %diff, %rate : #{vectors}",
+    "        %value = stablehlo.broadcast_in_dim %change, dims = [0, 1] : (#{vectors}) -> #{state}",
+    "        %update = stablehlo.multiply %value, %key : #{state}",
+    "        %next_state = stablehlo.add %decayed, %update : #{state}",
+    "        %query = stablehlo.broadcast_in_dim %q, dims = [0, 2] : (#{vectors}) -> #{state}",
+    "        %read_query = stablehlo.multiply %next_state, %query : #{state}",
+    "        %raw = stablehlo.reduce(%read_query init: %zero_f) applies stablehlo.add across dimensions = [2] : (#{state}, tensor<f32>) -> #{vectors}",
+    "        %scale = #{scale}",
+    "        %scaled = stablehlo.multiply %raw, %scale : #{vectors}",
+    "        %answer = stablehlo.reshape %scaled : (#{vectors}) -> #{row}",
+    "        %next_out = stablehlo.dynamic_update_slice %out, %answer, %i, %zero, %zero : (#{seq}, #{row}, tensor<i32>, tensor<i32>, tensor<i32>) -> #{seq}",
+    "        %next_i = stablehlo.add %i, %one : tensor<i32>",
+    "        stablehlo.return %next_i, %next_state, %next_out : #{loop_types}",
+    "    }) : (#{loop_types}) -> (#{loop_types})",
+  ].join("\n")
+
+  ok([
+    "stablehlo.constant dense<0> : tensor<i32>",
+    try fill(0.0, args[0]),
+    "#{THREE}#{loop}",
+    "stablehlo.reshape %#{first + 2}#2 : (#{seq}) -> #{out_rows}",
+    "stablehlo.reshape %#{first + 2}#1 : (#{state}) -> #{state_rows}",
+    "stablehlo.concatenate %#{first + 3}, %#{first + 4}, dim = 0 : (#{out_rows}, #{state_rows}) -> #{try type_of(t)}",
+  ])
 end
 
 # Rows of the source at the indices: one row slice per index, the indices' axes first, as `Reference.gather` answers.
@@ -367,6 +442,7 @@ end
 # `%n#1`.
 def numbered(n: Int, text: String) -> String
   return "    %#{n}:2 = #{text.slice(TWO.size, text.size - TWO.size)}" if text.start_with?(TWO)
+  return "    %#{n}:3 = #{text.slice(THREE.size, text.size - THREE.size)}" if text.start_with?(THREE)
   "    %#{n} = #{text}"
 end
 
