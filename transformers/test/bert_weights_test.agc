@@ -2,7 +2,8 @@
 ## on the tiny models of `bert_peer.py`: the names are the checkpoint's, a model rebuilt from its own weights gives the
 ## same embedding, the gradient of the cosine loss of a scored pair agrees on the reference (in doubles) with a central
 ## difference of the loss itself for three values and is not zero for the encoder, and `Train.fit_batches` with AdamW
-## lowers the loss on ggml and moves every weight that has a gradient. Run from `transformers/`.
+## lowers the loss on ggml and libtorch and moves every weight that has a gradient, and the gradients of libtorch agree
+## with the reference's. Run from `transformers/`.
 
 import Bert from "../bert"
 import Data from "pkg/train/data"
@@ -23,6 +24,10 @@ SCORES = [0.8, 0.1]
 STEP = 0.00001
 SLOPE_ABS = 0.00000001
 SLOPE_REL = 0.00001
+
+## How close the gradients of XLA (`F32`) must be to the reference's.
+XLA_ABS = 0.00001
+XLA_REL = 0.001
 
 private
 
@@ -190,42 +195,6 @@ def test_the_gradient_matches_a_central_difference_and_reaches_the_encoder() -> 
   end
 end
 
-## The loss and the gradient of every weight for one pair on `backend`, by the order of `Params.split`.
-def graded(dir: String, backend: Tensor.Backend) -> Result[List[List[Float]]]
-  m = try Bert.open("#{dir}/tiny", backend)
-  split = try Params.split(Bert.weights(m), ->(_name: String) { true })
-  b = try batch(backend, 1)
-  both = try Trace.value_and_grad(
-    split.trainable,
-    ->(ps: List[Tensor.Tensor]) {
-      loss(m, split, ps, Data.Batch(inputs: Trace.constant(b.inputs), targets: Trace.constant(b.targets)))
-    },
-  )
-
-  out: List[List[Float]] = [try S.floats_of(both.value)]
-  for g in both.grads
-    out = out.push(try S.floats_of(g))
-  end
-
-  ok(out)
-end
-
-## libtorch computes the loss and every gradient of the model as the reference does, in `F32`: the attention backward
-## runs on its `batch_matmul`.
-def test_the_gradient_agrees_on_libtorch() -> Result[Void]
-  with_peer do |dir|
-    return ok() if (try S.torch_backends()).empty?
-    want = try graded(dir, S.REF)
-    got = try graded(dir, S.TORCH)
-    try Test.eq(got.size, want.size)
-    for i in 0...want.size
-      try S.expect_close(got[i], want[i], 0.00001, 0.001, "output #{i} on libtorch")
-    end
-
-    ok()
-  end
-end
-
 ## `Train.fit_batches` with AdamW: the loss falls over three steps, and every weight with a gradient moved.
 def fits(dir: String, backend: Tensor.Backend) -> Result[Void]
   m = try Bert.open("#{dir}/tiny", backend)
@@ -264,4 +233,78 @@ def test_fit_batches_lowers_the_loss_and_moves_the_encoder_on_libtorch() -> Resu
     return ok() if (try S.torch_backends()).empty?
     fits(dir, S.TORCH)
   end
+end
+
+## The gradients of the cosine loss on libtorch match those of the reference (in `F32`): the attention backward runs on
+## its `batch_matmul`.
+def test_the_gradients_on_libtorch_match_the_reference() -> Result[Void]
+  with_peer do |dir|
+    return ok() if (try S.torch_backends()).empty?
+    want = try gradients("#{dir}/tiny", S.REF)
+    got = try gradients("#{dir}/tiny", S.TORCH)
+    try Test.eq(got.size, want.size)
+    for i in 0...want.size
+      try S.expect_close(got[i], want[i], 0.00001, 0.001, "gradient #{i} on libtorch")
+    end
+
+    ok()
+  end
+end
+
+## The gradients of the cosine loss on XLA (a compiled `value_and_grad`) match those of the reference.
+def test_the_gradients_on_xla_match_the_reference() -> Result[Void]
+  with_peer do |dir|
+    for xla in try S.xla_backends()
+      want = try gradients("#{dir}/tiny", S.REF)
+      got = try gradients("#{dir}/tiny", xla)
+      try Test.eq(got.size, want.size)
+      for i in 0...want.size
+        try S.expect_close(got[i], want[i], XLA_ABS, XLA_REL, "gradient #{i}")
+      end
+    end
+
+    ok()
+  end
+end
+
+## `Train.fit_batches` with AdamW on XLA: the loss falls over three steps, as on ggml.
+def test_fit_batches_lowers_the_loss_on_xla() -> Result[Void]
+  with_peer do |dir|
+    for xla in try S.xla_backends()
+      m = try Bert.open("#{dir}/tiny", xla)
+      split = try Params.split(Bert.weights(m), ->(_name: String) { true })
+      fit = try Train.fit_batches(
+        ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(m, split, ps, b) },
+        split.trainable,
+        ->(_e: Int, _i: Int) { batch(xla, 2) },
+        1,
+        Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.01, weight_decay: 0.0)),
+        3,
+      )
+
+      try Test.assert(fit.history[2] < fit.history[0], "the loss went from #{fit.history[0]} to #{fit.history[2]}")
+    end
+
+    ok()
+  end
+end
+
+## The gradients of the loss of the first two pairs, one list of values per weight.
+def gradients(dir: String, backend: Tensor.Backend) -> Result[List[List[Float]]]
+  m = try Bert.open(dir, backend)
+  split = try Params.split(Bert.weights(m), ->(_name: String) { true })
+  b = try batch(backend, 2)
+  both = try Trace.value_and_grad(
+    split.trainable,
+    ->(ps: List[Tensor.Tensor]) {
+      loss(m, split, ps, Data.Batch(inputs: Trace.constant(b.inputs), targets: Trace.constant(b.targets)))
+    },
+  )
+
+  out: List[List[Float]] = []
+  for g in both.grads
+    out = out.push(try S.floats_of(g))
+  end
+
+  ok(out)
 end
