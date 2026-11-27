@@ -4,6 +4,7 @@
 ## tensor is a `Tensor.*` call, so a step runs eagerly on the parameters'
 ## backend or traced (`fit` traces it).
 
+import Data from "data"
 import Hub from "pkg/hub/hub"
 import SafetensorsWrite from "pkg/hub/safetensors_write"
 import Tensor from "pkg/tensor/tensor"
@@ -129,44 +130,58 @@ def save(state: State, path: String) -> Result[Void]
   SafetensorsWrite.write(path, tensors, {"steps": "#{state.steps}", "optimizer": kind_of(state.optimizer)})
 end
 
-## The state that `save` wrote to `path`, for `optimizer` and `params`: the moments on the backend of each parameter, and
-## the step count. An error names what does not fit: another optimizer, a missing moment, a moment of another shape.
+## The state that `save` wrote to `path`, for `optimizer` and `params`: the step count, and the moments on the backend of
+## each parameter, in its dtype and with its shape. The knobs and the schedule are the `optimizer`'s, so a state can be
+## loaded with another learning rate or schedule (the step count is kept), and an AdamW `decay` list is given again. An
+## error names what does not fit: another optimizer, a missing or foreign tensor, a moment of another shape or dtype, a
+## step count that is not a number from 0, a header without its metadata. The tensors read before an error are freed.
 def load(optimizer: Optimizer, params: List[Tensor.Tensor], path: String) -> Result[State]
+  try check_knobs(optimizer, params.size)
   c = try Hub.open(path)
   files = Hub.metadata(c)
+  return error("#{path} has no header") if files.empty?
+
   meta = files[files.keys[0]]
-  saved = meta.get("optimizer").unwrap_or("none")
+  saved = try meta.get("optimizer").to_result("#{path} has no optimizer in its metadata")
   return error("#{path} holds an #{saved} state, not #{kind_of(optimizer)}") if saved != kind_of(optimizer)
 
-  text = try meta.get("steps").to_result("#{path} has no step count")
+  text = try meta.get("steps").to_result("#{path} has no step count in its metadata")
   steps = try text.to_i
-  wanted = params.size * moments_per_param(optimizer)
-  if Hub.names(c).size != wanted
-    return error("#{path} has #{Hub.names(c).size} moments, #{wanted} are needed for #{params.size} parameters")
+  return error("#{path} has the step count #{steps}") if steps < 0
+
+  wanted = moment_names(optimizer, params.size)
+  for name in Hub.names(c)
+    if !wanted.include?(name)
+      return error("#{path} has the tensor #{name}, which is no moment of #{params.size} parameters")
+    end
   end
 
   first: List[Tensor.Tensor] = []
   second: List[Tensor.Tensor] = []
   for i in 0...params.size
     if uses_first?(optimizer)
-      first = first.push(try moment(c, "first.#{i}", params[i]))
+      first = first.push(try loaded(c, "first.#{i}", params[i], first + second))
     end
 
     if uses_second?(optimizer)
-      second = second.push(try moment(c, "second.#{i}", params[i]))
+      second = second.push(try loaded(c, "second.#{i}", params[i], first + second))
     end
   end
 
   ok(State(optimizer: optimizer, steps: steps, first: first, second: second))
 end
 
-## `state` for `optimizer` and `params`, checked: the same kind of optimizer and one moment of each parameter's shape.
-## `fit` takes its `start` state through it.
+## `state` for `optimizer` and `params`, checked as `init` and `load` check: the knobs of `optimizer`, the same kind of
+## optimizer, and one moment of each parameter's shape and dtype. `fit` takes its `start` state through it. The
+## optimizer of the result is `optimizer`: the learning rate and the schedule may change on a resume, the step count of
+## `state` is kept, and the AdamW `decay` list is the one given here.
 def resume(optimizer: Optimizer, state: State, params: List[Tensor.Tensor]) -> Result[State]
+  try check_knobs(optimizer, params.size)
   if kind_of(state.optimizer) != kind_of(optimizer)
     return error("the start state holds an #{kind_of(state.optimizer)} state, not #{kind_of(optimizer)}")
   end
 
+  return error("the start state has the step count #{state.steps}") if state.steps < 0
   try check_moments("first", uses_first?(optimizer), state.first, params)
   try check_moments("second", uses_second?(optimizer), state.second, params)
   ok(state.with(optimizer: optimizer))
@@ -242,19 +257,6 @@ def kind_of(optimizer: Optimizer) -> String
   end
 end
 
-def moments_per_param(optimizer: Optimizer) -> Int
-  total = 0
-  if uses_first?(optimizer)
-    total = total + 1
-  end
-
-  if uses_second?(optimizer)
-    total = total + 1
-  end
-
-  total
-end
-
 def uses_first?(optimizer: Optimizer) -> Bool
   case optimizer
     Optimizer.Sgd(o) -> o.momentum != 0.0
@@ -269,14 +271,68 @@ def uses_second?(optimizer: Optimizer) -> Bool
   end
 end
 
-## The tensor `name` of the file, on the backend of `param`, which must have its shape.
-def moment(c: Hub.Checkpoint, name: String, param: Tensor.Tensor) -> Result[Tensor.Tensor]
-  t = try Hub.tensor(c, name, Tensor.backend(param))
-  if Tensor.shape(t) != Tensor.shape(param)
-    return error("#{name} has the shape #{Tensor.shape(t)}, its parameter #{Tensor.shape(param)}")
+## What `init` checks: the schedule, and for AdamW one decay flag per parameter.
+def check_knobs(optimizer: Optimizer, n: Int) -> Result[Void]
+  case optimizer
+    Optimizer.Sgd(o) -> check_schedule(o.schedule)
+    Optimizer.Adam(o) -> check_schedule(o.schedule)
+    Optimizer.AdamW(o) ->
+      try check_schedule(o.schedule)
+      check_decay(o, n)
+  end
+end
+
+## The tensor names of a saved state of `n` parameters.
+def moment_names(optimizer: Optimizer, n: Int) -> List[String]
+  out: List[String] = []
+  for i in 0...n
+    if uses_first?(optimizer)
+      out = out.push("first.#{i}")
+    end
+
+    if uses_second?(optimizer)
+      out = out.push("second.#{i}")
+    end
+  end
+
+  out
+end
+
+## The moment `name` of the file, in the dtype and on the backend of `param`; when it fails the moments of `read` are
+## freed.
+def loaded(c: Hub.Checkpoint, name: String, param: Tensor.Tensor, read: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  made = Hub.tensor(c, name, Tensor.backend(param), Tensor.dtype(param))
+  if !made.ok?
+    free_all(read)
+    return error(made.message)
+  end
+
+  t = made.unwrap!
+  fits = check_moment(name, t, param)
+  if !fits.ok?
+    free_all(read + [t])
+    return error(fits.message)
   end
 
   ok(t)
+end
+
+def free_all(tensors: List[Tensor.Tensor]) -> Void
+  for t in tensors
+    Data.free(t)
+  end
+end
+
+def check_moment(name: String, moment: Tensor.Tensor, param: Tensor.Tensor) -> Result[Void]
+  if Tensor.shape(moment) != Tensor.shape(param)
+    return error("#{name} has the shape #{Tensor.shape(moment)}, its parameter #{Tensor.shape(param)}")
+  end
+
+  if Tensor.dtype(moment) != Tensor.dtype(param)
+    return error("#{name} has the dtype #{Tensor.dtype(moment)}, its parameter #{Tensor.dtype(param)}")
+  end
+
+  ok()
 end
 
 def check_moments(name: String, used: Bool, moments: List[Tensor.Tensor], params: List[Tensor.Tensor]) -> Result[Void]
@@ -291,9 +347,7 @@ def check_moments(name: String, used: Bool, moments: List[Tensor.Tensor], params
   end
 
   for i in 0...params.size
-    if Tensor.shape(moments[i]) != Tensor.shape(params[i])
-      return error("#{name}.#{i} has the shape #{Tensor.shape(moments[i])}, its parameter #{Tensor.shape(params[i])}")
-    end
+    try check_moment("#{name}.#{i}", moments[i], params[i])
   end
 
   ok()

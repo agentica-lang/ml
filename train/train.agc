@@ -66,7 +66,8 @@ end
 ## with an error that names the epoch and the batch. The parameters and the optimizer state that a step replaces are
 ## freed at once on libtorch, ggml and XLA, except `params` themselves, which stay the caller's, as the trained ones of the
 ## result are. With `start`, the run begins from that optimizer state (`Optim.load`): its step count goes on along the
-## schedule, and the run owns its moments and frees them.
+## schedule. The run takes its moments and frees them, on every path, an error before the first step included: do not
+## use `start` after `fit`.
 def fit(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],
@@ -82,7 +83,10 @@ def fit(
     return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, start)
   end
 
-  feed = try Data.feed(data, epochs)
+  fed = Data.feed(data, epochs)
+  return refused(start, fed.message) if !fed.ok?
+
+  feed = fed.unwrap!
   batches = ->(e: Int) {
     current = Data.epoch(feed, e)
     ->(i: Int) { Data.take(current, i) }
@@ -130,8 +134,8 @@ def fit_batches(
   on_step: Optional[Fn[StepInfo, Result[Control]]] = none,
   start: Optional[Optim.State] = none,
 ) -> Result[Fit]
-  return error("fit_batches needs at least one batch, got #{count}") if count < 1
-  return error("prefetch must be 0 or more, got #{prefetch}") if prefetch < 0
+  return refused(start, "fit_batches needs at least one batch, got #{count}") if count < 1
+  return refused(start, "prefetch must be 0 or more, got #{prefetch}") if prefetch < 0
   run_of = ->(batches: Fn[Int, Fn[Int, Result[Data.Batch]]]) {
     Run(
       loss: loss,
@@ -149,7 +153,10 @@ def fit_batches(
     return trained(run_of.call(->(e: Int) { ->(i: Int) { fresh(batch.call(e, i), e, i) } }), params, optimizer)
   end
 
-  stream = try Data.ahead(batch, count, epochs, prefetch)
+  made = Data.ahead(batch, count, epochs, prefetch)
+  return refused(start, made.message) if !made.ok?
+
+  stream = made.unwrap!
   result = trained(run_of.call(->(_e: Int) { ->(_i: Int) { Data.next(stream) } }), params, optimizer)
   Data.finish(stream)
   result
@@ -244,8 +251,11 @@ def fit_indexed(
   on_step: Optional[Fn[StepInfo, Result[Control]]],
   start: Optional[Optim.State],
 ) -> Result[Fit]
-  return error("prefetch must be 0 or more, got #{data.prefetch}") if data.prefetch < 0
-  Data.stop(try Data.feed(data.with(prefetch: 0), epochs))
+  return refused(start, "prefetch must be 0 or more, got #{data.prefetch}") if data.prefetch < 0
+  fed = Data.feed(data.with(prefetch: 0), epochs)
+  return refused(start, fed.message) if !fed.ok?
+
+  Data.stop(fed.unwrap!)
   batches = ->(e: Int) {
     order = Data.order(data, e)
     ->(i: Int) { row_ids(data, order, i) }
@@ -289,9 +299,25 @@ end
 ## The state the run starts from: `start` checked against `optimizer` and `params`, or a new one.
 def initial(r: Run, optimizer: Optim.Optimizer, params: List[Tensor.Tensor]) -> Result[Optim.State]
   case r.start
-    some(s) -> Optim.resume(optimizer, s, params)
+    some(s) ->
+      checked = Optim.resume(optimizer, s, params)
+      if !checked.ok?
+        release(s, [], false)
+      end
+
+      checked
     none -> Optim.init(optimizer, params)
   end
+end
+
+## An error of `fit` before its run starts: the moments of `start` are freed first, as the run frees them.
+def refused(start: Optional[Optim.State], message: String) -> Result[Fit]
+  case start
+    some(s) -> release(s, [], false)
+    none -> nil
+  end
+
+  error(message)
 end
 
 ## The run, then its compiled steps closed.

@@ -13,7 +13,9 @@
 `Adam` defaults: `lr` 0.001, betas 0.9 and 0.999, `eps` 1e-8. `AdamW`'s `decay` has one flag per parameter (empty: all
 decay); a fine-tune leaves out biases and layer-norm weights. `fit` starts a run at step 0 with zero moments, or from
 `start: state` (`Optim.load(optimizer, params, path)` reads what `Optim.save(state, path)` wrote; `Train.Epoch` and
-`Train.StepInfo` have the run's `state` for a hook to save), so a resumed run goes on along its schedule.
+`Train.StepInfo` have the run's `state` for a hook to save), so a resumed run goes on along its schedule. The moments take their parameter's dtype and backend; the knobs, the
+schedule (they may change on a resume, the step count is kept) and an AdamW `decay` list come from the code. `fit` takes
+`start` and frees it: do not use it after. `state` in a hook is the run's own: save it before the hook returns.
 
 ## Fit and validate
 
