@@ -32,6 +32,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- `exp` on `Backend.Torch` flushes a denormal result to 0 on purpose (an input below -87.33 in `F32`, -708.39 in `F64`; libtorch is 3 to 10 times slower on them), so a masked softmax and the gradient of `gelu_erf` run faster; every result of 1.18e-38 or more is kept. The finite checks of the torch ops are one `aminmax` reduction instead of a boolean temporary and a scan, so `sigmoid` and `gelu_erf` run in half the time (ml#407).
 - `Dtype.BF16`: ggml, libtorch and XLA keep checkpoint weights in 16-bit buffers. `Tensor.from_file(..., dtype: BF16)` preserves BF16 file values and rounds F32 or F16 sources to nearest even. Products with F32 activations widen BF16 weights at compute time, and embeddings can widen only the selected rows.
 - `Backend.Xla` holds `F16` tensors: `Tensor.from_file(..., dtype: F16)`, `from_bytes` and `from_list` make half weights in 16-bit buffers, and a compiled product or lookup widens them to `F32` inside the program; `Qwen3.open(dir, xla, F16)` and the other `weights: F16` models load on XLA (ml#386).
 - The StableHLO emitter builds every op with `agc-ir`, so `Trace.stablehlo` and the programs XLA compiles are in MLIR's generic form (`"stablehlo.reduce"(...) ({...}) {dimensions = array<i64: 1>}`), each reduction's, sort's and scatter's combiner an explicit region; only the module, its function and the gated-delta call stay text. The programs compute the same: the IREE goldens of `train/` are unchanged (ml#417).

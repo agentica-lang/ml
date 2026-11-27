@@ -5,6 +5,7 @@
 
 import Conform from "torch_support"
 import Tensor from "../tensor"
+import Trace from "../trace"
 
 private
 
@@ -79,6 +80,131 @@ def test_exp_of_minus_infinity_is_zero_and_of_plus_infinity_an_error() -> Result
   try Test.eq(got, [0.0, 1.0])
   try Test.error?(Tensor.exp(try Conform.on_torch([1.0e308 * 10.0], [1])))
   Test.error?(Tensor.exp(try Conform.on_torch([open - open], [1])))
+end
+
+## The native `exp` flushes a result below `FLT_MIN` (about -87.34 in `F32`, -708.40 in `F64`) to 0, on purpose, and keeps
+## every other one: the floor is -87.33 and -708.39. These read the native values directly, and a relative compare, so
+## a floor that is too high (say -17) turns a kept value into 0 and fails.
+def test_exp_keeps_a_normal_result_and_flushes_a_denormal_one_to_zero() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [-87.3, -86.9, -80.0, -87.5, -100.0, -1000.0, 0.0]
+  got = try Conform.floats_of(try Tensor.exp(try Conform.on_torch(data, [7])))
+  for i in 0...3
+    try Test.assert(got[i] > 0.0, "exp(#{data[i]}) is #{got[i]}, a normal value that must be kept")
+    try Test.assert(
+      (got[i] - Math.exp(data[i])).abs <= 0.00001 * Math.exp(data[i]),
+      "exp(#{data[i]}) is #{got[i]}, expected #{Math.exp(data[i])}",
+    )
+  end
+
+  try Test.eq([got[3], got[4], got[5], got[6]], [0.0, 0.0, 0.0, 1.0])
+  ok()
+end
+
+def test_exp_of_f64_keeps_a_normal_result_and_flushes_a_denormal_one_to_zero() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [-700.0, -708.0, -709.0, -1000.0]
+  values = data.map { |x: Float| Tensor.Values.Float(x) }
+  doubles = try Tensor.from_list(values, [4], Tensor.Dtype.F64, Conform.TORCH)
+  got = try Conform.floats_of(try Tensor.exp(doubles))
+  for i in 0...2
+    want = Math.exp(data[i])
+    try Test.assert(got[i] > 0.0 and (got[i] - want).abs <= 0.00001 * want, "exp(#{data[i]}) is #{got[i]}")
+  end
+
+  Test.eq([got[2], got[3]], [0.0, 0.0])
+end
+
+## A masked row: scores that are kept, deep ones, `-inf`, and the unmasked ones around them.
+def test_exp_of_a_mixed_row_with_minus_infinity() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  open = -1.0e308 * 10.0
+  data = [2.0, open, -1.0, -1.0e9, 0.0, -88.0, -3.0, open]
+  got = try Conform.floats_of(try Tensor.exp(try Conform.on_torch(data, [2, 4])))
+  want = [Math.exp(2.0), 0.0, Math.exp(-1.0), 0.0, 1.0, 0.0, Math.exp(-3.0), 0.0]
+  for i in 0...8
+    try Test.assert(
+      (got[i] - want[i]).abs <= 0.00001 * want[i],
+      "exp row, value #{i} is #{got[i]}, expected #{want[i]}",
+    )
+  end
+
+  ok()
+end
+
+## NaN and `+inf` are refused before libtorch sees them, by every op that has a domain.
+def test_exp_log_sqrt_and_pow_refuse_a_nan_and_an_infinity() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  open = 1.0e308 * 10.0
+  for bad in [open, open - open, -open]
+    x = try Conform.on_torch([1.0, bad], [2])
+    one = try Conform.on_torch([1.0, 1.0], [2])
+    try Test.error?(Tensor.log(x))
+    try Test.error?(Tensor.sqrt(x))
+    try Test.error?(Tensor.pow(x, one))
+    try Test.error?(Tensor.pow(one, x))
+    if bad != -open
+      try Test.error?(Tensor.exp(x))
+    end
+  end
+
+  ok()
+end
+
+def test_a_masked_softmax_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [0.5, -1.0, -1.0e9, 2.0, -3.0, 1.0, -1.0e30, -1.0e30]
+  Conform.agrees(
+    try Tensor.softmax(try Conform.on_torch(data, [2, 4]), 1),
+    try Tensor.softmax(try Conform.on_ref(data, [2, 4]), 1),
+    "softmax with masked scores",
+  )
+end
+
+## The tails: the softmax backward reads `exp` of a masked score and the `gelu_erf` backward `exp(-x^2 / 2)` of a large
+## `x`, both far below -87.
+def test_the_gradients_of_a_masked_softmax_and_of_gelu_erf_agree_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [0.5, -1.0, -1.0e9, 2.0, -3.0, 1.0, 12.0, -14.0]
+  weights = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+  for named in ["softmax", "gelu_erf"]
+    ours = try tail_grad(named, try Conform.on_torch(data, [2, 4]), try Conform.on_torch(weights, [2, 4]))
+    theirs = try tail_grad(named, try Conform.on_ref(data, [2, 4]), try Conform.on_ref(weights, [2, 4]))
+    try within(ours, theirs, "the gradient of #{named}")
+  end
+
+  ok()
+end
+
+## A gradient sums several F32 roundings where the reference rounds none: 1e-5 of the value.
+def within(got: Tensor.Tensor, want: Tensor.Tensor, what: String) -> Result[Void]
+  ours = try Conform.floats_of(got)
+  theirs = try Conform.floats_of(want)
+  try Test.eq(ours.size, theirs.size)
+  for i in 0...theirs.size
+    if (ours[i] - theirs[i]).abs > 0.00001 * theirs[i].abs + 0.000001
+      return error("#{what}: value #{i} is #{ours[i]}, the reference says #{theirs[i]}")
+    end
+  end
+
+  ok()
+end
+
+def tail_grad(name: String, x: Tensor.Tensor, w: Tensor.Tensor) -> Result[Tensor.Tensor]
+  got = try Trace.grad([x, w]) do |xs| Tensor.sum(try Tensor.mul(try tail_of(name, xs[0]), xs[1])) end
+
+  ok(got[0])
+end
+
+def tail_of(name: String, x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  return Tensor.softmax(x, 1) if name == "softmax"
+  Tensor.gelu_erf(x)
 end
 
 def test_log_agrees_with_the_reference() -> Result[Void]

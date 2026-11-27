@@ -360,13 +360,38 @@ static bool check_axes(an_env *env, const torch::Tensor &t, const std::vector<in
   return true;
 }
 
+/* The smallest and largest value of `t`, in one pass and no temporary (`aminmax` carries a NaN into both). An empty
+   tensor has no value to refuse, so it reads as `1`, which passes every check below. */
+namespace {
+struct Span {
+  double low;
+  double high;
+};
+} // namespace
+
+static Span span_of(const torch::Tensor &t) {
+  if (t.numel() == 0) return Span{1.0, 1.0};
+  std::tuple<torch::Tensor, torch::Tensor> extremes = at::aminmax(t);
+  return Span{std::get<0>(extremes).item<double>(), std::get<1>(extremes).item<double>()};
+}
+
+static bool finite_span(const Span &span) { return std::isfinite(span.low) && std::isfinite(span.high); }
+
+static bool finite_values(const torch::Tensor &t) { return finite_span(span_of(t)); }
+
 /* A non-finite input never reaches libtorch's transcendental core: a `NaN`
    would travel through every later op as a `NaN` instead of an `error`, and
-   the reference refuses it at the same place. */
-static bool all_finite(const torch::Tensor &t, an_env *env, const char *op, an_term *failure) {
-  if (t.numel() == 0 || t.isfinite().all().item<bool>()) return true;
+   the reference refuses it at the same place. `span` is what the caller reads the sign from. */
+static bool all_finite(const torch::Tensor &t, an_env *env, const char *op, an_term *failure, Span *span) {
+  *span = span_of(t);
+  if (finite_span(*span)) return true;
   *failure = error_text(env, std::string(op) + " needs finite values, got a non-finite one");
   return false;
+}
+
+static bool all_finite(const torch::Tensor &t, an_env *env, const char *op, an_term *failure) {
+  Span span;
+  return all_finite(t, env, op, failure, &span);
 }
 
 an_term torch_create(an_env *env, torch_list_Int shape, torch_list_Float data, int64_t dtype) {
@@ -622,15 +647,27 @@ an_term torch_relu(an_env *env, struct torch_TensorHandle_state *a) {
   }
 }
 
-/* `exp` takes finite values and `-inf` (`exp(-inf)` is `0`, a masked score); a NaN or `+inf` never reaches it. */
+/* `exp` takes finite values and `-inf` (`exp(-inf)` is `0`, a masked score); a NaN or `+inf` never reaches it. libtorch's
+   `exp` is 3 to 10 times slower on a result that is denormal (below `FLT_MIN`, 1.1755e-38, at about -87.34 in `F32`;
+   `DBL_MIN` at about -708.40 in `F64`), which the masked scores of a softmax and the tails of a gaussian are. An input
+   under -87.33 (-708.39 in `F64`) is therefore computed from the floor and its result flushed to `0` on purpose: the
+   reference keeps a denormal there, so the two differ by under 1.2e-38 in absolute value. A result of 1.18e-38 or more
+   is kept. */
 an_term torch_exp(an_env *env, struct torch_TensorHandle_state *a) {
   const torch::Tensor &t = *a->value;
 
   try {
-    if (t.numel() > 0 && (t.isnan().any().item<bool>() || t.isposinf().any().item<bool>())) {
+    const Span span = span_of(t);
+    if (std::isnan(span.high) || span.high == std::numeric_limits<double>::infinity()) {
       return error_text(env, "exp needs finite values or -inf, got a NaN or +inf");
     }
-    return ok_tensor(env, t.exp());
+
+    const double floor = t.scalar_type() == torch::kDouble ? -708.39 : -87.33;
+    if (span.low >= floor) return ok_tensor(env, t.exp());
+
+    torch::Tensor out = t.clamp_min(floor).exp_();
+    out.masked_fill_(t.lt(floor), 0.0);
+    return ok_tensor(env, out);
   } catch (...) {
     return failed(env, "exp");
   }
@@ -641,8 +678,9 @@ an_term torch_log(an_env *env, struct torch_TensorHandle_state *a) {
   an_term failure;
 
   try {
-    if (!all_finite(t, env, "log", &failure)) return failure;
-    if (t.numel() > 0 && !t.gt(0).all().item<bool>()) {
+    Span span;
+    if (!all_finite(t, env, "log", &failure, &span)) return failure;
+    if (span.low <= 0.0) {
       return error_text(env, "log needs x > 0, got a value at or below zero");
     }
     return ok_tensor(env, t.log());
@@ -656,8 +694,9 @@ an_term torch_sqrt(an_env *env, struct torch_TensorHandle_state *a) {
   an_term failure;
 
   try {
-    if (!all_finite(t, env, "sqrt", &failure)) return failure;
-    if (t.numel() > 0 && !t.ge(0).all().item<bool>()) {
+    Span span;
+    if (!all_finite(t, env, "sqrt", &failure, &span)) return failure;
+    if (span.low < 0.0) {
       return error_text(env, "sqrt needs x >= 0, got a value below zero");
     }
     return ok_tensor(env, t.sqrt());
@@ -676,9 +715,10 @@ an_term torch_pow(an_env *env, struct torch_TensorHandle_state *base, struct tor
   if (!check_same_shape(env, bs, es, "pow", &failure)) return failure;
 
   try {
-    if (!all_finite(bs, env, "pow", &failure)) return failure;
-    if (!all_finite(es, env, "pow", &failure)) return failure;
-    if (bs.numel() > 0 && !bs.gt(0).all().item<bool>()) {
+    Span base_span, exponent_span;
+    if (!all_finite(bs, env, "pow", &failure, &base_span)) return failure;
+    if (!all_finite(es, env, "pow", &failure, &exponent_span)) return failure;
+    if (base_span.low <= 0.0) {
       return error_text(env, "pow needs base > 0, got a value at or below zero");
     }
     return ok_tensor(env, torch::pow(bs, es));
@@ -1215,7 +1255,7 @@ static an_term attend(an_env *env, const torch::Tensor &q, const torch::Tensor &
     if (mask != NULL) bias = *mask;
     torch::Tensor out = at::scaled_dot_product_attention(q, keys, values, bias, 0.0, false, scale).contiguous();
 
-    if (out.numel() > 0 && !out.isfinite().all().item<bool>()) {
+    if (!finite_values(out)) {
       return error_text(env, "attention needs finite q, k and v, and a key left for every query");
     }
     return ok_tensor(env, out);
