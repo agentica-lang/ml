@@ -26,7 +26,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
-- `exp` on `Backend.Torch` no longer pays libtorch's slow path for results below about 1e-37 (the masked scores of a softmax, the tails of `gelu_erf`'s gradient): they are computed as 0, as the reference gives; and the finite checks of the torch ops are two reductions instead of a boolean temporary and a scan, so `sigmoid` and `gelu_erf` run in half the time (ml#407).
+- `exp` on `Backend.Torch` flushes a denormal result to 0 on purpose (an input below -87.33 in `F32`, -708.39 in `F64`; libtorch is 3 to 10 times slower on them), so a masked softmax and the gradient of `gelu_erf` run faster; every result of 1.18e-38 or more is kept. The finite checks of the torch ops are one `aminmax` reduction instead of a boolean temporary and a scan, so `sigmoid` and `gelu_erf` run in half the time (ml#407).
 - `Tensor.adam_step` on `Backend.Torch` is one native pass over the weight and its moments, where it was ten libtorch kernels per weight (ml#407).
 - The default build of the optional `torch` module, without libtorch, stops with one clear error (`no libtorch found`, and how to find it) instead of errors about `pread` and `O_CLOEXEC` (ml#379).
 - A traced run on `Backend.Torch` frees each node's tensor after its last reader, and the Adam step of a computing backend makes one statement at a time: a MiniLM step with every weight trained peaks at 1.4 GiB of resident memory (it was killed at 2.5 GB), and a `Trace.eval` of 16 sentences of 64 tokens no longer keeps 660 MB per call (ml#394).

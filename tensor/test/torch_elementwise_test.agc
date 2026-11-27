@@ -82,17 +82,77 @@ def test_exp_of_minus_infinity_is_zero_and_of_plus_infinity_an_error() -> Result
   Test.error?(Tensor.exp(try Conform.on_torch([open - open], [1])))
 end
 
-## Below about -87 the result is denormal in `F32`, which libtorch is slow at: the native `exp` computes those entries
-## as `0` (the reference gives under 1e-37 there, or 0 below -745). The values above stay those of `exp`.
-def test_exp_of_a_very_negative_value_is_zero_and_its_neighbours_are_exp() -> Result[Void]
+## The native `exp` flushes a result below `FLT_MIN` (about -87.34 in `F32`, -708.40 in `F64`) to 0, on purpose, and keeps
+## every other one: the floor is -87.33 and -708.39. These read the native values directly, and a relative compare, so
+## a floor that is too high (say -17) turns a kept value into 0 and fails.
+def test_exp_keeps_a_normal_result_and_flushes_a_denormal_one_to_zero() -> Result[Void]
   return Conform.absent() if !Conform.available()
 
-  data = [-1000.0, -200.0, -104.0, -90.0, -87.5, -80.0, -20.0, 0.0]
-  Conform.agrees(
-    try Tensor.exp(try Conform.on_torch(data, [2, 4])),
-    try Tensor.exp(try Conform.on_ref(data, [2, 4])),
-    "exp of very negative values",
-  )
+  data = [-87.3, -86.9, -80.0, -87.5, -100.0, -1000.0, 0.0]
+  got = try Conform.floats_of(try Tensor.exp(try Conform.on_torch(data, [7])))
+  for i in 0...3
+    try Test.assert(got[i] > 0.0, "exp(#{data[i]}) is #{got[i]}, a normal value that must be kept")
+    try Test.assert(
+      (got[i] - Math.exp(data[i])).abs <= 0.00001 * Math.exp(data[i]),
+      "exp(#{data[i]}) is #{got[i]}, expected #{Math.exp(data[i])}",
+    )
+  end
+
+  try Test.eq([got[3], got[4], got[5], got[6]], [0.0, 0.0, 0.0, 1.0])
+  ok()
+end
+
+def test_exp_of_f64_keeps_a_normal_result_and_flushes_a_denormal_one_to_zero() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [-700.0, -708.0, -709.0, -1000.0]
+  values = data.map { |x: Float| Tensor.Values.Float(x) }
+  doubles = try Tensor.from_list(values, [4], Tensor.Dtype.F64, Conform.TORCH)
+  got = try Conform.floats_of(try Tensor.exp(doubles))
+  for i in 0...2
+    want = Math.exp(data[i])
+    try Test.assert(got[i] > 0.0 and (got[i] - want).abs <= 0.00001 * want, "exp(#{data[i]}) is #{got[i]}")
+  end
+
+  Test.eq([got[2], got[3]], [0.0, 0.0])
+end
+
+## A masked row: scores that are kept, deep ones, `-inf`, and the unmasked ones around them.
+def test_exp_of_a_mixed_row_with_minus_infinity() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  open = -1.0e308 * 10.0
+  data = [2.0, open, -1.0, -1.0e9, 0.0, -88.0, -3.0, open]
+  got = try Conform.floats_of(try Tensor.exp(try Conform.on_torch(data, [2, 4])))
+  want = [Math.exp(2.0), 0.0, Math.exp(-1.0), 0.0, 1.0, 0.0, Math.exp(-3.0), 0.0]
+  for i in 0...8
+    try Test.assert(
+      (got[i] - want[i]).abs <= 0.00001 * want[i],
+      "exp row, value #{i} is #{got[i]}, expected #{want[i]}",
+    )
+  end
+
+  ok()
+end
+
+## NaN and `+inf` are refused before libtorch sees them, by every op that has a domain.
+def test_exp_log_sqrt_and_pow_refuse_a_nan_and_an_infinity() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  open = 1.0e308 * 10.0
+  for bad in [open, open - open, -open]
+    x = try Conform.on_torch([1.0, bad], [2])
+    one = try Conform.on_torch([1.0, 1.0], [2])
+    try Test.error?(Tensor.log(x))
+    try Test.error?(Tensor.sqrt(x))
+    try Test.error?(Tensor.pow(x, one))
+    try Test.error?(Tensor.pow(one, x))
+    if bad != -open
+      try Test.error?(Tensor.exp(x))
+    end
+  end
+
+  ok()
 end
 
 def test_a_masked_softmax_agrees_with_the_reference() -> Result[Void]
