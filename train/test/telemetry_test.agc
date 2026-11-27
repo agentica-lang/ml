@@ -59,7 +59,7 @@ def fit(name: String) -> Result[Train.Fit]
     none,
     0,
     none,
-    name,
+    run: name,
   )
 end
 
@@ -166,5 +166,21 @@ def test_a_run_with_no_handler_gives_the_same_fit() -> Result[Void]
     try S.expect_close(try S.floats_of(watched.params[i]), try S.floats_of(plain.params[i]), 0.0, 0.0, "weight #{i}")
   end
 
+  ok()
+end
+
+## A hub with a handler that hears no event of the run: the run is the same, the handler gets nothing, and the events
+## are not even built (`enabled?` is false for them).
+def test_a_handler_for_other_events_hears_nothing_and_the_run_is_the_same() -> Result[Void]
+  plain = try fit("")
+  seen = Seen(steps: ATS.new(), rates: ATS.new(), epochs: ATS.new(), metrics: ATS.new(), runs: ATS.new())
+  try Telemetry.start()
+  try Telemetry.attach("other", ["jobs"], ->(event) { remember(seen, event) })
+  try Test.assert(!Telemetry.enabled?("train.step"), "train.step is enabled for a handler of jobs")
+  watched = try fit("xor")
+  try Telemetry.flush()
+  try Telemetry.stop()
+  try Test.eq(seen.runs.size, 0)
+  try S.expect_close(watched.history, plain.history, 0.0, 0.0, "history")
   ok()
 end
