@@ -1,5 +1,5 @@
 import Delta from "../src/stablehlo_delta"
-import IR from "pkg/agc-ir/ir"
+import IR from "pkg/agc-ir/src/ir"
 
 private
 

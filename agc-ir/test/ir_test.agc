@@ -1,4 +1,4 @@
-import IR from "../ir"
+import IR from "../src/ir"
 
 private
 
