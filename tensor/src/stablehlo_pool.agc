@@ -6,7 +6,10 @@ def avg_pool1d(b: IR.Block, input: IR.Value, kernel: Int, stride: Int, padding: 
   shape = input.type.shape
   return error("avg_pool1d IR needs rank 2 or 3") if shape.size != 2 and shape.size != 3
   return error("avg_pool1d IR needs a floating-point input") if !float?(input.type.element)
-  return error("avg_pool1d IR needs a positive kernel and stride, and valid padding") if kernel < 1 or stride < 1 or padding < 0 or padding > kernel / 2
+  if kernel < 1 or stride < 1 or padding < 0 or padding > kernel / 2
+    return error("avg_pool1d IR needs a positive kernel and stride, and valid padding")
+  end
+
   for d in shape
     return error("avg_pool1d IR needs nonempty input dimensions") if d < 1
   end
@@ -38,7 +41,10 @@ def avg_pool2d(b: IR.Block, input: IR.Value, kernel: Int, stride: Int, padding: 
   shape = input.type.shape
   return error("avg_pool2d IR needs rank 4") if shape.size != 4
   return error("avg_pool2d IR needs a floating-point input") if !float?(input.type.element)
-  return error("avg_pool2d IR needs a positive kernel and stride, and valid padding") if kernel < 1 or stride < 1 or padding < 0 or padding > kernel / 2
+  if kernel < 1 or stride < 1 or padding < 0 or padding > kernel / 2
+    return error("avg_pool2d IR needs a positive kernel and stride, and valid padding")
+  end
+
   for d in shape
     return error("avg_pool2d IR needs nonempty input dimensions") if d < 1
   end
@@ -82,6 +88,7 @@ def reduce_window(
     attr("window_strides", IR.Attr.I64Array(strides)),
     attr("padding", IR.Attr.DenseIntRows(padding, pad_type)),
   ]
+
   reduced = try IR.append(
     zero.block,
     "stablehlo.reduce_window",
@@ -90,6 +97,7 @@ def reduce_window(
     attrs,
     [yielded.block],
   )
+
   scale = try IR.append(
     reduced.block,
     "stablehlo.constant",
@@ -97,6 +105,7 @@ def reduce_window(
     [output],
     [attr("value", IR.Attr.DenseF32(1.0 / divisor, output))],
   )
+
   IR.append(scale.block, "stablehlo.multiply", [reduced.values[0], scale.values[0]], [output])
 end
 

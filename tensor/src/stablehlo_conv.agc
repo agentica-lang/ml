@@ -5,7 +5,10 @@ def conv2d(b: IR.Block, input: IR.Value, weight: IR.Value, stride: Int, padding:
   x = input.type.shape
   w = weight.type.shape
   element = input.type.element
-  if element != weight.type.element or (element != IR.Element.F16 and element != IR.Element.F32 and element != IR.Element.F64)
+  if (
+    element != weight.type.element or
+    (element != IR.Element.F16 and element != IR.Element.F32 and element != IR.Element.F64)
+  )
     return error("conv2d needs matching floating-point element types")
   end
 
@@ -14,7 +17,10 @@ def conv2d(b: IR.Block, input: IR.Value, weight: IR.Value, stride: Int, padding:
     return error("conv2d needs nonempty input and weight") if d < 1
   end
 
-  return error("conv2d needs positive stride and groups, and nonnegative padding") if stride < 1 or groups < 1 or padding < 0
+  if stride < 1 or groups < 1 or padding < 0
+    return error("conv2d needs positive stride and groups, and nonnegative padding")
+  end
+
   if x[1] % groups != 0 or w[0] % groups != 0 or w[1] != x[1] / groups
     return error("conv2d channels do not match the feature groups")
   end
@@ -32,6 +38,7 @@ def conv2d(b: IR.Block, input: IR.Value, weight: IR.Value, stride: Int, padding:
     attr("batch_group_count", IR.Attr.I64(1)),
     attr("feature_group_count", IR.Attr.I64(groups)),
   ]
+
   IR.append(b, "stablehlo.convolution", [input, weight], [out], attrs)
 end
 
@@ -40,7 +47,10 @@ end
 def conv1d(b: IR.Block, input: IR.Value, weight: IR.Value, stride: Int, padding: Int) -> Result[IR.Added]
   x = input.type.shape
   w = weight.type.shape
-  return error("conv1d needs a rank-2 or rank-3 input and rank-3 weight") if (x.size != 2 and x.size != 3) or w.size != 3
+  if (x.size != 2 and x.size != 3) or w.size != 3
+    return error("conv1d needs a rank-2 or rank-3 input and rank-3 weight")
+  end
+
   return error("conv1d needs matching floating-point element types") if input.type.element != weight.type.element
   element = input.type.element
   if element != IR.Element.F16 and element != IR.Element.F32 and element != IR.Element.F64
@@ -78,6 +88,7 @@ def conv1d(b: IR.Block, input: IR.Value, weight: IR.Value, stride: Int, padding:
     attr("batch_group_count", IR.Attr.I64(1)),
     attr("feature_group_count", IR.Attr.I64(1)),
   ]
+
   convolution = try IR.append(current, "stablehlo.convolution", [source, weight], [output], attrs)
   current = convolution.block
   answer = convolution.values[0]

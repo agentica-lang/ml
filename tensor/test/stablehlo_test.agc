@@ -74,15 +74,15 @@ def test_an_arange_a_kept_mean_and_a_small_fill() -> Result[Void]
   )
 end
 
-def test_an_op_without_an_emitter_is_an_error_naming_it() -> Result[Void]
+def test_xla_rejects_a_device_other_than_cpu() -> Result[Void]
   r = Trace.stablehlo(
     [spec([2, 2], Tensor.Dtype.F32)],
-    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.avg_pool1d(xs[0], 2)]) },
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.to_device(xs[0], Tensor.Device.Vulkan(0))]) },
   )
 
   case r
-    ok(_) -> error("avg_pool1d was emitted")
-    error(e) -> Test.eq(e.message, "StableHLO has no emitter for avg_pool1d yet")
+    ok(_) -> error("XLA accepted a Vulkan to_device target")
+    error(e) -> Test.assert(e.message.include?("XLA runs on the CPU only"), e.message)
   end
 end
 

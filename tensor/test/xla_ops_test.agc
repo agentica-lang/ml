@@ -445,10 +445,7 @@ def test_set_rows_matches_the_reference_for_ranks_two_to_four() -> Result[Void]
   fresh = try Support.floats(Support.uniform(3, 95, 1.0), [1, 3], Support.XLA)
   for bad in [[4], [-1]]
     positions = try Support.labels(bad, Support.XLA)
-    r = Trace.eval(
-      [cache, fresh, positions],
-      ->(xs: List[Tensor.Tensor]) { Tensor.set_rows(xs[0], xs[1], xs[2]) },
-    )
+    r = Trace.eval([cache, fresh, positions], ->(xs: List[Tensor.Tensor]) { Tensor.set_rows(xs[0], xs[1], xs[2]) })
 
     try Test.error?(r)
     try Test.assert(r.message.include?("outside the rows"), r.message)
@@ -460,9 +457,7 @@ end
 def test_identity_ops_match_the_reference_and_unsupported_xla_device_is_rejected() -> Result[Void]
   return ok() if !try Support.present()
   try agrees(
-    ->(b: Tensor.Backend) {
-      ok([try Support.floats(Support.uniform(24, 96, 1.0), [2, 3, 4], b)])
-    },
+    ->(b: Tensor.Backend) { ok([try Support.floats(Support.uniform(24, 96, 1.0), [2, 3, 4], b)]) },
     ->(xs: List[Tensor.Tensor]) {
       on_cpu = try Tensor.to_device(xs[0], Tensor.Device.Cpu)
       copied = try Tensor.copy(on_cpu)
@@ -476,6 +471,7 @@ def test_identity_ops_match_the_reference_and_unsupported_xla_device_is_rejected
     [Trace.spec_of(x)],
     ->(xs: List[Tensor.Tensor]) { ok([try Tensor.to_device(xs[0], Tensor.Device.Vulkan(0))]) },
   )
+
   try Test.assert(!r.ok?, "XLA accepted a Vulkan to_device target")
   Test.assert(r.message.include?("CPU only"), r.message)
 end

@@ -48,6 +48,7 @@ def test_a_function_prints_region_arguments_captures_and_attributes() -> Result[
     IR.Attribute(key: "mode", value: IR.Attr.DialectEnum("test", "mode", "SIGNED")),
     IR.Attribute(key: "layout", value: IR.Attr.DialectAttr("test", "layout", "[0, 1]")),
   ]
+
   nested = try IR.append(outer, "test.region", outer.args, [I32], attrs, regions: [tail.block])
   text = try IR.function("with_region", nested.block, nested.values)
   try Test.assert(text.include?("%v0_0 = \"test.region\"(%arg0)"), text)
@@ -55,6 +56,10 @@ def test_a_function_prints_region_arguments_captures_and_attributes() -> Result[
   try Test.assert(text.include?("\"test.yield\"(%v0r0_a0, %arg0)"), text)
   try Test.assert(text.include?("count = 2 : i64, axes = array<i64: 0, 1>, pad = dense<1> : tensor<2x2xi64>"), text)
   try Test.assert(text.include?("padding = dense<[[0, 0], [1, 1]]> : tensor<2x2xi64>"), text)
-  try Test.assert(text.include?("scale = dense<0.5> : tensor<f32>, mode = #test<mode SIGNED>, layout = #test.layout<[0, 1]>"), text)
+  try Test.assert(
+    text.include?("scale = dense<0.5> : tensor<f32>, mode = #test<mode SIGNED>, layout = #test.layout<[0, 1]>"),
+    text,
+  )
+
   Test.assert(text.include?("\"func.return\"(%v0_0)"), text)
 end

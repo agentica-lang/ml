@@ -175,7 +175,8 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Copy -> ok([])
     Types.Op.Contiguous -> ok([])
     Types.Op.ToDevice(Types.Device.Cpu) -> ok([])
-    Types.Op.ToDevice(device) -> error("XLA runs on the CPU only; cannot lower to_device to #{Types.device_name(device)}")
+    Types.Op.ToDevice(device) ->
+      error("XLA runs on the CPU only; cannot lower to_device to #{Types.device_name(device)}")
     Types.Op.Add -> ok(["stablehlo.add #{a[0]}, #{a[1]} : #{out}"])
     Types.Op.Sub -> ok(["stablehlo.subtract #{a[0]}, #{a[1]} : #{out}"])
     Types.Op.Mul -> ok(["stablehlo.multiply #{a[0]}, #{a[1]} : #{out}"])
@@ -245,7 +246,7 @@ def avg_pool1d(
 ) -> Result[List[String]]
   entry = IR.block([try float_ir_type(input)])
   built = try Pool.avg_pool1d(entry, entry.args[0], kernel, stride, padding)
-  return error("avg_pool1d IR result type does not match the graph") if built.values[0].type != (try float_ir_type(t))
+  return error("avg_pool1d IR result type does not match the graph") if built.values[0].type != try float_ir_type(t)
   pool_lines(built.block, built.block.ops, a, first)
 end
 
@@ -260,7 +261,7 @@ def avg_pool2d(
 ) -> Result[List[String]]
   entry = IR.block([try float_ir_type(input)])
   built = try Pool.avg_pool2d(entry, entry.args[0], kernel, stride, padding)
-  return error("avg_pool2d IR result type does not match the graph") if built.values[0].type != (try float_ir_type(t))
+  return error("avg_pool2d IR result type does not match the graph") if built.values[0].type != try float_ir_type(t)
   pool_lines(built.block, built.block.ops, a, first)
 end
 
@@ -496,10 +497,10 @@ def set_rows(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: 
   cache_type = try type_of(t)
   scalar = try tensor_type([], t.dtype)
   window_dims = ints((1...rank).to_a)
-  region = [
-    "^bb0(%old: #{scalar}, %update: #{scalar}):",
-    "        stablehlo.return %update : #{scalar}",
-  ].join("\n      ")
+  region = ["^bb0(%old: #{scalar}, %update: #{scalar}):", "        stablehlo.return %update : #{scalar}"].join(
+    "\n      ",
+  )
+
   types = "(#{cache_type}, #{indices_type}, #{updates_type}) -> #{cache_type}"
   ok([
     "stablehlo.reshape #{a[2]} : (#{try type_of(args[2])}) -> #{indices_type}",
