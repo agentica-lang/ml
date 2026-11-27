@@ -245,13 +245,259 @@ def test_a_checkpoint_that_cannot_be_read_is_an_error() -> Result[Void]
 
       try S.expect_error(Loop.read_checkpoint(dir, name, adam(), like), "param.1")
       nan = (
-        "{\"event\": \"step\", \"epoch\": 1, \"batch\": 0, \"step\": 2, \"seed\": 7, \"loss_bits\": 9221120237041090560}"
+        "{\"event\": \"step\", \"epoch\": 1, \"batch\": 0, \"step\": 2, \"seed\": 7, \"count\": 2, \"loss_bits\": 9221120237041090560}"
       )
 
       try rewrite(dir, name, "checkpoint.json", nan)
       try Write.write("#{dir}/#{name}/model.safetensors", {"param.0": like[0], "param.1": like[1]})
       saved = try Loop.read_checkpoint(dir, name, adam(), like)
       Test.assert(saved.loss != saved.loss, "the loss is #{saved.loss}")
+    },
+  )
+end
+
+def shuffled(backend: Tensor.Backend) -> Result[Data.Loader] = ok((try loader(backend)).with(shuffle: true))
+
+def stop_at(step: Int) -> Fn[Loop.Info, Result[Void]]
+  ->(info) {
+    return Loop.stop(info) if info.step == step
+
+    ok()
+  }
+end
+
+def steps_of(places: Channel[List[Int]]) -> Fn[Loop.Info, Result[Void]]
+  ->(info) {
+    _ = places.send([info.epoch, info.batch, info.step], 0)
+    ok()
+  }
+end
+
+def places_of(places: Channel[List[Int]], count: Int) -> Result[List[List[Int]]]
+  got: List[List[Int]] = []
+  for _ in 0...count
+    got = got.push(try places.recv(0))
+  end
+
+  ok(got)
+end
+
+## A resumed run reads its weights and its moments from F32 files, while the reference keeps doubles between steps: the
+## values differ by the rounding of F32, not by more.
+def close(got: List[Float], want: List[Float], backend: Tensor.Backend, what: String) -> Result[Void]
+  return S.expect_close(got, want, 0.0000001, 0.000001, what) if backend == S.REF
+
+  S.expect_close(got, want, 0.000001, 0.00001, what)
+end
+
+def same_weights(got: Train.Fit, want: Train.Fit, backend: Tensor.Backend) -> Result[Void]
+  for i in 0...want.params.size
+    try close(try S.floats_of(got.params[i]), try S.floats_of(want.params[i]), backend, "weight #{i} on #{backend}")
+  end
+
+  ok()
+end
+
+## A run of 4 epochs of two steps on a shuffled loader, stopped at the checkpoint of step 3 (in the middle of epoch 2)
+## and resumed from it, is the whole run: the same weights, the epochs after it with the same losses, and for the
+## epoch it was in the mean of the steps that it ran. The shuffle is the same: the seed and the epoch give the order.
+def test_a_run_resumed_from_a_step_checkpoint_is_the_whole_run() -> Result[Void]
+  for backend in try backends()
+    try with_folder(
+      ->(dir: String) {
+        places: Channel[List[Int]] = Channel.new(8)
+        whole = (
+          Loop.trainer(&linear, try weights(backend), adam())
+          |> Loop.handle(Loop.Event.StepCompleted, steps_of(places))
+          |> try Loop.run(try shuffled(backend), epochs: 4)
+        )
+
+        walked = try places_of(places, 8)
+
+        first = (
+          Loop.trainer(&linear, try weights(backend), adam())
+          |> Loop.checkpoint(dir, every: 3, keep: 4)
+          |> Loop.handle(Loop.Event.StepCompleted, stop_at(3))
+          |> try Loop.run(try shuffled(backend), epochs: 4)
+        )
+
+        try Test.eq(first.history.size, 2)
+        again: Channel[List[Int]] = Channel.new(8)
+        resumed = (
+          Loop.trainer(&linear, try weights(backend), adam())
+          |> Loop.checkpoint(dir, every: 3, keep: 4)
+          |> Loop.handle(Loop.Event.StepCompleted, steps_of(again))
+          |> Loop.resume(dir)
+          |> try Loop.run(try shuffled(backend), epochs: 4)
+        )
+
+        try Test.eq(try places_of(again, 5), walked.drop(3))
+        try Test.eq(resumed.history.size, 3)
+        try close(resumed.history.drop(1), whole.history.drop(2), backend, "history on #{backend}")
+        try same_weights(resumed, whole, backend)
+        Test.eq(try Loop.checkpoints(dir), ["step-0000000003", "step-0000000006"])
+      },
+    )
+  end
+
+  ok()
+end
+
+## The same for a checkpoint at the end of an epoch (batch 0 of the next): the history is the epochs that are left.
+def test_a_run_resumed_from_an_epoch_checkpoint_is_the_whole_run() -> Result[Void]
+  for backend in try backends()
+    try with_folder(
+      ->(dir: String) {
+        whole = Loop.trainer(&linear, try weights(backend), adam()) |> try Loop.run(try shuffled(backend), epochs: 4)
+
+        first = (
+          Loop.trainer(&linear, try weights(backend), adam())
+          |> Loop.checkpoint(dir, every: 1, event: Loop.Event.EpochCompleted)
+          |> Loop.handle(Loop.Event.EpochCompleted, stop_at(4))
+          |> try Loop.run(try shuffled(backend), epochs: 4)
+        )
+
+        try Test.eq(first.history.size, 2)
+        resumed = (
+          Loop.trainer(&linear, try weights(backend), adam())
+          |> Loop.resume(dir)
+          |> try Loop.run(try shuffled(backend), epochs: 4)
+        )
+
+        try close(resumed.history, whole.history.drop(2), backend, "history on #{backend}")
+        same_weights(resumed, whole, backend)
+      },
+    )
+  end
+
+  ok()
+end
+
+## A resumed run that stops in the middle of an epoch has the mean of the steps it ran in that epoch.
+def test_a_resumed_run_stopped_mid_epoch_averages_its_own_steps() -> Result[Void]
+  with_folder(
+    ->(dir: String) {
+      (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.checkpoint(dir, every: 3)
+        |> Loop.handle(Loop.Event.StepCompleted, stop_at(3))
+        |> try Loop.run(try shuffled(S.REF), epochs: 4)
+      )
+
+      losses: Channel[Float] = Channel.new(1)
+      stopped = (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.resume(dir)
+        |> Loop.handle(
+          Loop.Event.StepCompleted,
+          ->(info) {
+            _ = losses.send(info.loss, 0)
+            Loop.stop(info)
+          },
+        )
+        |> try Loop.run(try shuffled(S.REF), epochs: 4)
+      )
+
+      Test.eq(stopped.history, [try losses.recv(0)])
+    },
+  )
+end
+
+## A negative skip is an error, before the data or the start state is touched.
+def test_a_negative_skip_is_an_error() -> Result[Void]
+  r = Train.fit(&linear, try weights(S.REF), try loader(S.REF), adam(), 1, skip: -1)
+  try S.expect_error(r, "skip is 0 or more, got -1")
+  data = try loader(S.REF)
+  batch = ->(e: Int, i: Int) { Data.batch(data, Data.order(data, e), i) }
+  S.expect_error(
+    Train.fit_batches(&linear, try weights(S.REF), batch, 2, adam(), 1, skip: -1),
+    "skip is 0 or more, got -1",
+  )
+end
+
+## A loader with a prefetch task, and batches that a function makes, skip the batches of the checkpoint as well.
+def test_resume_with_prefetch() -> Result[Void]
+  with_folder(
+    ->(dir: String) {
+      data = (try shuffled(S.REF)).with(prefetch: 2)
+      whole = try Train.fit(&linear, try weights(S.REF), data, adam(), 4)
+      first = (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.checkpoint(dir, every: 3)
+        |> Loop.handle(Loop.Event.StepCompleted, stop_at(3))
+        |> try Loop.run(data, epochs: 4)
+      )
+
+      try Test.eq(first.history.size, 2)
+      resumed = (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.resume(dir)
+        |> try Loop.run(data, epochs: 4)
+      )
+
+      try close(resumed.history.drop(1), whole.history.drop(2), S.REF, "history with a prefetch")
+      try same_weights(resumed, whole, S.REF)
+      try Path.remove(dir, 5000)
+      try Dir.mkdir_private(dir, 5000)
+      batch = ->(e: Int, i: Int) { Data.batch(data, Data.order(data, e), i) }
+      made = (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.checkpoint(dir, every: 3)
+        |> Loop.handle(Loop.Event.StepCompleted, stop_at(3))
+        |> try Loop.run_batches(batch, 2, epochs: 4, prefetch: 2)
+      )
+
+      try Test.eq(made.history.size, 2)
+      later = (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.resume(dir)
+        |> try Loop.run_batches(batch, 2, epochs: 4, prefetch: 2)
+      )
+
+      try close(later.history.drop(1), whole.history.drop(2), S.REF, "history of run_batches")
+      same_weights(later, whole, S.REF)
+    },
+  )
+end
+
+## With no checkpoint the run starts from the beginning; a checkpoint of another seed, or of a run that was over, is
+## told apart.
+def test_resume_without_a_checkpoint_and_with_one_that_does_not_fit() -> Result[Void]
+  with_folder(
+    ->(dir: String) {
+      fresh = (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.resume(dir)
+        |> try Loop.run(try shuffled(S.REF), epochs: 2)
+      )
+
+      try Test.eq(fresh.history.size, 2)
+      try trained(S.REF, dir, 1, 2, 1)
+      other = (try shuffled(S.REF)).with(seed: 8)
+      r = (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.resume(dir)
+        |> Loop.run(other, epochs: 2)
+      )
+
+      try S.expect_error(r, "seed 7")
+      wider = (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.resume(dir)
+        |> Loop.run((try shuffled(S.REF)).with(batch_size: 4), epochs: 2)
+      )
+
+      try S.expect_error(wider, "2 batches an epoch, the run has 1")
+      done = (
+        Loop.trainer(&linear, try weights(S.REF), adam())
+        |> Loop.resume(dir)
+        |> try Loop.run(try loader(S.REF), epochs: 1)
+      )
+
+      try Test.eq(done.history.size, 0)
+      two = try Train.fit(&linear, try weights(S.REF), try loader(S.REF), adam(), 1)
+
+      same_weights(done, two, S.REF)
     },
   )
 end

@@ -7,6 +7,7 @@ All packages are released together at one version, each on its own tag, `<packag
 ### train
 
 - `Loop.checkpoint(dir, every:, keep:)` writes the weights, the optimizer state and the position of a run to a new folder, whole or not at all, and keeps the last few; `Loop.checkpoints` and `Loop.read_checkpoint` read them, and `Loop.Info` carries the `state` and the `seed` (ml#402).
+- `Loop.resume(trainer, dir)` goes on from the last checkpoint of `dir`, at its epoch and batch, with the same shuffle; `Train.fit` and `Train.fit_batches` take `skip:` for it (ml#402).
 - A run emits `telemetry` events for handlers that an app attaches: `train.step` (loss, learning rate, step), `train.epoch` (mean loss) and `train.metric` (each `Loop.metric` value), with the run name from the new `run` argument of `Train.fit`, `Train.fit_batches` and `Loop.trainer`; `train` depends on the `telemetry` package (ml#400).
 - `Optim.save` and `Optim.load` write and read the step count and the moments of an optimizer state, `Train.fit` and `fit_batches` take a `start` state that the schedule goes on from, and `Train.Epoch` and `StepInfo` carry the run's `state` (ml#402).
 - `Loop.handle(event, f, every:)` calls a function at `Started`, `StepCompleted` or `EpochCompleted`, and `Loop.stop(info)` ends a run early with its `Fit`, and `Train.fit` takes an optional `on_step`. **Breaking:** `on_epoch` and `on_step` answer a `Result[Train.Control]` (`Continue`, `Stop` or an `error`), and a failed metric stops the run at the end of its epoch (ml#397).
@@ -26,6 +27,7 @@ All packages are released together at one version, each on its own tag, `<packag
 ### tensor
 
 - `Tensor.adam_step` on `Backend.Torch` is one native pass over the weight and its moments, where it was ten libtorch kernels per weight (ml#407).
+- The default build of the optional `torch` module, without libtorch, stops with one clear error (`no libtorch found`, and how to find it) instead of errors about `pread` and `O_CLOEXEC` (ml#379).
 - A traced run on `Backend.Torch` frees each node's tensor after its last reader, and the Adam step of a computing backend makes one statement at a time: a MiniLM step with every weight trained peaks at 1.4 GiB of resident memory (it was killed at 2.5 GB), and a `Trace.eval` of 16 sentences of 64 tokens no longer keeps 660 MB per call (ml#394).
 - `Torch.memory` reads the bytes of the live libtorch tensors and their peak, for the tests of what a run frees (ml#394).
 - `Tensor.batch_matmul` runs on `Backend.Torch(Cpu)`, so the gradient of `Tensor.attention` (written with it) runs on libtorch too: 51 of the 52 primitives (ml#203).

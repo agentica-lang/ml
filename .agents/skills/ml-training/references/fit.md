@@ -15,7 +15,8 @@ decay); a fine-tune leaves out biases and layer-norm weights. `fit` starts a run
 `start: state` (`Optim.load(optimizer, params, path)` reads what `Optim.save(state, path)` wrote; `Train.Epoch` and
 `Train.StepInfo` have the run's `state` for a hook to save), so a resumed run goes on along its schedule. The moments take their parameter's dtype and backend; the knobs, the
 schedule (they may change on a resume, the step count is kept) and an AdamW `decay` list come from the code. `fit` takes
-`start` and frees it: do not use it after. `state` in a hook is the run's own: save it before the hook returns.
+`start` and frees it: do not use it after. `skip: n` (0 or more) takes the first `n` batches of the run as done, with the
+epoch order of the whole run (`Loop.resume` sets `start` and `skip` from a checkpoint); the first epoch's mean is over the batches it ran. `state` in a hook is the run's own: save it before the hook returns.
 
 ## Fit and validate
 

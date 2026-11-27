@@ -182,6 +182,8 @@ Without libtorch the package still works: `agentica check`, `agentica fmt
 warning: native module torch not built: the C compiler failed with status 1; the package runs without it
 ```
 
+The compiler error above it is one line, `no libtorch found` and how to find it: `native/torch.c` stops before it includes a header of its own.
+
 and every conformance test takes its `Conform.absent()` path, which asserts
 that `Tensor.available(...)` is false and that the dispatch arm answers an
 `error` instead of halting. `agentica test` reports those as passed, so
