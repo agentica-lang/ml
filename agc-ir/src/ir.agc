@@ -9,7 +9,10 @@ end
 enum Element
   I1
   I32
+  I64
+  F16
   F32
+  F64
 end
 
 struct Value
@@ -23,6 +26,7 @@ enum Attr
   DenseInt(Int, TensorType)
   DenseF32(Float, TensorType)
   DialectEnum(String, String, String)
+  DialectAttr(String, String, String)
 end
 
 struct Attribute
@@ -94,7 +98,10 @@ def show_type(t: TensorType) -> String
   ty = case t.element
     Element.I1 -> "i1"
     Element.I32 -> "i32"
+    Element.I64 -> "i64"
+    Element.F16 -> "f16"
     Element.F32 -> "f32"
+    Element.F64 -> "f64"
   end
 
   dims = t.shape.map { |d| "#{d}" }.push(ty)
@@ -114,6 +121,41 @@ def function(name: String, b: Block, returns: List[Value]) -> Result[String]
   ok("  func.func private @#{name}(#{args}) -> (#{types_of(returns)}) {\n#{text}\n  }")
 end
 
+## Prints an operation without its SSA assignment, for embedding in an existing emitter.
+## `names` binds visible operands; `base` is a fresh name stem for any nested region values.
+def operation(op: Operation, names: Map[Ref, String], base: String, indent: String = "") -> Result[String]
+  for v in op.operands
+    return error("#{op.name}: operand escapes its lexical scope") if !names.has_key?(v.id)
+  end
+
+  operands = op.operands.map { |v| names[v.id] }.join(", ")
+  regions: List[String] = []
+  for j in 0...op.regions.size
+    region = op.regions[j]
+    stem = "#{base}r#{j}_"
+    local = names
+    for k in 0...region.args.size
+      local = local.put(region.args[k].id, "%#{stem}a#{k}")
+    end
+
+    args = region.args.map { |a| "#{local[a.id]}: #{show_type(a.type)}" }.join(", ")
+    text = try render(region, local, stem, indent + "  ")
+    regions = regions.push("{\n#{indent}^bb0(#{args}):\n#{text}\n#{indent}}")
+  end
+
+  region_list = ""
+  if !regions.empty?
+    region_list = " (#{regions.join(", ")})"
+  end
+
+  attrs = ""
+  if !op.attributes.empty?
+    attrs = " {#{op.attributes.map { |a| attribute(a) }.join(", ")}}"
+  end
+
+  ok("\"#{op.name}\"(#{operands})#{region_list}#{attrs} : (#{types_of(op.operands)}) -> (#{types_of(op.results)})")
+end
+
 private
 
 def fresh(t: TensorType) -> Value = Value(id: Ref.new(), type: t)
@@ -127,6 +169,7 @@ def attribute(a: Attribute) -> String
     Attr.DenseInt(x, t) -> "dense<#{x}> : #{show_type(t)}"
     Attr.DenseF32(x, t) -> "dense<#{x}> : #{show_type(t)}"
     Attr.DialectEnum(dialect, kind, x) -> "##{dialect}<#{kind} #{x}>"
+    Attr.DialectAttr(dialect, kind, payload) -> "##{dialect}.#{kind}<#{payload}>"
   end
 
   "#{a.key} = #{value}"
@@ -138,34 +181,7 @@ def render(b: Block, inherited: Map[Ref, String], prefix: String, indent: String
   for i in 0...b.ops.size
     op = b.ops[i]
     base = "#{prefix}#{i}"
-    for v in op.operands
-      return error("#{op.name}: operand escapes its lexical scope") if !names.has_key?(v.id)
-    end
-
-    operands = op.operands.map { |v| names[v.id] }.join(", ")
-    regions: List[String] = []
-    for j in 0...op.regions.size
-      region = op.regions[j]
-      stem = "#{base}r#{j}_"
-      local = names
-      for k in 0...region.args.size
-        local = local.put(region.args[k].id, "%#{stem}a#{k}")
-      end
-
-      args = region.args.map { |a| "#{local[a.id]}: #{show_type(a.type)}" }.join(", ")
-      text = try render(region, local, stem, indent + "  ")
-      regions = regions.push("{\n#{indent}^bb0(#{args}):\n#{text}\n#{indent}}")
-    end
-
-    region_list = ""
-    if !regions.empty?
-      region_list = " (#{regions.join(", ")})"
-    end
-
-    attrs = ""
-    if !op.attributes.empty?
-      attrs = " {#{op.attributes.map { |a| attribute(a) }.join(", ")}}"
-    end
+    text = try operation(op, names, base, indent)
 
     lhs: List[String] = []
     for j in 0...op.results.size
@@ -179,9 +195,7 @@ def render(b: Block, inherited: Map[Ref, String], prefix: String, indent: String
       assignment = "#{lhs.join(", ")} = "
     end
 
-    lines = lines.push(
-      "#{indent}#{assignment}\"#{op.name}\"(#{operands})#{region_list}#{attrs} : (#{types_of(op.operands)}) -> (#{types_of(op.results)})",
-    )
+    lines = lines.push("#{indent}#{assignment}#{text}")
   end
 
   ok(lines.join("\n"))

@@ -6,6 +6,8 @@
 ## text needs no implicit broadcast: `broadcast_to` is a `broadcast_in_dim`, and a scalar of an op is a splat constant.
 ## An op the emitter does not know is an error naming it.
 
+import IR from "pkg/agc-ir/src/ir"
+import Conv from "stablehlo_conv"
 import Graph from "graph"
 import Lower from "lower"
 import Reference from "reference"
@@ -199,7 +201,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Concat(axis) -> ok(["stablehlo.concatenate #{a.join(", ")}, dim = #{axis} : #{sig}"])
     Types.Op.Stack(axis) -> stack(t, n.args, a, axis, first)
     Types.Op.BatchMatmul -> batch_matmul(n.args, a, sig)
-    Types.Op.Conv2d(stride, padding, groups) -> conv2d(a, sig, stride, padding, groups)
+    Types.Op.Conv2d(stride, padding, groups) -> conv2d(t, n.args, a, stride, padding, groups, first)
     Types.Op.GatedDeltaRule -> ok(["func.call @gated_delta_#{first}(#{a.join(", ")}) : #{sig}"])
     Types.Op.Argmax(axes, keep_dims) -> argmax(t, n.args[0], a[0], axes, keep_dims, first)
     Types.Op.Slice(starts, ends) -> ok(["stablehlo.slice #{a[0]} #{extents(starts, ends)} : #{sig}"])
@@ -221,12 +223,34 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
   end
 end
 
-# NCHW input and output, OIHW filters, with the same symmetric padding and stride on both spatial axes.
-def conv2d(a: List[String], sig: String, stride: Int, padding: Int, groups: Int) -> Result[List[String]]
-  dims = "dimension_numbers = #stablehlo.conv<[b, f, 0, 1]x[o, i, 0, 1]->[b, f, 0, 1]>"
-  window = "window_strides = array<i64: #{stride}, #{stride}>, padding = dense<#{padding}> : tensor<2x2xi64>"
-  counts = "batch_group_count = 1 : i64, feature_group_count = #{groups} : i64"
-  ok(["\"stablehlo.convolution\"(#{a[0]}, #{a[1]}) {#{dims}, #{window}, #{counts}} : #{sig}"])
+# Bind the typed builder arguments to the SSA names already assigned by the graph emitter.
+def conv2d(
+  t: Types.Tensor,
+  args: List[Types.Tensor],
+  a: List[String],
+  stride: Int,
+  padding: Int,
+  groups: Int,
+  first: Int,
+) -> Result[List[String]]
+  entry = IR.block([try conv_type(args[0]), try conv_type(args[1])])
+  input = entry.args[0]
+  weight = entry.args[1]
+  built = try Conv.conv2d(entry, input, weight, stride, padding, groups)
+  out = try conv_type(t)
+  return error("conv2d IR result type does not match the graph") if built.values[0].type != out
+  names: Map[Ref, String] = {}
+  names = names.put(input.id, a[0]).put(weight.id, a[1])
+  ok([try IR.operation(built.block.ops[0], names, "conv#{first}_")])
+end
+
+def conv_type(t: Types.Tensor) -> Result[IR.TensorType]
+  case t.dtype
+    Types.Dtype.F16 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F16))
+    Types.Dtype.F32 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F32))
+    Types.Dtype.F64 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F64))
+    _ -> error("conv2d IR needs a floating-point tensor")
+  end
 end
 
 # Rows of the source at the indices: one row slice per index, the indices' axes first, as `Reference.gather` answers.
