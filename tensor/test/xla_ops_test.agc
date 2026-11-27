@@ -278,6 +278,7 @@ def test_norms_gelu_and_rope_match_the_reference() -> Result[Void]
         try Tensor.layer_norm(xs[3], 0.00001),
         try Tensor.rms_norm(xs[3], 0.000001),
         try Tensor.gelu_erf(xs[0]),
+        try Tensor.gelu(xs[0]),
         try Tensor.rope(xs[1], xs[2]),
         try Tensor.rope(xs[4], xs[2]),
         try Tensor.rope(xs[1], xs[2], 500.0, some(4), false),

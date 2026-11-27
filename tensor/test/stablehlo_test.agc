@@ -106,6 +106,46 @@ def test_a_slice_names_its_extents() -> Result[Void]
   )
 end
 
+## An `argmax` takes the first index of the maximum: the maximum reduced, the positions where it is reached, and the
+## smallest of them. Without an axis it reduces every axis.
+def test_argmax_text_reduces_the_maximum_then_the_first_index() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([2, 3], Tensor.Dtype.F32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.argmax(xs[0], some([1])), try Tensor.argmax(xs[0])]) },
+  )
+
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<2x3xf32>) -> (tensor<2xi64>, tensor<i64>) {
+          %0 = stablehlo.reshape %arg0 : (tensor<2x3xf32>) -> tensor<2x3xf32>
+          %1 = stablehlo.constant dense<0xFF800000> : tensor<f32>
+          %2 = stablehlo.reduce(%0 init: %1) applies stablehlo.maximum across dimensions = [1] : (tensor<2x3xf32>, tensor<f32>) -> tensor<2xf32>
+          %3 = stablehlo.broadcast_in_dim %2, dims = [0] : (tensor<2xf32>) -> tensor<2x3xf32>
+          %4 = stablehlo.compare EQ, %0, %3, FLOAT : (tensor<2x3xf32>, tensor<2x3xf32>) -> tensor<2x3xi1>
+          %5 = stablehlo.iota dim = 1 : tensor<2x3xi64>
+          %6 = stablehlo.constant dense<3> : tensor<2x3xi64>
+          %7 = stablehlo.select %4, %5, %6 : tensor<2x3xi1>, tensor<2x3xi64>
+          %8 = stablehlo.constant dense<3> : tensor<i64>
+          %9 = stablehlo.reduce(%7 init: %8) applies stablehlo.minimum across dimensions = [1] : (tensor<2x3xi64>, tensor<i64>) -> tensor<2xi64>
+          %10 = stablehlo.reshape %arg0 : (tensor<2x3xf32>) -> tensor<6xf32>
+          %11 = stablehlo.constant dense<0xFF800000> : tensor<f32>
+          %12 = stablehlo.reduce(%10 init: %11) applies stablehlo.maximum across dimensions = [0] : (tensor<6xf32>, tensor<f32>) -> tensor<f32>
+          %13 = stablehlo.broadcast_in_dim %12, dims = [] : (tensor<f32>) -> tensor<6xf32>
+          %14 = stablehlo.compare EQ, %10, %13, FLOAT : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xi1>
+          %15 = stablehlo.iota dim = 0 : tensor<6xi64>
+          %16 = stablehlo.constant dense<6> : tensor<6xi64>
+          %17 = stablehlo.select %14, %15, %16 : tensor<6xi1>, tensor<6xi64>
+          %18 = stablehlo.constant dense<6> : tensor<i64>
+          %19 = stablehlo.reduce(%17 init: %18) applies stablehlo.minimum across dimensions = [0] : (tensor<6xi64>, tensor<i64>) -> tensor<i64>
+          func.return %9, %19 : tensor<2xi64>, tensor<i64>
+        }
+      }
+    MLIR
+  )
+end
+
 ## A product of an `F32` input by an `F16` weight would be a mixed-type `dot_general`, which StableHLO refuses.
 def test_a_mixed_dtype_matmul_is_an_error_naming_it() -> Result[Void]
   r = Trace.stablehlo(
