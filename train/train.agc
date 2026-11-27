@@ -24,6 +24,17 @@ struct Epoch
   params: List[Tensor.Tensor]
 end
 
+## What `on_step` gets after each step: the epoch (from 1) and the batch in it (from 0), the step count of the run (from
+## 1), the loss of the step, and the parameters it made. The parameters are the run's own: use them inside `on_step` (the
+## next step frees them), and copy what must outlive it.
+struct StepInfo
+  epoch: Int
+  batch: Int
+  step: Int
+  loss: Float
+  params: List[Tensor.Tensor]
+end
+
 ## The trained parameters and the mean loss of every epoch, in order. `metrics` is what `Loop` measured: the value of
 ## each of its metrics at the end of every epoch, by name (empty for a plain `fit`).
 struct Fit
@@ -35,7 +46,8 @@ end
 ## Trains `params` for `epochs` passes over the batches of `data`, one
 ## optimizer step per batch. `loss(params, batch)` must answer a float scalar;
 ## inside it the parameters and the batch are `Trace` tensors. The loader's
-## prefetch task, if any, ends before `fit` returns, on every path. With `metrics`,
+## prefetch task, if any, ends before `fit` returns, on every path. With `on_step`, every step is followed by a call
+## with its `StepInfo`; an `error` of the function stops the run with an error that names the epoch and the batch. With `metrics`,
 ## every step writes `train/loss`, `train/lr` and `train/step_ms` to that run at
 ## its step count (from 1); `fit` does not close the run. A metric that
 ## `Metrics.scalar` refuses (a loss that is not finite, for one) stops `fit`
@@ -50,8 +62,12 @@ def fit(
   epochs: Int,
   on_epoch: Optional[Fn[Epoch, Void]] = none,
   metrics: Optional[Metrics.Run] = none,
+  on_step: Optional[Fn[StepInfo, Result[Void]]] = none,
 ) -> Result[Fit]
-  return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics) if gathers_in_graph?(data, params)
+  if gathers_in_graph?(data, params)
+    return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step)
+  end
+
   feed = try Data.feed(data, epochs)
   batches = ->(e: Int) {
     current = Data.epoch(feed, e)
@@ -59,7 +75,15 @@ def fit(
   }
 
   result = trained(
-    Run(loss: loss, batches: batches, count: Data.count(data), epochs: epochs, on_epoch: on_epoch, metrics: metrics),
+    Run(
+      loss: loss,
+      batches: batches,
+      count: Data.count(data),
+      epochs: epochs,
+      on_epoch: on_epoch,
+      metrics: metrics,
+      on_step: on_step,
+    ),
     params,
     optimizer,
   )
@@ -88,11 +112,20 @@ def fit_batches(
   on_epoch: Optional[Fn[Epoch, Void]] = none,
   metrics: Optional[Metrics.Run] = none,
   prefetch: Int = 0,
+  on_step: Optional[Fn[StepInfo, Result[Void]]] = none,
 ) -> Result[Fit]
   return error("fit_batches needs at least one batch, got #{count}") if count < 1
   return error("prefetch must be 0 or more, got #{prefetch}") if prefetch < 0
   run_of = ->(batches: Fn[Int, Fn[Int, Result[Data.Batch]]]) {
-    Run(loss: loss, batches: batches, count: count, epochs: epochs, on_epoch: on_epoch, metrics: metrics)
+    Run(
+      loss: loss,
+      batches: batches,
+      count: count,
+      epochs: epochs,
+      on_epoch: on_epoch,
+      metrics: metrics,
+      on_step: on_step,
+    )
   }
 
   if prefetch == 0
@@ -141,6 +174,7 @@ struct Run
   epochs: Int
   on_epoch: Optional[Fn[Epoch, Void]]
   metrics: Optional[Metrics.Run]
+  on_step: Optional[Fn[StepInfo, Result[Void]]]
   indexed: Bool = false
 end
 
@@ -189,6 +223,7 @@ def fit_indexed(
   epochs: Int,
   on_epoch: Optional[Fn[Epoch, Void]],
   metrics: Optional[Metrics.Run],
+  on_step: Optional[Fn[StepInfo, Result[Void]]],
 ) -> Result[Fit]
   return error("prefetch must be 0 or more, got #{data.prefetch}") if data.prefetch < 0
   Data.stop(try Data.feed(data.with(prefetch: 0), epochs))
@@ -205,6 +240,7 @@ def fit_indexed(
       epochs: epochs,
       on_epoch: on_epoch,
       metrics: metrics,
+      on_step: on_step,
       indexed: true,
     ),
     params,
@@ -274,6 +310,17 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
           if !logged.ok?
             release(state, current, owned)
             return Ran(result: error("epoch #{e}, batch #{i}: #{logged.message}"), programs: programs)
+          end
+
+        none -> nil
+      end
+
+      case r.on_step
+        some(f) ->
+          called = f.call(StepInfo(epoch: e, batch: i, step: state.steps, loss: done.loss, params: current))
+          if !called.ok?
+            release(state, current, owned)
+            return Ran(result: error("epoch #{e}, batch #{i}: #{called.message}"), programs: programs)
           end
 
         none -> nil

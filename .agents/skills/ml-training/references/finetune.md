@@ -169,7 +169,8 @@ true
 `Loop` is `Train.fit` as a pipe; `Loop.run_batches(batch, count, epochs:)` is `Train.fit_batches` (`Optim.sgd`, `Optim.adam`
 and `Optim.adamw` are the optimizers with their usual knobs). Both answer the same `Train.Fit`.
 `Loop.metric` measures a `Loop.Metric` (its own batches, `observe`, `reduce`) at the end of every epoch, into
-`fit.metrics[name]`.
+`fit.metrics[name]`. `Loop.handle(event, f, every: n)` calls `f(Loop.Info)` at `Loop.Event.Started`, `StepCompleted` or
+`EpochCompleted`, in order, and an `error` from it ends the run at that step.
 
 ```agentica
 import Data from "pkg/train/data"
@@ -187,6 +188,7 @@ def trained(
   (
     Loop.trainer(loss, params, Optim.adamw(lr: 0.0001))
     |> Loop.metric(spearman)
+    |> Loop.handle(Loop.Event.StepCompleted, ->(_i: Loop.Info) { ok() }, every: 50)
     |> Loop.run(loader, epochs: 3)
   )
 end
