@@ -114,7 +114,7 @@ end
 def run(t: Trainer, data: Data.Loader, epochs: Int = 1) -> Result[Train.Fit]
   seen = measuring(t, epochs)
   try started(t, seen)
-  fit = try Train.fit(t.loss, t.params, data, t.optimizer, epochs, seen.on_epoch, none, seen.on_step, t.run)
+  fit = try Train.fit(t.loss, t.params, data, t.optimizer, epochs, seen.on_epoch, none, seen.on_step, run: t.run)
   measured(fit, t, seen)
 end
 
@@ -140,7 +140,7 @@ def run_batches(
     none,
     prefetch,
     seen.on_step,
-    t.run,
+    run: t.run,
   )
 
   measured(fit, t, seen)
