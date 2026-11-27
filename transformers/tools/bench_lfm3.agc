@@ -3,7 +3,7 @@
 ## after it. Prints
 ## `RESULT load_ms prompt_tokens_per_s decode_tokens_per_s`. Run from `transformers/`:
 ##
-##   agentica --max-steps 100000000000 tools/bench_lfm3.agc MODEL_DIR [cpu|vulkan]
+##   agentica tools/bench_lfm3.agc MODEL_DIR [cpu|vulkan]
 ##
 ## `VULKAN_FP16=0` makes Vulkan multiply in exact `float32` (fp16 is the default). The weights are `F16` (the `F32`
 ## model is

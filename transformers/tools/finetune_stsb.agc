@@ -9,7 +9,7 @@
 ## ```sh
 ## sh tools/fetch_stsb.sh data
 ## mkdir -p out
-## agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out [cpu|vulkan|xla|torch [ROWS [EPOCHS [VALIDATION [SECONDS]]]]]
+## agentica tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out [cpu|vulkan|xla|torch [ROWS [EPOCHS [VALIDATION [SECONDS]]]]]
 ## ```
 
 import Bert from "../bert"

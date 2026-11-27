@@ -3,7 +3,7 @@
 ## from `transformers/`:
 ##
 ## ```sh
-## agentica --max-steps 1000000000000 tools/distilbert_stsb.agc \
+## agentica tools/distilbert_stsb.agc \
 ##   MODEL_DIR TRAIN_JSONL VALIDATION_JSONL [PAIRS [BATCH [PAD_TO [WEIGHT_DECAY [ADAPTER_DIR]]]]]
 ## ```
 ##

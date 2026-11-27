@@ -2,7 +2,7 @@
 ## `REPS` runs). Vulkan multiplies in `F32`, as the checks do (`Tensor.vulkan_fp16(false)`). Manual; run from
 ## `transformers/`:
 ##
-##   agentica --max-steps 1000000000000 tools/bench_vit.agc MODEL_DIR [cpu|vulkan] [BATCH] [REPS]
+##   agentica tools/bench_vit.agc MODEL_DIR [cpu|vulkan] [BATCH] [REPS]
 
 import Tensor from "pkg/tensor/tensor"
 import ViT from "../vit"

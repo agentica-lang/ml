@@ -540,16 +540,16 @@ From `transformers/`, with `data` from the fetch step and `out` as a new folder 
 
 ```sh
 mkdir -p out
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out
+agentica tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out
 ```
 
 The optional arguments after the model, the data and the output folders are, in order, the backend, the number of training pairs, the epochs, the size of the validation sample and a training time budget in seconds. The backend is the only thing that changes between machines:
 
 ```sh
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out cpu 2000 2 500
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out vulkan 2000 2 500
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out xla 2000 2 500
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out torch 2000 2 500
+agentica tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out cpu 2000 2 500
+agentica tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out vulkan 2000 2 500
+agentica tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out xla 2000 2 500
+agentica tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out torch 2000 2 500
 ```
 
 With a last argument, the training time budget, the run stops after the first step past that many seconds and goes on to measure, save and reload what it has trained: `... out cpu 2000 2 500 90` trains for 90 seconds at most. The budget counts only the training steps (and the batches they take), not the measuring. It is at least 1 second. Without it, the run goes through all the epochs.
@@ -575,7 +575,7 @@ trained STEPS steps in MS ms, RATE pairs/s, RATE_AFTER_FIRST pairs/s after the f
 Measured: the program on each backend, three runs of each one after another, with 500 training pairs (31 steps of 16 per epoch), 2 epochs, a validation sample of 500 pairs (the same pairs before, after and on reload, and on every backend) and a budget of 90 seconds, from `transformers/` with nothing else running:
 
 ```sh
-/usr/bin/time -v agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out BACKEND 500 2 500 90
+/usr/bin/time -v agentica tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out BACKEND 500 2 500 90
 ```
 
 The seed is 1 (the `SEED` of the program: the shuffle of the pairs, so the same 500 pairs and the same order on every run). The machine is an AMD Ryzen 5 3550H (4 cores, 8 threads) with 12 GiB of RAM; `vulkan` ran on its integrated AMD Radeon Graphics (RADV RAVEN, Vega) with `F32` products, and every run was held to 2.5 GB of memory. Each cell is the mean over the three runs, with the minimum and the maximum when they differ in the digits shown.
