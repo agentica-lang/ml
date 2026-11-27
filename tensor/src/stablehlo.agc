@@ -622,6 +622,22 @@ def ir_type(shape: List[Int], dtype: Types.Dtype) -> Result[IR.TensorType]
   end
 end
 
+def put_ir(
+  l: Lines,
+  name: String,
+  sources: List[String],
+  types: List[IR.TensorType],
+  result: IR.TensorType,
+  attributes: List[IR.Attribute] = [],
+  regions: List[IR.Block] = [],
+) -> Result[Lines]
+  ok(put(l, try ir_op(name, sources, types, result, attributes, l.first + l.defs.size, regions)))
+end
+
+def broadcast_dims(dims: List[Int]) -> List[IR.Attribute]
+  [IR.Attribute(key: "broadcast_dimensions", value: IR.Attr.I64Array(dims))]
+end
+
 def put_reduce(
   l: Lines,
   name: String,
@@ -817,33 +833,50 @@ def attention(
   values = side.name
   l = side.lines
   shape = [q.shape[0], heads, q.shape[2], args[1].shape[2]]
-  scores = try tensor_type(shape, q.dtype)
-  qt = try type_of(q)
-  kt = try tensor_type([q.shape[0], heads, args[1].shape[2], q.shape[3]], q.dtype)
-  vt = try tensor_type([q.shape[0], heads, args[2].shape[2], args[2].shape[3]], q.dtype)
-  batch = "batching_dims = [0, 1] x [0, 1]"
-  l = put(
+  scores = try ir_type(shape, q.dtype)
+  kt = try ir_type([q.shape[0], heads, args[1].shape[2], q.shape[3]], q.dtype)
+  vt = try ir_type([q.shape[0], heads, args[2].shape[2], args[2].shape[3]], q.dtype)
+  l = try put_ir(
     l,
-    "stablehlo.dot_general #{a[0]}, #{keys}, #{batch}, contracting_dims = [3] x [3] : (#{qt}, #{kt}) -> #{scores}",
+    "stablehlo.dot_general",
+    [a[0], keys],
+    [try ir_type(q.shape, q.dtype), kt],
+    scores,
+    [dot_numbers([0, 1], [0, 1], [3], [3])],
   )
 
+  product = last(l)
   l = put(l, try splat(Types.Values.Float(scale), shape, q.dtype))
-  l = put(l, "stablehlo.multiply %#{first + l.defs.size - 2}, #{last(l)} : #{scores}")
+  l = try put_ir(l, "stablehlo.multiply", [product, last(l)], [scores, scores], scores)
   if args.size == 4
     mask = args[3]
+    scaled = last(l)
+    masked = a[3]
     if mask.shape != shape
-      spread = ints((0...mask.shape.size).to_a.map { |i| shape.size - mask.shape.size + i })
-      l = put(l, "stablehlo.broadcast_in_dim #{a[3]}, dims = #{spread} : (#{try type_of(mask)}) -> #{scores}")
-      l = put(l, "stablehlo.add %#{first + l.defs.size - 2}, #{last(l)} : #{scores}")
-    else
-      l = put(l, "stablehlo.add #{last(l)}, #{a[3]} : #{scores}")
+      spread = (0...mask.shape.size).to_a.map { |i| shape.size - mask.shape.size + i }
+      l = try put_ir(
+        l,
+        "stablehlo.broadcast_in_dim",
+        [a[3]],
+        [try ir_type(mask.shape, mask.dtype)],
+        scores,
+        broadcast_dims(spread),
+      )
+
+      masked = last(l)
     end
+
+    l = try put_ir(l, "stablehlo.add", [scaled, masked], [scores, scores], scores)
   end
 
   l = try softmax_last(l, last(l), shape, q.dtype)
-  l = put(
+  l = try put_ir(
     l,
-    "stablehlo.dot_general #{last(l)}, #{values}, #{batch}, contracting_dims = [3] x [2] : (#{scores}, #{vt}) -> #{try type_of(t)}",
+    "stablehlo.dot_general",
+    [last(l), values],
+    [scores, vt],
+    try ir_type(t.shape, t.dtype),
+    [dot_numbers([0, 1], [0, 1], [3], [2])],
   )
 
   ok(l.defs)
@@ -853,40 +886,39 @@ end
 # for its group.
 def attention_side(l: Lines, x: Types.Tensor, q: Types.Tensor, group: Int, name: String) -> Result[Side]
   source = name
-  shown = try type_of(x)
+  shown = try ir_type(x.shape, x.dtype)
   if x.dtype != q.dtype
-    shown = try tensor_type(x.shape, q.dtype)
-    l = put(l, "stablehlo.convert #{source} : (#{try type_of(x)}) -> #{shown}")
+    wide = try ir_type(x.shape, q.dtype)
+    l = try put_ir(l, "stablehlo.convert", [source], [shown], wide)
+    shown = wide
     source = last(l)
   end
 
   return ok(Side(lines: l, name: source)) if group == 1
   b = x.shape[0]
-  spread = try tensor_type([b, x.shape[1], group, x.shape[2], x.shape[3]], q.dtype)
-  merged = try tensor_type([b, q.shape[1], x.shape[2], x.shape[3]], q.dtype)
-  l = put(l, "stablehlo.broadcast_in_dim #{source}, dims = [0, 1, 3, 4] : (#{shown}) -> #{spread}")
-  l = put(l, "stablehlo.reshape #{last(l)} : (#{spread}) -> #{merged}")
+  spread = try ir_type([b, x.shape[1], group, x.shape[2], x.shape[3]], q.dtype)
+  merged = try ir_type([b, q.shape[1], x.shape[2], x.shape[3]], q.dtype)
+  l = try put_ir(l, "stablehlo.broadcast_in_dim", [source], [shown], spread, broadcast_dims([0, 1, 3, 4]))
+  l = try put_ir(l, "stablehlo.reshape", [last(l)], [spread], merged)
   ok(Side(lines: l, name: last(l)))
 end
 
 # The softmax over the last axis of `name` (of `shape`): `exp(x - max) / sum(exp(x - max))`. The last line.
 def softmax_last(l: Lines, name: String, shape: List[Int], dtype: Types.Dtype) -> Result[Lines]
   q = shape.size - 1
-  full = try tensor_type(shape, dtype)
-  lead = try tensor_type(shape.take(q), dtype)
-  dims = ints((0...q).to_a)
+  full = try ir_type(shape, dtype)
+  lead = try ir_type(shape.take(q), dtype)
+  dims = broadcast_dims((0...q).to_a)
   l = put(l, try fill_scalar("maximum", dtype))
-  l = try put_reduce(l, name, try ir_type(shape, dtype), last(l), [q], "maximum")
-
-  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{full}")
-  l = put(l, "stablehlo.subtract #{name}, #{last(l)} : #{full}")
-  l = put(l, "stablehlo.exponential #{last(l)} : #{full}")
+  l = try put_reduce(l, name, full, last(l), [q], "maximum")
+  l = try put_ir(l, "stablehlo.broadcast_in_dim", [last(l)], [lead], full, dims)
+  l = try put_ir(l, "stablehlo.subtract", [name, last(l)], [full, full], full)
+  l = try put_ir(l, "stablehlo.exponential", [last(l)], [full], full)
   powers = last(l)
   l = put(l, try fill_scalar("add", dtype))
-  l = try put_reduce(l, powers, try ir_type(shape, dtype), last(l), [q], "add")
-
-  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{full}")
-  ok(put(l, "stablehlo.divide #{powers}, #{last(l)} : #{full}"))
+  l = try put_reduce(l, powers, full, last(l), [q], "add")
+  l = try put_ir(l, "stablehlo.broadcast_in_dim", [last(l)], [lead], full, dims)
+  put_ir(l, "stablehlo.divide", [powers, last(l)], [full, full], full)
 end
 
 # The exact GELU, `0.5 x (1 + erf(x / sqrt(2)))`, the form `Reference` computes: `erf` is CHLO's (XLA lowers it).
