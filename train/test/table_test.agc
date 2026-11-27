@@ -187,7 +187,7 @@ end
 ## is an error that names the column and the row.
 def test_a_parquet_file_is_a_table_of_its_columns_in_file_order() -> Result[Void]
   t = try Table.read(PARQUET)
-  try Test.eq(t.names, ["x1", "x2", "count", "label", "flag", "name", "gap"])
+  try Test.eq(t.names, ["x1", "x2", "count", "label", "flag", "name", "gap", "wild"])
   try Test.eq(t.rows, 6)
   for name in ["x1", "x2", "count", "label"]
     try Test.eq(try Table.floats(t, name), try numbers(name))
@@ -197,6 +197,12 @@ def test_a_parquet_file_is_a_table_of_its_columns_in_file_order() -> Result[Void
   try Test.eq(try Table.texts(t, "name"), try words("name"))
   gap = error_text(Table.floats(t, "gap"))
   try Test.assert(gap.include?("gap") and gap.include?("null") and gap.include?("row 3"), "the error said: #{gap}")
+  wild = error_text(Table.floats(t, "wild"))
+  try Test.assert(
+    wild.include?("wild") and wild.include?("finite") and wild.include?("row 2"),
+    "the error said: #{wild}",
+  )
+
   gap_text = error_text(Table.texts(t, "gap"))
   try Test.assert(gap_text.include?("gap"), "the error said: #{gap_text}")
   try Test.assert(error_text(Table.texts(t, "x1")).include?("x1"), "a numeric column read as text")

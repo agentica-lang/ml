@@ -1,12 +1,13 @@
-## A table of named columns read from a file, for `Data.from_table`: a CSV file with a header row (the `csv` package of
-## agentica-lang/packages) or a Parquet file (the `parquet` package), read whole. A column is decoded when it is asked for,
-## through the `load` function of the table and not into a field of each column: that is the shape a format that holds its
-## columns apart (Parquet) fits, which decodes only the columns a dataset uses and, later, a part of the rows. A column is
-## numbers or text. In a CSV file it is numbers when every cell is a finite number (so an empty cell, or `1e400`, makes
-## its column text). In a Parquet file it is numbers when its type is an integer, a float or a boolean (as `Float`: an
-## `Int64` over 2^53 loses its low bits; a boolean is 1.0 or 0.0) and text when it is a string; a column with a null, or
-## of binary values, is an error when it is asked for. A column read as the other kind is an error that names the first
-## cell that does not fit. Rows are counted from 1: row 1 is the first one (after the header of a CSV file).
+## A table of named columns read from a file, for `Data.from_table`: a CSV file with a header row (the `csv` package
+## of agentica-lang/packages) or a Parquet file (the `parquet` package), read whole. A column is decoded when it is
+## asked for, through the `load` function of the table and not into a field of each column: that is the shape a format
+## that holds its columns apart (Parquet) fits, which decodes only the columns a dataset uses and, later, a part of
+## the rows. A column is numbers or text. In a CSV file it is numbers when every cell is a finite number (so an empty
+## cell, or `1e400`, makes its column text). In a Parquet file it is numbers when its type is an integer, a float or a
+## boolean (as `Float`: an `Int64` over 2^53 loses its low bits; a boolean is 1.0 or 0.0) and text when it is a
+## string; a column with a null, a NaN or an infinity, or of binary values, is an error when it is asked for. A column
+## read as the other kind is an error that names the first cell that does not fit. Rows are counted from 1: row 1 is
+## the first one (after the header of a CSV file).
 
 import Csv from "pkg/csv/csv"
 import Parquet from "pkg/parquet/parquet"
@@ -30,9 +31,9 @@ def read(path: String) -> Result[Table]
   error("#{path}: a table is a .csv or a .parquet file")
 end
 
-## The CSV file at `path`: the first row names the columns, every row has as many cells, and a name is used once. A file
-## that ends with a line break has no extra row, a byte order mark at its start is dropped, and a line with nothing on it
-## is skipped when the table has more than one column.
+## The CSV file at `path`: the first row names the columns, every row has as many cells, and a name is used once. A
+## file that ends with a line break has no extra row, a byte order mark at its start is dropped, and a line with
+## nothing on it is skipped when the table has more than one column.
 def read_csv(path: String) -> Result[Table]
   lines = try Csv.parse(try File.read_text(path))
   return error("#{path}: no header row") if lines.empty?
@@ -103,7 +104,12 @@ end
 
 def parquet_numbers(name: String, xs: List[Optional[Float]]) -> Result[Column]
   try nulls(name, xs)
-  ok(Column.Numbers(xs.map { |x| x.unwrap! }))
+  numbers = xs.map { |x| x.unwrap! }
+  for i in 0...numbers.size
+    return error("column #{name} has a number that is not finite at row #{i + 1}") if not finite?(numbers[i])
+  end
+
+  ok(Column.Numbers(numbers))
 end
 
 ## An error naming the first null of `xs`.
@@ -147,8 +153,11 @@ end
 def number(cell: String) -> Optional[Float]
   case cell.strip.to_f
     ok(x) ->
-      return none if x - x != 0.0
+      return none if not finite?(x)
       some(x)
     error(_) -> none
   end
 end
+
+## False for NaN and the infinities.
+def finite?(x: Float) -> Bool = x - x == 0.0

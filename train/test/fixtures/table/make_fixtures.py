@@ -6,7 +6,7 @@ pip install --only-binary :all: pyarrow==26.0.1). From `train/`:
 
 `name` has a comma, quotes and a non-ASCII letter, which a CSV writer must quote, and `gap` a missing cell (a null in the
 Parquet file). The Parquet file has also a `flag` column of booleans, `x2` as a 32-bit float, `count` as 64-bit and `label`
-as 32-bit integers, which a CSV cannot tell apart.
+as 32-bit integers, which a CSV cannot tell apart, and `wild` with a NaN and an infinity (not in `scores.json`).
 """
 
 import csv
@@ -26,6 +26,7 @@ COLUMNS = {
 
 
 FLAG = [True, False, True, True, False, False]
+WILD = [1.0, float("nan"), float("inf"), 4.0, 5.0, 6.0]
 
 
 def parquet():
@@ -35,7 +36,7 @@ def parquet():
     kinds = {"x1": pa.float64(), "x2": pa.float32(), "count": pa.int64(), "label": pa.int32(), "name": pa.string(), "gap": pa.float64()}
     arrays = {n: pa.array(v, type=kinds[n]) for n, v in COLUMNS.items()}
     arrays = {**{n: a for n, a in arrays.items() if n in ("x1", "x2", "count", "label")}, "flag": pa.array(FLAG, pa.bool_()),
-              "name": arrays["name"], "gap": arrays["gap"]}
+              "name": arrays["name"], "gap": arrays["gap"], "wild": pa.array(WILD, pa.float64())}
     pq.write_table(pa.table(arrays), HERE / "scores.parquet", compression="snappy", use_dictionary=False)
 
 

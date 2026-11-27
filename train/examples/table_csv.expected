@@ -1,0 +1,6 @@
+["x1", "x2", "count", "label", "name", "gap"]
+["ann", "bob, jr", "café", "", "dee", "eve \"x\""]
+error("column gap has a non-number cell (row 3 is \"\")")
+2
+[4, 2]
+[Values.Int(0), Values.Int(1), Values.Int(1), Values.Int(0)]
