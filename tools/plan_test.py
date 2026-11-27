@@ -42,6 +42,13 @@ class Selection(unittest.TestCase):
         self.assertEqual(out["packages"], ["vision"])
         self.assertEqual([out[k] for k in ("xla", "torch", "ggml_arm64")], ["false"] * 3)
 
+    def test_no_changed_file_runs_everything(self):
+        self.assertEqual(self.select("pull_request")["packages"], ALL)
+
+    def test_the_files_the_workflow_ignores_do_not_count(self):
+        out = self.select("pull_request", "vision/vit.agc", "README.md", "site/content/x.txt")
+        self.assertEqual(out["packages"], ["vision"])
+
     def test_the_arm_job_runs_for_transformers(self):
         out = self.select("pull_request", "transformers/qwen3.agc")
         self.assertEqual(out["packages"], ["transformers", "vision"])

@@ -33,43 +33,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      packages: ${{ steps.packages.outputs.packages }}
-      xla: ${{ steps.xla.outputs.xla }}
-      torch: ${{ steps.xla.outputs.xla }}
-      ggml_arm64: ${{ steps.xla.outputs.xla }}
+      packages: ${{ steps.plan.outputs.packages }}
+      xla: ${{ steps.plan.outputs.xla }}
+      torch: ${{ steps.plan.outputs.torch }}
+      ggml_arm64: ${{ steps.plan.outputs.ggml_arm64 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Third-party engines (whisper.cpp and friends) enter as submodules,
           # never vendored; tests must run against the pinned commits.
           submodules: recursive
-          # The xla step compares the merge commit of a pull request with its first parent, the base.
+          # The plan step compares the merge commit of a pull request with its first parent, the base.
           fetch-depth: 2
 
       - name: Test the plan
         run: python3 -m unittest tools/plan_test.py
 
-      - name: Find the packages
-        id: packages
+      # A push to main runs every package. A pull request runs the packages it changes and those that depend on them
+      # (the agentica.toml files tell which), and the extra jobs whose packages are among them; a change outside every
+      # package folder runs everything. The step compares the merge commit of the pull request with its first parent,
+      # the base (tools/plan.py).
+      - name: Plan
+        id: plan
         shell: bash
         run: |
           set -euo pipefail
-          pkgs=$(for f in */agentica.toml; do echo "${f%/agentica.toml}"; done | jq -R -s -c 'split("\n") | map(select(. != ""))')
-          echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
-          echo "Packages: $pkgs"
-
-      # The xla, torch and ggml-arm64 jobs run on a push to main, and on a pull request that changes tensor/, train/ or this file.
-      - name: Does the XLA backend need a run
-        id: xla
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" != pull_request ] ||
-            [ -n "$(git diff --name-only HEAD^1 HEAD -- tensor/ train/ .github/workflows/ci.yml)" ]; then
-            echo "xla=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "xla=false" >> "$GITHUB_OUTPUT"
-          fi
+          files=$(git diff --name-only HEAD^1 HEAD || true)
+          printf '%s\n' "$files" | python3 tools/plan.py "${{ github.event_name }}" | tee -a "$GITHUB_OUTPUT"
 
   # Each package on its pinned Agentica release: install, check, format, the
   # --check of its generated native headers, and its tests.
