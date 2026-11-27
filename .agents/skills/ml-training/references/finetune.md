@@ -323,6 +323,15 @@ end
   which model the adapter is for (`base_model_name_or_path` in `adapter_config.json` is `null`), so give PEFT the base
   model yourself.
 
+## Fine-tune a BERT-family model
+
+`Bert` (`sentence-transformers/all-MiniLM-L6-v2` and the other BertModel checkpoints) trains the same way as DistilBERT:
+`Bert.weights(m)` and `Bert.with_weights(m, Params.join(split, ps))` in the loss, and `Bert.pooled(model, ids,
+type_ids, mask)` for the mean embedding, which is part of the trace. Pass `type_ids` (`I32`, all 0 for one sentence)
+and a mask that is a constant of the batch (`1.0` for a token, `0.0` for padding). The pooler is not in `pooled`, so it
+has no gradient: leave it out of the split when you train a mean-pooled model. `transformers/tools/minilm_finetune.agc`
+is the example (`sh tools/fetch_minilm.sh` gets the pinned checkpoint), on ggml CPU or Vulkan.
+
 ## Use an adapter for Qwen3
 
 A PEFT adapter of a `Qwen3ForCausalLM` (or one trained here with `targets: ["q_proj", "v_proj"]`) loads as it is:

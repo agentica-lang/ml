@@ -1,7 +1,8 @@
 ## A short fine-tune of sentence-transformers/all-MiniLM-L6-v2 (6 layers, width 384) on scored sentence pairs, on ggml, as
 ## a check that a BERT-family model loads and trains: its embeddings put a paraphrase closer than an unrelated sentence,
-## the cosine loss falls over a few `Train.fit_batches` steps, and a sample of its weights moved. Manual,
-## never in CI; from `transformers/`:
+## the cosine loss falls over a few `Train.fit_batches` steps, and a sample of its weights moved. CI checks
+## and formats this file but does not run it: it runs by hand, as it needs the network (the checkpoint).
+## From `transformers/`:
 ##
 ## ```sh
 ## sh tools/fetch_minilm.sh                       # the pinned checkpoint, into ~/.cache/agentica-ml/hf/all-minilm-l6-v2

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Fetches sentence-transformers/all-MiniLM-L6-v2 (6 layers, width 384) at a pinned revision, for tools/minilm_finetune.agc,
-# the BERT-family fine-tune check. Never in CI. Only `model.safetensors` is fetched, never the pickle. A file gets its name
+# the BERT-family fine-tune check. CI checks and formats the tool but does not run it: the run is by hand, as it needs the
+# network (this download) and the model. Only `model.safetensors` is fetched, never the pickle. A file gets its name
 # only once its sha256 is right, and a file that is there is checked again.
 #
 #   sh tools/fetch_minilm.sh [DIR]       DIR defaults to ${AGENTICA_ML_CACHE:-~/.cache/agentica-ml}/hf/all-minilm-l6-v2
