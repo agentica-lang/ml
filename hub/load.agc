@@ -270,6 +270,13 @@ def held_bytes(c: Hub.Checkpoint, name: String, weights: Tensor.Dtype) -> Result
   end
 end
 
+def bf16_widen_bytes(c: Hub.Checkpoint, name: String, weights: Tensor.Dtype) -> Result[Int]
+  return ok(0) if weights != Tensor.Dtype.BF16
+  shape = try Hub.shape(c, name)
+  return ok(0) if try held_dtype(c, name, shape.size, weights) != Tensor.Dtype.BF16
+  ok(shape[0] * shape[1] * 4)
+end
+
 private
 
 ## The weight `name` of `rank`: `F32`, or `F16` or `BF16` when `weights` asks for it, it is a float file of rank 2 and it has
@@ -305,7 +312,11 @@ def held_dtype(c: Hub.Checkpoint, name: String, rank: Int, weights: Tensor.Dtype
 
   if (weights == Tensor.Dtype.F16 or weights == Tensor.Dtype.BF16) and rank == 2
     shape = try Hub.shape(c, name)
-    if shape.size == 2 and shape[0] * shape[1] >= HALF_MIN_ELEMENTS
+    if (
+      shape.size == 2 and
+      shape[0] * shape[1] >= HALF_MIN_ELEMENTS and
+      ["F32", "F16", "BF16"].include?(try Hub.dtype(c, name))
+    )
       dtype = weights
     end
   end

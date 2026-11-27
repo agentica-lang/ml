@@ -396,13 +396,13 @@ The load. The conversion of a BF16 or F32 file to F16 runs on up to 8 threads (o
 `WEIGHTS=bf16` keeps the same big matrices as `WEIGHTS=f16` in `BF16` on ggml, libtorch and XLA. Qwen3-0.6B, `tools/bench_qwen.agc
 MODEL_DIR xla` with the `jax-cuda13-pjrt` 0.12.0.1 plugin in the cache, `XLA_FLAGS=--xla_gpu_enable_triton_gemm=false
 NVIDIA_TF32_OVERRIDE=0`, on an RTX 4060 Laptop GPU (driver 615.71.09), Agentica 0.40.0-beta.2; two runs each, the
-range shown. The weight bytes are counted by `Load.held_bytes` from the checkpoint's shapes.
+range shown. The weight bytes are estimated from the checkpoint shapes and count the tied embedding and head once.
 
 | Weights | Weight bytes | Prompt, 128 tokens | 64 tokens after it | Load |
 |---|---|---|---|---|
-| F32 | 3.01 GB | 3459 tokens/s | 58.6 tokens/s | 1.26 to 1.30 s |
-| F16 | 1.50 GB | 3048 to 3122 | 56.4 to 57.5 | 2.09 to 2.10 s |
-| BF16 | 1.50 GB | 3122 to 3368 | 56.7 to 57.0 | 1.80 to 1.82 s |
+| F32 | 2.38 GB | 3459 tokens/s | 58.6 tokens/s | 1.26 to 1.30 s |
+| F16 | 1.19 GB | 3048 to 3122 | 56.4 to 57.5 | 2.09 to 2.10 s |
+| BF16 | 1.19 GB | 3122 to 3368 | 56.7 to 57.0 | 1.80 to 1.82 s |
 
 Half weights halve the bytes of the weights and do not speed up decoding here: a 0.6B model's step on this card waits
 on something other than the weights' bandwidth.
@@ -419,7 +419,7 @@ local, uncommitted patch of `native/xla.c` that creates the client with `preallo
 | F16 | 2564 MiB | 30.9 |
 | BF16 | 2564 MiB | 30.3 |
 
-The weights save 1434 MiB but the peak only 544 MiB, because a step does not read every weight in 16 bits. In the
+The weights save approximately 1137 MiB but the peak only 544 MiB, because a step does not read every weight in 16 bits. In the
 optimized program of a decode step (`--xla_dump_to`), the converts of the block matrices are fused into the loops that
 read them, but the tied head, the `[151936, 1024]` token table, is converted by a fusion of its own into an `F32`
 buffer of 622 MB before the cuBLAS product, on every step. That copy is most of the gap, and its writes are why the

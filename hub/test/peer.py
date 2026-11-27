@@ -542,6 +542,8 @@ def gguf_q8(out):
              "blk.0.ffn_up.weight": "model.layers.0.mlp.up_proj.weight", "output.weight": "lm_head.weight",
              "blk.0.attn_norm.weight": "model.layers.0.input_layernorm.weight"}
     gguf(out / "q8.gguf", [("general.architecture", 8, "qwen3")], tensors)
+    large_q8 = ("blk.0.attn_q.weight", [320, 320], GGML_TYPES["Q8_0"], bytes(320 * 320 // 32 * 34))
+    gguf(out / "q8-large.gguf", [("general.architecture", 8, "qwen3")], [large_q8])
     (out / "q8.json").write_text(json.dumps({names[k]: v for k, v in expected.items()}))
 
 

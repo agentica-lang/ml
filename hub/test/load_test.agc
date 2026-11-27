@@ -338,6 +338,10 @@ def test_held_bytes_count_what_the_weights_option_keeps() -> Result[Void]
       try Test.eq(try Load.held_bytes(c, name, f32), 320 * 320 * 4)
     end
 
+    bf16 = Tensor.Dtype.BF16
+    try Test.eq(try Load.held_bytes(c, "big.weight", bf16), 320 * 320 * 2)
+    try Test.eq(try Load.held_bytes(c, "f64.weight", bf16), 320 * 320 * 4)
+    try Test.eq(try Load.held_bytes(c, "f64.weight", half), 320 * 320 * 4)
     try Test.eq(try Load.held_bytes(c, "big.weight", half), 320 * 320 * 2)
     try Test.eq(try Load.held_bytes(c, "bf16.weight", half), 320 * 320 * 2)
     try Test.eq(try Load.held_bytes(c, "tok.weight", half), 400 * 300 * 2)

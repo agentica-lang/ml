@@ -76,10 +76,15 @@ end
 ## the head's own copy, as `layers_on_device` makes it, for an `n` between 1 and the blocks, and the table and the head
 ## once each when all of them are on the card).
 def sizes(tied: Bool) -> Placement.Footprint
+  head = 30 * MB
+  if tied
+    head = 40 * MB
+  end
+
   Placement.Footprint(
     blocks: [100 * MB, 100 * MB, 100 * MB, 100 * MB, 100 * MB],
     table: 40 * MB,
-    head: 30 * MB,
+    head: head,
     tied: tied,
   )
 end
@@ -103,7 +108,7 @@ def test_a_tied_head_is_not_counted_twice_with_every_block_on_the_card() -> Resu
   tied = sizes(true)
   try Test.eq(Placement.fit(tied, 539 * MB), 4)
   try Test.eq(Placement.fit(tied, 540 * MB), 5)
-  try Test.eq(Placement.fit(tied, 430 * MB), 4)
+  try Test.eq(Placement.fit(tied, 440 * MB), 4)
   ok()
 end
 
@@ -114,6 +119,14 @@ def test_the_budget_is_the_free_memory_less_the_reserve_up_to_the_cap() -> Resul
   try Test.eq(Placement.budget(1000 * MB, 200 * MB, some(900 * MB)), 800 * MB)
   try Test.eq(Placement.budget(100 * MB, 200 * MB, none), 0)
   ok()
+end
+
+def test_bf16_head_widening_counts_even_when_the_table_is_shared() -> Result[Void]
+  tied = sizes(true).with(head_widen: 200 * MB)
+  try Test.eq(Placement.fit(tied, 339 * MB), 0)
+  try Test.eq(Placement.fit(tied, 340 * MB), 1)
+  try Test.eq(Placement.fit(tied, 739 * MB), 4)
+  Test.eq(Placement.fit(tied, 740 * MB), 5)
 end
 
 ## A checkpoint of two blocks (the second twice the first), a table of 10 x 4 and a norm, with a head of its own when

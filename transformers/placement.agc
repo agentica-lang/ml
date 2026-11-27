@@ -29,6 +29,7 @@ struct Footprint
   table: Int
   head: Int
   tied: Bool
+  head_widen: Int = 0
 end
 
 ## The sides of the table and of the head (with the final norm) of a model of `blocks` blocks opened on `backend` with
@@ -66,6 +67,7 @@ def footprint(
   norm: String,
   weights: Tensor.Dtype,
   kv: Int,
+  tied_head: Optional[Bool] = none,
 ) -> Result[Footprint]
   names = Hub.names(c)
   sizes: List[Int] = []
@@ -73,20 +75,22 @@ def footprint(
     prefix = "#{layers}#{i}."
     bytes = kv
     for name in names.select { |n| n.start_with?(prefix) }
-      bytes = bytes + try Load.held_bytes(c, name, weights)
+      bytes = bytes + try Load.held_bytes(c, name, weights) + try Load.bf16_widen_bytes(c, name, weights)
     end
 
     sizes = sizes.push(bytes)
   end
 
   held = try Load.held_bytes(c, table, weights)
-  tied = not Hub.has?(c, head)
-  head_bytes = held
-  if not tied
-    head_bytes = try Load.held_bytes(c, head, weights)
+  tied = tied_head.unwrap_or(not Hub.has?(c, head))
+  head_name = head
+  if tied
+    head_name = table
   end
 
-  ok(Footprint(blocks: sizes, table: held, head: head_bytes + try Load.held_bytes(c, norm, weights), tied: tied))
+  head_bytes = try Load.held_bytes(c, head_name, weights) + try Load.held_bytes(c, norm, weights)
+  head_widen = try Load.bf16_widen_bytes(c, head_name, weights)
+  ok(Footprint(blocks: sizes, table: held, head: head_bytes, tied: tied, head_widen: head_widen))
 end
 
 ## The largest `layers_on_device` whose layout needs at most `budget` bytes on the card, 0 when not even one block fits.
@@ -100,14 +104,11 @@ def fit(footprint: Footprint, budget: Int) -> Int
   for n in 1..count
     used = used + footprint.blocks[n - 1]
     need = used + footprint.head
-    if n == count
-      need = used + footprint.table
-      if not footprint.tied
-        need = need + footprint.head
-      end
+    if n == count and not footprint.tied
+      need = need + footprint.table
     end
 
-    if need <= budget
+    if need + footprint.head_widen <= budget
       fitting = n
     end
   end
