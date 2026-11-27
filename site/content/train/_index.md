@@ -82,7 +82,7 @@ The optimizers are pure: `Optim.step(state, params, grads, scalars = [])` return
 
 `Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 
-`Optim.sgd(lr, momentum: 0.0, schedule:)`, `Optim.adam(lr:, schedule:)` and `Optim.adamw(lr:, weight_decay:, decay:, schedule:)` are the same optimizers with their usual knobs, as one call: `Optim.adamw(lr: 0.00002)` is `Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.00002))`. The knobs they leave out keep the defaults of their struct.
+`Optim.sgd(lr, momentum: 0.0, schedule:)`, `Optim.adam(lr:, schedule:)` and `Optim.adamw(lr:, weight_decay:, decay:, schedule:)` are the same optimizers with their usual knobs, as one call: `Optim.adamw(lr: 0.00002)` is `Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.00002))`. The betas and `eps` keep the defaults of their struct; build the struct to set them.
 
 ## Loop
 
@@ -97,13 +97,23 @@ fit = try (
 
 `Loop.run_batches(trainer, batch, count, epochs: 1, prefetch: 0)` is `Train.fit_batches`: `batch(epoch, i)` makes batch `i` of `count`.
 
+`Loop.metric(trainer, metric)` adds a number that the loop measures at the end of every epoch, on the batches of its own data (a validation set, say), with the parameters of that epoch. A `Loop.Metric` has a `name`, the `count` and the function `batch(i)` of its batches, `observe(params, batch)`, which answers one row of numbers for each example, and `reduce`, which turns all the rows into the value: `&Loop.mean` is the mean of the first number of each row, and `&Loop.spearman` Spearman's correlation of the first two. The values are in `fit.metrics[name]`, one per epoch; a metric that fails is not measured again, and the run ends with an error that names it after its last epoch. `observe` is forward only: a `Trace.eval` of the model, with no gradient.
+
+```agentica
+fit = try (
+  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
+  |> Loop.metric(Loop.Metric(name: "mse", count: 4, batch: ->(i: Int) { held_out(i) }, observe: &squared_errors, reduce: &Loop.mean))
+  |> Loop.run(data, epochs: 3)
+)
+```
+
 ## Train.fit
 
 `Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).
 
 - `loss` has the type `Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]]`. It gets the parameters and a batch, and it returns a float scalar.
 - Inside `loss`, the batch `inputs` and `targets` are traced inputs, so the loss is written once, as plain code. `fit` traces and compiles the step once for each batch shape (a smaller last batch is a second one) and runs it on every batch of that shape.
-- `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1) and `loss`. `fit` prints nothing.
+- `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1), `loss` and `params`, the parameters the epoch ended with (use them inside `on_epoch`: the next step frees them). `fit` prints nothing.
 - `metrics` is optional. It is an open [`Metrics.Run`](metrics.md) that gets `train/loss`, `train/lr` and `train/step_ms` for every step. A value it refuses, such as a loss that is not finite, stops `fit` too.
 - A failed step stops `fit` with an error that names the epoch and the batch, for example `epoch 1, batch 0: ...`.
 

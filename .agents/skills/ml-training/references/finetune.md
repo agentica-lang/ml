@@ -166,9 +166,31 @@ true
 
 ## Loop
 
-`Loop.trainer(loss, params, Optim.adamw(lr: 0.0001)) |> Loop.run(loader, epochs: 3)` is `Train.fit` as a pipe, and
-`Loop.run_batches(batch, count, epochs:)` is `Train.fit_batches` (`Optim.sgd`, `Optim.adam` and `Optim.adamw` are the
-optimizers with their usual knobs). Both answer the same `Train.Fit`.
+`Loop` is `Train.fit` as a pipe; `Loop.run_batches(batch, count, epochs:)` is `Train.fit_batches` (`Optim.sgd`, `Optim.adam`
+and `Optim.adamw` are the optimizers with their usual knobs). Both answer the same `Train.Fit`.
+`Loop.metric` measures a `Loop.Metric` (its own batches, `observe`, `reduce`) at the end of every epoch, into
+`fit.metrics[name]`.
+
+```agentica
+import Data from "pkg/train/data"
+import Loop from "pkg/train/loop"
+import Optim from "pkg/train/optim"
+import Tensor from "pkg/tensor/tensor"
+import Train from "pkg/train/train"
+
+def trained(
+  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  params: List[Tensor.Tensor],
+  loader: Data.Loader,
+  spearman: Loop.Metric,
+) -> Result[Train.Fit]
+  (
+    Loop.trainer(loss, params, Optim.adamw(lr: 0.0001))
+    |> Loop.metric(spearman)
+    |> Loop.run(loader, epochs: 3)
+  )
+end
+```
 
 ## Fine-tune a sentence-embedding model on a dataset
 
