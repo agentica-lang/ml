@@ -199,7 +199,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Relu -> ok([try fill(0.0, t), "stablehlo.maximum #{a[0]}, %#{first} : #{out}"])
     Types.Op.Gelu -> gelu(t, a[0], first)
     Types.Op.StopGrad -> ok([])
-    Types.Op.Matmul -> matmul(n.args, a, sig)
+    Types.Op.Matmul -> matmul(t, n.args, a, first)
     Types.Op.Transpose -> ok(["stablehlo.transpose #{a[0]}, dims = #{ints((0...t.shape.size).to_a.reverse)} : #{sig}"])
     Types.Op.Reshape -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
     Types.Op.Squeeze(_) -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
@@ -207,7 +207,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Permute(axes) -> ok(["stablehlo.transpose #{a[0]}, dims = #{ints(axes)} : #{sig}"])
     Types.Op.Concat(axis) -> ok(["stablehlo.concatenate #{a.join(", ")}, dim = #{axis} : #{sig}"])
     Types.Op.Stack(axis) -> stack(t, n.args, a, axis, first)
-    Types.Op.BatchMatmul -> batch_matmul(n.args, a, sig)
+    Types.Op.BatchMatmul -> batch_matmul(t, n.args, a, first)
     Types.Op.Conv1d(stride, padding) -> conv1d(t, n.args, a, stride, padding, first)
     Types.Op.Conv2d(stride, padding, groups) -> conv2d(t, n.args, a, stride, padding, groups, first)
     Types.Op.GatedDeltaRule -> ok(["func.call @gated_delta_#{first}(#{a.join(", ")}) : #{sig}"])
@@ -225,7 +225,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Eq -> ok(["stablehlo.compare EQ, #{a[0]}, #{a[1]}, #{compare_type(n.args[0].dtype)} : #{sig}"])
     Types.Op.Where -> ok(["stablehlo.select #{a[0]}, #{a[1]}, #{a[2]} : #{try type_of(n.args[0])}, #{out}"])
     Types.Op.Arange(start, _, step) -> arange(t, start, step, first)
-    Types.Op.Gather -> gather(t, n.args, a, sig)
+    Types.Op.Gather -> gather(t, n.args, a, first)
     Types.Op.SetRows -> set_rows(t, n.args, a, first)
     Types.Op.TopK(k) -> top_k(t, n.args[0], a[0], k, first)
     Types.Op.ScatterAdd(_) -> scatter_add(t, n.args, a, first)
@@ -342,17 +342,10 @@ end
 
 # Rows of the source at the indices: one row slice per index, the indices' axes first, as `Reference.gather` answers.
 # An index outside the rows is clamped, as XLA does.
-def gather(t: Types.Tensor, args: List[Types.Tensor], a: List[String], sig: String) -> Result[List[String]]
-  k = args[1].shape.size
-  rest = args[0].shape.drop(1)
-  fields = ["collapsed_slice_dims = [0]", "start_index_map = [0]", "index_vector_dim = #{k}"]
-  if !rest.empty?
-    fields = ["offset_dims = #{ints((0...rest.size).to_a.map { |i| k + i })}"] + fields
-  end
-
-  sizes = ([1] + rest).map { |d| d.to_s }.join(", ")
-  attrs = "dimension_numbers = #stablehlo.gather<#{fields.join(", ")}>, slice_sizes = array<i64: #{sizes}>"
-  ok(["\"stablehlo.gather\"(#{a[0]}, #{a[1]}) {#{attrs}, indices_are_sorted = false} : #{sig}"])
+def gather(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
+  types = [try ir_type(args[0].shape, args[0].dtype), try ir_type(args[1].shape, args[1].dtype)]
+  attrs = gather_attrs(args[0].shape, args[1].shape.size)
+  ok([try ir_op("stablehlo.gather", a, types, try ir_type(t.shape, t.dtype), attrs, first)])
 end
 
 # See StableHLO reduce_window: padding takes the initial value, so padded cells must not win over negative inputs.
@@ -415,16 +408,7 @@ def expert_matmul(t: Types.Tensor, args: List[Types.Tensor], a: List[String], fi
     "stablehlo.dot_general",
     [spread.values[0], gathered.values[0]],
     [out],
-    [
-      IR.Attribute(
-        key: "dot_dimension_numbers",
-        value: IR.Attr.DialectAttr(
-          "stablehlo",
-          "dot",
-          "lhs_batching_dimensions = [0, 1], rhs_batching_dimensions = [0, 1], lhs_contracting_dimensions = [2], rhs_contracting_dimensions = [3]",
-        ),
-      ),
-    ],
+    [dot_numbers([0, 1], [0, 1], [2], [3])],
   )
 
   ir_lines(product.block, [a[0], a[1], a[2]], first)
@@ -448,6 +432,31 @@ end
 
 # The lines of the ops of `b` in order, each with one result: the entry argument `i` is the SSA name `sources[i]`, and
 # the result of op `i` is `%first + i`.
+def dot_numbers(lhs_batch: List[Int], rhs_batch: List[Int], lhs: List[Int], rhs: List[Int]) -> IR.Attribute
+  fields: List[String] = []
+  if !lhs_batch.empty?
+    fields = ["lhs_batching_dimensions = #{ints(lhs_batch)}", "rhs_batching_dimensions = #{ints(rhs_batch)}"]
+  end
+
+  fields = fields + ["lhs_contracting_dimensions = #{ints(lhs)}", "rhs_contracting_dimensions = #{ints(rhs)}"]
+  IR.Attribute(key: "dot_dimension_numbers", value: IR.Attr.DialectAttr("stablehlo", "dot", fields.join(", ")))
+end
+
+def ir_op(
+  name: String,
+  sources: List[String],
+  types: List[IR.TensorType],
+  result: IR.TensorType,
+  attributes: List[IR.Attribute],
+  first: Int,
+  regions: List[IR.Block] = [],
+) -> Result[String]
+  entry = IR.block(types)
+  added = try IR.append(entry, name, entry.args, [result], attributes, regions)
+  lines = try ir_lines(added.block, sources, first)
+  ok(lines[0])
+end
+
 def ir_lines(b: IR.Block, sources: List[String], first: Int) -> Result[List[String]]
   names: Map[Ref, String] = {}
   for i in 0...sources.size
@@ -664,13 +673,27 @@ def put(l: Lines, text: String) -> Lines = l.with(defs: l.defs.push(text))
 # The name of the last line of `l`.
 def last(l: Lines) -> String = "%#{l.first + l.defs.size - 1}"
 
-def matmul(args: List[Types.Tensor], a: List[String], sig: String) -> Result[List[String]]
+def matmul(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
   if args[0].dtype != args[1].dtype
     kinds = "#{Types.dtype_name(args[0].dtype)} by #{Types.dtype_name(args[1].dtype)}"
     return error("StableHLO has no emitter for matmul of #{kinds} yet")
   end
 
-  ok(["stablehlo.dot_general #{a[0]}, #{a[1]}, contracting_dims = [1] x [0] : #{sig}"])
+  dot(t, args, a, [], [1], [0], first)
+end
+
+def dot(
+  t: Types.Tensor,
+  args: List[Types.Tensor],
+  a: List[String],
+  batch: List[Int],
+  lhs: List[Int],
+  rhs: List[Int],
+  first: Int,
+) -> Result[List[String]]
+  types = [try ir_type(args[0].shape, args[0].dtype), try ir_type(args[1].shape, args[1].dtype)]
+  attrs = [dot_numbers(batch, batch, lhs, rhs)]
+  ok([try ir_op("stablehlo.dot_general", a, types, try ir_type(t.shape, t.dtype), attrs, first)])
 end
 
 # The line `n` of the program for the text of a node: an op with two results (`TWO`) is `%n:2`, and its second
@@ -1003,16 +1026,14 @@ def columns_of(x: Types.Tensor, name: String, from: Int, to: Int) -> Result[Stri
 end
 
 # The batched product `[B..., m, k] . [B..., k, n]`: the leading axes are the batch, the rest is `matmul`.
-def batch_matmul(args: List[Types.Tensor], a: List[String], sig: String) -> Result[List[String]]
+def batch_matmul(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
   if args[0].dtype != args[1].dtype
     kinds = "#{Types.dtype_name(args[0].dtype)} by #{Types.dtype_name(args[1].dtype)}"
     return error("StableHLO has no emitter for batch_matmul of #{kinds} yet")
   end
 
   rank = args[0].shape.size
-  batch = ints((0...(rank - 2)).to_a)
-  dims = "batching_dims = #{batch} x #{batch}, contracting_dims = [#{rank - 1}] x [#{rank - 2}]"
-  ok(["stablehlo.dot_general #{a[0]}, #{a[1]}, #{dims} : #{sig}"])
+  dot(t, args, a, (0...(rank - 2)).to_a, [rank - 1], [rank - 2], first)
 end
 
 # `x` as another dtype: a conversion truncates a float to an integer, and a boolean is `x != 0`.

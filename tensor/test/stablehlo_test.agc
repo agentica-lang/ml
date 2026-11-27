@@ -170,6 +170,35 @@ def test_argmax_text_reduces_the_maximum_then_the_first_index() -> Result[Void]
   )
 end
 
+## A product and a batched product are one `dot_general` each, and the rows of a table are one `gather`.
+def test_products_and_gather_text_name_their_dimensions() -> Result[Void]
+  specs = [spec([2, 3], Tensor.Dtype.F32), spec([3, 4], Tensor.Dtype.F32), spec([2], Tensor.Dtype.I32)]
+  m = try Trace.stablehlo(specs, ->(xs: List[Tensor.Tensor]) { products(xs) })
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<2x3xf32>, %arg1: tensor<3x4xf32>, %arg2: tensor<2xi32>) -> (tensor<2x4xf32>, tensor<1x2x4xf32>, tensor<2x4xf32>) {
+          %0 = "stablehlo.dot_general"(%arg0, %arg1) {dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>} : (tensor<2x3xf32>, tensor<3x4xf32>) -> (tensor<2x4xf32>)
+          %1 = stablehlo.reshape %arg0 : (tensor<2x3xf32>) -> tensor<1x2x3xf32>
+          %2 = stablehlo.reshape %arg1 : (tensor<3x4xf32>) -> tensor<1x3x4xf32>
+          %3 = "stablehlo.dot_general"(%1, %2) {dot_dimension_numbers = #stablehlo.dot<lhs_batching_dimensions = [0], rhs_batching_dimensions = [0], lhs_contracting_dimensions = [2], rhs_contracting_dimensions = [1]>} : (tensor<1x2x3xf32>, tensor<1x3x4xf32>) -> (tensor<1x2x4xf32>)
+          %4 = "stablehlo.gather"(%arg1, %arg2) {dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1, 4>, indices_are_sorted = false} : (tensor<3x4xf32>, tensor<2xi32>) -> (tensor<2x4xf32>)
+          func.return %0, %3, %4 : tensor<2x4xf32>, tensor<1x2x4xf32>, tensor<2x4xf32>
+        }
+      }
+    MLIR
+  )
+end
+
+def products(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+  ok([
+    try Tensor.matmul(xs[0], xs[1]),
+    try Tensor.batch_matmul(try Tensor.reshape(xs[0], [1, 2, 3]), try Tensor.reshape(xs[1], [1, 3, 4])),
+    try Tensor.gather(xs[1], xs[2]),
+  ])
+end
+
 ## A product of an `F32` input by an `F16` weight would be a mixed-type `dot_general`, which StableHLO refuses.
 def test_a_mixed_dtype_matmul_is_an_error_naming_it() -> Result[Void]
   r = Trace.stablehlo(
@@ -300,7 +329,7 @@ def test_the_ops_of_a_transformer_step_are_written() -> Result[Void]
     "stablehlo.transpose",
     "stablehlo.concatenate",
     "batching_dims = [0, 1] x [0, 1], contracting_dims = [3] x [3]",
-    "contracting_dims = [1] x [0]",
+    "lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]",
     "\"stablehlo.minimum\"",
     "\"chlo.erf\"",
     "stablehlo.cosine",
