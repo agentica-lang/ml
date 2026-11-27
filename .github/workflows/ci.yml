@@ -46,6 +46,9 @@ jobs:
           # The xla step compares the merge commit of a pull request with its first parent, the base.
           fetch-depth: 2
 
+      - name: Test the plan
+        run: python3 -m unittest tools/plan_test.py
+
       - name: Find the packages
         id: packages
         shell: bash
