@@ -13,6 +13,7 @@ import Tensor from "pkg/tensor/tensor"
 import WordPiece from "tokenizer/wordpiece"
 import Source from "tokenizer/source"
 import Lift from "lift"
+import Named from "named"
 import Sentence from "sentence"
 
 ## The fields of `config.json` that the model reads.
@@ -40,6 +41,8 @@ struct Bert
   stack: Nn.EncoderStack
   ## `tanh(dense(first token))`; none when the checkpoint has no pooler.
   pooler: Optional[Nn.Dense]
+  ## What the names of the checkpoint start with: `bert.` in a `BertFor...` file, nothing otherwise.
+  prefix: String = ""
 end
 
 ## What `forward` computes for a batch.
@@ -112,6 +115,7 @@ def load(c: Hub.Checkpoint, config: Config, backend: Tensor.Backend) -> Result[B
       norm: try Load.layer_norm(c, "#{e}LayerNorm", eps, backend),
       stack: Nn.EncoderStack(blocks: blocks),
       pooler: pooler,
+      prefix: prefix,
     ),
   )
 end
@@ -156,12 +160,70 @@ end
 ## 1.0 for a token, 0.0 for padding), through the model. `seq` may not pass
 ## `max_position_embeddings`.
 def forward(m: Bert, ids: Tensor.Tensor, type_ids: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Output]
-  shape = Tensor.shape(ids)
-  if shape.size != 2 or Tensor.shape(type_ids) != shape or Tensor.shape(mask) != shape
-    return error("forward needs ids, type_ids and mask of one [batch, seq] shape, got #{shape}")
+  try check_inputs(ids, type_ids, mask)
+  to_output(try through(m, Inputs(ids: ids, type_ids: type_ids, keep: mask), true))
+end
+
+## The mean embedding `[batch, hidden_size]` of `ids`, `type_ids` and `mask` (as `forward` takes them), with `normalize`
+## over its length: the model as plain `Tensor` calls, not one staged graph. Inside a loss, with the traced weights of
+## `with_weights`, it is part of the trace, so `Train.fit` takes its gradient. Outside a trace it runs eagerly, which
+## ggml refuses ("does not run eagerly on the ggml backend"): `embed` is the call for inference. The pooler does not run.
+def pooled(
+  m: Bert,
+  ids: Tensor.Tensor,
+  type_ids: Tensor.Tensor,
+  mask: Tensor.Tensor,
+  normalize: Bool = false,
+) -> Result[Tensor.Tensor]
+  try check_inputs(ids, type_ids, mask)
+  mean = try Sentence.mean_pooled((try graph(m, ids, type_ids, mask, false))[0], mask)
+  return Sentence.normalized(mean) if normalize
+  ok(mean)
+end
+
+## The weights of `m` by their names in the checkpoint (`encoder.layer.0.attention.self.query.weight`, under `bert.`
+## when the file has it), for training the model or part of it (`Params.split` of `train`). The layer norms are named
+## `weight` and `bias`, also for a file that stores `gamma` and `beta`. The pooler is there when the model has one.
+def weights(m: Bert) -> Map[String, Tensor.Tensor]
+  e = "#{m.prefix}embeddings."
+  out = {
+    "#{e}word_embeddings.weight": m.words.table,
+    "#{e}position_embeddings.weight": m.positions.table,
+    "#{e}token_type_embeddings.weight": m.types.table,
+  }
+
+  out = Named.norm(out, "#{e}LayerNorm", m.norm)
+  for i in 0...m.stack.blocks.size
+    out = Named.block(out, block_names("#{m.prefix}encoder.layer.#{i}."), m.stack.blocks[i])
   end
 
-  to_output(try through(m, Inputs(ids: ids, type_ids: type_ids, keep: mask), true))
+  case m.pooler
+    some(p) -> Named.dense(out, "#{m.prefix}pooler.dense", p)
+    none -> out
+  end
+end
+
+## `m` with the tensors of `weights` in place of its own: the names must be those of `weights(m)`, no more and no
+## fewer, each with the shape the model holds. Inside a loss the tensors are traced and `pooled` of the result is part
+## of the trace. The result shares the tensors of `weights`, with no copy: `close_model` of it closes them.
+def with_weights(m: Bert, weights: Map[String, Tensor.Tensor]) -> Result[Bert]
+  try Named.check(weights(m), weights)
+  e = "#{m.prefix}embeddings."
+  blocks: List[Nn.EncoderBlock] = []
+  for i in 0...m.stack.blocks.size
+    blocks = blocks.push(Named.with_block(weights, block_names("#{m.prefix}encoder.layer.#{i}."), m.stack.blocks[i]))
+  end
+
+  ok(
+    m.with(
+      words: Nn.Embedding(table: weights["#{e}word_embeddings.weight"]),
+      positions: Nn.Embedding(table: weights["#{e}position_embeddings.weight"]),
+      types: Nn.Embedding(table: weights["#{e}token_type_embeddings.weight"]),
+      norm: Named.with_norm(weights, "#{e}LayerNorm", m.norm),
+      stack: Nn.EncoderStack(blocks: blocks),
+      pooler: m.pooler.map { |p| Named.with_dense(weights, "#{m.prefix}pooler.dense", p) },
+    ),
+  )
 end
 
 ## Closes the tensors of an `Output`.
@@ -218,6 +280,15 @@ def block_names(p: String) -> Load.BlockNames
     up: "#{p}intermediate.dense",
     down: "#{p}output.dense",
   )
+end
+
+def check_inputs(ids: Tensor.Tensor, type_ids: Tensor.Tensor, mask: Tensor.Tensor) -> Result[Void]
+  shape = Tensor.shape(ids)
+  if shape.size != 2 or Tensor.shape(type_ids) != shape or Tensor.shape(mask) != shape
+    return error("the model needs ids, type_ids and mask of one [batch, seq] shape, got #{shape}")
+  end
+
+  ok()
 end
 
 def padded(xs: List[Int], i: Int, pad: Int) -> Int
