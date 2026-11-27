@@ -15,6 +15,7 @@
 import Hub from "pkg/hub/hub"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
+import Table from "table"
 
 ## The Park-Miller generator of `nn/init.agc`: reproducible, not statistical.
 ## It draws row ids below `MODULUS - 1`, so a dataset holds fewer rows.
@@ -76,6 +77,54 @@ end
 def load(path: String, inputs: String, targets: String, backend: Tensor.Backend) -> Result[Dataset]
   c = try Hub.open(path)
   dataset(try Hub.tensor(c, inputs, backend), try Hub.tensor(c, targets, backend))
+end
+
+## A dataset of the columns of `table`: the numeric columns `inputs` are the features, `[rows, features]` row by row, and
+## the numeric column `target` the targets `[rows]`, as `F32` or, with `target_dtype: I32`, whole numbers (class ids for
+## `Loss.cross_entropy`; a target that is not whole is an error). A column that is text, or holds a null, is an error that
+## names it, and so is a table with no rows. The tensors are made on `backend`.
+def from_table(
+  table: Table.Table,
+  inputs: List[String],
+  target: String,
+  backend: Tensor.Backend,
+  target_dtype: Tensor.Dtype = Tensor.Dtype.F32,
+) -> Result[Dataset]
+  return error("a dataset needs at least one input column") if inputs.empty?
+  return error("the table has no rows") if table.rows == 0
+  if target_dtype != Tensor.Dtype.F32 and target_dtype != Tensor.Dtype.I32
+    return error("target_dtype is F32 or I32, got #{target_dtype}")
+  end
+
+  columns: List[List[Float]] = []
+  for name in inputs
+    columns = columns.push(try Table.floats(table, name))
+  end
+
+  values: List[Tensor.Values] = []
+  for row in 0...table.rows
+    for column in columns
+      values = values.push(Tensor.Values.Float(column[row]))
+    end
+  end
+
+  goals = try Table.floats(table, target)
+  aimed: List[Tensor.Values] = []
+  for i in 0...goals.size
+    goal = goals[i]
+    if target_dtype == Tensor.Dtype.I32
+      if goal < -2147483648.0 or goal > 2147483647.0 or goal != goal or goal != goal.round.to_f
+        return error("column #{target} row #{i + 1} holds #{goal}, not a whole number of the I32 range")
+      end
+
+      aimed = aimed.push(Tensor.Values.Int(goal.round))
+    else
+      aimed = aimed.push(Tensor.Values.Float(goal))
+    end
+  end
+
+  features = try Tensor.from_list(values, [table.rows, inputs.size], Tensor.Dtype.F32, backend)
+  dataset(features, try Tensor.from_list(aimed, [table.rows], target_dtype, backend))
 end
 
 def size(d: Dataset) -> Int = Tensor.shape(d.inputs)[0]

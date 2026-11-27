@@ -6,6 +6,14 @@ path = "../../asr"
 override = true
 
 [[package]]
+name = "csv"
+git = "https://github.com/agentica-lang/packages"
+subdir = "csv"
+tag = "csv-0.1.0"
+commit = "0faedbde510bd91d9b6647867b9e078d0f2cb2a2"
+hash = "sha256:bf982ce1b04c69e4966bbd34e2b41844d9b5f06305edfa7b6f785b5974f811f9"
+
+[[package]]
 name = "hub"
 path = "../../hub"
 override = true

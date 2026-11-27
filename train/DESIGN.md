@@ -23,6 +23,8 @@ Optim.step_inputs(state) -> List[List[Float]]   the inputs of the next step: SGD
 
 Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
 Data.load(path, inputs, targets, backend) -> Result[Dataset]  two named tensors of a safetensors file
+Data.from_table(table, inputs, target, backend, target_dtype = F32) -> Result[Dataset]  numeric columns of a Table (table.agc: a CSV file)
+Table.read(path) / Table.floats(table, name) / Table.texts(table, name)   table.agc: columns of a CSV file, decoded when asked; rows count from 1
 Data.Loader { dataset, batch_size, shuffle = true, seed = 0, drop_last = false, prefetch = 2 }
 Data.size(dataset) / Data.count(loader) / Data.order(loader, epoch) / Data.batch(loader, rows, i)
 Data.feed(loader, epochs) -> Result[Feed]; Data.epoch(feed, e); Data.take(feed, i); Data.stop(feed)
@@ -302,6 +304,15 @@ Lora.open(dir, backend) -> Result[Adapter]
   step (`Data.release`: inputs, targets and the gathered row ids); nothing it
   keeps is made directly from a batch. A batch whose tensors were freed
   before it was taken (the task ended without `stop`) is an error of `take`.
+- **A table is read whole and decoded by column** (`table.agc`, ml#318). A
+  `Table` is its names, its row count and a `load` function that decodes one
+  column when it is asked for, so a format that keeps its columns apart
+  decodes only the ones a dataset uses. A CSV column is numbers when every
+  cell is a finite number, else text. Rows count from 1 after the header.
+  The Parquet reader to come has these limits: an `Int64` over 2^53 loses its
+  low bits as a `Float`, a null is an error when its column is asked for, and
+  row groups do not fit a whole-column `load` yet (a file larger than memory
+  waits for the row-group reading of the `parquet` package).
 
 ## Cost
 
