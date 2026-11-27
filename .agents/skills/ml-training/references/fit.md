@@ -11,8 +11,11 @@
 | Run | `Train.fit(loss, params, loader, optimizer, epochs, on_epoch, metrics, on_step)` and `Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics, prefetch: 0, on_step)` |
 
 `Adam` defaults: `lr` 0.001, betas 0.9 and 0.999, `eps` 1e-8. `AdamW`'s `decay` has one flag per parameter (empty: all
-decay); a fine-tune leaves out biases and layer-norm weights. `fit` starts every run at step 0, so a resumed run starts
-its warmup again and its moments from zero.
+decay); a fine-tune leaves out biases and layer-norm weights. `fit` starts a run at step 0 with zero moments, or from
+`start: state` (`Optim.load(optimizer, params, path)` reads what `Optim.save(state, path)` wrote; `Train.Epoch` and
+`Train.StepInfo` have the run's `state` for a hook to save), so a resumed run goes on along its schedule. The moments take their parameter's dtype and backend; the knobs, the
+schedule (they may change on a resume, the step count is kept) and an AdamW `decay` list come from the code. `fit` takes
+`start` and frees it: do not use it after. `state` in a hook is the run's own: save it before the hook returns.
 
 ## Fit and validate
 
@@ -68,10 +71,10 @@ true
 
 ## Progress, metrics, checkpoints
 
-- `on_epoch` gets `Train.Epoch(epoch:, loss:, steps:, params:)` (the epoch counts from 1; `params` are the parameters the epoch
+- `on_epoch` gets `Train.Epoch(epoch:, loss:, steps:, state:, params:)` (the epoch counts from 1; `params` are the parameters the epoch
   ended with, valid only inside `on_epoch`: the next step frees them). It answers `Result[Train.Control]`:
   `ok(Train.Control.Continue)`, `ok(Train.Control.Stop)` (ends the fit after the epoch, with its `Fit`) or an `error`.
-- `on_step` gets `Train.StepInfo(epoch:, batch:, step:, loss:, params:)` after each step and answers `Result[Train.Control]`;
+- `on_step` gets `Train.StepInfo(epoch:, batch:, step:, loss:, state:, params:)` after each step and answers `Result[Train.Control]`;
   `Stop` ends the fit after the step, with its `Fit`, and an `error` stops it, naming the epoch and the batch.
 - `metrics` is an open `Metrics.Run`: every step writes `train/loss`, `train/lr` and `train/step_ms` to
   `runs/NAME/metrics.jsonl` and a TensorBoard event file (`tensorboard --logdir runs`). `fit` does not open or close
