@@ -362,10 +362,12 @@ static bool check_axes(an_env *env, const torch::Tensor &t, const std::vector<in
 
 /* The smallest and largest value of `t`, in one pass and no temporary (`aminmax` carries a NaN into both). An empty
    tensor has no value to refuse, so it reads as `1`, which passes every check below. */
+namespace {
 struct Span {
   double low;
   double high;
 };
+} // namespace
 
 static Span span_of(const torch::Tensor &t) {
   if (t.numel() == 0) return Span{1.0, 1.0};
