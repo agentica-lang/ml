@@ -47,10 +47,37 @@ def refuse_limits(truncation: Optional[Setting], padding: Optional[Setting]) -> 
   ok()
 end
 
+## `root`, a parsed `tokenizer.json`, with a fixed padding (`"strategy": {"Fixed": 128}`, as `all-MiniLM-L6-v2` has)
+## read as the padding to the longest of a batch. The tokenizers here never pad (the caller pads a batch and masks it),
+## which is what Hugging Face's loaders do with the file's padding too, so a fixed length changes nothing here.
+def fixed_padding_as_longest(root: JSON.Value) -> Result[JSON.Value]
+  case root.node
+    JSON.Node.Object(fields) ->
+      padding = fields.get("padding").unwrap_or(JSON.null())
+      case padding.node
+        JSON.Node.Object(setting) ->
+          strategy = setting.get("strategy").unwrap_or(JSON.null())
+          case strategy.node
+            JSON.Node.Object(kind) ->
+              if kind.keys != ["Fixed"]
+                return error("the padding strategy is not supported, only BatchLongest and Fixed")
+              end
+
+              ok(JSON.object(fields.put("padding", JSON.object(setting.put("strategy", JSON.from("BatchLongest"))))))
+            _ -> ok(root)
+          end
+
+        _ -> ok(root)
+      end
+
+    _ -> ok(root)
+  end
+end
+
 ## The most tokens an encoding has when the file truncates (`max_length`, the special tokens counted), none when it
 ## does not. Only the plain form is read: cut at the right, `LongestFirst`, no stride. `padding` to the longest of a
-## batch is accepted and changes nothing, since one text is its own batch. Any other strategy is an error (a fixed
-## length is an object in the file, so it fails when the file is decoded), and so is `pad_to_multiple_of` above 1,
+## batch is accepted and changes nothing, since one text is its own batch; a fixed length too, through
+## `fixed_padding_as_longest`. Any other strategy is an error, and so is `pad_to_multiple_of` above 1,
 ## which pads one text too.
 def limit(truncation: Optional[Setting], padding: Optional[Setting]) -> Result[Optional[Int]]
   case padding

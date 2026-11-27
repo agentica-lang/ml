@@ -41,6 +41,18 @@ def truncation(max_length: Int, strategy: String, direction: String, stride: Int
   "\"truncation\": {#{fields.join(", ")}}"
 end
 
+## A file with the fixed padding of `all-MiniLM-L6-v2` (its `padding` object as the real file has it) reads as the
+## padding to the longest: no tokenizer here pads, so the encodings are those of a file without padding.
+def test_a_fixed_padding_of_the_file_changes_nothing() -> Result[Void]
+  text = try File.read_text("test/fixtures/wordpiece.json")
+  head = "\"padding\": {\"strategy\": {\"Fixed\": 128}, \"direction\": \"Right\", \"pad_to_multiple_of\": null, "
+  fixed = head + "\"pad_id\": 0, \"pad_type_id\": 0, \"pad_token\": \"[PAD]\"}"
+  tok = try WordPiece.parse(try S.replaced(text, "\"padding\": null", fixed))
+  plain = try WordPiece.parse(text)
+  try Test.eq(tok.pad_id, some(0))
+  Test.eq(try WordPiece.encode(tok, "hello world"), try WordPiece.encode(plain, "hello world"))
+end
+
 ## A file that truncates and pads to the longest of a batch (sentence-transformers' checkpoints): an encoding of one
 ## text has `max_length` ids at most, the special tokens counted, and the padding changes nothing.
 def test_the_truncation_of_the_file_cuts_one_text() -> Result[Void]
@@ -78,7 +90,12 @@ def test_other_pipelines_are_errors() -> Result[Void]
     try S.replaced(text, "\"truncation\": null", truncation(8, "OnlyFirst", "Right", 0)),
     try S.replaced(text, "\"truncation\": null", truncation(8, "LongestFirst", "Left", 0)),
     try S.replaced(text, "\"truncation\": null", truncation(8, "LongestFirst", "Right", 2)),
-    try S.replaced(text, "\"padding\": null", "\"padding\": {\"strategy\": {\"Fixed\": 8}, \"pad_id\": 0}"),
+    try S.replaced(
+      text,
+      "\"padding\": null",
+      "\"padding\": {\"strategy\": {\"Fixed\": 8, \"Other\": 1}, \"pad_id\": 0}",
+    ),
+    try S.replaced(text, "\"padding\": null", "\"padding\": {\"strategy\": {\"Other\": 8}, \"pad_id\": 0}"),
     try S.replaced(
       text,
       "\"padding\": null",

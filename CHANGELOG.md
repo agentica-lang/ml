@@ -28,6 +28,8 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
+- `WordPiece` reads a tokenizer file with a fixed padding (`"strategy": {"Fixed": 128}`) as the padding to the longest, so `sentence-transformers/all-MiniLM-L6-v2` opens; no tokenizer here pads (ml#377).
+- `tools/fetch_minilm.sh` fetches all-MiniLM-L6-v2 at a pinned revision and sha256, and `tools/minilm_finetune.agc` loads it and fine-tunes it for a few steps on ggml CPU or Vulkan (ml#377).
 - `Generate` of Qwen3 runs on `Backend.Xla(Device.Cpu)`: the steps of the cache are compiled by XLA, and `Lift.staged` compiles the forward there too (ml#243). Checked on the tiny model of the tests; the check against Hugging Face on Qwen3-0.6B and the speed are not done yet.
 - `Bert.weights`, `Bert.with_weights` and `Bert.pooled` name the weights of a BERT as the checkpoint does and run its mean embedding inside a trace, so `Train.fit` and `Params` fine-tune it (`sentence-transformers/all-MiniLM-L6-v2` sized models); `DistilBert` shares the helpers (ml#377).
 - `GraniteMoe.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their experts and keys, run on the CPU under a Vulkan device, as for Qwen3 (ml#331).

@@ -109,7 +109,7 @@ Read only what the task needs.
 | File in `references/` | Covers |
 |---|---|
 | `fit.md` | losses, optimizers and schedules, datasets and loaders, `fit`, `fit_batches`, `on_epoch`, metrics, validation, checkpoints |
-| `finetune.md` | freezing layers (`Params`), LoRA (`Lora.init`, `save`, `open`, `merged`), fine-tuning DistilBERT and Qwen3, PEFT files |
+| `finetune.md` | freezing layers (`Params`), LoRA (`Lora.init`, `save`, `open`, `merged`), fine-tuning DistilBERT, a BERT-family model (MiniLM) and Qwen3, PEFT files |
 | `speed.md` | which backend and batch size, `Trace.compile`, benchmark numbers, `Trace.stablehlo` export |
 | `verify.md` | checking a run against a PyTorch peer, and an adapter against PEFT |
 
