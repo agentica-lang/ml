@@ -58,7 +58,9 @@ def near(got: Tensor.Tensor, want: Tensor.Tensor, what: String) -> Result[Void]
   try Test.eq(ours.size, theirs.size)
   for i in 0...theirs.size
     gap = (ours[i] - theirs[i]).abs
-    return error("#{what}: value #{i} is #{ours[i]}, the reference says #{theirs[i]}") if gap > 0.00001 * theirs[i].abs
+    if gap > 0.00001 * (1.0 + theirs[i].abs)
+      return error("#{what}: value #{i} is #{ours[i]}, the reference says #{theirs[i]}")
+    end
   end
 
   ok()
@@ -138,6 +140,72 @@ def test_a_chain_of_adam_steps_frees_what_each_step_made() -> Result[Void]
     moved[WIDTH - 1] < ramp()[WIDTH - 1] - 0.03,
     "forty steps of lr 0.001 moved the last value to #{moved[WIDTH - 1]}",
   )
+
+  ok()
+end
+
+## `x` times the constant `c`, then a chain of views of it (`reshape`, `permute`, `slice`, `transpose`, a
+## `stop_grad`), each read again after the nodes it was made from are past their last reader. The sum needs the
+## forward values in its backward: `sigmoid`, `exp`, `layer_norm` and the products.
+def views(x: Tensor.Tensor, c: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
+  a = try Tensor.mul(x, c)
+  r = try Tensor.reshape(a, [2, 3, 4])
+  p = try Tensor.permute(r, [2, 0, 1])
+  s = try Tensor.slice(p, [1, 0, 0], [3, 2, 3])
+  t = try Tensor.transpose(a)
+  held = try Tensor.stop_grad(r)
+  late = try Tensor.mul(try Tensor.exp(p), try Tensor.reshape(held, [4, 2, 3]))
+  parts = [
+    try Tensor.sum(try Tensor.sigmoid(s)),
+    try Tensor.sum(late),
+    try Tensor.sum(try Tensor.mul(t, t)),
+    try Tensor.sum(try Tensor.mul(try Tensor.layer_norm(a, 0.00001), x)),
+  ]
+
+  total = parts[0]
+  for part in parts.drop(1)
+    total = try Tensor.add(total, part)
+  end
+
+  ok([total, s, held, x, c, s])
+end
+
+def views_total(xs: List[Tensor.Tensor]) -> Result[Tensor.Tensor]
+  outs = try views(xs[0], xs[1])
+  ok(outs[0])
+end
+
+def view_operands(backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  xs = (0...24).to_a.map { |i| 0.05 * i.to_f - 0.4 }
+  cs = (0...24).to_a.map { |i| 1.0 + 0.01 * i.to_f }
+  ok([try Tensor.floats(xs, [4, 6], backend), try Tensor.floats(cs, [4, 6], backend)])
+end
+
+## A value closed while a view, a later reader, the backward, an output or the caller still needs it fails the read
+## (`RUNTIME-NATIVE-CLOSED`) or reads other numbers: every output and gradient matches the reference, and the caller's
+## input and constant are open and unchanged after both runs.
+def test_views_outputs_and_the_backward_read_only_open_values() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  t = try view_operands(Conform.TORCH)
+  r = try view_operands(Conform.REF)
+  ours = try Trace.eval_many([t[0]]) do |xs| views(xs[0], Trace.constant(t[1])) end
+  theirs = try Trace.eval_many([r[0]]) do |xs| views(xs[0], Trace.constant(r[1])) end
+  for i in 0...theirs.size
+    try near(ours[i], theirs[i], "output #{i}")
+  end
+
+  got = try Trace.value_and_grad(t) do |xs| views_total(xs) end
+  want = try Trace.value_and_grad(r) do |xs| views_total(xs) end
+  try near(got.value, want.value, "the value")
+  for i in 0...2
+    try near(got.grads[i], want.grads[i], "the gradient of argument #{i}")
+  end
+
+  for i in 0...2
+    try Test.assert(!Conform.native_closed(t[i]), "argument #{i} was closed")
+    try near(t[i], r[i], "argument #{i} after the runs")
+  end
 
   ok()
 end

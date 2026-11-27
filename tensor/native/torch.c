@@ -57,11 +57,14 @@ struct torch_storage_use {
 };
 
 static std::mutex torch_memory_lock;
-static std::unordered_map<const void *, torch_storage_use> torch_storages;
+/* Never destroyed: a handle the VM frees after the static destructors of this module ran still finds it. */
+typedef std::unordered_map<const void *, torch_storage_use> torch_storage_map;
+static torch_storage_map &torch_storages = *new torch_storage_map();
 static int64_t torch_live_bytes = 0;
 static int64_t torch_peak_bytes = 0;
 
 static void torch_memory_add(const torch::Tensor &value) {
+  if (!value.has_storage()) return;
   const void *key = value.storage().unsafeGetStorageImpl();
   std::lock_guard<std::mutex> guard(torch_memory_lock);
   torch_storage_use &use = torch_storages[key];
@@ -75,6 +78,7 @@ static void torch_memory_add(const torch::Tensor &value) {
 }
 
 static void torch_memory_drop(const torch::Tensor &value) {
+  if (!value.has_storage()) return;
   const void *key = value.storage().unsafeGetStorageImpl();
   std::lock_guard<std::mutex> guard(torch_memory_lock);
   auto found = torch_storages.find(key);
