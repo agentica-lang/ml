@@ -35,7 +35,7 @@ end
 ## file that ends with a line break has no extra row, a byte order mark at its start is dropped, and a line with
 ## nothing on it is skipped when the table has more than one column.
 def read_csv(path: String) -> Result[Table]
-  lines = try Csv.parse(try File.read_text(path))
+  lines = try Csv.parse(try String.from_bytes(try read_all(path)))
   return error("#{path}: no header row") if lines.empty?
 
   names = lines[0]
@@ -53,9 +53,7 @@ end
 
 ## The Parquet file at `path`, whole: its schema gives the names and the footer the rows.
 def read_parquet(path: String) -> Result[Table]
-  size = (try File.stat(path)).size_bytes
-  bytes = try File.open(path) do |f| File.read_bytes(f, size) end
-  file = try Parquet.open(bytes)
+  file = try Parquet.open(try read_all(path))
   ok(
     Table(
       names: Parquet.schema(file).map { |f| f.name },
@@ -82,6 +80,22 @@ def texts(t: Table, name: String) -> Result[List[String]]
 end
 
 private
+
+CHUNK_BYTES = 1048576
+
+## The whole file at `path`, read in chunks: `File.read_text` and `File.read_bytes` stop at 1 MiB.
+def read_all(path: String) -> Result[Bytes]
+  File.open(path) do |f|
+    parts: List[Bytes] = []
+    while true
+      chunk = try File.read_bytes(f, CHUNK_BYTES)
+      break if chunk.empty?
+      parts = parts.push(chunk)
+    end
+
+    ok(Bytes.concat(parts))
+  end
+end
 
 ## The column `name` of a Parquet file: numbers, or text, with no null.
 def parquet_column(file: Parquet.Table, name: String) -> Result[Column]
