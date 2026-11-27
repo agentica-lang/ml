@@ -16,13 +16,14 @@ import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
 ## What `on_epoch` gets after each epoch: its number from 1, the mean loss of its batches, the step count of the run so
-## far, and the parameters the epoch ended with. The parameters are the run's own: use them inside `on_epoch` (the next
-## step frees them), and copy what must outlive it. `on_epoch` answers a `Control`: an `error` stops the run with an
+## far, the optimizer state and the parameters the epoch ended with. The state and the parameters are the run's own: use
+## them inside `on_epoch` (the next step frees them; `Optim.save` writes the state), and copy what must outlive it. `on_epoch` answers a `Control`: an `error` stops the run with an
 ## error that names the epoch.
 struct Epoch
   epoch: Int
   loss: Float
   steps: Int
+  state: Optim.State
   params: List[Tensor.Tensor]
 end
 
@@ -41,6 +42,7 @@ struct StepInfo
   batch: Int
   step: Int
   loss: Float
+  state: Optim.State
   params: List[Tensor.Tensor]
 end
 
@@ -63,7 +65,8 @@ end
 ## `Metrics.scalar` refuses (a loss that is not finite, for one) stops `fit`
 ## with an error that names the epoch and the batch. The parameters and the optimizer state that a step replaces are
 ## freed at once on libtorch, ggml and XLA, except `params` themselves, which stay the caller's, as the trained ones of the
-## result are.
+## result are. With `start`, the run begins from that optimizer state (`Optim.load`): its step count goes on along the
+## schedule, and the run owns its moments and frees them.
 def fit(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],
@@ -73,9 +76,10 @@ def fit(
   on_epoch: Optional[Fn[Epoch, Result[Control]]] = none,
   metrics: Optional[Metrics.Run] = none,
   on_step: Optional[Fn[StepInfo, Result[Control]]] = none,
+  start: Optional[Optim.State] = none,
 ) -> Result[Fit]
   if gathers_in_graph?(data, params)
-    return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step)
+    return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, start)
   end
 
   feed = try Data.feed(data, epochs)
@@ -93,6 +97,7 @@ def fit(
       on_epoch: on_epoch,
       metrics: metrics,
       on_step: on_step,
+      start: start,
     ),
     params,
     optimizer,
@@ -123,6 +128,7 @@ def fit_batches(
   metrics: Optional[Metrics.Run] = none,
   prefetch: Int = 0,
   on_step: Optional[Fn[StepInfo, Result[Control]]] = none,
+  start: Optional[Optim.State] = none,
 ) -> Result[Fit]
   return error("fit_batches needs at least one batch, got #{count}") if count < 1
   return error("prefetch must be 0 or more, got #{prefetch}") if prefetch < 0
@@ -135,6 +141,7 @@ def fit_batches(
       on_epoch: on_epoch,
       metrics: metrics,
       on_step: on_step,
+      start: start,
     )
   }
 
@@ -185,6 +192,7 @@ struct Run
   on_epoch: Optional[Fn[Epoch, Result[Control]]]
   metrics: Optional[Metrics.Run]
   on_step: Optional[Fn[StepInfo, Result[Control]]]
+  start: Optional[Optim.State] = none
   indexed: Bool = false
 end
 
@@ -234,6 +242,7 @@ def fit_indexed(
   on_epoch: Optional[Fn[Epoch, Result[Control]]],
   metrics: Optional[Metrics.Run],
   on_step: Optional[Fn[StepInfo, Result[Control]]],
+  start: Optional[Optim.State],
 ) -> Result[Fit]
   return error("prefetch must be 0 or more, got #{data.prefetch}") if data.prefetch < 0
   Data.stop(try Data.feed(data.with(prefetch: 0), epochs))
@@ -251,6 +260,7 @@ def fit_indexed(
       on_epoch: on_epoch,
       metrics: metrics,
       on_step: on_step,
+      start: start,
       indexed: true,
     ),
     params,
@@ -276,9 +286,17 @@ def fresh(made: Result[Data.Batch], e: Int, i: Int) -> Result[Data.Batch]
   ok(b)
 end
 
+## The state the run starts from: `start` checked against `optimizer` and `params`, or a new one.
+def initial(r: Run, optimizer: Optim.Optimizer, params: List[Tensor.Tensor]) -> Result[Optim.State]
+  case r.start
+    some(s) -> Optim.resume(optimizer, s, params)
+    none -> Optim.init(optimizer, params)
+  end
+end
+
 ## The run, then its compiled steps closed.
 def trained(r: Run, params: List[Tensor.Tensor], optimizer: Optim.Optimizer) -> Result[Fit]
-  ran = run(r, try Optim.init(optimizer, params), params)
+  ran = run(r, try initial(r, optimizer, params), params)
   for key in ran.programs.keys
     Trace.close(ran.programs[key])
   end
@@ -328,7 +346,10 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
       total = total + done.loss
       case r.on_step
         some(f) ->
-          called = f.call(StepInfo(epoch: e, batch: i, step: state.steps, loss: done.loss, params: current))
+          called = f.call(
+            StepInfo(epoch: e, batch: i, step: state.steps, loss: done.loss, state: state, params: current),
+          )
+
           if !called.ok?
             release(state, current, owned)
             return Ran(result: error("epoch #{e}, batch #{i}: #{called.message}"), programs: programs)
@@ -348,7 +369,7 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
     history = history.push(mean)
     case r.on_epoch
       some(f) ->
-        called = f.call(Epoch(epoch: e, loss: mean, steps: state.steps, params: current))
+        called = f.call(Epoch(epoch: e, loss: mean, steps: state.steps, state: state, params: current))
         if !called.ok?
           release(state, current, owned)
           return Ran(result: error("epoch #{e}: #{called.message}"), programs: programs)

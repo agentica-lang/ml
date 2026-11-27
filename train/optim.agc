@@ -4,6 +4,8 @@
 ## tensor is a `Tensor.*` call, so a step runs eagerly on the parameters'
 ## backend or traced (`fit` traces it).
 
+import Hub from "pkg/hub/hub"
+import SafetensorsWrite from "pkg/hub/safetensors_write"
 import Tensor from "pkg/tensor/tensor"
 
 PI = 3.141592653589793
@@ -12,7 +14,8 @@ PI = 3.141592653589793
 ## total)` rises from 0 to 1 over `warmup` steps, then falls straight to 0 at step `total`; `WarmupCosine` falls along a
 ## half cosine. They are the schedules of Hugging Face's `Trainer` (`get_linear_schedule_with_warmup` and
 ## `get_cosine_schedule_with_warmup`) up to `total`; after it the factor stays 0, where Hugging Face's cosine rises
-## again. `fit` starts every run at step 0, so a resumed run starts its warmup again.
+## again. `fit` starts a run at step 0, or at the step of the `start` state it is given (`save` and `load`), so a resumed
+## run goes on along its schedule.
 enum Schedule
   Constant
   WarmupLinear(Int, Int)
@@ -110,6 +113,65 @@ def init(optimizer: Optimizer, params: List[Tensor.Tensor]) -> Result[State]
   end
 end
 
+## Writes the step count and the moments of `state` to a safetensors file at `path`: the tensors `first.I` and `second.I`
+## for parameter `I`, and the metadata `steps` and `optimizer` (`sgd`, `adam` or `adamw`). The knobs and the schedule are
+## not saved: the code gives them again to `load`.
+def save(state: State, path: String) -> Result[Void]
+  tensors: Map[String, Tensor.Tensor] = {}
+  for i in 0...state.first.size
+    tensors = tensors.put("first.#{i}", state.first[i])
+  end
+
+  for i in 0...state.second.size
+    tensors = tensors.put("second.#{i}", state.second[i])
+  end
+
+  SafetensorsWrite.write(path, tensors, {"steps": "#{state.steps}", "optimizer": kind_of(state.optimizer)})
+end
+
+## The state that `save` wrote to `path`, for `optimizer` and `params`: the moments on the backend of each parameter, and
+## the step count. An error names what does not fit: another optimizer, a missing moment, a moment of another shape.
+def load(optimizer: Optimizer, params: List[Tensor.Tensor], path: String) -> Result[State]
+  c = try Hub.open(path)
+  files = Hub.metadata(c)
+  meta = files[files.keys[0]]
+  saved = meta.get("optimizer").unwrap_or("none")
+  return error("#{path} holds an #{saved} state, not #{kind_of(optimizer)}") if saved != kind_of(optimizer)
+
+  text = try meta.get("steps").to_result("#{path} has no step count")
+  steps = try text.to_i
+  wanted = params.size * moments_per_param(optimizer)
+  if Hub.names(c).size != wanted
+    return error("#{path} has #{Hub.names(c).size} moments, #{wanted} are needed for #{params.size} parameters")
+  end
+
+  first: List[Tensor.Tensor] = []
+  second: List[Tensor.Tensor] = []
+  for i in 0...params.size
+    if uses_first?(optimizer)
+      first = first.push(try moment(c, "first.#{i}", params[i]))
+    end
+
+    if uses_second?(optimizer)
+      second = second.push(try moment(c, "second.#{i}", params[i]))
+    end
+  end
+
+  ok(State(optimizer: optimizer, steps: steps, first: first, second: second))
+end
+
+## `state` for `optimizer` and `params`, checked: the same kind of optimizer and one moment of each parameter's shape.
+## `fit` takes its `start` state through it.
+def resume(optimizer: Optimizer, state: State, params: List[Tensor.Tensor]) -> Result[State]
+  if kind_of(state.optimizer) != kind_of(optimizer)
+    return error("the start state holds an #{kind_of(state.optimizer)} state, not #{kind_of(optimizer)}")
+  end
+
+  try check_moments("first", uses_first?(optimizer), state.first, params)
+  try check_moments("second", uses_second?(optimizer), state.second, params)
+  ok(state.with(optimizer: optimizer))
+end
+
 ## `scalars` are the inputs of a step that is one compiled program of every step count, where it otherwise holds the
 ## numbers as constants: the tensors of `step_inputs` (Adam's and AdamW's are rank-1 tensors of 7 numbers, which
 ## `Tensor.adam_step` takes).
@@ -171,6 +233,71 @@ def input_shape(numbers: List[Float]) -> List[Int]
 end
 
 private
+
+def kind_of(optimizer: Optimizer) -> String
+  case optimizer
+    Optimizer.Sgd(_) -> "sgd"
+    Optimizer.Adam(_) -> "adam"
+    Optimizer.AdamW(_) -> "adamw"
+  end
+end
+
+def moments_per_param(optimizer: Optimizer) -> Int
+  total = 0
+  if uses_first?(optimizer)
+    total = total + 1
+  end
+
+  if uses_second?(optimizer)
+    total = total + 1
+  end
+
+  total
+end
+
+def uses_first?(optimizer: Optimizer) -> Bool
+  case optimizer
+    Optimizer.Sgd(o) -> o.momentum != 0.0
+    _ -> true
+  end
+end
+
+def uses_second?(optimizer: Optimizer) -> Bool
+  case optimizer
+    Optimizer.Sgd(_) -> false
+    _ -> true
+  end
+end
+
+## The tensor `name` of the file, on the backend of `param`, which must have its shape.
+def moment(c: Hub.Checkpoint, name: String, param: Tensor.Tensor) -> Result[Tensor.Tensor]
+  t = try Hub.tensor(c, name, Tensor.backend(param))
+  if Tensor.shape(t) != Tensor.shape(param)
+    return error("#{name} has the shape #{Tensor.shape(t)}, its parameter #{Tensor.shape(param)}")
+  end
+
+  ok(t)
+end
+
+def check_moments(name: String, used: Bool, moments: List[Tensor.Tensor], params: List[Tensor.Tensor]) -> Result[Void]
+  if !used
+    return ok() if moments.empty?
+
+    return error("the start state has #{name} moments that its optimizer does not use")
+  end
+
+  if moments.size != params.size
+    return error("the start state has #{moments.size} #{name} moments for #{params.size} parameters")
+  end
+
+  for i in 0...params.size
+    if Tensor.shape(moments[i]) != Tensor.shape(params[i])
+      return error("#{name}.#{i} has the shape #{Tensor.shape(moments[i])}, its parameter #{Tensor.shape(params[i])}")
+    end
+  end
+
+  ok()
+end
 
 def zeros_like(params: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   zeros: List[Tensor.Tensor] = []
