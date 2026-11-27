@@ -298,6 +298,24 @@ def linear(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Typ
   one(device, a.dtype, [a.shape[0], b.shape[0]]) do Raw.linear(ha, hb) end
 end
 
+## One Adam step over `p`, `g`, `m` and `v` (`F32`, one shape) with `x = [lr, beta1, beta2, eps, decay, correct1,
+## correct2]`: the new weight, first moment and second moment stacked, `[3, ...shape]`, from one native pass.
+def adam_step(
+  device: Types.Device,
+  p: Types.Tensor,
+  g: Types.Tensor,
+  m: Types.Tensor,
+  v: Types.Tensor,
+  x: List[Float],
+) -> Result[Types.Tensor]
+  _ = try ready(device, "adam_step")
+  hp = try handle_of(p)
+  hg = try handle_of(g)
+  hm = try handle_of(m)
+  hv = try handle_of(v)
+  one(device, p.dtype, [3] + p.shape) do Raw.adam_step(hp, hg, hm, hv, x[0], x[1], x[2], x[3], x[4], x[5], x[6]) end
+end
+
 ## `max(0, x)`, elementwise, float only.
 def relu(device: Types.Device, t: Types.Tensor) -> Result[Types.Tensor]
   _ = try ready(device, "relu")

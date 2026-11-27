@@ -26,6 +26,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- `Tensor.adam_step` on `Backend.Torch` is one native pass over the weight and its moments, where it was ten libtorch kernels per weight (ml#407).
 - The default build of the optional `torch` module, without libtorch, stops with one clear error (`no libtorch found`, and how to find it) instead of errors about `pread` and `O_CLOEXEC` (ml#379).
 - A traced run on `Backend.Torch` frees each node's tensor after its last reader, and the Adam step of a computing backend makes one statement at a time: a MiniLM step with every weight trained peaks at 1.4 GiB of resident memory (it was killed at 2.5 GB), and a `Trace.eval` of 16 sentences of 64 tokens no longer keeps 660 MB per call (ml#394).
 - `Torch.memory` reads the bytes of the live libtorch tensors and their peak, for the tests of what a run frees (ml#394).
