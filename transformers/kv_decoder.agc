@@ -8,7 +8,7 @@
 ##   rows to a capacity of 8, 16, 32 and so on (`capacity`), so a graph changes shape only when the capacity grows. The
 ##   model's `stepped` decides the dtype of what it keeps. A step writes the new rows with a product by a 0/1 matrix
 ##   (`written`), and a mask hides the later positions and the padding.
-## - On `Ggml` each (tokens, rows, capacity) is one compiled graph, kept by the generator of the model: the prompt,
+## - On `Ggml` and `Xla` each (tokens, rows, capacity) is one compiled graph, kept by the generator of the model: the prompt,
 ##   padded to a power-of-2 capacity (8, 16, ...), takes only its last hidden row to the head, and every later step is
 ##   one token. The choice of the next id runs in the graph, so one number leaves the device, not the logits. A
 ##   one-token step reads the rows of the cache in use, rounded up (`Padded.reach`), not the padding after them; each
@@ -46,7 +46,7 @@ import Stepping from "stepping"
 ## wanted, for a prompt of a model with `taps` the `valid` and `keep` of its `Delta.Padding`, and per layer the keys then
 ## the values, then the states. The cache the step leaves has `room` rows, of which the attention
 ## reads the first `reach`; `in_place` writes the new row into the tensors of the old cache, and `compiled` says the
-## step is traced for ggml (a model may keep its cache in `F16` then). `usable` and `mode` are those of the generator
+## step is compiled for ggml, which keeps the cache in `F16` (`Stepping.half_cache?`; XLA keeps `F32`). `usable` and `mode` are those of the generator
 ## and of the call (`Stepping.Head`).
 struct Request
   usable: Int
@@ -501,7 +501,7 @@ def advance[M](g: Core[M], cache: Cache, ids: List[Int], mode: Stepping.Head) ->
   ok(Advanced(head: r.head, cache: r.cache.with(length: cache.length + n, delta: delta)))
 end
 
-## The graph of one step as a compiled function of its inputs on `Ggml`; `in_place` writes the new row into the cache's
+## The graph of one step as a compiled function of its inputs on `Ggml` or `Xla`; `in_place` (on `Ggml` only) writes the new row into the cache's
 ## own tensors, which come back as the keys and values of the new one. Its attention reads the first `reach` rows of the
 ## cache. Each reach is a graph of its own, and a capacity keeps one: a step takes the graph of a larger reach when
 ## there is one (its mask hides the rows after the length), and compiling the graph of a reach ends the graphs of the

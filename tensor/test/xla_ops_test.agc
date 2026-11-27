@@ -246,7 +246,8 @@ def test_value_and_grad_through_the_new_ops_matches_the_reference() -> Result[Vo
   Support.close(got, want)
 end
 
-## The ids of the largest values, the largest first, of a vector and of each row of a matrix.
+## The ids of the largest values, the largest first, of a vector and of each row of a matrix; among equal values the
+## lowest index first.
 def test_top_ids_match_the_reference() -> Result[Void]
   return ok() if !try Support.present()
   agrees(
@@ -254,6 +255,7 @@ def test_top_ids_match_the_reference() -> Result[Void]
       ok([
         try Support.floats(Support.uniform(40, 71, 3.0), [40], b),
         try Support.floats(Support.uniform(3 * 12, 72, 3.0), [3, 12], b),
+        try Support.floats([1.0, 3.0, 3.0, 0.0, 3.0], [5], b),
       ])
     },
     ->(xs: List[Tensor.Tensor]) {
@@ -262,6 +264,7 @@ def test_top_ids_match_the_reference() -> Result[Void]
         try Tensor.top_ids(xs[0], 7),
         try Tensor.top_ids(xs[1], 4),
         try Tensor.top_ids(xs[1], 12),
+        try Tensor.top_ids(xs[2], 3),
       ])
     },
   )

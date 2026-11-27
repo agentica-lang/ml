@@ -1001,7 +1001,9 @@ The price:
   that adds into zeros; a duplicate index sums, and an index outside the rows
   would be dropped by XLA, so `checked` covers it as it does a `gather`) and
   `top_ids` (a stable descending `sort` of the values with an `iota`, then the
-  first `k` ids: the lowest index of equal values first). Any other op is an
+  first `k` ids: the lowest index of equal values first, as the reference does;
+  a NaN compares false with everything, so where a NaN lands in the order is not
+  defined). Any other op is an
   error naming it. A program checks no values: a `to_dtype` out of the range
   of its integer type wraps, a `pow` with a base at or below 0 gives what XLA
   gives (a NaN): the reference refuses these with an error, and only the index

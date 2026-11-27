@@ -27,7 +27,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
-- `Generate` of Qwen3 runs on `Backend.Xla(Device.Cpu)`: the steps of the cache are compiled by XLA, and `Lift.staged` compiles the forward there too (ml#243).
+- `Generate` of Qwen3 runs on `Backend.Xla(Device.Cpu)`: the steps of the cache are compiled by XLA, and `Lift.staged` compiles the forward there too (ml#243). Checked on the tiny model of the tests; the check against Hugging Face on Qwen3-0.6B and the speed are not done yet.
 - `GraniteMoe.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their experts and keys, run on the CPU under a Vulkan device, as for Qwen3 (ml#331).
 - `Lfm3.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their convolution states and keys, run on the CPU under a Vulkan device, as for Qwen3 (ml#331).
 - `Qwen3_5.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their keys and states, run on the CPU under a Vulkan device, with the table and the head placed as for Qwen3 (ml#331).

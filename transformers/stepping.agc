@@ -273,7 +273,7 @@ def check_ids(limit: Int, vocab: Int, length: Int, ids: List[Int]) -> Result[Voi
 end
 
 ## Whether a step writes its row into the tensors of a cache (`keys`, its first tensor of `[1, heads, rows, width]`): on
-## `Ggml`, one token after a cache that already has the `room` rows of the step.
+## `Ggml`, one token after a cache that already has the `room` rows of the step. A step on `Xla` makes new tensors.
 def in_place?(backend: Tensor.Backend, keys: List[Tensor.Tensor], width: Int, room: Int) -> Bool
   case backend
     Tensor.Backend.Ggml(_) -> width == 1 and not keys.empty? and Tensor.shape(keys[0])[2] == room

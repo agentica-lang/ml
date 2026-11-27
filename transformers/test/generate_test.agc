@@ -441,6 +441,18 @@ def test_sampling_is_greedy_when_one_id_is_left_and_seeded_otherwise_on_ggml() -
   end
 end
 
+## The same on XLA, and for one warm seed the draw is the reference's.
+def test_sampling_is_greedy_when_one_id_is_left_and_seeded_otherwise_on_xla() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.xla_backends()
+      try sampling(dir, backend)
+      try Test.eq(try drawn(dir, backend), try drawn(dir, S.REF))
+    end
+
+    ok()
+  end
+end
+
 ## A model whose step gives other tensors than its `Stepper` says (a keys-and-values layer, one tensor too few) is an
 ## error, on the reference and on ggml.
 def test_a_step_with_other_outputs_than_the_stepper_says_is_an_error() -> Result[Void]
@@ -529,6 +541,16 @@ def test_the_pick_of_a_tie_in_a_long_row_is_the_first_index() -> Result[Void]
 end
 
 private
+
+## Eight ids drawn at temperature 1.5 from seed 21 after a prompt of three.
+def drawn(dir: String, backend: Tensor.Backend) -> Result[List[Int]]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  ids = try Generate.generate(g, [1, 5, 2], 8, [], some(Sample.Sampling(temperature: 1.5, seed: 21)))
+  Generate.close(g)
+  Qwen3.close_model(m)
+  ok(ids)
+end
 
 def sampling(dir: String, backend: Tensor.Backend) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", backend)
