@@ -32,8 +32,9 @@ def test_a_full_queue_refuses_and_keeps_what_it_holds() -> Result[Void] = with_p
 ## A stop id ends the sequence without ever becoming a token, and the end still arrives.
 def test_a_stop_id_ends_the_sequence_without_a_token() -> Result[Void] = with_peer do |dir| stop_id(dir) end
 
-## The stop fails what is live and waiting, ends the task, and afterwards the server stays stopped. A submit racing
-## the stop is answered, never left hanging.
+## The stop fails what is live and waiting, ends the task, and afterwards the server stays stopped. The sequential
+## orderings around the stop are answered, never left hanging: a submit buffered before the stop hears it, and a
+## submit after it is refused at once.
 def test_the_stop_ends_everything_cleanly() -> Result[Void] = with_peer do |dir| shutdown(dir) end
 
 private
@@ -54,8 +55,12 @@ def interleaved(dir: String) -> Result[Void]
   a_ch: Channel[Serving.Event] = Channel.new(2)
   b_ch: Channel[Serving.Event] = Channel.new(32)
   try Serving.submit(server, [1, 5, 2], 5, [], a_ch)
-  first_a = try expect_token(a_ch)
+  # B is admitted before anything is consumed, so no consumer stall lets A run alone: the only head start A can
+  # get is the scheduler spinning between the two sends, bounded by the drain of one round and far short of the
+  # three extra steps that would drop A (a channel of two holding at most one more). What remains is fail-only
+  # flake, never a false pass.
   try Serving.submit(server, [4, 4, 9], 5, [], b_ch)
+  first_a = try expect_token(a_ch)
   # B decoded while A provably still runs: its first token arrived, and A cannot be done — `Done` would be the sixth
   # send through a channel of two with one consumed, so at most three could have landed. The probe keeps what it takes.
   first_b = try expect_token(b_ch)
@@ -181,6 +186,8 @@ def stop_id(dir: String) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", S.REF)
   base = try Generate.open(m)
   want = try Generate.generate(base, [1, 5, 2], 4)
+  # The fixture run below picks `want[2]`: fail readably when the tiny model answers with fewer than 3 ids.
+  try Test.assert(want.size >= 3, "the probe run has #{want.size} ids, needs at least 3 for the stop-id pick")
   Generate.close(base)
   g = try Generate.open(m)
   server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
@@ -246,22 +253,14 @@ def shutdown(dir: String) -> Result[Void]
   try Serving.stop(server)
   try expect_failed(a_ch, "the server is stopped")
   try expect_failed(b_ch, "the server is stopped")
-  # A submit racing the stop is never left hanging: it either lands first and hears the stop, or the closed inbox
-  # refuses it at once.
+  # The sequential orderings around the stop, not a true race: a submit buffered before the stop hears the stop,
+  # and a submit after the stop is refused at once (the post-stop case is also checked on `server` below).
   g2 = try Generate.open(m)
   server2 = try Serving.start(g2, Serving.Limits(max_active: 1, max_pending: 1))
   x_ch: Channel[Serving.Event] = Channel.new(8)
-  raced = case Serving.submit(server2, [1, 5, 2], 5, [], x_ch)
-    ok(_) -> true
-    error(e) ->
-      try Test.assert(e.message.include?("stopped"), "the refusal #{e.message} does not say stopped")
-      false
-  end
-
+  try Serving.submit(server2, [1, 5, 2], 5, [], x_ch)
   try Serving.stop(server2)
-  if raced
-    try expect_failed(x_ch, "the server is stopped")
-  end
+  try expect_failed(x_ch, "the server is stopped")
 
   Generate.close(g2)
   Generate.close(g)

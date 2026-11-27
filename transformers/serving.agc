@@ -96,8 +96,8 @@ def submit(s: Server, prompt: List[Int], max_new: Int, stop: List[Int], reply: C
   error("serving: saturated, no room for another request")
 end
 
-## Cancels the live or waiting sequence on `reply` (one request per channel: a shared channel cancels the first live
-## match): its cache is finished and `reply` hears `Failed` with `cancelled`. An unknown or finished request is `ok`
+## Cancels the live or waiting sequence on `reply` (one request per channel: sharing a channel between live requests
+## is not supported; a shared channel cancels the first live match and drops every waiting match): its cache is finished and `reply` hears `Failed` with `cancelled`. An unknown or finished request is `ok`
 ## with nothing sent. An error means the server stopped, or the queue is full and the cancel was not heard (retriable).
 def cancel(s: Server, reply: Channel[Event]) -> Result[Void]
   sent = s.inbox.send(Command.Cancel(reply.address), COMMAND_WAIT_MS)
@@ -106,7 +106,8 @@ def cancel(s: Server, reply: Channel[Event]) -> Result[Void]
   error("serving: the server is not taking cancels")
 end
 
-## Ends the run: every live and waiting sequence hears `Failed` with `the server is stopped`, every cache is finished,
+## Ends the run: every live and waiting sequence is sent `Failed` with `the server is stopped` (best-effort, like all
+## events: a full or closed reply channel loses it), every cache is finished,
 ## the task ends, and the inbox closes. The control send waits `COMMAND_WAIT_MS` for room: a full queue refuses with a
 ## retriable `busy` error and the server keeps running with the generator. Ownership returns to the caller only when
 ## this returns `ok()`: then the task has joined and the caller may close the generator and the model.
@@ -253,7 +254,8 @@ end
 ## The live sequence of a request: an empty cache, nothing fed yet.
 def fresh(s: Submit) -> Live = Live(want: s, cache: Generate.start(), ids: [], last: 0, fed: false)
 
-## The end of the sequence on `addr` (the first live match; channels are one request's own): a live one is finished
+## The end of the sequence on `addr` (the first live match, and every waiting match; channels are one request's
+## own, so sharing one is not supported): a live one is finished
 ## and hears it cancelled, a waiting one is dropped the same way, anything else is nothing to do.
 def cancelled(addr: Address[Event], active: List[Live], pending: List[Submit], stopped: Bool) -> State
   for i in 0...active.size
