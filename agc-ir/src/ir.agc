@@ -8,8 +8,11 @@ end
 
 enum Element
   I1
+  I8
+  I16
   I32
   I64
+  U8
   F16
   F32
   F64
@@ -27,6 +30,7 @@ enum Attr
   DenseInt(Int, TensorType)
   DenseIntRows(List[List[Int]], TensorType)
   DenseF32(Float, TensorType)
+  DenseLiteral(String, TensorType)
   DialectEnum(String, String, String)
   DialectAttr(String, String, String)
 end
@@ -99,8 +103,11 @@ end
 def show_type(t: TensorType) -> String
   ty = case t.element
     Element.I1 -> "i1"
+    Element.I8 -> "i8"
+    Element.I16 -> "i16"
     Element.I32 -> "i32"
     Element.I64 -> "i64"
+    Element.U8 -> "ui8"
     Element.F16 -> "f16"
     Element.F32 -> "f32"
     Element.F64 -> "f64"
@@ -167,17 +174,23 @@ def boolean(x: Bool) -> String
   "false"
 end
 
+def i64_array(xs: List[Int]) -> String
+  return "array<i64>" if xs.empty?
+  "array<i64: #{xs.map { |x| "#{x}" }.join(", ")}>"
+end
+
 def types_of(values: List[Value]) -> String = values.map { |v| show_type(v.type) }.join(", ")
 
 def attribute(a: Attribute) -> String
   value = case a.value
     Attr.I64(x) -> "#{x} : i64"
-    Attr.I64Array(xs) -> "array<i64: #{xs.map { |x| "#{x}" }.join(", ")}>"
+    Attr.I64Array(xs) -> i64_array(xs)
     Attr.Bool(x) -> boolean(x)
     Attr.DenseInt(x, t) -> "dense<#{x}> : #{show_type(t)}"
     Attr.DenseIntRows(rows, t) ->
       "dense<[#{rows.map { |row| "[#{row.map { |x| "#{x}" }.join(", ")}]" }.join(", ")}]> : #{show_type(t)}"
     Attr.DenseF32(x, t) -> "dense<#{x}> : #{show_type(t)}"
+    Attr.DenseLiteral(payload, t) -> "dense<#{payload}> : #{show_type(t)}"
     Attr.DialectEnum(dialect, kind, x) -> "##{dialect}<#{kind} #{x}>"
     Attr.DialectAttr(dialect, kind, payload) -> "##{dialect}.#{kind}<#{payload}>"
   end
