@@ -9,7 +9,8 @@
 ##
 ## It needs the checkpoint, which is not in the repository, so it runs only when `QWEN35_MODEL` names its folder (the
 ## revision of `transformers/DESIGN.md`, with `model.safetensors` or its index, `config.json` and `tokenizer.json`).
-## `QWEN35_DEVICE=vulkan` runs on Vulkan, the CPU otherwise. The vision tower is closed before the text model opens, so
+## `QWEN35_DEVICE=vulkan` runs on Vulkan, `QWEN35_DEVICE=xla` uses the installed PJRT plugin, and the default is ggml CPU.
+## The vision tower is closed before the text model opens, so
 ## the two never share the memory. Run from `vision/`, in an environment where `QWEN35_MODEL` is the folder of the
 ## checkpoint:
 ## `QWEN35_MODEL=Qwen3.5-0.8B agentica test --max-steps 1000000000000 test/qwen35_image_hf_test.agc`.
@@ -90,8 +91,13 @@ def checked(name: String) -> Result[Void]
     return ok()
   end
 
-  backend = try Hf.device_named("QWEN35_DEVICE")
-  return error("QWEN35_MODEL is set and ggml is not built") if !Tensor.available(backend)
+  device = System.env("QWEN35_DEVICE")
+  backend = Tensor.Backend.Xla(Tensor.Device.Cpu)
+  if !device.ok? or try device != "xla"
+    backend = try Hf.device_named("QWEN35_DEVICE")
+  end
+
+  return error("QWEN35_MODEL is set but the requested backend is not available") if !Tensor.available(backend)
   want = try JSON.decode(try File.read_text("test/fixtures/qwen/chat_golden.json"), Golden)
   c = try want.cases.find { |k| k.name == name }
   puts(try check(try listed, c, backend))

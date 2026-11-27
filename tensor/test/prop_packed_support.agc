@@ -234,7 +234,7 @@ VALUES = [0.125, 0.0625, 0.25]
 FAIL_CLOSED = [
   "a packed weight goes only into",
   "which ggml holds only for a packed weight",
-  "a quantized or F16 weight goes only into",
+  "a quantized, F16 or BF16 weight goes only into",
   "tensors, got",
   "needs a float dtype, got",
 ]

@@ -153,6 +153,14 @@ def test_held_bytes_of_q8_0_blocks() -> Result[Void]
     try Test.eq(try Load.held_bytes(c, q, Tensor.Dtype.Q8_0), ((3 * 96) / 32) * 34)
     try Test.eq(try Load.held_bytes(c, q, Tensor.Dtype.F32), 3 * 96 * 4)
     try Test.eq(try Load.held_bytes(c, "model.layers.0.input_layernorm.weight", Tensor.Dtype.Q8_0), 64 * 4)
+    large = try Hub.open("#{dir}/q8-large.gguf")
+    bf16 = Tensor.Dtype.BF16
+    try Test.eq(try Load.held_bytes(large, q, bf16), 320 * 320 * 4)
+    for backend in try S.ggml_backends()
+      dense = try Load.dense(large, "model.layers.0.self_attn.q_proj", backend, bf16)
+      try Test.eq(Tensor.dtype(dense.w), Tensor.Dtype.F32)
+    end
+
     ok()
   end
 end

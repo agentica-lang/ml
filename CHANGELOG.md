@@ -19,14 +19,23 @@ All packages are released together at one version, each on its own tag, `<packag
 - **Breaking:** train, transformers, vision and tools/skills ask for Agentica 0.40.0-beta.2 (the `parquet` package needs it); CI already ran on it (ml#318).
 - `Table.read` reads a CSV or Parquet file over 1 MiB, in chunks (ml#378).
 
+### agc-ir
+
+- `Element.BF16` (`bf16`).
+- `Element.I8`, `I16` and `U8` (`ui8`), and `Attr.DenseLiteral(payload, type)`, a dense attribute whose payload the dialect formats; an empty `Attr.I64Array` prints as `array<i64>`, the form MLIR parses (ml#417).
+
 ### hub
 
+- `weights: BF16` keeps the big matrices of a checkpoint as `BF16` weights on ggml, Torch and XLA (`Load.weights_from_env` reads `WEIGHTS=bf16`).
 - `Load.max_device_bytes_from_env` reads `AGENTICA_ML_MAX_DEVICE_BYTES` for the tools (ml#331).
 - `Load.held_bytes(c, name, weights)` counts the bytes a weight takes on a ggml device under `weights`, without reading it (ml#331).
 
 ### tensor
 
 - `exp` on `Backend.Torch` flushes a denormal result to 0 on purpose (an input below -87.33 in `F32`, -708.39 in `F64`; libtorch is 3 to 10 times slower on them), so a masked softmax and the gradient of `gelu_erf` run faster; every result of 1.18e-38 or more is kept. The finite checks of the torch ops are one `aminmax` reduction instead of a boolean temporary and a scan, so `sigmoid` and `gelu_erf` run in half the time (ml#407).
+- `Dtype.BF16`: ggml, libtorch and XLA keep checkpoint weights in 16-bit buffers. `Tensor.from_file(..., dtype: BF16)` preserves BF16 file values and rounds F32 or F16 sources to nearest even. Products with F32 activations widen BF16 weights at compute time, and embeddings can widen only the selected rows.
+- `Backend.Xla` holds `F16` tensors: `Tensor.from_file(..., dtype: F16)`, `from_bytes` and `from_list` make half weights in 16-bit buffers, and a compiled product or lookup widens them to `F32` inside the program; `Qwen3.open(dir, xla, F16)` and the other `weights: F16` models load on XLA (ml#386).
+- The StableHLO emitter builds every op with `agc-ir`, so `Trace.stablehlo` and the programs XLA compiles are in MLIR's generic form (`"stablehlo.reduce"(...) ({...}) {dimensions = array<i64: 1>}`), each reduction's, sort's and scatter's combiner an explicit region; only the module, its function and the gated-delta call stay text. The programs compute the same: the IREE goldens of `train/` are unchanged (ml#417).
 - `Tensor.adam_step` on `Backend.Torch` is one native pass over the weight and its moments, where it was ten libtorch kernels per weight (ml#407).
 - The default build of the optional `torch` module, without libtorch, stops with one clear error (`no libtorch found`, and how to find it) instead of errors about `pread` and `O_CLOEXEC` (ml#379).
 - A traced run on `Backend.Torch` frees each node's tensor after its last reader, and the Adam step of a computing backend makes one statement at a time: a MiniLM step with every weight trained peaks at 1.4 GiB of resident memory (it was killed at 2.5 GB), and a `Trace.eval` of 16 sentences of 64 tokens no longer keeps 660 MB per call (ml#394).
@@ -41,6 +50,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
+- `Qwen3.open(dir, xla, BF16)` keeps a `bfloat16` checkpoint's big matrices as they are stored, and gives the logits of the same checkpoint read as `F32`. `tools/bench_qwen.agc` takes `xla`; on an RTX 4060 the estimated unique weight storage of Qwen3-0.6B is 1.19 GB against 2.38 GB, at the same decode speed (`benchmarks/README.md`).
 - `tools/minilm_finetune.agc` takes `torch`, which fine-tunes MiniLM on libtorch, every weight (ml#203, ml#394).
 - `WordPiece` reads a tokenizer file with a fixed padding (`"strategy": {"Fixed": 128}`) as the padding to the longest, so `sentence-transformers/all-MiniLM-L6-v2` opens; no tokenizer here pads (ml#377).
 - `tools/fetch_minilm.sh` fetches all-MiniLM-L6-v2 at a pinned revision and sha256, and `tools/minilm_finetune.agc` loads it and fine-tunes it for a few steps on ggml CPU or Vulkan (ml#377).

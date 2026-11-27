@@ -15,14 +15,16 @@
 ## `WEIGHTS=f16` loads the big matrices as half weights (ggml only) and `VULKAN_FP16=1` lets Vulkan multiply in
 ## fp16 (`Tensor.vulkan_fp16`); a check against whisper.cpp leaves both off, which is exact `float32`.
 ## BACKEND is `torch` (libtorch, the default), `reference` (the pure one,
-## slow), `ggml` (ggml on the CPU) or `vulkan` (ggml on Vulkan device 0); CASE
-## runs only that case's index.
+## slow), `ggml` (ggml on the CPU), `vulkan` (ggml on Vulkan device 0), or
+## `xla` (XLA; the installed PJRT plugin chooses CPU or CUDA); CASE runs only
+## that case's index.
 
 import Asr from "../asr"
 import Binary from "std/binary"
 import Load from "pkg/hub/load"
 import Lower from "pkg/tensor/src/lower"
 import Tensor from "pkg/tensor/tensor"
+import Xla from "pkg/tensor/src/xla"
 import Tokenizer from "../tokenizer"
 
 GOLDEN = "test/fixtures/transcribe_golden.json"
@@ -167,14 +169,16 @@ def backend_of(name: String) -> Result[Tensor.Backend]
     "reference" -> ok(Tensor.Backend.Reference)
     "ggml" -> ok(Tensor.Backend.Ggml(Tensor.Device.Cpu))
     "vulkan" -> ok(Tensor.Backend.Ggml(Tensor.Device.Vulkan(0)))
-    _ -> error("BACKEND is torch, reference, ggml or vulkan, got #{name}")
+    "xla" -> ok(Tensor.Backend.Xla(Tensor.Device.Cpu))
+    _ -> error("BACKEND is torch, reference, ggml, vulkan or xla, got #{name}")
   end
 end
 
-## The graphs ggml compiled so far in this process; 0 off ggml.
+## The graphs the backend compiled so far in this process; 0 on an eager backend.
 def compiles(backend: Tensor.Backend) -> Result[Int]
   case backend
     Tensor.Backend.Ggml(_) -> Lower.compiles()
+    Tensor.Backend.Xla(_) -> ok(Xla.compiles())
     _ -> ok(0)
   end
 end

@@ -147,6 +147,7 @@ def layers_within(
     "model.norm.weight",
     weights,
     cache,
+    some(config.tie_word_embeddings),
   )
 
   ok(Placement.fit(footprint, budget))

@@ -686,4 +686,48 @@ static inline bool ff_each_bytes(const uint8_t *data, size_t len, int64_t count,
   return ok;
 }
 
+static bool ff_bf16_chunk(void *ctx, const float *values, int64_t first, int64_t n, char *why, size_t why_len) {
+  uint16_t *dest = (uint16_t *)ctx;
+  for (int64_t i = 0; i < n; i++) {
+    float value = values[i];
+    uint32_t bits, mag;
+    memcpy(&bits, &value, sizeof bits);
+    mag = bits & 0x7fffffffu;
+    /* BF16_MAX is 0x7F7F in F32 bits (0x7F7F0000): anything finite above it, infinities included, is out of range.
+       NaNs (above 0x7F800000) pass and are quieted below, as on XLA. */
+    if (mag > 0x7F7F0000u && mag <= 0x7F800000u) {
+      snprintf(why, why_len, "the value %g at element %lld is outside what BF16 holds",
+               (double)value, (long long)first + (long long)i);
+      return false;
+    }
+    dest[first + i] = (bits & 0x7fffffffu) > 0x7f800000u
+        ? (uint16_t)((bits >> 16) | 0x40u)
+        : (uint16_t)((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
+  }
+  return true;
+}
+
+static inline bool ff_bf16_from_bytes(const uint8_t *data, size_t len, int64_t count, int64_t format,
+                                      uint16_t *dest, char *why, size_t why_len) {
+  if (format != FF_BF16) return ff_each_bytes(data, len, count, format, ff_bf16_chunk, dest, why, why_len);
+  if (count < 0 || (uint64_t)count > SIZE_MAX / 2 || len != (size_t)count * 2) {
+    snprintf(why, why_len, "%zu bytes are not %lld BF16 values", len, (long long)count);
+    return false;
+  }
+  if (len != 0) memcpy(dest, data, len);
+  return true;
+}
+
+static inline bool ff_read_bf16(const char *path, size_t path_len, int64_t offset, int64_t count,
+                                int64_t format, uint16_t *dest, int threads, char *why, size_t why_len) {
+  if (format == FF_BF16) {
+    if (count < 0 || count > INT64_MAX / 2) {
+      snprintf(why, why_len, "invalid BF16 element count");
+      return false;
+    }
+    return ff_read_bytes(path, path_len, offset, count * 2, (uint8_t *)dest, why, why_len);
+  }
+  return ff_each(path, path_len, offset, count, format, ff_bf16_chunk, dest, threads, why, why_len);
+}
+
 #endif

@@ -54,13 +54,13 @@ extern module "torch"
   ## C reads the file into the tensor's own memory, so no value crosses as a
   ## list; a range past the end of the file is an error.
   ## @fresh
-  compute def load(path: String, offset: Int, shape: List[Int], format: Int) -> Result[TensorHandle]
+  compute def load(path: String, offset: Int, shape: List[Int], format: Int, dtype: Int) -> Result[TensorHandle]
   ## The same from `data`, the bytes of the range that Agentica read
   ## (`TENSOR_LOAD=agentica`): the call reads them in place and widens them into
   ## the tensor's own memory. `data` must be exactly the range, or the call is
   ## an error.
   ## @fresh
-  compute def from_bytes(data: Bytes, shape: List[Int], format: Int) -> Result[TensorHandle]
+  compute def from_bytes(data: Bytes, shape: List[Int], format: Int, dtype: Int) -> Result[TensorHandle]
   ## Elementwise `a + b`, two tensors of one shape.
   ## @fresh
   compute def add(a: TensorHandle, b: TensorHandle) -> Result[TensorHandle]

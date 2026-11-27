@@ -260,8 +260,9 @@ def load(
 end
 
 ## The log-mel features of `pcm` as `[1, num_mel_bins, frames]` on the model's backend (`Mel.features`), which the
-## caller closes. On `Ggml` they run the graph that `load` compiled; elsewhere `Mel.log_mel` on `Reference` and the same
-## graph, traced each time, on libtorch.
+## caller closes. On `Ggml` they run the graph that `load` compiled; on XLA
+## they trace the graph for each call, on libtorch they run its ops, and on
+## `Reference` the exact CPU implementation.
 def features(m: Model, pcm: List[Float32], frames: Int) -> Result[Tensor.Tensor]
   Mel.features(pcm, m.config.num_mel_bins, frames, Tensor.backend(m.tokens.table), m.mel)
 end
@@ -962,15 +963,16 @@ def close(ts: List[Tensor.Tensor]) -> Void
   end
 end
 
-## Whether `backend` computes only compiled graphs (`Ggml`).
+## Whether `backend` runs model computation through whole traced graphs (`Ggml` and XLA).
 def compiled(backend: Tensor.Backend) -> Bool
   case backend
     Tensor.Backend.Ggml(_) -> true
+    Tensor.Backend.Xla(_) -> true
     _ -> false
   end
 end
 
-## `f` of the model and `args`; on `Ggml` one compiled graph of the traced
+## `f` of the model and `args`; on graph backends one compiled graph of the traced
 ## model.
 def run(
   m: Model,
@@ -984,7 +986,7 @@ def run(
   f.call(m, args)
 end
 
-## `f` of the model and `x`. On `Ggml` it is one compiled graph; elsewhere it
+## `f` of the model and `x`. On a graph backend it is one compiled graph; elsewhere it
 ## runs in an arena that keeps the result alone (the libtorch ops are
 ## `AN_FRESH`), so its intermediates die with the arena.
 def staged(m: Model, x: Tensor.Tensor, f: Fn[Model, Tensor.Tensor, Result[Tensor.Tensor]]) -> Result[Tensor.Tensor]
@@ -1205,7 +1207,7 @@ def ids_of(ids: List[Int], backend: Tensor.Backend) -> Result[Tensor.Tensor]
   Tensor.from_list(ids.map { |i| Tensor.Values.Int(i) }, [ids.size], Tensor.Dtype.I32, backend)
 end
 
-## One step on a backend that compiles (`Ggml`): the graph of the logits, or of the pick when `mask` is given, and
+## One step on a backend that compiles (`Ggml` or XLA): the graph of the logits, or of the pick when `mask` is given, and
 ## of the new cache. A one-token step after the first runs a graph compiled for its cache rows and capacity
 ## (`Cache.graphs`), the prompt traces its own.
 def advance(
@@ -1247,7 +1249,12 @@ def advance(
   room = Padded.capacity(cache.length + n, m.config.max_target_positions)
   graphs = cache.graphs
   got: Result[List[Tensor.Tensor]] = error("no step ran")
-  reuse = n == 1 and cache.length > 0 and fits(spare, cache, room)
+  reuse = false
+  case backend
+    Tensor.Backend.Ggml(_) -> reuse = n == 1 and cache.length > 0 and fits(spare, cache, room)
+    _ -> nil
+  end
+
   if !reuse
     close(spare)
   end

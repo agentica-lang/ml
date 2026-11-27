@@ -256,7 +256,8 @@ def scalar_to_tensor(value: Types.Values, dtype: Types.Dtype, backend: Types.Bac
   end
 end
 
-## Creation: row-major `data` of `shape`; the count must match.
+## Creation: row-major `data` of `shape`; the count must match. On XLA an `F16` value is rounded to nearest even and
+## one beyond 65504, an infinity included, is an `error` naming its element; a NaN stays one.
 def from_list(
   data: List[Types.Values],
   shape: List[Int],
@@ -288,8 +289,8 @@ end
 ## 256 for the K formats), and the tensor is `F32` (dequantized at load, on
 ## every backend) or, with the `dtype` of the same name, a quantized weight that
 ## keeps the blocks (a quarter to a seventh of the memory of `F32`; a rank-2
-## weight of rows of whole blocks). Only the ggml backend holds an `F16` or a
-## quantized weight, and a trace may use it only as the weight of
+## weight of rows of whole blocks). Only the ggml backend holds a quantized
+## weight, and only ggml and XLA an `F16` one, and a trace may use it only as the weight of
 ## `matmul` or `linear` and as the table of `gather` or `embedding`
 ## (`tensor/DESIGN.md` §7). It is for inference, with `linear(..., out_in:
 ## true)` for a checkpoint's `[out, in]` weight.
@@ -307,17 +308,13 @@ def from_file(
   end
 
   if !Types.is_packed_dtype(dtype) and dtype != Types.Dtype.F32
-    return error("from_file reads F32, F16 or a quantized dtype, got #{Types.dtype_name(dtype)}")
+    return error("from_file reads F32, F16, BF16 or a quantized dtype, got #{Types.dtype_name(dtype)}")
   end
 
-  if Types.is_packed_dtype(dtype)
-    case backend
-      Types.Backend.Ggml(_) -> nil
-      _ ->
-        return error(
-          "from_file with dtype #{Types.dtype_name(dtype)} (packed weights) needs the ggml backend, got #{Types.backend_name(backend)}",
-        )
-    end
+  if Types.is_packed_dtype(dtype) and !holds_packed?(backend, dtype)
+    return error(
+      "from_file with dtype #{Types.dtype_name(dtype)} (packed weights) needs ggml, XLA for F16 or BF16, or Torch for BF16, got #{Types.backend_name(backend)}",
+    )
   end
 
   name = Types.dtype_name(dtype)
@@ -334,9 +331,9 @@ def from_file(
     end
   end
 
-  if dtype == Types.Dtype.F16 and Types.block_of(format).some?
+  if (dtype == Types.Dtype.F16 or dtype == Types.Dtype.BF16) and Types.block_of(format).some?
     fmt = Types.format_name(format)
-    return error("from_file reads a #{fmt} file as F32 or keeps it as #{fmt}, not as F16")
+    return error("from_file reads a #{fmt} file as F32 or keeps it as #{fmt}, not as #{Types.dtype_name(dtype)}")
   end
 
   return error("from_file needs an offset of 0 or more, got #{offset}") if offset < 0
@@ -347,10 +344,10 @@ def from_file(
 
   case backend
     Types.Backend.Reference -> Reference.from_file(path, offset, shape, format)
-    Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format)
+    Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format, dtype)
     Types.Backend.Trace -> error("from_file makes no traced tensor: lift one with Trace.constant")
     Types.Backend.Ggml(device) -> Ggml.from_file(device, path, offset, shape, format, dtype)
-    Types.Backend.Xla(device) -> Xla.from_file(device, path, offset, shape, format)
+    Types.Backend.Xla(device) -> Xla.from_file(device, path, offset, shape, format, dtype)
   end
 end
 
@@ -1066,8 +1063,8 @@ end
 ## - `x`: `[tokens, uses, inner]`, or `[tokens, 1, inner]` for one input that every use of the token shares.
 ## - `ids`: `I32 [tokens, uses]`, each in `0...experts` (an id outside is an `error`).
 ## - The answer is `[tokens, uses, rows]`.
-## `F32` only. In a trace it is one node, which `Ggml` runs as `ggml_mul_mat_id` (CPU and Vulkan), with the weights
-## as they are, and the other backends that compute run a loop over the pairs; `XLA` has no lowering. No gradient.
+## `F32` only. In a trace it is one node: `Ggml` runs `ggml_mul_mat_id` (CPU and Vulkan), and `XLA` gathers
+## the selected weights and runs a batched product. The eager implementation loops over the pairs. No gradient.
 def expert_matmul(weights: Types.Tensor, x: Types.Tensor, ids: Types.Tensor) -> Result[Types.Tensor]
   try check_expert_matmul(weights, x, ids)
   out_shape = [ids.shape[0], ids.shape[1], weights.shape[1]]
@@ -1157,8 +1154,8 @@ end
 ##   `i` the key axis), the layout ggml has: the zeros to start, or the `state` of an earlier call to go on.
 ## - `F32` only. A token with `g = 0` and `beta = 0` leaves the state as it was, which is how a padded prompt keeps the
 ##   state of its last real token.
-## In a trace it is one node, which `Ggml` runs as `ggml_gated_delta_net` (CPU, and Vulkan for widths 16, 32, 64 and
-## 128); `XLA` has no lowering.
+## In a trace it is one node: `Ggml` runs `ggml_gated_delta_net` (CPU, and Vulkan for widths 16, 32, 64 and 128),
+## while `XLA` compiles a StableHLO loop.
 ## The other backends run the recurrence token by token over the ops of this module, so a long sequence is slow there.
 ## No gradient.
 def gated_delta_rule(
@@ -1713,7 +1710,12 @@ def attention(
   _ = try same_backend(q, k, "attention")
   _ = try same_backend(q, v, "attention")
   _ = try same_dtype(k, v, "attention")
-  if k.dtype != q.dtype and !(k.dtype == Types.Dtype.F16 and q.dtype == Types.Dtype.F32 and compiled?(q))
+  mixed = (
+    q.dtype == Types.Dtype.F32 and
+    ((k.dtype == Types.Dtype.F16 and compiled?(q)) or (k.dtype == Types.Dtype.BF16 and (compiled?(q) or torch?(q))))
+  )
+
+  if k.dtype != q.dtype and !mixed
     return error("attention needs #{Types.dtype_name(q.dtype)} keys and values, got #{Types.dtype_name(k.dtype)}")
   end
 
@@ -1979,6 +1981,16 @@ end
 
 private
 
+## ggml holds every packed dtype; XLA holds F16 and BF16, and Torch holds BF16.
+def holds_packed?(backend: Types.Backend, dtype: Types.Dtype) -> Bool
+  case backend
+    Types.Backend.Ggml(_) -> true
+    Types.Backend.Torch(_) -> dtype == Types.Dtype.BF16
+    Types.Backend.Xla(_) -> dtype == Types.Dtype.F16 or dtype == Types.Dtype.BF16
+    _ -> false
+  end
+end
+
 ## What `body` makes, with every other tensor it made freed on return.
 def staged(body: Fn[Result[Types.Tensor]]) -> Result[Types.Tensor] = Native.arena do body.call() end
 
@@ -2176,11 +2188,12 @@ def same_dtype(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
 end
 
 ## `x` and the weight `w` of a product share their dtype, or `w` is a half or
-## quantized weight (`F16`, `Q8_0`, `Q4_K` or `Q6_K`, from `from_file` with that `dtype`) of an
-## `F32` `x` in a trace: ggml reads the weight and answers `F32`.
+## quantized weight (`F16`, `BF16`, `Q8_0`, `Q4_K` or `Q6_K`, from `from_file` with that `dtype`) of an
+## `F32` `x` in a trace: ggml reads the weight and answers `F32`, and XLA widens it in the program.
 def weight_dtype(x: Types.Tensor, w: Types.Tensor, op: String) -> Result[Bool]
   case x.backend
     Types.Backend.Trace -> return ok(true) if x.dtype == Types.Dtype.F32 and Types.is_packed_dtype(w.dtype)
+    Types.Backend.Torch(_) -> return ok(true) if x.dtype == Types.Dtype.F32 and w.dtype == Types.Dtype.BF16
     _ -> nil
   end
 
@@ -2259,6 +2272,13 @@ def compiled?(t: Types.Tensor) -> Bool
   case t.backend
     Types.Backend.Trace -> true
     Types.Backend.Ggml(_) -> true
+    _ -> false
+  end
+end
+
+def torch?(t: Types.Tensor) -> Bool
+  case t.backend
+    Types.Backend.Torch(_) -> true
     _ -> false
   end
 end

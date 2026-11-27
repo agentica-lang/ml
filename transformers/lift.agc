@@ -28,13 +28,14 @@ def staged[M](
   end
 end
 
-## Closes the libtorch and ggml tensors of `ts` now, not at the end of an
-## arena; the reference has nothing to close.
+## Closes the native tensors of `ts` now, not at the end of an arena;
+## the reference has nothing to close.
 def close(ts: List[Tensor.Tensor]) -> Void
   for t in ts
     case t.handle
       Tensor.Handle.Native(h) -> Native.close(h)
       Tensor.Handle.Ggml(h) -> Native.close(h)
+      Tensor.Handle.Xla(h) -> Native.close(h)
       _ -> nil
     end
   end

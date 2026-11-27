@@ -122,6 +122,7 @@ static bool scalar_type_of(int64_t code, torch::ScalarType *out) {
     case 6: *out = torch::kLong; return true;
     case 7: *out = torch::kByte; return true;
     case 8: *out = torch::kBool; return true;
+    case 9: *out = torch::kBFloat16; return true;
     default: return false;
   }
 }
@@ -139,6 +140,7 @@ static const char *dtype_name_of(int64_t code) {
     case 6: return "I64";
     case 7: return "U8";
     case 8: return "Bool";
+    case 9: return "BF16";
     default: return "unknown";
   }
 }
@@ -148,7 +150,7 @@ static const char *dtype_name_of(int64_t code) {
 static std::string scalar_type_name(torch::ScalarType type) {
   torch::ScalarType other;
 
-  for (int64_t code = 0; code < 9; code++) {
+  for (int64_t code = 0; code < 10; code++) {
     if (scalar_type_of(code, &other) && other == type) return dtype_name_of(code);
   }
   return "unknown";
@@ -439,7 +441,7 @@ an_term torch_fill(an_env *env, torch_list_Int shape, double value, int64_t dtyp
   }
 }
 
-an_term torch_load(an_env *env, ng_str path, int64_t offset, torch_list_Int shape, int64_t format) {
+an_term torch_load(an_env *env, ng_str path, int64_t offset, torch_list_Int shape, int64_t format, int64_t dtype) {
   std::vector<int64_t> dims;
   an_term failure;
   char why[FF_PATH_MAX + 160];
@@ -447,6 +449,15 @@ an_term torch_load(an_env *env, ng_str path, int64_t offset, torch_list_Int shap
   if (!read_shape(env, shape, &dims, &failure)) return failure;
 
   try {
+    if (dtype == 9) {
+      torch::Tensor built = torch::empty(dims, torch::TensorOptions().dtype(torch::kBFloat16));
+      auto *dest = reinterpret_cast<uint16_t *>(built.data_ptr<at::BFloat16>());
+      if (!ff_read_bf16(path.data, path.len, offset, built.numel(), format, dest, 1, why, sizeof why)) {
+        return error_text(env, why);
+      }
+      return ok_tensor(env, built);
+    }
+    if (dtype != 0) return error_text(env, "a file is read as F32 or BF16");
     /* The file is read into the tensor's own memory. */
     torch::Tensor built = torch::empty(dims, torch::TensorOptions().dtype(torch::kFloat32));
     if (!ff_read(path.data, path.len, offset, built.numel(), format, built.data_ptr<float>(), why, sizeof why)) {
@@ -458,7 +469,7 @@ an_term torch_load(an_env *env, ng_str path, int64_t offset, torch_list_Int shap
   }
 }
 
-an_term torch_from_bytes(an_env *env, ng_buf data, torch_list_Int shape, int64_t format) {
+an_term torch_from_bytes(an_env *env, ng_buf data, torch_list_Int shape, int64_t format, int64_t dtype) {
   std::vector<int64_t> dims;
   an_term failure;
   char why[160];
@@ -466,6 +477,15 @@ an_term torch_from_bytes(an_env *env, ng_buf data, torch_list_Int shape, int64_t
   if (!read_shape(env, shape, &dims, &failure)) return failure;
 
   try {
+    if (dtype == 9) {
+      torch::Tensor built = torch::empty(dims, torch::TensorOptions().dtype(torch::kBFloat16));
+      auto *dest = reinterpret_cast<uint16_t *>(built.data_ptr<at::BFloat16>());
+      if (!ff_bf16_from_bytes(data.data, data.len, built.numel(), format, dest, why, sizeof why)) {
+        return error_text(env, why);
+      }
+      return ok_tensor(env, built);
+    }
+    if (dtype != 0) return error_text(env, "bytes are read as F32 or BF16");
     torch::Tensor built = torch::empty(dims, torch::TensorOptions().dtype(torch::kFloat32));
     if (!ff_from_bytes(data.data, data.len, built.numel(), format, built.data_ptr<float>(), why, sizeof why)) {
       return error_text(env, why);
@@ -562,7 +582,9 @@ an_term torch_matmul(an_env *env, struct torch_TensorHandle_state *a, struct tor
   }
 
   try {
-    return ok_tensor(env, torch::matmul(left, right));
+    auto weight = left.scalar_type() == torch::kFloat32 && right.scalar_type() == torch::kBFloat16
+        ? right.to(torch::kFloat32) : right;
+    return ok_tensor(env, torch::matmul(left, weight));
   } catch (...) {
     return failed(env, "matmul");
   }
@@ -607,7 +629,9 @@ an_term torch_linear(an_env *env, struct torch_TensorHandle_state *a, struct tor
   }
 
   try {
-    return ok_tensor(env, torch::linear(left, right));
+    auto weight = left.scalar_type() == torch::kFloat32 && right.scalar_type() == torch::kBFloat16
+        ? right.to(torch::kFloat32) : right;
+    return ok_tensor(env, torch::linear(left, weight));
   } catch (...) {
     return failed(env, "linear");
   }
@@ -1189,7 +1213,9 @@ static an_term attend(an_env *env, const torch::Tensor &q, const torch::Tensor &
     return error_text(env, "attention takes rank-4 tensors, got " + shape_text(q) + ", " + shape_text(k) + " and " +
                                shape_text(v));
   }
-  if (!q.is_floating_point() || k.scalar_type() != q.scalar_type() || v.scalar_type() != q.scalar_type() ||
+  bool mixed = q.scalar_type() == torch::kFloat32 && k.scalar_type() == torch::kBFloat16 &&
+               v.scalar_type() == torch::kBFloat16;
+  if (!q.is_floating_point() || (!mixed && (k.scalar_type() != q.scalar_type() || v.scalar_type() != q.scalar_type())) ||
       (mask != NULL && mask->scalar_type() != q.scalar_type())) {
     return error_text(env, "attention takes float tensors of one dtype");
   }
@@ -1216,8 +1242,12 @@ static an_term attend(an_env *env, const torch::Tensor &q, const torch::Tensor &
     }
 
     int64_t group = q.size(1) / k.size(1);
-    torch::Tensor keys = group == 1 ? k : k.repeat_interleave(group, 1);
-    torch::Tensor values = group == 1 ? v : v.repeat_interleave(group, 1);
+    torch::Tensor keys = mixed ? k.to(torch::kFloat32) : k;
+    torch::Tensor values = mixed ? v.to(torch::kFloat32) : v;
+    if (group != 1) {
+      keys = keys.repeat_interleave(group, 1);
+      values = values.repeat_interleave(group, 1);
+    }
     c10::optional<torch::Tensor> bias;
 
     if (mask != NULL) bias = *mask;
