@@ -1066,8 +1066,8 @@ end
 ## - `x`: `[tokens, uses, inner]`, or `[tokens, 1, inner]` for one input that every use of the token shares.
 ## - `ids`: `I32 [tokens, uses]`, each in `0...experts` (an id outside is an `error`).
 ## - The answer is `[tokens, uses, rows]`.
-## `F32` only. In a trace it is one node, which `Ggml` runs as `ggml_mul_mat_id` (CPU and Vulkan), with the weights
-## as they are, and the other backends that compute run a loop over the pairs; `XLA` has no lowering. No gradient.
+## `F32` only. In a trace it is one node: `Ggml` runs `ggml_mul_mat_id` (CPU and Vulkan), and `XLA` gathers
+## the selected weights and runs a batched product. The eager implementation loops over the pairs. No gradient.
 def expert_matmul(weights: Types.Tensor, x: Types.Tensor, ids: Types.Tensor) -> Result[Types.Tensor]
   try check_expert_matmul(weights, x, ids)
   out_shape = [ids.shape[0], ids.shape[1], weights.shape[1]]
@@ -1157,8 +1157,8 @@ end
 ##   `i` the key axis), the layout ggml has: the zeros to start, or the `state` of an earlier call to go on.
 ## - `F32` only. A token with `g = 0` and `beta = 0` leaves the state as it was, which is how a padded prompt keeps the
 ##   state of its last real token.
-## In a trace it is one node, which `Ggml` runs as `ggml_gated_delta_net` (CPU, and Vulkan for widths 16, 32, 64 and
-## 128); `XLA` has no lowering.
+## In a trace it is one node: `Ggml` runs `ggml_gated_delta_net` (CPU, and Vulkan for widths 16, 32, 64 and 128),
+## while `XLA` compiles a StableHLO loop.
 ## The other backends run the recurrence token by token over the ops of this module, so a long sequence is slow there.
 ## No gradient.
 def gated_delta_rule(

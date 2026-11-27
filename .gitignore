@@ -22,3 +22,6 @@ __pycache__/
 # The programs that tools/check-skills.sh extracts from the skills.
 /tools/skills/gen/
 /tools/skills/gen.fmt/
+
+# Local copies of upstream specifications.
+/.references/

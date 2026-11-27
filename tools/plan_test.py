@@ -21,7 +21,8 @@ class DependencyWalk(unittest.TestCase):
     def test_dependents_come_in_through_others(self):
         deps = plan.dependencies(ROOT)
         self.assertEqual(plan.closure(deps, {"nn"}), {"nn", "hub", "asr", "train", "transformers", "vision"})
-        self.assertEqual(plan.closure(deps, {"tensor"}), set(ALL) - {"whisper"})
+        self.assertEqual(plan.closure(deps, {"tensor"}), set(ALL) - {"whisper", "agc-ir"})
+        self.assertEqual(plan.closure(deps, {"agc-ir"}), set(ALL) - {"whisper"})
 
 
 class Selection(unittest.TestCase):
