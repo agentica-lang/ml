@@ -393,7 +393,7 @@ The load. The conversion of a BF16 or F32 file to F16 runs on up to 8 threads (o
 
 ### BF16 weights on XLA CUDA
 
-`WEIGHTS=bf16` keeps the same big matrices as `WEIGHTS=f16` in `BF16`, on XLA only. Qwen3-0.6B, `tools/bench_qwen.agc
+`WEIGHTS=bf16` keeps the same big matrices as `WEIGHTS=f16` in `BF16` on ggml, libtorch and XLA. Qwen3-0.6B, `tools/bench_qwen.agc
 MODEL_DIR xla` with the `jax-cuda13-pjrt` 0.12.0.1 plugin in the cache, `XLA_FLAGS=--xla_gpu_enable_triton_gemm=false
 NVIDIA_TF32_OVERRIDE=0`, on an RTX 4060 Laptop GPU (driver 615.71.09), Agentica 0.40.0-beta.2; two runs each, the
 range shown. The weight bytes are counted by `Load.held_bytes` from the checkpoint's shapes.

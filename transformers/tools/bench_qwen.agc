@@ -6,7 +6,7 @@
 ##   agentica tools/bench_qwen.agc MODEL_DIR [cpu|vulkan|xla]
 ##
 ## `xla` runs on `Backend.Xla` with the plugin of the cache (the CPU one, or a CUDA one put there). `WEIGHTS=f16`
-## (or `bf16`, XLA only) loads the big matrices as half weights (off by default) and `VULKAN_FP16=0` makes Vulkan multiply in
+## (or `bf16`) loads the big matrices as half weights (off by default) and `VULKAN_FP16=0` makes Vulkan multiply in
 ## exact `float32` (fp16 is the default). `AGENTICA_ML_KV=host` keeps the KV cache in host memory (`Placement.Kv.Host`).
 ## `AGENTICA_ML_MAX_DEVICE_BYTES=n` puts on a Vulkan device the most blocks that fit `n` bytes of it (`Qwen3.layers_that_fit`,
 ## printed as `LAYERS`), and it excludes `AGENTICA_ML_LAYERS_ON_DEVICE`.

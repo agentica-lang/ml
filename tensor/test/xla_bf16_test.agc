@@ -13,6 +13,7 @@ import Files from "ggml_file_support"
 import Support from "xla_support"
 import Tensor from "../tensor"
 import Trace from "../trace"
+import Xla from "../src/xla"
 
 ## The largest finite BF16.
 MAX = 3.3895313892515355e38
@@ -45,6 +46,25 @@ def test_a_bf16_file_keeps_every_word() -> Result[Void]
     end
 
     ok()
+  end
+end
+
+def test_xla_preserves_signaling_nan_bits_when_loading_bf16() -> Result[Void]
+  return ok() if !try Support.present()
+  Files.with_file("xla-bf16-bits", try Bytes.from_list([129, 127, 129, 255])) do |path|
+    input = try Tensor.from_file(path, 0, [2], Tensor.FloatFormat.BF16, Support.XLA, Tensor.Dtype.BF16)
+    output = try Tensor.zeros([2], Tensor.Dtype.I16, Support.XLA)
+    text = <<~MLIR
+      module {
+        func.func public @main(%arg0: tensor<2xbf16>) -> tensor<2xi16> {
+          %0 = "stablehlo.bitcast_convert"(%arg0) : (tensor<2xbf16>) -> tensor<2xi16>
+          func.return %0 : tensor<2xi16>
+        }
+      }
+    MLIR
+    program = try Xla.compile(text, [], [output], [], false)
+    got = (try Xla.execute(program, [input]))[0]
+    Test.eq(try Tensor.to_list(got), [Tensor.Values.Int(32641), Tensor.Values.Int(-127)])
   end
 end
 
@@ -103,6 +123,20 @@ def test_a_compiled_program_widens_a_bf16_input() -> Result[Void]
 end
 
 def test_the_reference_rejects_a_bf16_destination() -> Result[Void]
+  values = [Tensor.Values.Float(0.1), Tensor.Values.Float(3.4e38)]
+  input = try Tensor.from_list(values, [2], Tensor.Dtype.F64, Support.REF)
+  results = [
+    Tensor.from_list(values, [2], Tensor.Dtype.BF16),
+    Tensor.to_dtype(input, Tensor.Dtype.BF16),
+    Tensor.zeros([2], Tensor.Dtype.BF16),
+    Tensor.full([2], values[0], Tensor.Dtype.BF16),
+  ]
+
+  for result in results
+    try Test.assert(!result.ok?, "the reference created a BF16 tensor")
+    try Test.assert(result.message.include?("BF16"), result.message)
+  end
+
   Files.with_file("xla-bf16", try Bytes.from_list([128, 63])) do |path|
     r = Tensor.from_file(path, 0, [1], Tensor.FloatFormat.BF16, Support.REF, Tensor.Dtype.BF16)
     try Test.assert(!r.ok?, "the reference read a file as BF16")

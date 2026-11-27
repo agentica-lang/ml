@@ -213,6 +213,7 @@ end
 
 ## Creation: a tensor of `shape` holding `value` everywhere.
 def filled(shape: List[Int], dtype: Types.Dtype, value: Float) -> Result[Types.Tensor]
+  return error("the reference backend does not hold BF16") if dtype == Types.Dtype.BF16
   n = try Types.volume(shape)
   ok(make(shape, dtype, List.repeat(value, n)))
 end
@@ -229,6 +230,7 @@ def empty(shape: List[Int], dtype: Types.Dtype) -> Result[Types.Tensor] = filled
 
 ## Creation: every element `value`.
 def full(shape: List[Int], value: Types.Values, dtype: Types.Dtype) -> Result[Types.Tensor]
+  return error("the reference backend does not hold BF16") if dtype == Types.Dtype.BF16
   n = try Types.volume(shape)
   x = try Types.value_to_float(value, dtype)
   ok(make(shape, dtype, List.repeat(x, n)))
@@ -262,12 +264,14 @@ end
 
 ## Creation: the one `value` as a rank-0 tensor.
 def scalar_to_tensor(value: Types.Values, dtype: Types.Dtype) -> Result[Types.Tensor]
+  return error("the reference backend does not hold BF16") if dtype == Types.Dtype.BF16
   x = try Types.value_to_float(value, dtype)
   ok(make([], dtype, [x]))
 end
 
 ## Creation: row-major `data` of `shape`; the count must match.
 def from_list(data: List[Types.Values], shape: List[Int], dtype: Types.Dtype) -> Result[Types.Tensor]
+  return error("the reference backend does not hold BF16") if dtype == Types.Dtype.BF16
   n = try Types.volume(shape)
   return error("from_list needs #{n} values for #{shape}, got #{data.size}") if data.size != n
   values: List[Float] = []
@@ -1274,6 +1278,7 @@ end
 ## wrap-around; `Bool` keeps the nonzero rule for every input, so `NaN`
 ## is `true` (it is nonzero, as in torch) rather than an error.
 def to_dtype(t: Types.Tensor, dtype: Types.Dtype) -> Result[Types.Tensor]
+  return error("the reference backend does not hold BF16") if dtype == Types.Dtype.BF16
   out: List[Float] = []
   for x in try data_of(t)
     out = out.push(try convert_one(x, t.dtype, dtype))

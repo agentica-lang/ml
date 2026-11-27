@@ -29,7 +29,6 @@ static const PJRT_Buffer_Type TYPES[DT_COUNT] = {
     PJRT_Buffer_Type_S16, PJRT_Buffer_Type_S8,  PJRT_Buffer_Type_U8,  PJRT_Buffer_Type_PRED,
     PJRT_Buffer_Type_F16, PJRT_Buffer_Type_BF16,
 };
-#define BF16_MAX 3.3895313892515355e38
 static const size_t SIZES[DT_COUNT] = {4, 8, 4, 8, 2, 1, 1, 1, 2, 2};
 
 #define MAX_RANK 16
@@ -573,6 +572,15 @@ static an_term loaded_floats(an_env *env, xla_list_Int *shape, const char *path,
   if (loaded() == NULL) return failed(env, "the XLA plugin is not loaded");
   if (dtype != DT_F32 && dtype != DT_F16 && dtype != DT_BF16) return failed(env, "a file is read as F32, F16 or BF16");
   if (!dims_of(env, shape, dims, &rank, &count, &failure)) return failure;
+  if (dtype == DT_BF16) {
+    uint16_t *words = (uint16_t *)host(count, DT_BF16);
+    if (words == NULL) return failed(env, "out of memory");
+    read = path != NULL ? ff_read_bf16(path, path_len, offset, count, format, words, 1, why, sizeof why)
+                        : ff_bf16_from_bytes(data, len, count, format, words, why, sizeof why);
+    out = read ? put(env, words, DT_BF16, dims, rank) : failed(env, why);
+    free(words);
+    return out;
+  }
   need = ff_bytes(format, count);
   if (need >= 0 && path == NULL && (size_t)need != len) return failed(env, "the bytes are not the length of the shape");
   if (need >= 0 && path != NULL && !range_in_file(path, path_len, offset, need)) {
@@ -586,27 +594,25 @@ static an_term loaded_floats(an_env *env, xla_list_Int *shape, const char *path,
     free(values);
     return failed(env, why);
   }
-  if (dtype == DT_F16 || dtype == DT_BF16) {
-    uint16_t *halves = (uint16_t *)host(count, (int)dtype);
-    double limit = dtype == DT_F16 ? 65504.0 : BF16_MAX;
-    bool keep = dtype == DT_BF16 && format == FF_BF16;
+  if (dtype == DT_F16) {
+    uint16_t *halves = (uint16_t *)host(count, DT_F16);
 
     if (halves == NULL) {
       free(values);
       return failed(env, "out of memory");
     }
     for (i = 0; i < count; i++) {
-      if (!keep && (values[i] > limit || values[i] < -limit)) {
-        snprintf(why, sizeof why, "the value %g at element %lld is outside what %s holds (up to %g)",
-                 (double)values[i], (long long)i, dtype == DT_F16 ? "F16" : "BF16", limit);
+      if (values[i] > 65504.0f || values[i] < -65504.0f) {
+        snprintf(why, sizeof why, "the value %g at element %lld is outside what F16 holds (up to 65504)",
+                 (double)values[i], (long long)i);
         free(values);
         free(halves);
         return failed(env, why);
       }
-      halves[i] = dtype == DT_F16 ? half_bits(values[i]) : bf16_bits(values[i]);
+      halves[i] = half_bits(values[i]);
     }
     free(values);
-    out = put(env, halves, (int)dtype, dims, rank);
+    out = put(env, halves, DT_F16, dims, rank);
     free(halves);
     return out;
   }
