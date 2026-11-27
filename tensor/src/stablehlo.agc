@@ -709,24 +709,60 @@ end
 # equal values first: a stable descending sort of the values with an `iota`, and the first `k` ids.
 def top_k(t: Types.Tensor, x: Types.Tensor, name: String, k: Int, first: Int) -> Result[List[String]]
   axis = x.shape.size - 1
-  ids = try tensor_type(x.shape, Types.Dtype.I32)
-  shown = try type_of(x)
-  value = try tensor_type([], x.dtype)
-  index = try tensor_type([], Types.Dtype.I32)
-  body = [
-    "^bb0(%a: #{value}, %b: #{value}, %i: #{index}, %j: #{index}):",
-    "        %c = stablehlo.compare GT, %a, %b, #{compare_type(x.dtype)} : (#{value}, #{value}) -> tensor<i1>",
-    "        stablehlo.return %c : tensor<i1>",
-  ].join("\n      ")
+  values = try ir_type(x.shape, x.dtype)
+  ids = try ir_type(x.shape, Types.Dtype.I32)
+  value = IR.TensorType(shape: [], element: values.element)
+  index = IR.TensorType(shape: [], element: IR.Element.I32)
+  flag = IR.TensorType(shape: [], element: IR.Element.I1)
+  region = IR.block([value, value, index, index])
+  compared = try IR.append(
+    region,
+    "stablehlo.compare",
+    [region.args[0], region.args[1]],
+    [flag],
+    compare_attrs("GT", x.dtype),
+  )
 
-  sorted = "\"stablehlo.sort\"(#{name}, %#{first}) ({\n      #{body}\n    })"
-  attrs = "{dimension = #{axis} : i64, is_stable = true} : (#{shown}, #{ids}) -> (#{shown}, #{ids})"
-  window = extents(x.shape.map { |_| 0 }, x.shape.take(axis) + [k])
+  yielded = try IR.append(compared.block, "stablehlo.return", compared.values, [])
+  entry = IR.block([values, ids])
+  attrs = [
+    IR.Attribute(key: "dimension", value: IR.Attr.I64(axis)),
+    IR.Attribute(key: "is_stable", value: IR.Attr.Bool(true)),
+  ]
+
+  sorted = try IR.append(entry, "stablehlo.sort", entry.args, [values, ids], attrs, [yielded.block])
+  names: Map[Ref, String] = {}
+  names = names.put(entry.args[0].id, name).put(entry.args[1].id, "%#{first}")
   ok([
-    "stablehlo.iota dim = #{axis} : #{ids}",
-    "#{TWO}#{sorted} #{attrs}",
-    "stablehlo.slice %#{first + 1}#1 #{window} : (#{ids}) -> #{try type_of(t)}",
+    try iota_op(ids, axis, first),
+    "#{TWO}#{try IR.operation(sorted.block.ops[0], names, "ir#{first + 1}_0", "    ")}",
+    try slice_op("%#{first + 1}#1", ids, x.shape.map { |_| 0 }, x.shape.take(axis) + [k], first + 2),
   ])
+end
+
+def iota_op(t: IR.TensorType, dim: Int, first: Int) -> Result[String]
+  ir_op("stablehlo.iota", [], [], t, [IR.Attribute(key: "iota_dimension", value: IR.Attr.I64(dim))], first)
+end
+
+def slice_op(name: String, x: IR.TensorType, starts: List[Int], ends: List[Int], first: Int) -> Result[String]
+  out = IR.TensorType(shape: (0...starts.size).map { |i| ends[i] - starts[i] }, element: x.element)
+  attrs = [
+    IR.Attribute(key: "start_indices", value: IR.Attr.I64Array(starts)),
+    IR.Attribute(key: "limit_indices", value: IR.Attr.I64Array(ends)),
+    IR.Attribute(key: "strides", value: IR.Attr.I64Array(starts.map { |_| 1 })),
+  ]
+
+  ir_op("stablehlo.slice", [name], [x], out, attrs, first)
+end
+
+def compare_attrs(direction: String, dtype: Types.Dtype) -> List[IR.Attribute]
+  [
+    IR.Attribute(
+      key: "comparison_direction",
+      value: IR.Attr.DialectEnum("stablehlo", "comparison_direction", direction),
+    ),
+    IR.Attribute(key: "compare_type", value: IR.Attr.DialectEnum("stablehlo", "comparison_type", compare_type(dtype))),
+  ]
 end
 
 # `scatter_add`: the rows of `updates` added into zeros `[rows, ...]` at `indices`, duplicates summing. An index
@@ -739,18 +775,24 @@ def scatter_add(t: Types.Tensor, args: List[Types.Tensor], a: List[String], firs
     fields = ["update_window_dims = #{ints((0...rest.size).to_a.map { |i| k + i })}"] + fields
   end
 
-  scalar = try tensor_type([], t.dtype)
-  body = [
-    "^bb0(%acc: #{scalar}, %upd: #{scalar}):",
-    "        %sum = stablehlo.add %acc, %upd : #{scalar}",
-    "        stablehlo.return %sum : #{scalar}",
-  ].join("\n      ")
+  out = try ir_type(t.shape, t.dtype)
+  scalar = IR.TensorType(shape: [], element: out.element)
+  region = IR.block([scalar, scalar])
+  total = try IR.append(region, "stablehlo.add", region.args, [scalar])
+  yielded = try IR.append(total.block, "stablehlo.return", total.values, [])
+  attrs = [
+    IR.Attribute(
+      key: "scatter_dimension_numbers",
+      value: IR.Attr.DialectAttr("stablehlo", "scatter", fields.join(", ")),
+    ),
+    IR.Attribute(key: "indices_are_sorted", value: IR.Attr.Bool(false)),
+    IR.Attribute(key: "unique_indices", value: IR.Attr.Bool(false)),
+  ]
 
-  attrs = "scatter_dimension_numbers = #stablehlo.scatter<#{fields.join(", ")}>, indices_are_sorted = false"
-  types = try signature([t, args[0], args[1]], try type_of(t))
+  types = [out, try ir_type(args[0].shape, args[0].dtype), try ir_type(args[1].shape, args[1].dtype)]
   ok([
     try fill(0.0, t),
-    "\"stablehlo.scatter\"(%#{first}, #{a[0]}, #{a[1]}) ({\n      #{body}\n    }) {#{attrs}, unique_indices = false} : #{types}",
+    try ir_op("stablehlo.scatter", ["%#{first}", a[0], a[1]], types, out, attrs, first + 1, [yielded.block]),
   ])
 end
 

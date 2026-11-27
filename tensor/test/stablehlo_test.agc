@@ -339,9 +339,9 @@ def test_the_ops_of_a_transformer_step_are_written() -> Result[Void]
     "dims = [0, 1, 3, 4]",
     "index_vector_dim = 1",
     "\"stablehlo.sort\"",
-    "#1 [0:",
+    "#1) {start_indices",
     "\"stablehlo.scatter\"",
-    "stablehlo.add %acc, %upd",
+    "inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]",
   ]
 
   for w in wanted
