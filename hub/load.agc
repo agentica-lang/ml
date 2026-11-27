@@ -347,7 +347,8 @@ def checked(weights: Tensor.Dtype, backend: Tensor.Backend) -> Result[Bool]
     Tensor.Dtype.F16 ->
       case backend
         Tensor.Backend.Ggml(_) -> ok(true)
-        _ -> error("weights: F16 needs the ggml backend (half weights are only held by ggml)")
+        Tensor.Backend.Xla(_) -> ok(true)
+        _ -> error("weights: F16 needs the ggml or the XLA backend (half weights are only held by those)")
       end
 
     Tensor.Dtype.Q8_0 ->

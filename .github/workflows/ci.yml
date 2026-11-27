@@ -375,7 +375,7 @@ jobs:
       - name: Test
         env:
           TENSOR_REQUIRE_XLA: '1'
-        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_ops_test.agc test/xla_missing_test.agc test/from_file_test.agc
+        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_ops_test.agc test/xla_half_test.agc test/xla_missing_test.agc test/from_file_test.agc
 
       - name: Test the Agentica read path of from_file on XLA
         env:
@@ -595,7 +595,7 @@ jobs:
       - name: Test
         env:
           TENSOR_REQUIRE_XLA: '1'
-        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_ops_test.agc test/xla_missing_test.agc test/from_file_test.agc
+        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_ops_test.agc test/xla_half_test.agc test/xla_missing_test.agc test/from_file_test.agc
 
       - name: Test the Agentica read path of from_file on XLA
         env:

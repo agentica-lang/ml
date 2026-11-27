@@ -9,7 +9,8 @@
 ## The plugin is not built here and not linked: `native/xla.c` loads it with `dlopen` at the first use, from the ml
 ## cache, where `tools/install_xla.agc` puts the plugin of our release (`RELEASE`).
 ##
-## Storage: `F32`, `F64`, `I32`, `I64`, `I16`, `I8`, `U8` and `Bool`; `F16` and the quantized dtypes are refused. Lifetimes (§8):
+## Storage: `F32`, `F16`, `F64`, `I32`, `I64`, `I16`, `I8`, `U8` and `Bool`; the quantized dtypes are refused. An `F16` tensor is
+## a half weight: 16 bits per value in the buffer, widened to `F32` inside the program that reads it (`src/stablehlo.agc`). Lifetimes (§8):
 ## one `Native.arena` per call, as in `src/ggml.agc`.
 
 import FileRange from "file_range"
@@ -160,29 +161,37 @@ def from_list(
   made("from_list", shape, dtype) do XlaRaw.upload(shape, values, code) end
 end
 
-## Creation: an `F32` tensor from a file, read and widened in C straight into the buffer (Agentica reads the range
-## with `TENSOR_LOAD=agentica`).
+## Creation: a tensor from a file, `F32` or (with `dtype: F16`) a half weight, read and widened in C straight into the
+## buffer (Agentica reads the range with `TENSOR_LOAD=agentica`). A value beyond 65504 is an error for `F16`.
 def from_file(
   device: Types.Device,
   path: String,
   offset: Int,
   shape: List[Int],
   format: Types.FloatFormat,
+  dtype: Types.Dtype = Types.Dtype.F32,
 ) -> Result[Types.Tensor]
-  _ = try ready(device, Types.Dtype.F32, "from_file")
+  code = try file_dtype(device, dtype, "from_file")
   if FileRange.agentica_read?()
     n = try Types.volume(shape)
-    return from_bytes(device, try FileRange.read_range(path, offset, try Types.file_bytes(format, n)), shape, format)
+    bytes = try FileRange.read_range(path, offset, try Types.file_bytes(format, n))
+    return from_bytes(device, bytes, shape, format, dtype)
   end
 
-  made("from_file", shape, Types.Dtype.F32) do XlaRaw.load(path, offset, shape, Types.file_code(format)) end
+  made("from_file", shape, dtype) do XlaRaw.load(path, offset, shape, Types.file_code(format), code) end
 end
 
-## Creation: an `F32` tensor of `shape` from `bytes`, which hold exactly its values as `format` writes them, widened in
-## C.
-def from_bytes(device: Types.Device, bytes: Bytes, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
-  _ = try ready(device, Types.Dtype.F32, "from_bytes")
-  made("from_bytes", shape, Types.Dtype.F32) do XlaRaw.from_bytes(bytes, shape, Types.file_code(format)) end
+## Creation: an `F32` (or `F16`) tensor of `shape` from `bytes`, which hold exactly its values as `format` writes them,
+## widened in C.
+def from_bytes(
+  device: Types.Device,
+  bytes: Bytes,
+  shape: List[Int],
+  format: Types.FloatFormat,
+  dtype: Types.Dtype = Types.Dtype.F32,
+) -> Result[Types.Tensor]
+  code = try file_dtype(device, dtype, "from_bytes")
+  made("from_bytes", shape, dtype) do XlaRaw.from_bytes(bytes, shape, Types.file_code(format), code) end
 end
 
 ## Host readback: the row-major values tagged with `t`'s dtype.
@@ -346,6 +355,15 @@ def made(op: String, shape: List[Int], dtype: Types.Dtype, call: Fn[Result[XlaRa
   end
 end
 
+## `ready` for what a file makes: `F32`, or `F16` for a half weight.
+def file_dtype(device: Types.Device, dtype: Types.Dtype, op: String) -> Result[Int]
+  if dtype != Types.Dtype.F32 and dtype != Types.Dtype.F16
+    return error("#{op}: the XLA backend reads a file as F32 or F16, got #{Types.dtype_name(dtype)}")
+  end
+
+  ready(device, dtype, op)
+end
+
 ## The plugin is loaded, the device is the CPU, and the dtype's code for the native calls.
 def ready(device: Types.Device, dtype: Types.Dtype, op: String) -> Result[Int]
   _ = try cpu(device, op)
@@ -369,6 +387,7 @@ def code_of(dtype: Types.Dtype, op: String) -> Result[Int]
     Types.Dtype.I8 -> ok(5)
     Types.Dtype.U8 -> ok(6)
     Types.Dtype.Bool -> ok(7)
+    Types.Dtype.F16 -> ok(8)
     _ -> error("#{op}: the XLA backend holds no #{Types.dtype_name(dtype)} tensor")
   end
 end

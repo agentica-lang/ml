@@ -546,6 +546,14 @@ end
   only feeds `linear` or `matmul` returns an `F32` gradient. Use
   `linear(..., out_in: true)` with a checkpoint's `[out, in]` weight: without
   it the lowering transposes (copies) the half weight on every run.
+- **Half weights on XLA.** `Tensor.from_file(..., dtype: F16)` and `from_list(..., F16)` on `Backend.Xla` keep the weight in
+  a PJRT `F16` buffer (`native/xla.c`: the file is read and widened in C, and a value beyond 65504 is an error naming
+  its element, as on ggml). The load holds the widened `F32` values of the tensor for a moment before it converts them.
+  StableHLO has no mixed-type `dot_general`, so the emitter (`src/stablehlo.agc`) converts each `F16` operand of a node
+  whose result is `F32` (a `matmul`, a `gather`, an `attention`) with a `stablehlo.convert` inside the program, and the
+  weight stays 16 bits as an argument. An `F16` result (a `transpose` or a `slice` of a weight) is left as it is. Whether
+  XLA's CPU plugin fuses the convert into the product or makes an `F32` copy of the weight on each run is not measured
+  here (the memory numbers belong to the benchmark of ml#390). `BF16` has no `Dtype` yet, so it is not held.
 - **Quantized weights.** `Tensor.from_file(..., format: Q8_0, dtype: Q8_0)` on
   ggml keeps the blocks of a Q8_0 file as they are (`GGML_TYPE_Q8_0`: 34 bytes
   for 32 values, about a quarter of `F32`; the range is copied, nothing is

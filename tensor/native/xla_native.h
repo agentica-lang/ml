@@ -146,12 +146,13 @@ an_term xla_open(an_env *env, ng_str path);
 /* A buffer of the row-major `shape` and the dtype `dtype` holding `data`, one value per element. */
 an_term xla_upload(an_env *env, xla_list_Int shape, xla_list_Float data, int64_t dtype);
 
-/* An `F32` buffer of `shape` from the range at `offset` of the file `path`, which `format` (a `Types.file_code`)
-   holds: the call reads and widens it in C, and checks the range against the file. */
-an_term xla_load(an_env *env, ng_str path, int64_t offset, xla_list_Int shape, int64_t format);
+/* A buffer of `shape` from the range at `offset` of the file `path`, which `format` (a `Types.file_code`) holds:
+   the call reads and widens it in C, and checks the range against the file. `dtype` is the code of `F32` (0) or
+   `F16` (8): a half buffer is made from the widened values, and a value beyond 65504 is an error. */
+an_term xla_load(an_env *env, ng_str path, int64_t offset, xla_list_Int shape, int64_t format, int64_t dtype);
 
 /* The same from `data`, the bytes of the range that Agentica read: they must be exactly the range. */
-an_term xla_from_bytes(an_env *env, ng_buf data, xla_list_Int shape, int64_t format);
+an_term xla_from_bytes(an_env *env, ng_buf data, xla_list_Int shape, int64_t format, int64_t dtype);
 
 /* A buffer of `shape` and `dtype` with every element `value`, filled in C. */
 an_term xla_filled(an_env *env, xla_list_Int shape, double value, int64_t dtype);
@@ -429,7 +430,9 @@ static an_term xla_native_load(an_env *env, int argc, const an_term *argv) {
   a2.argument = 3;
   int64_t a3;
   if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
-  return xla_load(env, a0, a1, a2, a3);
+  int64_t a4;
+  if (!an_get_int(env, argv[4], &a4)) return an_badarg(env, 4);
+  return xla_load(env, a0, a1, a2, a3, a4);
 }
 
 static an_term xla_native_from_bytes(an_env *env, int argc, const an_term *argv) {
@@ -443,7 +446,9 @@ static an_term xla_native_from_bytes(an_env *env, int argc, const an_term *argv)
   a1.argument = 2;
   int64_t a2;
   if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
-  return xla_from_bytes(env, a0, a1, a2);
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  return xla_from_bytes(env, a0, a1, a2, a3);
 }
 
 static an_term xla_native_filled(an_env *env, int argc, const an_term *argv) {
@@ -520,8 +525,8 @@ static const an_function xla_native_functions[] = {
   {"arch", "() -> String", xla_native_arch, AN_SHORT},
   {"open", "(String) -> Result[Void]", xla_native_open, AN_DIRTY},
   {"upload", "(List[Int], List[Float], Int) -> Result[Buffer]", xla_native_upload, AN_DIRTY},
-  {"load", "(String, Int, List[Int], Int) -> Result[Buffer]", xla_native_load, AN_DIRTY},
-  {"from_bytes", "(Bytes, List[Int], Int) -> Result[Buffer]", xla_native_from_bytes, AN_DIRTY},
+  {"load", "(String, Int, List[Int], Int, Int) -> Result[Buffer]", xla_native_load, AN_DIRTY},
+  {"from_bytes", "(Bytes, List[Int], Int, Int) -> Result[Buffer]", xla_native_from_bytes, AN_DIRTY},
   {"filled", "(List[Int], Float, Int) -> Result[Buffer]", xla_native_filled, AN_DIRTY},
   {"readback", "(Buffer) -> Result[List[Float]]", xla_native_readback, AN_DIRTY},
   {"compile", "(String, Int, List[Int]) -> Result[Program]", xla_native_compile, AN_DIRTY},

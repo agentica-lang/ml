@@ -75,13 +75,13 @@ def test_the_last_position_alone_is_the_last_row_of_the_logits() -> Result[Void]
   end
 end
 
-## `weights: F16` is an error off ggml, and on ggml a model whose matrices are all under `Load.HALF_MIN_ELEMENTS` is the
+## `weights: F16` is an error off ggml and XLA, and on them a model whose matrices are all under `Load.HALF_MIN_ELEMENTS` is the
 ## same model (a tiny one: the half path itself is `hub/test/load_test.agc` and the checkpoints of `tools/`).
 def test_f16_weights_need_ggml_and_leave_a_tiny_model_alone() -> Result[Void]
   with_peer do |dir|
     refused = Qwen3.open("#{dir}/tiny", S.REF, Tensor.Dtype.F16)
     try Test.error?(refused)
-    for backend in try S.ggml_backends()
+    for backend in try S.ggml_backends() + try S.xla_backends()
       half = try Qwen3.open("#{dir}/tiny", backend, Tensor.Dtype.F16)
       whole = try Qwen3.open("#{dir}/tiny", backend)
       try Test.eq(
@@ -194,7 +194,7 @@ end
 def test_f16_weights_keep_the_big_matrices_half_and_the_logits_close() -> Result[Void]
   with_peer do |dir|
     rows = [[1, 5, 2, 7, 3, 12], [399, 200, 9, 0, 6, 11]]
-    for backend in try S.ggml_backends()
+    for backend in try S.ggml_backends() + try S.xla_backends()
       half = try Qwen3.open("#{dir}/half", backend, Tensor.Dtype.F16)
       whole = try Qwen3.open("#{dir}/half", backend)
       block = half.stack.blocks[0]

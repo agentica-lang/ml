@@ -106,17 +106,40 @@ def test_a_slice_names_its_extents() -> Result[Void]
   )
 end
 
-## A product of an `F32` input by an `F16` weight would be a mixed-type `dot_general`, which StableHLO refuses.
-def test_a_mixed_dtype_matmul_is_an_error_naming_it() -> Result[Void]
-  r = Trace.stablehlo(
-    [spec([2, 2], Tensor.Dtype.F32), spec([2, 2], Tensor.Dtype.F16)],
+## An `F16` weight stays half as an argument and is widened inside the program, where an `F32` result reads it: a product
+## and the rows of a table. A product of two other mixed dtypes is an error naming it.
+def test_an_f16_weight_is_widened_where_an_f32_result_reads_it() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([2, 3], Tensor.Dtype.F32), spec([3, 2], Tensor.Dtype.F16)],
     ->(xs: List[Tensor.Tensor]) { ok([try Tensor.matmul(xs[0], xs[1])]) },
   )
 
-  case r
-    ok(_) -> error("a mixed matmul was emitted")
-    error(e) -> Test.eq(e.message, "StableHLO has no emitter for matmul of F32 by F16 yet")
-  end
+  try Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<2x3xf32>, %arg1: tensor<3x2xf16>) -> (tensor<2x2xf32>) {
+          %0 = stablehlo.convert %arg1 : (tensor<3x2xf16>) -> tensor<3x2xf32>
+          %1 = stablehlo.dot_general %arg0, %0, contracting_dims = [1] x [0] : (tensor<2x3xf32>, tensor<3x2xf32>) -> tensor<2x2xf32>
+          func.return %1 : tensor<2x2xf32>
+        }
+      }
+    MLIR
+  )
+
+  rows = try Trace.stablehlo(
+    [spec([5, 3], Tensor.Dtype.F16), spec([2], Tensor.Dtype.I32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.to_dtype(try Tensor.gather(xs[0], xs[1]), Tensor.Dtype.F32)]) },
+  )
+
+  try Test.assert(rows.text.include?("(tensor<2x3xf16>) -> tensor<2x3xf32>"), rows.text)
+  r = Trace.stablehlo(
+    [spec([2, 2], Tensor.Dtype.F32), spec([2, 2], Tensor.Dtype.I32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.matmul(xs[0], xs[1])]) },
+  )
+
+  try Test.assert(!r.ok?, "a matmul of F32 by I32 was emitted")
+  ok()
 end
 
 def spec(shape: List[Int], dtype: Tensor.Dtype) -> Trace.Spec

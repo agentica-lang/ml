@@ -59,7 +59,7 @@ Use it around a loop of ops on libtorch.
 `weights: Tensor.Dtype.F16` (on `Qwen3.open`, `Asr.open`, the `Load` functions) keeps the big matrices in 16 bits on
 ggml: half the memory, and Qwen3-0.6B decodes about 1.6 times faster on Vulkan. A value beyond 65504 is an error that names
 it. `Dtype.Q8_0` keeps the blocks of a Q8_0 GGUF file, a quarter of the memory, and `Dtype.Q4_K` those of a Q4_K_M file (its Q4_K and Q6_K matrices, each at its own bit width), about a sixth. Half and quantized weights are for
-inference only: they have no gradient. Any backend but ggml refuses them with an error naming the option.
+inference only: they have no gradient. Half weights also load on XLA (`Backend.Xla`), where the program widens them to `F32` for each product; quantized weights are ggml only. Any other backend refuses them with an error naming the option.
 
 ## Errors
 

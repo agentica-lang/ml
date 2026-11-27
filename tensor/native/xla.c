@@ -23,12 +23,13 @@
 #include <string.h>
 
 /* The dtype codes of `src/xla.agc` (`code_of`), in order. */
-enum { DT_F32, DT_F64, DT_I32, DT_I64, DT_I16, DT_I8, DT_U8, DT_BOOL, DT_COUNT };
+enum { DT_F32, DT_F64, DT_I32, DT_I64, DT_I16, DT_I8, DT_U8, DT_BOOL, DT_F16, DT_COUNT };
 static const PJRT_Buffer_Type TYPES[DT_COUNT] = {
     PJRT_Buffer_Type_F32, PJRT_Buffer_Type_F64, PJRT_Buffer_Type_S32, PJRT_Buffer_Type_S64,
     PJRT_Buffer_Type_S16, PJRT_Buffer_Type_S8,  PJRT_Buffer_Type_U8,  PJRT_Buffer_Type_PRED,
+    PJRT_Buffer_Type_F16,
 };
-static const size_t SIZES[DT_COUNT] = {4, 8, 4, 8, 2, 1, 1, 1};
+static const size_t SIZES[DT_COUNT] = {4, 8, 4, 8, 2, 1, 1, 1, 2};
 
 #define MAX_RANK 16
 
@@ -375,6 +376,37 @@ static bool dims_of(an_env *env, xla_list_Int *shape, int64_t *dims, size_t *ran
   return true;
 }
 
+/* The IEEE binary16 bits of `f`, rounded to nearest even; a value past 65504 rounds to an infinity. */
+static uint16_t half_bits(float f) {
+  uint32_t x, sign, m, half, rem;
+  int32_t e, he;
+
+  memcpy(&x, &f, sizeof x);
+  sign = (x >> 16) & 0x8000u;
+  e = (int32_t)((x >> 23) & 0xFFu);
+  m = x & 0x7FFFFFu;
+  if (e == 0xFF) return (uint16_t)(sign | 0x7C00u | (m != 0 ? 0x200u | (m >> 13) : 0));
+  he = e - 112;
+  if (he >= 31) return (uint16_t)(sign | 0x7C00u);
+  if (he <= 0) {
+    int shift;
+    uint32_t mid;
+
+    if (he < -10) return (uint16_t)sign;
+    m |= 0x800000u;
+    shift = 14 - he;
+    half = m >> shift;
+    rem = m & ((1u << shift) - 1);
+    mid = 1u << (shift - 1);
+    if (rem > mid || (rem == mid && (half & 1u))) half++;
+    return (uint16_t)(sign | half);
+  }
+  half = ((uint32_t)he << 10) | (m >> 13);
+  rem = m & 0x1FFFu;
+  if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) half++;
+  return (uint16_t)(sign | half);
+}
+
 static void store(void *bytes, int dtype, int64_t i, double x) {
   switch (dtype) {
   case DT_F32: ((float *)bytes)[i] = (float)x; break;
@@ -384,6 +416,7 @@ static void store(void *bytes, int dtype, int64_t i, double x) {
   case DT_I16: ((int16_t *)bytes)[i] = (int16_t)x; break;
   case DT_I8: ((int8_t *)bytes)[i] = (int8_t)x; break;
   case DT_U8: ((uint8_t *)bytes)[i] = (uint8_t)x; break;
+  case DT_F16: ((uint16_t *)bytes)[i] = half_bits((float)x); break;
   default: ((uint8_t *)bytes)[i] = x != 0.0; break;
   }
 }
@@ -397,6 +430,7 @@ static double load(const void *bytes, int dtype, int64_t i) {
   case DT_I16: return (double)((const int16_t *)bytes)[i];
   case DT_I8: return (double)((const int8_t *)bytes)[i];
   case DT_U8: return (double)((const uint8_t *)bytes)[i];
+  case DT_F16: return (double)ff_half(((const uint16_t *)bytes)[i]);
   default: return ((const uint8_t *)bytes)[i] ? 1.0 : 0.0;
   }
 }
@@ -491,8 +525,8 @@ static bool range_in_file(const char *path, size_t path_len, int64_t offset, int
    holds (a float format or the blocks of a quantized one): widened straight into the host buffer, with no list in
    between. The file is checked against the range and `data` against the length of the shape before a value is read. */
 static an_term loaded_floats(an_env *env, xla_list_Int *shape, const char *path, size_t path_len, int64_t offset,
-                             const uint8_t *data, size_t len, int64_t format) {
-  int64_t dims[MAX_RANK], count;
+                             const uint8_t *data, size_t len, int64_t format, int64_t dtype) {
+  int64_t dims[MAX_RANK], count, i;
   size_t rank;
   char why[FF_PATH_MAX + 160];
   an_term failure, out;
@@ -501,6 +535,7 @@ static an_term loaded_floats(an_env *env, xla_list_Int *shape, const char *path,
   bool read;
 
   if (loaded() == NULL) return failed(env, "the XLA plugin is not loaded");
+  if (dtype != DT_F32 && dtype != DT_F16) return failed(env, "a file is read as F32 or F16");
   if (!dims_of(env, shape, dims, &rank, &count, &failure)) return failure;
   need = ff_bytes(format, count);
   if (need >= 0 && path == NULL && (size_t)need != len) return failed(env, "the bytes are not the length of the shape");
@@ -515,17 +550,41 @@ static an_term loaded_floats(an_env *env, xla_list_Int *shape, const char *path,
     free(values);
     return failed(env, why);
   }
+  if (dtype == DT_F16) {
+    uint16_t *halves = (uint16_t *)host(count, DT_F16);
+
+    if (halves == NULL) {
+      free(values);
+      return failed(env, "out of memory");
+    }
+    for (i = 0; i < count; i++) {
+      if (values[i] > 65504.0f || values[i] < -65504.0f) {
+        char why[96];
+
+        snprintf(why, sizeof why, "the value %g at element %lld is outside what F16 holds (up to 65504)",
+                 (double)values[i], (long long)i);
+        free(values);
+        free(halves);
+        return failed(env, why);
+      }
+      halves[i] = half_bits(values[i]);
+    }
+    free(values);
+    out = put(env, halves, DT_F16, dims, rank);
+    free(halves);
+    return out;
+  }
   out = put(env, values, DT_F32, dims, rank);
   free(values);
   return out;
 }
 
-an_term xla_load(an_env *env, ng_str path, int64_t offset, xla_list_Int shape, int64_t format) {
-  return loaded_floats(env, &shape, path.data, path.len, offset, NULL, 0, format);
+an_term xla_load(an_env *env, ng_str path, int64_t offset, xla_list_Int shape, int64_t format, int64_t dtype) {
+  return loaded_floats(env, &shape, path.data, path.len, offset, NULL, 0, format, dtype);
 }
 
-an_term xla_from_bytes(an_env *env, ng_buf data, xla_list_Int shape, int64_t format) {
-  return loaded_floats(env, &shape, NULL, 0, 0, data.data, data.len, format);
+an_term xla_from_bytes(an_env *env, ng_buf data, xla_list_Int shape, int64_t format, int64_t dtype) {
+  return loaded_floats(env, &shape, NULL, 0, 0, data.data, data.len, format, dtype);
 }
 
 an_term xla_filled(an_env *env, xla_list_Int shape, double value, int64_t dtype) {

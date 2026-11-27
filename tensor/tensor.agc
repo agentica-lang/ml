@@ -288,8 +288,8 @@ end
 ## 256 for the K formats), and the tensor is `F32` (dequantized at load, on
 ## every backend) or, with the `dtype` of the same name, a quantized weight that
 ## keeps the blocks (a quarter to a seventh of the memory of `F32`; a rank-2
-## weight of rows of whole blocks). Only the ggml backend holds an `F16` or a
-## quantized weight, and a trace may use it only as the weight of
+## weight of rows of whole blocks). Only the ggml backend holds a quantized
+## weight, and only ggml and XLA an `F16` one, and a trace may use it only as the weight of
 ## `matmul` or `linear` and as the table of `gather` or `embedding`
 ## (`tensor/DESIGN.md` §7). It is for inference, with `linear(..., out_in:
 ## true)` for a checkpoint's `[out, in]` weight.
@@ -310,14 +310,10 @@ def from_file(
     return error("from_file reads F32, F16 or a quantized dtype, got #{Types.dtype_name(dtype)}")
   end
 
-  if Types.is_packed_dtype(dtype)
-    case backend
-      Types.Backend.Ggml(_) -> nil
-      _ ->
-        return error(
-          "from_file with dtype #{Types.dtype_name(dtype)} (packed weights) needs the ggml backend, got #{Types.backend_name(backend)}",
-        )
-    end
+  if Types.is_packed_dtype(dtype) and !holds_packed?(backend, dtype)
+    return error(
+      "from_file with dtype #{Types.dtype_name(dtype)} (packed weights) needs the ggml backend (or XLA for F16), got #{Types.backend_name(backend)}",
+    )
   end
 
   name = Types.dtype_name(dtype)
@@ -350,7 +346,7 @@ def from_file(
     Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format)
     Types.Backend.Trace -> error("from_file makes no traced tensor: lift one with Trace.constant")
     Types.Backend.Ggml(device) -> Ggml.from_file(device, path, offset, shape, format, dtype)
-    Types.Backend.Xla(device) -> Xla.from_file(device, path, offset, shape, format)
+    Types.Backend.Xla(device) -> Xla.from_file(device, path, offset, shape, format, dtype)
   end
 end
 
@@ -1978,6 +1974,15 @@ def beam_search(logits: Types.Tensor, width: Int) -> Result[Types.Tensor]
 end
 
 private
+
+## ggml holds every packed dtype; XLA holds `F16` alone.
+def holds_packed?(backend: Types.Backend, dtype: Types.Dtype) -> Bool
+  case backend
+    Types.Backend.Ggml(_) -> true
+    Types.Backend.Xla(_) -> dtype == Types.Dtype.F16
+    _ -> false
+  end
+end
 
 ## What `body` makes, with every other tensor it made freed on return.
 def staged(body: Fn[Result[Types.Tensor]]) -> Result[Types.Tensor] = Native.arena do body.call() end
