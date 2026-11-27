@@ -171,6 +171,13 @@ n = Placement.fit(footprint, Placement.budget(400000000, 70000000, none))   # 3:
 m = try Qwen3.open(dir, backend, weights, some(n))
 ```
 
+`Qwen3.layers_that_fit(dir, backend, weights, max_device_bytes, context, reserve)` does it for a Qwen3 folder (or GGUF) on a Vulkan device: it reads the free memory of the device (`Tensor.device_memory`), takes `reserve` bytes off it (256 MB by default, for the compute buffers) and `max_device_bytes` as a cap when it is `some`, counts the KV cache of `context` tokens (2048 by default, `F32`) for each block, and answers `some(n)`, the `layers_on_device` that fills the card; `none` on any other backend. `Qwen3.layers_within(c, config, weights, budget, context)` is the same for a budget you give. The count is a reading of the moment, not a reservation. The tools take the cap from `AGENTICA_ML_MAX_DEVICE_BYTES` (`bench_qwen.agc`, with `AGENTICA_ML_LAYERS_ON_DEVICE` as the other way to choose).
+
+```agentica {mode="fragment"}
+n = Qwen3.layers_that_fit(dir, backend, weights, some(4000000000)).unwrap!
+m = Qwen3.open(dir, backend, weights, n).unwrap!
+```
+
 - `Qwen3.close_model(m)` frees the weights; the logits belong to the caller (`Lift.close`). `qwen_check` peaks at 3.7 GB on ggml CPU and 1.5 GB on Vulkan, where the weights live in device memory.
 - A `model_type` other than `qwen3`, `qwen2` or `llama`, an activation other than `silu`, `attention_bias: true`, `mlp_bias: true`, `rope_scaling`, `use_sliding_window: true` (a `sliding_window` size with it `false` is ignored, as Hugging Face does), a head count that the key heads do not divide, and a tensor of another shape are errors. Reference and ggml are tested; libtorch is not, and a sharded checkpoint is not tested. On the reference backend attention needs `q * k` of at most 1,048,576, about 1024 tokens with the causal mask; ggml has no such limit.
 

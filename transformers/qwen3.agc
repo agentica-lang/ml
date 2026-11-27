@@ -69,6 +69,12 @@ struct Qwen3
   device: Tensor.Backend
 end
 
+## An open checkpoint and its config, as `open` reads them.
+struct Opened
+  checkpoint: Hub.Checkpoint
+  config: Config
+end
+
 ## The model in `dir`, which holds `config.json` and `model.safetensors` (or
 ## the `model.safetensors.index.json` of a sharded one), or in the `.gguf` file
 ## `dir` names, whose key-values give the config.
@@ -85,12 +91,50 @@ def open(
   weights: Tensor.Dtype = Tensor.Dtype.F32,
   layers_on_device: Optional[Int] = none,
 ) -> Result[Qwen3]
-  if dir.end_with?(".gguf")
-    c = try Hub.open(dir)
-    return load(c, try gguf_config(c), backend, weights, layers_on_device)
+  found = try opened(dir)
+  load(found.checkpoint, found.config, backend, weights, layers_on_device)
+end
+
+## The `layers_on_device` for `open` on a Vulkan device that fills the card: the most blocks whose layout, with the
+## KV cache of `context` tokens (`F32`) for each, fits the free memory of the device (`Tensor.device_memory`) less
+## `reserve` bytes for the compute buffers, and not more than `max_device_bytes` when it is `some`. `none` on any other
+## backend, where `layers_on_device` changes nothing. The count is a reading of the moment: it does not hold the memory.
+def layers_that_fit(
+  dir: String,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+  max_device_bytes: Optional[Int] = none,
+  context: Int = 2048,
+  reserve: Int = 256000000,
+) -> Result[Optional[Int]]
+  case backend
+    Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> nil
+    _ -> return ok(none)
   end
 
-  load(try checkpoint(dir), try read_config(dir), backend, weights, layers_on_device)
+  found = try opened(dir)
+  free = (try Tensor.device_memory(backend)).free
+  budget = Placement.budget(free, reserve, max_device_bytes)
+  ok(some(try layers_within(found.checkpoint, found.config, weights, budget, context)))
+end
+
+## The most blocks of the model of `c` that `budget` bytes of the card hold with `layers_on_device` (`Placement.fit`
+## over the footprint of the checkpoint: the KV cache of `context` tokens in `F32` counted for each block).
+def layers_within(c: Hub.Checkpoint, config: Config, weights: Tensor.Dtype, budget: Int, context: Int) -> Result[Int]
+  config = try with_head_dim(config)
+  kv = 2 * config.num_key_value_heads * config.head_dim * context * 4
+  footprint = try Placement.footprint(
+    c,
+    "model.layers.",
+    config.num_hidden_layers,
+    "model.embed_tokens.weight",
+    "lm_head.weight",
+    "model.norm.weight",
+    weights,
+    kv,
+  )
+
+  ok(Placement.fit(footprint, budget))
 end
 
 ## The `config.json` of the model folder `dir`.
@@ -398,6 +442,16 @@ def with_weights(m: Qwen3, weights: Map[String, Tensor.Tensor]) -> Result[Qwen3]
 end
 
 private
+
+## The checkpoint and the config of `dir`: a GGUF file, or a folder with `config.json` and the safetensors.
+def opened(dir: String) -> Result[Opened]
+  if dir.end_with?(".gguf")
+    c = try Hub.open(dir)
+    return ok(Opened(checkpoint: c, config: try gguf_config(c)))
+  end
+
+  ok(Opened(checkpoint: try checkpoint(dir), config: try read_config(dir)))
+end
 
 ## An error when `given` has a name `m` lacks or a tensor of another shape than the model's.
 def fitting(m: Qwen3, given: Map[String, Tensor.Tensor]) -> Result[Void]

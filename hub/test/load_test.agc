@@ -28,6 +28,14 @@ def test_the_layers_on_device_variable_is_a_whole_number_or_absent() -> Result[V
   Test.error?(Load.layers_on_device_of("many"))
 end
 
+def test_the_max_device_bytes_variable_is_a_whole_number_or_absent() -> Result[Void]
+  try Test.eq(try Load.max_device_bytes_of(""), none)
+  try Test.eq(try Load.max_device_bytes_of("4000000000"), some(4000000000))
+  try Test.eq(try Load.max_device_bytes_of("0"), some(0))
+  try Test.error?(Load.max_device_bytes_of("-1"))
+  Test.error?(Load.max_device_bytes_of("4GB"))
+end
+
 def test_the_kv_variable_is_host_or_device_or_absent() -> Result[Void]
   try Test.eq(try Load.kv_host_of(""), false)
   try Test.eq(try Load.kv_host_of("device"), false)

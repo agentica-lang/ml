@@ -86,6 +86,23 @@ def layers_on_device_of(text: String) -> Result[Optional[Int]]
   end
 end
 
+## The budget the tools give `Qwen3.layers_that_fit`: `AGENTICA_ML_MAX_DEVICE_BYTES=n` bytes of the card at most, `none`
+## when it is not set.
+def max_device_bytes_from_env() -> Result[Optional[Int]]
+  max_device_bytes_of(System.env("AGENTICA_ML_MAX_DEVICE_BYTES").unwrap_or(""))
+end
+
+## The option of the text of that variable: `none` when it is empty, else a whole number of 0 or more.
+def max_device_bytes_of(text: String) -> Result[Optional[Int]]
+  return ok(none) if text == ""
+  case text.to_i
+    ok(n) ->
+      return error("AGENTICA_ML_MAX_DEVICE_BYTES is 0 or more, got #{text}") if n < 0
+      ok(some(n))
+    error(_) -> error("AGENTICA_ML_MAX_DEVICE_BYTES is a whole number of bytes, got #{text}")
+  end
+end
+
 ## Whether the tools keep the KV cache in host memory: `AGENTICA_ML_KV=host` (`Generate.open(..., kv: Placement.Kv.Host)`)
 ## or `AGENTICA_ML_KV=device`, the default.
 def kv_host_from_env() -> Result[Bool] = kv_host_of(System.env("AGENTICA_ML_KV").unwrap_or(""))
