@@ -1,7 +1,6 @@
 ## `Tensor.adam_step`, the update kernel of Adam: ggml runs it as one `ggml_opt_step_adamw` node, every other backend
 ## composes it. The numbers come from the formula in doubles (Python), at step 3 with a weight decay.
 
-import Conform from "torch_support"
 import Tensor from "../tensor"
 import Trace from "../trace"
 import S from "support"
@@ -378,26 +377,19 @@ def test_a_moment_read_twice_is_copied() -> Result[Void]
   ok()
 end
 
-## On a backend that computes, `adam_step` makes the ops of `adam_composed` one at a time (`adam_eager`): the same
-## numbers to the last bit, at step 3 with a weight decay and at a later step of a schedule with a lower rate.
+## On a backend that computes, `adam_step` makes the ops of `adam_composed` one at a time (`adam_staged`): the same
+## numbers to the last bit, at step 3 with a weight decay and at a later step of a schedule with a lower rate. The
+## libtorch kernel is one pass that rounds in the last place differently (`torch_adam_test.agc`).
 def test_the_eager_step_is_the_composition_bit_for_bit() -> Result[Void]
-  backends = [Tensor.Backend.Reference]
-  if Conform.available()
-    backends = backends.push(Conform.TORCH)
-  else
-    try Conform.absent()
-  end
-
   later = [0.0025, 0.9, 0.999, 0.00000001, 0.05, 1.0000265613, 1.1123]
-  for backend in backends
-    for hyper in [HYPER, later]
-      args = try tensors(backend, Tensor.Dtype.F32)
-      h = try Tensor.floats(hyper, [7], backend)
-      eager = try Tensor.adam_step(args[0], args[1], args[2], args[3], h)
-      composed = try Tensor.adam_composed(args[0], args[1], args[2], args[3], h)
-      for i in 0...3
-        try Test.eq(try S.floats_of(eager[i]), try S.floats_of(composed[i]))
-      end
+  backend = Tensor.Backend.Reference
+  for hyper in [HYPER, later]
+    args = try tensors(backend, Tensor.Dtype.F32)
+    h = try Tensor.floats(hyper, [7], backend)
+    eager = try Tensor.adam_step(args[0], args[1], args[2], args[3], h)
+    composed = try Tensor.adam_composed(args[0], args[1], args[2], args[3], h)
+    for i in 0...3
+      try Test.eq(try S.floats_of(eager[i]), try S.floats_of(composed[i]))
     end
   end
 
