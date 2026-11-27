@@ -24,6 +24,12 @@
    another handle's state. So an arena that keeps a result keeps it alone, not the tensors it came from. A new row that
    makes a handle must make one that owns all its memory (no `from_blob` over borrowed data, no view of memory that is
    not refcounted), or the arguments may be freed under it. */
+#ifndef __cplusplus
+#error "native/torch.c is C++: no libtorch found, or CC is not a C++ driver. Run: eval \"$(sh tools/build-torch.sh)\" (README, Local setup)"
+#endif
+#if defined(__has_include) && !__has_include(<torch/torch.h>)
+#error "no libtorch found: <torch/torch.h> is not on the include path. Run: eval \"$(sh tools/build-torch.sh)\" (README, Local setup)"
+#endif
 #include "agentica_native.h"
 #define TORCH_NATIVE_IMPLEMENTATION
 #include "torch_native.h"

@@ -108,6 +108,17 @@ jobs:
         if: matrix.package == 'vision'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev
 
+      # The default build of the optional torch module (a C compiler, no libtorch) must say why it stops, and show no
+      # error of its own (ml#379: pread and O_CLOEXEC of float_file.h).
+      - name: The torch module names a missing libtorch
+        if: matrix.package == 'tensor'
+        shell: bash
+        run: |
+          out=$(env -u CC cc -c -o /dev/null native/torch.c 2>&1 || true)
+          echo "$out"
+          grep -q "no libtorch found" <<<"$out"
+          ! grep -Eq "pread|O_CLOEXEC|ftruncate" <<<"$out"
+
       # tensor/tools/build-engine.sh keeps ggml outside the checkout, in
       # ~/.cache/agentica-ml, under a key of its own (commit, flags,
       # compiler). This step restores that folder, keyed by the ggml commit
