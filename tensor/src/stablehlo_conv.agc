@@ -35,6 +35,62 @@ def conv2d(b: IR.Block, input: IR.Value, weight: IR.Value, stride: Int, padding:
   IR.append(b, "stablehlo.convolution", [input, weight], [out], attrs)
 end
 
+## Conv1d over NCL input and OIK weights. A rank-2 [C, L] input is represented
+## internally as [1, C, L], then reshaped back to [O, L_out].
+def conv1d(b: IR.Block, input: IR.Value, weight: IR.Value, stride: Int, padding: Int) -> Result[IR.Added]
+  x = input.type.shape
+  w = weight.type.shape
+  return error("conv1d needs a rank-2 or rank-3 input and rank-3 weight") if (x.size != 2 and x.size != 3) or w.size != 3
+  return error("conv1d needs matching floating-point element types") if input.type.element != weight.type.element
+  element = input.type.element
+  if element != IR.Element.F16 and element != IR.Element.F32 and element != IR.Element.F64
+    return error("conv1d needs matching floating-point element types")
+  end
+
+  for d in x + w
+    return error("conv1d needs nonempty input and weight") if d < 1
+  end
+
+  channels = x[x.size - 2]
+  if stride < 1 or padding < 0 or w[1] != channels
+    return error("conv1d needs positive stride, nonnegative padding, and matching input channels")
+  end
+
+  length = x[x.size - 1] + 2 * padding - w[2]
+  return error("conv1d kernel exceeds the padded input") if length < 0
+  out_length = length / stride + 1
+  current = b
+  source = input
+  if x.size == 2
+    batched = IR.TensorType(shape: [1] + x, element: element)
+    reshaped = try IR.append(current, "stablehlo.reshape", [source], [batched])
+    current = reshaped.block
+    source = reshaped.values[0]
+  end
+
+  output = IR.TensorType(shape: [source.type.shape[0], w[0], out_length], element: element)
+  dims = IR.Attr.DialectAttr("stablehlo", "conv", "[b, f, 0]x[o, i, 0]->[b, f, 0]")
+  pad = IR.TensorType(shape: [1, 2], element: IR.Element.I64)
+  attrs = [
+    attr("dimension_numbers", dims),
+    attr("window_strides", IR.Attr.I64Array([stride])),
+    attr("padding", IR.Attr.DenseInt(padding, pad)),
+    attr("batch_group_count", IR.Attr.I64(1)),
+    attr("feature_group_count", IR.Attr.I64(1)),
+  ]
+  convolution = try IR.append(current, "stablehlo.convolution", [source, weight], [output], attrs)
+  current = convolution.block
+  answer = convolution.values[0]
+  if x.size == 2
+    flat = IR.TensorType(shape: [w[0], out_length], element: element)
+    squeezed = try IR.append(current, "stablehlo.reshape", [answer], [flat])
+    current = squeezed.block
+    answer = squeezed.values[0]
+  end
+
+  ok(IR.Added(block: current, values: [answer]))
+end
+
 private
 
 def attr(key: String, value: IR.Attr) -> IR.Attribute = IR.Attribute(key: key, value: value)

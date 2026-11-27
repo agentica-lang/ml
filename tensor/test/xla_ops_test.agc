@@ -107,6 +107,30 @@ def test_grouped_conv2d_with_stride_and_padding_matches_the_reference() -> Resul
   )
 end
 
+def test_conv1d_matches_the_reference_for_batched_and_unbatched_inputs() -> Result[Void]
+  return ok() if !try Support.present()
+  for unbatched in [false, true]
+    try agrees(
+      ->(b: Tensor.Backend) {
+        shape = [2, 3, 12]
+        count = 2 * 3 * 12
+        if unbatched
+          shape = [3, 12]
+          count = 3 * 12
+        end
+
+        ok([
+          try Support.floats(Support.uniform(count, 81, 1.0), shape, b),
+          try Support.floats(Support.uniform(5 * 3 * 3, 82, 1.0), [5, 3, 3], b),
+        ])
+      },
+      ->(xs: List[Tensor.Tensor]) { ok([try Tensor.conv1d(xs[0], xs[1], 2, 1)]) },
+    )
+  end
+
+  ok()
+end
+
 def test_elementwise_ops_and_dtype_conversions_match_the_reference() -> Result[Void]
   return ok() if !try Support.present()
   agrees(

@@ -201,6 +201,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Concat(axis) -> ok(["stablehlo.concatenate #{a.join(", ")}, dim = #{axis} : #{sig}"])
     Types.Op.Stack(axis) -> stack(t, n.args, a, axis, first)
     Types.Op.BatchMatmul -> batch_matmul(n.args, a, sig)
+    Types.Op.Conv1d(stride, padding) -> conv1d(t, n.args, a, stride, padding, first)
     Types.Op.Conv2d(stride, padding, groups) -> conv2d(t, n.args, a, stride, padding, groups, first)
     Types.Op.GatedDeltaRule -> ok(["func.call @gated_delta_#{first}(#{a.join(", ")}) : #{sig}"])
     Types.Op.MaxPool2d(kernel, stride, padding) -> max_pool2d(t, n.args[0], a[0], kernel, stride, padding, first)
@@ -223,6 +224,34 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.AdamPart(i) -> adam_part(t, n.args[0], a[0], i, first)
     _ -> error("StableHLO has no emitter for #{Types.op_name(n.op)} yet")
   end
+end
+
+def conv1d(
+  t: Types.Tensor,
+  args: List[Types.Tensor],
+  a: List[String],
+  stride: Int,
+  padding: Int,
+  first: Int,
+) -> Result[List[String]]
+  entry = IR.block([try conv_type(args[0]), try conv_type(args[1])])
+  input = entry.args[0]
+  weight = entry.args[1]
+  built = try Conv.conv1d(entry, input, weight, stride, padding)
+  out = try conv_type(t)
+  return error("conv1d IR result type does not match the graph") if built.values[0].type != out
+  names: Map[Ref, String] = {}
+  names = names.put(input.id, a[0]).put(weight.id, a[1])
+  lines: List[String] = []
+  for i in 0...built.block.ops.size
+    op = built.block.ops[i]
+    lines = lines.push(try IR.operation(op, names, "conv1d_#{first}_#{i}"))
+    for value in op.results
+      names = names.put(value.id, "%#{first + i}")
+    end
+  end
+
+  ok(lines)
 end
 
 # Bind the typed builder arguments to the SSA names already assigned by the graph emitter.
