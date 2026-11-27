@@ -23,6 +23,7 @@ import XlaRaw from "xla_native"
 enum Dtype
   F32
   F16
+  BF16
   F64
   I8
   I16
@@ -302,13 +303,14 @@ end
 
 ## True for the dtypes a weight is kept in on ggml to save memory: `F16` and the quantized ones. Read-only, and only the
 ## weight of a matmul or the table of a gather (`tensor/DESIGN.md` §7).
-def is_packed_dtype(dtype: Dtype) -> Bool = dtype == Dtype.F16 or is_quantized_dtype(dtype)
+def is_packed_dtype(dtype: Dtype) -> Bool = dtype == Dtype.F16 or dtype == Dtype.BF16 or is_quantized_dtype(dtype)
 
 ## True for the dtypes that hold non-integer numerics.
 def is_float_dtype(dtype: Dtype) -> Bool
   case dtype
     Dtype.F32 -> true
     Dtype.F16 -> true
+    Dtype.BF16 -> true
     Dtype.F64 -> true
     _ -> false
   end
@@ -331,6 +333,7 @@ def dtype_name(dtype: Dtype) -> String
   case dtype
     Dtype.F32 -> "F32"
     Dtype.F16 -> "F16"
+    Dtype.BF16 -> "BF16"
     Dtype.Q8_0 -> "Q8_0"
     Dtype.Q4_K -> "Q4_K"
     Dtype.Q6_K -> "Q6_K"
@@ -434,6 +437,7 @@ def float_to_value(x: Float, dtype: Dtype) -> Result[Values]
   case dtype
     Dtype.F32 -> ok(Values.Float(x))
     Dtype.F16 -> ok(Values.Float(x))
+    Dtype.BF16 -> ok(Values.Float(x))
     Dtype.Q8_0 -> ok(Values.Float(x))
     Dtype.Q4_K -> ok(Values.Float(x))
     Dtype.Q6_K -> ok(Values.Float(x))

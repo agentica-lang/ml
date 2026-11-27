@@ -22,6 +22,8 @@ import XlaRaw from "xla_native"
 ## in `tensor/xla-commit`, which the `XLA plugin` workflow builds and publishes.
 RELEASE = "xla-c9276de87e15"
 
+BF16_MAX = 3.3895313892515355e38
+
 ## The name of the plugin in the cache.
 FILE = "pjrt_c_api_cpu_plugin.so"
 
@@ -159,6 +161,12 @@ def from_list(
     x = try Types.value_to_float(v, dtype)
     if dtype == Types.Dtype.F16 and x.abs > 65504.0
       return error("from_list: the value #{x} at element #{values.size} is outside what F16 holds (up to 65504)")
+    end
+
+    if dtype == Types.Dtype.BF16 and x.abs > BF16_MAX
+      return error(
+        "from_list: the value #{x} at element #{values.size} is outside what BF16 holds (up to #{BF16_MAX})",
+      )
     end
 
     values = values.push(x)
@@ -363,8 +371,8 @@ end
 
 ## `ready` for what a file makes: `F32`, or `F16` for a half weight.
 def file_dtype(device: Types.Device, dtype: Types.Dtype, op: String) -> Result[Int]
-  if dtype != Types.Dtype.F32 and dtype != Types.Dtype.F16
-    return error("#{op}: the XLA backend reads a file as F32 or F16, got #{Types.dtype_name(dtype)}")
+  if dtype != Types.Dtype.F32 and dtype != Types.Dtype.F16 and dtype != Types.Dtype.BF16
+    return error("#{op}: the XLA backend reads a file as F32, F16 or BF16, got #{Types.dtype_name(dtype)}")
   end
 
   ready(device, dtype, op)
@@ -394,6 +402,7 @@ def code_of(dtype: Types.Dtype, op: String) -> Result[Int]
     Types.Dtype.U8 -> ok(6)
     Types.Dtype.Bool -> ok(7)
     Types.Dtype.F16 -> ok(8)
+    Types.Dtype.BF16 -> ok(9)
     _ -> error("#{op}: the XLA backend holds no #{Types.dtype_name(dtype)} tensor")
   end
 end

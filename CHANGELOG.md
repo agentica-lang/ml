@@ -21,6 +21,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### agc-ir
 
+- `Element.BF16` (`bf16`).
 - `Element.I8`, `I16` and `U8` (`ui8`), and `Attr.DenseLiteral(payload, type)`, a dense attribute whose payload the dialect formats; an empty `Attr.I64Array` prints as `array<i64>`, the form MLIR parses (ml#417).
 
 ### hub
@@ -30,6 +31,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- `Dtype.BF16`: `Backend.Xla` holds `BF16` tensors in 16-bit buffers. `Tensor.from_file(..., dtype: BF16)` of a `BF16` file keeps every word (signed zero, infinities, NaN); `from_list` and an `F32` or `F16` file round to nearest even and refuse a value beyond the `BF16` maximum, naming its element. The other backends refuse it.
 - `Backend.Xla` holds `F16` tensors: `Tensor.from_file(..., dtype: F16)`, `from_bytes` and `from_list` make half weights in 16-bit buffers, and a compiled product or lookup widens them to `F32` inside the program; `Qwen3.open(dir, xla, F16)` and the other `weights: F16` models load on XLA (ml#386).
 - The StableHLO emitter builds every op with `agc-ir`, so `Trace.stablehlo` and the programs XLA compiles are in MLIR's generic form (`"stablehlo.reduce"(...) ({...}) {dimensions = array<i64: 1>}`), each reduction's, sort's and scatter's combiner an explicit region; only the module, its function and the gated-delta call stay text. The programs compute the same: the IREE goldens of `train/` are unchanged (ml#417).
 - `Tensor.adam_step` on `Backend.Torch` is one native pass over the weight and its moments, where it was ten libtorch kernels per weight (ml#407).

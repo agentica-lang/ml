@@ -43,7 +43,7 @@ without them, see §1).
 ## 2. Types
 
 ```text
-Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool | Q8_0 | Q4_K | Q6_K   # the last three: quantized weights of ggml only (§7)
+Dtype   = F32 | F16 | BF16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool | Q8_0 | Q4_K | Q6_K   # the last three: quantized weights of ggml only (§7)
 Device  = Cpu | Vulkan(Int)                                    # enum; Vulkan(i): ggml's device i
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
@@ -558,7 +558,13 @@ end
   an argument. An `F16` result (a `transpose` or a `slice` of a weight) is left as it is. `Trace.value_and_grad` refuses
   an `F16` weight on XLA as on ggml. Whether
   XLA's CPU plugin fuses the convert into the product or makes an `F32` copy of the weight on each run is not measured
-  here (the memory numbers belong to the benchmark of ml#390). `BF16` has no `Dtype` yet, so it is not held.
+  here (the memory numbers belong to the benchmark of ml#390). `BF16` is held on XLA only, as a second half weight
+  (`from_file(..., dtype: BF16)` and `from_list`; ggml, libtorch and the reference backend refuse it). A `BF16` file
+  read as `BF16` keeps every 16-bit word, a signed zero, an infinity and a NaN's payload included: C widens each word
+  to `F32` exactly and `bf16_bits` narrows it back, keeping the top 7 mantissa bits of a NaN (setting the quiet bit only
+  if they are all zero). Any other source (`from_list`, an `F32` or `F16` file) rounds to nearest even once from the
+  double, and a value beyond 3.3895313892515355e38, an infinity included, is an error naming its element; a NaN stays.
+  StableHLO spells it `bf16`.
 - **Quantized weights.** `Tensor.from_file(..., format: Q8_0, dtype: Q8_0)` on
   ggml keeps the blocks of a Q8_0 file as they are (`GGML_TYPE_Q8_0`: 34 bytes
   for 32 values, about a quarter of `F32`; the range is copied, nothing is

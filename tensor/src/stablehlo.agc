@@ -411,6 +411,7 @@ end
 def float_ir_type(t: Types.Tensor) -> Result[IR.TensorType]
   case t.dtype
     Types.Dtype.F16 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F16))
+    Types.Dtype.BF16 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.BF16))
     Types.Dtype.F32 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F32))
     Types.Dtype.F64 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F64))
     _ -> error("StableHLO IR needs a floating-point tensor")
@@ -675,6 +676,7 @@ end
 def ir_type(shape: List[Int], dtype: Types.Dtype) -> Result[IR.TensorType]
   case dtype
     Types.Dtype.F16 -> ok(IR.TensorType(shape: shape, element: IR.Element.F16))
+    Types.Dtype.BF16 -> ok(IR.TensorType(shape: shape, element: IR.Element.BF16))
     Types.Dtype.F32 -> ok(IR.TensorType(shape: shape, element: IR.Element.F32))
     Types.Dtype.F64 -> ok(IR.TensorType(shape: shape, element: IR.Element.F64))
     Types.Dtype.I8 -> ok(IR.TensorType(shape: shape, element: IR.Element.I8))
@@ -1401,6 +1403,7 @@ def nan(dtype: Types.Dtype) -> Result[String]
   case dtype
     Types.Dtype.F32 -> ok("0x7FC00000")
     Types.Dtype.F16 -> ok("0x7E00")
+    Types.Dtype.BF16 -> ok("0x7FC0")
     Types.Dtype.F64 -> ok("0x7FF8000000000000")
     _ -> error("#{Types.dtype_name(dtype)} has no NaN")
   end
@@ -1410,6 +1413,7 @@ def infinity(dtype: Types.Dtype, negative: Bool) -> Result[String]
   case dtype
     Types.Dtype.F32 -> ok(sign(negative, "0xFF800000", "0x7F800000"))
     Types.Dtype.F16 -> ok(sign(negative, "0xFC00", "0x7C00"))
+    Types.Dtype.BF16 -> ok(sign(negative, "0xFF80", "0x7F80"))
     Types.Dtype.F64 -> ok(sign(negative, "0xFFF0000000000000", "0x7FF0000000000000"))
     _ -> error("#{Types.dtype_name(dtype)} has no infinity")
   end
@@ -1425,6 +1429,7 @@ def compare_type(dtype: Types.Dtype) -> String
   case dtype
     Types.Dtype.F32 -> "FLOAT"
     Types.Dtype.F16 -> "FLOAT"
+    Types.Dtype.BF16 -> "FLOAT"
     Types.Dtype.F64 -> "FLOAT"
     Types.Dtype.Q8_0 -> "FLOAT"
     Types.Dtype.Q4_K -> "FLOAT"

@@ -264,6 +264,7 @@ end
 def storable(dtype: Types.Dtype, op: String) -> Result[Bool]
   case dtype
     Types.Dtype.F16 -> refused(dtype, op)
+    Types.Dtype.BF16 -> refused(dtype, op)
     Types.Dtype.Q8_0 -> refused(dtype, op)
     Types.Dtype.Q4_K -> refused(dtype, op)
     Types.Dtype.Q6_K -> refused(dtype, op)

@@ -18,6 +18,7 @@ def is_float_dtype(dtype: Types.Dtype) -> Bool
   case dtype
     Types.Dtype.F32 -> true
     Types.Dtype.F16 -> true
+    Types.Dtype.BF16 -> true
     Types.Dtype.F64 -> true
     _ -> false
   end
@@ -40,6 +41,7 @@ def name(dtype: Types.Dtype) -> String
   case dtype
     Types.Dtype.F32 -> "F32"
     Types.Dtype.F16 -> "F16"
+    Types.Dtype.BF16 -> "BF16"
     Types.Dtype.F64 -> "F64"
     Types.Dtype.I8 -> "I8"
     Types.Dtype.I16 -> "I16"
@@ -68,6 +70,7 @@ def code(dtype: Types.Dtype) -> Int
     Types.Dtype.I64 -> 6
     Types.Dtype.U8 -> 7
     Types.Dtype.Bool -> 8
+    Types.Dtype.BF16 -> -1
     Types.Dtype.Q8_0 -> -1
     Types.Dtype.Q4_K -> -1
     Types.Dtype.Q6_K -> -1
@@ -115,6 +118,7 @@ def float_to_value(x: Float, dtype: Types.Dtype) -> Result[Types.Values]
   case dtype
     Types.Dtype.F32 -> ok(Types.Values.Float(x))
     Types.Dtype.F16 -> ok(Types.Values.Float(x))
+    Types.Dtype.BF16 -> ok(Types.Values.Float(x))
     Types.Dtype.F64 -> ok(Types.Values.Float(x))
     Types.Dtype.Bool ->
       return ok(Types.Values.Bool(true)) if x == 1.0

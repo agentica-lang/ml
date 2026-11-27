@@ -308,12 +308,12 @@ def from_file(
   end
 
   if !Types.is_packed_dtype(dtype) and dtype != Types.Dtype.F32
-    return error("from_file reads F32, F16 or a quantized dtype, got #{Types.dtype_name(dtype)}")
+    return error("from_file reads F32, F16, BF16 or a quantized dtype, got #{Types.dtype_name(dtype)}")
   end
 
   if Types.is_packed_dtype(dtype) and !holds_packed?(backend, dtype)
     return error(
-      "from_file with dtype #{Types.dtype_name(dtype)} (packed weights) needs the ggml backend (or XLA for F16), got #{Types.backend_name(backend)}",
+      "from_file with dtype #{Types.dtype_name(dtype)} (packed weights) needs the ggml backend (or XLA for F16 and BF16), got #{Types.backend_name(backend)}",
     )
   end
 
@@ -331,9 +331,9 @@ def from_file(
     end
   end
 
-  if dtype == Types.Dtype.F16 and Types.block_of(format).some?
+  if (dtype == Types.Dtype.F16 or dtype == Types.Dtype.BF16) and Types.block_of(format).some?
     fmt = Types.format_name(format)
-    return error("from_file reads a #{fmt} file as F32 or keeps it as #{fmt}, not as F16")
+    return error("from_file reads a #{fmt} file as F32 or keeps it as #{fmt}, not as #{Types.dtype_name(dtype)}")
   end
 
   return error("from_file needs an offset of 0 or more, got #{offset}") if offset < 0
@@ -1976,11 +1976,11 @@ end
 
 private
 
-## ggml holds every packed dtype; XLA holds `F16` alone.
+## ggml holds every packed dtype but `BF16`; XLA holds `F16` and `BF16`.
 def holds_packed?(backend: Types.Backend, dtype: Types.Dtype) -> Bool
   case backend
-    Types.Backend.Ggml(_) -> true
-    Types.Backend.Xla(_) -> dtype == Types.Dtype.F16
+    Types.Backend.Ggml(_) -> dtype != Types.Dtype.BF16
+    Types.Backend.Xla(_) -> dtype == Types.Dtype.F16 or dtype == Types.Dtype.BF16
     _ -> false
   end
 end

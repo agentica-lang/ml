@@ -49,11 +49,11 @@ def test_a_bool_attribute_prints_true_or_false() -> Result[Void]
 end
 
 def test_the_narrow_integer_elements_print_their_mlir_names() -> Result[Void]
-  shown = [IR.Element.I8, IR.Element.I16, IR.Element.U8].map { |e|
+  shown = [IR.Element.I8, IR.Element.I16, IR.Element.U8, IR.Element.BF16].map { |e|
     IR.show_type(IR.TensorType(shape: [2], element: e))
   }
 
-  Test.eq(shown, ["tensor<2xi8>", "tensor<2xi16>", "tensor<2xui8>"])
+  Test.eq(shown, ["tensor<2xi8>", "tensor<2xi16>", "tensor<2xui8>", "tensor<2xbf16>"])
 end
 
 def test_a_dense_literal_prints_its_payload_as_given() -> Result[Void]
