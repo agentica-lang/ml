@@ -146,7 +146,7 @@ def stepper(m: Qwen3_5.Qwen3_5) -> KvDecoder.Stepper[Qwen3_5.Qwen3_5]
     layers: full,
     limit: m.config.max_position_embeddings,
     vocab: m.config.vocab_size,
-    backend: Tensor.backend(m.tokens.table),
+    backend: m.device,
     states: 2 * (m.layers.size - full),
     taps: m.config.linear_conv_kernel_dim,
     sighted: true,
