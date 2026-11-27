@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     # The pins of Hugo (the extended archive) and Dart Sass. The docs theme's tools/site_versions.py downloads them,
     # checks the hashes, and builds dev and every release with them (a tag has its own copy of this file, which the
@@ -89,7 +89,7 @@ jobs:
   deploy:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       pages: write
