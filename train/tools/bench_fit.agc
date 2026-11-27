@@ -82,7 +82,7 @@ def time_fit(loader: Data.Loader, params: List[Tensor.Tensor], epochs: Int) -> R
     loader,
     Optim.Optimizer.Adam(Optim.Adam(lr: 0.001)),
     epochs,
-    some(->(_: Train.Epoch) { tick(stamps) }),
+    some(->(_) { tick(stamps) }),
   )
 
   last = try stamps.recv(0)
@@ -104,8 +104,9 @@ def time_fit(loader: Data.Loader, params: List[Tensor.Tensor], epochs: Int) -> R
   ok()
 end
 
-def tick(stamps: Channel[Int]) -> Void
+def tick(stamps: Channel[Int]) -> Result[Train.Control]
   _ = stamps.send(Time.monotonic_ms(), 0)
+  ok(Train.Control.Continue)
 end
 
 def loss(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]

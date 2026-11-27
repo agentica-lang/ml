@@ -8,7 +8,7 @@
 | Optimizer | `Optim.Optimizer.Sgd(Optim.Sgd(lr:, momentum: 0.0))`, `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))`, `AdamW(Optim.AdamW(lr:, weight_decay: 0.01, decay: []))` |
 | Schedule | `schedule:` on any optimizer: `Optim.Schedule.Constant`, `WarmupLinear(warmup, total)`, `WarmupCosine(warmup, total)`. `lr` is the peak. |
 | Data | `Data.dataset(inputs, targets)` (the first dimension is the rows), `Data.Loader(dataset:, batch_size:, shuffle: true, seed: 0, drop_last: false, prefetch: 2)` |
-| Run | `Train.fit(loss, params, loader, optimizer, epochs, on_epoch, metrics)` and `Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics, prefetch: 0)` |
+| Run | `Train.fit(loss, params, loader, optimizer, epochs, on_epoch, metrics, on_step)` and `Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics, prefetch: 0, on_step)` |
 
 `Adam` defaults: `lr` 0.001, betas 0.9 and 0.999, `eps` 1e-8. `AdamW`'s `decay` has one flag per parameter (empty: all
 decay); a fine-tune leaves out biases and layer-norm weights. `fit` starts every run at step 0, so a resumed run starts
@@ -68,8 +68,11 @@ true
 
 ## Progress, metrics, checkpoints
 
-- `on_epoch` gets `Train.Epoch(epoch:, loss:, params:)` (the epoch counts from 1; `params` are the parameters the epoch
-  ended with, valid only inside `on_epoch`: the next step frees them).
+- `on_epoch` gets `Train.Epoch(epoch:, loss:, steps:, params:)` (the epoch counts from 1; `params` are the parameters the epoch
+  ended with, valid only inside `on_epoch`: the next step frees them). It answers `Result[Train.Control]`:
+  `ok(Train.Control.Continue)`, `ok(Train.Control.Stop)` (ends the fit after the epoch, with its `Fit`) or an `error`.
+- `on_step` gets `Train.StepInfo(epoch:, batch:, step:, loss:, params:)` after each step and answers `Result[Train.Control]`;
+  `Stop` ends the fit after the step, with its `Fit`, and an `error` stops it, naming the epoch and the batch.
 - `metrics` is an open `Metrics.Run`: every step writes `train/loss`, `train/lr` and `train/step_ms` to
   `runs/NAME/metrics.jsonl` and a TensorBoard event file (`tensorboard --logdir runs`). `fit` does not open or close
   the run. A loss that is not finite stops the fit with an error naming the epoch and the batch.
@@ -105,7 +108,12 @@ def main() -> Void
     loader,
     sgd,
     5,
-    some(->(e: Train.Epoch) { puts("epoch #{e.epoch}") }),
+    some(
+      ->(e) {
+        puts("epoch #{e.epoch}")
+        ok(Train.Control.Continue)
+      },
+    ),
     some(run),
   )
 

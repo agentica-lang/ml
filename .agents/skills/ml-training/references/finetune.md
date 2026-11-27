@@ -169,7 +169,8 @@ true
 `Loop` is `Train.fit` as a pipe; `Loop.run_batches(batch, count, epochs:)` is `Train.fit_batches` (`Optim.sgd`, `Optim.adam`
 and `Optim.adamw` are the optimizers with their usual knobs). Both answer the same `Train.Fit`.
 `Loop.metric` measures a `Loop.Metric` (its own batches, `observe`, `reduce`) at the end of every epoch, into
-`fit.metrics[name]`.
+`fit.metrics[name]`. `Loop.handle(event, f, every: n)` calls `f(Loop.Info)` at `Loop.Event.Started`, `StepCompleted` or
+`EpochCompleted`, in order. An `error` from it ends the run; `return Loop.stop(info)` ends it without one, with the `Fit` so far.
 
 ```agentica
 import Data from "pkg/train/data"
@@ -187,6 +188,17 @@ def trained(
   (
     Loop.trainer(loss, params, Optim.adamw(lr: 0.0001))
     |> Loop.metric(spearman)
+    |> Loop.handle(Loop.Event.StepCompleted, ->(_) { ok() }, every: 50)
+    |> Loop.handle(
+      Loop.Event.StepCompleted,
+      ->(info) {
+        puts("step #{info.step} loss #{info.loss}")
+        return Loop.stop(info) if info.step == 1000
+
+        ok()
+      },
+      every: 50,
+    )
     |> Loop.run(loader, epochs: 3)
   )
 end
@@ -329,7 +341,12 @@ def main() -> Void
     1,
     Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.0002, weight_decay: 0.01)),
     10,
-    some(->(e: Train.Epoch) { puts("step #{e.epoch}: #{e.loss}") }),
+    some(
+      ->(e) {
+        puts("step #{e.epoch}: #{e.loss}")
+        ok(Train.Control.Continue)
+      },
+    ),
   ).unwrap!
 
   puts("validation loss after: #{validated(m, weights, adapter, fit.params, held).unwrap!}")

@@ -6,6 +6,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### train
 
+- `Loop.handle(event, f, every:)` calls a function at `Started`, `StepCompleted` or `EpochCompleted`, and `Loop.stop(info)` ends a run early with its `Fit`, and `Train.fit` takes an optional `on_step`. **Breaking:** `on_epoch` and `on_step` answer a `Result[Train.Control]` (`Continue`, `Stop` or an `error`), and a failed metric stops the run at the end of its epoch (ml#397).
 - `Loop.trainer` and `Loop.run` (`Loop.run_batches` for a batch function) run a training as a pipe over `Train.fit`, and `Optim.sgd`, `Optim.adam` and `Optim.adamw` are short optimizer constructors (ml#397).
 - `Loop.metric` measures a `Loop.Metric` at the end of every epoch into `Fit.metrics`; `Loop.mean` and `Loop.spearman` reduce its rows, and `Train.Epoch` carries the epoch's `params`; `finetune_stsb.agc` moves to `Loop.spearman` in a later step (ml#397).
 - `Table.read(path)` reads a CSV file (the `csv` package) into named columns, and `Data.from_table(table, inputs, target, backend, target_dtype)` makes a `Dataset` of its numeric columns for a `Loader` (ml#318).

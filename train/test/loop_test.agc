@@ -110,7 +110,7 @@ def test_a_metric_is_measured_at_the_end_of_every_epoch() -> Result[Void]
     errors = Loop.Metric(
       name: "mse",
       count: 2,
-      batch: ->(i: Int) { pair(backend, i) },
+      batch: ->(i) { pair(backend, i) },
       observe: &squared_errors,
       reduce: &Loop.mean,
     )
@@ -137,8 +137,8 @@ def test_a_failing_metric_is_an_error_that_names_it() -> Result[Void]
   failing = Loop.Metric(
     name: "broken",
     count: 1,
-    batch: ->(i: Int) { pair(S.REF, i) },
-    observe: ->(_ps: List[Tensor.Tensor], _b: Data.Batch) { error("no luck") },
+    batch: ->(i) { pair(S.REF, i) },
+    observe: ->(_, _) { error("no luck") },
     reduce: &Loop.mean,
   )
 
@@ -152,33 +152,6 @@ def test_a_failing_metric_is_an_error_that_names_it() -> Result[Void]
   S.expect_error(r, "metric broken: no luck")
 end
 
-## A metric that fails is not measured again: with three epochs its function is called once, and the run ends with its
-## error after the last epoch.
-def test_a_failed_metric_is_not_measured_again() -> Result[Void]
-  calls: Channel[Int] = Channel.new(3)
-  failing = Loop.Metric(
-    name: "broken",
-    count: 1,
-    batch: ->(i: Int) { pair(S.REF, i) },
-    observe: ->(_ps: List[Tensor.Tensor], _b: Data.Batch) {
-      _ = calls.send(1, 0)
-      error("no luck")
-    },
-    reduce: &Loop.mean,
-  )
-
-  loader = Data.Loader(dataset: try rows(S.REF), batch_size: 2, shuffle: false)
-  r = (
-    Loop.trainer(&linear, try weights(S.REF), adam())
-    |> Loop.metric(failing)
-    |> Loop.run(loader, epochs: 3)
-  )
-
-  try S.expect_error(r, "metric broken: no luck")
-  try Test.eq(try calls.recv(0), 1)
-  Test.error?(calls.recv(0))
-end
-
 ## The parameters of each epoch are the ones that epoch ended with: a metric that reads a weight sees it change, and
 ## `Loop.spearman` through a run is the correlation of the trained parameters' predictions with the targets.
 def test_a_metric_sees_the_parameters_of_its_epoch() -> Result[Void]
@@ -187,15 +160,15 @@ def test_a_metric_sees_the_parameters_of_its_epoch() -> Result[Void]
     weight = Loop.Metric(
       name: "weight",
       count: 1,
-      batch: ->(i: Int) { pair(backend, i) },
-      observe: ->(ps: List[Tensor.Tensor], _b: Data.Batch) { first_weight(ps) },
+      batch: ->(i) { pair(backend, i) },
+      observe: ->(ps, _) { first_weight(ps) },
       reduce: &Loop.mean,
     )
 
     order = Loop.Metric(
       name: "spearman",
       count: 2,
-      batch: ->(i: Int) { pair(backend, i) },
+      batch: ->(i) { pair(backend, i) },
       observe: &predictions_and_targets,
       reduce: &Loop.spearman,
     )
@@ -225,6 +198,260 @@ def predictions_and_targets(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Li
   got = try S.floats_of(predicted)
   want = try S.floats_of(b.targets)
   ok((0...want.size).map { |i: Int| [got[i], want[i]] })
+end
+
+def labelled(log: Channel[String], tag: String) -> Fn[Loop.Info, Result[Void]]
+  ->(i) {
+    _ = log.send("#{tag}#{i.step}", 0)
+    ok()
+  }
+end
+
+def failing_at(log: Channel[String], step: Int) -> Fn[Loop.Info, Result[Void]]
+  ->(i) {
+    return error("stop at #{i.step}") if i.step == step
+
+    _ = log.send("f#{i.step}", 0)
+    ok()
+  }
+end
+
+def failing_epoch(epoch: Int, message: String) -> Fn[Loop.Info, Result[Void]]
+  ->(i) {
+    return error(message) if i.epoch == epoch
+
+    ok()
+  }
+end
+
+def drained(log: Channel[String], count: Int) -> Result[List[String]]
+  out: List[String] = []
+  for _ in 0...count
+    out = out.push(try log.recv(0))
+  end
+
+  try Test.error?(log.recv(0))
+  ok(out)
+end
+
+## Handlers are called in the order they were added, at their events, every `every` steps or epochs; an epoch handler
+## sees the metrics of its epoch. Two epochs of two steps and an epoch handler every 2: only epoch 2 fires.
+def test_handlers_run_in_order_at_their_events() -> Result[Void]
+  for backend in try backends()
+    log: Channel[String] = Channel.new(32)
+    loader = Data.Loader(dataset: try rows(backend), batch_size: 2, shuffle: false)
+    on_epoch = ->(i: Loop.Info) {
+      _ = log.send("e#{i.epoch}:#{i.metrics.size}@#{i.step}", 0)
+      ok()
+    }
+
+    mse = Loop.Metric(
+      name: "mse",
+      count: 2,
+      batch: ->(i) { pair(backend, i) },
+      observe: &squared_errors,
+      reduce: &Loop.mean,
+    )
+
+    fit = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.metric(mse)
+      |> Loop.handle(
+        Loop.Event.Started,
+        ->(_) {
+          _ = log.send("start", 0)
+          ok()
+        },
+      )
+      |> Loop.handle(Loop.Event.StepCompleted, labelled(log, "a"))
+      |> Loop.handle(Loop.Event.StepCompleted, labelled(log, "b"), every: 3)
+      |> Loop.handle(Loop.Event.EpochCompleted, on_epoch, every: 2)
+      |> try Loop.run(loader, epochs: 3)
+    )
+
+    try Test.eq(fit.history.size, 3)
+    got = try drained(log, 10)
+    try Test.eq(got, ["start", "a1", "a2", "a3", "b3", "a4", "e2:1@4", "a5", "a6", "b6"])
+  end
+
+  ok()
+end
+
+## An error from a step handler stops the run at that step: no later step, no later handler.
+def test_a_step_handler_error_stops_the_run_at_once() -> Result[Void]
+  for backend in try backends()
+    log: Channel[String] = Channel.new(32)
+    loader = Data.Loader(dataset: try rows(backend), batch_size: 2, shuffle: false)
+    r = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.handle(Loop.Event.StepCompleted, failing_at(log, 3))
+      |> Loop.handle(Loop.Event.StepCompleted, labelled(log, "late"))
+      |> Loop.run(loader, epochs: 3)
+    )
+
+    try S.expect_error(r, "epoch 2, batch 0: stop at 3")
+    try Test.eq(try drained(log, 4), ["f1", "late1", "f2", "late2"])
+  end
+
+  ok()
+end
+
+## A metric that fails stops the run at the end of its epoch, not after the last: no later step runs, and the metric is
+## called once.
+def test_a_failed_metric_stops_the_run_at_the_end_of_its_epoch() -> Result[Void]
+  log: Channel[String] = Channel.new(32)
+  calls: Channel[Int] = Channel.new(3)
+  failing = Loop.Metric(
+    name: "broken",
+    count: 1,
+    batch: ->(i) { pair(S.REF, i) },
+    observe: ->(_, _) {
+      _ = calls.send(1, 0)
+      error("no luck")
+    },
+    reduce: &Loop.mean,
+  )
+
+  loader = Data.Loader(dataset: try rows(S.REF), batch_size: 2, shuffle: false)
+  r = (
+    Loop.trainer(&linear, try weights(S.REF), adam())
+    |> Loop.metric(failing)
+    |> Loop.handle(Loop.Event.StepCompleted, labelled(log, "s"))
+    |> Loop.run(loader, epochs: 3)
+  )
+
+  try S.expect_error(r, "metric broken: no luck")
+  try Test.eq(try drained(log, 2), ["s1", "s2"])
+  try Test.eq(try calls.recv(0), 1)
+  Test.error?(calls.recv(0))
+end
+
+## An epoch handler that fails stops the run at the end of its epoch, with the epoch in its error. A `Started` handler
+## that fails stops it before the first step.
+def test_a_failing_epoch_handler_stops_the_run() -> Result[Void]
+  for backend in try backends()
+    log: Channel[String] = Channel.new(32)
+    loader = Data.Loader(dataset: try rows(backend), batch_size: 2, shuffle: false)
+    r = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.handle(Loop.Event.StepCompleted, labelled(log, "s"))
+      |> Loop.handle(Loop.Event.EpochCompleted, failing_epoch(1, "full"))
+      |> Loop.run(loader, epochs: 3)
+    )
+
+    try S.expect_error(r, "epoch 1: full")
+    try Test.eq(try drained(log, 2), ["s1", "s2"])
+
+    last = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.handle(Loop.Event.EpochCompleted, failing_epoch(2, "late"))
+      |> Loop.run(loader, epochs: 2)
+    )
+
+    try S.expect_error(last, "epoch 2: late")
+    early = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.handle(Loop.Event.Started, ->(_) { error("no go") })
+      |> Loop.run(loader)
+    )
+
+    try S.expect_error(early, "before the first step: no go")
+  end
+
+  ok()
+end
+
+## `Loop.stop` ends the run without an error, after the step or epoch of its handler, with the `Fit` so far: the history
+## of the epochs run (the last over the steps it ran) and the metric values of the epochs that ended.
+def test_stop_ends_the_run_with_its_fit() -> Result[Void]
+  for backend in try backends()
+    loader = Data.Loader(dataset: try rows(backend), batch_size: 2, shuffle: false)
+    mse = Loop.Metric(
+      name: "mse",
+      count: 2,
+      batch: ->(i) { pair(backend, i) },
+      observe: &squared_errors,
+      reduce: &Loop.mean,
+    )
+
+    losses: Channel[Float] = Channel.new(8)
+    trainer = Loop.trainer(&linear, try weights(backend), adam()) |> Loop.metric(mse)
+    by_step = (
+      trainer
+      |> Loop.handle(
+        Loop.Event.StepCompleted,
+        ->(i) {
+          _ = losses.send(i.loss, 0)
+          ok()
+        },
+      )
+      |> Loop.handle(Loop.Event.StepCompleted, stop_at_step(3))
+      |> try Loop.run(loader, epochs: 3)
+    )
+
+    try Test.eq(by_step.history.size, 2)
+    stepped = [try losses.recv(0), try losses.recv(0), try losses.recv(0)]
+    try S.expect_close(
+      by_step.history,
+      [(stepped[0] + stepped[1]) / 2.0, stepped[2]],
+      0.000001,
+      0.00001,
+      "the last epoch is the mean of the steps it ran",
+    )
+
+    try Test.eq(by_step.metrics["mse"].size, 1)
+    try Test.eq((try S.floats_of(by_step.params[0])).size, 2)
+    by_epoch = (
+      trainer
+      |> Loop.handle(Loop.Event.EpochCompleted, stop_at_step(4))
+      |> try Loop.run(loader, epochs: 3)
+    )
+
+    try Test.eq(by_epoch.history.size, 2)
+    try Test.eq(by_epoch.metrics["mse"].size, 2)
+    first = (
+      trainer
+      |> Loop.handle(Loop.Event.Started, ->(i) { Loop.stop(i) })
+      |> try Loop.run(loader, epochs: 3)
+    )
+
+    try Test.eq(first.history.size, 1)
+    try Test.eq(first.metrics["mse"].size, 0)
+    mistaken = (
+      trainer
+      |> Loop.handle(
+        Loop.Event.StepCompleted,
+        ->(i) {
+          try Loop.stop(i)
+          error("x")
+        },
+      )
+      |> Loop.run(loader, epochs: 3)
+    )
+
+    try S.expect_error(mistaken, "epoch 1, batch 0: x")
+  end
+
+  ok()
+end
+
+def stop_at_step(step: Int) -> Fn[Loop.Info, Result[Void]]
+  ->(i) {
+    return Loop.stop(i) if i.step == step
+
+    ok()
+  }
+end
+
+def test_every_is_one_or_more() -> Result[Void]
+  loader = Data.Loader(dataset: try rows(S.REF), batch_size: 2, shuffle: false)
+  r = (
+    Loop.trainer(&linear, try weights(S.REF), adam())
+    |> Loop.handle(Loop.Event.StepCompleted, labelled(Channel.new(1), "x"), every: 0)
+    |> Loop.run(loader)
+  )
+
+  S.expect_error(r, "every is 1 or more")
 end
 
 ## The reducers: the mean of the first number, Spearman's correlation of the first two (ties share their ranks, a

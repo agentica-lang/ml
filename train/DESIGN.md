@@ -40,7 +40,8 @@ Metrics.close(run) -> Result[Void]
 Train.fit(loss, params, data: Data.Loader, optimizer, epochs, on_epoch?, metrics?) -> Result[Fit { params, history }]
 Train.fit_batches(loss, params, batch: Fn[Int, Int, Result[Batch]], count, optimizer, epochs, on_epoch?, metrics?, prefetch = 0) -> Result[Fit]
   loss: Fn[List[Tensor], Data.Batch, Result[Tensor]]
-  on_epoch: Optional[Fn[Epoch { epoch, loss }, Void]]
+  on_epoch: Optional[Fn[Epoch { epoch, loss, steps, params }, Result[Control]]]
+  on_step: Optional[Fn[StepInfo { epoch, batch, step, loss, params }, Result[Control]]]    Stop ends the run with its Fit
 Train.stablehlo(loss, params, batch: Data.Batch, optimizer) -> Result[Trace.Module]
 
 Params.split(weights: Map[String, Tensor], trainable: Fn[String, Bool]) -> Result[Split { names, trainable, frozen }]
@@ -266,7 +267,7 @@ Lora.open(dir, backend) -> Result[Adapter]
   `train/lr` and `train/step_ms` (from a monotonic clock) at the optimizer's step count (from 1).
   `fit` does not open or close the run.
 - **Reporting is a callback and a history.** `fit` answers the mean loss of
-  every epoch and calls `on_epoch` after each; a caller logs from there
+  every epoch and calls `on_epoch` after each, and `on_step` after each step (a hook answers `Continue` or `Stop`, or an `error`); a caller logs from there
   (`std/logger` or `puts`). `fit` itself prints nothing.
 - **A batch is one op per tensor.** The epoch's order is a Fisher-Yates
   permutation drawn in Agentica with the Park-Miller generator of `nn/init.agc`,

@@ -97,27 +97,48 @@ fit = try (
 
 `Loop.run_batches(trainer, batch, count, epochs: 1, prefetch: 0)` is `Train.fit_batches`: `batch(epoch, i)` makes batch `i` of `count`.
 
-`Loop.metric(trainer, metric)` adds a number that the loop measures at the end of every epoch, on the batches of its own data (a validation set, say), with the parameters of that epoch. A `Loop.Metric` has a `name`, the `count` and the function `batch(i)` of its batches, `observe(params, batch)`, which answers one row of numbers for each example, and `reduce`, which turns all the rows into the value: `&Loop.mean` is the mean of the first number of each row, and `&Loop.spearman` Spearman's correlation of the first two. The values are in `fit.metrics[name]`, one per epoch; a metric that fails is not measured again, and the run ends with an error that names it after its last epoch. `observe` is forward only: a `Trace.eval` of the model, with no gradient.
+`Loop.metric(trainer, metric)` adds a number that the loop measures at the end of every epoch, on the batches of its own data (a validation set, say), with the parameters of that epoch. A `Loop.Metric` has a `name`, the `count` and the function `batch(i)` of its batches, `observe(params, batch)`, which answers one row of numbers for each example, and `reduce`, which turns all the rows into the value: `&Loop.mean` is the mean of the first number of each row, and `&Loop.spearman` Spearman's correlation of the first two. The values are in `fit.metrics[name]`, one per epoch; a metric that fails ends the run, at the end of its epoch, with an error that names it. A run stopped from a step handler has no values for the epoch it cut short, so `fit.metrics[name]` has one value per epoch that ended, possibly fewer than `fit.history`. `observe` is forward only: a `Trace.eval` of the model, with no gradient.
 
 ```agentica
 fit = try (
   Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
-  |> Loop.metric(Loop.Metric(name: "mse", count: 4, batch: ->(i: Int) { held_out(i) }, observe: &squared_errors, reduce: &Loop.mean))
+  |> Loop.metric(Loop.Metric(name: "mse", count: 4, batch: ->(i) { held_out(i) }, observe: &squared_errors, reduce: &Loop.mean))
+  |> Loop.run(data, epochs: 3)
+)
+```
+
+`Loop.handle(trainer, event, f, every: 1)` adds a function that the loop calls at an event, in the order the handlers were added and in the thread of the run: `Loop.Event.Started` (before the first step), `Loop.Event.StepCompleted` (after each step) or `Loop.Event.EpochCompleted` (after each epoch, once its metrics are measured). `every: n` calls it on every `n`th step or epoch. It gets a `Loop.Info` with the `epoch` (from 1), the `batch` and the `step` count of the run (at `EpochCompleted` the steps so far, with `batch` 0), the `loss` (of the step, or the mean of the epoch), the `params` (valid only inside the handler: the next step frees them) and, at `EpochCompleted`, the `metrics` of that epoch by name. A handler answers a `Result[Void]`: an `error` ends the run, and `return Loop.stop(info)` ends it without one, after that step or epoch (after the first step, from `Started`): `run` answers the `Fit` as usual (a stop from a step handler skips the metrics of the epoch it cut short; one from `EpochCompleted` keeps its epoch's; an `error` wins over a stop), with the parameters so far and a history whose last epoch is the mean over the steps it ran. A step handler's error is named by the epoch and the batch (`epoch 2, batch 0: ...`); an epoch handler's, like a metric's, by the epoch (`epoch 1: ...`), and it stops the run at the end of that epoch; a `Started` handler's is named `before the first step`.
+
+```agentica
+fit = try (
+  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
+  |> Loop.handle(Loop.Event.StepCompleted, ->(_) { ok() }, every: 50)
+  |> Loop.handle(
+    Loop.Event.StepCompleted,
+    ->(info) {
+      puts("step #{info.step} loss #{info.loss}")
+      return Loop.stop(info) if info.step == 1000
+
+      ok()
+    },
+    every: 50,
+  )
   |> Loop.run(data, epochs: 3)
 )
 ```
 
 ## Train.fit
 
-`Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).
+`Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).
 
 - `loss` has the type `Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]]`. It gets the parameters and a batch, and it returns a float scalar.
 - Inside `loss`, the batch `inputs` and `targets` are traced inputs, so the loss is written once, as plain code. `fit` traces and compiles the step once for each batch shape (a smaller last batch is a second one) and runs it on every batch of that shape.
-- `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1), `loss` and `params`, the parameters the epoch ended with (use them inside `on_epoch`: the next step frees them). `fit` prints nothing.
+- `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1), `loss`, `steps` (the step count of the run so far) and `params`, the parameters the epoch ended with (use them inside `on_epoch`: the next step frees them), and answers a `Result[Train.Control]`: `ok(Train.Control.Continue)`, `ok(Train.Control.Stop)` (ends `fit` after the epoch, answering its `Fit`) or an `error` (stops `fit` with an error that names the epoch). `fit` prints nothing.
+- `on_step` is optional. It gets a `StepInfo` after each step, with `epoch` (from 1), `batch` (from 0), `step` (the count of the run, from 1), `loss` and `params` (valid only inside `on_step`), and answers a `Result[Train.Control]` as `on_epoch` does: `Stop` ends `fit` after the step, answering its `Fit` (the history's last epoch is the mean over the steps it ran), and an `error` stops it with an error that names the epoch and the batch.
 - `metrics` is optional. It is an open [`Metrics.Run`](metrics.md) that gets `train/loss`, `train/lr` and `train/step_ms` for every step. A value it refuses, such as a loss that is not finite, stops `fit` too.
 - A failed step stops `fit` with an error that names the epoch and the batch, for example `epoch 1, batch 0: ...`.
 
-`Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics)` is `fit` over batches that a function makes, for data that is not two tensors of one shape: `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `epoch` (from 1) as a `Data.Batch(inputs:, targets:)`.
+`Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics, prefetch, on_step)` is `fit` over batches that a function makes, for data that is not two tensors of one shape: `batch(epoch, i)` answers batch `i` (from 0) of `count` in epoch `epoch` (from 1) as a `Data.Batch(inputs:, targets:)`.
 
 ```agentica
 fit = try Train.fit_batches(&loss, params, ->(_epoch: Int, i: Int) { padded(sentences, i) }, 63, optimizer, 1)

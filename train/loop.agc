@@ -5,6 +5,7 @@
 ## fit = try (
 ##   Loop.trainer(&loss, params, Optim.adamw(lr: 0.00002))
 ##   |> Loop.metric(spearman)
+##   |> Loop.handle(Loop.Event.StepCompleted, report, every: 50)
 ##   |> Loop.run(data, epochs: 3)
 ## )
 ## ```
@@ -31,6 +32,38 @@ struct Metric
   reduce: Fn[List[List[Float]], Float]
 end
 
+## When a handler is called: once before the first step (`Started`), after each step (`StepCompleted`) or after each epoch
+## (`EpochCompleted`, once its metrics are measured).
+enum Event
+  Started
+  StepCompleted
+  EpochCompleted
+end
+
+## What a handler gets. `epoch` counts from 1 (0 at `Started`), `batch` is the index in the epoch and `step` the count of
+## the run, from 1 (the steps so far at `EpochCompleted`, 0 at `Started`); `batch` is 0 at `Started` and `EpochCompleted`.
+## `loss` is the loss of the step, or the mean loss of the epoch at `EpochCompleted` (0 at `Started`).
+## `params` are the parameters the step or the epoch made, the run's own: use them inside the handler (the next step
+## frees them). `metrics` holds the values measured at the end of this epoch, by name, at `EpochCompleted`. `halt` is
+## what `Loop.stop` writes.
+struct Info
+  event: Event
+  epoch: Int
+  batch: Int
+  step: Int
+  loss: Float
+  params: List[Tensor.Tensor]
+  metrics: Map[String, Float] = {}
+  halt: Channel[Bool]
+end
+
+## A function called at an event, every `every` steps or epochs. An `error` from it ends the run.
+struct Handler
+  event: Event
+  every: Int
+  call: Fn[Info, Result[Void]]
+end
+
 ## What a run trains: the loss of a parameter list and a batch (inside it the parameters and the batch are `Trace`
 ## tensors), the parameters it starts from, and the optimizer.
 struct Trainer
@@ -38,6 +71,7 @@ struct Trainer
   params: List[Tensor.Tensor]
   optimizer: Optim.Optimizer
   metrics: List[Metric] = []
+  handlers: List[Handler] = []
 end
 
 def trainer(
@@ -49,15 +83,35 @@ def trainer(
 end
 
 ## The trainer with `metric` measured at the end of every epoch of its run; the values are in `Fit.metrics` under the
-## name of the metric, one per epoch. A metric that fails is not measured again: the run goes on, and ends with its
-## error after the last epoch.
+## name of the metric, one per epoch. A metric that fails ends the run with its error at the end of its
+## epoch. A run stopped from a step handler has no values for the epoch it cut short: `Fit.metrics` has one value per epoch
+## that ended, possibly fewer than the history.
 def metric(t: Trainer, m: Metric) -> Trainer = t.with(metrics: t.metrics.push(m))
 
-## `Train.fit` of the trainer over the batches of `data`, for `epochs` passes (one by default). Until `Loop.handle`, a
-## run takes no `on_epoch` or `metrics` run of `Train.fit`.
+## The trainer with `f` called at `event`: before the first step, after every `every`th step, or after every `every`th
+## epoch (with the metrics of that epoch). Handlers of an event are called in the order they were added, and in the
+## thread of the run. A handler that answers an `error` ends the run with it: a step handler's error is named by the
+## epoch and the batch, an epoch handler's (and a metric's) by the epoch, and a `Started` handler's by "before the first
+## step". An `every` below 1 is an error of the run.
+def handle(t: Trainer, event: Event, f: Fn[Info, Result[Void]], every: Int = 1) -> Trainer
+  t.with(handlers: t.handlers.push(Handler(event: event, every: every, call: f)))
+end
+
+## What a handler returns to end the run early, without an error: `return Loop.stop(info) if info.step == 100`. The run
+## ends after the step or epoch of `info` (after the first step, for a `Started` handler), and answers its `Train.Fit`
+## as usual: the parameters so far, and a history whose last epoch is the mean over the steps it ran. A stop from a step
+## handler skips the metrics of the epoch it cut short; a stop from `EpochCompleted` keeps those of its epoch. An `error`
+## wins over a stop: a handler that stops and then answers an `error` ends the run with the error.
+def stop(info: Info) -> Result[Void]
+  _ = info.halt.send(true, 0)
+  ok()
+end
+
+## `Train.fit` of the trainer over the batches of `data`, for `epochs` passes (one by default).
 def run(t: Trainer, data: Data.Loader, epochs: Int = 1) -> Result[Train.Fit]
   seen = measuring(t, epochs)
-  fit = try Train.fit(t.loss, t.params, data, t.optimizer, epochs, seen.on_epoch)
+  try started(t, seen)
+  fit = try Train.fit(t.loss, t.params, data, t.optimizer, epochs, seen.on_epoch, none, seen.on_step)
   measured(fit, t, seen)
 end
 
@@ -71,7 +125,20 @@ def run_batches(
   prefetch: Int = 0,
 ) -> Result[Train.Fit]
   seen = measuring(t, epochs)
-  fit = try Train.fit_batches(t.loss, t.params, batch, count, t.optimizer, epochs, seen.on_epoch, none, prefetch)
+  try started(t, seen)
+  fit = try Train.fit_batches(
+    t.loss,
+    t.params,
+    batch,
+    count,
+    t.optimizer,
+    epochs,
+    seen.on_epoch,
+    none,
+    prefetch,
+    seen.on_step,
+  )
+
   measured(fit, t, seen)
 end
 
@@ -113,41 +180,44 @@ end
 
 private
 
-## What a run collects: the closure of `on_epoch` and the channel that it sends the values of an epoch to, one
-## `Result` for each epoch.
+## What a run hands to the engine: the closures of `on_epoch` and `on_step`, the channel that `on_epoch` sends the
+## metric values of an epoch to, and the channel that `Loop.stop` writes to.
 struct Seen
-  on_epoch: Optional[Fn[Train.Epoch, Void]]
-  values: Channel[Result[List[Float]]]
-  failed: Channel[Bool]
+  on_epoch: Optional[Fn[Train.Epoch, Result[Train.Control]]]
+  on_step: Optional[Fn[Train.StepInfo, Result[Train.Control]]]
+  values: Channel[List[Float]]
+  halt: Channel[Bool]
 end
 
 def measuring(t: Trainer, epochs: Int) -> Seen
-  values: Channel[Result[List[Float]]] = Channel.new(epochs)
-  failed: Channel[Bool] = Channel.new(1)
-  return Seen(on_epoch: none, values: values, failed: failed) if t.metrics.empty?
+  values: Channel[List[Float]] = Channel.new(epochs)
+  halt: Channel[Bool] = Channel.new(1)
+  steps = handlers_at(t, Event.StepCompleted)
+  on_step: Optional[Fn[Train.StepInfo, Result[Train.Control]]] = none
+  if !t.handlers.empty? or !t.metrics.empty?
+    on_step = some(->(s) { after_step(steps, s, halt) })
+  end
 
-  on_epoch = ->(e: Train.Epoch) { _ = values.send(after_epoch(t.metrics, e.params, failed), 0) }
-  Seen(on_epoch: some(on_epoch), values: values, failed: failed)
+  on_epoch: Optional[Fn[Train.Epoch, Result[Train.Control]]] = none
+  if !t.metrics.empty? or !handlers_at(t, Event.EpochCompleted).empty?
+    on_epoch = some(->(e) { after_epoch(t, e, values, halt) })
+  end
+
+  Seen(on_epoch: on_epoch, on_step: on_step, values: values, halt: halt)
 end
 
-## `fit` with the metric values of every epoch, or the error of the first metric that failed.
+## `fit` with the metric values of every epoch that ended.
 def measured(fit: Train.Fit, t: Trainer, seen: Seen) -> Result[Train.Fit]
-  return ok(fit) if t.metrics.empty?
+  return ok(fit) if seen.on_epoch.none?
 
   columns: List[List[Float]] = t.metrics.map { |_m: Metric| [] }
-  for _ in fit.history
-    values = next_values(seen)
-    if !values.ok?
-      for p in fit.params
-        Data.free(p)
-      end
-
-      return error(values.message)
-    end
-
+  got = seen.values.recv(0)
+  while got.ok?
     for k in 0...t.metrics.size
-      columns = columns.set(k, columns[k].push(values.unwrap![k]))
+      columns = columns.set(k, columns[k].push(got.unwrap![k]))
     end
+
+    got = seen.values.recv(0)
   end
 
   named: Map[String, List[Float]] = {}
@@ -158,28 +228,78 @@ def measured(fit: Train.Fit, t: Trainer, seen: Seen) -> Result[Train.Fit]
   ok(fit.with(metrics: named))
 end
 
-## The values of the metrics for one epoch, or the error of the first that fails; once one has failed, later epochs
-## measure nothing.
-def after_epoch(metrics: List[Metric], params: List[Tensor.Tensor], failed: Channel[Bool]) -> Result[List[Float]]
-  if failed.recv(0).ok?
-    _ = failed.send(true, 0)
-    return error("an earlier epoch's metric failed")
-  end
+def handlers_at(t: Trainer, event: Event) -> List[Handler] = t.handlers.select { |h: Handler| h.event == event }
 
-  measured = measure_all(metrics, params)
-  if !measured.ok?
-    _ = failed.send(true, 0)
-  end
+## `Stop` when a handler called `Loop.stop` since the last check.
+def control(halt: Channel[Bool]) -> Train.Control
+  return Train.Control.Stop if halt.recv(0).ok?
 
-  measured
+  Train.Control.Continue
 end
 
-## What the next epoch's `on_epoch` sent: its values or its error.
-def next_values(seen: Seen) -> Result[List[Float]]
-  case seen.values.recv(0)
-    ok(values) -> values
-    error(e) -> error(e.message)
+## Checks the handlers, then calls those of `Started`.
+def started(t: Trainer, seen: Seen) -> Result[Void]
+  for h in t.handlers
+    return error("handle: every is 1 or more, got #{h.every}") if h.every < 1
   end
+
+  info = Info(event: Event.Started, epoch: 0, batch: 0, step: 0, loss: 0.0, params: t.params, halt: seen.halt)
+  for h in handlers_at(t, Event.Started)
+    called = h.call.call(info)
+    return error("before the first step: #{called.message}") if !called.ok?
+  end
+
+  ok()
+end
+
+## What `on_step` does after a step: calls the step handlers that are due, then stops if one of them asked to.
+def after_step(steps: List[Handler], s: Train.StepInfo, halt: Channel[Bool]) -> Result[Train.Control]
+  info = Info(
+    event: Event.StepCompleted,
+    epoch: s.epoch,
+    batch: s.batch,
+    step: s.step,
+    loss: s.loss,
+    params: s.params,
+    halt: halt,
+  )
+
+  for h in steps
+    if s.step % h.every == 0
+      try h.call.call(info)
+    end
+  end
+
+  ok(control(halt))
+end
+
+## The metrics of the epoch, then its handlers with them. The values go to `measured`.
+def after_epoch(t: Trainer, e: Train.Epoch, values: Channel[List[Float]], halt: Channel[Bool]) -> Result[Train.Control]
+  measured = try measure_all(t.metrics, e.params)
+  named: Map[String, Float] = {}
+  for k in 0...t.metrics.size
+    named = named.put(t.metrics[k].name, measured[k])
+  end
+
+  info = Info(
+    event: Event.EpochCompleted,
+    epoch: e.epoch,
+    batch: 0,
+    step: e.steps,
+    loss: e.loss,
+    params: e.params,
+    metrics: named,
+    halt: halt,
+  )
+
+  for h in handlers_at(t, Event.EpochCompleted)
+    if e.epoch % h.every == 0
+      try h.call.call(info)
+    end
+  end
+
+  _ = values.send(measured, 0)
+  ok(control(halt))
 end
 
 def measure_all(metrics: List[Metric], params: List[Tensor.Tensor]) -> Result[List[Float]]

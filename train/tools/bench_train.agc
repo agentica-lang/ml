@@ -132,7 +132,7 @@ def fitted(s: Setup) -> Result[Measured]
   loader = Data.Loader(dataset: dataset, batch_size: Tensor.shape(s.x)[0], shuffle: false, prefetch: 0)
   stamps: Channel[Int] = Channel.new(epochs + 1)
   started = Time.monotonic_ns()
-  fit = try Train.fit(&loss, s.params, loader, s.optimizer, epochs, some(->(_: Train.Epoch) { stamp(stamps) }))
+  fit = try Train.fit(&loss, s.params, loader, s.optimizer, epochs, some(->(_) { stamp(stamps) }))
 
   ns: List[Int] = []
   last = started
@@ -222,8 +222,9 @@ def scalar(t: Tensor.Tensor) -> Result[Float]
   end
 end
 
-def stamp(stamps: Channel[Int]) -> Void
+def stamp(stamps: Channel[Int]) -> Result[Train.Control]
   _ = stamps.send(Time.monotonic_ns(), 0)
+  ok(Train.Control.Continue)
 end
 
 def loss(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor] = loss_of(ps, b.inputs, b.targets)

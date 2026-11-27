@@ -47,7 +47,7 @@ private
 
 def test_an_mlp_learns_xor() -> Result[Void]
   seen: Channel[Train.Epoch] = Channel.new(EPOCHS)
-  fit = try xor(S.REF, some(->(e: Train.Epoch) { report(seen, e) }))
+  fit = try xor(S.REF, some(->(e) { report(seen, e) }))
   try S.expect_close(fit.history, HISTORY, 0.0, 0.0000001, "loss history")
   try Test.assert(fit.history[EPOCHS - 1] < 0.05, "the loss ends at #{fit.history[EPOCHS - 1]}")
   for i in 0...EPOCHS
@@ -140,8 +140,52 @@ def classifies(fit: Train.Fit, backend: Tensor.Backend) -> Result[Void]
   Test.eq(logits.map { |z| z > 0.0 }, [false, true, true, false])
 end
 
-def report(seen: Channel[Train.Epoch], e: Train.Epoch) -> Void
+def report(seen: Channel[Train.Epoch], e: Train.Epoch) -> Result[Train.Control]
   _ = seen.send(e, 0)
+  ok(Train.Control.Continue)
+end
+
+## `on_step` gets the step after each step, counted across epochs (the loader has one batch, so the step is the epoch),
+## and an error from it stops the fit at that step, naming the epoch and the batch.
+def test_on_step_sees_every_step_and_its_error_stops_the_fit() -> Result[Void]
+  seen: Channel[String] = Channel.new(16)
+  on_step = ->(s) {
+    _ = seen.send("#{s.epoch}/#{s.batch}/#{s.step}", 0)
+    return error("stop") if s.step == 3
+
+    ok(Train.Control.Continue)
+  }
+
+  try S.expect_error(xor(S.REF, on_step: some(on_step)), "epoch 3, batch 0: stop")
+  try Test.eq([try seen.recv(0), try seen.recv(0), try seen.recv(0)], ["1/0/1", "2/0/2", "3/0/3"])
+  Test.error?(seen.recv(0))
+end
+
+## `Stop` ends the fit without an error: after the step or the epoch it follows, with its `Fit` (the parameters so far
+## and the history of the epochs run).
+def test_stop_ends_the_fit_with_its_fit() -> Result[Void]
+  halt = ->(s: Train.StepInfo) {
+    return ok(Train.Control.Stop) if s.step == 3
+
+    ok(Train.Control.Continue)
+  }
+
+  stopped = try xor(S.REF, on_step: some(halt))
+  try Test.eq(stopped.history.size, 3)
+  try S.expect_close(stopped.history, HISTORY.take(3), 0.0, 0.0000001, "the history of the first three epochs")
+  try Test.eq(stopped.params.size, 4)
+  try Test.eq((try S.floats_of(stopped.params[0])).size, 16)
+
+  after_two = try xor(S.REF, some(stop_at_epoch(2)))
+  Test.eq(after_two.history.size, 2)
+end
+
+def stop_at_epoch(n: Int) -> Fn[Train.Epoch, Result[Train.Control]]
+  ->(e) {
+    return ok(Train.Control.Stop) if e.epoch == n
+
+    ok(Train.Control.Continue)
+  }
 end
 
 ## Without the native module, a tensor on libtorch is an error, not a halt.
@@ -152,7 +196,11 @@ def absent() -> Result[Void]
   end
 end
 
-def xor(backend: Tensor.Backend, on_epoch: Optional[Fn[Train.Epoch, Void]] = none) -> Result[Train.Fit]
+def xor(
+  backend: Tensor.Backend,
+  on_epoch: Optional[Fn[Train.Epoch, Result[Train.Control]]] = none,
+  on_step: Optional[Fn[Train.StepInfo, Result[Train.Control]]] = none,
+) -> Result[Train.Fit]
   up = try Nn.init_dense(2, 8, 1, backend)
   down = try Nn.init_dense(8, 1, 2, backend)
   params = [up.w, up.b.unwrap!, down.w, down.b.unwrap!]
@@ -164,6 +212,8 @@ def xor(backend: Tensor.Backend, on_epoch: Optional[Fn[Train.Epoch, Void]] = non
     adam,
     EPOCHS,
     on_epoch,
+    none,
+    on_step,
   )
 end
 
