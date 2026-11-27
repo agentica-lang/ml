@@ -119,6 +119,15 @@ typedef struct {
 bool ggml_list_Float_open(an_env *env, an_term t, ggml_list_Float *out);
 int ggml_list_Float_next(an_env *env, ggml_list_Float *list, double *out);
 
+typedef struct {
+  an_list_builder builder;
+} ggml_list_Int_builder;
+void ggml_list_Int_begin(an_env *env, ggml_list_Int_builder *b, size_t hint);
+void ggml_list_Int_push(an_env *env, ggml_list_Int_builder *b, int64_t value);
+an_term ggml_list_Int_end(an_env *env, ggml_list_Int_builder *b);
+
+an_term ggml_result_list_Int_ok(an_env *env, an_term value);
+
 an_term ggml_result_TensorHandle_ok(an_env *env, an_term value);
 
 typedef struct {
@@ -142,6 +151,10 @@ an_term ggml_result_Pin_ok(an_env *env, an_term value);
    device (a software rasterizer): 0 when ggml was built without its Vulkan
    backend (`tools/build-engine.sh cpu`). It opens no device. */
 an_term ggml_vulkan_devices(an_env *env);
+
+/* `[free, total]` bytes of the memory of `device` (`ggml_backend_dev_memory`): what its buffers can hold, the host's
+   RAM for the CPU. It opens no backend; an unknown device is an error. */
+an_term ggml_device_memory(an_env *env, int64_t device);
 
 /* A tensor of the row-major `shape` (rank 4 at most) on `device`, holding
    `data`, one value per element. */
@@ -447,6 +460,18 @@ int ggml_list_Float_next(an_env *env, ggml_list_Float *list, double *out) {
   return ng_fail_cursor_item(env, &fail, "List[Float]", list->argument, at, NULL);
 }
 
+void ggml_list_Int_begin(an_env *env, ggml_list_Int_builder *b, size_t hint) { an_list_begin(env, &b->builder, hint); }
+
+void ggml_list_Int_push(an_env *env, ggml_list_Int_builder *b, int64_t value) {
+  an_list_push(env, &b->builder, an_int(env, value));
+}
+
+an_term ggml_list_Int_end(an_env *env, ggml_list_Int_builder *b) { return an_list_end(env, &b->builder); }
+
+an_term ggml_result_list_Int_ok(an_env *env, an_term value) {
+  return an_ok(env, value);
+}
+
 an_term ggml_result_TensorHandle_ok(an_env *env, an_term value) {
   return an_ok(env, value);
 }
@@ -483,6 +508,13 @@ static an_term ggml_native_vulkan_devices(an_env *env, int argc, const an_term *
   (void)argc;
   (void)argv;
   return ggml_vulkan_devices(env);
+}
+
+static an_term ggml_native_device_memory(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  int64_t a0;
+  if (!an_get_int(env, argv[0], &a0)) return an_badarg(env, 0);
+  return ggml_device_memory(env, a0);
 }
 
 static an_term ggml_native_upload(an_env *env, int argc, const an_term *argv) {
@@ -790,6 +822,7 @@ static an_term ggml_native_vulkan_fp16(an_env *env, int argc, const an_term *arg
 
 static const an_function ggml_native_functions[] = {
   {"vulkan_devices", "() -> Int", ggml_native_vulkan_devices, AN_DIRTY},
+  {"device_memory", "(Int) -> Result[List[Int]]", ggml_native_device_memory, AN_DIRTY},
   {"upload", "(Int, List[Int], List[Float], Bool) -> Result[TensorHandle]", ggml_native_upload, AN_DIRTY},
   {"load", "(Int, String, Int, List[Int], Int, Int) -> Result[TensorHandle]", ggml_native_load, AN_DIRTY},
   {"from_bytes", "(Int, Bytes, List[Int], Int, Int) -> Result[TensorHandle]", ggml_native_from_bytes, AN_DIRTY},
@@ -828,5 +861,5 @@ static const an_function ggml_native_functions[] = {
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
     {"Pin", sizeof(struct ggml_Pin_state), GGML_Pin_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 29, NULL, 0, ggml_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 30, NULL, 0, ggml_native_resources, 3, LOAD)
 #endif

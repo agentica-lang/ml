@@ -94,6 +94,24 @@ struct Beam
   seq: List[Int]
 end
 
+## The bytes a ggml device has: what is `free` now and its `total`.
+struct DeviceMemory
+  free: Int
+  total: Int
+end
+
+## The `DeviceMemory` of the device `backend` runs on (`ggml_backend_dev_memory`): the card for `Ggml(Vulkan(i))`, the
+## RAM of the host for `Ggml(Cpu)`. It opens no backend. Another backend, a missing Vulkan device or a missing ggml module
+## is an error. A card that shares memory with the host (an iGPU) reports the part of it that the driver lends.
+def device_memory(backend: Types.Backend) -> Result[DeviceMemory]
+  case backend
+    Types.Backend.Ggml(device) ->
+      bytes = try Ggml.device_memory(device)
+      ok(DeviceMemory(free: bytes[0], total: bytes[1]))
+    _ -> error("device_memory: only a ggml backend has a device to ask, got #{Types.backend_name(backend)}")
+  end
+end
+
 ## The shape of `t`: a field read, no backend call.
 def shape(t: Types.Tensor) -> List[Int] = t.shape
 

@@ -153,6 +153,17 @@ def to_device(t: Types.Tensor, device: Types.Device) -> Result[Types.Tensor]
   made("to_device", device, t.shape, t.dtype) do GgmlRaw.transfer(h, code) end
 end
 
+## `[free, total]` bytes of the memory of `device`.
+def device_memory(device: Types.Device) -> Result[List[Int]]
+  code = try code_of(device, "device_memory")
+  Native.arena do
+    case GgmlRaw.device_memory(code)
+      ok(bytes) -> ok(bytes)
+      error(e) -> error("device_memory: #{e.message}")
+    end
+  end
+end
+
 ## Chooses fp16 `mul_mat` (`true`, the default) or F32 (`false`) for every
 ## Vulkan device this process opens; an error once a ggml call fixed the
 ## other one. Without the ggml module there is nothing to choose and it
