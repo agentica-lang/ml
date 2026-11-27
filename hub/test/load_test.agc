@@ -314,3 +314,26 @@ def test_f16_weights_need_ggml() -> Result[Void]
     Test.assert(error_text(refused).include?("F32, F16, Q8_0 or Q4_K"), "the error says: #{error_text(refused)}")
   end
 end
+
+## `held_bytes` is what `matrix` makes of the tensor, counted: 4 bytes a value in F32, 2 for a matrix that `weights: F16`
+## keeps half (100000 values or more), 4 for the rest (a vector, a small matrix, the matrix of the F64 file that has no half
+## form), whatever the file stores.
+def test_held_bytes_count_what_the_weights_option_keeps() -> Result[Void]
+  S.with_fixtures("half") do |dir|
+    c = try Hub.open("#{dir}/half.safetensors")
+    f32 = Tensor.Dtype.F32
+    half = Tensor.Dtype.F16
+    for name in ["big.weight", "f16.weight", "bf16.weight", "f64.weight"]
+      try Test.eq(try Load.held_bytes(c, name, f32), 320 * 320 * 4)
+    end
+
+    try Test.eq(try Load.held_bytes(c, "big.weight", half), 320 * 320 * 2)
+    try Test.eq(try Load.held_bytes(c, "bf16.weight", half), 320 * 320 * 2)
+    try Test.eq(try Load.held_bytes(c, "tok.weight", half), 400 * 300 * 2)
+    try Test.eq(try Load.held_bytes(c, "edge.weight", half), 100 * 1000 * 2)
+    try Test.eq(try Load.held_bytes(c, "under.weight", half), 3 * 33333 * 4)
+    try Test.eq(try Load.held_bytes(c, "small.weight", half), 12 * 4)
+    try Test.eq(try Load.held_bytes(c, "norm.weight", half), 320 * 4)
+    Test.error?(Load.held_bytes(c, "missing.weight", half))
+  end
+end

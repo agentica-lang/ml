@@ -232,6 +232,24 @@ def decoder_block(
   )
 end
 
+## The bytes the tensor `name` takes on a ggml device under `weights`: what `matrix` holds, counted from the shape and
+## the file's dtype without reading the values (a block of a quantized dtype is its bytes, a float is 4 or, half, 2).
+def held_bytes(c: Hub.Checkpoint, name: String, weights: Tensor.Dtype) -> Result[Int]
+  shape = try Hub.shape(c, name)
+  values = 1
+  for n in shape
+    values = values * n
+  end
+
+  case try held_dtype(c, name, shape.size, weights)
+    Tensor.Dtype.F16 -> ok(values * 2)
+    Tensor.Dtype.Q8_0 -> ok((values / 32) * 34)
+    Tensor.Dtype.Q4_K -> ok((values / 256) * 144)
+    Tensor.Dtype.Q6_K -> ok((values / 256) * 210)
+    _ -> ok(values * 4)
+  end
+end
+
 private
 
 ## The weight `name` of `rank`: `F32`, or `F16` when `weights` asks for it, it is a float file of rank 2 and it has
@@ -245,6 +263,21 @@ def matrix(
   weights: Tensor.Dtype,
 ) -> Result[Tensor.Tensor]
   _ = try checked(weights, backend)
+  dtype = try held_dtype(c, name, rank, weights)
+  t = try Hub.tensor(c, name, backend, dtype)
+  shape = Tensor.shape(t)
+  return error("#{name}: needs rank #{rank}, got #{shape}") if shape.size != rank
+  return ok(t) if Tensor.packed?(Tensor.dtype(t))
+  case Tensor.dtype(t)
+    Tensor.Dtype.F32 -> ok(t)
+    Tensor.Dtype.F16 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
+    Tensor.Dtype.F64 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
+    _ -> error("#{name}: needs a float dtype, got #{Tensor.dtype(t)}")
+  end
+end
+
+## The dtype `matrix` keeps the weight `name` of `rank` in under `weights`, before any backend is asked.
+def held_dtype(c: Hub.Checkpoint, name: String, rank: Int, weights: Tensor.Dtype) -> Result[Tensor.Dtype]
   dtype = Tensor.Dtype.F32
   if rank == 2 and (weights == Tensor.Dtype.Q8_0 or weights == Tensor.Dtype.Q4_K)
     dtype = kept(weights, try Hub.dtype(c, name))
@@ -257,16 +290,7 @@ def matrix(
     end
   end
 
-  t = try Hub.tensor(c, name, backend, dtype)
-  shape = Tensor.shape(t)
-  return error("#{name}: needs rank #{rank}, got #{shape}") if shape.size != rank
-  return ok(t) if Tensor.packed?(Tensor.dtype(t))
-  case Tensor.dtype(t)
-    Tensor.Dtype.F32 -> ok(t)
-    Tensor.Dtype.F16 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
-    Tensor.Dtype.F64 -> Tensor.to_dtype(t, Tensor.Dtype.F32)
-    _ -> error("#{name}: needs a float dtype, got #{Tensor.dtype(t)}")
-  end
+  ok(dtype)
 end
 
 ## Frees `t` now on the backends whose tensors hold native memory, so a load

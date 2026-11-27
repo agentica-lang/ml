@@ -1,6 +1,7 @@
 ## Where `layers_on_device` puts the blocks of a model, its embedding table and its head: the rule of llama.cpp's `-ngl`,
 ## shared by the models that take the option.
 
+import Hub from "pkg/hub/hub"
 import Load from "pkg/hub/load"
 import Tensor from "pkg/tensor/tensor"
 
@@ -21,7 +22,8 @@ enum Kv
 end
 
 ## What a model puts on the card, in bytes: each block (with its KV cache, if the caller counts it), the embedding table,
-## and the head (with the final norm). `tied` says the head is the table.
+## and the head with the final norm. `tied` says the head is the table: `head` is then the size of the copy of the table
+## that `layers_on_device` makes on the card (with every block there the table is the head, and `fit` counts it once).
 struct Footprint
   blocks: List[Int]
   table: Int
@@ -49,6 +51,42 @@ def layer_backend(backend: Tensor.Backend, i: Int, layers_on_device: Optional[In
     Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> Tensor.Backend.Ggml(Tensor.Device.Cpu)
     _ -> backend
   end
+end
+
+## The `Footprint` of the checkpoint `c` under `weights`, counted from its shapes and dtypes (`Load.held_bytes`) without
+## reading a value: block `i` is the tensors named `{layers}{i}.` plus `kv` bytes for its KV cache, `table` and `head` are
+## tensors by name, and the head is the table when the checkpoint has no `head`. `norm` is the final norm, counted with
+## the head.
+def footprint(
+  c: Hub.Checkpoint,
+  layers: String,
+  blocks: Int,
+  table: String,
+  head: String,
+  norm: String,
+  weights: Tensor.Dtype,
+  kv: Int,
+) -> Result[Footprint]
+  names = Hub.names(c)
+  sizes: List[Int] = []
+  for i in 0...blocks
+    prefix = "#{layers}#{i}."
+    bytes = kv
+    for name in names.select { |n| n.start_with?(prefix) }
+      bytes = bytes + try Load.held_bytes(c, name, weights)
+    end
+
+    sizes = sizes.push(bytes)
+  end
+
+  held = try Load.held_bytes(c, table, weights)
+  tied = not Hub.has?(c, head)
+  head_bytes = held
+  if not tied
+    head_bytes = try Load.held_bytes(c, head, weights)
+  end
+
+  ok(Footprint(blocks: sizes, table: held, head: head_bytes + try Load.held_bytes(c, norm, weights), tied: tied))
 end
 
 ## The largest `layers_on_device` whose layout needs at most `budget` bytes on the card, 0 when not even one block fits.
