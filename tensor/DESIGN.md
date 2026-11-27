@@ -43,7 +43,7 @@ without them, see §1).
 ## 2. Types
 
 ```text
-Dtype   = F32 | F16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool | Q8_0 | Q4_K | Q6_K   # the last three: quantized weights of ggml only (§7)
+Dtype   = F32 | F16 | BF16 | F64 | I8 | I16 | I32 | I64 | U8 | Bool | Q8_0 | Q4_K | Q6_K   # the last three: quantized weights of ggml only (§7)
 Device  = Cpu | Vulkan(Int)                                    # enum; Vulkan(i): ggml's device i
 Shape   = List[Int]                                            # static ints, row-major C-order
 Values  = Float(Float) | Int(Int) | Bool(Bool)                 # enum, dtype-tagged
@@ -558,7 +558,18 @@ end
   an argument. An `F16` result (a `transpose` or a `slice` of a weight) is left as it is. `Trace.value_and_grad` refuses
   an `F16` weight on XLA as on ggml. Whether
   XLA's CPU plugin fuses the convert into the product or makes an `F32` copy of the weight on each run is not measured
-  here (the memory numbers belong to the benchmark of ml#390). `BF16` has no `Dtype` yet, so it is not held.
+  here (the memory numbers belong to the benchmark of ml#390). XLA, ggml and Torch hold `BF16` weights loaded with
+  `from_file(..., dtype: BF16)`. A `BF16` file read as `BF16` keeps the stored values, including signed zero,
+  infinities and NaNs. On ggml and Torch the loader copies those words directly. Their F32 products widen BF16
+  weights during compute, and an embedding reads the selected rows before widening. These conversions can
+  allocate F32 temporaries. On XLA, any other source (`from_list`, an `F32` or `F16` file) rounds to nearest even once from the
+  double, and a value beyond 3.3895313892515355e38, an infinity included, is an error naming its element; a NaN stays.
+  On the CUDA plugin, Qwen3-0.6B's decode step fuses the converts of its block matrices into the loops that read
+  them, but converts the tied head (the token table) into an `F32` buffer of 622 MB on every step before the cuBLAS
+  product, so the peak device memory falls by less than the weights do (`benchmarks/README.md`).
+  StableHLO spells it `bf16`, and the emitter widens a `BF16` operand of an `F32` result as it widens an `F16` one: a
+  product converts the weight, a lookup gathers the rows first and converts only them, and `attention` reads `BF16`
+  keys and values with an `F32` query.
 - **Quantized weights.** `Tensor.from_file(..., format: Q8_0, dtype: Q8_0)` on
   ggml keeps the blocks of a Q8_0 file as they are (`GGML_TYPE_Q8_0`: 34 bytes
   for 32 values, about a quarter of `F32`; the range is copied, nothing is

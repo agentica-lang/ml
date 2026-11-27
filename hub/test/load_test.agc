@@ -317,9 +317,12 @@ def test_f16_weights_need_ggml() -> Result[Void]
       try Test.assert(error_text(refused).include?("ggml"), "the error names no backend: #{error_text(refused)}")
     end
 
+    bf16 = Load.dense(c, "big", S.REF, Tensor.Dtype.BF16)
+    try Test.error?(bf16)
+    try Test.assert(error_text(bf16).include?("XLA"), "the error names no backend: #{error_text(bf16)}")
     refused = Load.dense(c, "big", S.REF, Tensor.Dtype.I32)
     try Test.error?(refused)
-    Test.assert(error_text(refused).include?("F32, F16, Q8_0 or Q4_K"), "the error says: #{error_text(refused)}")
+    Test.assert(error_text(refused).include?("F32, F16, BF16, Q8_0 or Q4_K"), "the error says: #{error_text(refused)}")
   end
 end
 
@@ -335,6 +338,10 @@ def test_held_bytes_count_what_the_weights_option_keeps() -> Result[Void]
       try Test.eq(try Load.held_bytes(c, name, f32), 320 * 320 * 4)
     end
 
+    bf16 = Tensor.Dtype.BF16
+    try Test.eq(try Load.held_bytes(c, "big.weight", bf16), 320 * 320 * 2)
+    try Test.eq(try Load.held_bytes(c, "f64.weight", bf16), 320 * 320 * 4)
+    try Test.eq(try Load.held_bytes(c, "f64.weight", half), 320 * 320 * 4)
     try Test.eq(try Load.held_bytes(c, "big.weight", half), 320 * 320 * 2)
     try Test.eq(try Load.held_bytes(c, "bf16.weight", half), 320 * 320 * 2)
     try Test.eq(try Load.held_bytes(c, "tok.weight", half), 400 * 300 * 2)

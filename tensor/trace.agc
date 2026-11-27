@@ -570,19 +570,17 @@ def xla_evaluate(outs: List[Types.Tensor], env: Map[Ref, Types.Tensor]) -> Resul
   values
 end
 
-## A half or quantized weight (`F16`, `Q8_0`, `Q4_K` or `Q6_K` on ggml, `F16` on XLA; `Tensor.from_file` with that `dtype`)
-## is read-only: no gradient is taken for it, which an `F16` tensor of the other backends keeps.
+## Packed weights are inference-only. Torch still supports gradients for its ordinary F16 tensors.
 def not_half_weight(t: Types.Tensor, what: String) -> Result[Bool]
   case t.backend
-    Types.Backend.Ggml(_) -> return half_weight_error(t, what)
-    Types.Backend.Xla(_) -> return half_weight_error(t, what)
-    _ -> nil
+    Types.Backend.Ggml(_) -> half_weight_error(t, what)
+    Types.Backend.Xla(_) -> half_weight_error(t, what)
+    Types.Backend.Torch(_) if t.dtype == Types.Dtype.BF16 -> half_weight_error(t, what)
+    _ -> ok(true)
   end
-
-  ok(true)
 end
 
-## An error naming `what` when `t` is packed (an `F16` of XLA, or any packed dtype of ggml, the only ones there are).
+## An error naming `what` when `t` is packed.
 def half_weight_error(t: Types.Tensor, what: String) -> Result[Bool]
   return ok(true) if !Types.is_packed_dtype(t.dtype)
   kind = "half"
@@ -591,7 +589,7 @@ def half_weight_error(t: Types.Tensor, what: String) -> Result[Bool]
   end
 
   error(
-    "#{what} is a #{kind} weight (#{Types.dtype_name(t.dtype)} on #{Types.backend_name(t.backend)}): no gradient is taken for it, weights loaded as F16 or quantized are for inference",
+    "#{what} is a #{kind} weight (#{Types.dtype_name(t.dtype)} on #{Types.backend_name(t.backend)}): no gradient is taken for it, packed weights are for inference",
   )
 end
 

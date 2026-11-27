@@ -23,13 +23,13 @@
 #include <string.h>
 
 /* The dtype codes of `src/xla.agc` (`code_of`), in order. */
-enum { DT_F32, DT_F64, DT_I32, DT_I64, DT_I16, DT_I8, DT_U8, DT_BOOL, DT_F16, DT_COUNT };
+enum { DT_F32, DT_F64, DT_I32, DT_I64, DT_I16, DT_I8, DT_U8, DT_BOOL, DT_F16, DT_BF16, DT_COUNT };
 static const PJRT_Buffer_Type TYPES[DT_COUNT] = {
     PJRT_Buffer_Type_F32, PJRT_Buffer_Type_F64, PJRT_Buffer_Type_S32, PJRT_Buffer_Type_S64,
     PJRT_Buffer_Type_S16, PJRT_Buffer_Type_S8,  PJRT_Buffer_Type_U8,  PJRT_Buffer_Type_PRED,
-    PJRT_Buffer_Type_F16,
+    PJRT_Buffer_Type_F16, PJRT_Buffer_Type_BF16,
 };
-static const size_t SIZES[DT_COUNT] = {4, 8, 4, 8, 2, 1, 1, 1, 2};
+static const size_t SIZES[DT_COUNT] = {4, 8, 4, 8, 2, 1, 1, 1, 2, 2};
 
 #define MAX_RANK 16
 
@@ -407,6 +407,39 @@ static uint16_t half_bits(double x) {
   return (uint16_t)(sign | half);
 }
 
+static uint16_t bf16_bits(double x) {
+  uint64_t bits, m, b, rem, mid;
+  uint32_t sign;
+  int e, be, shift;
+
+  memcpy(&bits, &x, sizeof bits);
+  sign = (uint32_t)(bits >> 48) & 0x8000u;
+  e = (int)((bits >> 52) & 0x7FFu);
+  m = bits & 0xFFFFFFFFFFFFFull;
+  if (e == 0x7FF) {
+    if (m == 0) return (uint16_t)(sign | 0x7F80u);
+    b = m >> 45;
+    return (uint16_t)(sign | 0x7F80u | (b != 0 ? b : 0x40u));
+  }
+  be = e - 896;
+  if (be >= 255) return (uint16_t)(sign | 0x7F80u);
+  if (be <= 0) {
+    if (be < -7) return (uint16_t)sign;
+    m |= 0x10000000000000ull;
+    shift = 46 - be;
+    b = m >> shift;
+    rem = m & ((1ull << shift) - 1);
+    mid = 1ull << (shift - 1);
+    if (rem > mid || (rem == mid && (b & 1u))) b++;
+    return (uint16_t)(sign | b);
+  }
+  b = ((uint64_t)be << 7) | (m >> 45);
+  rem = m & 0x1FFFFFFFFFFFull;
+  mid = 0x100000000000ull;
+  if (rem > mid || (rem == mid && (b & 1u))) b++;
+  return (uint16_t)(sign | b);
+}
+
 static void store(void *bytes, int dtype, int64_t i, double x) {
   switch (dtype) {
   case DT_F32: ((float *)bytes)[i] = (float)x; break;
@@ -417,6 +450,7 @@ static void store(void *bytes, int dtype, int64_t i, double x) {
   case DT_I8: ((int8_t *)bytes)[i] = (int8_t)x; break;
   case DT_U8: ((uint8_t *)bytes)[i] = (uint8_t)x; break;
   case DT_F16: ((uint16_t *)bytes)[i] = half_bits(x); break;
+  case DT_BF16: ((uint16_t *)bytes)[i] = bf16_bits(x); break;
   default: ((uint8_t *)bytes)[i] = x != 0.0; break;
   }
 }
@@ -431,6 +465,7 @@ static double load(const void *bytes, int dtype, int64_t i) {
   case DT_I8: return (double)((const int8_t *)bytes)[i];
   case DT_U8: return (double)((const uint8_t *)bytes)[i];
   case DT_F16: return (double)ff_half(((const uint16_t *)bytes)[i]);
+  case DT_BF16: return (double)ff_bfloat(((const uint16_t *)bytes)[i]);
   default: return ((const uint8_t *)bytes)[i] ? 1.0 : 0.0;
   }
 }
@@ -535,8 +570,17 @@ static an_term loaded_floats(an_env *env, xla_list_Int *shape, const char *path,
   bool read;
 
   if (loaded() == NULL) return failed(env, "the XLA plugin is not loaded");
-  if (dtype != DT_F32 && dtype != DT_F16) return failed(env, "a file is read as F32 or F16");
+  if (dtype != DT_F32 && dtype != DT_F16 && dtype != DT_BF16) return failed(env, "a file is read as F32, F16 or BF16");
   if (!dims_of(env, shape, dims, &rank, &count, &failure)) return failure;
+  if (dtype == DT_BF16) {
+    uint16_t *words = (uint16_t *)host(count, DT_BF16);
+    if (words == NULL) return failed(env, "out of memory");
+    read = path != NULL ? ff_read_bf16(path, path_len, offset, count, format, words, 1, why, sizeof why)
+                        : ff_bf16_from_bytes(data, len, count, format, words, why, sizeof why);
+    out = read ? put(env, words, DT_BF16, dims, rank) : failed(env, why);
+    free(words);
+    return out;
+  }
   need = ff_bytes(format, count);
   if (need >= 0 && path == NULL && (size_t)need != len) return failed(env, "the bytes are not the length of the shape");
   if (need >= 0 && path != NULL && !range_in_file(path, path_len, offset, need)) {

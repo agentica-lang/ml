@@ -254,7 +254,7 @@ jobs:
         env:
           TENSOR_LOAD: agentica
           TENSOR_REQUIRE_GGML: '1'
-        run: agentica test --max-steps 10000000 test/from_file_test.agc
+        run: agentica test --max-steps 10000000 test/from_file_test.agc test/xla_bf16_test.agc
 
       # A package with tools/fetch-model.sh validates against the pinned
       # models it downloads (weights never enter git); the script checks every
@@ -375,13 +375,13 @@ jobs:
       - name: Test
         env:
           TENSOR_REQUIRE_XLA: '1'
-        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_ops_test.agc test/xla_half_test.agc test/xla_missing_test.agc test/from_file_test.agc
+        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_ops_test.agc test/xla_half_test.agc test/xla_bf16_test.agc test/xla_missing_test.agc test/from_file_test.agc
 
       - name: Test the Agentica read path of from_file on XLA
         env:
           TENSOR_LOAD: agentica
           TENSOR_REQUIRE_XLA: '1'
-        run: agentica test --max-steps 10000000 test/from_file_test.agc test/xla_half_test.agc
+        run: agentica test --max-steps 10000000 test/from_file_test.agc test/xla_half_test.agc test/xla_bf16_test.agc
 
       # Train.fit on XLA: the fits that follow the reference and PyTorch's goldens. train/ reads tensor/ from the
       # workspace, so it needs no install of its own beyond its locked dependencies.
@@ -412,6 +412,12 @@ jobs:
         env:
           TENSOR_REQUIRE_XLA: '1'
         run: agentica test --max-steps 200000000 --only "f16 weights" test/qwen3_test.agc
+
+      - name: Test Qwen3 BF16 weights on XLA
+        working-directory: transformers
+        env:
+          TENSOR_REQUIRE_XLA: '1'
+        run: agentica test --max-steps 200000000 --only "bf16 weights" test/qwen3_test.agc
 
   # The libtorch backend of tensor/ (Backend.Torch) on Ubuntu's own libtorch-dev, the system package: the repository never
   # downloads or vendors libtorch. tools/build-torch.sh finds it, `agentica install` builds the optional native module,
@@ -468,6 +474,12 @@ jobs:
           TENSOR_REQUIRE_TORCH: '1'
         run: agentica test --coverage --max-steps 10000000
 
+      - name: Test the Agentica read path of BF16 on libtorch
+        env:
+          TENSOR_LOAD: agentica
+          TENSOR_REQUIRE_TORCH: '1'
+        run: agentica test --max-steps 10000000 test/xla_bf16_test.agc
+
       # The gradients of DistilBERT and BERT on libtorch (the attention backward needs batch_matmul), and a few
       # training steps of each. transformers/ reads tensor/ from the workspace.
       - name: Install the locked dependencies of transformers
@@ -479,6 +491,12 @@ jobs:
         env:
           TENSOR_REQUIRE_TORCH: '1'
         run: agentica test --max-steps 10000000 test/distilbert_weights_test.agc test/bert_weights_test.agc
+
+      - name: Test Qwen3 BF16 weights on Torch
+        working-directory: transformers
+        env:
+          TENSOR_REQUIRE_TORCH: '1'
+        run: agentica test --max-steps 200000000 --only "bf16 weights" test/qwen3_test.agc
 
       - name: Coverage of the torch files
         run: python3 ../tools/coverage_check.py coverage/lcov.info --package tensor --only libtorch
@@ -601,13 +619,13 @@ jobs:
       - name: Test
         env:
           TENSOR_REQUIRE_XLA: '1'
-        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_ops_test.agc test/xla_half_test.agc test/xla_missing_test.agc test/from_file_test.agc
+        run: agentica test --max-steps 10000000 test/xla_test.agc test/xla_ops_test.agc test/xla_half_test.agc test/xla_bf16_test.agc test/xla_missing_test.agc test/from_file_test.agc
 
       - name: Test the Agentica read path of from_file on XLA
         env:
           TENSOR_LOAD: agentica
           TENSOR_REQUIRE_XLA: '1'
-        run: agentica test --max-steps 10000000 test/from_file_test.agc test/xla_half_test.agc
+        run: agentica test --max-steps 10000000 test/from_file_test.agc test/xla_half_test.agc test/xla_bf16_test.agc
 
   # The libtorch backend of tensor/ on linux-arm64, as the torch job: Ubuntu's libtorch-dev (not in 24.04, so the
   # runner is 26.04), tools/build-torch.sh, the optional native module built by `agentica install`, and the tensor suite

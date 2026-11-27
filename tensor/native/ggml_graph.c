@@ -840,13 +840,20 @@ static struct ggml_tensor *flash(struct entry *p, const struct gnode *q, const s
    additive mask (its ne[2] and ne[3] repeat). The caller has checked every extent these asserts of ggml read. */
 static struct ggml_tensor *attention(struct entry *p, const struct gnode *q, const struct gnode *k, const struct gnode *v,
                                      const struct gnode *mask, float scale, bool may_flash) {
-  struct ggml_tensor *fused = may_flash ? flash(p, q, k, v, mask, scale) : NULL;
-  struct ggml_tensor *scores, *weights, *rows;
+  bool bf16 = k->t->type == GGML_TYPE_BF16;
+  struct ggml_tensor *fused = may_flash && !bf16 ? flash(p, q, k, v, mask, scale) : NULL;
+  struct ggml_tensor *scores, *weights, *rows, *keys, *values;
 
   if (fused != NULL) return fused;
-  scores = ggml_mul_mat(p->ctx, operand(p, k), operand(p, q)); /* [Sk, Sq, H, B] */
+  keys = operand(p, k);
+  values = dense(p, v);
+  if (bf16) {
+    keys = ggml_cast(p->ctx, keys, GGML_TYPE_F32);
+    values = ggml_cast(p->ctx, values, GGML_TYPE_F32);
+  }
+  scores = ggml_mul_mat(p->ctx, keys, operand(p, q)); /* [Sk, Sq, H, B] */
   weights = ggml_soft_max_ext(p->ctx, scores, mask != NULL ? dense(p, mask) : NULL, scale, 0.0f);
-  rows = ggml_cont(p->ctx, ggml_permute(p->ctx, dense(p, v), 1, 0, 2, 3)); /* [Sk, Dv, Hkv, B] */
+  rows = ggml_cont(p->ctx, ggml_permute(p->ctx, values, 1, 0, 2, 3)); /* [Sk, Dv, Hkv, B] */
   return ggml_mul_mat(p->ctx, rows, weights); /* [Dv, Sq, H, B] */
 }
 
@@ -981,16 +988,17 @@ static int read_ints(an_env *env, ggml_list_Int *list, int64_t *out, int max, in
 /* The answer of a list that did not read: the cursor's error, or `text`. */
 static an_term bad_list(an_env *env, int r, const char *text) { return r == -1 ? an_void(env) : tg_error(env, text); }
 
-/* Where a packed operand (a quantized weight, or an F16 one) may go, as one closed list for every op: the leaf itself
-   as the argument of a transpose or the table of a gather, and the second argument of a matmul (the leaf, or the
-   transpose of one: a view, read in place). An F16 cache goes only where `transformers` puts it: the cache leaf of a
-   set_rows, the key or value of an attention (a leaf, the result of a set_rows or a cast, or a slice of one of
-   those: the rows in use), and a cast of a leaf to F32.
+/* Where a packed operand (a quantized weight, or an F16 or BF16 one) may go, as one closed list for every op: the leaf
+   itself as the argument of a transpose or the table of a gather, and the second argument of a matmul (the leaf, or
+   the transpose of one: a view, read in place). An F16 cache goes only where `transformers` puts it: the cache leaf
+   of a set_rows, the key or value of an attention (a leaf, the result of a set_rows or a cast, or a slice of one of
+   those: the rows in use), and a cast of a leaf to F32. A BF16 weight is never a cache: the leaf itself, its
+   transpose, its gather table, a cast of the leaf, or the key or value of an attention.
    Any other use would copy or compute on blocks that ggml's ops do not take
    (`ggml_cont` of a quantized view sizes its copy by rows and writes past its buffer), so it is an error before any
    ggml call. `x` is argument `i` of a node of `op`; NULL when it fits. */
 static const char *packed_misuse(int64_t op, int i, const struct gnode *x) {
-  if (!ggml_is_quantized(x->t->type) && x->t->type != GGML_TYPE_F16) return NULL;
+  if (!ggml_is_quantized(x->t->type) && x->t->type != GGML_TYPE_F16 && x->t->type != GGML_TYPE_BF16) return NULL;
   if (op == OP_MATMUL && i == 1) return NULL;
   if (x->t->type == GGML_TYPE_F16) {
     /* an F16 cache: written in place by set_rows, read by attention, widened by a cast */
@@ -1002,8 +1010,10 @@ static const char *packed_misuse(int64_t op, int i, const struct gnode *x) {
     if (op == OP_SLICE && (x->op == OP_LEAF || x->op == OP_SET_ROWS || x->op == OP_CAST)) return NULL;
     if (op == OP_CAST && x->op == OP_LEAF) return NULL;
   }
+  if (x->t->type == GGML_TYPE_BF16 && x->op == OP_LEAF &&
+      (op == OP_CAST || (op == OP_ATTENTION && (i == 1 || i == 2)))) return NULL;
   if (x->op == OP_LEAF && (op == OP_TRANSPOSE || (op == OP_GATHER && i == 0))) return NULL;
-  return "a quantized or F16 weight goes only into the weight of a matmul, a transpose of the weight itself or the table of a gather; an F16 cache only into a set_rows (a leaf), the key or value of an attention, a slice that an attention reads, or a cast (a leaf)";
+  return "a quantized, F16 or BF16 weight goes only into the weight of a matmul, a transpose of the weight itself or the table of a gather; an F16 cache only into a set_rows (a leaf), the key or value of an attention, a slice that an attention reads, or a cast (a leaf); a BF16 leaf only into a cast or the key or value of an attention";
 }
 
 an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_list_Int args_list,
@@ -1069,7 +1079,7 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
   switch (op) {
     case OP_LEAF:
       /* ints[0]: the type the leaf is bound to, as `Types.held_code`: 0 F32, 1 F16, 2 Q8_0, 3 Q4_K, 4 Q6_K */
-      if (nints > 0 && (ints[0] < 0 || ints[0] > 4)) return tg_error(env, "a leaf is F32, F16, Q8_0, Q4_K or Q6_K");
+      if (nints > 0 && (ints[0] < 0 || ints[0] > HELD_BF16)) return tg_error(env, "a leaf is F32, F16, BF16, Q8_0, Q4_K or Q6_K");
       type = nints > 0 ? held_type(ints[0]) : GGML_TYPE_F32;
       if (ggml_is_quantized(type) && (rank != 2 || n->ne[0] % ggml_blck_size(type) != 0)) {
         return tg_error(env, "a quantized leaf is a rank-2 weight whose rows hold whole blocks");
@@ -1099,18 +1109,22 @@ an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_
     case OP_SQRT: t = ggml_sqrt(p->ctx, dense(p, a)); break;
     case OP_SIGMOID: t = ggml_sigmoid(p->ctx, dense(p, a)); break;
     case OP_TANH: t = ggml_tanh(p->ctx, dense(p, a)); break;
-    case OP_MATMUL:
+    case OP_MATMUL: {
+      struct ggml_tensor *weight;
       /* ggml_mul_mat(x, y) is y · xᵀ in row-major terms, so a · b is
          mul_mat(bᵀ, a). When b is a transpose (the backward's ct · wᵀ), bᵀ
          is its argument and no copy is made. */
       if (b->op == OP_TRANSPOSE) {
-        t = ggml_mul_mat(p->ctx, operand(p, &p->nodes[b->arg]), operand(p, a));
+        weight = operand(p, &p->nodes[b->arg]);
       } else if (ggml_is_quantized(b->t->type)) {
         return tg_error(env, "a quantized weight is read as [out, in]: use linear with out_in, not a matmul by the weight");
       } else {
-        t = ggml_mul_mat(p->ctx, ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b))), operand(p, a));
+        weight = ggml_cont(p->ctx, ggml_transpose(p->ctx, dense(p, b)));
       }
+      if (weight->type == GGML_TYPE_BF16) weight = ggml_cast(p->ctx, weight, GGML_TYPE_F32);
+      t = ggml_mul_mat(p->ctx, weight, operand(p, a));
       break;
+    }
     case OP_TRANSPOSE:
       /* ggml_transpose swaps ne0 and ne1 only */
       if (rank > 2) {

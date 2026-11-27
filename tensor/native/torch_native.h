@@ -109,13 +109,13 @@ an_term torch_fill(an_env *env, torch_list_Int shape, double value, int64_t dtyp
    code of `Types.file_code`) that start at byte `offset` of the file `path`.
    C reads the file into the tensor's own memory, so no value crosses as a
    list; a range past the end of the file is an error. */
-an_term torch_load(an_env *env, ng_str path, int64_t offset, torch_list_Int shape, int64_t format);
+an_term torch_load(an_env *env, ng_str path, int64_t offset, torch_list_Int shape, int64_t format, int64_t dtype);
 
 /* The same from `data`, the bytes of the range that Agentica read
    (`TENSOR_LOAD=agentica`): the call reads them in place and widens them into
    the tensor's own memory. `data` must be exactly the range, or the call is
    an error. */
-an_term torch_from_bytes(an_env *env, ng_buf data, torch_list_Int shape, int64_t format);
+an_term torch_from_bytes(an_env *env, ng_buf data, torch_list_Int shape, int64_t format, int64_t dtype);
 
 /* Elementwise `a + b`, two tensors of one shape. */
 an_term torch_add(an_env *env, struct torch_TensorHandle_state *a, struct torch_TensorHandle_state *b);
@@ -534,7 +534,9 @@ static an_term torch_native_load(an_env *env, int argc, const an_term *argv) {
   a2.argument = 3;
   int64_t a3;
   if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
-  return torch_load(env, a0, a1, a2, a3);
+  int64_t a4;
+  if (!an_get_int(env, argv[4], &a4)) return an_badarg(env, 4);
+  return torch_load(env, a0, a1, a2, a3, a4);
 }
 
 static an_term torch_native_from_bytes(an_env *env, int argc, const an_term *argv) {
@@ -548,7 +550,9 @@ static an_term torch_native_from_bytes(an_env *env, int argc, const an_term *arg
   a1.argument = 2;
   int64_t a2;
   if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
-  return torch_from_bytes(env, a0, a1, a2);
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  return torch_from_bytes(env, a0, a1, a2, a3);
 }
 
 static an_term torch_native_add(an_env *env, int argc, const an_term *argv) {
@@ -1081,8 +1085,8 @@ static an_term torch_native_append_file(an_env *env, int argc, const an_term *ar
 static const an_function torch_native_functions[] = {
   {"create", "(List[Int], List[Float], Int) -> Result[TensorHandle]", torch_native_create, AN_DIRTY | AN_FRESH},
   {"fill", "(List[Int], Float, Int) -> Result[TensorHandle]", torch_native_fill, AN_DIRTY | AN_FRESH},
-  {"load", "(String, Int, List[Int], Int) -> Result[TensorHandle]", torch_native_load, AN_DIRTY | AN_FRESH},
-  {"from_bytes", "(Bytes, List[Int], Int) -> Result[TensorHandle]", torch_native_from_bytes, AN_DIRTY | AN_FRESH},
+  {"load", "(String, Int, List[Int], Int, Int) -> Result[TensorHandle]", torch_native_load, AN_DIRTY | AN_FRESH},
+  {"from_bytes", "(Bytes, List[Int], Int, Int) -> Result[TensorHandle]", torch_native_from_bytes, AN_DIRTY | AN_FRESH},
   {"add", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_add, AN_DIRTY | AN_FRESH},
   {"mul", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_mul, AN_DIRTY | AN_FRESH},
   {"sub", "(TensorHandle, TensorHandle) -> Result[TensorHandle]", torch_native_sub, AN_DIRTY | AN_FRESH},

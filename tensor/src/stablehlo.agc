@@ -175,7 +175,8 @@ struct Side
   name: String
 end
 
-# The operands of a node, the `F16` ones of an `F32` result converted: their lines, their types and their names.
+# The operands of a node, the half (`F16` or `BF16`) ones of an `F32` result converted: their lines, their types and
+# their names.
 struct Widened
   lines: List[String]
   args: List[Types.Tensor]
@@ -183,14 +184,14 @@ struct Widened
 end
 
 # A half weight is stored in 16 bits and read in 32: where a node's result is `F32` (a product, the rows of a table, an
-# attention), each `F16` operand is converted in the program first, so the weight stays half in memory and an op never
-# mixes types. An `F16` result (a transpose or a slice of a weight) keeps its operands as they are.
+# attention), each half operand is converted in the program first, so the weight stays half in memory and an op never
+# mixes types. A half result (a transpose or a slice of a weight) keeps its operands as they are.
 def widened(t: Types.Tensor, n: Types.Node, names: List[String], first: Int) -> Result[Widened]
   out = Widened(lines: [], args: n.args, names: names)
   return ok(out) if t.dtype != Types.Dtype.F32 or converts?(n.op)
   for i in 0...n.args.size
     x = n.args[i]
-    if x.dtype == Types.Dtype.F16
+    if x.dtype == Types.Dtype.F16 or x.dtype == Types.Dtype.BF16
       wide = x.with(dtype: Types.Dtype.F32)
       from = try ir_type(x.shape, x.dtype)
       to = try ir_type(wide.shape, wide.dtype)
@@ -411,6 +412,7 @@ end
 def float_ir_type(t: Types.Tensor) -> Result[IR.TensorType]
   case t.dtype
     Types.Dtype.F16 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F16))
+    Types.Dtype.BF16 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.BF16))
     Types.Dtype.F32 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F32))
     Types.Dtype.F64 -> ok(IR.TensorType(shape: t.shape, element: IR.Element.F64))
     _ -> error("StableHLO IR needs a floating-point tensor")
@@ -675,6 +677,7 @@ end
 def ir_type(shape: List[Int], dtype: Types.Dtype) -> Result[IR.TensorType]
   case dtype
     Types.Dtype.F16 -> ok(IR.TensorType(shape: shape, element: IR.Element.F16))
+    Types.Dtype.BF16 -> ok(IR.TensorType(shape: shape, element: IR.Element.BF16))
     Types.Dtype.F32 -> ok(IR.TensorType(shape: shape, element: IR.Element.F32))
     Types.Dtype.F64 -> ok(IR.TensorType(shape: shape, element: IR.Element.F64))
     Types.Dtype.I8 -> ok(IR.TensorType(shape: shape, element: IR.Element.I8))
@@ -1401,6 +1404,7 @@ def nan(dtype: Types.Dtype) -> Result[String]
   case dtype
     Types.Dtype.F32 -> ok("0x7FC00000")
     Types.Dtype.F16 -> ok("0x7E00")
+    Types.Dtype.BF16 -> ok("0x7FC0")
     Types.Dtype.F64 -> ok("0x7FF8000000000000")
     _ -> error("#{Types.dtype_name(dtype)} has no NaN")
   end
@@ -1410,6 +1414,7 @@ def infinity(dtype: Types.Dtype, negative: Bool) -> Result[String]
   case dtype
     Types.Dtype.F32 -> ok(sign(negative, "0xFF800000", "0x7F800000"))
     Types.Dtype.F16 -> ok(sign(negative, "0xFC00", "0x7C00"))
+    Types.Dtype.BF16 -> ok(sign(negative, "0xFF80", "0x7F80"))
     Types.Dtype.F64 -> ok(sign(negative, "0xFFF0000000000000", "0x7FF0000000000000"))
     _ -> error("#{Types.dtype_name(dtype)} has no infinity")
   end
@@ -1425,6 +1430,7 @@ def compare_type(dtype: Types.Dtype) -> String
   case dtype
     Types.Dtype.F32 -> "FLOAT"
     Types.Dtype.F16 -> "FLOAT"
+    Types.Dtype.BF16 -> "FLOAT"
     Types.Dtype.F64 -> "FLOAT"
     Types.Dtype.Q8_0 -> "FLOAT"
     Types.Dtype.Q4_K -> "FLOAT"

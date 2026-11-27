@@ -14,6 +14,7 @@ enum Element
   I64
   U8
   F16
+  BF16
   F32
   F64
 end
@@ -109,6 +110,7 @@ def show_type(t: TensorType) -> String
     Element.I64 -> "i64"
     Element.U8 -> "ui8"
     Element.F16 -> "f16"
+    Element.BF16 -> "bf16"
     Element.F32 -> "f32"
     Element.F64 -> "f64"
   end

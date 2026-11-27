@@ -29,6 +29,7 @@ struct Footprint
   table: Int
   head: Int
   tied: Bool
+  head_widen: Int = 0
 end
 
 ## The sides of the table and of the head (with the final norm) of a model of `blocks` blocks opened on `backend` with
@@ -54,9 +55,11 @@ def layer_backend(backend: Tensor.Backend, i: Int, layers_on_device: Optional[In
 end
 
 ## The `Footprint` of the checkpoint `c` under `weights`, counted from its shapes and dtypes (`Load.held_bytes`) without
-## reading a value: block `i` is the tensors named `{layers}{i}.` plus `kv` bytes for its KV cache, `table` and `head` are
-## tensors by name, and the head is the table when the checkpoint has no `head`. `norm` is the final norm, counted with
-## the head.
+## reading a value: block `i` is the tensors named `{layers}{i}.` plus `kv` bytes for its KV cache (and, under
+## `weights: BF16`, the F32 working copy of its BF16 matrices), `table` and `head` are tensors by name, and the head is
+## the table when `tied_head` says so (else when the checkpoint has no `head`). `norm` is the final norm, counted with
+## the head. `head_widen` is the F32 working copy of the head's BF16 matrices (`Load.bf16_widen_bytes`), 0 unless
+## `weights` is `BF16`.
 def footprint(
   c: Hub.Checkpoint,
   layers: String,
@@ -66,6 +69,7 @@ def footprint(
   norm: String,
   weights: Tensor.Dtype,
   kv: Int,
+  tied_head: Optional[Bool] = none,
 ) -> Result[Footprint]
   names = Hub.names(c)
   sizes: List[Int] = []
@@ -73,20 +77,22 @@ def footprint(
     prefix = "#{layers}#{i}."
     bytes = kv
     for name in names.select { |n| n.start_with?(prefix) }
-      bytes = bytes + try Load.held_bytes(c, name, weights)
+      bytes = bytes + try Load.held_bytes(c, name, weights) + try Load.bf16_widen_bytes(c, name, weights)
     end
 
     sizes = sizes.push(bytes)
   end
 
   held = try Load.held_bytes(c, table, weights)
-  tied = not Hub.has?(c, head)
-  head_bytes = held
-  if not tied
-    head_bytes = try Load.held_bytes(c, head, weights)
+  tied = tied_head.unwrap_or(not Hub.has?(c, head))
+  head_name = head
+  if tied
+    head_name = table
   end
 
-  ok(Footprint(blocks: sizes, table: held, head: head_bytes + try Load.held_bytes(c, norm, weights), tied: tied))
+  head_bytes = try Load.held_bytes(c, head_name, weights) + try Load.held_bytes(c, norm, weights)
+  head_widen = try Load.bf16_widen_bytes(c, head_name, weights)
+  ok(Footprint(blocks: sizes, table: held, head: head_bytes, tied: tied, head_widen: head_widen))
 end
 
 ## The largest `layers_on_device` whose layout needs at most `budget` bytes on the card, 0 when not even one block fits.
@@ -100,14 +106,11 @@ def fit(footprint: Footprint, budget: Int) -> Int
   for n in 1..count
     used = used + footprint.blocks[n - 1]
     need = used + footprint.head
-    if n == count
-      need = used + footprint.table
-      if not footprint.tied
-        need = need + footprint.head
-      end
+    if n == count and not footprint.tied
+      need = need + footprint.table
     end
 
-    if need <= budget
+    if need + footprint.head_widen <= budget
       fitting = n
     end
   end
