@@ -23,6 +23,7 @@ Optim.step_inputs(state) -> List[List[Float]]   the inputs of the next step: SGD
 
 Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
 Data.load(path, inputs, targets, backend) -> Result[Dataset]  two named tensors of a safetensors file
+Data.from_table(table, inputs, target, backend, target_dtype = F32) -> Result[Dataset]  numeric columns of a Table (table.agc: a CSV file)
 Data.Loader { dataset, batch_size, shuffle = true, seed = 0, drop_last = false, prefetch = 2 }
 Data.size(dataset) / Data.count(loader) / Data.order(loader, epoch) / Data.batch(loader, rows, i)
 Data.feed(loader, epochs) -> Result[Feed]; Data.epoch(feed, e); Data.take(feed, i); Data.stop(feed)

@@ -46,6 +46,39 @@ end
 - `Data.dataset(inputs, targets)` checks that both tensors have rank 1 or more, the same number of rows, and the same backend.
 - `Data.load(path, inputs, targets, backend)` reads two named tensors of a safetensors file, or of a sharded checkpoint through its index, onto `backend`. The whole file is read.
 - `Data.size(dataset)` is the number of rows.
+- `Data.from_table(table, inputs, target, backend, target_dtype)` makes a dataset of the columns of a table read from a file, [below](#tables).
+
+## Tables
+
+`Table.read(path)` (`import Table from "pkg/train/table"`) reads a CSV file (the `csv` package) whose first row names the columns: every row must have as many cells as the header, and a name may be used once. The file is read whole, and a column is decoded when it is asked for. A column is numbers when every cell is a number, else text (so one empty cell makes a column text). `Table.floats(table, name)` and `Table.texts(table, name)` give a column; asking for the other kind is an error that names the column and the first cell that does not fit. `table.names` are the columns in file order and `table.rows` the number of rows.
+
+`Data.from_table(table, inputs, target, backend, target_dtype)` takes the numeric columns `inputs` as the features, `inputs` of `[rows, features]` row by row, and the numeric column `target` as the targets `[rows]`: `F32` by default, or with `target_dtype: Tensor.Dtype.I32` whole numbers, the class ids that `Loss.cross_entropy` takes (a target that is not whole is an error). A column that is text is an error that names it, so the text columns of a file are left out of `inputs`. The result is a `Dataset` for a `Loader`.
+
+```agentica
+import Data from "pkg/train/data"
+import Table from "pkg/train/table"
+import Tensor from "pkg/tensor/tensor"
+
+def main() -> Void
+  table = Table.read("scores.csv").unwrap!
+  puts(table.names)
+  dataset = Data.from_table(table, ["x1", "x2"], "label", Tensor.Backend.Reference, Tensor.Dtype.I32).unwrap!
+  loader = Data.Loader(dataset: dataset, batch_size: 4, shuffle: false, prefetch: 0)
+  puts(Data.count(loader))
+  batch = Data.batch(loader, Data.order(loader, 1), 0).unwrap!
+  puts(Tensor.shape(batch.inputs))
+  puts(Tensor.to_list(batch.targets).unwrap!)
+end
+```
+
+```output
+["x1", "x2", "count", "label", "name", "gap"]
+2
+[4, 2]
+[Values.Int(0), Values.Int(1), Values.Int(1), Values.Int(0)]
+```
+
+with `scores.csv` as `train/test/fixtures/table/scores.csv`. Parquet files are not read yet.
 
 ## Loader
 
