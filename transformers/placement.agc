@@ -20,6 +20,15 @@ enum Kv
   Host
 end
 
+## What a model puts on the card, in bytes: each block (with its KV cache, if the caller counts it), the embedding table,
+## and the head (with the final norm). `tied` says the head is the table.
+struct Footprint
+  blocks: List[Int]
+  table: Int
+  head: Int
+  tied: Bool
+end
+
 ## The sides of the table and of the head (with the final norm) of a model of `blocks` blocks opened on `backend` with
 ## `layers_on_device: n`, as llama.cpp's `-ngl` puts them: with `n` below `blocks` on a Vulkan device the table is on the
 ## CPU, and the head is on the device for an `n` of 1 or more and on the CPU for 0; with `none` or an `n` of `blocks` or
@@ -40,6 +49,44 @@ def layer_backend(backend: Tensor.Backend, i: Int, layers_on_device: Optional[In
     Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> Tensor.Backend.Ggml(Tensor.Device.Cpu)
     _ -> backend
   end
+end
+
+## The largest `layers_on_device` whose layout needs at most `budget` bytes on the card, 0 when not even one block fits.
+## The layout is the one `placement` makes: with `n` of 0 nothing is on the card; with `n` below the blocks the first `n`
+## blocks and the head (a tied head is a copy of the table there); with every block, the blocks and the table, and the
+## head too unless it is the table.
+def fit(footprint: Footprint, budget: Int) -> Int
+  count = footprint.blocks.size
+  used = 0
+  fitting = 0
+  for n in 1..count
+    used = used + footprint.blocks[n - 1]
+    need = used + footprint.head
+    if n == count
+      need = used + footprint.table
+      if not footprint.tied
+        need = need + footprint.head
+      end
+    end
+
+    if need <= budget
+      fitting = n
+    end
+  end
+
+  fitting
+end
+
+## The bytes a model may take on the card: `free` less the `reserve` that the compute buffers and the rest of the process
+## need, and not more than `cap` when the user set one; never below 0.
+def budget(free: Int, reserve: Int, cap: Optional[Int]) -> Int
+  room = free - reserve
+  if cap.some? and cap.unwrap! < room
+    room = cap.unwrap!
+  end
+
+  return 0 if room < 0
+  room
 end
 
 ## The `Kv` of the `AGENTICA_ML_KV` variable that the tools read (`host` or `device`, `device` when it is not set).

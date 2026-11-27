@@ -4,6 +4,10 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ## [Unreleased]
 
+### transformers
+
+- `Placement.fit(footprint, budget)` gives the largest `layers_on_device` whose layout fits a budget in bytes, and `Placement.budget(free, reserve, cap)` the budget; both are pure, the first step of a memory budget for `layers_on_device` (ml#331).
+
 ## [0.7.0] - 2026-11-27
 
 ### tensor
