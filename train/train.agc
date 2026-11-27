@@ -15,17 +15,21 @@ import Optim from "optim"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
-## What `on_epoch` gets after each epoch: its number from 1 and the mean loss
-## of its batches.
+## What `on_epoch` gets after each epoch: its number from 1, the mean loss of its batches, and the parameters the
+## epoch ended with. The parameters are the run's own: use them inside `on_epoch` (the next step frees them), and copy
+## what must outlive it.
 struct Epoch
   epoch: Int
   loss: Float
+  params: List[Tensor.Tensor]
 end
 
-## The trained parameters and the mean loss of every epoch, in order.
+## The trained parameters and the mean loss of every epoch, in order. `metrics` is what `Loop` measured: the value of
+## each of its metrics at the end of every epoch, by name (empty for a plain `fit`).
 struct Fit
   params: List[Tensor.Tensor]
   history: List[Float]
+  metrics: Map[String, List[Float]] = {}
 end
 
 ## Trains `params` for `epochs` passes over the batches of `data`, one
@@ -281,7 +285,7 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
     mean = total / r.count.to_f
     history = history.push(mean)
     case r.on_epoch
-      some(f) -> f.call(Epoch(epoch: e, loss: mean))
+      some(f) -> f.call(Epoch(epoch: e, loss: mean, params: current))
       none -> nil
     end
   end

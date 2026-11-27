@@ -82,7 +82,7 @@ The optimizers are pure: `Optim.step(state, params, grads, scalars = [])` return
 
 `Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 
-`Optim.sgd(lr, momentum: 0.0, schedule:)`, `Optim.adam(lr:, schedule:)` and `Optim.adamw(lr:, weight_decay:, decay:, schedule:)` are the same optimizers with their usual knobs, as one call: `Optim.adamw(lr: 0.00002)` is `Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.00002))`. The knobs they leave out keep the defaults of their struct.
+`Optim.sgd(lr, momentum: 0.0, schedule:)`, `Optim.adam(lr:, schedule:)` and `Optim.adamw(lr:, weight_decay:, decay:, schedule:)` are the same optimizers with their usual knobs, as one call: `Optim.adamw(lr: 0.00002)` is `Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.00002))`. The betas and `eps` keep the defaults of their struct; build the struct to set them.
 
 ## Loop
 
@@ -96,6 +96,16 @@ fit = try (
 ```
 
 `Loop.run_batches(trainer, batch, count, epochs: 1, prefetch: 0)` is `Train.fit_batches`: `batch(epoch, i)` makes batch `i` of `count`.
+
+`Loop.metric(trainer, metric)` adds a number that the loop measures at the end of every epoch, on the batches of its own data (a validation set, say), with the parameters of that epoch. A `Loop.Metric` has a `name`, the `count` and the function `batch(i)` of its batches, `observe(params, batch)`, which answers one row of numbers for each example, and `reduce`, which turns all the rows into the value: `&Loop.mean` is the mean of the first number of each row, and `&Loop.spearman` Spearman's correlation of the first two. The values are in `fit.metrics[name]`, one per epoch; a metric that fails ends the run with an error that names it.
+
+```agentica
+fit = try (
+  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
+  |> Loop.metric(Loop.Metric(name: "mse", count: 4, batch: ->(i: Int) { held_out(i) }, observe: &squared_errors, reduce: &Loop.mean))
+  |> Loop.run(data, epochs: 3)
+)
+```
 
 ## Train.fit
 

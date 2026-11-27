@@ -7,6 +7,7 @@ import Loss from "../loss"
 import Optim from "../optim"
 import S from "support"
 import Tensor from "pkg/tensor/tensor"
+import Trace from "pkg/tensor/trace"
 import Train from "../train"
 
 INPUTS = [1.0, 2.0, -1.0, 0.5, 0.25, -2.0, 1.5, 1.0]
@@ -82,6 +83,93 @@ def test_run_batches_is_fit_batches() -> Result[Void]
   end
 
   ok()
+end
+
+## `epochs` left out is one epoch, and `prefetch` builds batches ahead without changing the run.
+def test_one_epoch_by_default_and_prefetch_changes_nothing() -> Result[Void]
+  for backend in try backends()
+    loader = Data.Loader(dataset: try rows(backend), batch_size: 2, shuffle: false)
+    want = try Train.fit(&linear, try weights(backend), loader, adam(), 1)
+    got = Loop.trainer(&linear, try weights(backend), adam()) |> try Loop.run(loader)
+
+    try same(got, want, "default epochs on #{backend}")
+    batch = ->(_epoch: Int, i: Int) { pair(backend, i) }
+    ahead = Loop.trainer(&linear, try weights(backend), adam()) |> try Loop.run_batches(batch, 2, prefetch: 2)
+
+    try same(ahead, want, "prefetch on #{backend}")
+  end
+
+  ok()
+end
+
+## A metric is measured at the end of every epoch on the batches of its own data, with the parameters of that epoch:
+## its values are in `Fit.metrics`, one per epoch, and the last one is the metric of the trained parameters.
+def test_a_metric_is_measured_at_the_end_of_every_epoch() -> Result[Void]
+  for backend in try backends()
+    loader = Data.Loader(dataset: try rows(backend), batch_size: 2, shuffle: false)
+    errors = Loop.Metric(
+      name: "mse",
+      count: 2,
+      batch: ->(i: Int) { pair(backend, i) },
+      observe: &squared_errors,
+      reduce: &Loop.mean,
+    )
+
+    fit = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.metric(errors)
+      |> try Loop.run(loader, epochs: 3)
+    )
+
+    values = fit.metrics["mse"]
+    try Test.eq(values.size, 3)
+    try Test.eq(fit.metrics.keys, ["mse"])
+    try Test.assert(values[2] < values[0], "the metric did not fall on #{backend}")
+    again = try Loop.measure(errors, fit.params)
+    try S.expect_close([again], [values[2]], 0.000001, 0.00001, "the last value on #{backend}")
+  end
+
+  ok()
+end
+
+## A metric that fails ends the run with an error that names it.
+def test_a_failing_metric_is_an_error_that_names_it() -> Result[Void]
+  failing = Loop.Metric(
+    name: "broken",
+    count: 1,
+    batch: ->(i: Int) { pair(S.REF, i) },
+    observe: ->(_ps: List[Tensor.Tensor], _b: Data.Batch) { error("no luck") },
+    reduce: &Loop.mean,
+  )
+
+  loader = Data.Loader(dataset: try rows(S.REF), batch_size: 2, shuffle: false)
+  r = (
+    Loop.trainer(&linear, try weights(S.REF), adam())
+    |> Loop.metric(failing)
+    |> Loop.run(loader)
+  )
+
+  S.expect_error(r, "metric broken: no luck")
+end
+
+## The reducers: the mean of the first number, Spearman's correlation of the first two (ties share their ranks, a
+## constant column is 0).
+def test_the_reducers() -> Result[Void]
+  try Test.eq(Loop.mean([[1.0], [2.0], [6.0]]), 3.0)
+  try Test.eq(Loop.mean([]), 0.0)
+  try Test.eq(Loop.spearman([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]]), 1.0)
+  try Test.eq(Loop.spearman([[1.0, 30.0], [2.0, 20.0], [3.0, 10.0]]), -1.0)
+  try Test.eq(Loop.spearman([[1.0, 5.0], [2.0, 5.0], [3.0, 5.0]]), 0.0)
+  both = Loop.spearman([[1.0, 1.0], [2.0, 1.0], [3.0, 2.0], [4.0, 3.0]])
+  S.expect_close([both], [0.9486832980505138], 0.0000001, 0.0, "ties")
+end
+
+## The squared error of every row of a batch under the parameters of the linear model.
+def squared_errors(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[List[List[Float]]]
+  predicted = try Trace.eval(ps + [b.inputs], ->(xs: List[Tensor.Tensor]) { Tensor.linear(xs[2], xs[0], some(xs[1])) })
+  got = try S.floats_of(predicted)
+  want = try S.floats_of(b.targets)
+  ok((0...want.size).map { |i: Int| [(got[i] - want[i]) * (got[i] - want[i])] })
 end
 
 ## The short constructors are the structs with the same knobs, and the knobs they leave out keep their defaults.

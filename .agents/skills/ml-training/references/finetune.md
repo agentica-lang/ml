@@ -166,9 +166,18 @@ true
 
 ## Loop
 
-`Loop.trainer(loss, params, Optim.adamw(lr: 0.0001)) |> Loop.run(loader, epochs: 3)` is `Train.fit` as a pipe, and
-`Loop.run_batches(batch, count, epochs:)` is `Train.fit_batches` (`Optim.sgd`, `Optim.adam` and `Optim.adamw` are the
-optimizers with their usual knobs). Both answer the same `Train.Fit`.
+`Loop` is `Train.fit` as a pipe; `Loop.run_batches(batch, count, epochs:)` is `Train.fit_batches` (`Optim.sgd`, `Optim.adam`
+and `Optim.adamw` are the optimizers with their usual knobs). Both answer the same `Train.Fit`.
+`Loop.metric` measures a `Loop.Metric` (its own batches, `observe`, `reduce`) at the end of every epoch, into
+`fit.metrics[name]`.
+
+```agentica
+fit = try (
+  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
+  |> Loop.metric(spearman)
+  |> Loop.run(loader, epochs: 3)
+)
+```
 
 ## Fine-tune a sentence-embedding model on a dataset
 

@@ -75,7 +75,7 @@ struct Step
 end
 
 ## The optimizers with their usual knobs, for a pipe: `Optim.adamw(lr: 0.00002, schedule: ...)` is
-## `Optimizer.AdamW(AdamW(lr: 0.00002, schedule: ...))`. The knobs they leave out keep the defaults of their struct.
+## `Optimizer.AdamW(AdamW(lr: 0.00002, schedule: ...))`. The knobs they leave out (the betas and `eps`) keep the defaults of their struct: build the struct to set them.
 def sgd(lr: Float, momentum: Float = 0.0, schedule: Schedule = Schedule.Constant) -> Optimizer
   Optimizer.Sgd(Sgd(lr: lr, momentum: momentum, schedule: schedule))
 end
