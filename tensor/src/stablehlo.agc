@@ -1002,7 +1002,7 @@ def rope(
   l = put(l, "stablehlo.convert #{a[1]} : (#{try type_of(args[1])}) -> #{try tensor_type([seq], x.dtype)}")
   l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = [0] : (#{try tensor_type([seq], x.dtype)}) -> #{grid}")
   turns = (0...half).map { |i| decimal(Math.exp(-((2.0 * i.to_f) / dims.to_f) * Math.log(base))) }
-  l = put(l, "stablehlo.constant dense<[#{turns.join(", ")}]> : #{table}")
+  l = put(l, try constant_op("[#{turns.join(", ")}]", try ir_type([half], x.dtype)))
   l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = [1] : (#{table}) -> #{grid}")
   l = put(l, "stablehlo.multiply %#{first + 1}, #{last(l)} : #{grid}")
   angle = last(l)
@@ -1284,11 +1284,15 @@ def fill(x: Float, like: Types.Tensor) -> Result[String] = splat(Types.Values.Fl
 
 def fill_scalar(combine: String, dtype: Types.Dtype) -> Result[String]
   return splat(Types.Values.Float(0.0), [], dtype) if combine == "add"
-  ok("stablehlo.constant dense<#{try infinity(dtype, true)}> : #{try tensor_type([], dtype)}")
+  constant_op(try infinity(dtype, true), try ir_type([], dtype))
 end
 
 def splat(v: Types.Values, shape: List[Int], dtype: Types.Dtype) -> Result[String]
-  ok("stablehlo.constant dense<#{try literal(v, dtype)}> : #{try tensor_type(shape, dtype)}")
+  constant_op(try literal(v, dtype), try ir_type(shape, dtype))
+end
+
+def constant_op(payload: String, t: IR.TensorType) -> Result[String]
+  ir_op("stablehlo.constant", [], [], t, [IR.Attribute(key: "value", value: IR.Attr.DenseLiteral(payload, t))], 0)
 end
 
 # A float literal always has its decimal point in MLIR, and a NaN or an infinity is its bit pattern.

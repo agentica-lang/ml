@@ -30,6 +30,7 @@ enum Attr
   DenseInt(Int, TensorType)
   DenseIntRows(List[List[Int]], TensorType)
   DenseF32(Float, TensorType)
+  DenseLiteral(String, TensorType)
   DialectEnum(String, String, String)
   DialectAttr(String, String, String)
 end
@@ -184,6 +185,7 @@ def attribute(a: Attribute) -> String
     Attr.DenseIntRows(rows, t) ->
       "dense<[#{rows.map { |row| "[#{row.map { |x| "#{x}" }.join(", ")}]" }.join(", ")}]> : #{show_type(t)}"
     Attr.DenseF32(x, t) -> "dense<#{x}> : #{show_type(t)}"
+    Attr.DenseLiteral(payload, t) -> "dense<#{payload}> : #{show_type(t)}"
     Attr.DialectEnum(dialect, kind, x) -> "##{dialect}<#{kind} #{x}>"
     Attr.DialectAttr(dialect, kind, payload) -> "##{dialect}.#{kind}<#{payload}>"
   end

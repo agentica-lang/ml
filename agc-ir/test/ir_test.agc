@@ -56,6 +56,28 @@ def test_the_narrow_integer_elements_print_their_mlir_names() -> Result[Void]
   Test.eq(shown, ["tensor<2xi8>", "tensor<2xi16>", "tensor<2xui8>"])
 end
 
+def test_a_dense_literal_prints_its_payload_as_given() -> Result[Void]
+  scalar = IR.TensorType(shape: [], element: IR.Element.F16)
+  table = IR.TensorType(shape: [2], element: IR.Element.F32)
+  b = IR.block([])
+  added = try IR.append(
+    b,
+    "test.constants",
+    [],
+    [scalar, table],
+    [
+      IR.Attribute(key: "low", value: IR.Attr.DenseLiteral("0xFC00", scalar)),
+      IR.Attribute(key: "turns", value: IR.Attr.DenseLiteral("[1.0, 1.0e-2]", table)),
+    ],
+  )
+
+  text = try IR.operation(added.block.ops[0], {}, "unused")
+  Test.eq(
+    text,
+    "\"test.constants\"() {low = dense<0xFC00> : tensor<f16>, turns = dense<[1.0, 1.0e-2]> : tensor<2xf32>} : () -> (tensor<f16>, tensor<2xf32>)",
+  )
+end
+
 def test_a_function_prints_region_arguments_captures_and_attributes() -> Result[Void]
   outer = IR.block([I32])
   region = IR.block([I32], some(outer))

@@ -5,15 +5,15 @@ module {
     %2 = stablehlo.add %0, %1 : tensor<4x5xf32>
     %3 = stablehlo.multiply %2, %2 : tensor<4x5xf32>
     %4 = stablehlo.multiply %3, %2 : tensor<4x5xf32>
-    %5 = stablehlo.constant dense<0.044715> : tensor<4x5xf32>
+    %5 = "stablehlo.constant"() {value = dense<0.044715> : tensor<4x5xf32>} : () -> (tensor<4x5xf32>)
     %6 = stablehlo.multiply %5, %4 : tensor<4x5xf32>
     %7 = stablehlo.add %2, %6 : tensor<4x5xf32>
-    %8 = stablehlo.constant dense<0.7978845608028654> : tensor<4x5xf32>
+    %8 = "stablehlo.constant"() {value = dense<0.7978845608028654> : tensor<4x5xf32>} : () -> (tensor<4x5xf32>)
     %9 = stablehlo.multiply %8, %7 : tensor<4x5xf32>
     %10 = stablehlo.tanh %9 : tensor<4x5xf32>
-    %11 = stablehlo.constant dense<1.0> : tensor<4x5xf32>
+    %11 = "stablehlo.constant"() {value = dense<1.0> : tensor<4x5xf32>} : () -> (tensor<4x5xf32>)
     %12 = stablehlo.add %11, %10 : tensor<4x5xf32>
-    %13 = stablehlo.constant dense<0.5> : tensor<4x5xf32>
+    %13 = "stablehlo.constant"() {value = dense<0.5> : tensor<4x5xf32>} : () -> (tensor<4x5xf32>)
     %14 = stablehlo.multiply %13, %2 : tensor<4x5xf32>
     %15 = stablehlo.multiply %14, %12 : tensor<4x5xf32>
     %16 = "stablehlo.dot_general"(%15, %arg3) {dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>} : (tensor<4x5xf32>, tensor<5x2xf32>) -> (tensor<4x2xf32>)

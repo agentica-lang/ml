@@ -36,7 +36,7 @@ def test_the_reductions_and_the_comparisons_take_their_neutral_elements_and_type
       module {
         func.func public @main(%arg0: tensor<2x3xf32>, %arg1: tensor<3xi32>) -> (tensor<2x1xf32>, tensor<3xi1>) {
           %0 = stablehlo.iota dim = 0 : tensor<3xi32>
-          %1 = stablehlo.constant dense<0xFF800000> : tensor<f32>
+          %1 = "stablehlo.constant"() {value = dense<0xFF800000> : tensor<f32>} : () -> (tensor<f32>)
           %2 = "stablehlo.reduce"(%arg0, %1) ({
           ^bb0(%ir2_0r0_a0: tensor<f32>, %ir2_0r0_a1: tensor<f32>):
             %ir2_0r0_0_0 = "stablehlo.maximum"(%ir2_0r0_a0, %ir2_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
@@ -59,19 +59,19 @@ def test_an_arange_a_kept_mean_and_a_small_fill() -> Result[Void]
     <<~MLIR,
       module {
         func.func public @main(%arg0: tensor<2x3xf32>) -> (tensor<3xi32>, tensor<2x1xf32>) {
-          %0 = stablehlo.constant dense<1.0e-8> : tensor<2x1xf32>
+          %0 = "stablehlo.constant"() {value = dense<1.0e-8> : tensor<2x1xf32>} : () -> (tensor<2x1xf32>)
           %1 = stablehlo.iota dim = 0 : tensor<3xi32>
-          %2 = stablehlo.constant dense<2> : tensor<3xi32>
+          %2 = "stablehlo.constant"() {value = dense<2> : tensor<3xi32>} : () -> (tensor<3xi32>)
           %3 = stablehlo.multiply %1, %2 : tensor<3xi32>
-          %4 = stablehlo.constant dense<1> : tensor<3xi32>
+          %4 = "stablehlo.constant"() {value = dense<1> : tensor<3xi32>} : () -> (tensor<3xi32>)
           %5 = stablehlo.add %3, %4 : tensor<3xi32>
-          %6 = stablehlo.constant dense<0.0> : tensor<f32>
+          %6 = "stablehlo.constant"() {value = dense<0.0> : tensor<f32>} : () -> (tensor<f32>)
           %7 = "stablehlo.reduce"(%arg0, %6) ({
           ^bb0(%ir7_0r0_a0: tensor<f32>, %ir7_0r0_a1: tensor<f32>):
             %ir7_0r0_0_0 = "stablehlo.add"(%ir7_0r0_a0, %ir7_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
             "stablehlo.return"(%ir7_0r0_0_0) : (tensor<f32>) -> ()
           }) {dimensions = array<i64: 1>} : (tensor<2x3xf32>, tensor<f32>) -> (tensor<2xf32>)
-          %8 = stablehlo.constant dense<3.0> : tensor<2xf32>
+          %8 = "stablehlo.constant"() {value = dense<3.0> : tensor<2xf32>} : () -> (tensor<2xf32>)
           %9 = stablehlo.divide %7, %8 : tensor<2xf32>
           %10 = stablehlo.reshape %9 : (tensor<2xf32>) -> tensor<2x1xf32>
           %11 = stablehlo.add %10, %0 : tensor<2x1xf32>
@@ -128,7 +128,7 @@ def test_argmax_text_reduces_the_maximum_then_the_first_index() -> Result[Void]
       module {
         func.func public @main(%arg0: tensor<2x3xf32>) -> (tensor<2xi64>, tensor<i64>) {
           %0 = stablehlo.reshape %arg0 : (tensor<2x3xf32>) -> tensor<2x3xf32>
-          %1 = stablehlo.constant dense<0xFF800000> : tensor<f32>
+          %1 = "stablehlo.constant"() {value = dense<0xFF800000> : tensor<f32>} : () -> (tensor<f32>)
           %2 = "stablehlo.reduce"(%0, %1) ({
           ^bb0(%ir2_0r0_a0: tensor<f32>, %ir2_0r0_a1: tensor<f32>):
             %ir2_0r0_0_0 = "stablehlo.maximum"(%ir2_0r0_a0, %ir2_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
@@ -137,16 +137,16 @@ def test_argmax_text_reduces_the_maximum_then_the_first_index() -> Result[Void]
           %3 = stablehlo.broadcast_in_dim %2, dims = [0] : (tensor<2xf32>) -> tensor<2x3xf32>
           %4 = stablehlo.compare EQ, %0, %3, FLOAT : (tensor<2x3xf32>, tensor<2x3xf32>) -> tensor<2x3xi1>
           %5 = stablehlo.iota dim = 1 : tensor<2x3xi64>
-          %6 = stablehlo.constant dense<3> : tensor<2x3xi64>
+          %6 = "stablehlo.constant"() {value = dense<3> : tensor<2x3xi64>} : () -> (tensor<2x3xi64>)
           %7 = stablehlo.select %4, %5, %6 : tensor<2x3xi1>, tensor<2x3xi64>
-          %8 = stablehlo.constant dense<3> : tensor<i64>
+          %8 = "stablehlo.constant"() {value = dense<3> : tensor<i64>} : () -> (tensor<i64>)
           %9 = "stablehlo.reduce"(%7, %8) ({
           ^bb0(%ir9_0r0_a0: tensor<i64>, %ir9_0r0_a1: tensor<i64>):
             %ir9_0r0_0_0 = "stablehlo.minimum"(%ir9_0r0_a0, %ir9_0r0_a1) : (tensor<i64>, tensor<i64>) -> (tensor<i64>)
             "stablehlo.return"(%ir9_0r0_0_0) : (tensor<i64>) -> ()
           }) {dimensions = array<i64: 1>} : (tensor<2x3xi64>, tensor<i64>) -> (tensor<2xi64>)
           %10 = stablehlo.reshape %arg0 : (tensor<2x3xf32>) -> tensor<6xf32>
-          %11 = stablehlo.constant dense<0xFF800000> : tensor<f32>
+          %11 = "stablehlo.constant"() {value = dense<0xFF800000> : tensor<f32>} : () -> (tensor<f32>)
           %12 = "stablehlo.reduce"(%10, %11) ({
           ^bb0(%ir12_0r0_a0: tensor<f32>, %ir12_0r0_a1: tensor<f32>):
             %ir12_0r0_0_0 = "stablehlo.maximum"(%ir12_0r0_a0, %ir12_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
@@ -155,9 +155,9 @@ def test_argmax_text_reduces_the_maximum_then_the_first_index() -> Result[Void]
           %13 = stablehlo.broadcast_in_dim %12, dims = [] : (tensor<f32>) -> tensor<6xf32>
           %14 = stablehlo.compare EQ, %10, %13, FLOAT : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xi1>
           %15 = stablehlo.iota dim = 0 : tensor<6xi64>
-          %16 = stablehlo.constant dense<6> : tensor<6xi64>
+          %16 = "stablehlo.constant"() {value = dense<6> : tensor<6xi64>} : () -> (tensor<6xi64>)
           %17 = stablehlo.select %14, %15, %16 : tensor<6xi1>, tensor<6xi64>
-          %18 = stablehlo.constant dense<6> : tensor<i64>
+          %18 = "stablehlo.constant"() {value = dense<6> : tensor<i64>} : () -> (tensor<i64>)
           %19 = "stablehlo.reduce"(%17, %18) ({
           ^bb0(%ir19_0r0_a0: tensor<i64>, %ir19_0r0_a1: tensor<i64>):
             %ir19_0r0_0_0 = "stablehlo.minimum"(%ir19_0r0_a0, %ir19_0r0_a1) : (tensor<i64>, tensor<i64>) -> (tensor<i64>)
