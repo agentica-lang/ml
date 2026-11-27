@@ -10,6 +10,49 @@ import Trace from "../trace"
 
 private
 
+def test_padded_max_pool_does_not_choose_zero_over_negative_pixels() -> Result[Void]
+  return ok() if !try Support.present()
+  agrees(
+    ->(b: Tensor.Backend) {
+      xs = Support.uniform(60, 1, 1.0).map { |x| -1.0 - x.abs }
+      ok([try Support.floats(xs, [1, 2, 5, 6], b)])
+    },
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.max_pool2d(xs[0], 3, 2, 1)]) },
+  )
+end
+
+def test_expert_matmul_matches_the_reference_with_shared_and_per_expert_inputs() -> Result[Void]
+  return ok() if !try Support.present()
+  for uses in [1, 2]
+    try agrees(
+      ->(b: Tensor.Backend) {
+        ok([
+          try Support.floats(Support.uniform(24, 1, 0.5), [3, 2, 4], b),
+          try Support.floats(Support.uniform(8 * uses, 2, 0.5), [2, uses, 4], b),
+          try Tensor.from_list([2, 0, 1, 1].map { |i| Tensor.Values.Int(i) }, [2, 2], Tensor.Dtype.I32, b),
+        ])
+      },
+      ->(xs: List[Tensor.Tensor]) { ok([try Tensor.expert_matmul(xs[0], xs[1], xs[2])]) },
+    )
+  end
+
+  ok()
+end
+
+def test_expert_matmul_rejects_invalid_expert_ids() -> Result[Void]
+  return ok() if !try Support.present()
+  weights = try Support.floats(Support.uniform(12, 1, 0.5), [3, 2, 2], Support.XLA)
+  x = try Support.floats([1.0, 2.0], [1, 1, 2], Support.XLA)
+  for bad in [-1, 3]
+    ids = try Tensor.from_list([Tensor.Values.Int(bad)], [1, 1], Tensor.Dtype.I32, Support.XLA)
+    r = Trace.eval([weights, x, ids], ->(xs: List[Tensor.Tensor]) { Tensor.expert_matmul(xs[0], xs[1], xs[2]) })
+    try Test.error?(r)
+    try Test.assert(r.message.include?("outside the rows"), r.message)
+  end
+
+  ok()
+end
+
 def test_gated_delta_output_and_state_match_the_reference() -> Result[Void]
   return ok() if !try Support.present()
   for tokens in [1, 5]

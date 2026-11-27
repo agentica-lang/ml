@@ -203,6 +203,8 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.BatchMatmul -> batch_matmul(n.args, a, sig)
     Types.Op.Conv2d(stride, padding, groups) -> conv2d(t, n.args, a, stride, padding, groups, first)
     Types.Op.GatedDeltaRule -> ok(["func.call @gated_delta_#{first}(#{a.join(", ")}) : #{sig}"])
+    Types.Op.MaxPool2d(kernel, stride, padding) -> max_pool2d(t, n.args[0], a[0], kernel, stride, padding, first)
+    Types.Op.ExpertMatmul -> expert_matmul(t, n.args, a, first)
     Types.Op.Argmax(axes, keep_dims) -> argmax(t, n.args[0], a[0], axes, keep_dims, first)
     Types.Op.Slice(starts, ends) -> ok(["stablehlo.slice #{a[0]} #{extents(starts, ends)} : #{sig}"])
     Types.Op.BroadcastTo -> broadcast(t, n.args[0], a[0])
@@ -266,6 +268,54 @@ def gather(t: Types.Tensor, args: List[Types.Tensor], a: List[String], sig: Stri
   sizes = ([1] + rest).map { |d| d.to_s }.join(", ")
   attrs = "dimension_numbers = #stablehlo.gather<#{fields.join(", ")}>, slice_sizes = array<i64: #{sizes}>"
   ok(["\"stablehlo.gather\"(#{a[0]}, #{a[1]}) {#{attrs}, indices_are_sorted = false} : #{sig}"])
+end
+
+# See StableHLO reduce_window: padding takes the initial value, so padded cells must not win over negative inputs.
+def max_pool2d(
+  t: Types.Tensor,
+  x: Types.Tensor,
+  a: String,
+  kernel: Int,
+  stride: Int,
+  pad: Int,
+  first: Int,
+) -> Result[List[String]]
+  scalar = try tensor_type([], t.dtype)
+  dims = (
+    "window_dimensions = array<i64: 1, 1, #{kernel}, #{kernel}>, window_strides = array<i64: 1, 1, #{stride}, #{stride}>"
+  )
+
+  padding = "padding = dense<[[0, 0], [0, 0], [#{pad}, #{pad}], [#{pad}, #{pad}]]> : tensor<4x2xi64>"
+  ok([
+    try fill_scalar("maximum", t.dtype),
+    "\"stablehlo.reduce_window\"(#{a}, %#{first}) ({\n      ^bb0(%lhs: #{scalar}, %rhs: #{scalar}):\n        %max = stablehlo.maximum %lhs, %rhs : #{scalar}\n        stablehlo.return %max : #{scalar}\n    }) {#{dims}, #{padding}} : (#{try type_of(x)}, #{scalar}) -> #{try type_of(t)}",
+  ])
+end
+
+# Gather the selected expert matrices, then contract each input row with its own expert.
+def expert_matmul(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
+  weights = args[0]
+  x = args[1]
+  ids = args[2]
+  rows = weights.shape[1]
+  inner = weights.shape[2]
+  selected = weights.with(shape: ids.shape + [rows, inner])
+  broadcast_x = try tensor_type(ids.shape + [inner], x.dtype)
+  selected_ty = try type_of(selected)
+  gathered = try gather(
+    selected,
+    [weights, ids],
+    [a[0], a[2]],
+    "(#{try type_of(weights)}, #{try type_of(ids)}) -> #{selected_ty}",
+  )
+
+  ok(
+    gathered +
+    [
+      "stablehlo.broadcast_in_dim #{a[1]}, dims = [0, 1, 2] : (#{try type_of(x)}) -> #{broadcast_x}",
+      "stablehlo.dot_general %#{first + gathered.size}, %#{first + gathered.size - 1}, batching_dims = [0, 1] x [0, 1], contracting_dims = [2] x [3] : (#{broadcast_x}, #{selected_ty}) -> #{try type_of(t)}",
+    ],
+  )
 end
 
 # `adam_step` over `[p, g, m, v, hyper]`: the new `[p, m, v]` stacked on a new first axis, from the ops of
@@ -342,6 +392,7 @@ end
 
 def indexed(n: Types.Node) -> Optional[Bound]
   case n.op
+    Types.Op.ExpertMatmul -> some(Bound(index: n.args[2], rows: n.args[0].shape[0]))
     Types.Op.Gather -> some(Bound(index: n.args[1], rows: n.args[0].shape[0]))
     Types.Op.ScatterAdd(rows) -> some(Bound(index: n.args[0], rows: rows))
     _ -> none
