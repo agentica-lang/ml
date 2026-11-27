@@ -474,6 +474,19 @@ an_term xla_upload(an_env *env, xla_list_Int shape, xla_list_Float data, int64_t
   return out;
 }
 
+/* Whether the `need` bytes at `offset` of the file `path` are inside it: a cheap check before the host buffer is
+   allocated; `ff_read` still opens and checks the file itself. */
+static bool range_in_file(const char *path, size_t path_len, int64_t offset, int64_t need) {
+  char name[FF_PATH_MAX];
+  struct stat st;
+
+  if (path_len >= sizeof name) return false;
+  memcpy(name, path, path_len);
+  name[path_len] = 0;
+  if (stat(name, &st) != 0 || offset < 0) return false;
+  return offset <= (int64_t)st.st_size && need <= (int64_t)st.st_size - offset;
+}
+
 /* An F32 buffer of `shape` from the range at `offset` of the file `path`, or from `data` (`path` NULL), which `format`
    holds (a float format or the blocks of a quantized one): widened straight into the host buffer, with no list in
    between. The file is checked against the range and `data` against the length of the shape before a value is read. */
@@ -484,10 +497,16 @@ static an_term loaded_floats(an_env *env, xla_list_Int *shape, const char *path,
   char why[FF_PATH_MAX + 160];
   an_term failure, out;
   float *values;
+  int64_t need;
   bool read;
 
   if (loaded() == NULL) return failed(env, "the XLA plugin is not loaded");
   if (!dims_of(env, shape, dims, &rank, &count, &failure)) return failure;
+  need = ff_bytes(format, count);
+  if (need >= 0 && path == NULL && (size_t)need != len) return failed(env, "the bytes are not the length of the shape");
+  if (need >= 0 && path != NULL && !range_in_file(path, path_len, offset, need)) {
+    return failed(env, "the range reaches past the end of the file");
+  }
   values = (float *)host(count, DT_F32);
   if (values == NULL) return failed(env, "out of memory");
   read = path != NULL ? ff_read(path, path_len, offset, count, format, values, why, sizeof why)
