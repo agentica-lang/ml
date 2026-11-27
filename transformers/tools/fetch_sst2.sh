@@ -1,16 +1,15 @@
 #!/bin/sh
-# Fetches what tools/finetune_sst2.agc reads into DIR, at pinned revisions, and checks the SHA-256 of each file (as
-# benchmarks/stsb/run.sh does): DIR/distilbert-base-uncased (config, tokenizer and weights of the checkpoint) and
-# DIR/sst2 (the validation split of stanfordnlp/sst2 and its first TRAIN_ROWS training rows, as CSV files below the
-# 1 MiB that Table.read takes: the parquet files are converted by tools/sst2_csv.py with PYTHON, which needs pyarrow,
-# default python3). A file gets its name only once its hash is right.
+# Fetches what tools/finetune_sst2.agc reads into DIR, at pinned revisions, and checks the SHA-256 of each file with
+# `sha256sum`, as benchmarks/stsb/run.sh does: DIR/distilbert-base-uncased (config, tokenizer and weights of the
+# checkpoint, 268 MB) and DIR/sst2 (the train and validation splits of stanfordnlp/sst2, as Parquet). It needs the
+# network and `curl`. A file that is there with the right hash is not fetched again, and a file gets its name only once
+# its hash is right.
 #
 #   sh tools/fetch_sst2.sh DIR
 set -eu
 
 [ $# -eq 1 ] || { echo "usage: fetch_sst2.sh DIR" >&2; exit 2; }
 dir=$1
-TRAIN_ROWS=10000
 model=https://huggingface.co/distilbert/distilbert-base-uncased/resolve/12040accade4e8a0f71eabdb258fecc2e7e948be
 data=https://huggingface.co/datasets/stanfordnlp/sst2/resolve/8d51e7e4887a4caaa95b3fbebbf53c0490b58bbb/data
 
@@ -36,7 +35,4 @@ got "$data/train-00000-of-00001.parquet" "$dir/sst2/train.parquet" \
   c7921283b75a42e685f50edecb96798607ea0fcbfd0739ee8975f22c12d55f09
 got "$data/validation-00000-of-00001.parquet" "$dir/sst2/validation.parquet" \
   fb00fe008f6828f86ba2beda8415a4cf5da0c884f21c5f238c87131b5aa19529
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-"${PYTHON:-python3}" -I "$here/sst2_csv.py" "$dir/sst2/train.parquet" "$dir/sst2/train.csv" "$TRAIN_ROWS"
-"${PYTHON:-python3}" -I "$here/sst2_csv.py" "$dir/sst2/validation.parquet" "$dir/sst2/validation.csv"
 echo "fetch_sst2.sh: the files are in $dir"
