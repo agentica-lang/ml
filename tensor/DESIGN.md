@@ -975,7 +975,15 @@ The price:
   the error the reference gives; a compare that cannot be true for the dtype
   (below 0 for `U8`, at or above the rows when they are past its maximum) is
   left out) and `adam_step` (the ops of its composed form over the 7 numbers,
-  its three results stacked; a part is a `slice`). Any other op is an error
+  its three results stacked; a part is a `slice`), and the shape and dtype ops of
+  a transformer step: `sigmoid` (`logistic`), `pow` (`power`), `clamp`,
+  `to_dtype` (`convert`; a boolean is a compare with 0, and a float to an
+  integer truncates, as the reference does), `permute` (`transpose`), `concat`
+  (`concatenate`), `stack` (a `reshape` of each, then `concatenate`), `squeeze`
+  and `unsqueeze` (`reshape`), `batch_matmul` (`dot_general` with the leading
+  axes as batching dimensions) and `argmax` (the reduced axes moved last and
+  flattened, the maximum, then the smallest index of the positions that hold
+  it: a tie keeps the lowest, as the reference does). Any other op is an error
   naming it. The quantized dtypes have no MLIR element type; `Bool` is `i1`, `U8` is `ui8`.
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,

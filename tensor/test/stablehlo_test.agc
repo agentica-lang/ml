@@ -77,12 +77,12 @@ end
 def test_an_op_without_an_emitter_is_an_error_naming_it() -> Result[Void]
   r = Trace.stablehlo(
     [spec([2, 2], Tensor.Dtype.F32)],
-    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.permute(xs[0], [1, 0])]) },
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.gelu_erf(xs[0])]) },
   )
 
   case r
-    ok(_) -> error("permute was emitted")
-    error(e) -> Test.eq(e.message, "StableHLO has no emitter for permute yet")
+    ok(_) -> error("gelu_erf was emitted")
+    error(e) -> Test.eq(e.message, "StableHLO has no emitter for gelu_erf yet")
   end
 end
 
