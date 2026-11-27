@@ -29,7 +29,7 @@ end
 def main() -> Void
   args = System.args
   if args.size < 2
-    puts("usage: generate_check.agc MODEL_DIR GOLDEN_JSON [cpu|vulkan]")
+    puts("usage: generate_check.agc MODEL_DIR GOLDEN_JSON [cpu|vulkan|xla]")
     System.exit(2)
   end
 
@@ -38,7 +38,12 @@ def main() -> Void
     device = Tensor.Device.Vulkan(0)
   end
 
-  case run(args[0], args[1], Tensor.Backend.Ggml(device))
+  backend = Tensor.Backend.Ggml(device)
+  if args.size > 2 and args[2] == "xla"
+    backend = Tensor.Backend.Xla(Tensor.Device.Cpu)
+  end
+
+  case run(args[0], args[1], backend)
     ok(_) -> puts("generates what Hugging Face does")
     error(e) ->
       puts("generate_check: #{e.message}")

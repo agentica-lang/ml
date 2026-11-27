@@ -1031,7 +1031,7 @@ end
 
 ## The indices of the `k` largest elements of the float vector `x`, or of each row of the matrix `x`, an `I32` `[k]`
 ## (`[rows, k]`), from the largest down on every backend but `Ggml`, where `ggml_top_k` gives them in no particular
-## order. Among equal values the ones kept are not specified. In a trace it is one node, which `Ggml` runs on the
+## order. Among equal values the ones kept are not specified; the reference and `Xla` keep the lowest indices. In a trace it is one node, which `Ggml` runs on the
 ## device: only the ids cross to the host, not the whole vector. A row has at most 2^24 elements (ids are exact in `F32`
 ## below that). No gradient.
 def top_ids(x: Types.Tensor, k: Int) -> Result[Types.Tensor]

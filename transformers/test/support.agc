@@ -6,6 +6,7 @@ import Tensor from "pkg/tensor/tensor"
 REF = Tensor.Backend.Reference
 GGML = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+XLA = Tensor.Backend.Xla(Tensor.Device.Cpu)
 
 ## `text` with the `n`th (from 0) occurrence of `needle` replaced by `with`;
 ## an error when there is no such occurrence, so a test never "refuses" a file
@@ -43,6 +44,15 @@ def ggml_backends() -> Result[List[Tensor.Backend]]
 
   return ok([GGML, VULKAN]) if Tensor.available(VULKAN)
   ok([GGML])
+end
+
+## `[XLA]` when the plugin is there (`tensor/tools/install_xla.agc`), none when it is not, an error when it is required
+## (`TENSOR_REQUIRE_XLA`) and missing.
+def xla_backends() -> Result[List[Tensor.Backend]]
+  return ok([XLA]) if Tensor.available(XLA)
+  flag = System.env("TENSOR_REQUIRE_XLA")
+  return error("XLA required but not installed (TENSOR_REQUIRE_XLA is set)") if flag.ok? and try flag != ""
+  ok([])
 end
 
 ## `ggml_backends` for a model with a gated delta rule of head width `width` (Qwen3.5): ggml-vulkan runs that op for

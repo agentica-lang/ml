@@ -996,16 +996,23 @@ The price:
   the batch and the heads as batching dimensions gives the scores, then the
   scale, the mask broadcast to the scores, the softmax as the maximum, `exp`
   and a sum, and a second `dot_general`; a key in another dtype than the query
-  is converted) and `scatter_add` (a `stablehlo.scatter` that adds into zeros;
-  a duplicate index sums, and an index outside the rows would be dropped by
-  XLA, so `checked` covers it as it does a `gather`). Any other op is an
+  is converted; a query whose keys are all `-inf` gives a NaN row there, where
+  the reference refuses it with an error), `scatter_add` (a `stablehlo.scatter`
+  that adds into zeros; a duplicate index sums, and an index outside the rows
+  would be dropped by XLA, so `checked` covers it as it does a `gather`) and
+  `top_ids` (a stable descending `sort` of the values with an `iota`, then the
+  first `k` ids: the lowest index of equal values first, as the reference does;
+  a NaN compares false with everything, so where a NaN lands in the order is not
+  defined). Any other op is an
   error naming it. A program checks no values: a `to_dtype` out of the range
   of its integer type wraps, a `pow` with a base at or below 0 gives what XLA
   gives (a NaN): the reference refuses these with an error, and only the index
-  of a `gather` is checked (`checked`). The backward rules of `pow`, `clamp`, `batch_matmul` and
-  `to_dtype` do not exist yet (`trace.agc`), so a gradient does not pass
-  through them on any backend; the backward of `attention` is written with
-  `batch_matmul`, which it uses forward only. The quantized dtypes have no MLIR element type; `Bool` is `i1`, `U8` is `ui8`.
+  of a `gather` or a `scatter_add` is checked (`checked`). The backward rules
+  of `pow`, `clamp`, `batch_matmul` and `to_dtype` do not exist yet
+  (`trace.agc`), so a gradient does not pass through them on any backend; the
+  backward of `attention` is written with `batch_matmul`, which it uses forward
+  only. The quantized dtypes have no MLIR element type; `Bool` is `i1`, `U8` is
+  `ui8`.
 - `Train.stablehlo(loss, params, batch, optimizer)` is the step of `fit`, as
   `fit` traces it: the arguments are the parameters, the optimizer's moments,
   then the inputs of the step (`Optim.step_inputs`: SGD's learning rate as a
