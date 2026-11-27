@@ -119,6 +119,57 @@ def test_a_mixed_dtype_matmul_is_an_error_naming_it() -> Result[Void]
   end
 end
 
+## The text of `set_rows` on a rank-2 cache: the positions as a column, the rows moved to the scatter layout, and one
+## scatter that replaces the rows. This golden is the one the emitter must keep when it builds the scatter with `agc-ir`.
+def test_set_rows_text_of_rank_two_is_a_scatter_of_the_rows() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([4, 3], Tensor.Dtype.F32), spec([2, 3], Tensor.Dtype.F32), spec([2], Tensor.Dtype.I32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.set_rows(xs[0], xs[1], xs[2])]) },
+  )
+
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<4x3xf32>, %arg1: tensor<2x3xf32>, %arg2: tensor<2xi32>) -> (tensor<4x3xf32>) {
+          %0 = stablehlo.reshape %arg2 : (tensor<2xi32>) -> tensor<2x1xi32>
+          %1 = stablehlo.transpose %arg1, dims = [0, 1] : (tensor<2x3xf32>) -> tensor<2x3xf32>
+          %2 = "stablehlo.scatter"(%arg0, %0, %1) ({
+          ^bb0(%set_rows0_r0_a0: tensor<f32>, %set_rows0_r0_a1: tensor<f32>):
+            "stablehlo.return"(%set_rows0_r0_a1) : (tensor<f32>) -> ()
+          }) {scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [1], inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, indices_are_sorted = false, unique_indices = false} : (tensor<4x3xf32>, tensor<2x1xi32>, tensor<2x3xf32>) -> (tensor<4x3xf32>)
+          func.return %2 : tensor<4x3xf32>
+        }
+      }
+    MLIR
+  )
+end
+
+## The text of `set_rows` on a rank-3 cache: the rows axis is the one before the width, so the updates move it to the front.
+def test_set_rows_text_of_rank_three_moves_the_rows_axis() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([2, 4, 3], Tensor.Dtype.F32), spec([2, 2, 3], Tensor.Dtype.F32), spec([2], Tensor.Dtype.I32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.set_rows(xs[0], xs[1], xs[2])]) },
+  )
+
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<2x4x3xf32>, %arg1: tensor<2x2x3xf32>, %arg2: tensor<2xi32>) -> (tensor<2x4x3xf32>) {
+          %0 = stablehlo.reshape %arg2 : (tensor<2xi32>) -> tensor<2x1xi32>
+          %1 = stablehlo.transpose %arg1, dims = [1, 0, 2] : (tensor<2x2x3xf32>) -> tensor<2x2x3xf32>
+          %2 = "stablehlo.scatter"(%arg0, %0, %1) ({
+          ^bb0(%set_rows0_r0_a0: tensor<f32>, %set_rows0_r0_a1: tensor<f32>):
+            "stablehlo.return"(%set_rows0_r0_a1) : (tensor<f32>) -> ()
+          }) {scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [1, 2], inserted_window_dims = [1], scatter_dims_to_operand_dims = [1], index_vector_dim = 1>, indices_are_sorted = false, unique_indices = false} : (tensor<2x4x3xf32>, tensor<2x1xi32>, tensor<2x2x3xf32>) -> (tensor<2x4x3xf32>)
+          func.return %2 : tensor<2x4x3xf32>
+        }
+      }
+    MLIR
+  )
+end
+
 def spec(shape: List[Int], dtype: Tensor.Dtype) -> Trace.Spec
   Trace.Spec(shape: shape, dtype: dtype, backend: Tensor.Backend.Reference)
 end

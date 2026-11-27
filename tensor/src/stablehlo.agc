@@ -485,7 +485,8 @@ def indexed(n: Types.Node) -> Optional[Bound]
 end
 
 # Replace rows along the penultimate dimension. Move that dimension to the front so the updates have the
-# scatter layout [indices, window...], then scatter-replace into the original cache.
+# scatter layout [indices, window...], then scatter-replace into the original cache. The scatter is built with
+# `agc-ir`; the reshape and the transpose stay as text.
 def set_rows(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
   rank = t.shape.size
   axis = rank - 2
@@ -494,19 +495,54 @@ def set_rows(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: 
   indices_shape = [args[2].shape[0], 1]
   indices_type = try tensor_type(indices_shape, args[2].dtype)
   updates_type = try tensor_type(updates_shape, args[1].dtype)
-  cache_type = try type_of(t)
-  scalar = try tensor_type([], t.dtype)
-  window_dims = ints((1...rank).to_a)
-  region = ["^bb0(%old: #{scalar}, %update: #{scalar}):", "        stablehlo.return %update : #{scalar}"].join(
-    "\n      ",
+  entry = IR.block([
+    try ir_type(t.shape, t.dtype),
+    try ir_type(indices_shape, args[2].dtype),
+    try ir_type(updates_shape, args[1].dtype),
+  ])
+
+  scalar = IR.TensorType(shape: [], element: entry.args[0].type.element)
+  region = IR.block([scalar, scalar])
+  ended = try IR.append(region, "stablehlo.return", [region.args[1]], [])
+  dims = (
+    "update_window_dims = #{ints((1...rank).to_a)}, inserted_window_dims = [#{axis}], scatter_dims_to_operand_dims = [#{axis}], index_vector_dim = 1"
   )
 
-  types = "(#{cache_type}, #{indices_type}, #{updates_type}) -> #{cache_type}"
+  attrs = [
+    IR.Attribute(key: "scatter_dimension_numbers", value: IR.Attr.DialectAttr("stablehlo", "scatter", dims)),
+    IR.Attribute(key: "indices_are_sorted", value: IR.Attr.Bool(false)),
+    IR.Attribute(key: "unique_indices", value: IR.Attr.Bool(false)),
+  ]
+
+  scattered = try IR.append(
+    entry,
+    "stablehlo.scatter",
+    entry.args,
+    [entry.args[0].type],
+    attrs,
+    regions: [ended.block],
+  )
+
+  names: Map[Ref, String] = {}
+  names = names.put(entry.args[0].id, a[0]).put(entry.args[1].id, "%#{first}").put(entry.args[2].id, "%#{first + 1}")
+  scatter = try IR.operation(scattered.block.ops[0], names, "set_rows#{first}_", "    ")
   ok([
     "stablehlo.reshape #{a[2]} : (#{try type_of(args[2])}) -> #{indices_type}",
     "stablehlo.transpose #{a[1]}, dims = #{ints(axes)} : (#{try type_of(args[1])}) -> #{updates_type}",
-    "\"stablehlo.scatter\"(#{a[0]}, %#{first}, %#{first + 1}) ({\n      #{region}\n    }) {scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = #{window_dims}, inserted_window_dims = [#{axis}], scatter_dims_to_operand_dims = [#{axis}], index_vector_dim = 1>, indices_are_sorted = false, unique_indices = false} : #{types}",
+    scatter,
   ])
+end
+
+# The `agc-ir` type of a tensor of `shape` and `dtype`: the element types the scatter of `set_rows` takes.
+def ir_type(shape: List[Int], dtype: Types.Dtype) -> Result[IR.TensorType]
+  case dtype
+    Types.Dtype.F16 -> ok(IR.TensorType(shape: shape, element: IR.Element.F16))
+    Types.Dtype.F32 -> ok(IR.TensorType(shape: shape, element: IR.Element.F32))
+    Types.Dtype.F64 -> ok(IR.TensorType(shape: shape, element: IR.Element.F64))
+    Types.Dtype.I32 -> ok(IR.TensorType(shape: shape, element: IR.Element.I32))
+    Types.Dtype.I64 -> ok(IR.TensorType(shape: shape, element: IR.Element.I64))
+    _ -> error("StableHLO IR has no element type for #{Types.dtype_name(dtype)}")
+  end
 end
 
 # Whether one of the indices `name` (the tensor `idx`) is outside `[0, rows)`: an `i1`, the last line. No lines when

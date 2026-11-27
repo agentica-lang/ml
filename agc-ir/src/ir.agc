@@ -23,6 +23,7 @@ end
 enum Attr
   I64(Int)
   I64Array(List[Int])
+  Bool(Bool)
   DenseInt(Int, TensorType)
   DenseIntRows(List[List[Int]], TensorType)
   DenseF32(Float, TensorType)
@@ -161,12 +162,18 @@ private
 
 def fresh(t: TensorType) -> Value = Value(id: Ref.new(), type: t)
 
+def boolean(x: Bool) -> String
+  return "true" if x
+  "false"
+end
+
 def types_of(values: List[Value]) -> String = values.map { |v| show_type(v.type) }.join(", ")
 
 def attribute(a: Attribute) -> String
   value = case a.value
     Attr.I64(x) -> "#{x} : i64"
     Attr.I64Array(xs) -> "array<i64: #{xs.map { |x| "#{x}" }.join(", ")}>"
+    Attr.Bool(x) -> boolean(x)
     Attr.DenseInt(x, t) -> "dense<#{x}> : #{show_type(t)}"
     Attr.DenseIntRows(rows, t) ->
       "dense<[#{rows.map { |row| "[#{row.map { |x| "#{x}" }.join(", ")}]" }.join(", ")}]> : #{show_type(t)}"

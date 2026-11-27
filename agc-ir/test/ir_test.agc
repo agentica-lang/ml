@@ -32,6 +32,22 @@ def test_an_operation_can_use_existing_ssa_names() -> Result[Void]
   Test.eq(text, "\"test.binary\"(%4, %arg2) : (tensor<i32>, tensor<i32>) -> (tensor<i32>)")
 end
 
+def test_a_bool_attribute_prints_true_or_false() -> Result[Void]
+  b = IR.block([I32])
+  added = try IR.append(
+    b,
+    "test.flags",
+    b.args,
+    [I32],
+    [IR.Attribute(key: "sorted", value: IR.Attr.Bool(false)), IR.Attribute(key: "unique", value: IR.Attr.Bool(true))],
+  )
+
+  names: Map[Ref, String] = {}
+  names = names.put(b.args[0].id, "%arg0")
+  text = try IR.operation(added.block.ops[0], names, "unused")
+  Test.eq(text, "\"test.flags\"(%arg0) {sorted = false, unique = true} : (tensor<i32>) -> (tensor<i32>)")
+end
+
 def test_a_function_prints_region_arguments_captures_and_attributes() -> Result[Void]
   outer = IR.block([I32])
   region = IR.block([I32], some(outer))
