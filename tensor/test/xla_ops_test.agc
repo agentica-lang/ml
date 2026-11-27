@@ -10,6 +10,19 @@ import Trace from "../trace"
 
 private
 
+def test_grouped_conv2d_with_stride_and_padding_matches_the_reference() -> Result[Void]
+  return ok() if !try Support.present()
+  agrees(
+    ->(b: Tensor.Backend) {
+      ok([
+        try Support.floats(Support.uniform(2 * 4 * 5 * 7, 1, 1.0), [2, 4, 5, 7], b),
+        try Support.floats(Support.uniform(6 * 2 * 2 * 3, 2, 1.0), [6, 2, 2, 3], b),
+      ])
+    },
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.conv2d(xs[0], xs[1], 2, 1, 2)]) },
+  )
+end
+
 def test_elementwise_ops_and_dtype_conversions_match_the_reference() -> Result[Void]
   return ok() if !try Support.present()
   agrees(

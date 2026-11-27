@@ -188,6 +188,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Concat(axis) -> ok(["stablehlo.concatenate #{a.join(", ")}, dim = #{axis} : #{sig}"])
     Types.Op.Stack(axis) -> stack(t, n.args, a, axis, first)
     Types.Op.BatchMatmul -> batch_matmul(n.args, a, sig)
+    Types.Op.Conv2d(stride, padding, groups) -> conv2d(a, sig, stride, padding, groups)
     Types.Op.Argmax(axes, keep_dims) -> argmax(t, n.args[0], a[0], axes, keep_dims, first)
     Types.Op.Slice(starts, ends) -> ok(["stablehlo.slice #{a[0]} #{extents(starts, ends)} : #{sig}"])
     Types.Op.BroadcastTo -> broadcast(t, n.args[0], a[0])
@@ -206,6 +207,14 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.AdamPart(i) -> adam_part(t, n.args[0], a[0], i, first)
     _ -> error("StableHLO has no emitter for #{Types.op_name(n.op)} yet")
   end
+end
+
+# NCHW input and output, OIHW filters, with the same symmetric padding and stride on both spatial axes.
+def conv2d(a: List[String], sig: String, stride: Int, padding: Int, groups: Int) -> Result[List[String]]
+  dims = "dimension_numbers = #stablehlo.conv<[b, f, 0, 1]x[o, i, 0, 1]->[b, f, 0, 1]>"
+  window = "window_strides = array<i64: #{stride}, #{stride}>, padding = dense<#{padding}> : tensor<2x2xi64>"
+  counts = "batch_group_count = 1 : i64, feature_group_count = #{groups} : i64"
+  ok(["\"stablehlo.convolution\"(#{a[0]}, #{a[1]}) {#{dims}, #{window}, #{counts}} : #{sig}"])
 end
 
 # Rows of the source at the indices: one row slice per index, the indices' axes first, as `Reference.gather` answers.
