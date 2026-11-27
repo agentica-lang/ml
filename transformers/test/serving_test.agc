@@ -57,19 +57,21 @@ def interleaved(dir: String) -> Result[Void]
   first_a = try expect_token(a_ch)
   try Serving.submit(server, [4, 4, 9], 5, [], b_ch)
   # B decoded while A provably still runs: its first token arrived, and A cannot be done — `Done` would be the sixth
-  # send through a channel of two with one consumed, so at most three could have landed.
+  # send through a channel of two with one consumed, so at most three could have landed. The probe keeps what it takes.
   first_b = try expect_token(b_ch)
+  extra: List[Int] = []
   case a_ch.recv(0)
     ok(ev) ->
       case ev
         Serving.Event.Done -> return error("A ended before B decoded")
+        Serving.Event.Token(id) -> extra = [id]
         _ -> nil
       end
 
     error(_) -> nil
   end
 
-  got_a = [first_a] + try collect(a_ch)
+  got_a = [first_a] + extra + try collect(a_ch)
   got_b = [first_b] + try collect(b_ch)
   try Serving.stop(server)
   Generate.close(g)
@@ -175,6 +177,33 @@ def bad_steps(dir: String) -> Result[Void]
   Test.eq(got, want)
 end
 
+def stop_id(dir: String) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", S.REF)
+  base = try Generate.open(m)
+  want = try Generate.generate(base, [1, 5, 2], 4)
+  Generate.close(base)
+  g = try Generate.open(m)
+  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  # The stop is the third id of the run: the answer is the ids before its first occurrence.
+  stop = want[2]
+  expected = want.take(2)
+  if want[0] == stop
+    expected = []
+  else
+    if want[1] == stop
+      expected = want.take(1)
+    end
+  end
+
+  ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [1, 5, 2], 5, [stop], ch)
+  got = try collect(ch)
+  try Serving.stop(server)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  Test.eq(got, expected)
+end
+
 def saturated(dir: String) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", S.REF)
   base = try Generate.open(m)
@@ -217,6 +246,24 @@ def shutdown(dir: String) -> Result[Void]
   try Serving.stop(server)
   try expect_failed(a_ch, "the server is stopped")
   try expect_failed(b_ch, "the server is stopped")
+  # A submit racing the stop is never left hanging: it either lands first and hears the stop, or the closed inbox
+  # refuses it at once.
+  g2 = try Generate.open(m)
+  server2 = try Serving.start(g2, Serving.Limits(max_active: 1, max_pending: 1))
+  x_ch: Channel[Serving.Event] = Channel.new(8)
+  raced = case Serving.submit(server2, [1, 5, 2], 5, [], x_ch)
+    ok(_) -> true
+    error(e) ->
+      try Test.assert(e.message.include?("stopped"), "the refusal #{e.message} does not say stopped")
+      false
+  end
+
+  try Serving.stop(server2)
+  if raced
+    try expect_failed(x_ch, "the server is stopped")
+  end
+
+  Generate.close(g2)
   Generate.close(g)
   Qwen3.close_model(m)
   late: Channel[Serving.Event] = Channel.new(4)
