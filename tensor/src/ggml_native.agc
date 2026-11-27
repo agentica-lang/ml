@@ -30,6 +30,9 @@ extern module "ggml"
   ## device (a software rasterizer): 0 when ggml was built without its Vulkan
   ## backend (`tools/build-engine.sh cpu`). It opens no device.
   compute def vulkan_devices() -> Int
+  ## `[free, total]` bytes of the memory of `device` (`ggml_backend_dev_memory`): what its buffers can hold, the host's
+  ## RAM for the CPU. It opens no backend; an unknown device is an error.
+  compute def device_memory(device: Int) -> Result[List[Int]]
   ## A tensor of the row-major `shape` (rank 4 at most) on `device`, holding
   ## `data`, one value per element.
   compute def upload(device: Int, shape: List[Int], data: List[Float], int32: Bool) -> Result[TensorHandle]
