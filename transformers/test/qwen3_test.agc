@@ -216,14 +216,14 @@ def test_f16_weights_keep_the_big_matrices_half_and_the_logits_close() -> Result
 end
 
 ## `weights: BF16` keeps the table (the tied head too) and the big MLP matrices of a `bfloat16` checkpoint in `BF16` on
-## XLA, as the file stores them, and the logits are those of the same checkpoint read as `F32`. Off XLA it is an error.
-def test_bf16_weights_keep_the_file_words_on_xla() -> Result[Void]
+## ggml, Torch and XLA, with logits compared to the same checkpoint read as `F32`.
+def test_bf16_weights_keep_the_file_values() -> Result[Void]
   with_peer do |dir|
     refused = Qwen3.open("#{dir}/half_bf16", S.REF, Tensor.Dtype.BF16)
     try Test.assert(!refused.ok?, "the reference held BF16 weights")
     try Test.assert(refused.message.include?("BF16"), refused.message)
     rows = [[1, 5, 2, 7, 3, 12], [399, 200, 9, 0, 6, 11]]
-    for backend in try S.xla_backends()
+    for backend in try S.ggml_backends() + try S.torch_backends() + try S.xla_backends()
       half = try Qwen3.open("#{dir}/half_bf16", backend, Tensor.Dtype.BF16)
       whole = try Qwen3.open("#{dir}/half_bf16", backend)
       block = half.stack.blocks[0]

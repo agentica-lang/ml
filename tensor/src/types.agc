@@ -277,6 +277,7 @@ def held_code(dtype: Dtype) -> Int
     Dtype.Q8_0 -> 2
     Dtype.Q4_K -> 3
     Dtype.Q6_K -> 4
+    Dtype.BF16 -> 5
     _ -> 0
   end
 end

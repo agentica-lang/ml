@@ -154,21 +154,28 @@ def from_file(
   offset: Int,
   shape: List[Int],
   format: Types.FloatFormat,
+  dtype: Types.Dtype = Types.Dtype.F32,
 ) -> Result[Types.Tensor]
   _ = try ready(device, "from_file")
   if FileRange.agentica_read?()
     n = try Types.volume(shape)
-    return from_bytes(device, try FileRange.read_range(path, offset, try Types.file_bytes(format, n)), shape, format)
+    return from_bytes(device, try FileRange.read_range(path, offset, try Types.file_bytes(format, n)), shape, format, dtype)
   end
 
-  one(device, Types.Dtype.F32, shape) do Raw.load(path, offset, shape, Types.file_code(format)) end
+  one(device, dtype, shape) do Raw.load(path, offset, shape, Types.file_code(format), TorchDtypes.code(dtype)) end
 end
 
 ## Creation: an `F32` tensor of `shape` from `bytes`, which hold exactly its values as `format` writes them; C widens
 ## them into the tensor's own memory.
-def from_bytes(device: Types.Device, bytes: Bytes, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
+def from_bytes(
+  device: Types.Device,
+  bytes: Bytes,
+  shape: List[Int],
+  format: Types.FloatFormat,
+  dtype: Types.Dtype = Types.Dtype.F32,
+) -> Result[Types.Tensor]
   _ = try ready(device, "from_bytes")
-  one(device, Types.Dtype.F32, shape) do Raw.from_bytes(bytes, shape, Types.file_code(format)) end
+  one(device, dtype, shape) do Raw.from_bytes(bytes, shape, Types.file_code(format), TorchDtypes.code(dtype)) end
 end
 
 ## Appends the `F32` values of `t` to the file `path`, written by C.
@@ -248,7 +255,10 @@ end
 ## The rank-2 product `[rows, inner] . [inner, cols]`, float only.
 def matmul(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try ready(device, "matmul")
-  _ = try same_dtype(a, b, "matmul")
+  if a.dtype != Types.Dtype.F32 or b.dtype != Types.Dtype.BF16
+    _ = try same_dtype(a, b, "matmul")
+  end
+
   _ = try float_only(a, "matmul")
   return error("matmul needs rank-2 tensors, got #{a.shape} and #{b.shape}") if a.shape.size != 2 or b.shape.size != 2
 
@@ -287,7 +297,10 @@ end
 ## transposed `b` would copy it.
 def linear(device: Types.Device, a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
   _ = try ready(device, "linear")
-  _ = try same_dtype(a, b, "linear")
+  if a.dtype != Types.Dtype.F32 or b.dtype != Types.Dtype.BF16
+    _ = try same_dtype(a, b, "linear")
+  end
+
   _ = try float_only(a, "linear")
   return error("linear needs rank-2 tensors, got #{a.shape} and #{b.shape}") if a.shape.size != 2 or b.shape.size != 2
 

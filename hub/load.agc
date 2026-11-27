@@ -11,7 +11,7 @@
 ## per value at load (`Tensor.from_file`, `tensor/DESIGN.md` §7). Everything
 ## else stays `F32`, and so does a matrix under `HALF_MIN_ELEMENTS`, where
 ## halving gains nothing. Any other backend answers an error naming the option.
-## `weights: BF16` keeps the same matrices in `BF16` on the XLA backend only: a `bfloat16` checkpoint's words as they
+## `weights: BF16` keeps the same matrices in `BF16` on ggml, Torch and XLA: a `bfloat16` checkpoint's words as they
 ## are, an `F32` or `F16` one rounded once.
 ##
 ## With `weights: Q8_0` a rank-2 weight that the file stores as Q8_0 (a GGUF file) is kept as its blocks on the ggml
@@ -357,7 +357,9 @@ def checked(weights: Tensor.Dtype, backend: Tensor.Backend) -> Result[Bool]
     Tensor.Dtype.BF16 ->
       case backend
         Tensor.Backend.Xla(_) -> ok(true)
-        _ -> error("weights: BF16 needs the XLA backend (BF16 weights are only held by XLA)")
+        Tensor.Backend.Ggml(_) -> ok(true)
+        Tensor.Backend.Torch(_) -> ok(true)
+        _ -> error("weights: BF16 needs the ggml, Torch or XLA backend")
       end
 
     Tensor.Dtype.Q8_0 ->

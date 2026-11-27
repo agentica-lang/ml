@@ -88,10 +88,10 @@ The test fixtures drop the `model.` part of the prefix
   `BF16` (an `F64` one) has no half form and stays `F32`. A `BF16` value under
   about 6e-8 (F16's smallest) becomes zero, and under 6e-5 it loses digits.
   `WEIGHTS=f16` (`Load.weights_from_env`) sets it for the tools.
-- **`weights: BF16` is the same on XLA.** The same matrices are read as
+- **`weights: BF16` works on ggml, Torch and XLA.** The same matrices are read as
   `BF16` (`tensor/DESIGN.md` §7): a `bfloat16` checkpoint keeps its words, an
   `F32` or `F16` one rounds once, and a value beyond the largest `BF16` is an
-  error. Any backend but XLA is an error. `WEIGHTS=bf16` sets it for the tools.
+  error. `WEIGHTS=bf16` sets it for the tools.
 - **`weights: Q8_0` is opt-in too, and it keeps what the file holds.** A
   rank-2 weight that the file stores as Q8_0 is read as a quantized weight
   (`Hub.tensor` with `dtype: Q8_0`: ggml only, about a quarter of the memory of

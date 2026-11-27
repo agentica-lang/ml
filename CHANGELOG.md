@@ -26,13 +26,13 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### hub
 
-- `weights: BF16` keeps the big matrices of a checkpoint as `BF16` weights on XLA (`Load.weights_from_env` reads `WEIGHTS=bf16`); any other backend is an error.
+- `weights: BF16` keeps the big matrices of a checkpoint as `BF16` weights on ggml, Torch and XLA (`Load.weights_from_env` reads `WEIGHTS=bf16`).
 - `Load.max_device_bytes_from_env` reads `AGENTICA_ML_MAX_DEVICE_BYTES` for the tools (ml#331).
 - `Load.held_bytes(c, name, weights)` counts the bytes a weight takes on a ggml device under `weights`, without reading it (ml#331).
 
 ### tensor
 
-- `Dtype.BF16`: `Backend.Xla` holds `BF16` tensors in 16-bit buffers. `Tensor.from_file(..., dtype: BF16)` of a `BF16` file keeps every word (signed zero, infinities, NaN); `from_list` and an `F32` or `F16` file round to nearest even and refuse a value beyond the `BF16` maximum, naming its element. A compiled product, lookup or `attention` widens a `BF16` weight to `F32` inside the program, as for `F16`. The other backends refuse it.
+- `Dtype.BF16`: ggml, libtorch and XLA keep checkpoint weights in 16-bit buffers. `Tensor.from_file(..., dtype: BF16)` preserves BF16 file values and rounds F32 or F16 sources to nearest even. Products with F32 activations widen BF16 weights at compute time, and embeddings can widen only the selected rows.
 - `Backend.Xla` holds `F16` tensors: `Tensor.from_file(..., dtype: F16)`, `from_bytes` and `from_list` make half weights in 16-bit buffers, and a compiled product or lookup widens them to `F32` inside the program; `Qwen3.open(dir, xla, F16)` and the other `weights: F16` models load on XLA (ml#386).
 - The StableHLO emitter builds every op with `agc-ir`, so `Trace.stablehlo` and the programs XLA compiles are in MLIR's generic form (`"stablehlo.reduce"(...) ({...}) {dimensions = array<i64: 1>}`), each reduction's, sort's and scatter's combiner an explicit region; only the module, its function and the gated-delta call stay text. The programs compute the same: the IREE goldens of `train/` are unchanged (ml#417).
 - `Tensor.adam_step` on `Backend.Torch` is one native pass over the weight and its moments, where it was ten libtorch kernels per weight (ml#407).

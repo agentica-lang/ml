@@ -70,7 +70,7 @@ def code(dtype: Types.Dtype) -> Int
     Types.Dtype.I64 -> 6
     Types.Dtype.U8 -> 7
     Types.Dtype.Bool -> 8
-    Types.Dtype.BF16 -> -1
+    Types.Dtype.BF16 -> 9
     Types.Dtype.Q8_0 -> -1
     Types.Dtype.Q4_K -> -1
     Types.Dtype.Q6_K -> -1

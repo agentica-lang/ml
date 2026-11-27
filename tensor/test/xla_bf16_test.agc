@@ -38,9 +38,13 @@ def expect_words(t: Tensor.Tensor) -> Result[Void]
 end
 
 def test_a_bf16_file_keeps_every_word() -> Result[Void]
-  return ok() if !try Support.present()
-  Files.with_file("xla-bf16", try Bytes.from_list(WORDS)) do |path|
-    expect_words(try Tensor.from_file(path, 0, [7], Tensor.FloatFormat.BF16, Support.XLA, Tensor.Dtype.BF16))
+  backends = try bf16_backends()
+  Files.with_file("bf16", try Bytes.from_list(WORDS)) do |path|
+    for backend in backends
+      try expect_words(try Tensor.from_file(path, 0, [7], Tensor.FloatFormat.BF16, backend, Tensor.Dtype.BF16))
+    end
+
+    ok()
   end
 end
 
@@ -98,29 +102,40 @@ def test_a_compiled_program_widens_a_bf16_input() -> Result[Void]
   Test.eq(try floats(got), values)
 end
 
-def test_only_xla_reads_a_file_as_bf16() -> Result[Void]
+def test_the_reference_rejects_a_bf16_destination() -> Result[Void]
   Files.with_file("xla-bf16", try Bytes.from_list([128, 63])) do |path|
-    for backend in [Tensor.Backend.Reference, Tensor.Backend.Ggml(Tensor.Device.Cpu)]
-      r = Tensor.from_file(path, 0, [1], Tensor.FloatFormat.BF16, backend, Tensor.Dtype.BF16)
-      try Test.assert(!r.ok?, "a backend other than XLA read a file as BF16")
-      try Test.assert(r.message.include?("BF16"), r.message)
-    end
-
-    ok()
+    r = Tensor.from_file(path, 0, [1], Tensor.FloatFormat.BF16, Support.REF, Tensor.Dtype.BF16)
+    try Test.assert(!r.ok?, "the reference read a file as BF16")
+    Test.assert(r.message.include?("BF16"), r.message)
   end
 end
 
 ## The bytes of `xs` as BF16 words, each the top half of its `F32` (the low bits dropped): weights BF16 holds exactly.
 def bf16_bytes(xs: List[Float]) -> List[Int] = xs.flat_map { |x: Float| Files.f32_bytes(x).drop(2) }
 
+def bf16_backends() -> Result[List[Tensor.Backend]]
+  try Tensor.vulkan_fp16(false)
+  backends = [
+    Tensor.Backend.Ggml(Tensor.Device.Cpu),
+    Tensor.Backend.Ggml(Tensor.Device.Vulkan(0)),
+    Tensor.Backend.Torch(Tensor.Device.Cpu),
+  ].select { |backend| Tensor.available(backend) }
+  if try Support.present()
+    backends = backends.push(Support.XLA)
+  end
+
+  ok(backends)
+end
+
 def same_weights(
+  backend: Tensor.Backend,
   count: Int,
   shape: List[Int],
   seed: Int,
   body: Fn[Tensor.Tensor, Tensor.Tensor, Result[Void]],
 ) -> Result[Void]
   Files.with_file("xla-bf16", try Bytes.from_list(bf16_bytes(Support.uniform(count, seed, 1.0)))) do |path|
-    half = try Tensor.from_file(path, 0, shape, Tensor.FloatFormat.BF16, Support.XLA, Tensor.Dtype.BF16)
+    half = try Tensor.from_file(path, 0, shape, Tensor.FloatFormat.BF16, backend, Tensor.Dtype.BF16)
     wide = try Tensor.from_file(path, 0, shape, Tensor.FloatFormat.BF16, Support.REF)
     body.call(half, wide)
   end
@@ -142,7 +157,7 @@ end
 
 def test_a_bf16_weight_computes_as_the_f32_weight_it_holds() -> Result[Void]
   return ok() if !try Support.present()
-  same_weights(12, [4, 3], 3) do |half, wide|
+  same_weights(Support.XLA, 12, [4, 3], 3) do |half, wide|
     shared = try inputs(Support.XLA)
     compiled = try Trace.compile(
       [Trace.spec_of(shared[0]), Trace.spec_of(shared[1]), Trace.spec_of(half)],
@@ -161,10 +176,17 @@ end
 
 ## Grouped-query attention with BF16 keys and values and an `F32` query.
 def test_attention_reads_bf16_keys_and_values() -> Result[Void]
-  return ok() if !try Support.present()
-  same_weights(24, [1, 1, 3, 8], 5) do |k_half, k_wide|
-    same_weights(24, [1, 1, 3, 8], 11) do |v_half, v_wide|
-      q = try Support.floats(Support.uniform(32, 13, 1.0), [1, 2, 2, 8], Support.XLA)
+  for backend in try bf16_backends()
+    try attention_parity(backend)
+  end
+
+  ok()
+end
+
+def attention_parity(backend: Tensor.Backend) -> Result[Void]
+  same_weights(backend, 24, [1, 1, 3, 8], 5) do |k_half, k_wide|
+    same_weights(backend, 24, [1, 1, 3, 8], 11) do |v_half, v_wide|
+      q = try Support.floats(Support.uniform(32, 13, 1.0), [1, 2, 2, 8], backend)
       compiled = try Trace.compile(
         [Trace.spec_of(q), Trace.spec_of(k_half), Trace.spec_of(v_half)],
         ->(xs: List[Tensor.Tensor]) { attend(xs[0], xs[1], xs[2]) },

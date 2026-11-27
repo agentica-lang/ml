@@ -313,7 +313,7 @@ def from_file(
 
   if Types.is_packed_dtype(dtype) and !holds_packed?(backend, dtype)
     return error(
-      "from_file with dtype #{Types.dtype_name(dtype)} (packed weights) needs the ggml backend (or XLA for F16 and BF16), got #{Types.backend_name(backend)}",
+      "from_file with dtype #{Types.dtype_name(dtype)} (packed weights) needs ggml, XLA for F16 or BF16, or Torch for BF16, got #{Types.backend_name(backend)}",
     )
   end
 
@@ -344,7 +344,7 @@ def from_file(
 
   case backend
     Types.Backend.Reference -> Reference.from_file(path, offset, shape, format)
-    Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format)
+    Types.Backend.Torch(device) -> Torch.from_file(device, path, offset, shape, format, dtype)
     Types.Backend.Trace -> error("from_file makes no traced tensor: lift one with Trace.constant")
     Types.Backend.Ggml(device) -> Ggml.from_file(device, path, offset, shape, format, dtype)
     Types.Backend.Xla(device) -> Xla.from_file(device, path, offset, shape, format, dtype)
@@ -1710,10 +1710,11 @@ def attention(
   _ = try same_backend(q, k, "attention")
   _ = try same_backend(q, v, "attention")
   _ = try same_dtype(k, v, "attention")
-  if (
-    k.dtype != q.dtype and
-    !((k.dtype == Types.Dtype.F16 or k.dtype == Types.Dtype.BF16) and q.dtype == Types.Dtype.F32 and compiled?(q))
+  mixed = q.dtype == Types.Dtype.F32 and (
+    (k.dtype == Types.Dtype.F16 and compiled?(q)) or
+    (k.dtype == Types.Dtype.BF16 and (compiled?(q) or torch?(q)))
   )
+  if k.dtype != q.dtype and !mixed
     return error("attention needs #{Types.dtype_name(q.dtype)} keys and values, got #{Types.dtype_name(k.dtype)}")
   end
 
@@ -1979,10 +1980,11 @@ end
 
 private
 
-## ggml holds every packed dtype but `BF16`; XLA holds `F16` and `BF16`.
+## ggml holds every packed dtype; XLA holds F16 and BF16, and Torch holds BF16.
 def holds_packed?(backend: Types.Backend, dtype: Types.Dtype) -> Bool
   case backend
-    Types.Backend.Ggml(_) -> dtype != Types.Dtype.BF16
+    Types.Backend.Ggml(_) -> true
+    Types.Backend.Torch(_) -> dtype == Types.Dtype.BF16
     Types.Backend.Xla(_) -> dtype == Types.Dtype.F16 or dtype == Types.Dtype.BF16
     _ -> false
   end
@@ -2190,6 +2192,7 @@ end
 def weight_dtype(x: Types.Tensor, w: Types.Tensor, op: String) -> Result[Bool]
   case x.backend
     Types.Backend.Trace -> return ok(true) if x.dtype == Types.Dtype.F32 and Types.is_packed_dtype(w.dtype)
+    Types.Backend.Torch(_) -> return ok(true) if x.dtype == Types.Dtype.F32 and w.dtype == Types.Dtype.BF16
     _ -> nil
   end
 
@@ -2268,6 +2271,13 @@ def compiled?(t: Types.Tensor) -> Bool
   case t.backend
     Types.Backend.Trace -> true
     Types.Backend.Ggml(_) -> true
+    _ -> false
+  end
+end
+
+def torch?(t: Types.Tensor) -> Bool
+  case t.backend
+    Types.Backend.Torch(_) -> true
     _ -> false
   end
 end

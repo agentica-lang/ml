@@ -558,11 +558,11 @@ end
   an argument. An `F16` result (a `transpose` or a `slice` of a weight) is left as it is. `Trace.value_and_grad` refuses
   an `F16` weight on XLA as on ggml. Whether
   XLA's CPU plugin fuses the convert into the product or makes an `F32` copy of the weight on each run is not measured
-  here (the memory numbers belong to the benchmark of ml#390). `BF16` is held on XLA only, as a second half weight
-  (`from_file(..., dtype: BF16)` and `from_list`; ggml, libtorch and the reference backend refuse it). A `BF16` file
-  read as `BF16` keeps every 16-bit word, a signed zero, an infinity and a NaN's payload included: C widens each word
-  to `F32` exactly and `bf16_bits` narrows it back, keeping the top 7 mantissa bits of a NaN (setting the quiet bit only
-  if they are all zero). Any other source (`from_list`, an `F32` or `F16` file) rounds to nearest even once from the
+  here (the memory numbers belong to the benchmark of ml#390). XLA, ggml and Torch hold `BF16` weights loaded with
+  `from_file(..., dtype: BF16)`. A `BF16` file read as `BF16` keeps the stored values, including signed zero,
+  infinities and NaNs. On ggml and Torch the loader copies those words directly. Their F32 products widen BF16
+  weights during compute, and an embedding reads the selected rows before widening. These conversions can
+  allocate F32 temporaries. On XLA, any other source (`from_list`, an `F32` or `F16` file) rounds to nearest even once from the
   double, and a value beyond 3.3895313892515355e38, an infinity included, is an error naming its element; a NaN stays.
   On the CUDA plugin, Qwen3-0.6B's decode step fuses the converts of its block matrices into the loops that read
   them, but converts the tied head (the token table) into an `F32` buffer of 622 MB on every step before the cuBLAS

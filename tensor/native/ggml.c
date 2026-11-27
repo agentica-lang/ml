@@ -433,7 +433,8 @@ const char *tg_copy(struct ggml_tensor *src, struct ggml_tensor *dst, const int3
     ggml_backend_tensor_copy(src, dst);
     return NULL;
   }
-  if (src->type == GGML_TYPE_F16 || dst->type == GGML_TYPE_F16 || ggml_is_quantized(src->type) ||
+  if (src->type == GGML_TYPE_F16 || dst->type == GGML_TYPE_F16 ||
+      src->type == GGML_TYPE_BF16 || dst->type == GGML_TYPE_BF16 || ggml_is_quantized(src->type) ||
       ggml_is_quantized(dst->type)) {
     return "an F16 or quantized tensor is not converted to or from another type";
   }
@@ -600,15 +601,16 @@ static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const
   enum ggml_type type = held_type(held);
   void *host;
 
-  if (held < HELD_F32 || held > HELD_Q6_K) return tg_error(env, "unknown held type code");
-  if ((held >= HELD_Q8_0 && format != held_format(held)) || (held == HELD_F16 && ff_block_values(format) != 0)) {
+  if (held < HELD_F32 || held > HELD_BF16) return tg_error(env, "unknown held type code");
+  if ((ggml_is_quantized(type) && format != held_format(held)) ||
+      ((held == HELD_F16 || held == HELD_BF16) && ff_block_values(format) != 0)) {
     return tg_error(env, "a range of blocks is read as F32 or kept as the blocks of its own type, and nothing else");
   }
   if (!make_tensor(env, device, &shape, type, state, &failure)) return failure;
   in_place = !state->vulkan && ggml_backend_buffer_is_host(state->buffer);
   host = in_place ? state->t->data : host_bytes(state->t);
   if (host == NULL) return tg_error(env, "out of memory");
-  if (held >= HELD_Q8_0) {
+  if (ggml_is_quantized(type)) {
     int64_t bytes = (int64_t)ggml_nbytes(state->t);
 
     if (src->data != NULL) {
@@ -617,6 +619,13 @@ static an_term load_from(an_env *env, int64_t device, ggml_list_Int shape, const
       else snprintf(why, sizeof why, "%zu bytes are not the %lld of the tensor", src->len, (long long)bytes);
     } else {
       read = ff_read_bytes(src->path, src->path_len, src->offset, bytes, (uint8_t *)host, why, sizeof why);
+    }
+  } else if (held == HELD_BF16) {
+    if (src->data != NULL) {
+      read = ff_bf16_from_bytes(src->data, src->len, ggml_nelements(state->t), format, (uint16_t *)host, why, sizeof why);
+    } else {
+      read = ff_read_bf16(src->path, src->path_len, src->offset, ggml_nelements(state->t), format,
+                          (uint16_t *)host, half_threads(), why, sizeof why);
     }
   } else if (held == HELD_F16) {
     struct half_sink sink = {(ggml_fp16_t *)host};
@@ -842,6 +851,7 @@ an_term ggml_readback(an_env *env, struct ggml_TensorHandle_state *t) {
   ggml_list_Float_begin(env, &out, (size_t)count);
   for (i = 0; i < count; i++) {
     if (t->t->type == GGML_TYPE_I32) ggml_list_Float_push(env, &out, (double)((int32_t *)bytes)[i]);
+    else if (t->t->type == GGML_TYPE_BF16) ggml_list_Float_push(env, &out, (double)ff_bfloat(((uint16_t *)bytes)[i]));
     else if (t->t->type == GGML_TYPE_F16) ggml_list_Float_push(env, &out, (double)ggml_fp16_to_fp32(((ggml_fp16_t *)bytes)[i]));
     else ggml_list_Float_push(env, &out, (double)((float *)bytes)[i]);
   }
