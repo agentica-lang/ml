@@ -1567,7 +1567,7 @@ def adam_step(
       end
 
       adam_composed(p, g, m, v, hyper)
-    _ -> adam_composed(p, g, m, v, hyper)
+    _ -> adam_eager(p, g, m, v, hyper)
   end
 end
 
@@ -1978,6 +1978,57 @@ def beam_search(logits: Types.Tensor, width: Int) -> Result[Types.Tensor]
 end
 
 private
+
+## What `body` makes, with every other tensor it made freed on return.
+def staged(body: Fn[Result[Types.Tensor]]) -> Result[Types.Tensor] = Native.arena do body.call() end
+
+## `t` times `k` in every element; the tensor of `k`s is freed on return.
+def scaled_by(t: Types.Tensor, k: Float) -> Result[Types.Tensor]
+  staged do
+    factor = try full(t.shape, Types.Values.Float(k), t.dtype, t.backend)
+    mul(t, factor)
+  end
+end
+
+## `adam_composed` on a backend that computes: the same ops and numbers, made one statement at a time, each in an arena
+## of its own. A coefficient is a tensor of the shape of `p`, and the nine at once and the temporaries of the whole
+## step are more than a word table of MiniLM can hold beside its gradients.
+def adam_eager(
+  p: Types.Tensor,
+  g: Types.Tensor,
+  m: Types.Tensor,
+  v: Types.Tensor,
+  hyper: Types.Tensor,
+) -> Result[List[Types.Tensor]]
+  x = try host_floats(hyper)
+  first = try staged do
+    keep = try scaled_by(m, x[1])
+    add(keep, try scaled_by(g, 1.0 - x[1]))
+  end
+
+  second = try staged do
+    keep = try scaled_by(v, x[2])
+    squared = try mul(g, g)
+    add(keep, try scaled_by(squared, 1.0 - x[2]))
+  end
+
+  denominator = try staged do
+    root = try sqrt(try scaled_by(second, x[6]))
+    add(root, try full(p.shape, Types.Values.Float(x[3]), p.dtype, p.backend))
+  end
+
+  step = try staged do
+    ratio = try div(try scaled_by(first, x[5]), denominator)
+    scaled_by(ratio, x[0])
+  end
+
+  stepped = try staged do
+    decayed = try scaled_by(p, 1.0 - x[0] * x[4])
+    sub(decayed, step)
+  end
+
+  ok([stepped, first, second])
+end
 
 ## `x . w`, or `x . wᵀ` when `w` is `[out, in]`.
 def product(x: Types.Tensor, w: Types.Tensor, out_in: Bool) -> Result[Types.Tensor]

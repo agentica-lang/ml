@@ -36,7 +36,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 /* The state of one native tensor. The VM hands a zeroed block, and a
@@ -46,10 +48,50 @@ struct torch_TensorHandle_state {
   torch::Tensor *value;
 };
 
+/* The memory the live handles hold, by storage: a view shares its base's storage, so a storage counts once, from
+   its first handle to its last. `torch_memory` reads it, for the tests that a step does not keep what it is done
+   with. */
+struct torch_storage_use {
+  int64_t handles;
+  int64_t bytes;
+};
+
+static std::mutex torch_memory_lock;
+static std::unordered_map<const void *, torch_storage_use> torch_storages;
+static int64_t torch_live_bytes = 0;
+static int64_t torch_peak_bytes = 0;
+
+static void torch_memory_add(const torch::Tensor &value) {
+  const void *key = value.storage().unsafeGetStorageImpl();
+  std::lock_guard<std::mutex> guard(torch_memory_lock);
+  torch_storage_use &use = torch_storages[key];
+
+  if (use.handles == 0) {
+    use.bytes = (int64_t)value.storage().nbytes();
+    torch_live_bytes += use.bytes;
+    if (torch_live_bytes > torch_peak_bytes) torch_peak_bytes = torch_live_bytes;
+  }
+  use.handles++;
+}
+
+static void torch_memory_drop(const torch::Tensor &value) {
+  const void *key = value.storage().unsafeGetStorageImpl();
+  std::lock_guard<std::mutex> guard(torch_memory_lock);
+  auto found = torch_storages.find(key);
+
+  if (found == torch_storages.end()) return;
+  found->second.handles--;
+  if (found->second.handles == 0) {
+    torch_live_bytes -= found->second.bytes;
+    torch_storages.erase(found);
+  }
+}
+
 static void torch_TensorHandle_free(void *state) {
   struct torch_TensorHandle_state *self = (struct torch_TensorHandle_state *)state;
 
   if (self->value != NULL) {
+    torch_memory_drop(*self->value);
     delete self->value;
     self->value = NULL;
   }
@@ -204,6 +246,7 @@ static an_term ok_tensor(an_env *env, const torch::Tensor &value) {
 
   try {
     state->value = new torch::Tensor(value);
+    torch_memory_add(*state->value);
   } catch (const std::exception &e) {
     return error_text(env, std::string("could not hold a native tensor: ") + e.what());
   } catch (...) {
@@ -1421,6 +1464,24 @@ an_term torch_readback(an_env *env, struct torch_TensorHandle_state *a) {
   } catch (...) {
     return failed(env, "readback");
   }
+}
+
+an_term torch_memory(an_env *env, bool reset) {
+  int64_t live;
+  int64_t peak;
+
+  {
+    std::lock_guard<std::mutex> guard(torch_memory_lock);
+    live = torch_live_bytes;
+    peak = torch_peak_bytes;
+    if (reset) torch_peak_bytes = torch_live_bytes;
+  }
+
+  torch_list_Float_builder out;
+  torch_list_Float_begin(env, &out, 2);
+  torch_list_Float_push(env, &out, (double)live);
+  torch_list_Float_push(env, &out, (double)peak);
+  return torch_result_list_Float_ok(env, torch_list_Float_end(env, &out));
 }
 
 an_term torch_append_file(an_env *env, struct torch_TensorHandle_state *a, ng_str path) {
