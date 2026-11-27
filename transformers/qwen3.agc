@@ -98,7 +98,9 @@ end
 ## The `layers_on_device` for `open` on a Vulkan device that fills the card: the most blocks whose layout, with the
 ## KV cache of `context` tokens (`F32`) for each, fits the free memory of the device (`Tensor.device_memory`) less
 ## `reserve` bytes for the compute buffers, and not more than `max_device_bytes` when it is `some`. `none` on any other
-## backend, where `layers_on_device` changes nothing. The count is a reading of the moment: it does not hold the memory.
+## backend, where `layers_on_device` changes nothing. With `kv: Placement.Kv.Host` the cache is in host memory and counts
+## for nothing (the step of the prompt still makes its cache on the card first, so leave room in `reserve` for it). The
+## count is a reading of the moment: it does not hold the memory.
 def layers_that_fit(
   dir: String,
   backend: Tensor.Backend,
@@ -106,6 +108,7 @@ def layers_that_fit(
   max_device_bytes: Optional[Int] = none,
   context: Int = 2048,
   reserve: Int = 256000000,
+  kv: Placement.Kv = Placement.Kv.Device,
 ) -> Result[Optional[Int]]
   case backend
     Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> nil
@@ -115,14 +118,26 @@ def layers_that_fit(
   found = try opened(dir)
   free = (try Tensor.device_memory(backend)).free
   budget = Placement.budget(free, reserve, max_device_bytes)
-  ok(some(try layers_within(found.checkpoint, found.config, weights, budget, context)))
+  ok(some(try layers_within(found.checkpoint, found.config, weights, budget, context, kv)))
 end
 
 ## The most blocks of the model of `c` that `budget` bytes of the card hold with `layers_on_device` (`Placement.fit`
-## over the footprint of the checkpoint: the KV cache of `context` tokens in `F32` counted for each block).
-def layers_within(c: Hub.Checkpoint, config: Config, weights: Tensor.Dtype, budget: Int, context: Int) -> Result[Int]
+## over the footprint of the checkpoint: the KV cache of `context` tokens in `F32` counted for each block, unless `kv` is
+## `Host`).
+def layers_within(
+  c: Hub.Checkpoint,
+  config: Config,
+  weights: Tensor.Dtype,
+  budget: Int,
+  context: Int,
+  kv: Placement.Kv = Placement.Kv.Device,
+) -> Result[Int]
   config = try with_head_dim(config)
-  kv = 2 * config.num_key_value_heads * config.head_dim * context * 4
+  cache = 0
+  if kv == Placement.Kv.Device
+    cache = 2 * config.num_key_value_heads * config.head_dim * context * 4
+  end
+
   footprint = try Placement.footprint(
     c,
     "model.layers.",
@@ -131,7 +146,7 @@ def layers_within(c: Hub.Checkpoint, config: Config, weights: Tensor.Dtype, budg
     "lm_head.weight",
     "model.norm.weight",
     weights,
-    kv,
+    cache,
   )
 
   ok(Placement.fit(footprint, budget))
