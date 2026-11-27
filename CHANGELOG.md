@@ -15,6 +15,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
+- `Lfm3.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their convolution states and keys, run on the CPU under a Vulkan device, as for Qwen3 (ml#331).
 - `Qwen3_5.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their keys and states, run on the CPU under a Vulkan device, with the table and the head placed as for Qwen3 (ml#331).
 - `Qwen3.layers_that_fit` and `Qwen3.layers_within` take `kv: Placement.Kv.Host` and then count no KV cache on the card (ml#331).
 - `Qwen3.layers_that_fit(dir, backend, weights, max_device_bytes)` gives the `layers_on_device` that fills the free memory of a Vulkan device (less a reserve, up to a cap), and `AGENTICA_ML_MAX_DEVICE_BYTES` sets the cap for `bench_qwen` (ml#331).

@@ -12,6 +12,7 @@ import Nn from "pkg/nn/nn"
 import ShortConv from "pkg/nn/short_conv"
 import Tensor from "pkg/tensor/tensor"
 import Lift from "lift"
+import Placement from "placement"
 import Qwen3 from "qwen3"
 import Source from "tokenizer/source"
 
@@ -73,14 +74,23 @@ struct Lfm3
   layers: List[Layer]
   ## The norm after the last layer (`embedding_norm` in the checkpoint).
   final_norm: Nn.LayerNorm
-  ## `[vocab_size, hidden_size]` (`out_in`): the embedding table itself when tied.
+  ## `[vocab_size, hidden_size]` (`out_in`): the embedding table itself when tied, or a copy of it when the head is on
+  ## another backend than the table (`layers_on_device`).
   head: Nn.Dense
+  ## The backend the model was opened on: where the token ids and the first layers are, whatever side the table is on
+  ## (`layers_on_device`).
+  device: Tensor.Backend
 end
 
 ## The model in `dir`, which holds `config.json` and `model.safetensors` (or the `model.safetensors.index.json` of a
 ## sharded one), as the official `LiquidAI/LFM3-*` repositories have it.
-def open(dir: String, backend: Tensor.Backend, weights: Tensor.Dtype = Tensor.Dtype.F32) -> Result[Lfm3]
-  load(try Qwen3.checkpoint(dir), try read_config(dir), backend, weights)
+def open(
+  dir: String,
+  backend: Tensor.Backend,
+  weights: Tensor.Dtype = Tensor.Dtype.F32,
+  layers_on_device: Optional[Int] = none,
+) -> Result[Lfm3]
+  load(try Qwen3.checkpoint(dir), try read_config(dir), backend, weights, layers_on_device)
 end
 
 ## The config of the model folder `dir`, with its `head_dim` filled in when the file leaves it out.
@@ -125,27 +135,39 @@ def check_config(config: Config) -> Result[Void]
 end
 
 ## The model of an open checkpoint, its shapes checked against `config`. `weights` is `F32` or, on ggml, `F16`.
+## `layers_on_device` is that of `Qwen3.open`: the layers from the `n`th on, with their convolution states and keys, run
+## on the CPU when the model is on a Vulkan device.
 def load(
   c: Hub.Checkpoint,
   config: Config,
   backend: Tensor.Backend,
   weights: Tensor.Dtype = Tensor.Dtype.F32,
+  layers_on_device: Optional[Int] = none,
 ) -> Result[Lfm3]
   return error("weights is F32 or F16, not #{weights}") if weights != Tensor.Dtype.F32 and weights != Tensor.Dtype.F16
 
   try check_config(config)
+  if layers_on_device.some? and layers_on_device.unwrap! < 0
+    return error("layers_on_device is 0 or more, got #{layers_on_device.unwrap!}")
+  end
+
   width = config.hidden_size
-  tokens = try Load.embedding(c, "model.embed_tokens.weight", backend, weights)
-  try expect_shape("model.embed_tokens.weight", tokens.table, [config.vocab_size, width])
+  side = Placement.placement(backend, config.num_hidden_layers, layers_on_device)
+  table = "model.embed_tokens.weight"
+  tokens = try Load.embedding(c, table, side.table, weights)
+  try expect_shape(table, tokens.table, [config.vocab_size, width])
   layers: List[Layer] = []
   for i in 0...config.num_hidden_layers
-    layers = layers.push(try layer(c, "model.layers.#{i}.", config.layer_types[i], config, backend, weights))
+    on = Placement.layer_backend(backend, i, layers_on_device)
+    layers = layers.push(try layer(c, "model.layers.#{i}.", config.layer_types[i], config, on, weights))
   end
 
   head = Nn.Dense(w: tokens.table, b: none, out_in: true)
   if not config.tie_word_embeddings
-    head = try Load.dense(c, "lm_head", backend, weights)
+    head = try Load.dense(c, "lm_head", side.head, weights)
     try expect_shape("lm_head.weight", head.w, [config.vocab_size, width])
+  elsif Tensor.backend(tokens.table) != side.head
+    head = Nn.Dense(w: (try Load.embedding(c, table, side.head, weights)).table, b: none, out_in: true)
   end
 
   ok(
@@ -153,8 +175,9 @@ def load(
       config: config,
       tokens: tokens,
       layers: layers,
-      final_norm: try rms(c, "model.embedding_norm", config.norm_eps, backend),
+      final_norm: try rms(c, "model.embedding_norm", config.norm_eps, side.head),
       head: head,
+      device: backend,
     ),
   )
 end
@@ -173,7 +196,7 @@ def run(m: Lfm3, rows: List[List[Int]], last: Bool = false) -> Result[Tensor.Ten
     end
   end
 
-  tensor = try Tensor.from_list(ids, [rows.size, seq], Tensor.Dtype.I32, Tensor.backend(m.tokens.table))
+  tensor = try Tensor.from_list(ids, [rows.size, seq], Tensor.Dtype.I32, m.device)
   out = logits(m, tensor, last)
   Lift.close([tensor])
   out
