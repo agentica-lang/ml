@@ -1,6 +1,7 @@
-## A table read from a CSV file (`table.agc`) and the dataset `Data.from_table` makes of its columns: the fixture
-## `fixtures/table/scores.csv` (written by `make_fixtures.py`, next to the values it must read as in `scores.json`) has
-## float, integer, text (with a comma and quotes in it) and incomplete columns of 6 rows.
+## A table read from a CSV or a Parquet file (`table.agc`) and the dataset `Data.from_table` makes of its columns: the
+## fixtures `fixtures/table/scores.csv` and `scores.parquet` (written by `make_fixtures.py`, next to the values they must
+## read as in `scores.json`) have float, integer, text (with a comma and quotes in it) and incomplete columns of 6 rows;
+## the Parquet file has also booleans and keeps the integers and floats in their widths.
 
 import Data from "../data"
 import S from "support"
@@ -8,6 +9,7 @@ import Table from "../table"
 import Tensor from "pkg/tensor/tensor"
 
 FILE = "test/fixtures/table/scores.csv"
+PARQUET = "test/fixtures/table/scores.parquet"
 
 private
 
@@ -77,7 +79,7 @@ def test_a_column_that_cannot_be_read_as_asked_is_an_error_that_names_it() -> Re
   try Test.assert(name.include?("name") and name.include?("row 1 is \"ann\""), "the error said: #{name}")
   try Test.assert(error_text(Table.texts(t, "x1")).include?("x1"), "a numeric column read as text")
   try Test.assert(error_text(Table.floats(t, "nope")).include?("nope"), "a missing column")
-  try Test.assert(error_text(Table.read("test/fixtures/table/scores.txt")).include?(".csv"), "an unknown format")
+  try Test.assert(error_text(Table.read("test/fixtures/table/scores.txt")).include?(".parquet"), "an unknown format")
   Test.error?(Table.read("test/fixtures/table/missing.csv"))
 end
 
@@ -179,4 +181,37 @@ def test_the_shapes_of_a_csv_file_are_read_or_refused() -> Result[Void]
     twice = error_text(written(dir, "a,a\n1,2\n"))
     Test.assert(twice.include?("used twice"), "said: #{twice}")
   end
+end
+
+## The same columns from a Parquet file: 32 and 64-bit numbers as floats, booleans as 1.0 and 0.0, text as it is, and a null
+## is an error that names the column and the row.
+def test_a_parquet_file_is_a_table_of_its_columns_in_file_order() -> Result[Void]
+  t = try Table.read(PARQUET)
+  try Test.eq(t.names, ["x1", "x2", "count", "label", "flag", "name", "gap"])
+  try Test.eq(t.rows, 6)
+  for name in ["x1", "x2", "count", "label"]
+    try Test.eq(try Table.floats(t, name), try numbers(name))
+  end
+
+  try Test.eq(try Table.floats(t, "flag"), [1.0, 0.0, 1.0, 1.0, 0.0, 0.0])
+  try Test.eq(try Table.texts(t, "name"), try words("name"))
+  gap = error_text(Table.floats(t, "gap"))
+  try Test.assert(gap.include?("gap") and gap.include?("null") and gap.include?("row 3"), "the error said: #{gap}")
+  gap_text = error_text(Table.texts(t, "gap"))
+  try Test.assert(gap_text.include?("gap"), "the error said: #{gap_text}")
+  try Test.assert(error_text(Table.texts(t, "x1")).include?("x1"), "a numeric column read as text")
+  try Test.assert(error_text(Table.floats(t, "name")).include?("name"), "a text column read as numbers")
+  Test.assert(error_text(Table.floats(t, "nope")).include?("nope"), "a missing column")
+end
+
+## A dataset of the Parquet file is the dataset of the CSV file with the same columns.
+def test_a_dataset_of_a_parquet_file_is_the_one_of_the_csv_file() -> Result[Void]
+  csv = try Data.from_table(try Table.read(FILE), ["x1", "x2", "count"], "label", S.REF, Tensor.Dtype.I32)
+  parquet = try Data.from_table(try Table.read(PARQUET), ["x1", "x2", "count"], "label", S.REF, Tensor.Dtype.I32)
+  try Test.eq(try Tensor.to_list(parquet.inputs), try Tensor.to_list(csv.inputs))
+  try Test.eq(try Tensor.to_list(parquet.targets), try Tensor.to_list(csv.targets))
+  flagged = try Data.from_table(try Table.read(PARQUET), ["flag", "x1"], "label", S.REF)
+  try Test.eq(Tensor.shape(flagged.inputs), [6, 2])
+  nulls = error_text(Data.from_table(try Table.read(PARQUET), ["x1", "gap"], "label", S.REF))
+  Test.assert(nulls.include?("gap"), "said: #{nulls}")
 end

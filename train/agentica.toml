@@ -1,5 +1,5 @@
 name = "train"
-agentica = "0.38.0"
+agentica = "0.40.0-beta.2"
 
 # Every bare `end` is followed by an empty line (AGENTS.md).
 [style]
@@ -10,4 +10,5 @@ tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.7.0", su
 hub = { git = "https://github.com/agentica-lang/ml", tag = "hub-0.7.0", subdir = "hub" }
 nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.7.0", subdir = "nn" }
 csv = { git = "https://github.com/agentica-lang/packages", tag = "csv-0.1.0", subdir = "csv" }
+parquet = { git = "https://github.com/agentica-lang/packages", tag = "parquet-0.2.0-beta.1", subdir = "parquet" }
 prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.4.2", subdir = "prop", group = "test" }

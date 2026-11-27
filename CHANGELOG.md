@@ -7,6 +7,8 @@ All packages are released together at one version, each on its own tag, `<packag
 ### train
 
 - `Table.read(path)` reads a CSV file (the `csv` package) into named columns, and `Data.from_table(table, inputs, target, backend, target_dtype)` makes a `Dataset` of its numeric columns for a `Loader` (ml#318).
+- `Table.read` reads a `.parquet` file too (the `parquet` package), and `Data.from_table` makes a `Dataset` of its columns (ml#318).
+- **Breaking:** train, transformers, vision and tools/skills ask for Agentica 0.40.0-beta.2 (the `parquet` package needs it); CI already ran on it (ml#318).
 
 ### hub
 
