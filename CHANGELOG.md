@@ -6,6 +6,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### train
 
+- `Loop.trainer(loss, params, optimizer)` and `Loop.run(trainer, data, epochs:)` (`Loop.run_batches` for a batch function) run a training as a pipe over `Train.fit`, and `Optim.sgd`, `Optim.adam` and `Optim.adamw` build the optimizers with their usual knobs (ml#397).
 - `Table.read(path)` reads a CSV file (the `csv` package) into named columns, and `Data.from_table(table, inputs, target, backend, target_dtype)` makes a `Dataset` of its numeric columns for a `Loader` (ml#318).
 - `Table.read` reads a `.parquet` file too (the `parquet` package), and `Data.from_table` makes a `Dataset` of its columns (ml#318).
 - A Parquet column with a NaN or an infinity is an error that names the column and the row, as a CSV cell that is not finite keeps its column text; `train/examples/` has a CSV and a Parquet example with goldens, and `train/data.md` the text-column path with `Train.fit_batches` (ml#318).
