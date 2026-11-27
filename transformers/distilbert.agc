@@ -9,6 +9,7 @@
 import Hub from "pkg/hub/hub"
 import Lift from "lift"
 import Load from "pkg/hub/load"
+import Named from "named"
 import Nn from "pkg/nn/nn"
 import Sentence from "sentence"
 import Source from "tokenizer/source"
@@ -141,18 +142,9 @@ end
 def weights(m: DistilBert) -> Map[String, Tensor.Tensor]
   e = "#{m.prefix}embeddings."
   out = {"#{e}word_embeddings.weight": m.words.table, "#{e}position_embeddings.weight": m.positions.table}
-  out = norm_weights(out, "#{e}LayerNorm", m.norm)
+  out = Named.norm(out, "#{e}LayerNorm", m.norm)
   for i in 0...m.stack.blocks.size
-    b = m.stack.blocks[i]
-    n = block_names("#{m.prefix}transformer.layer.#{i}.")
-    out = norm_weights(out, n.norm1, b.norm1)
-    out = dense_weights(out, n.query, b.attention.query)
-    out = dense_weights(out, n.key, b.attention.key)
-    out = dense_weights(out, n.value, b.attention.value)
-    out = dense_weights(out, n.output, b.attention.output)
-    out = norm_weights(out, n.norm2, b.norm2)
-    out = dense_weights(out, n.up, b.mlp.up)
-    out = dense_weights(out, n.down, b.mlp.down)
+    out = Named.block(out, block_names("#{m.prefix}transformer.layer.#{i}."), m.stack.blocks[i])
   end
 
   out
@@ -162,36 +154,12 @@ end
 ## fewer, each with the shape the model holds. Inside a loss the tensors are traced and `pooled` of the result is part
 ## of the trace. The result shares the tensors of `weights`, with no copy: `close_model` of it closes them.
 def with_weights(m: DistilBert, weights: Map[String, Tensor.Tensor]) -> Result[DistilBert]
-  own = weights(m)
-  for name in weights.keys.sort
-    old = try own.get(name).to_result("the model has no weight #{name}")
-    if Tensor.shape(weights[name]) != Tensor.shape(old)
-      return error("#{name}: the model holds #{Tensor.shape(old)}, got #{Tensor.shape(weights[name])}")
-    end
-  end
-
-  for name in own.keys.sort
-    return error("the weights have no #{name}") if !weights.has_key?(name)
-  end
-
+  try Named.check(weights(m), weights)
   e = "#{m.prefix}embeddings."
   blocks: List[Nn.EncoderBlock] = []
   for i in 0...m.stack.blocks.size
-    b = m.stack.blocks[i]
-    n = block_names("#{m.prefix}transformer.layer.#{i}.")
-    a = b.attention
     blocks = blocks.push(
-      b.with(
-        norm1: with_norm(weights, n.norm1, b.norm1),
-        attention: a.with(
-          query: with_dense(weights, n.query, a.query),
-          key: with_dense(weights, n.key, a.key),
-          value: with_dense(weights, n.value, a.value),
-          output: with_dense(weights, n.output, a.output),
-        ),
-        norm2: with_norm(weights, n.norm2, b.norm2),
-        mlp: b.mlp.with(up: with_dense(weights, n.up, b.mlp.up), down: with_dense(weights, n.down, b.mlp.down)),
-      ),
+      Named.with_block(weights, block_names("#{m.prefix}transformer.layer.#{i}."), m.stack.blocks[i]),
     )
   end
 
@@ -199,7 +167,7 @@ def with_weights(m: DistilBert, weights: Map[String, Tensor.Tensor]) -> Result[D
     m.with(
       words: Nn.Embedding(table: weights["#{e}word_embeddings.weight"]),
       positions: Nn.Embedding(table: weights["#{e}position_embeddings.weight"]),
-      norm: with_norm(weights, "#{e}LayerNorm", m.norm),
+      norm: Named.with_norm(weights, "#{e}LayerNorm", m.norm),
       stack: Nn.EncoderStack(blocks: blocks),
     ),
   )
@@ -253,27 +221,6 @@ def block_names(p: String) -> Load.BlockNames
     up: "#{p}ffn.lin1",
     down: "#{p}ffn.lin2",
   )
-end
-
-def dense_weights(out: Map[String, Tensor.Tensor], name: String, d: Nn.Dense) -> Map[String, Tensor.Tensor]
-  named = out.put("#{name}.weight", d.w)
-  case d.b
-    some(b) -> named.put("#{name}.bias", b)
-    none -> named
-  end
-end
-
-def norm_weights(out: Map[String, Tensor.Tensor], name: String, n: Nn.LayerNorm) -> Map[String, Tensor.Tensor]
-  out.put("#{name}.weight", n.gamma).put("#{name}.bias", n.beta)
-end
-
-## `d` and `n` with the tensors of `weights`, whose names `with_weights` has checked.
-def with_dense(weights: Map[String, Tensor.Tensor], name: String, d: Nn.Dense) -> Nn.Dense
-  d.with(w: weights["#{name}.weight"], b: d.b.map { |_| weights["#{name}.bias"] })
-end
-
-def with_norm(weights: Map[String, Tensor.Tensor], name: String, n: Nn.LayerNorm) -> Nn.LayerNorm
-  n.with(gamma: weights["#{name}.weight"], beta: weights["#{name}.bias"])
 end
 
 def expect_shape(name: String, t: Tensor.Tensor, want: List[Int]) -> Result[Void]

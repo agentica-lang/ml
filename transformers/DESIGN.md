@@ -490,6 +490,10 @@ Bert.forward(m, ids, type_ids, mask)   [batch, seq] tensors: I32, I32, F32 (1.0 
   not optional fields of `Bert`: the config names differ and `Bert`'s struct
   is public. Both take `Nn.padding_bias`, and `embed` pools and normalizes
   in the same graph as the encoder.
+- `Bert.weights`, `with_weights` and `pooled` follow the same shape
+  (`named.agc` holds the code the two share). The layer norms are named
+  `weight` and `bias` also for a file with `gamma` and `beta`, and the
+  pooler is among the weights, with no gradient under a mean pooling.
 - `DistilBert.weights` and `with_weights` name the weights as the checkpoint
   does, as `Qwen3`'s do, so a fine-tune is `Params.split`, a loss over
   `with_weights(m, Params.join(split, ps))` and `Train.fit`. The model keeps

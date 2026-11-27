@@ -36,6 +36,56 @@ def test_a_padded_batch_matches_the_peer_on_ggml() -> Result[Void]
   end
 end
 
+## `pooled` (plain tensor calls, the call of a loss) gives the peer's mean embedding of the padded batch, with the
+## token types and the padding, and its normalized form is that mean over its length.
+def test_pooled_is_the_peers_mean_embedding() -> Result[Void]
+  with_peer do |dir|
+    want = try S.flat(try JSON.get(try expected(dir), "mean"))
+    unit: List[Float] = []
+    for row in 0...2
+      mean = want.drop(row * 8).take(8)
+      length = Math.sqrt(mean.map { |x: Float| x * x }.sum)
+      unit = unit + mean.map { |x: Float| x / length }
+    end
+
+    for folder in ["tiny", "legacy"]
+      m = try Bert.open("#{dir}/#{folder}", S.REF)
+      ids: List[Tensor.Values] = []
+      types: List[Tensor.Values] = []
+      keep: List[Tensor.Values] = []
+      for e in try encodings(dir)
+        for i in 0...5
+          if i < e.ids.size
+            ids = ids.push(Tensor.Values.Int(e.ids[i]))
+            types = types.push(Tensor.Values.Int(e.type_ids[i]))
+            keep = keep.push(Tensor.Values.Float(1.0))
+          else
+            ids = ids.push(Tensor.Values.Int(0))
+            types = types.push(Tensor.Values.Int(0))
+            keep = keep.push(Tensor.Values.Float(0.0))
+          end
+        end
+      end
+
+      i32 = Tensor.Dtype.I32
+      id_tensor = try Tensor.from_list(ids, [2, 5], i32, S.REF)
+      type_tensor = try Tensor.from_list(types, [2, 5], i32, S.REF)
+      mask = try Tensor.from_list(keep, [2, 5], Tensor.Dtype.F32, S.REF)
+      mean = try Bert.pooled(m, id_tensor, type_tensor, mask)
+      try S.expect_close(try S.floats_of(mean), want, ABS, REL, "#{folder} pooled")
+      normalized = try Bert.pooled(m, id_tensor, type_tensor, mask, true)
+      try S.expect_close(try S.floats_of(normalized), unit, ABS, REL, "#{folder} normalized")
+      zeros = try Tensor.full([2, 5], Tensor.Values.Int(0), i32, S.REF)
+      try Test.assert(
+        try S.floats_of(try Bert.pooled(m, id_tensor, zeros, mask)) != want,
+        "the token types were ignored",
+      )
+    end
+
+    ok()
+  end
+end
+
 def test_a_model_without_a_pooler_gives_the_hidden_state_alone() -> Result[Void]
   with_peer do |dir|
     m = try Bert.open("#{dir}/nopooler", S.REF)
