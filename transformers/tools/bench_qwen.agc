@@ -7,6 +7,8 @@
 ##
 ## `WEIGHTS=f16` loads the big matrices as half weights (off by default) and `VULKAN_FP16=0` makes Vulkan multiply in
 ## exact `float32` (fp16 is the default). `AGENTICA_ML_KV=host` keeps the KV cache in host memory (`Placement.Kv.Host`).
+## `AGENTICA_ML_MAX_DEVICE_BYTES=n` puts on a Vulkan device the most blocks that fit `n` bytes of it (`Qwen3.layers_that_fit`,
+## printed as `LAYERS`), and it excludes `AGENTICA_ML_LAYERS_ON_DEVICE`.
 
 import Generate from "../generate"
 import Placement from "../placement"
@@ -43,7 +45,19 @@ private
 def run(dir: String, backend: Tensor.Backend, cpu: Bool) -> Result[String]
   started = Time.monotonic_ms
   try Load.vulkan_fp16_from_env(true)
-  m = try Qwen3.open(dir, backend, try Load.weights_from_env(), try Load.layers_on_device_from_env())
+  weights = try Load.weights_from_env()
+  layers = try Load.layers_on_device_from_env()
+  cap = try Load.max_device_bytes_from_env()
+  if cap.some?
+    if layers.some?
+      return error("AGENTICA_ML_MAX_DEVICE_BYTES and AGENTICA_ML_LAYERS_ON_DEVICE are two ways to say one thing")
+    end
+
+    layers = try Qwen3.layers_that_fit(dir, backend, weights, cap, PROMPT + NEW)
+    puts("LAYERS #{layers}")
+  end
+
+  m = try Qwen3.open(dir, backend, weights, layers)
   load = Time.monotonic_ms - started
   g = try Generate.open(m, kv: try Placement.kv_from_env())
   prompt = (0...PROMPT).map { |i| 1000 + (i * 7) % 5000 }

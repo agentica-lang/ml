@@ -6,6 +6,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### hub
 
+- `Load.max_device_bytes_from_env` reads `AGENTICA_ML_MAX_DEVICE_BYTES` for the tools (ml#331).
 - `Load.held_bytes(c, name, weights)` counts the bytes a weight takes on a ggml device under `weights`, without reading it (ml#331).
 
 ### tensor
@@ -14,6 +15,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
+- `Qwen3.layers_that_fit(dir, backend, weights, max_device_bytes)` gives the `layers_on_device` that fills the free memory of a Vulkan device (less a reserve, up to a cap), and `AGENTICA_ML_MAX_DEVICE_BYTES` sets the cap for `bench_qwen` (ml#331).
 - `Placement.footprint(c, ...)` counts the `Footprint` of a model from its checkpoint (ml#331).
 - `Placement.fit(footprint, budget)` gives the largest `layers_on_device` whose layout fits a budget in bytes, and `Placement.budget(free, reserve, cap)` the budget; both are pure, the first step of a memory budget for `layers_on_device` (ml#331).
 
