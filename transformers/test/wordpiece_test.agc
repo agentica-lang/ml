@@ -45,7 +45,10 @@ end
 ## text has `max_length` ids at most, the special tokens counted, and the padding changes nothing.
 def test_a_fixed_padding_of_the_file_changes_nothing() -> Result[Void]
   text = try File.read_text("test/fixtures/wordpiece.json")
-  fixed = "\"padding\": {\"strategy\": {\"Fixed\": 128}, \"direction\": \"Right\", \"pad_id\": 0}"
+  fixed = (
+    "\"padding\": {\"strategy\": {\"Fixed\": 128}, \"direction\": \"Right\", \"pad_to_multiple_of\": null, \"pad_id\": 0, \"pad_type_id\": 0, \"pad_token\": \"[PAD]\"}"
+  )
+
   tok = try WordPiece.parse(try S.replaced(text, "\"padding\": null", fixed))
   plain = try WordPiece.parse(text)
   try Test.eq(tok.pad_id, some(0))
