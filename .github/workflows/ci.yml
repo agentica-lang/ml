@@ -50,7 +50,7 @@ jobs:
           fetch-depth: 2
 
       - name: Test the plan
-        run: python3 -m unittest tools/plan_test.py
+        run: python3 -m unittest tools/plan_test.py tools/check_guide_test.py
 
       # A push to main runs every package. A pull request runs the packages it changes and those that depend on them
       # (the agentica.toml files tell which), and the extra jobs whose packages are among them; a change outside every
@@ -201,6 +201,10 @@ jobs:
         env:
           TENSOR_REQUIRE_GGML: ${{ contains(fromJSON('["tensor", "nn", "train", "asr", "transformers", "hub", "vision"]'), matrix.package) && '1' || '' }}
         run: agentica test --coverage --max-steps 10000000
+
+      - name: The guide shows its program
+        if: matrix.package == 'transformers'
+        run: python3 ../tools/check_guide.py ../site/content/train/finetune-minilm.md tools/finetune_stsb.agc
 
       # The line coverage of the Test step: at least FLOOR percent (tools/coverage_check.py, where the floor and the
       # files that CI cannot run are) of the package's own lines. The report is kept as an artifact, with no external
