@@ -10,6 +10,9 @@ import Tensor from "pkg/tensor/tensor"
 
 FILE = "test/fixtures/table/scores.csv"
 PARQUET = "test/fixtures/table/scores.parquet"
+BIG_PARQUET = "test/fixtures/table/big.parquet"
+BIG_ROWS = 2000
+BIG_WIDTH = 1100
 
 private
 
@@ -220,4 +223,32 @@ def test_a_dataset_of_a_parquet_file_is_the_one_of_the_csv_file() -> Result[Void
   try Test.eq(Tensor.shape(flagged.inputs), [6, 2])
   nulls = error_text(Data.from_table(try Table.read(PARQUET), ["x1", "gap"], "label", S.REF))
   Test.assert(nulls.include?("gap"), "said: #{nulls}")
+end
+
+## A file over the 1 MiB that `File.read_text` and `File.read_bytes` take at once is read in chunks: a CSV file of 3 MB
+## written here, and `big.parquet` (2.2 MiB, `make_big.py`).
+def test_a_csv_file_over_one_mib_is_read_whole() -> Result[Void]
+  with_dir do |dir|
+    line = "#{"x" * 1000},"
+    text = "payload,id\n" + (0...3000).map { |i| "#{line}#{i}\n" }.join("")
+    try Test.assert(text.bytesize > 2 * 1048576, "the file is #{text.bytesize} bytes")
+    t = try written(dir, text)
+    try Test.eq(t.rows, 3000)
+    ids = try Table.floats(t, "id")
+    try Test.eq(ids[2999], 2999.0)
+    payload = try Table.texts(t, "payload")
+    Test.eq(payload[2999].size, 1000)
+  end
+end
+
+def test_a_parquet_file_over_one_mib_is_read_whole() -> Result[Void]
+  try Test.assert((try File.stat(BIG_PARQUET)).size_bytes > 2 * 1048576, "the fixture is not over 2 MiB")
+  t = try Table.read(BIG_PARQUET)
+  try Test.eq(t.names, ["id", "payload"])
+  try Test.eq(t.rows, BIG_ROWS)
+  ids = try Table.floats(t, "id")
+  try Test.eq(ids[BIG_ROWS - 1], (BIG_ROWS - 1).to_f)
+  payload = try Table.texts(t, "payload")
+  try Test.eq(payload.size, BIG_ROWS)
+  Test.eq(payload[BIG_ROWS - 1].size, BIG_WIDTH)
 end
