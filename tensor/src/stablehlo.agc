@@ -150,12 +150,24 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Log -> ok(["stablehlo.log #{a[0]} : #{out}"])
     Types.Op.Sqrt -> ok(["stablehlo.sqrt #{a[0]} : #{out}"])
     Types.Op.Tanh -> ok(["stablehlo.tanh #{a[0]} : #{out}"])
+    Types.Op.Sigmoid -> ok(["stablehlo.logistic #{a[0]} : #{out}"])
+    Types.Op.Pow -> ok(["stablehlo.power #{a[0]}, #{a[1]} : #{out}"])
+    Types.Op.Clamp(lo, hi) ->
+      ok([try fill(lo, t), try fill(hi, t), "stablehlo.clamp %#{first}, #{a[0]}, %#{first + 1} : #{out}"])
+    Types.Op.ToDtype -> convert(t, n.args[0], a[0], first)
     Types.Op.Relu -> ok([try fill(0.0, t), "stablehlo.maximum #{a[0]}, %#{first} : #{out}"])
     Types.Op.Gelu -> gelu(t, a[0], first)
     Types.Op.StopGrad -> ok([])
     Types.Op.Matmul -> matmul(n.args, a, sig)
     Types.Op.Transpose -> ok(["stablehlo.transpose #{a[0]}, dims = #{ints((0...t.shape.size).to_a.reverse)} : #{sig}"])
     Types.Op.Reshape -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
+    Types.Op.Squeeze(_) -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
+    Types.Op.Unsqueeze(_) -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
+    Types.Op.Permute(axes) -> ok(["stablehlo.transpose #{a[0]}, dims = #{ints(axes)} : #{sig}"])
+    Types.Op.Concat(axis) -> ok(["stablehlo.concatenate #{a.join(", ")}, dim = #{axis} : #{sig}"])
+    Types.Op.Stack(axis) -> stack(t, n.args, a, axis, first)
+    Types.Op.BatchMatmul -> batch_matmul(n.args, a, sig)
+    Types.Op.Argmax(axes, keep_dims) -> argmax(t, n.args[0], a[0], axes, keep_dims, first)
     Types.Op.Slice(starts, ends) -> ok(["stablehlo.slice #{a[0]} #{extents(starts, ends)} : #{sig}"])
     Types.Op.BroadcastTo -> broadcast(t, n.args[0], a[0])
     Types.Op.Sum(axes, keep_dims) -> reduction(t, n.args[0], a[0], axes, keep_dims, "add", first)
@@ -314,6 +326,117 @@ def matmul(args: List[Types.Tensor], a: List[String], sig: String) -> Result[Lis
   end
 
   ok(["stablehlo.dot_general #{a[0]}, #{a[1]}, contracting_dims = [1] x [0] : #{sig}"])
+end
+
+# The batched product `[B..., m, k] . [B..., k, n]`: the leading axes are the batch, the rest is `matmul`.
+def batch_matmul(args: List[Types.Tensor], a: List[String], sig: String) -> Result[List[String]]
+  if args[0].dtype != args[1].dtype
+    kinds = "#{Types.dtype_name(args[0].dtype)} by #{Types.dtype_name(args[1].dtype)}"
+    return error("StableHLO has no emitter for batch_matmul of #{kinds} yet")
+  end
+
+  rank = args[0].shape.size
+  batch = ints((0...(rank - 2)).to_a)
+  dims = "batching_dims = #{batch} x #{batch}, contracting_dims = [#{rank - 1}] x [#{rank - 2}]"
+  ok(["stablehlo.dot_general #{a[0]}, #{a[1]}, #{dims} : #{sig}"])
+end
+
+# `x` as another dtype: a conversion truncates a float to an integer, and a boolean is `x != 0`.
+def convert(t: Types.Tensor, x: Types.Tensor, name: String, first: Int) -> Result[List[String]]
+  from = try type_of(x)
+  if t.dtype == Types.Dtype.Bool and x.dtype != Types.Dtype.Bool
+    zero = Types.Values.Int(0)
+    if Types.is_float_dtype(x.dtype)
+      zero = Types.Values.Float(0.0)
+    end
+
+    return ok([
+      try splat(zero, x.shape, x.dtype),
+      "stablehlo.compare NE, #{name}, %#{first}, #{compare_type(x.dtype)} : (#{from}, #{from}) -> #{try type_of(t)}",
+    ])
+  end
+
+  ok(["stablehlo.convert #{name} : (#{from}) -> #{try type_of(t)}"])
+end
+
+# The tensors of `args` joined on a new `axis`: each gets a 1 there, and they are concatenated.
+def stack(t: Types.Tensor, args: List[Types.Tensor], a: List[String], axis: Int, first: Int) -> Result[List[String]]
+  one = args[0].shape.take(axis) + [1] + args[0].shape.drop(axis)
+  layer = try tensor_type(one, args[0].dtype)
+  l = Lines(first: first, defs: [])
+  rows: List[String] = []
+  for i in 0...args.size
+    l = put(l, "stablehlo.reshape #{a[i]} : (#{try type_of(args[i])}) -> #{layer}")
+    rows = rows.push(last(l))
+  end
+
+  l = put(
+    l,
+    "stablehlo.concatenate #{rows.join(", ")}, dim = #{axis} : (#{rows.map { |_| layer }.join(", ")}) -> #{try type_of(t)}",
+  )
+
+  ok(l.defs)
+end
+
+# The index of the largest value of each block of `x` that the reduced `axes` make, numbered row-major by the ascending
+# axes, the lowest one of a tie: the axes go last and are flattened into one `block`, the maximum is found, and the
+# smallest index among the positions that hold it (the others hold `block`) is the answer.
+def argmax(
+  t: Types.Tensor,
+  x: Types.Tensor,
+  name: String,
+  axes: List[Int],
+  keep_dims: Bool,
+  first: Int,
+) -> Result[List[String]]
+  kept = (0...x.shape.size).to_a.select { |i| !axes.include?(i) }
+  order = kept + axes
+  block = try Types.volume(axes.map { |ax| x.shape[ax] })
+  lead = kept.map { |i| x.shape[i] }
+  flat = lead + [block]
+  q = lead.size
+  l = Lines(first: first, defs: [])
+  source = name
+  if order != (0...x.shape.size).to_a
+    permuted = try tensor_type(order.map { |i| x.shape[i] }, x.dtype)
+    l = put(l, "stablehlo.transpose #{source}, dims = #{ints(order)} : (#{try type_of(x)}) -> #{permuted}")
+    source = last(l)
+  end
+
+  rows = try tensor_type(flat, x.dtype)
+  l = put(l, "stablehlo.reshape #{source} : (#{try tensor_type(order.map { |i| x.shape[i] }, x.dtype)}) -> #{rows}")
+  source = last(l)
+  top = try tensor_type(lead, x.dtype)
+  l = put(l, try fill_scalar("maximum", x.dtype))
+  l = put(
+    l,
+    "stablehlo.reduce(#{source} init: #{last(l)}) applies stablehlo.maximum across dimensions = [#{q}] : (#{rows}, #{try tensor_type([], x.dtype)}) -> #{top}",
+  )
+
+  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{ints((0...q).to_a)} : (#{top}) -> #{rows}")
+
+  flags = try tensor_type(flat, Types.Dtype.Bool)
+  l = put(l, "stablehlo.compare EQ, #{source}, #{last(l)}, #{compare_type(x.dtype)} : (#{rows}, #{rows}) -> #{flags}")
+
+  hit = last(l)
+  positions = try tensor_type(flat, t.dtype)
+  l = put(l, "stablehlo.iota dim = #{q} : #{positions}")
+  index = last(l)
+  l = put(l, try splat(Types.Values.Int(block), flat, t.dtype))
+  l = put(l, "stablehlo.select #{hit}, #{index}, #{last(l)} : #{flags}, #{positions}")
+  chosen = last(l)
+  l = put(l, try splat(Types.Values.Int(block), [], t.dtype))
+  found = try tensor_type(lead, t.dtype)
+  l = put(
+    l,
+    "stablehlo.reduce(#{chosen} init: #{last(l)}) applies stablehlo.minimum across dimensions = [#{q}] : (#{positions}, #{try tensor_type([], t.dtype)}) -> #{found}",
+  )
+
+  if keep_dims
+    l = put(l, "stablehlo.reshape #{last(l)} : (#{found}) -> #{try type_of(t)}")
+  end
+
+  ok(l.defs)
 end
 
 # `0.5 x (1 + tanh(c (x + k x^3)))`, the form `Reference` computes.
