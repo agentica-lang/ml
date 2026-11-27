@@ -234,7 +234,7 @@ commit, so a bump of the pin links a new module with no manual cleanup.
 ### A fresh AWS c8g (Graviton4, Ubuntu 24.04 arm64)
 
 CPU only; no GPU or Vulkan. The same steps run in CI on GitHub's
-`ubuntu-24.04-arm` runner (the `ggml-arm64` job).
+`ubuntu-26.04-arm` runner (the `ggml-arm64` job).
 
 ```sh
 sudo apt-get update
@@ -370,7 +370,7 @@ headers; the repository never downloads it). So:
 - CI **does** build ggml's CPU backend (`tools/build-engine.sh`, the
   workflow's engine step), so `native/ggml.c` compiles and the ggml CPU
   checks run there; `TENSOR_REQUIRE_GGML=1` makes a module that did not build
-  fail them. The `ggml-arm64` job does the same on `ubuntu-24.04-arm`, with the
+  fail them. The `ggml-arm64` job does the same on `ubuntu-26.04-arm`, with the
   linux-arm64 Agentica archive. Vulkan runs locally only: no hosted runner has a
   device.
 - The `xla` job installs the XLA plugin (cached by its sha256) and runs the XLA
