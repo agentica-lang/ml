@@ -172,11 +172,24 @@ and `Optim.adamw` are the optimizers with their usual knobs). Both answer the sa
 `fit.metrics[name]`.
 
 ```agentica
-fit = try (
-  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
-  |> Loop.metric(spearman)
-  |> Loop.run(loader, epochs: 3)
-)
+import Data from "pkg/train/data"
+import Loop from "pkg/train/loop"
+import Optim from "pkg/train/optim"
+import Tensor from "pkg/tensor/tensor"
+import Train from "pkg/train/train"
+
+def trained(
+  loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
+  params: List[Tensor.Tensor],
+  loader: Data.Loader,
+  spearman: Loop.Metric,
+) -> Result[Train.Fit]
+  (
+    Loop.trainer(loss, params, Optim.adamw(lr: 0.0001))
+    |> Loop.metric(spearman)
+    |> Loop.run(loader, epochs: 3)
+  )
+end
 ```
 
 ## Fine-tune a sentence-embedding model on a dataset
