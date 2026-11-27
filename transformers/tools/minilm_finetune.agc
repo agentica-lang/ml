@@ -1,16 +1,18 @@
-## A short fine-tune of sentence-transformers/all-MiniLM-L6-v2 (6 layers, width 384) on scored sentence pairs, on ggml or XLA, as
-## a check that a BERT-family model loads and trains: its embeddings put a paraphrase closer than an unrelated sentence,
-## the cosine loss falls over a few `Train.fit_batches` steps, and a sample of its weights moved. CI checks
-## and formats this file but does not run it: it runs by hand, as it needs the network (the checkpoint).
+## A short fine-tune of sentence-transformers/all-MiniLM-L6-v2 (6 layers, width 384) on scored sentence pairs, on ggml,
+## XLA or libtorch, as a check that a BERT-family model loads and trains: its embeddings put a paraphrase closer than an
+## unrelated sentence, the cosine loss falls over a few `Train.fit_batches` steps, and a sample of its weights moved. CI
+## checks and formats this file but does not run it: it runs by hand, as it needs the network (the checkpoint).
 ## From `transformers/`:
 ##
 ## ```sh
 ## sh tools/fetch_minilm.sh                       # the pinned checkpoint, into ~/.cache/agentica-ml/hf/all-minilm-l6-v2
-## agentica --max-steps 1000000000000 tools/minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla [STEPS [LR]]]
+## agentica --max-steps 1000000000000 tools/minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla|torch [STEPS [LR [PAIRS]]]]
 ## ```
 ##
-## It trains every weight (AdamW, no weight decay, no dropout, `F32`) on eight pairs, all of them in each step, so the
-## loss must fall.
+## It trains every weight (AdamW, no weight decay, no dropout, `F32`) on PAIRS of its eight pairs (default all), all of
+## them in each step, so the loss must fall. Only on libtorch the word table (12M of the 22M weights) stays frozen: a
+## step there held about 2.5 GB at its peak (2,505,192 kB, 4 pairs, table frozen) and more with the table trained, which
+## went over a 2.5 GB cap (https://github.com/agentica-lang/ml/issues/394).
 
 import Bert from "../bert"
 import Data from "pkg/train/data"
@@ -45,7 +47,7 @@ end
 def main() -> Void
   args = System.args
   if args.empty?
-    puts("usage: minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla [STEPS [LR]]]")
+    puts("usage: minilm_finetune.agc MODEL_DIR [cpu|vulkan|xla|torch [STEPS [LR [PAIRS]]]]")
     System.exit(2)
   end
 
@@ -59,17 +61,20 @@ end
 
 private
 
-def pairs() -> List[Pair]
-  [
+## The first `count` pairs, a paraphrase and an unrelated pair in turn.
+def pairs(count: Int) -> List[Pair]
+  all = [
     Pair(left: "A man is eating food.", right: "A man is eating a piece of bread.", score: 0.9),
-    Pair(left: "A girl is playing a guitar.", right: "A woman plays the guitar.", score: 0.85),
-    Pair(left: "A man is riding a horse.", right: "A man rides a horse across a field.", score: 0.9),
-    Pair(left: "The cat sits on the sofa.", right: "A cat is lying on the couch.", score: 0.8),
     Pair(left: "A man is eating food.", right: "The stock market fell on Monday.", score: 0.0),
+    Pair(left: "A girl is playing a guitar.", right: "A woman plays the guitar.", score: 0.85),
     Pair(left: "A girl is playing a guitar.", right: "Two trains stand in a station.", score: 0.05),
+    Pair(left: "A man is riding a horse.", right: "A man rides a horse across a field.", score: 0.9),
     Pair(left: "A man is riding a horse.", right: "A chef is slicing an onion.", score: 0.1),
+    Pair(left: "The cat sits on the sofa.", right: "A cat is lying on the couch.", score: 0.8),
     Pair(left: "The cat sits on the sofa.", right: "Scientists found water on Mars.", score: 0.0),
   ]
+
+  all.take(count)
 end
 
 def run(args: List[String]) -> Result[Void]
@@ -83,6 +88,10 @@ def run(args: List[String]) -> Result[Void]
     backend = Tensor.Backend.Xla(Tensor.Device.Cpu)
   end
 
+  if args.size > 1 and args[1] == "torch"
+    backend = Tensor.Backend.Torch(Tensor.Device.Cpu)
+  end
+
   steps = DEFAULT_STEPS
   if args.size > 2
     steps = try args[2].to_i
@@ -93,18 +102,35 @@ def run(args: List[String]) -> Result[Void]
     lr = try args[3].to_f
   end
 
+  count = 8
+  if args.size > 4
+    count = try args[4].to_i
+  end
+
+  return error("PAIRS is 2 to 8, got #{count}") if count < 2 or count > 8
+
   m = try Bert.open(args[0], backend)
   tok = try WordPiece.open("#{args[0]}/tokenizer.json")
   puts("loaded #{m.config.num_hidden_layers} layers of width #{m.config.hidden_size} on #{backend}")
   try expect_paraphrase_closer(m, tok)
-  split = try Params.split(Bert.weights(m), ->(_name: String) { true })
+  train_table = true
+  case backend
+    Tensor.Backend.Torch(_) -> train_table = false
+    _ -> nil
+  end
+
+  split = try Params.split(
+    Bert.weights(m),
+    ->(name: String) { train_table or !name.end_with?("word_embeddings.weight") },
+  )
+
   watched = WATCHED.map { |name: String| split.names.index(name).unwrap! }
   before = try snapshot(watched.map { |i: Int| split.trainable[i] })
-  ids = try encoded(m, tok)
+  ids = try encoded(m, tok, count)
   fit = try Train.fit_batches(
     ->(ps: List[Tensor.Tensor], b: Data.Batch) { loss(m, split, ps, b) },
     split.trainable,
-    ->(_e: Int, _i: Int) { batch(m, ids) },
+    ->(_e: Int, _i: Int) { batch(m, ids, count) },
     1,
     Optim.Optimizer.AdamW(Optim.AdamW(lr: lr, weight_decay: 0.0)),
     steps,
@@ -123,9 +149,9 @@ def run(args: List[String]) -> Result[Void]
 end
 
 ## The two sentences of each pair as ids, `[pair, side, MAX_LENGTH]` padded with the model's pad id, in one shape.
-def encoded(m: Bert.Bert, tok: WordPiece.WordPiece) -> Result[List[Int]]
+def encoded(m: Bert.Bert, tok: WordPiece.WordPiece, count: Int) -> Result[List[Int]]
   out: List[Int] = []
-  for p in pairs()
+  for p in pairs(count)
     for text in [p.left, p.right]
       e = try WordPiece.encode(tok, text, none, true, some(MAX_LENGTH))
       out = out + e.ids + List.repeat(m.config.pad_token_id, MAX_LENGTH - e.ids.size)
@@ -135,9 +161,9 @@ def encoded(m: Bert.Bert, tok: WordPiece.WordPiece) -> Result[List[Int]]
   ok(out)
 end
 
-def batch(m: Bert.Bert, ids: List[Int]) -> Result[Data.Batch]
+def batch(m: Bert.Bert, ids: List[Int], count: Int) -> Result[Data.Batch]
   backend = Tensor.backend(m.words.table)
-  n = pairs().size
+  n = count
   inputs = try Tensor.from_list(
     ids.map { |i: Int| Tensor.Values.Int(i) },
     [n, 2, MAX_LENGTH],
@@ -145,7 +171,7 @@ def batch(m: Bert.Bert, ids: List[Int]) -> Result[Data.Batch]
     backend,
   )
 
-  case Tensor.from_list(pairs().map { |p: Pair| Tensor.Values.Float(p.score) }, [n], Tensor.Dtype.F32, backend)
+  case Tensor.from_list(pairs(count).map { |p: Pair| Tensor.Values.Float(p.score) }, [n], Tensor.Dtype.F32, backend)
     ok(targets) -> ok(Data.Batch(inputs: inputs, targets: targets))
     error(e) ->
       Data.free(inputs)

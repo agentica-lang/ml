@@ -447,6 +447,18 @@ jobs:
           TENSOR_REQUIRE_TORCH: '1'
         run: agentica test --coverage --max-steps 10000000
 
+      # The gradients of DistilBERT and BERT on libtorch (the attention backward needs batch_matmul), and a few
+      # training steps of each. transformers/ reads tensor/ from the workspace.
+      - name: Install the locked dependencies of transformers
+        working-directory: transformers
+        run: agentica install
+
+      - name: Test transformers on libtorch
+        working-directory: transformers
+        env:
+          TENSOR_REQUIRE_TORCH: '1'
+        run: agentica test --max-steps 10000000 test/distilbert_weights_test.agc test/bert_weights_test.agc
+
       - name: Coverage of the torch files
         run: python3 ../tools/coverage_check.py coverage/lcov.info --package tensor --only libtorch
 

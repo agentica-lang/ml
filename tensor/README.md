@@ -87,9 +87,9 @@ call the module, so both have to be declared here (`DESIGN.md` §1, §2, §7).
 ## What is implemented, and what is not
 
 `DESIGN.md` §3.1 names 52 primitives. Both backends compute them: the
-**reference computes all 52**, and the **libtorch backend implements 50** and
+**reference computes all 52**, and the **libtorch backend implements 51** and
 answers `error("<op> is not implemented on the torch backend yet (see tensor/README.md)")` for the
-other two, so the gap is an error naming the op, never a wrong number. Every
+other one, so the gap is an error naming the op, never a wrong number. Every
 implemented one is checked against the reference on the same inputs, values and
 shape/dtype, plus its error paths.
 
@@ -98,7 +98,7 @@ shape/dtype, plus its error paths.
 | Creation (7) | `zeros`, `ones`, `empty`, `full`, `like`, `arange`, `scalar_to_tensor` | — |
 | Elementwise (17) | `add`, `sub`, `mul`, `div`, `neg`, `exp`, `log`, `sqrt`, `pow`, `relu`, `sigmoid`, `tanh`, `gelu_tanh_approx`, `eq`, `lt`, `where`, `clamp` | — |
 | Reductions (4) | `sum`, `mean`, `max`, `argmax` (each with `axes` and `keep_dims`) | — |
-| Linear algebra (3) | `matmul`, `transpose` | `batch_matmul` |
+| Linear algebra (3) | `matmul`, `transpose`, `batch_matmul` | — |
 | Attention (3) | `permute`, `attention` (grouped heads, additive mask, `scale`), `rope` (`neox` or paired, `dims`, `inverse`) | — |
 | Shape (9) | `reshape`, `squeeze`, `unsqueeze`, `slice`, `concat`, `stack`, `broadcast_to`, `gather`, `scatter_add` | — |
 | Convolution/pooling (5) | `conv1d` (`stride`, `padding`), `avg_pool1d` (`kernel`, `stride`, `padding`), `conv2d` (`stride`, `padding`, `groups`), `max_pool2d` and `avg_pool2d` (`kernel`, `stride`, `padding`) | — |
@@ -111,11 +111,8 @@ writes a range of floats of one file into another as another float format.
 `gelu_erf`, the exact GELU, is outside §3.1: it runs on every backend for
 inference, and `Trace` records it without a gradient.
 
-Why those two are out:
+Why that one is out:
 
-- **`batch_matmul`** is expressible (`at::matmul` already takes a batch) and
-  untested. `multi_head_attention` does not need it: it splits heads into
-  rank-2 `matmul` calls (§3.2).
 - **`to_device`** would only move a tensor to the one device libtorch serves
   here, which is the identity: it serves `Device.Cpu` only.
 

@@ -92,7 +92,7 @@ true
 - `loss(params, batch)` answers a float scalar `Result[Tensor]`. Inside it, `params` and the batch are traced; the loss is
   traced once for each batch shape, not on every step. Rebuild layers from the list: `Nn.Dense(w: ps[0], b: some(ps[1]))`.
 - An op with no backward rule on the path from the parameters to the loss makes `fit` fail with an error naming the op:
-  `pow`, `clamp`, `to_dtype`, `batch_matmul` (on libtorch), `conv1d`, `avg_pool1d`. Use the derived ops (`softmax`,
+  `pow`, `clamp`, `to_dtype`, `batch_matmul`, `conv1d`, `avg_pool1d`. Use the derived ops (`softmax`,
   `gelu`, `layer_norm`, `linear`). An op off that path is fine, such as `to_dtype` on a padding mask.
 - Train a model loaded as `F32`. Half (`F16`) and quantized (`Q8_0`, `Q4_K`, `Q6_K`) weights have no gradient.
 - On ggml, one step is one graph with at most 512 outputs: the loss, the new parameters and the moments. That is 170

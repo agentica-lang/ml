@@ -21,6 +21,44 @@ def test_matmul_agrees_with_the_reference() -> Result[Void]
   )
 end
 
+def test_batch_matmul_agrees_with_the_reference_at_rank_three_and_four() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  for shapes in [[[2, 3, 4], [2, 4, 2]], [[2, 2, 3, 2], [2, 2, 2, 3]], [[1, 3, 1], [1, 1, 2]]]
+    left = (0...volume(shapes[0])).to_a.map { |i| 0.25 * (i % 7).to_f - 0.5 }
+    right = (0...volume(shapes[1])).to_a.map { |i| 0.5 - 0.125 * (i % 5).to_f }
+    ours = try Tensor.batch_matmul(try Conform.on_torch(left, shapes[0]), try Conform.on_torch(right, shapes[1]))
+    want = try Tensor.batch_matmul(try Conform.on_ref(left, shapes[0]), try Conform.on_ref(right, shapes[1]))
+    try Test.eq(Tensor.shape(ours), Tensor.shape(want))
+    try Conform.agrees(ours, want, "batch_matmul #{shapes}")
+  end
+
+  ok()
+end
+
+def test_batch_matmul_rejects_what_it_cannot_pair_on_both_backends() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = (0...24).to_a.map { |i| i.to_f }
+  for shapes in [[[2, 3, 4], [3, 4, 2]], [[2, 3, 4], [2, 3, 2]], [[2, 3, 4], [4, 2]], [[4], [4]]]
+    left = data.take(volume(shapes[0]))
+    right = data.take(volume(shapes[1]))
+    try Test.error?(Tensor.batch_matmul(try Conform.on_torch(left, shapes[0]), try Conform.on_torch(right, shapes[1])))
+    try Test.error?(Tensor.batch_matmul(try Conform.on_ref(left, shapes[0]), try Conform.on_ref(right, shapes[1])))
+  end
+
+  ok()
+end
+
+def volume(shape: List[Int]) -> Int
+  n = 1
+  for d in shape
+    n = n * d
+  end
+
+  n
+end
+
 def test_transpose_of_a_rank_two_tensor_agrees() -> Result[Void]
   return Conform.absent() if !Conform.available()
 

@@ -59,9 +59,8 @@
 ##   validates their window arithmetic before dispatch, so both backends
 ##   accept and refuse the same shapes.
 ## - The 52 names of §3.1 all exist below. `Reference` computes all of them;
-##   the `Torch` arm computes everything but `batch_matmul` and
-##   `to_device`, and answers
-##   `error("<op> is not implemented on the torch backend yet")` for those,
+##   the `Torch` arm computes everything but `to_device`, and answers
+##   `error("<op> is not implemented on the torch backend yet")` for it,
 ##   so the gap is a `Result` error naming the op, never a wrong number
 ##   (`README.md`, "What is implemented"). The `Ggml` arm creates, reads
 ##   back and copies between devices (`to_device`), and answers
@@ -814,7 +813,7 @@ def batch_matmul(a: Types.Tensor, b: Types.Tensor) -> Result[Types.Tensor]
 
   case a.backend
     Types.Backend.Reference -> Reference.batch_matmul(a, b)
-    Types.Backend.Torch(_) -> Torch.unsupported("batch_matmul")
+    Types.Backend.Torch(device) -> Torch.batch_matmul(device, a, b)
     Types.Backend.Trace -> ok(Graph.batch_matmul(a, b))
     Types.Backend.Ggml(_) -> Ggml.compiled_only("batch_matmul")
     Types.Backend.Xla(_) -> Xla.compiled_only("batch_matmul")

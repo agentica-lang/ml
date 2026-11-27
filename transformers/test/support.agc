@@ -6,6 +6,7 @@ import Tensor from "pkg/tensor/tensor"
 REF = Tensor.Backend.Reference
 GGML = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+TORCH = Tensor.Backend.Torch(Tensor.Device.Cpu)
 XLA = Tensor.Backend.Xla(Tensor.Device.Cpu)
 
 ## `text` with the `n`th (from 0) occurrence of `needle` replaced by `with`;
@@ -52,6 +53,15 @@ def xla_backends() -> Result[List[Tensor.Backend]]
   return ok([XLA]) if Tensor.available(XLA)
   flag = System.env("TENSOR_REQUIRE_XLA")
   return error("XLA required but not installed (TENSOR_REQUIRE_XLA is set)") if flag.ok? and try flag != ""
+  ok([])
+end
+
+## The libtorch backend when it is built, none when it is not, and an error when it is required
+## (`TENSOR_REQUIRE_TORCH`, set by the torch job of CI) and not built.
+def torch_backends() -> Result[List[Tensor.Backend]]
+  return ok([TORCH]) if Tensor.available(TORCH)
+  flag = System.env("TENSOR_REQUIRE_TORCH")
+  return error("libtorch required but not built (TENSOR_REQUIRE_TORCH is set)") if flag.ok? and try flag != ""
   ok([])
 end
 
