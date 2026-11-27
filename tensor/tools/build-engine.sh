@@ -2,6 +2,8 @@
 # Builds the pinned ggml submodule (`third_party/ggml`) that the native `ggml`
 # module links, and prints the environment it needs.
 #
+# Linux x86_64 and aarch64 (the Vulkan build: x86_64 only).
+#
 # Usage, from anywhere, in the shell that then runs agentica:
 #
 #   eval "$(sh tools/build-engine.sh | grep '^export ')"          # CPU only (CI)
@@ -18,8 +20,10 @@
 #   ${AGENTICA_ML_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agentica-ml}/ggml/<key>/
 #
 # The key is the ggml commit, the action, a hash of the cmake flags and a hash
-# of the `cc` and `c++` versions. The entry holds ggml's static archives (the
-# Vulkan one with its shaders already compiled in) and `libtensor_ggml.a`, so
+# of the `cc` and `c++` versions (on aarch64, where ggml builds for the CPU it
+# runs on, also a hash of that CPU's part and features). The entry holds ggml's
+# static archives (the Vulkan one with its shaders already compiled in) and
+# `libtensor_ggml.a`, so
 # it needs nothing from a build tree. A hit builds nothing: the same pinned
 # ggml is never compiled twice. A miss builds in the tree (through ccache when
 # it is on PATH) and then publishes the entry whole (a temp dir, then `mv`),
@@ -59,11 +63,12 @@ case "$action" in
     ;;
 esac
 
-# The linker script below is GNU ld's, and the flags pin x86-64 AVX2.
-case "$(uname -s)/$(uname -m)" in
-  Linux/x86_64) ;;
+# The linker script below is GNU ld's.
+machine="$(uname -s)/$(uname -m)"
+case "$machine" in
+  Linux/x86_64 | Linux/aarch64) ;;
   *)
-    echo "build-engine.sh: Linux x86_64 only, got $(uname -s)/$(uname -m)" >&2
+    echo "build-engine.sh: Linux x86_64 or aarch64 only, got $machine" >&2
     exit 1
     ;;
 esac
@@ -79,15 +84,26 @@ jobs=${JOBS:-$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)}
   exit 1
 }
 
-# GGML_NATIVE=OFF pins the instruction set to AVX2/FMA/F16C, so every x86-64
-# AVX2 machine gets the same build; GGML_OPENMP=OFF keeps ggml's own threads.
+# On x86-64, GGML_NATIVE=OFF pins the instruction set to AVX2/FMA/F16C, so every
+# AVX2 machine gets the same build. On aarch64 there is no such common floor
+# (NEON everywhere, SVE and i8mm only from Graviton3 and Neoverse N2/V1 on), so
+# GGML_NATIVE=ON lets ggml pick what the building machine has, and the cache key
+# below names that CPU. GGML_OPENMP=OFF keeps ggml's own threads.
 # GGML_LLAMAFILE=ON builds llamafile's sgemm, ggml's register-blocked F32 matmul for the CPU: it is off outside
 # llama.cpp, and without it an F32 matmul is a row of dot products (about 70 GFLOPS here against 100 to 140).
-flags="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_LLAMAFILE=ON -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF"
+case "$machine" in
+  Linux/aarch64) native=ON ;;
+  *) native=OFF ;;
+esac
+flags="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DGGML_NATIVE=$native -DGGML_OPENMP=OFF -DGGML_LLAMAFILE=ON -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF"
 targets="ggml ggml-base ggml-cpu"
 vulkan_lib=
 
 if [ "$action" = vulkan ]; then
+  [ "$machine" = Linux/x86_64 ] || {
+    echo "build-engine.sh: the Vulkan build is Linux x86_64 only; on $machine use the CPU build" >&2
+    exit 1
+  }
   sdk=
   for candidate in "${VULKAN_SDK:-}" "$HOME/.local/vulkan-sdk/usr" /usr; do
     if [ -n "$candidate" ] && [ -f "$candidate/include/vulkan/vulkan.h" ] && [ -d "$candidate/share/cmake/SPIRV-Headers" ]; then
@@ -136,6 +152,13 @@ short_hash() { sha256sum | cut -c1-8; }
 flags_hash=$(printf 'v1 %s' "$flags" | short_hash)
 cc_hash=$({ cc --version | head -n 1; c++ --version | head -n 1; } 2> /dev/null | short_hash)
 key="$(printf '%s' "$rev" | cut -c1-12)-$action-$flags_hash-$cc_hash"
+# A native build runs only on CPUs with the features of the one that built it (an
+# entry copied to an older machine would die with SIGILL), so the key of an
+# aarch64 entry holds the implementer, part and feature flags of the first core.
+if [ "$native" = ON ]; then
+  cpu_hash=$(grep -E '^(CPU implementer|CPU part|Features)' /proc/cpuinfo | head -n 3 | short_hash)
+  key="$key-$cpu_hash"
+fi
 cache="${AGENTICA_ML_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agentica-ml}/ggml"
 entry="$cache/$key"
 
