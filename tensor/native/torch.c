@@ -358,11 +358,17 @@ static bool check_axes(an_env *env, const torch::Tensor &t, const std::vector<in
   return true;
 }
 
+/* True when `t` has no NaN and no infinity. Two reductions and no temporary: `max` and `min` carry a NaN, and an
+   infinity is one of them. */
+static bool finite_values(const torch::Tensor &t) {
+  return t.numel() == 0 || (std::isfinite(t.max().item<double>()) && std::isfinite(t.min().item<double>()));
+}
+
 /* A non-finite input never reaches libtorch's transcendental core: a `NaN`
    would travel through every later op as a `NaN` instead of an `error`, and
    the reference refuses it at the same place. */
 static bool all_finite(const torch::Tensor &t, an_env *env, const char *op, an_term *failure) {
-  if (t.numel() == 0 || t.isfinite().all().item<bool>()) return true;
+  if (finite_values(t)) return true;
   *failure = error_text(env, std::string(op) + " needs finite values, got a non-finite one");
   return false;
 }
@@ -598,15 +604,28 @@ an_term torch_relu(an_env *env, struct torch_TensorHandle_state *a) {
   }
 }
 
-/* `exp` takes finite values and `-inf` (`exp(-inf)` is `0`, a masked score); a NaN or `+inf` never reaches it. */
+/* `exp` takes finite values and `-inf` (`exp(-inf)` is `0`, a masked score); a NaN or `+inf` never reaches it. The one
+   `max` reduction sees both (it carries a NaN). libtorch's `exp` is 3 to 10 times slower on inputs whose result is
+   denormal (below about -87 in `F32`), which the masked scores of a softmax and the tails of a gaussian are: those
+   take `exp` of a clamped input, and the entries below the floor are set to the `0` the reference gives (they are
+   under 1e-37, and denormal values are not kept). */
 an_term torch_exp(an_env *env, struct torch_TensorHandle_state *a) {
   const torch::Tensor &t = *a->value;
 
   try {
-    if (t.numel() > 0 && (t.isnan().any().item<bool>() || t.isposinf().any().item<bool>())) {
+    if (t.numel() == 0) return ok_tensor(env, t.exp());
+
+    const double highest = t.max().item<double>();
+    if (std::isnan(highest) || highest == std::numeric_limits<double>::infinity()) {
       return error_text(env, "exp needs finite values or -inf, got a NaN or +inf");
     }
-    return ok_tensor(env, t.exp());
+
+    const double floor = t.scalar_type() == torch::kDouble ? -700.0 : -87.0;
+    if (t.min().item<double>() >= floor) return ok_tensor(env, t.exp());
+
+    torch::Tensor out = t.clamp_min(floor).exp_();
+    out.masked_fill_(t.lt(floor), 0.0);
+    return ok_tensor(env, out);
   } catch (...) {
     return failed(env, "exp");
   }
@@ -618,7 +637,7 @@ an_term torch_log(an_env *env, struct torch_TensorHandle_state *a) {
 
   try {
     if (!all_finite(t, env, "log", &failure)) return failure;
-    if (t.numel() > 0 && !t.gt(0).all().item<bool>()) {
+    if (t.numel() > 0 && t.min().item<double>() <= 0.0) {
       return error_text(env, "log needs x > 0, got a value at or below zero");
     }
     return ok_tensor(env, t.log());
@@ -633,7 +652,7 @@ an_term torch_sqrt(an_env *env, struct torch_TensorHandle_state *a) {
 
   try {
     if (!all_finite(t, env, "sqrt", &failure)) return failure;
-    if (t.numel() > 0 && !t.ge(0).all().item<bool>()) {
+    if (t.numel() > 0 && t.min().item<double>() < 0.0) {
       return error_text(env, "sqrt needs x >= 0, got a value below zero");
     }
     return ok_tensor(env, t.sqrt());
@@ -654,7 +673,7 @@ an_term torch_pow(an_env *env, struct torch_TensorHandle_state *base, struct tor
   try {
     if (!all_finite(bs, env, "pow", &failure)) return failure;
     if (!all_finite(es, env, "pow", &failure)) return failure;
-    if (bs.numel() > 0 && !bs.gt(0).all().item<bool>()) {
+    if (bs.numel() > 0 && bs.min().item<double>() <= 0.0) {
       return error_text(env, "pow needs base > 0, got a value at or below zero");
     }
     return ok_tensor(env, torch::pow(bs, es));
@@ -1185,7 +1204,7 @@ static an_term attend(an_env *env, const torch::Tensor &q, const torch::Tensor &
     if (mask != NULL) bias = *mask;
     torch::Tensor out = at::scaled_dot_product_attention(q, keys, values, bias, 0.0, false, scale).contiguous();
 
-    if (out.numel() > 0 && !out.isfinite().all().item<bool>()) {
+    if (!finite_values(out)) {
       return error_text(env, "attention needs finite q, k and v, and a key left for every query");
     }
     return ok_tensor(env, out);

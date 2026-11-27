@@ -5,6 +5,7 @@
 
 import Conform from "torch_support"
 import Tensor from "../tensor"
+import Trace from "../trace"
 
 private
 
@@ -79,6 +80,71 @@ def test_exp_of_minus_infinity_is_zero_and_of_plus_infinity_an_error() -> Result
   try Test.eq(got, [0.0, 1.0])
   try Test.error?(Tensor.exp(try Conform.on_torch([1.0e308 * 10.0], [1])))
   Test.error?(Tensor.exp(try Conform.on_torch([open - open], [1])))
+end
+
+## Below about -87 the result is denormal in `F32`, which libtorch is slow at: the native `exp` computes those entries
+## as `0` (the reference gives under 1e-37 there, or 0 below -745). The values above stay those of `exp`.
+def test_exp_of_a_very_negative_value_is_zero_and_its_neighbours_are_exp() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [-1000.0, -200.0, -104.0, -90.0, -87.5, -80.0, -20.0, 0.0]
+  Conform.agrees(
+    try Tensor.exp(try Conform.on_torch(data, [2, 4])),
+    try Tensor.exp(try Conform.on_ref(data, [2, 4])),
+    "exp of very negative values",
+  )
+end
+
+def test_a_masked_softmax_agrees_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [0.5, -1.0, -1.0e9, 2.0, -3.0, 1.0, -1.0e30, -1.0e30]
+  Conform.agrees(
+    try Tensor.softmax(try Conform.on_torch(data, [2, 4]), 1),
+    try Tensor.softmax(try Conform.on_ref(data, [2, 4]), 1),
+    "softmax with masked scores",
+  )
+end
+
+## The tails: the softmax backward reads `exp` of a masked score and the `gelu_erf` backward `exp(-x^2 / 2)` of a large
+## `x`, both far below -87.
+def test_the_gradients_of_a_masked_softmax_and_of_gelu_erf_agree_with_the_reference() -> Result[Void]
+  return Conform.absent() if !Conform.available()
+
+  data = [0.5, -1.0, -1.0e9, 2.0, -3.0, 1.0, 12.0, -14.0]
+  weights = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+  for named in ["softmax", "gelu_erf"]
+    ours = try tail_grad(named, try Conform.on_torch(data, [2, 4]), try Conform.on_torch(weights, [2, 4]))
+    theirs = try tail_grad(named, try Conform.on_ref(data, [2, 4]), try Conform.on_ref(weights, [2, 4]))
+    try within(ours, theirs, "the gradient of #{named}")
+  end
+
+  ok()
+end
+
+## A gradient sums several F32 roundings where the reference rounds none: 1e-5 of the value.
+def within(got: Tensor.Tensor, want: Tensor.Tensor, what: String) -> Result[Void]
+  ours = try Conform.floats_of(got)
+  theirs = try Conform.floats_of(want)
+  try Test.eq(ours.size, theirs.size)
+  for i in 0...theirs.size
+    if (ours[i] - theirs[i]).abs > 0.00001 * theirs[i].abs + 0.000001
+      return error("#{what}: value #{i} is #{ours[i]}, the reference says #{theirs[i]}")
+    end
+  end
+
+  ok()
+end
+
+def tail_grad(name: String, x: Tensor.Tensor, w: Tensor.Tensor) -> Result[Tensor.Tensor]
+  got = try Trace.grad([x, w]) do |xs| Tensor.sum(try Tensor.mul(try tail_of(name, xs[0]), xs[1])) end
+
+  ok(got[0])
+end
+
+def tail_of(name: String, x: Tensor.Tensor) -> Result[Tensor.Tensor]
+  return Tensor.softmax(x, 1) if name == "softmax"
+  Tensor.gelu_erf(x)
 end
 
 def test_log_agrees_with_the_reference() -> Result[Void]

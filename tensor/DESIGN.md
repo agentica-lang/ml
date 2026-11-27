@@ -97,7 +97,8 @@ Creation: `zeros, ones, empty, full, like, arange, scalar_to_tensor`.
 Elementwise: `add, sub, mul, div, neg, exp, log, sqrt, pow, relu, sigmoid,
 tanh, gelu_tanh_approx, eq, lt, where, clamp`.
 Every transcendental here refuses `NaN` and infinite input, except that `exp(-inf)` is `0`
-(a masked score).
+(a masked score). On libtorch the check is a `max` and a `min` reduction, and `exp` below -87 in `F32` (-700 in `F64`)
+is `0`, not libtorch's denormal result, which it computes 3 to 10 times slower.
 Reductions: `sum, mean, max, argmax` (each with `axes: Optional[List[Int]]`,
 `keep_dims: Bool`).
 Linear algebra: `matmul, transpose, batch_matmul` (plain `dot` is derived).
