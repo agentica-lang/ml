@@ -36,6 +36,7 @@ end
 - Checkpoints with the `bert.` prefix and `gamma`/`beta` layer norms (`bert-base-uncased`) and those without (`save_pretrained` today) both load; the `cls.*` head is ignored. A `model_type` other than `bert`, a position embedding other than `absolute` and an activation other than `gelu`, `gelu_new`, `gelu_pytorch_tanh` and `relu` are errors.
 - On ggml the forward is one graph with the weights as constants; the other backends run it eagerly. The weights are `F32` in memory (about 0.4 GB for `bert-base-uncased`).
 - The sequence length may not pass `max_position_embeddings` (512), and every encoding needs a token.
+- `Bert.weights(m)` gives the weights by their names in the checkpoint (`encoder.layer.0.attention.self.query.weight`; under `bert.` when the file has that prefix, the layer norms as `weight` and `bias` even when the file says `gamma` and `beta`, the pooler when there is one), and `Bert.with_weights(m, weights)` gives the model with those tensors in their place, as `DistilBert` does. `Bert.pooled(m, ids, type_ids, mask, normalize)` is the mean embedding as plain tensor calls, for a loss with `Params` and `Train.fit`: the pooler is not in it, so it has no gradient there. Freeze it, or train a head over `Bert.forward`, to use it.
 - Reference and ggml are tested; libtorch is not. `Bert.open` reads `model.safetensors` only, not a sharded checkpoint.
 
 ## DistilBERT

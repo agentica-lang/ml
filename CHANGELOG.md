@@ -26,6 +26,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
+- `Bert.weights`, `Bert.with_weights` and `Bert.pooled` name the weights of a BERT as the checkpoint does and run its mean embedding inside a trace, so `Train.fit` and `Params` fine-tune it (`sentence-transformers/all-MiniLM-L6-v2` sized models); `DistilBert` shares the helpers (ml#377).
 - `GraniteMoe.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their experts and keys, run on the CPU under a Vulkan device, as for Qwen3 (ml#331).
 - `Lfm3.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their convolution states and keys, run on the CPU under a Vulkan device, as for Qwen3 (ml#331).
 - `Qwen3_5.open(dir, backend, weights, layers_on_device)`: the layers from the `n`th on, with their keys and states, run on the CPU under a Vulkan device, with the table and the head placed as for Qwen3 (ml#331).
