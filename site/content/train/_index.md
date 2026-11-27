@@ -8,6 +8,8 @@ weight: 3
 
 The batches come from a data loader, which has [its own page](data.md). `fit` can report its loss, learning rate and step time to [metrics](metrics.md).
 
+A whole fine-tune of a sentence-embedding model on a Hugging Face dataset, on any backend, is in [fine-tune all-MiniLM-L6-v2](finetune-minilm.md).
+
 ## Example
 
 Linear regression on eight rows, with SGD (stochastic gradient descent, a simple optimizer) and the loader's default shuffle. The loss is the mean squared error of `x w`:
