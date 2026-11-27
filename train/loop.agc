@@ -16,6 +16,7 @@
 
 import Data from "data"
 import Optim from "optim"
+import Telemetry from "pkg/telemetry/telemetry"
 import Tensor from "pkg/tensor/tensor"
 import Train from "train"
 
@@ -72,14 +73,16 @@ struct Trainer
   optimizer: Optim.Optimizer
   metrics: List[Metric] = []
   handlers: List[Handler] = []
+  run: String = ""
 end
 
 def trainer(
   loss: Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]],
   params: List[Tensor.Tensor],
   optimizer: Optim.Optimizer,
+  run: String = "",
 ) -> Trainer
-  Trainer(loss: loss, params: params, optimizer: optimizer)
+  Trainer(loss: loss, params: params, optimizer: optimizer, run: run)
 end
 
 ## The trainer with `metric` measured at the end of every epoch of its run; the values are in `Fit.metrics` under the
@@ -111,7 +114,7 @@ end
 def run(t: Trainer, data: Data.Loader, epochs: Int = 1) -> Result[Train.Fit]
   seen = measuring(t, epochs)
   try started(t, seen)
-  fit = try Train.fit(t.loss, t.params, data, t.optimizer, epochs, seen.on_epoch, none, seen.on_step)
+  fit = try Train.fit(t.loss, t.params, data, t.optimizer, epochs, seen.on_epoch, none, seen.on_step, run: t.run)
   measured(fit, t, seen)
 end
 
@@ -137,6 +140,7 @@ def run_batches(
     none,
     prefetch,
     seen.on_step,
+    run: t.run,
   )
 
   measured(fit, t, seen)
@@ -279,6 +283,7 @@ def after_epoch(t: Trainer, e: Train.Epoch, values: Channel[List[Float]], halt: 
   named: Map[String, Float] = {}
   for k in 0...t.metrics.size
     named = named.put(t.metrics[k].name, measured[k])
+    announce_metric(t.run, t.metrics[k].name, e.epoch, measured[k])
   end
 
   info = Info(
@@ -300,6 +305,19 @@ def after_epoch(t: Trainer, e: Train.Epoch, values: Channel[List[Float]], halt: 
 
   _ = values.send(measured, 0)
   ok(control(halt))
+end
+
+## `train.metric` for `telemetry` handlers: the value of a metric at the end of an epoch, with the run name and the
+## metric name in the metadata.
+def announce_metric(run: String, name: String, epoch: Int, value: Float) -> Void
+  if Telemetry.enabled?("train.metric")
+    Telemetry.execute(
+      "train.metric",
+      ints: {"epoch_count": epoch},
+      floats: {"value": value},
+      metadata: {"run": run, "metric": name},
+    )
+  end
 end
 
 def measure_all(metrics: List[Metric], params: List[Tensor.Tensor]) -> Result[List[Float]]

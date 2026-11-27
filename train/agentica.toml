@@ -12,3 +12,4 @@ nn = { git = "https://github.com/agentica-lang/ml", tag = "nn-0.7.0", subdir = "
 csv = { git = "https://github.com/agentica-lang/packages", tag = "csv-0.1.0", subdir = "csv" }
 parquet = { git = "https://github.com/agentica-lang/packages", tag = "parquet-0.2.0-beta.1", subdir = "parquet" }
 prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.4.2", subdir = "prop", group = "test" }
+telemetry = { git = "https://github.com/agentica-lang/packages", tag = "telemetry-0.1.0", subdir = "telemetry" }
