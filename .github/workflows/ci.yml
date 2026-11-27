@@ -382,7 +382,7 @@ jobs:
         working-directory: train
         env:
           TENSOR_REQUIRE_XLA: '1'
-        run: agentica test --max-steps 10000000 test/fit_test.agc test/schedule_test.agc test/adamw_test.agc
+        run: agentica test --max-steps 10000000 test/fit_test.agc test/schedule_test.agc test/adamw_test.agc test/loop_test.agc
 
       # Qwen3 generation on XLA: the steps of a cache against the forward, and the greedy ids (the peer is Python's
       # standard library). transformers/ reads tensor/ from the workspace.

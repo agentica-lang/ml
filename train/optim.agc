@@ -74,6 +74,25 @@ struct Step
   params: List[Tensor.Tensor]
 end
 
+## The optimizers with their usual knobs, for a pipe: `Optim.adamw(lr: 0.00002, schedule: ...)` is
+## `Optimizer.AdamW(AdamW(lr: 0.00002, schedule: ...))`. The knobs they leave out keep the defaults of their struct.
+def sgd(lr: Float, momentum: Float = 0.0, schedule: Schedule = Schedule.Constant) -> Optimizer
+  Optimizer.Sgd(Sgd(lr: lr, momentum: momentum, schedule: schedule))
+end
+
+def adam(lr: Float = 0.001, schedule: Schedule = Schedule.Constant) -> Optimizer
+  Optimizer.Adam(Adam(lr: lr, schedule: schedule))
+end
+
+def adamw(
+  lr: Float = 0.001,
+  weight_decay: Float = 0.01,
+  decay: List[Bool] = [],
+  schedule: Schedule = Schedule.Constant,
+) -> Optimizer
+  Optimizer.AdamW(AdamW(lr: lr, weight_decay: weight_decay, decay: decay, schedule: schedule))
+end
+
 def init(optimizer: Optimizer, params: List[Tensor.Tensor]) -> Result[State]
   unused: List[Tensor.Tensor] = []
   case optimizer
@@ -107,10 +126,10 @@ def step(
   case state.optimizer
     Optimizer.Sgd(o) ->
       try check_scalars(scalars, 1, "an SGD step takes one scalar")
-      sgd(o, state, params, grads, scalars)
+      sgd_update(o, state, params, grads, scalars)
     Optimizer.Adam(o) ->
       try check_adam_rows(scalars, 1, "an Adam step takes one input of 7 numbers")
-      adam(o, none, state, params, grads, scalars)
+      adam_update(o, none, state, params, grads, scalars)
     Optimizer.AdamW(o) ->
       try check_adam_rows(scalars, 2, "an AdamW step takes two inputs of 7 numbers")
       try check_decay(o, params.size)
@@ -119,7 +138,7 @@ def step(
         decays = List.repeat(true, params.size)
       end
 
-      adam(plain(o), some(decays), state, params, grads, scalars)
+      adam_update(plain(o), some(decays), state, params, grads, scalars)
   end
 end
 
@@ -199,7 +218,7 @@ def rate_factor(s: Schedule, t: Int) -> Float
   end
 end
 
-def sgd(
+def sgd_update(
   o: Sgd,
   state: State,
   params: List[Tensor.Tensor],
@@ -247,7 +266,7 @@ end
 ## Adam's step, and AdamW's with `decays`: the flag of each parameter, which shrinks by `lr weight_decay` of itself.
 ## The update is `Tensor.adam_step` with the rows of `scalars` (`step_inputs`; without them, those of the optimizer's
 ## state as constants), the row of a parameter that decays first.
-def adam(
+def adam_update(
   o: Adam,
   decays: Optional[List[Bool]],
   state: State,

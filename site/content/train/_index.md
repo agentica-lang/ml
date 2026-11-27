@@ -82,6 +82,21 @@ The optimizers are pure: `Optim.step(state, params, grads, scalars = [])` return
 
 `Optim.step` answers an `Optim.Step`. It is an error unless there is one gradient per parameter. The `State` has `optimizer`, `steps`, and `first` and `second`: the SGD velocity or the Adam moments, one tensor per parameter. A list the optimizer does not use is empty.
 
+`Optim.sgd(lr, momentum: 0.0, schedule:)`, `Optim.adam(lr:, schedule:)` and `Optim.adamw(lr:, weight_decay:, decay:, schedule:)` are the same optimizers with their usual knobs, as one call: `Optim.adamw(lr: 0.00002)` is `Optim.Optimizer.AdamW(Optim.AdamW(lr: 0.00002))`. The knobs they leave out keep the defaults of their struct.
+
+## Loop
+
+`Loop` builds a training run as a value and runs it, as a pipe over `Train.fit`: `Loop.trainer(loss, params, optimizer)` makes a `Loop.Trainer`, and `Loop.run(trainer, data, epochs: 1)` is `Train.fit` of it. It answers the same `Fit`.
+
+```agentica
+fit = try (
+  Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
+  |> Loop.run(data, epochs: 3)
+)
+```
+
+`Loop.run_batches(trainer, batch, count, epochs: 1, prefetch: 0)` is `Train.fit_batches`: `batch(epoch, i)` makes batch `i` of `count`.
+
 ## Train.fit
 
 `Train.fit(loss, params, data, optimizer, epochs, on_epoch, metrics)` runs `epochs` passes over the batches of `data`, with one optimizer step per batch. It returns a `Result` of `Fit`, with `params` (the trained list) and `history` (the mean loss of each epoch).
