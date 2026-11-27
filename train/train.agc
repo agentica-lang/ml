@@ -12,6 +12,7 @@
 import Data from "data"
 import Metrics from "metrics"
 import Optim from "optim"
+import Telemetry from "pkg/telemetry/telemetry"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
@@ -78,9 +79,10 @@ def fit(
   metrics: Optional[Metrics.Run] = none,
   on_step: Optional[Fn[StepInfo, Result[Control]]] = none,
   start: Optional[Optim.State] = none,
+  run: String = "",
 ) -> Result[Fit]
   if gathers_in_graph?(data, params)
-    return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, start)
+    return fit_indexed(loss, params, data, optimizer, epochs, on_epoch, metrics, on_step, start, run)
   end
 
   fed = Data.feed(data, epochs)
@@ -102,6 +104,7 @@ def fit(
       metrics: metrics,
       on_step: on_step,
       start: start,
+      name: run,
     ),
     params,
     optimizer,
@@ -133,6 +136,7 @@ def fit_batches(
   prefetch: Int = 0,
   on_step: Optional[Fn[StepInfo, Result[Control]]] = none,
   start: Optional[Optim.State] = none,
+  run: String = "",
 ) -> Result[Fit]
   return refused(start, "fit_batches needs at least one batch, got #{count}") if count < 1
   return refused(start, "prefetch must be 0 or more, got #{prefetch}") if prefetch < 0
@@ -146,6 +150,7 @@ def fit_batches(
       metrics: metrics,
       on_step: on_step,
       start: start,
+      name: run,
     )
   }
 
@@ -200,6 +205,7 @@ struct Run
   metrics: Optional[Metrics.Run]
   on_step: Optional[Fn[StepInfo, Result[Control]]]
   start: Optional[Optim.State] = none
+  name: String = ""
   indexed: Bool = false
 end
 
@@ -221,6 +227,30 @@ end
 struct Taken
   stepped: Result[Stepped]
   programs: Map[String, Trace.Compiled]
+end
+
+## The events of a run for `telemetry` handlers: `train.step` after each step and `train.epoch` after each epoch, with
+## the run name as `run` in the metadata. Nothing is built when no handler hears them.
+def announce_step(name: String, epoch: Int, step: Int, loss: Float, rate: Float) -> Void
+  if Telemetry.enabled?("train.step")
+    Telemetry.execute(
+      "train.step",
+      ints: {"step_count": step, "epoch_count": epoch},
+      floats: {"loss": loss, "lr": rate},
+      metadata: {"run": name},
+    )
+  end
+end
+
+def announce_epoch(name: String, epoch: Int, step: Int, loss: Float) -> Void
+  if Telemetry.enabled?("train.epoch")
+    Telemetry.execute(
+      "train.epoch",
+      ints: {"epoch_count": epoch, "step_count": step},
+      floats: {"loss": loss},
+      metadata: {"run": name},
+    )
+  end
 end
 
 ## Whether `fit` gathers the rows of a batch inside the step: on ggml and XLA, where a gather in its own graph costs a
@@ -250,6 +280,7 @@ def fit_indexed(
   metrics: Optional[Metrics.Run],
   on_step: Optional[Fn[StepInfo, Result[Control]]],
   start: Optional[Optim.State],
+  run: String,
 ) -> Result[Fit]
   return refused(start, "prefetch must be 0 or more, got #{data.prefetch}") if data.prefetch < 0
   fed = Data.feed(data.with(prefetch: 0), epochs)
@@ -271,6 +302,7 @@ def fit_indexed(
       metrics: metrics,
       on_step: on_step,
       start: start,
+      name: run,
       indexed: true,
     ),
     params,
@@ -370,6 +402,7 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
       end
 
       total = total + done.loss
+      announce_step(r.name, e, state.steps, done.loss, rate)
       case r.on_step
         some(f) ->
           called = f.call(
@@ -393,6 +426,7 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
 
     mean = total / r.count.to_f
     history = history.push(mean)
+    announce_epoch(r.name, e, state.steps, mean)
     case r.on_epoch
       some(f) ->
         called = f.call(Epoch(epoch: e, loss: mean, steps: state.steps, state: state, params: current))

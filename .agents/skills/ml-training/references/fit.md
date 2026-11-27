@@ -8,7 +8,7 @@
 | Optimizer | `Optim.Optimizer.Sgd(Optim.Sgd(lr:, momentum: 0.0))`, `Adam(Optim.Adam(lr:, beta1:, beta2:, eps:))`, `AdamW(Optim.AdamW(lr:, weight_decay: 0.01, decay: []))` |
 | Schedule | `schedule:` on any optimizer: `Optim.Schedule.Constant`, `WarmupLinear(warmup, total)`, `WarmupCosine(warmup, total)`. `lr` is the peak. |
 | Data | `Data.dataset(inputs, targets)` (the first dimension is the rows), `Data.Loader(dataset:, batch_size:, shuffle: true, seed: 0, drop_last: false, prefetch: 2)` |
-| Run | `Train.fit(loss, params, loader, optimizer, epochs, on_epoch, metrics, on_step)` and `Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics, prefetch: 0, on_step)` |
+| Run | `Train.fit(loss, params, loader, optimizer, epochs, on_epoch, metrics, on_step, run)` and `Train.fit_batches(loss, params, batch, count, optimizer, epochs, on_epoch, metrics, prefetch: 0, on_step, run)` |
 
 `Adam` defaults: `lr` 0.001, betas 0.9 and 0.999, `eps` 1e-8. `AdamW`'s `decay` has one flag per parameter (empty: all
 decay); a fine-tune leaves out biases and layer-norm weights. `fit` starts a run at step 0 with zero moments, or from
@@ -76,6 +76,7 @@ true
   `ok(Train.Control.Continue)`, `ok(Train.Control.Stop)` (ends the fit after the epoch, with its `Fit`) or an `error`.
 - `on_step` gets `Train.StepInfo(epoch:, batch:, step:, loss:, state:, params:)` after each step and answers `Result[Train.Control]`;
   `Stop` ends the fit after the step, with its `Fit`, and an `error` stops it, naming the epoch and the batch.
+- `run` names the run (`Loop.trainer(..., run:)` too): a run emits `telemetry` events `train.step` (`ints` `step_count`, `epoch_count`; `floats` `loss`, `lr`), `train.epoch` (`loss`) and `train.metric` (`value`, metadata `metric`) for handlers an app attaches, with `run` in the metadata; they observe only.
 - `metrics` is an open `Metrics.Run`: every step writes `train/loss`, `train/lr` and `train/step_ms` to
   `runs/NAME/metrics.jsonl` and a TensorBoard event file (`tensorboard --logdir runs`). `fit` does not open or close
   the run. A loss that is not finite stops the fit with an error naming the epoch and the batch.
