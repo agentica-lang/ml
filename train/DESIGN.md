@@ -24,7 +24,7 @@ Optim.step_inputs(state) -> List[List[Float]]   the inputs of the next step: SGD
 Data.dataset(inputs, targets) -> Result[Dataset]            [N, ...] and [N, ...]
 Data.load(path, inputs, targets, backend) -> Result[Dataset]  two named tensors of a safetensors file
 Data.from_table(table, inputs, target, backend, target_dtype = F32) -> Result[Dataset]  numeric columns of a Table (table.agc: a CSV file)
-Table.read(path) / Table.floats(table, name) / Table.texts(table, name)   table.agc: columns of a CSV file, decoded when asked; rows count from 1
+Table.read(path) / Table.floats(table, name) / Table.texts(table, name)   table.agc: columns of a CSV or Parquet file, decoded when asked; rows count from 1
 Data.Loader { dataset, batch_size, shuffle = true, seed = 0, drop_last = false, prefetch = 2 }
 Data.size(dataset) / Data.count(loader) / Data.order(loader, epoch) / Data.batch(loader, rows, i)
 Data.feed(loader, epochs) -> Result[Feed]; Data.epoch(feed, e); Data.take(feed, i); Data.stop(feed)
@@ -309,10 +309,10 @@ Lora.open(dir, backend) -> Result[Adapter]
   column when it is asked for, so a format that keeps its columns apart
   decodes only the ones a dataset uses. A CSV column is numbers when every
   cell is a finite number, else text. Rows count from 1 after the header.
-  The Parquet reader to come has these limits: an `Int64` over 2^53 loses its
+  The Parquet reader has these limits: an `Int64` over 2^53 loses its
   low bits as a `Float`, a null is an error when its column is asked for, and
   row groups do not fit a whole-column `load` yet (a file larger than memory
-  waits for the row-group reading of the `parquet` package).
+  waits for the row-group reading of the `parquet` package, packages#271).
 
 ## Cost
 

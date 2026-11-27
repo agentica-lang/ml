@@ -39,6 +39,22 @@ tag = "nn-0.7.0"
 workspace = true
 
 [[package]]
+name = "parquet"
+git = "https://github.com/agentica-lang/packages"
+subdir = "parquet"
+tag = "parquet-0.2.0-beta.1"
+commit = "b9b8e7ffd9f489420b30e4c42723957ff702b7e3"
+hash = "sha256:83911fb4d47936cc8e93c77629a505abcf56163b82d451352dc5197a36857a00"
+
+[[package]]
+name = "snappy"
+git = "https://github.com/agentica-lang/packages"
+subdir = "snappy"
+tag = "snappy-0.1.0"
+commit = "bc43dbddcb05ed293115deb4f904f8d66e925b97"
+hash = "sha256:41619cfea17b86fb868b68b2b9be6c7d0b954451bb26f544b1adc6bebea368e4"
+
+[[package]]
 name = "tensor"
 git = "https://github.com/agentica-lang/ml"
 subdir = "tensor"

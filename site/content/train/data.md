@@ -50,7 +50,7 @@ end
 
 ## Tables
 
-`Table.read(path)` (`import Table from "pkg/train/table"`) reads a CSV file (the `csv` package) whose first row names the columns: every row must have as many cells as the header and a name may be used once. A byte order mark at the start is dropped, a line with nothing on it is skipped when there is more than one column, and a quoted cell may hold a comma, quotes and line breaks. The file is read whole, and a column is decoded when it is asked for. A column is numbers when every cell is a finite number, else text (so one empty cell makes a column text). `Table.floats(table, name)` and `Table.texts(table, name)` give a column; asking for the other kind is an error that names the column and the first cell that does not fit (`column gap has a non-number cell (row 3 is "")`). Rows are counted from 1: row 1 is the first one after the header. `table.names` are the columns in file order and `table.rows` the number of rows.
+`Table.read(path)` (`import Table from "pkg/train/table"`) reads a `.csv` file (the `csv` package) or a `.parquet` file (the `parquet` package). In a CSV file the first row names the columns: every row must have as many cells as the header and a name may be used once. A byte order mark at the start is dropped, a line with nothing on it is skipped when there is more than one column, and a quoted cell may hold a comma, quotes and line breaks. The file is read whole, and a column is decoded when it is asked for. A column is numbers when every cell is a finite number, else text (so one empty cell makes a column text). `Table.floats(table, name)` and `Table.texts(table, name)` give a column; asking for the other kind is an error that names the column and the first cell that does not fit (`column gap has a non-number cell (row 3 is "")`). In a Parquet file a column is numbers when it holds integers, floats or booleans (as floats: an `Int64` over 2^53 loses its low bits, `true` is 1.0) and text when it holds strings; a column with a null, or of binary values, is an error when it is asked for (`column gap has a null at row 3`), and the file is read whole (row groups are not read apart yet). Rows are counted from 1: row 1 is the first one (after the header of a CSV file). `table.names` are the columns in file order and `table.rows` the number of rows.
 
 `Data.from_table(table, inputs, target, backend, target_dtype)` takes the numeric columns `inputs` as the features, `[rows, features]` row by row, and the numeric column `target` as the targets `[rows]`: `F32` by default, or with `target_dtype: Tensor.Dtype.I32` whole numbers in the I32 range, the class ids that `Loss.cross_entropy` takes (a target that is not whole is an error that names the column and the row). A column that is text is an error that names it, so the text columns of a file are left out of `inputs`, and a table with no rows is an error. The result is a `Dataset` for a `Loader`.
 
@@ -80,7 +80,7 @@ end
 [Values.Int(0), Values.Int(1), Values.Int(1), Values.Int(0)]
 ```
 
-Parquet files are not read yet.
+The same call reads a Parquet file: `Table.read("scores.parquet")` gives a table of the same columns, and `Data.from_table` makes the same dataset of it.
 
 ## Loader
 
