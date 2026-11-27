@@ -126,6 +126,22 @@ def test_an_f32_file_rounds_to_bf16_and_refuses_what_it_cannot_hold() -> Result[
   end
 end
 
+## The same refusal on every backend that holds BF16: a finite F32 beyond the largest BF16 is an error naming its
+## element, never a silent infinity (the C loader shares the XLA limit).
+def test_an_f32_file_beyond_bf16_is_an_error_on_every_backend() -> Result[Void]
+  big = [1.0, 3.4e38].flat_map { |x: Float| Files.f32_bytes(x) }
+  for backend in try bf16_backends()
+    Files.with_file("bf16-range", try Bytes.from_list(big)) do |path|
+      r = Tensor.from_file(path, 0, [2], Tensor.FloatFormat.F32, backend, Tensor.Dtype.BF16)
+      try Test.assert(!r.ok?, "3.4e38 was loaded as BF16")
+      try Test.assert(r.message.include?("outside what BF16 holds"), r.message)
+      Test.assert(r.message.include?("element 1 "), r.message)
+    end
+  end
+
+  ok()
+end
+
 ## The CPU gate of the plan: a compiled program takes a BF16 input and widens it to `F32` exactly.
 def test_a_compiled_program_widens_a_bf16_input() -> Result[Void]
   return ok() if !try Support.present()

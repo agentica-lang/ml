@@ -690,13 +690,16 @@ static bool ff_bf16_chunk(void *ctx, const float *values, int64_t first, int64_t
   uint16_t *dest = (uint16_t *)ctx;
   for (int64_t i = 0; i < n; i++) {
     float value = values[i];
-    uint32_t bits;
-    if (value > 0x1.fep127f || value < -0x1.fep127f) {
+    uint32_t bits, mag;
+    memcpy(&bits, &value, sizeof bits);
+    mag = bits & 0x7fffffffu;
+    /* BF16_MAX is 0x7F7F in F32 bits (0x7F7F0000): anything finite above it, infinities included, is out of range.
+       NaNs (above 0x7F800000) pass and are quieted below, as on XLA. */
+    if (mag > 0x7F7F0000u && mag <= 0x7F800000u) {
       snprintf(why, why_len, "the value %g at element %lld is outside what BF16 holds",
                (double)value, (long long)first + (long long)i);
       return false;
     }
-    memcpy(&bits, &value, sizeof bits);
     dest[first + i] = (bits & 0x7fffffffu) > 0x7f800000u
         ? (uint16_t)((bits >> 16) | 0x40u)
         : (uint16_t)((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);

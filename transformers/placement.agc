@@ -55,9 +55,11 @@ def layer_backend(backend: Tensor.Backend, i: Int, layers_on_device: Optional[In
 end
 
 ## The `Footprint` of the checkpoint `c` under `weights`, counted from its shapes and dtypes (`Load.held_bytes`) without
-## reading a value: block `i` is the tensors named `{layers}{i}.` plus `kv` bytes for its KV cache, `table` and `head` are
-## tensors by name, and the head is the table when the checkpoint has no `head`. `norm` is the final norm, counted with
-## the head.
+## reading a value: block `i` is the tensors named `{layers}{i}.` plus `kv` bytes for its KV cache (and, under
+## `weights: BF16`, the F32 working copy of its BF16 matrices), `table` and `head` are tensors by name, and the head is
+## the table when `tied_head` says so (else when the checkpoint has no `head`). `norm` is the final norm, counted with
+## the head. `head_widen` is the F32 working copy of the head's BF16 matrices (`Load.bf16_widen_bytes`), 0 unless
+## `weights` is `BF16`.
 def footprint(
   c: Hub.Checkpoint,
   layers: String,

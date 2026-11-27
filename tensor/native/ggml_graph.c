@@ -988,11 +988,12 @@ static int read_ints(an_env *env, ggml_list_Int *list, int64_t *out, int max, in
 /* The answer of a list that did not read: the cursor's error, or `text`. */
 static an_term bad_list(an_env *env, int r, const char *text) { return r == -1 ? an_void(env) : tg_error(env, text); }
 
-/* Where a packed operand (a quantized weight, or an F16 one) may go, as one closed list for every op: the leaf itself
-   as the argument of a transpose or the table of a gather, and the second argument of a matmul (the leaf, or the
-   transpose of one: a view, read in place). An F16 cache goes only where `transformers` puts it: the cache leaf of a
-   set_rows, the key or value of an attention (a leaf, the result of a set_rows or a cast, or a slice of one of
-   those: the rows in use), and a cast of a leaf to F32.
+/* Where a packed operand (a quantized weight, or an F16 or BF16 one) may go, as one closed list for every op: the leaf
+   itself as the argument of a transpose or the table of a gather, and the second argument of a matmul (the leaf, or
+   the transpose of one: a view, read in place). An F16 cache goes only where `transformers` puts it: the cache leaf
+   of a set_rows, the key or value of an attention (a leaf, the result of a set_rows or a cast, or a slice of one of
+   those: the rows in use), and a cast of a leaf to F32. A BF16 weight is never a cache: the leaf itself, its
+   transpose, its gather table, a cast of the leaf, or the key or value of an attention.
    Any other use would copy or compute on blocks that ggml's ops do not take
    (`ggml_cont` of a quantized view sizes its copy by rows and writes past its buffer), so it is an error before any
    ggml call. `x` is argument `i` of a node of `op`; NULL when it fits. */
@@ -1012,7 +1013,7 @@ static const char *packed_misuse(int64_t op, int i, const struct gnode *x) {
   if (x->t->type == GGML_TYPE_BF16 && x->op == OP_LEAF &&
       (op == OP_CAST || (op == OP_ATTENTION && (i == 1 || i == 2)))) return NULL;
   if (x->op == OP_LEAF && (op == OP_TRANSPOSE || (op == OP_GATHER && i == 0))) return NULL;
-  return "a quantized or F16 weight goes only into the weight of a matmul, a transpose of the weight itself or the table of a gather; an F16 cache only into a set_rows (a leaf), the key or value of an attention, a slice that an attention reads, or a cast (a leaf)";
+  return "a quantized, F16 or BF16 weight goes only into the weight of a matmul, a transpose of the weight itself or the table of a gather; an F16 cache only into a set_rows (a leaf), the key or value of an attention, a slice that an attention reads, or a cast (a leaf); a BF16 leaf only into a cast or the key or value of an attention";
 }
 
 an_term ggml_node(an_env *env, struct ggml_Lease_state *lease, int64_t op, ggml_list_Int args_list,
