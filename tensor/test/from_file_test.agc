@@ -1,6 +1,6 @@
 ## `Tensor.from_file`: F32, F16 and BF16 ranges of one file read the same on
-## every backend this machine has (the reference reads them in Agentica, libtorch
-## and ggml in C), and a bad range is an `error` on each.
+## every backend this machine has (the reference reads them in Agentica, libtorch,
+## ggml and XLA in C), and a bad range is an `error` on each.
 ##
 ## The file is one buffer with bytes before the first range, so the offsets
 ## are not zero. Without a native module its backend is not in the list: the
@@ -13,6 +13,7 @@ import Trace from "../trace"
 
 CPU = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+XLA = Tensor.Backend.Xla(Tensor.Device.Cpu)
 
 ## Three padding bytes, then 3 F32 (1.5, -2.25, 0.0) at 3, 5 F16 (1.0, -2.0,
 ## 0.5, the smallest subnormal, 65504.0) at 15, and 3 BF16 (1.0, -3.0, 0.5) at 25.
@@ -23,7 +24,7 @@ BYTES = [
 private
 
 def backends() -> List[Tensor.Backend]
-  all = [Conform.REF, Conform.TORCH, CPU, VULKAN]
+  all = [Conform.REF, Conform.TORCH, CPU, VULKAN, XLA]
   all.select { |b: Tensor.Backend| Tensor.available(b) }
 end
 
@@ -95,6 +96,29 @@ def test_from_bytes_reads_what_from_file_reads() -> Result[Void]
   Test.error?(Tensor.from_bytes(try Bytes.from_list([0, 0, 0, 0]), [1], Tensor.FloatFormat.F32, Tensor.Backend.Trace))
 end
 
+## One Q8_0 block (the scale 0.5 as a half, then the quants -16..15) is dequantized to F32 on each backend, by
+## `from_bytes` and by `from_file`, and a length that is not whole blocks is an `error`.
+def test_a_q8_0_block_is_dequantized_on_each_backend() -> Result[Void]
+  quants = (0...32).map { |i: Int| (i + 240) % 256 }
+  block = try Bytes.from_list([0, 56] + quants)
+  want = (0...32).map { |i: Int| (i - 16).to_f * 0.5 }
+  with_file do |path|
+    try File.open("#{path}.q8", "write", 5000) do |f|
+      try File.write_bytes(f, block, 5000)
+      ok()
+    end
+
+    for b in backends()
+      try Test.eq(try floats(try Tensor.from_bytes(block, [32], Tensor.FloatFormat.Q8_0, b)), want)
+      try Test.eq(try floats(try Tensor.from_file("#{path}.q8", 0, [4, 8], Tensor.FloatFormat.Q8_0, b)), want)
+      try Test.error?(Tensor.from_bytes(block, [31], Tensor.FloatFormat.Q8_0, b))
+      try Test.error?(Tensor.from_file("#{path}.q8", 0, [64], Tensor.FloatFormat.Q8_0, b))
+    end
+
+    ok()
+  end
+end
+
 ## `Tensor.append_file` writes what `from_file` read: after the bytes the file had, the same bytes as the range, on
 ## each backend, and only an `F32` tensor into a file that exists.
 def test_append_file_writes_back_the_bytes_of_a_range() -> Result[Void]
@@ -137,6 +161,12 @@ def test_a_shape_that_overflows_an_int_is_no_crash() -> Result[Void]
 
     ok()
   end
+end
+
+## With `TENSOR_REQUIRE_XLA` the XLA backend is among those the tests above run on, so they cannot drop it silently.
+def test_xla_is_among_the_backends_when_it_is_required() -> Result[Void]
+  return ok() if System.env("TENSOR_REQUIRE_XLA") != ok("1")
+  Test.assert(backends().include?(XLA), "TENSOR_REQUIRE_XLA is set and the XLA backend is not in backends()")
 end
 
 def test_a_bad_range_is_an_error_on_each_backend() -> Result[Void]

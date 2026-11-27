@@ -23,6 +23,7 @@ All packages are released together at one version, each on its own tag, `<packag
 - The StableHLO emitter compiles `layer_norm`, `rms_norm`, `gelu_erf` and `rope` too (ml#243).
 - The StableHLO emitter compiles `attention` and `scatter_add` (the gradient of an embedding) too, and a program with a `scatter_add` checks its indices as one with a `gather` does (ml#243).
 - The StableHLO emitter compiles `top_ids` too (ml#243).
+- `Tensor.from_file` and `Tensor.from_bytes` on `Backend.Xla` read and widen the range in C, straight into the buffer, as ggml does (no list of floats): Qwen3-0.6B opens in 2.8 GB instead of over 6 GB (ml#243).
 - `Tensor.device_memory(backend)` gives the free and total bytes of the device of a ggml backend (`ggml_backend_dev_memory`), for a memory budget of `layers_on_device` (ml#331).
 
 ### transformers

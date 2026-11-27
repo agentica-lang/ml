@@ -98,6 +98,10 @@ def backends() -> Result[List[Tensor.Backend]]
     out = out.push(Tensor.Backend.Torch(CPU))
   end
 
+  if Tensor.available(Tensor.Backend.Xla(CPU))
+    out = out.push(Tensor.Backend.Xla(CPU))
+  end
+
   for device in try devices()
     out = out.push(Tensor.Backend.Ggml(device))
   end
