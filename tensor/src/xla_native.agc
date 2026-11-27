@@ -24,6 +24,11 @@ extern module "xla"
   compute def open(path: String) -> Result[Void]
   ## A buffer of the row-major `shape` and the dtype `dtype` holding `data`, one value per element.
   compute def upload(shape: List[Int], data: List[Float], dtype: Int) -> Result[Buffer]
+  ## An `F32` buffer of `shape` from the range at `offset` of the file `path`, which `format` (a `Types.file_code`)
+  ## holds: the call reads and widens it in C, and checks the range against the file.
+  compute def load(path: String, offset: Int, shape: List[Int], format: Int) -> Result[Buffer]
+  ## The same from `data`, the bytes of the range that Agentica read: they must be exactly the range.
+  compute def from_bytes(data: Bytes, shape: List[Int], format: Int) -> Result[Buffer]
   ## A buffer of `shape` and `dtype` with every element `value`, filled in C.
   compute def filled(shape: List[Int], value: Float, dtype: Int) -> Result[Buffer]
   ## Host readback: the row-major values as doubles, which the caller tags with the tensor's dtype.

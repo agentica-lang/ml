@@ -12,6 +12,7 @@
 ## Storage: `F32`, `F64`, `I32`, `I64`, `I16`, `I8`, `U8` and `Bool`; `F16` and the quantized dtypes are refused. Lifetimes (§8):
 ## one `Native.arena` per call, as in `src/ggml.agc`.
 
+import FileRange from "file_range"
 import Reference from "reference"
 import Types from "types"
 import XlaRaw from "xla_native"
@@ -159,7 +160,8 @@ def from_list(
   made("from_list", shape, dtype) do XlaRaw.upload(shape, values, code) end
 end
 
-## Creation: an `F32` tensor from a file, read by the reference and uploaded.
+## Creation: an `F32` tensor from a file, read and widened in C straight into the buffer (Agentica reads the range
+## with `TENSOR_LOAD=agentica`).
 def from_file(
   device: Types.Device,
   path: String,
@@ -168,14 +170,19 @@ def from_file(
   format: Types.FloatFormat,
 ) -> Result[Types.Tensor]
   _ = try ready(device, Types.Dtype.F32, "from_file")
-  uploaded(device, try Reference.from_file(path, offset, shape, format))
+  if FileRange.agentica_read?()
+    n = try Types.volume(shape)
+    return from_bytes(device, try FileRange.read_range(path, offset, try Types.file_bytes(format, n)), shape, format)
+  end
+
+  made("from_file", shape, Types.Dtype.F32) do XlaRaw.load(path, offset, shape, Types.file_code(format)) end
 end
 
-## Creation: an `F32` tensor of `shape` from `bytes`, which hold exactly its values as `format` writes them, decoded by
-## the reference and uploaded.
+## Creation: an `F32` tensor of `shape` from `bytes`, which hold exactly its values as `format` writes them, widened in
+## C.
 def from_bytes(device: Types.Device, bytes: Bytes, shape: List[Int], format: Types.FloatFormat) -> Result[Types.Tensor]
   _ = try ready(device, Types.Dtype.F32, "from_bytes")
-  uploaded(device, try Reference.from_bytes(bytes, shape, format))
+  made("from_bytes", shape, Types.Dtype.F32) do XlaRaw.from_bytes(bytes, shape, Types.file_code(format)) end
 end
 
 ## Host readback: the row-major values tagged with `t`'s dtype.

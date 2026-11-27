@@ -12,6 +12,7 @@
 #include "cchecker.h"
 #include "xla_native.h"
 
+#include "float_file.h"
 #include "pjrt_c_api.h"
 
 #include <dlfcn.h>
@@ -471,6 +472,41 @@ an_term xla_upload(an_env *env, xla_list_Int shape, xla_list_Float data, int64_t
   out = put(env, bytes, (int)dtype, dims, rank);
   free(bytes);
   return out;
+}
+
+/* An F32 buffer of `shape` from the range at `offset` of the file `path`, or from `data` (`path` NULL), which `format`
+   holds (a float format or the blocks of a quantized one): widened straight into the host buffer, with no list in
+   between. The file is checked against the range and `data` against the length of the shape before a value is read. */
+static an_term loaded_floats(an_env *env, xla_list_Int *shape, const char *path, size_t path_len, int64_t offset,
+                             const uint8_t *data, size_t len, int64_t format) {
+  int64_t dims[MAX_RANK], count;
+  size_t rank;
+  char why[FF_PATH_MAX + 160];
+  an_term failure, out;
+  float *values;
+  bool read;
+
+  if (loaded() == NULL) return failed(env, "the XLA plugin is not loaded");
+  if (!dims_of(env, shape, dims, &rank, &count, &failure)) return failure;
+  values = (float *)host(count, DT_F32);
+  if (values == NULL) return failed(env, "out of memory");
+  read = path != NULL ? ff_read(path, path_len, offset, count, format, values, why, sizeof why)
+                      : ff_from_bytes(data, len, count, format, values, why, sizeof why);
+  if (!read) {
+    free(values);
+    return failed(env, why);
+  }
+  out = put(env, values, DT_F32, dims, rank);
+  free(values);
+  return out;
+}
+
+an_term xla_load(an_env *env, ng_str path, int64_t offset, xla_list_Int shape, int64_t format) {
+  return loaded_floats(env, &shape, path.data, path.len, offset, NULL, 0, format);
+}
+
+an_term xla_from_bytes(an_env *env, ng_buf data, xla_list_Int shape, int64_t format) {
+  return loaded_floats(env, &shape, NULL, 0, 0, data.data, data.len, format);
 }
 
 an_term xla_filled(an_env *env, xla_list_Int shape, double value, int64_t dtype) {

@@ -146,6 +146,13 @@ an_term xla_open(an_env *env, ng_str path);
 /* A buffer of the row-major `shape` and the dtype `dtype` holding `data`, one value per element. */
 an_term xla_upload(an_env *env, xla_list_Int shape, xla_list_Float data, int64_t dtype);
 
+/* An `F32` buffer of `shape` from the range at `offset` of the file `path`, which `format` (a `Types.file_code`: F32,
+   F16, BF16 or U8) holds: the call reads and widens it in C, and checks the range against the file. */
+an_term xla_load(an_env *env, ng_str path, int64_t offset, xla_list_Int shape, int64_t format);
+
+/* The same from `data`, the bytes of the range that Agentica read: they must be exactly the range. */
+an_term xla_from_bytes(an_env *env, ng_buf data, xla_list_Int shape, int64_t format);
+
 /* A buffer of `shape` and `dtype` with every element `value`, filled in C. */
 an_term xla_filled(an_env *env, xla_list_Int shape, double value, int64_t dtype);
 
@@ -409,6 +416,36 @@ static an_term xla_native_upload(an_env *env, int argc, const an_term *argv) {
   return xla_upload(env, a0, a1, a2);
 }
 
+static an_term xla_native_load(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  ng_str a0;
+  if (!an_get_string(env, argv[0], &a0.data, &a0.len)) return an_badarg(env, 0);
+  int64_t a1;
+  if (!an_get_int(env, argv[1], &a1)) return an_badarg(env, 1);
+  xla_list_Int a2;
+  if (!xla_native_open_list_Int(env, argv[2], &a2, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 2);
+  a2.argument = 3;
+  int64_t a3;
+  if (!an_get_int(env, argv[3], &a3)) return an_badarg(env, 3);
+  return xla_load(env, a0, a1, a2, a3);
+}
+
+static an_term xla_native_from_bytes(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  ng_fail fail;
+  ng_buf a0;
+  if (!an_get_bytes(env, argv[0], &a0.data, &a0.len)) return an_badarg(env, 0);
+  xla_list_Int a1;
+  if (!xla_native_open_list_Int(env, argv[1], &a1, &fail))
+    return ng_fail_argument(env, &fail, "List[Int]", 1);
+  a1.argument = 2;
+  int64_t a2;
+  if (!an_get_int(env, argv[2], &a2)) return an_badarg(env, 2);
+  return xla_from_bytes(env, a0, a1, a2);
+}
+
 static an_term xla_native_filled(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   ng_fail fail;
@@ -483,6 +520,8 @@ static const an_function xla_native_functions[] = {
   {"arch", "() -> String", xla_native_arch, AN_SHORT},
   {"open", "(String) -> Result[Void]", xla_native_open, AN_DIRTY},
   {"upload", "(List[Int], List[Float], Int) -> Result[Buffer]", xla_native_upload, AN_DIRTY},
+  {"load", "(String, Int, List[Int], Int) -> Result[Buffer]", xla_native_load, AN_DIRTY},
+  {"from_bytes", "(Bytes, List[Int], Int) -> Result[Buffer]", xla_native_from_bytes, AN_DIRTY},
   {"filled", "(List[Int], Float, Int) -> Result[Buffer]", xla_native_filled, AN_DIRTY},
   {"readback", "(Buffer) -> Result[List[Float]]", xla_native_readback, AN_DIRTY},
   {"compile", "(String, Int, List[Int]) -> Result[Program]", xla_native_compile, AN_DIRTY},
@@ -501,5 +540,5 @@ static const an_function xla_native_functions[] = {
     {"Program", sizeof(struct xla_Program_state), XLA_Program_FREE}, \
     {"Call", sizeof(struct xla_Call_state), XLA_Call_FREE}, \
   }; \
-  AN_MODULE_TABLES("xla", xla_native_functions, 11, NULL, 0, xla_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("xla", xla_native_functions, 13, NULL, 0, xla_native_resources, 3, LOAD)
 #endif

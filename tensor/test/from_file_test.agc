@@ -1,6 +1,6 @@
 ## `Tensor.from_file`: F32, F16 and BF16 ranges of one file read the same on
-## every backend this machine has (the reference reads them in Agentica, libtorch
-## and ggml in C), and a bad range is an `error` on each.
+## every backend this machine has (the reference reads them in Agentica, libtorch,
+## ggml and XLA in C), and a bad range is an `error` on each.
 ##
 ## The file is one buffer with bytes before the first range, so the offsets
 ## are not zero. Without a native module its backend is not in the list: the
@@ -13,6 +13,7 @@ import Trace from "../trace"
 
 CPU = Tensor.Backend.Ggml(Tensor.Device.Cpu)
 VULKAN = Tensor.Backend.Ggml(Tensor.Device.Vulkan(0))
+XLA = Tensor.Backend.Xla(Tensor.Device.Cpu)
 
 ## Three padding bytes, then 3 F32 (1.5, -2.25, 0.0) at 3, 5 F16 (1.0, -2.0,
 ## 0.5, the smallest subnormal, 65504.0) at 15, and 3 BF16 (1.0, -3.0, 0.5) at 25.
@@ -23,7 +24,7 @@ BYTES = [
 private
 
 def backends() -> List[Tensor.Backend]
-  all = [Conform.REF, Conform.TORCH, CPU, VULKAN]
+  all = [Conform.REF, Conform.TORCH, CPU, VULKAN, XLA]
   all.select { |b: Tensor.Backend| Tensor.available(b) }
 end
 
