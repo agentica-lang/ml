@@ -146,8 +146,8 @@ an_term xla_open(an_env *env, ng_str path);
 /* A buffer of the row-major `shape` and the dtype `dtype` holding `data`, one value per element. */
 an_term xla_upload(an_env *env, xla_list_Int shape, xla_list_Float data, int64_t dtype);
 
-/* An `F32` buffer of `shape` from the range at `offset` of the file `path`, which `format` (a `Types.file_code`: F32,
-   F16, BF16 or U8) holds: the call reads and widens it in C, and checks the range against the file. */
+/* An `F32` buffer of `shape` from the range at `offset` of the file `path`, which `format` (a `Types.file_code`)
+   holds: the call reads and widens it in C, and checks the range against the file. */
 an_term xla_load(an_env *env, ng_str path, int64_t offset, xla_list_Int shape, int64_t format);
 
 /* The same from `data`, the bytes of the range that Agentica read: they must be exactly the range. */
