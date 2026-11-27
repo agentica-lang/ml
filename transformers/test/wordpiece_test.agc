@@ -43,6 +43,15 @@ end
 
 ## A file that truncates and pads to the longest of a batch (sentence-transformers' checkpoints): an encoding of one
 ## text has `max_length` ids at most, the special tokens counted, and the padding changes nothing.
+def test_a_fixed_padding_of_the_file_changes_nothing() -> Result[Void]
+  text = try File.read_text("test/fixtures/wordpiece.json")
+  fixed = "\"padding\": {\"strategy\": {\"Fixed\": 128}, \"direction\": \"Right\", \"pad_id\": 0}"
+  tok = try WordPiece.parse(try S.replaced(text, "\"padding\": null", fixed))
+  plain = try WordPiece.parse(text)
+  try Test.eq(tok.pad_id, some(0))
+  Test.eq(try WordPiece.encode(tok, "hello world"), try WordPiece.encode(plain, "hello world"))
+end
+
 def test_the_truncation_of_the_file_cuts_one_text() -> Result[Void]
   text = try File.read_text("test/fixtures/wordpiece.json")
   limited = try S.replaced(text, "\"truncation\": null", truncation(6, "LongestFirst", "Right", 0))
@@ -78,7 +87,12 @@ def test_other_pipelines_are_errors() -> Result[Void]
     try S.replaced(text, "\"truncation\": null", truncation(8, "OnlyFirst", "Right", 0)),
     try S.replaced(text, "\"truncation\": null", truncation(8, "LongestFirst", "Left", 0)),
     try S.replaced(text, "\"truncation\": null", truncation(8, "LongestFirst", "Right", 2)),
-    try S.replaced(text, "\"padding\": null", "\"padding\": {\"strategy\": {\"Fixed\": 8}, \"pad_id\": 0}"),
+    try S.replaced(
+      text,
+      "\"padding\": null",
+      "\"padding\": {\"strategy\": {\"Fixed\": 8, \"Other\": 1}, \"pad_id\": 0}",
+    ),
+    try S.replaced(text, "\"padding\": null", "\"padding\": {\"strategy\": {\"Other\": 8}, \"pad_id\": 0}"),
     try S.replaced(
       text,
       "\"padding\": null",

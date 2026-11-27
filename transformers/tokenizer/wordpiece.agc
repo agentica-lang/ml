@@ -46,7 +46,7 @@ end
 
 ## The tokenizer of the text of a `tokenizer.json`.
 def parse(text: String) -> Result[WordPiece]
-  file = try JSON.decode(text, Json)
+  file = try JSON.decode(try Added.fixed_padding_as_longest(try JSON.parse(text)), Json)
   max_length = try Added.limit(file.truncation, file.padding)
   pad_id: Optional[Int] = none
   case file.padding
