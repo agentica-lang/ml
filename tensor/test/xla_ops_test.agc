@@ -75,6 +75,7 @@ def test_a_batched_product_matches_the_reference() -> Result[Void]
       ok([
         try Tensor.batch_matmul(xs[0], xs[1]),
         try Tensor.batch_matmul(try Tensor.unsqueeze(xs[2], 0), try Tensor.unsqueeze(xs[3], 0)),
+        try Tensor.batch_matmul(xs[2], xs[3]),
       ])
     },
   )
@@ -112,20 +113,126 @@ def test_norms_gelu_and_rope_match_the_reference() -> Result[Void]
           Tensor.Dtype.I32,
           b,
         ),
+        try Support.floats(Support.uniform(8, 23, 2.0), [8], b),
+        try Support.floats(Support.uniform(3 * 8, 24, 1.0), [3, 8], b),
       ])
     },
     ->(xs: List[Tensor.Tensor]) {
       ok([
         try Tensor.layer_norm(xs[0], 0.00001),
         try Tensor.rms_norm(xs[0], 0.000001),
+        try Tensor.layer_norm(xs[3], 0.00001),
+        try Tensor.rms_norm(xs[3], 0.000001),
         try Tensor.gelu_erf(xs[0]),
         try Tensor.rope(xs[1], xs[2]),
+        try Tensor.rope(xs[4], xs[2]),
         try Tensor.rope(xs[1], xs[2], 500.0, some(4), false),
         try Tensor.rope(xs[1], xs[2], 10000.0, some(8), false, true),
         try Tensor.rope(xs[1], xs[2], 1000000.0, some(6), true, true),
       ])
     },
   )
+end
+
+## Heads that share keys (a group of 2), a mask of each shape, the causal mask, a scale, and one head per key.
+def test_attention_matches_the_reference() -> Result[Void]
+  return ok() if !try Support.present()
+  agrees(
+    ->(b: Tensor.Backend) {
+      ok([
+        try Support.floats(Support.uniform(2 * 4 * 3 * 8, 41, 1.0), [2, 4, 3, 8], b),
+        try Support.floats(Support.uniform(2 * 2 * 5 * 8, 42, 1.0), [2, 2, 5, 8], b),
+        try Support.floats(Support.uniform(2 * 2 * 5 * 6, 43, 1.0), [2, 2, 5, 6], b),
+        try Support.floats(Support.uniform(3 * 5, 44, 2.0), [3, 5], b),
+        try Support.floats(Support.uniform(2 * 4 * 3 * 5, 45, 2.0), [2, 4, 3, 5], b),
+        try Support.floats(Support.uniform(2 * 4 * 5 * 8, 46, 1.0), [2, 4, 5, 8], b),
+        try Support.floats(Support.uniform(1 * 1 * 3 * 5, 47, 2.0), [1, 1, 3, 5], b),
+      ])
+    },
+    ->(xs: List[Tensor.Tensor]) {
+      ok([
+        try Tensor.attention(xs[0], xs[1], xs[2]),
+        try Tensor.attention(xs[0], xs[1], xs[2], mask: some(xs[3])),
+        try Tensor.attention(xs[0], xs[1], xs[2], mask: some(xs[4]), scale: some(0.3)),
+        try Tensor.attention(xs[0], xs[1], xs[2], causal: true),
+        try Tensor.attention(xs[0], xs[5], xs[5], mask: some(xs[6]), causal: true),
+      ])
+    },
+  )
+end
+
+## Rows added at their indices, duplicates summing, for indices of rank 1 and 2 and updates of rank 1 and 2; an index
+## outside the rows is an error, as on the reference.
+def test_scatter_add_matches_the_reference_and_checks_its_indices() -> Result[Void]
+  return ok() if !try Support.present()
+  try agrees(
+    ->(b: Tensor.Backend) {
+      ok([
+        try Support.labels([1, 3, 1, 0], b),
+        try Support.floats(Support.uniform(4 * 3, 51, 1.0), [4, 3], b),
+        try Support.floats(Support.uniform(4, 52, 1.0), [4], b),
+        try Tensor.from_list(
+          [Tensor.Values.Int(4), Tensor.Values.Int(4), Tensor.Values.Int(0), Tensor.Values.Int(2)],
+          [2, 2],
+          Tensor.Dtype.I64,
+          b,
+        ),
+        try Support.floats(Support.uniform(2 * 2 * 3, 53, 1.0), [2, 2, 3], b),
+      ])
+    },
+    ->(xs: List[Tensor.Tensor]) {
+      ok([
+        try Tensor.scatter_add(xs[0], xs[1], 5),
+        try Tensor.scatter_add(xs[0], xs[2], 5),
+        try Tensor.scatter_add(xs[3], xs[4], 5),
+      ])
+    },
+  )
+
+  updates = try Support.floats(Support.uniform(6, 54, 1.0), [2, 3], Support.XLA)
+  for bad in [[1, 5], [-1, 0]]
+    r = Trace.eval(
+      [try Support.labels(bad, Support.XLA), updates],
+      ->(xs: List[Tensor.Tensor]) { Tensor.scatter_add(xs[0], xs[1], 5) },
+    )
+
+    try Test.assert(!r.ok?, "scatter_add at #{bad} of 5 rows ran on XLA")
+    try Test.assert(r.message.include?("outside the rows"), r.message)
+  end
+
+  ok()
+end
+
+## The gradient through attention (its backward is written with `batch_matmul`) and through the embedding gather (whose
+## backward is `scatter_add`), compiled by XLA.
+def test_value_and_grad_through_attention_and_an_embedding_matches_the_reference() -> Result[Void]
+  return ok() if !try Support.present()
+  got = try embedding_gradients(Support.XLA)
+  want = try embedding_gradients(Support.REF)
+  Support.close(got, want)
+end
+
+def embedding_gradients(b: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  args = [
+    try Support.floats(Support.uniform(6 * 8, 61, 1.0), [6, 8], b),
+    try Support.floats(Support.uniform(2 * 4 * 3 * 4, 62, 1.0), [2, 4, 3, 4], b),
+    try Support.floats(Support.uniform(2 * 2 * 3 * 4, 63, 1.0), [2, 2, 3, 4], b),
+  ]
+
+  ids = try Support.labels([2, 5, 2, 0, 3, 3], b)
+  loss = ->(xs: List[Tensor.Tensor]) { embedding_loss(xs, ids) }
+  got = try Trace.value_and_grad(args, loss)
+  ok([got.value] + got.grads)
+end
+
+## Rows of a table gathered into `[2, 3, 8]`, split into heads as the queries of an attention over keys and values, and a
+## weighted sum.
+def embedding_loss(xs: List[Tensor.Tensor], ids: Tensor.Tensor) -> Result[Tensor.Tensor]
+  words = try Tensor.reshape(try Tensor.gather(xs[0], Trace.constant(ids)), [2, 3, 2, 4])
+  q = try Tensor.concat([try Tensor.permute(words, [0, 2, 1, 3]), xs[1]], 1)
+  mask = try Tensor.full([3, 3], Tensor.Values.Float(0.0), Tensor.Dtype.F32, Tensor.backend(q))
+  out = try Tensor.attention(q, xs[2], xs[2], mask: some(mask), causal: true)
+  Tensor.sum(try Tensor.mul(out, out))
 end
 
 ## The gradient of a loss through the ops of a transformer's block, by the rules of `trace.agc`, compiled by XLA.

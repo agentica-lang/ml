@@ -73,3 +73,8 @@ def values(t: Tensor.Tensor) -> Result[List[Float]]
 
   ok(out)
 end
+
+## The class ids `xs` as an `I32` tensor.
+def labels(xs: List[Int], backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  Tensor.from_list(xs.map { |x| Tensor.Values.Int(x) }, [xs.size], Tensor.Dtype.I32, backend)
+end

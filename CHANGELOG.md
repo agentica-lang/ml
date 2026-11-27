@@ -21,6 +21,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 - The StableHLO emitter (so `Backend.Xla`) compiles `sigmoid`, `pow`, `clamp`, `to_dtype`, `permute`, `concat`, `stack`, `squeeze`, `unsqueeze`, `batch_matmul` and `argmax` (ml#243).
 - The StableHLO emitter compiles `layer_norm`, `rms_norm`, `gelu_erf` and `rope` too (ml#243).
+- The StableHLO emitter compiles `attention` and `scatter_add` (the gradient of an embedding) too, and a program with a `scatter_add` checks its indices as one with a `gather` does (ml#243).
 - `Tensor.device_memory(backend)` gives the free and total bytes of the device of a ggml backend (`ggml_backend_dev_memory`), for a memory budget of `layers_on_device` (ml#331).
 
 ### transformers
