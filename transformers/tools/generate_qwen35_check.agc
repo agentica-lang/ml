@@ -7,7 +7,8 @@
 ##   agentica tools/generate_qwen35_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
 ##
 ## `USABLE=248070` (the token count of 0.8B's tokenizer, `tok.pieces.size`) opens the generator with it
-## (`Generator.usable`): the ids must be the same. `VULKAN_FP16=0` is the default of the check.
+## (`Generator.usable`): the ids must be the same. `VULKAN_FP16=0` is the default of the check, and
+## `AGENTICA_ML_LAYERS_ON_DEVICE=n` runs the layers from the `n`th on on the CPU.
 
 import Generate from "../generate_qwen35"
 import Qwen3_5 from "../qwen3_5"
@@ -55,7 +56,7 @@ private
 def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Void]
   want = try JSON.decode(try Source.read_text(golden), Golden)
   try Load.vulkan_fp16_from_env()
-  m = try Qwen3_5.open(dir, backend, try Load.weights_from_env())
+  m = try Qwen3_5.open(dir, backend, try Load.weights_from_env(), try Load.layers_on_device_from_env())
   puts("model_type #{m.config.model_type}, #{m.layers.size} layers")
   g = try Generate.open(m, System.env("USABLE").unwrap_or("0").to_i.unwrap_or(0))
   done = checked(g, want)
