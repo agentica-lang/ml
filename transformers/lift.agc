@@ -13,7 +13,7 @@ import ShortConv from "pkg/nn/short_conv"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
-## `f` of the model and `args`: one compiled graph of `lift(m)` on `Ggml`; on
+## `f` of the model and `args`: one compiled graph of `lift(m)` on `Ggml` and `Xla`; on
 ## another backend the call itself, in an arena that keeps the results alone.
 def staged[M](
   m: M,
@@ -23,6 +23,7 @@ def staged[M](
 ) -> Result[List[Tensor.Tensor]]
   case Tensor.backend(args[0])
     Tensor.Backend.Ggml(_) -> Trace.eval_many(args, ->(xs: List[Tensor.Tensor]) { f.call(lift.call(m), xs) })
+    Tensor.Backend.Xla(_) -> Trace.eval_many(args, ->(xs: List[Tensor.Tensor]) { f.call(lift.call(m), xs) })
     _ -> Native.arena do f.call(m, args) end
   end
 end

@@ -147,6 +147,7 @@ def test_attention_matches_the_reference() -> Result[Void]
         try Support.floats(Support.uniform(2 * 4 * 3 * 5, 45, 2.0), [2, 4, 3, 5], b),
         try Support.floats(Support.uniform(2 * 4 * 5 * 8, 46, 1.0), [2, 4, 5, 8], b),
         try Support.floats(Support.uniform(1 * 1 * 3 * 5, 47, 2.0), [1, 1, 3, 5], b),
+        try Support.floats(Support.uniform(2 * 1 * 3 * 5, 48, 2.0), [2, 1, 3, 5], b),
       ])
     },
     ->(xs: List[Tensor.Tensor]) {
@@ -156,6 +157,7 @@ def test_attention_matches_the_reference() -> Result[Void]
         try Tensor.attention(xs[0], xs[1], xs[2], mask: some(xs[4]), scale: some(0.3)),
         try Tensor.attention(xs[0], xs[1], xs[2], causal: true),
         try Tensor.attention(xs[0], xs[5], xs[5], mask: some(xs[6]), causal: true),
+        try Tensor.attention(xs[0], xs[5], xs[5], mask: some(xs[7])),
       ])
     },
   )
@@ -217,6 +219,7 @@ def embedding_gradients(b: Tensor.Backend) -> Result[List[Tensor.Tensor]]
     try Support.floats(Support.uniform(6 * 8, 61, 1.0), [6, 8], b),
     try Support.floats(Support.uniform(2 * 4 * 3 * 4, 62, 1.0), [2, 4, 3, 4], b),
     try Support.floats(Support.uniform(2 * 2 * 3 * 4, 63, 1.0), [2, 2, 3, 4], b),
+    try Support.floats(Support.uniform(2 * 2 * 3 * 4, 64, 1.0), [2, 2, 3, 4], b),
   ]
 
   ids = try Support.labels([2, 5, 2, 0, 3, 3], b)
@@ -231,7 +234,7 @@ def embedding_loss(xs: List[Tensor.Tensor], ids: Tensor.Tensor) -> Result[Tensor
   words = try Tensor.reshape(try Tensor.gather(xs[0], Trace.constant(ids)), [2, 3, 2, 4])
   q = try Tensor.concat([try Tensor.permute(words, [0, 2, 1, 3]), xs[1]], 1)
   mask = try Tensor.full([3, 3], Tensor.Values.Float(0.0), Tensor.Dtype.F32, Tensor.backend(q))
-  out = try Tensor.attention(q, xs[2], xs[2], mask: some(mask), causal: true)
+  out = try Tensor.attention(q, xs[2], xs[3], mask: some(mask), causal: true)
   Tensor.sum(try Tensor.mul(out, out))
 end
 
@@ -241,6 +244,27 @@ def test_value_and_grad_through_the_new_ops_matches_the_reference() -> Result[Vo
   got = try gradients(Support.XLA)
   want = try gradients(Support.REF)
   Support.close(got, want)
+end
+
+## The ids of the largest values, the largest first, of a vector and of each row of a matrix.
+def test_top_ids_match_the_reference() -> Result[Void]
+  return ok() if !try Support.present()
+  agrees(
+    ->(b: Tensor.Backend) {
+      ok([
+        try Support.floats(Support.uniform(40, 71, 3.0), [40], b),
+        try Support.floats(Support.uniform(3 * 12, 72, 3.0), [3, 12], b),
+      ])
+    },
+    ->(xs: List[Tensor.Tensor]) {
+      ok([
+        try Tensor.top_ids(xs[0], 1),
+        try Tensor.top_ids(xs[0], 7),
+        try Tensor.top_ids(xs[1], 4),
+        try Tensor.top_ids(xs[1], 12),
+      ])
+    },
+  )
 end
 
 def test_an_op_the_emitter_still_lacks_is_an_error_naming_it() -> Result[Void]

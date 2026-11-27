@@ -478,6 +478,7 @@ def advance[M](g: Core[M], cache: Cache, ids: List[Int], mode: Stepping.Head) ->
 
   outs = case backend
     Tensor.Backend.Ggml(_) -> compiled_step(g, cache, fed, feed, room, reach, mode, in_place)
+    Tensor.Backend.Xla(_) -> compiled_step(g, cache, fed, feed, room, reach, mode, in_place)
     _ -> eager_step(g, cache, fed, feed, room, mode)
   end
 
@@ -543,7 +544,7 @@ def compiled_step[M](
           reach: reach,
           mode: mode,
           in_place: in_place,
-          compiled: true,
+          compiled: Stepping.half_cache?(s.backend),
           rotary: seen.rotary,
           splice: seen.splice,
         ),

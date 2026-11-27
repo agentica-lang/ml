@@ -169,6 +169,10 @@ def test_the_ops_of_a_transformer_step_are_written() -> Result[Void]
     "stablehlo.sine",
     "stablehlo.negate",
     "stablehlo.exponential",
+    "dims = [0, 1, 3, 4]",
+    "index_vector_dim = 1",
+    "\"stablehlo.sort\"",
+    "#1 [0:",
     "\"stablehlo.scatter\"",
     "stablehlo.add %acc, %upd",
   ]
@@ -198,5 +202,6 @@ def transformer_ops(xs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
     try Tensor.rope(q, xs[3], 10000.0, some(4), false, true),
     try Tensor.attention(q, xs[1], xs[1], mask: some(xs[2])),
     try Tensor.scatter_add(xs[4], xs[5], 5),
+    try Tensor.top_ids(try Tensor.reshape(q, [6, 32]), 3),
   ])
 end

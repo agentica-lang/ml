@@ -25,6 +25,10 @@ REL = 0.000000001
 HALF_ABS = 0.0006
 HALF_REL = 0.001
 
+# XLA keeps the cache in F32 and sums in another order than the peer's double: the logits drift by a few 1e-6.
+XLA_ABS = 0.00005
+XLA_REL = 0.0001
+
 # The two generators of `reading` read the same F16 cache: only the order of the sums of an attention may differ.
 SAME_ABS = 0.00001
 SAME_REL = 0.00001
@@ -36,6 +40,19 @@ def test_each_step_matches_the_forward_over_the_whole_row() -> Result[Void]
       try stepping(dir, S.REF, prompt, ABS, REL)
       for backend in try S.ggml_backends()
         try stepping(dir, backend, prompt, HALF_ABS, HALF_REL)
+      end
+    end
+
+    ok()
+  end
+end
+
+## The same steps on XLA, whose cache is F32: a prompt padded to a bucket and a cache that grows.
+def test_each_step_matches_the_forward_over_the_whole_row_on_xla() -> Result[Void]
+  with_peer do |dir|
+    for prompt in [5, 8, 9]
+      for backend in try S.xla_backends()
+        try stepping(dir, backend, prompt, XLA_ABS, XLA_REL)
       end
     end
 
@@ -385,6 +402,17 @@ def test_generate_is_the_greedy_choice_of_the_forward_on_ggml() -> Result[Void]
   end
 end
 
+## The same on XLA: the steps are compiled once per shape, and the ids are the ones of the forward.
+def test_generate_is_the_greedy_choice_of_the_forward_on_xla() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.xla_backends()
+      try generating(dir, "tiny", backend)
+    end
+
+    ok()
+  end
+end
+
 ## The Qwen2 layout (no query and key norms, a bias on the query, key and value) through the cache.
 def test_generate_is_the_greedy_choice_of_the_forward_for_the_qwen2_layout() -> Result[Void]
   with_peer do |dir|
@@ -546,6 +574,7 @@ def generating_on(m: Qwen3.Qwen3, backend: Tensor.Backend) -> Result[Void]
   made = Generate.compiles(g)
   case backend
     Tensor.Backend.Ggml(_) -> try Test.assert(made >= 3, "the steps compiled: #{made}")
+    Tensor.Backend.Xla(_) -> try Test.assert(made >= 3, "the steps compiled: #{made}")
     _ -> try Test.eq(made, 0)
   end
 

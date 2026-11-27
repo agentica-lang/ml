@@ -12,6 +12,8 @@ weight: 2
 
 `Generate.open(m, usable, kv: Placement.Kv.Host)` (`import Placement from "pkg/transformers/placement"`) keeps the keys and values of every layer in host memory when the model is on a Vulkan device, as llama.cpp's `--no-kv-offload` does: the attention reads them on the CPU and the cache grows in RAM. The step of the prompt makes the whole cache on the card first, at the capacity of the prompt, and copies it over, so the card's peak holds that cache once; the steps after it make no cache on the card. The default, `Placement.Kv.Device`, leaves each cache where its block is (the cache of a block that `layers_on_device` put on the CPU is in host memory already). The logits are the same. On Qwen3-0.6B Q4_K_M a token takes about 150 ms with `Host` against 20 ms with the cache on the card, 0.90 of llama.cpp's `--no-kv-offload` (134 ms): both pay about 2.3 ms for each of the two splits a layer makes between the card and the CPU (`benchmarks/README.md`). On the CPU engine, and for the blocks that are on the CPU already, `Host` changes nothing, and the recurrent states of Qwen3.5 and LFM3 stay where they are made (on the device).
 
+`Generate` runs Qwen3 on XLA too: open the model on `Tensor.Backend.Xla(Tensor.Device.Cpu)` (the plugin is installed by `tensor/tools/install_xla.agc`). Each step is compiled once per shape as on ggml, with the cache in `F32` and no write in place, and the ids are the greedy ones of ggml (`tools/generate_check.agc MODEL_DIR GOLDEN xla` checks them against Hugging Face). Sampling works too.
+
 ```agentica
 import Bpe from "pkg/transformers/tokenizer/bpe"
 import Generate from "pkg/transformers/generate"

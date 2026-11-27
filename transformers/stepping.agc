@@ -281,6 +281,14 @@ def in_place?(backend: Tensor.Backend, keys: List[Tensor.Tensor], width: Int, ro
   end
 end
 
+## True when the cache of a compiled step is kept in `F16`: on `Ggml`, not on `Xla`, which compiles for `F32`.
+def half_cache?(backend: Tensor.Backend) -> Bool
+  case backend
+    Tensor.Backend.Ggml(_) -> true
+    _ -> false
+  end
+end
+
 ## The cache tensor `t` as it is kept: `F16` on `Ggml` (`half`), when it is not already.
 def cached(t: Tensor.Tensor, half: Bool) -> Result[Tensor.Tensor]
   return ok(t) if not half or Tensor.dtype(t) == Tensor.Dtype.F16
