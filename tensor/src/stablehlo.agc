@@ -399,8 +399,6 @@ def max_pool2d(
   ok([try fill_scalar("maximum", t.dtype)] + try ir_lines(built.block, [a, "%#{first}"], first + 1))
 end
 
-# Gather the selected expert matrices, then contract each input row with its own expert. The ops are built with
-# `agc-ir` and printed in order by `ir_lines`.
 def expert_matmul(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
   weights = args[0]
   x = args[1]
@@ -443,8 +441,6 @@ def expert_matmul(t: Types.Tensor, args: List[Types.Tensor], a: List[String], fi
   ir_lines(product.block, [a[0], a[1], a[2]], first)
 end
 
-# The attributes of the gather of rows of an expert table `source`, by indices of rank `index_rank`: one row slice per
-# index, the index axes first, as `gather` writes them.
 def gather_attrs(source: List[Int], index_rank: Int) -> List[IR.Attribute]
   rest = source.drop(1)
   fields = ["collapsed_slice_dims = [0]", "start_index_map = [0]", "index_vector_dim = #{index_rank}"]
@@ -459,8 +455,6 @@ def gather_attrs(source: List[Int], index_rank: Int) -> List[IR.Attribute]
   ]
 end
 
-# The lines of the ops of `b` in order, each with one result: the entry argument `i` is the SSA name `sources[i]`, and
-# the result of op `i` is `%first + i`.
 def dot_numbers(lhs_batch: List[Int], rhs_batch: List[Int], lhs: List[Int], rhs: List[Int]) -> IR.Attribute
   fields: List[String] = []
   if !lhs_batch.empty?
@@ -588,9 +582,6 @@ def indexed(n: Types.Node) -> Optional[Bound]
   end
 end
 
-# Replace rows along the penultimate dimension. Move that dimension to the front so the updates have the
-# scatter layout [indices, window...], then scatter-replace into the original cache. The scatter is built with
-# `agc-ir`; the reshape and the transpose stay as text.
 def set_rows(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
   rank = t.shape.size
   axis = rank - 2
@@ -635,7 +626,6 @@ def set_rows(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: 
   ])
 end
 
-# The `agc-ir` type of a tensor of `shape` and `dtype`: the element types the scatter of `set_rows` takes.
 def ir_type(shape: List[Int], dtype: Types.Dtype) -> Result[IR.TensorType]
   case dtype
     Types.Dtype.F16 -> ok(IR.TensorType(shape: shape, element: IR.Element.F16))
