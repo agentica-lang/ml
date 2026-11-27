@@ -11,6 +11,9 @@ import Lower from "lower"
 import Reference from "reference"
 import Types from "types"
 
+## Starts the text of a node that has two results.
+TWO = "<2>"
+
 ## The program: its text, and the tensors of its constants in the order of the arguments that follow the inputs.
 struct Module
   text: String
@@ -25,8 +28,8 @@ end
 ## The module of the traced tensors `outs` over the input nodes `inputs` (traced `Input` tensors, in argument order).
 ## With `donate`, the moments an `adam_step` updates in place (`Lower.adam_moments`) are aliased to their outputs
 ## (`tf.aliasing_output`), so XLA writes the new moment over the old one: a run consumes those inputs. With `checked`,
-## a program with a `gather` or a `scatter_add` also answers whether one of its indices is outside the rows (`Module.checked`), which
-## XLA would clamp: the caller makes that the error the other backends give.
+## a program with a `gather` or a `scatter_add` also answers whether one of its indices is outside the rows
+## (`Module.checked`), which XLA would clamp or drop: the caller makes that the error the other backends give.
 def emit(
   inputs: List[Types.Tensor],
   outs: List[Types.Tensor],
@@ -80,7 +83,7 @@ def emit(
       _ ->
         defs = try define(t, n, n.args.map { |a| names[Graph.id_of(a)] }, next)
         for i in 0...defs.size
-          body = body.push("    %#{next + i} = #{defs[i]}")
+          body = body.push(numbered(next + i, defs[i]))
         end
 
         next = next + defs.size
@@ -90,7 +93,7 @@ def emit(
           names = names.put(n.id, "%#{next - 1}")
         end
 
-        bound = indexed(n, t)
+        bound = indexed(n)
         if checked and !bound.none?
           at = bound.unwrap!
           lines = try outside(at.index, names[Graph.id_of(at.index)], at.rows, next)
@@ -143,6 +146,12 @@ struct Lines
   defs: List[String]
 end
 
+# The lines so far and the name of the tensor that the last of them made (or the one that was given).
+struct Side
+  lines: Lines
+  name: String
+end
+
 # One text per SSA value of the node `t`, the first named `%first`; none means the node is its first argument.
 def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Result[List[String]]
   out = try type_of(t)
@@ -190,6 +199,7 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.Where -> ok(["stablehlo.select #{a[0]}, #{a[1]}, #{a[2]} : #{try type_of(n.args[0])}, #{out}"])
     Types.Op.Arange(start, _, step) -> arange(t, start, step, first)
     Types.Op.Gather -> gather(t, n.args, a, sig)
+    Types.Op.TopK(k) -> top_k(t, n.args[0], a[0], k, first)
     Types.Op.ScatterAdd(_) -> scatter_add(t, n.args, a, first)
     Types.Op.Attention(scale) -> attention(t, n.args, a, scale, first)
     Types.Op.AdamStep -> adam(t, n.args, a, first)
@@ -285,7 +295,7 @@ def adam_part(t: Types.Tensor, stacked: Types.Tensor, name: String, i: Int, firs
   ])
 end
 
-def indexed(n: Types.Node, t: Types.Tensor) -> Optional[Bound]
+def indexed(n: Types.Node) -> Optional[Bound]
   case n.op
     Types.Op.Gather -> some(Bound(index: n.args[1], rows: n.args[0].shape[0]))
     Types.Op.ScatterAdd(rows) -> some(Bound(index: n.args[0], rows: rows))
@@ -343,9 +353,41 @@ def matmul(args: List[Types.Tensor], a: List[String], sig: String) -> Result[Lis
   ok(["stablehlo.dot_general #{a[0]}, #{a[1]}, contracting_dims = [1] x [0] : #{sig}"])
 end
 
-# `scatter_add`: the rows of `updates` added into zeros `[rows, ...]` at `indices`, duplicates summing. An
-# index outside
-# the rows is dropped by XLA, so for `Xla` the program also answers a flag that one is (`checked`).
+# The line `n` of the program for the text of a node: an op with two results (`TWO`) is `%n:2`, and its second
+# result is
+# `%n#1`.
+def numbered(n: Int, text: String) -> String
+  return "    %#{n}:2 = #{text.slice(TWO.size, text.size - TWO.size)}" if text.start_with?(TWO)
+  "    %#{n} = #{text}"
+end
+
+# The ids of the `k` largest values of each row of `x` (a vector or a matrix), the largest first and the lowest
+# index of
+# equal values first: a stable descending sort of the values with an `iota`, and the first `k` ids.
+def top_k(t: Types.Tensor, x: Types.Tensor, name: String, k: Int, first: Int) -> Result[List[String]]
+  axis = x.shape.size - 1
+  ids = try tensor_type(x.shape, Types.Dtype.I32)
+  shown = try type_of(x)
+  value = try tensor_type([], x.dtype)
+  index = try tensor_type([], Types.Dtype.I32)
+  body = [
+    "^bb0(%a: #{value}, %b: #{value}, %i: #{index}, %j: #{index}):",
+    "        %c = stablehlo.compare GT, %a, %b, #{compare_type(x.dtype)} : (#{value}, #{value}) -> tensor<i1>",
+    "        stablehlo.return %c : tensor<i1>",
+  ].join("\n      ")
+
+  sorted = "\"stablehlo.sort\"(#{name}, %#{first}) ({\n      #{body}\n    })"
+  attrs = "{dimension = #{axis} : i64, is_stable = true} : (#{shown}, #{ids}) -> (#{shown}, #{ids})"
+  window = extents(x.shape.map { |_| 0 }, x.shape.take(axis) + [k])
+  ok([
+    "stablehlo.iota dim = #{axis} : #{ids}",
+    "#{TWO}#{sorted} #{attrs}",
+    "stablehlo.slice %#{first + 1}#1 #{window} : (#{ids}) -> #{try type_of(t)}",
+  ])
+end
+
+# `scatter_add`: the rows of `updates` added into zeros `[rows, ...]` at `indices`, duplicates summing. An index
+# outside the rows is dropped by XLA, so for `Xla` the program also answers a flag that one is (`checked`).
 def scatter_add(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
   k = args[0].shape.size
   rest = t.shape.drop(1)
@@ -369,10 +411,10 @@ def scatter_add(t: Types.Tensor, args: List[Types.Tensor], a: List[String], firs
   ])
 end
 
-# Attention over `[batch, heads, seq, width]` queries, keys and values (the keys and values may have fewer heads, each
-# serving a group of consecutive query heads): `softmax(q k^T scale + mask) v`, with the softmax over the keys
-# written as
-# the maximum, `exp` and a sum, as `Reference.attention` does. A key of another dtype than the query is converted.
+# Attention over `[batch, heads, seq, width]` queries, keys and values (the keys and values may have fewer heads,
+# each serving a group of consecutive query heads): `softmax(q k^T scale + mask) v`, with the softmax over the
+# keys written as the maximum, `exp` and a sum, as `Reference.attention` does. A key of another dtype than the
+# query is converted.
 def attention(
   t: Types.Tensor,
   args: List[Types.Tensor],
@@ -384,12 +426,11 @@ def attention(
   heads = q.shape[1]
   group = heads / args[1].shape[1]
   l = Lines(first: first, defs: [])
-  keys = a[1]
-  values = a[2]
-  l = try attention_side(l, args[1], q, group, keys)
-  keys = last(l)
-  l = try attention_side(l, args[2], q, group, values)
-  values = last(l)
+  side = try attention_side(l, args[1], q, group, a[1])
+  keys = side.name
+  side = try attention_side(side.lines, args[2], q, group, a[2])
+  values = side.name
+  l = side.lines
   shape = [q.shape[0], heads, q.shape[2], args[1].shape[2]]
   scores = try tensor_type(shape, q.dtype)
   qt = try type_of(q)
@@ -424,8 +465,8 @@ def attention(
 end
 
 # `x` (keys or values of fewer heads) as one tensor of the query's heads, in the dtype of the query: each head repeated
-# for its group. The last line of the result.
-def attention_side(l: Lines, x: Types.Tensor, q: Types.Tensor, group: Int, name: String) -> Result[Lines]
+# for its group.
+def attention_side(l: Lines, x: Types.Tensor, q: Types.Tensor, group: Int, name: String) -> Result[Side]
   source = name
   shown = try type_of(x)
   if x.dtype != q.dtype
@@ -434,17 +475,13 @@ def attention_side(l: Lines, x: Types.Tensor, q: Types.Tensor, group: Int, name:
     source = last(l)
   end
 
-  return ok(put(l, "stablehlo.reshape #{source} : (#{shown}) -> #{shown}")) if group == 1
+  return ok(Side(lines: l, name: source)) if group == 1
   b = x.shape[0]
-  kv = x.shape[1]
-  spread = try tensor_type([b, kv, group, x.shape[2], x.shape[3]], q.dtype)
+  spread = try tensor_type([b, x.shape[1], group, x.shape[2], x.shape[3]], q.dtype)
+  merged = try tensor_type([b, q.shape[1], x.shape[2], x.shape[3]], q.dtype)
   l = put(l, "stablehlo.broadcast_in_dim #{source}, dims = [0, 1, 3, 4] : (#{shown}) -> #{spread}")
-  ok(
-    put(
-      l,
-      "stablehlo.reshape #{last(l)} : (#{spread}) -> #{try tensor_type([b, q.shape[1], x.shape[2], x.shape[3]], q.dtype)}",
-    ),
-  )
+  l = put(l, "stablehlo.reshape #{last(l)} : (#{spread}) -> #{merged}")
+  ok(Side(lines: l, name: last(l)))
 end
 
 # The softmax over the last axis of `name` (of `shape`): `exp(x - max) / sum(exp(x - max))`. The last line.
@@ -489,10 +526,9 @@ def gelu_erf(t: Types.Tensor, x: String, first: Int) -> Result[List[String]]
   ])
 end
 
-# A layer norm (`center`) or an RMS norm of `x` over its last axis, no affine: `centered / sqrt(mean(centered^2)
-# + eps)`,
-# where `centered` is `x - mean(x)` for the layer norm and `x` for the RMS norm, as `Tensor.layer_norm_composed` and
-# `rms_norm_composed` write them. The sums run in the dtype of `x`.
+# A layer norm (`center`) or an RMS norm of `x` over its last axis, no affine: `centered / sqrt(mean(centered^2) +
+# eps)`, where `centered` is `x - mean(x)` for the layer norm and `x` for the RMS norm, as
+# `Tensor.layer_norm_composed` and `rms_norm_composed` write them. The sums run in the dtype of `x`.
 def normalized(t: Types.Tensor, x: String, eps: Float, center: Bool, first: Int) -> Result[List[String]]
   out = try type_of(t)
   q = t.shape.size - 1
@@ -535,10 +571,10 @@ def last_mean(l: Lines, name: String, like: Types.Tensor) -> Result[Lines]
   ok(put(l, "stablehlo.divide #{total}, #{last(l)} : #{reduced}"))
 end
 
-# Rotary embedding of `x` `[..., seq, width]` by the integer `positions` `[seq]`. The cosines and sines of the angles
-# `position * base^(-2i/dims)` are written in the program (the frequencies are constants), then the pairs are
-# rotated as
-# `Reference.rope` does: `(i, i + dims/2)` with `neox`, `(2i, 2i + 1)` without; the columns past `dims` pass through.
+# Rotary embedding of `x` `[..., seq, width]` by the integer `positions` `[seq]`. The cosines and sines of the
+# angles `position * base^(-2i/dims)` are written in the program (the frequencies are constants), then the pairs
+# are rotated as `Reference.rope` does: `(i, i + dims/2)` with `neox`, `(2i, 2i + 1)` without; the columns past
+# `dims` pass through.
 def rope(
   t: Types.Tensor,
   args: List[Types.Tensor],
