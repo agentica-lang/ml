@@ -87,14 +87,21 @@ def emit(
         params = params.push("#{arg}: #{shown}")
         constants = constants.push(c)
       _ ->
-        case n.op
+        wide = try widened(t, n, n.args.map { |a| names[Graph.id_of(a)] }, next)
+        for i in 0...wide.lines.size
+          body = body.push(numbered(next + i, wide.lines[i]))
+        end
+
+        next = next + wide.lines.size
+        wn = n.with(args: wide.args)
+        case wn.op
           Types.Op.GatedDeltaRule ->
-            shape = n.args[0].shape
+            shape = wn.args[0].shape
             helpers = helpers.push(try Delta.emit("gated_delta_#{next}", shape[0], shape[1], shape[2]))
           _ -> nil
         end
 
-        defs = try define(t, n, n.args.map { |a| names[Graph.id_of(a)] }, next)
+        defs = try define(t, wn, wide.names, next)
         for i in 0...defs.size
           body = body.push(numbered(next + i, defs[i]))
         end
@@ -166,6 +173,45 @@ end
 struct Side
   lines: Lines
   name: String
+end
+
+# The operands of a node, the `F16` ones of an `F32` result converted: their lines, their types and their names.
+struct Widened
+  lines: List[String]
+  args: List[Types.Tensor]
+  names: List[String]
+end
+
+# A half weight is stored in 16 bits and read in 32: where a node's result is `F32` (a product, the rows of a table, an
+# attention), each `F16` operand is converted in the program first, so the weight stays half in memory and an op never
+# mixes types. An `F16` result (a transpose or a slice of a weight) keeps its operands as they are.
+def widened(t: Types.Tensor, n: Types.Node, names: List[String], first: Int) -> Result[Widened]
+  out = Widened(lines: [], args: n.args, names: names)
+  return ok(out) if t.dtype != Types.Dtype.F32 or converts?(n.op)
+  for i in 0...n.args.size
+    x = n.args[i]
+    if x.dtype == Types.Dtype.F16
+      wide = x.with(dtype: Types.Dtype.F32)
+      from = try ir_type(x.shape, x.dtype)
+      to = try ir_type(wide.shape, wide.dtype)
+      line = try ir_op("stablehlo.convert", [names[i]], [from], to, [], first + out.lines.size)
+      out = out.with(
+        lines: out.lines.push(line),
+        args: out.args.set(i, wide),
+        names: out.names.set(i, "%#{first + out.lines.size}"),
+      )
+    end
+  end
+
+  ok(out)
+end
+
+# A `to_dtype` converts its operand itself.
+def converts?(op: Types.Op) -> Bool
+  case op
+    Types.Op.ToDtype -> true
+    _ -> false
+  end
 end
 
 # One text per SSA value of the node `t`, the first named `%first`; none means the node is its first argument.

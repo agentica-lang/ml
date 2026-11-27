@@ -30,6 +30,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### tensor
 
+- `Backend.Xla` holds `F16` tensors: `Tensor.from_file(..., dtype: F16)`, `from_bytes` and `from_list` make half weights in 16-bit buffers, and a compiled product or lookup widens them to `F32` inside the program; `Qwen3.open(dir, xla, F16)` and the other `weights: F16` models load on XLA (ml#386).
 - The StableHLO emitter builds every op with `agc-ir`, so `Trace.stablehlo` and the programs XLA compiles are in MLIR's generic form (`"stablehlo.reduce"(...) ({...}) {dimensions = array<i64: 1>}`), each reduction's, sort's and scatter's combiner an explicit region; only the module, its function and the gated-delta call stay text. The programs compute the same: the IREE goldens of `train/` are unchanged (ml#417).
 - `Tensor.adam_step` on `Backend.Torch` is one native pass over the weight and its moments, where it was ten libtorch kernels per weight (ml#407).
 - The default build of the optional `torch` module, without libtorch, stops with one clear error (`no libtorch found`, and how to find it) instead of errors about `pread` and `O_CLOEXEC` (ml#379).

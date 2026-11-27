@@ -7,11 +7,10 @@
 ##
 ## With `weights: F16` the big matrices of a model (`dense` and the `embedding`
 ## of tokens, the weights of `matmul`/`linear` and `gather`) are kept in 16
-## bits on the ggml backend: half the memory and the bandwidth, one rounding
+## bits on the ggml or XLA backend: half the memory and the bandwidth, one rounding
 ## per value at load (`Tensor.from_file`, `tensor/DESIGN.md` §7). Everything
 ## else stays `F32`, and so does a matrix under `HALF_MIN_ELEMENTS`, where
-## halving gains nothing. Any backend but ggml answers an error naming the
-## option.
+## halving gains nothing. Any other backend answers an error naming the option.
 ##
 ## With `weights: Q8_0` a rank-2 weight that the file stores as Q8_0 (a GGUF file) is kept as its blocks on the ggml
 ## backend, about a quarter of the memory of `F32` (`tensor/DESIGN.md` §7); everything else stays `F32` (a Q8_0
@@ -347,7 +346,8 @@ def checked(weights: Tensor.Dtype, backend: Tensor.Backend) -> Result[Bool]
     Tensor.Dtype.F16 ->
       case backend
         Tensor.Backend.Ggml(_) -> ok(true)
-        _ -> error("weights: F16 needs the ggml backend (half weights are only held by ggml)")
+        Tensor.Backend.Xla(_) -> ok(true)
+        _ -> error("weights: F16 needs the ggml or the XLA backend (half weights are only held by those)")
       end
 
     Tensor.Dtype.Q8_0 ->

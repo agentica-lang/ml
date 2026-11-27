@@ -76,7 +76,7 @@ def names(c: Checkpoint) -> List[String] = c.weight_map.keys.sort
 
 def has?(c: Checkpoint, name: String) -> Bool = c.weight_map.key?(name)
 
-## The tensor `name` on `backend`: a float one as `F32`, or as `F16` with `dtype: F16` (a half weight, ggml only); a
+## The tensor `name` on `backend`: a float one as `F32`, or as `F16` with `dtype: F16` (a half weight, ggml and XLA only); a
 ## quantized one (Q8_0, Q4_K or Q6_K) of a GGUF file dequantized to `F32`, or kept as it is with the dtype of its type
 ## (ggml only).
 def tensor(
