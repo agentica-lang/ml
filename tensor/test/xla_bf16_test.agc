@@ -68,6 +68,25 @@ def test_xla_preserves_signaling_nan_bits_when_loading_bf16() -> Result[Void]
   end
 end
 
+def test_a_gradient_over_a_bf16_weight_is_an_error() -> Result[Void]
+  backends = try bf16_backends()
+  Files.with_file("bf16-grad", try Bytes.from_list([128, 63])) do |path|
+    for backend in backends
+      w = try Tensor.from_file(path, 0, [1, 1], Tensor.FloatFormat.BF16, backend, Tensor.Dtype.BF16)
+      x = try Tensor.ones([1, 1], Tensor.Dtype.F32, backend)
+      result = Trace.value_and_grad(
+        [x, w],
+        ->(xs: List[Tensor.Tensor]) { Tensor.sum(try Tensor.matmul(xs[0], xs[1])) },
+      )
+
+      try Test.assert(!result.ok?, "a gradient was taken over a BF16 weight")
+      try Test.assert(result.message.include?("no gradient is taken"), result.message)
+    end
+
+    ok()
+  end
+end
+
 ## Ties go to the even neighbour; a value just above a tie rounds up (one rounding from the double: through an `F32` it
 ## would land on the tie and round down); the largest BF16 is held.
 def test_bf16_values_made_from_a_list_round_to_nearest_even_once() -> Result[Void]

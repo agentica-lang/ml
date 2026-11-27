@@ -49,7 +49,7 @@ All packages are released together at one version, each on its own tag, `<packag
 
 ### transformers
 
-- `Qwen3.open(dir, xla, BF16)` keeps a `bfloat16` checkpoint's big matrices as they are stored, and gives the logits of the same checkpoint read as `F32`. `tools/bench_qwen.agc` takes `xla`; on an RTX 4060 the weights of Qwen3-0.6B take 1.50 GB against 3.01 GB, at the same decode speed (`benchmarks/README.md`).
+- `Qwen3.open(dir, xla, BF16)` keeps a `bfloat16` checkpoint's big matrices as they are stored, and gives the logits of the same checkpoint read as `F32`. `tools/bench_qwen.agc` takes `xla`; on an RTX 4060 the estimated unique weight storage of Qwen3-0.6B is 1.19 GB against 2.38 GB, at the same decode speed (`benchmarks/README.md`).
 - `tools/minilm_finetune.agc` takes `torch`, which fine-tunes MiniLM on libtorch, every weight (ml#203, ml#394).
 - `WordPiece` reads a tokenizer file with a fixed padding (`"strategy": {"Fixed": 128}`) as the padding to the longest, so `sentence-transformers/all-MiniLM-L6-v2` opens; no tokenizer here pads (ml#377).
 - `tools/fetch_minilm.sh` fetches all-MiniLM-L6-v2 at a pinned revision and sha256, and `tools/minilm_finetune.agc` loads it and fine-tunes it for a few steps on ggml CPU or Vulkan (ml#377).

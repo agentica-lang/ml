@@ -254,7 +254,7 @@ jobs:
         env:
           TENSOR_LOAD: agentica
           TENSOR_REQUIRE_GGML: '1'
-        run: agentica test --max-steps 10000000 test/from_file_test.agc
+        run: agentica test --max-steps 10000000 test/from_file_test.agc test/xla_bf16_test.agc
 
       # A package with tools/fetch-model.sh validates against the pinned
       # models it downloads (weights never enter git); the script checks every
@@ -473,6 +473,12 @@ jobs:
         env:
           TENSOR_REQUIRE_TORCH: '1'
         run: agentica test --coverage --max-steps 10000000
+
+      - name: Test the Agentica read path of BF16 on libtorch
+        env:
+          TENSOR_LOAD: agentica
+          TENSOR_REQUIRE_TORCH: '1'
+        run: agentica test --max-steps 10000000 test/xla_bf16_test.agc
 
       # The gradients of DistilBERT and BERT on libtorch (the attention backward needs batch_matmul), and a few
       # training steps of each. transformers/ reads tensor/ from the workspace.
