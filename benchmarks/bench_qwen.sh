@@ -4,6 +4,9 @@
 #
 #   benchmarks/bench_qwen.sh MODEL_DIR GGUF_DIR LLAMA_CPU_BUILD LLAMA_VULKAN_BUILD [ROUNDS]
 #
+# The row `ours-xla` runs the F32 model on XLA (`Backend.Xla(Device.Cpu)`, the plugin of `tensor/tools/install_xla.agc`)
+# and is compared with `llama-cpu-f32`; its first round compiles each step shape once (the warm-up pass).
+#
 # `ROWS=vulkan` (several: `ROWS=q4k,f16`) runs only the rows whose name contains one of the words (a substring, so
 # `f16` takes `ours-cpu-f16` and `llama-vulkan-f16`); no match is an error that lists the rows. MODEL_DIR is the
 # Hugging Face checkout of Qwen/Qwen3-0.6B; GGUF_DIR holds qwen3-0.6b-f32.gguf and qwen3-0.6b-f16.gguf (made with
@@ -70,7 +73,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-all_rows="ours-cpu ours-cpu-f16 ours-cpu-q4k llama-cpu-f32 llama-cpu-f16 llama-cpu-q4km ours-vulkan ours-vulkan-exact ours-vulkan-f16 ours-vulkan-q4k ours-vulkan-q4k-kvhost llama-vulkan-q4km-nkvo ours-vulkan-q4k-n26 ours-vulkan-q4k-n13 ours-vulkan-q4k-n0 llama-vulkan-f32 llama-vulkan-f16 llama-vulkan-q4km llama-vulkan-q4km-ngl27 llama-vulkan-q4km-ngl14 llama-vulkan-q4km-ngl0"
+all_rows="ours-cpu ours-xla ours-cpu-f16 ours-cpu-q4k llama-cpu-f32 llama-cpu-f16 llama-cpu-q4km ours-vulkan ours-vulkan-exact ours-vulkan-f16 ours-vulkan-q4k ours-vulkan-q4k-kvhost llama-vulkan-q4km-nkvo ours-vulkan-q4k-n26 ours-vulkan-q4k-n13 ours-vulkan-q4k-n0 llama-vulkan-f32 llama-vulkan-f16 llama-vulkan-q4km llama-vulkan-q4km-ngl27 llama-vulkan-q4km-ngl14 llama-vulkan-q4km-ngl0"
 
 want() { # name: true when ROWS is unset or one of its comma-separated words is in the name
   [ -z "${ROWS:-}" ] && return 0
@@ -173,7 +176,9 @@ run_ours() { # subject device name [VAR=value...]
   device=$2
   name=$3
   shift 3
-  exports=$(cd "$here/../transformers" && sh tools/build-engine.sh "$device") || { echo "bench_qwen.sh: no engine for $device" >&2; return 1; }
+  engine=$device
+  [ "$device" = xla ] && engine=cpu
+  exports=$(cd "$here/../transformers" && sh tools/build-engine.sh "$engine") || { echo "bench_qwen.sh: no engine for $device" >&2; return 1; }
   (cd "$here/../transformers" &&
     eval "$(printf '%s\n' "$exports" | grep '^export ')" &&
     env WEIGHTS=f32 VULKAN_FP16=1 TENSOR_THREADS="$threads" "$@" /usr/bin/time -f "RSS %M" -o "$work/time" agentica --max-steps 100000000000 tools/bench_qwen.agc "$subject" "$device" > "$work/ours.out" 2> "$work/err") || { cat "$work/err" >&2; return 1; }
@@ -244,6 +249,7 @@ pair() { # ours_function llama_function
   fi
 }
 
+ours_xla_f32() { ours ours-xla xla "$model" WEIGHTS=f32; }
 ours_cpu_f32() { ours ours-cpu cpu "$model" WEIGHTS=f32; }
 llama_cpu_f32() { llama llama-cpu-f32 "$cpu" "$ggufs/qwen3-0.6b-f32.gguf"; }
 ours_cpu_f16() { ours ours-cpu-f16 cpu "$model" WEIGHTS=f16; }
@@ -268,6 +274,7 @@ llama_vulkan_q4km_ngl0() { llama llama-vulkan-q4km-ngl0 "$vulkan" "$q4km" -ngl 0
 while [ "$round" -lt "$rounds" ]; do
   round=$((round + 1))
   pair ours_cpu_f32 llama_cpu_f32
+  ours_xla_f32
   pair ours_cpu_f16 llama_cpu_f16
   pair ours_cpu_q4k llama_cpu_q4km
   pair ours_vulkan_f32 llama_vulkan_f32
@@ -286,7 +293,7 @@ cat "$out"
 sort -u "$meta"
 python3 -I - "$out" << 'PY'
 import statistics, sys
-pairs = {"ours-cpu": "llama-cpu-f32", "ours-cpu-f16": "llama-cpu-f16", "ours-cpu-q4k": "llama-cpu-q4km",
+pairs = {"ours-cpu": "llama-cpu-f32", "ours-xla": "llama-cpu-f32", "ours-cpu-f16": "llama-cpu-f16", "ours-cpu-q4k": "llama-cpu-q4km",
          "ours-vulkan": "llama-vulkan-f32", "ours-vulkan-f16": "llama-vulkan-f16", "ours-vulkan-q4k": "llama-vulkan-q4km",
          "ours-vulkan-q4k-kvhost": "llama-vulkan-q4km-nkvo", "ours-vulkan-q4k-n26": "llama-vulkan-q4km-ngl27", "ours-vulkan-q4k-n13": "llama-vulkan-q4km-ngl14", "ours-vulkan-q4k-n0": "llama-vulkan-q4km-ngl0"}
 rows = {}
