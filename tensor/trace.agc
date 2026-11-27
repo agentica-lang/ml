@@ -163,12 +163,73 @@ def evaluate(
     _ -> nil
   end
 
+  order = try reachable(outs, Set.new(env.keys))
+  last = try last_readers(order)
+  kept = try pinned(order, outs, env)
   values = env
-  for t in try reachable(outs, Set.new(env.keys))
-    values = values.put(Graph.id_of(t), try apply(t, values, backend))
+  for i in 0...order.size
+    t = order[i]
+    made = try Native.arena do apply(t, values, backend) end
+    values = values.put(Graph.id_of(t), made)
+    for a in try args_of(t)
+      id = Graph.id_of(a)
+      if last.get(id, -1) == i and !kept.include?(id) and values.key?(id)
+        close_value(values[id])
+        values = values.delete(id)
+      end
+    end
   end
 
   ok(outs.map { |o| values[Graph.id_of(o)] })
+end
+
+## For each node `order` reads, the position in `order` of the last node that reads it.
+def last_readers(order: List[Types.Tensor]) -> Result[Map[Ref, Int]]
+  last: Map[Ref, Int] = {}
+  for i in 0...order.size
+    for a in try args_of(order[i])
+      last = last.put(Graph.id_of(a), i)
+    end
+  end
+
+  ok(last)
+end
+
+## The nodes whose values `evaluate` does not free after their last reader: the inputs it was given, the outputs, the
+## constants (a caller's tensor), and `stop_grad` and `to_device`, which answer the tensor they were given.
+def pinned(order: List[Types.Tensor], outs: List[Types.Tensor], env: Map[Ref, Types.Tensor]) -> Result[Set[Ref]]
+  kept = Set.new(env.keys)
+  for o in outs
+    kept = kept.add(Graph.id_of(o))
+  end
+
+  for t in order
+    n = try Graph.node_of(t)
+    alias = false
+    case n.op
+      Types.Op.Constant(_) -> kept = kept.add(n.id)
+      Types.Op.StopGrad -> alias = true
+      Types.Op.ToDevice(_) -> alias = true
+      _ -> nil
+    end
+
+    if alias
+      kept = kept.add(n.id)
+      for a in n.args
+        kept = kept.add(Graph.id_of(a))
+      end
+    end
+  end
+
+  ok(kept)
+end
+
+## Frees the native memory of `t` now; the other backends hold plain values, which the collector takes.
+def close_value(t: Types.Tensor) -> Void
+  case t.handle
+    Types.Handle.Native(h) -> Native.close(h)
+    _ -> nil
+  end
 end
 
 ## The number of distinct nodes `outs` reach: what `evaluate` computes, once

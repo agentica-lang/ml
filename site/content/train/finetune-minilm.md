@@ -52,7 +52,7 @@ TOLERANCE = 0.000001
 
 `main` runs `run` and turns an `error` into a message and an exit status. Everything below `private` is the program. `run` reads the arguments, opens the model and the data, measures the model, trains for one epoch, measures it again, saves it, loads it back and fails unless the loaded model scores what the trained one did. The backend is chosen by its name before anything is loaded, and a backend that is not available on the machine is an `error` that names it. `vulkan` asks for `F32` products (`Tensor.vulkan_fp16(false)`), the exact arithmetic that the checks against Hugging Face run.
 
-`trainable` says which weights the optimizer changes: all of them, except on libtorch the word table, which holds 12 of the 22 million weights, because a step that trains it needs more than 2.5 GB there ([ml#394](https://github.com/agentica-lang/ml/issues/394)). So libtorch trains a different set of weights than the other backends, and its numbers are not comparable with theirs until that issue is fixed.
+`trainable` says which weights the optimizer changes: all of them, on every backend.
 
 ```agentica
 def main() -> Void
@@ -108,7 +108,7 @@ def run(args: List[String]) -> Result[Void]
   validation = try pairs(tok, "#{args[1]}/validation.parquet", none)
   puts("#{train.size} training pairs, #{validation.size} validation pairs, on #{backend}")
 
-  split = try trainable(base, backend)
+  split = try trainable(base)
   net = Net(base: base, split: split)
   before = try evaluate(net, split.trainable, validation)
   puts("before: Spearman #{before.spearman}, cosine loss #{before.loss}, mean cosine #{before.cosine}")
@@ -128,11 +128,8 @@ def run(args: List[String]) -> Result[Void]
   ok()
 end
 
-# Every weight, but on libtorch the word table: a step that trains it holds more than 2.5 GB there (ml#394).
-def trainable(base: Bert.Bert, backend: Tensor.Backend) -> Result[Params.Split]
-  frozen = backend == Tensor.Backend.Torch(Tensor.Device.Cpu)
-  Params.split(Bert.weights(base), ->(name: String) { !(frozen and name.end_with?("word_embeddings.weight")) })
-end
+# Every weight.
+def trainable(base: Bert.Bert) -> Result[Params.Split] = Params.split(Bert.weights(base), ->(_name: String) { true })
 
 def backend_of(name: String) -> Result[Tensor.Backend]
   case name
@@ -330,7 +327,7 @@ end
 # The score of the model that `save` wrote, opened from its folder as the original is.
 def reloaded(dir: String, backend: Tensor.Backend, rows: List[Pair]) -> Result[Score]
   base = try Bert.open(dir, backend)
-  split = try trainable(base, backend)
+  split = try trainable(base)
   evaluate(Net(base: base, split: split), split.trainable, rows)
 end
 ```
@@ -443,9 +440,9 @@ Measured: the same program on 160 training pairs (10 steps), once for each backe
 | ggml CPU | 0.8671 | 0.8691 | 0.0316 | 0.0280 |
 | ggml Vulkan | 0.8671 | 0.8691 | 0.0316 | 0.0280 |
 | XLA CPU | 0.8671 | 0.8691 | 0.0316 | 0.0280 |
-| libtorch CPU | not comparable, see below | | | |
+| libtorch CPU | 0.8671 | 0.8691 | 0.0316 | 0.0280 |
 
-The libtorch row is empty on purpose. The program accepts `torch`, but it trains a different set of weights (the word table stays frozen), so its numbers would not be comparable, and a run in a 2.5 GB cap was killed during the first measurement, before any training. Both are tracked in [ml#394](https://github.com/agentica-lang/ml/issues/394).
+The libtorch run peaked at 1.8 GiB of resident memory (1,896,712 kB).
 
 ## Next steps
 

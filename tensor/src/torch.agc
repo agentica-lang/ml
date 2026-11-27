@@ -177,6 +177,13 @@ def append_file(t: Types.Tensor, path: String) -> Result[Void]
   Raw.append_file(try handle_of(t), path)
 end
 
+## `[live, peak]`: the bytes the live libtorch tensors hold (a view and its base count once), and the most they held
+## since the last call with `reset` true. For the tests that a run frees what it is done with.
+def memory(reset: Bool = false) -> Result[List[Float]]
+  _ = try usable("memory")
+  Raw.memory(reset)
+end
+
 ## Host readback: the row-major values tagged with `t`'s dtype. This is the
 ## reference's `to_list` for this backend: the boundary carries doubles, so the
 ## tagging happens here, as the reference tags its own storage.

@@ -285,6 +285,11 @@ an_term torch_avg_pool2d(an_env *env, struct torch_TensorHandle_state *input, in
    tags with the tensor's dtype. `I64` values past 2^53 lose precision. */
 an_term torch_readback(an_env *env, struct torch_TensorHandle_state *a);
 
+/* `[live, peak]`: the bytes of the storages that live tensors hold, and the most they held since the last call
+   with `reset` true (a view shares its base's storage, which counts once). For the tests that a run frees what it is
+   done with. */
+an_term torch_memory(an_env *env, bool reset);
+
 /* Appends the values of the `F32` tensor `a`, row-major and little-endian, to the existing file `path`: C writes
    them, so no value crosses as a list. */
 an_term torch_append_file(an_env *env, struct torch_TensorHandle_state *a, ng_str path);
@@ -1024,6 +1029,13 @@ static an_term torch_native_readback(an_env *env, int argc, const an_term *argv)
   return torch_readback(env, a0);
 }
 
+static an_term torch_native_memory(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  bool a0;
+  if (!an_get_bool(env, argv[0], &a0)) return an_badarg(env, 0);
+  return torch_memory(env, a0);
+}
+
 static an_term torch_native_append_file(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   struct torch_TensorHandle_state *a0 = torch_TensorHandle_get(env, argv[0]);
@@ -1085,6 +1097,7 @@ static const an_function torch_native_functions[] = {
   {"max_pool2d", "(TensorHandle, Int, Int, Int) -> Result[TensorHandle]", torch_native_max_pool2d, AN_DIRTY | AN_FRESH},
   {"avg_pool2d", "(TensorHandle, Int, Int, Int) -> Result[TensorHandle]", torch_native_avg_pool2d, AN_DIRTY | AN_FRESH},
   {"readback", "(TensorHandle) -> Result[List[Float]]", torch_native_readback, AN_DIRTY},
+  {"memory", "(Bool) -> Result[List[Float]]", torch_native_memory, AN_DIRTY},
   {"append_file", "(TensorHandle, String) -> Result[Void]", torch_native_append_file, AN_DIRTY},
 };
 
@@ -1094,5 +1107,5 @@ static const an_function torch_native_functions[] = {
   static const an_resource_type torch_native_resources[] = { \
     {"TensorHandle", sizeof(struct torch_TensorHandle_state), TORCH_TensorHandle_FREE}, \
   }; \
-  AN_MODULE_TABLES("torch", torch_native_functions, 52, NULL, 0, torch_native_resources, 1, LOAD)
+  AN_MODULE_TABLES("torch", torch_native_functions, 53, NULL, 0, torch_native_resources, 1, LOAD)
 #endif
