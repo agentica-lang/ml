@@ -167,7 +167,8 @@ end
 ## The mean embedding `[batch, hidden_size]` of `ids`, `type_ids` and `mask` (as `forward` takes them), with `normalize`
 ## over its length: the model as plain `Tensor` calls, not one staged graph. Inside a loss, with the traced weights of
 ## `with_weights`, it is part of the trace, so `Train.fit` takes its gradient. Outside a trace it runs eagerly, which
-## ggml refuses ("does not run eagerly on the ggml backend"): `embed` is the call for inference. The pooler does not run.
+## ggml refuses ("does not run eagerly on the ggml backend"): `embed` is the call for inference. The pooler does not
+## run.
 def pooled(
   m: Bert,
   ids: Tensor.Tensor,

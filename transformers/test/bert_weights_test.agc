@@ -33,7 +33,7 @@ end
 
 def picks() -> List[Pick]
   [
-    Pick(name: "embeddings.token_type_embeddings.weight", at: 3),
+    Pick(name: "embeddings.token_type_embeddings.weight", at: 8 + 3),
     Pick(name: "encoder.layer.0.attention.self.query.weight", at: 3),
     Pick(name: "encoder.layer.1.output.dense.weight", at: 10),
   ]
@@ -61,6 +61,13 @@ def padding_mask(ids: Tensor.Tensor, pad: Int) -> Result[Tensor.Tensor]
   Tensor.sub(ones, try Tensor.to_dtype(try Tensor.eq(ids, pads), Tensor.Dtype.F32))
 end
 
+## The token types of `n` pairs as a batch of `2 n` rows: 0 for the first sentence of a pair and 1 for the second.
+def side_types(n: Int, seq: Int, backend: Tensor.Backend) -> Result[Tensor.Tensor]
+  first = try Tensor.full([n, 1, seq], Tensor.Values.Int(0), Tensor.Dtype.I32, backend)
+  second = try Tensor.full([n, 1, seq], Tensor.Values.Int(1), Tensor.Dtype.I32, backend)
+  Tensor.reshape(try Tensor.concat([first, second], 1), [2 * n, seq])
+end
+
 ## The cosine loss of a batch of pairs (`inputs` is `[pair, side, token]`, `targets` the scores) with the weights
 ## `ps` of `split`: the two sides go through the model as one batch, then each pair's two embeddings are compared.
 def loss(m: Bert.Bert, split: Params.Split, ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Tensor.Tensor]
@@ -69,7 +76,7 @@ def loss(m: Bert.Bert, split: Params.Split, ps: List[Tensor.Tensor], b: Data.Bat
   seq = Tensor.shape(b.inputs)[2]
   width = m.config.hidden_size
   flat = try Tensor.reshape(b.inputs, [2 * n, seq])
-  types = try Tensor.full([2 * n, seq], Tensor.Values.Int(0), Tensor.Dtype.I32, Tensor.backend(flat))
+  types = try side_types(n, seq, Tensor.backend(flat))
   pooled = try Bert.pooled(model, flat, types, try padding_mask(flat, m.config.pad_token_id))
   sides = try Tensor.reshape(pooled, [n, 2, width])
   a = try Tensor.reshape(try Tensor.slice(sides, [0, 0, 0], [n, 1, width]), [n, width])
@@ -113,7 +120,7 @@ def test_the_names_are_the_checkpoints_and_the_weights_go_back() -> Result[Void]
 
       try Test.eq(m.prefix, want_prefix)
       flat = try ids(S.REF, [4, 5])
-      types = try Tensor.full([4, 5], Tensor.Values.Int(0), Tensor.Dtype.I32, S.REF)
+      types = try side_types(2, 5, S.REF)
       mask = try padding_mask(flat, 0)
       own = try S.floats_of(try Bert.pooled(m, flat, types, mask, true))
       scaled: Map[String, Tensor.Tensor] = {}
