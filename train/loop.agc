@@ -83,7 +83,9 @@ def trainer(
 end
 
 ## The trainer with `metric` measured at the end of every epoch of its run; the values are in `Fit.metrics` under the
-## name of the metric, one per epoch. A metric that fails ends the run with its error at the next step.
+## name of the metric, one per epoch. A metric that fails ends the run with its error at the end of its
+## epoch. A run stopped from a step handler has no values for the epoch it cut short: `Fit.metrics` has one value per epoch
+## that ended, possibly fewer than the history.
 def metric(t: Trainer, m: Metric) -> Trainer = t.with(metrics: t.metrics.push(m))
 
 ## The trainer with `f` called at `event`: before the first step, after every `every`th step, or after every `every`th
@@ -97,7 +99,9 @@ end
 
 ## What a handler returns to end the run early, without an error: `return Loop.stop(info) if info.step == 100`. The run
 ## ends after the step or epoch of `info` (after the first step, for a `Started` handler), and answers its `Train.Fit`
-## as usual: the parameters so far, and a history whose last epoch is the mean over the steps it ran.
+## as usual: the parameters so far, and a history whose last epoch is the mean over the steps it ran. A stop from a step
+## handler skips the metrics of the epoch it cut short; a stop from `EpochCompleted` keeps those of its epoch. An `error`
+## wins over a stop: a handler that stops and then answers an `error` ends the run with the error.
 def stop(info: Info) -> Result[Void]
   _ = info.halt.send(true, 0)
   ok()

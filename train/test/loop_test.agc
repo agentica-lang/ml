@@ -374,14 +374,31 @@ def test_stop_ends_the_run_with_its_fit() -> Result[Void]
       reduce: &Loop.mean,
     )
 
+    losses: Channel[Float] = Channel.new(8)
     trainer = Loop.trainer(&linear, try weights(backend), adam()) |> Loop.metric(mse)
     by_step = (
       trainer
+      |> Loop.handle(
+        Loop.Event.StepCompleted,
+        ->(i) {
+          _ = losses.send(i.loss, 0)
+          ok()
+        },
+      )
       |> Loop.handle(Loop.Event.StepCompleted, stop_at_step(3))
       |> try Loop.run(loader, epochs: 3)
     )
 
     try Test.eq(by_step.history.size, 2)
+    stepped = [try losses.recv(0), try losses.recv(0), try losses.recv(0)]
+    try S.expect_close(
+      by_step.history,
+      [(stepped[0] + stepped[1]) / 2.0, stepped[2]],
+      0.000001,
+      0.00001,
+      "the last epoch is the mean of the steps it ran",
+    )
+
     try Test.eq(by_step.metrics["mse"].size, 1)
     try Test.eq((try S.floats_of(by_step.params[0])).size, 2)
     by_epoch = (
@@ -392,6 +409,27 @@ def test_stop_ends_the_run_with_its_fit() -> Result[Void]
 
     try Test.eq(by_epoch.history.size, 2)
     try Test.eq(by_epoch.metrics["mse"].size, 2)
+    first = (
+      trainer
+      |> Loop.handle(Loop.Event.Started, ->(i) { Loop.stop(i) })
+      |> try Loop.run(loader, epochs: 3)
+    )
+
+    try Test.eq(first.history.size, 1)
+    try Test.eq(first.metrics["mse"].size, 0)
+    mistaken = (
+      trainer
+      |> Loop.handle(
+        Loop.Event.StepCompleted,
+        ->(i) {
+          try Loop.stop(i)
+          error("x")
+        },
+      )
+      |> Loop.run(loader, epochs: 3)
+    )
+
+    try S.expect_error(mistaken, "epoch 1, batch 0: x")
   end
 
   ok()

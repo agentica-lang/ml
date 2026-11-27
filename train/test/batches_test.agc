@@ -294,7 +294,14 @@ end
 ## whose last epoch is the mean over the steps it ran (one here).
 def test_stop_from_on_step_answers_the_fit_so_far() -> Result[Void]
   for backend in try backends()
+    losses: Channel[Float] = Channel.new(8)
+    replaced: Channel[Tensor.Tensor] = Channel.new(1)
     stop = ->(s: Train.StepInfo) {
+      _ = losses.send(s.loss, 0)
+      if s.step == 2
+        _ = replaced.send(s.params[0], 0)
+      end
+
       return ok(Train.Control.Stop) if s.step == 3
 
       ok(Train.Control.Continue)
@@ -312,7 +319,24 @@ def test_stop_from_on_step_answers_the_fit_so_far() -> Result[Void]
     )
 
     try Test.eq(fit.history.size, 2)
+    first = try losses.recv(0)
+    second = try losses.recv(0)
+    try S.expect_close(
+      [fit.history[0], fit.history[1]],
+      [(first + second) / 2.0, try losses.recv(0)],
+      0.000001,
+      0.00001,
+      "the history on #{backend}",
+    )
+
     try Test.eq((try S.floats_of(fit.params[0])).size, 2)
+    if backend != S.REF
+      gone = try replaced.recv(0)
+      try Test.assert(
+        Data.freed?(Data.Batch(inputs: gone, targets: gone)),
+        "the replaced weights are freed on #{backend}",
+      )
+    end
   end
 
   ok()
