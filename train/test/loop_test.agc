@@ -110,7 +110,7 @@ def test_a_metric_is_measured_at_the_end_of_every_epoch() -> Result[Void]
     errors = Loop.Metric(
       name: "mse",
       count: 2,
-      batch: ->(i: Int) { pair(backend, i) },
+      batch: ->(i) { pair(backend, i) },
       observe: &squared_errors,
       reduce: &Loop.mean,
     )
@@ -137,8 +137,8 @@ def test_a_failing_metric_is_an_error_that_names_it() -> Result[Void]
   failing = Loop.Metric(
     name: "broken",
     count: 1,
-    batch: ->(i: Int) { pair(S.REF, i) },
-    observe: ->(_ps: List[Tensor.Tensor], _b: Data.Batch) { error("no luck") },
+    batch: ->(i) { pair(S.REF, i) },
+    observe: ->(_, _) { error("no luck") },
     reduce: &Loop.mean,
   )
 
@@ -160,15 +160,15 @@ def test_a_metric_sees_the_parameters_of_its_epoch() -> Result[Void]
     weight = Loop.Metric(
       name: "weight",
       count: 1,
-      batch: ->(i: Int) { pair(backend, i) },
-      observe: ->(ps: List[Tensor.Tensor], _b: Data.Batch) { first_weight(ps) },
+      batch: ->(i) { pair(backend, i) },
+      observe: ->(ps, _) { first_weight(ps) },
       reduce: &Loop.mean,
     )
 
     order = Loop.Metric(
       name: "spearman",
       count: 2,
-      batch: ->(i: Int) { pair(backend, i) },
+      batch: ->(i) { pair(backend, i) },
       observe: &predictions_and_targets,
       reduce: &Loop.spearman,
     )
@@ -201,14 +201,14 @@ def predictions_and_targets(ps: List[Tensor.Tensor], b: Data.Batch) -> Result[Li
 end
 
 def labelled(log: Channel[String], tag: String) -> Fn[Loop.Info, Result[Void]]
-  ->(i: Loop.Info) {
+  ->(i) {
     _ = log.send("#{tag}#{i.step}", 0)
     ok()
   }
 end
 
 def failing_at(log: Channel[String], step: Int) -> Fn[Loop.Info, Result[Void]]
-  ->(i: Loop.Info) {
+  ->(i) {
     return error("stop at #{i.step}") if i.step == step
 
     _ = log.send("f#{i.step}", 0)
@@ -240,7 +240,7 @@ def test_handlers_run_in_order_at_their_events() -> Result[Void]
     mse = Loop.Metric(
       name: "mse",
       count: 2,
-      batch: ->(i: Int) { pair(backend, i) },
+      batch: ->(i) { pair(backend, i) },
       observe: &squared_errors,
       reduce: &Loop.mean,
     )
@@ -250,7 +250,7 @@ def test_handlers_run_in_order_at_their_events() -> Result[Void]
       |> Loop.metric(mse)
       |> Loop.handle(
         Loop.Event.Started,
-        ->(_i: Loop.Info) {
+        ->(_) {
           _ = log.send("start", 0)
           ok()
         },
@@ -296,8 +296,8 @@ def test_a_failed_metric_stops_the_run_at_the_next_step() -> Result[Void]
   failing = Loop.Metric(
     name: "broken",
     count: 1,
-    batch: ->(i: Int) { pair(S.REF, i) },
-    observe: ->(_ps: List[Tensor.Tensor], _b: Data.Batch) {
+    batch: ->(i) { pair(S.REF, i) },
+    observe: ->(_, _) {
       _ = calls.send(1, 0)
       error("no luck")
     },

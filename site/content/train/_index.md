@@ -102,7 +102,7 @@ fit = try (
 ```agentica
 fit = try (
   Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
-  |> Loop.metric(Loop.Metric(name: "mse", count: 4, batch: ->(i: Int) { held_out(i) }, observe: &squared_errors, reduce: &Loop.mean))
+  |> Loop.metric(Loop.Metric(name: "mse", count: 4, batch: ->(i) { held_out(i) }, observe: &squared_errors, reduce: &Loop.mean))
   |> Loop.run(data, epochs: 3)
 )
 ```
@@ -112,8 +112,15 @@ fit = try (
 ```agentica
 fit = try (
   Loop.trainer(&loss, params, Optim.adamw(lr: 0.0001))
-  |> Loop.handle(Loop.Event.StepCompleted, ->(i: Loop.Info) { log_loss(i.step, i.loss) }, every: 50)
-  |> Loop.handle(Loop.Event.EpochCompleted, ->(i: Loop.Info) { save_checkpoint(i.epoch, i.params) })
+  |> Loop.handle(Loop.Event.StepCompleted, ->(_) { ok() }, every: 50)
+  |> Loop.handle(
+    Loop.Event.StepCompleted,
+    ->(info) {
+      puts("step #{info.step} loss #{info.loss}")
+      ok()
+    },
+    every: 50,
+  )
   |> Loop.run(data, epochs: 3)
 )
 ```

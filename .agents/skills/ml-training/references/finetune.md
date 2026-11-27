@@ -188,7 +188,15 @@ def trained(
   (
     Loop.trainer(loss, params, Optim.adamw(lr: 0.0001))
     |> Loop.metric(spearman)
-    |> Loop.handle(Loop.Event.StepCompleted, ->(_i: Loop.Info) { ok() }, every: 50)
+    |> Loop.handle(Loop.Event.StepCompleted, ->(_) { ok() }, every: 50)
+    |> Loop.handle(
+      Loop.Event.StepCompleted,
+      ->(info) {
+        puts("step #{info.step} loss #{info.loss}")
+        ok()
+      },
+      every: 50,
+    )
     |> Loop.run(loader, epochs: 3)
   )
 end
