@@ -306,7 +306,7 @@ Lift.close([features])
 
 ## Granite MoE
 
-`GraniteMoe.open(dir, backend, weights)` loads IBM Granite MoE (`granitemoe`, the 1B-A400M model `ibm-granite/granite-3.1-1b-a400m-instruct`) from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory, 5.3 GB for the 1B-A400M model). `GraniteMoe.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache; `Generate` of `pkg/transformers/generate_granite_moe` generates with a KV cache, as in [Generation](generation.md#generation). There is no tokenizer or chat template for it yet, so a caller passes token ids.
+`GraniteMoe.open(dir, backend, weights, layers_on_device)` loads IBM Granite MoE (`granitemoe`, the 1B-A400M model `ibm-granite/granite-3.1-1b-a400m-instruct`) from the folder of its official repository (`config.json`, and `model.safetensors` or its index; the weights are `bfloat16` on disk and `F32` in memory, 5.3 GB for the 1B-A400M model). `GraniteMoe.run(m, rows, last)` is the forward over whole sequences, as `Qwen3.run`, with no cache; `Generate` of `pkg/transformers/generate_granite_moe` generates with a KV cache, as in [Generation](generation.md#generation). There is no tokenizer or chat template for it yet, so a caller passes token ids. `layers_on_device` is that of [Qwen3](#qwen3): on a Vulkan device the layers from the `n`th on, with their experts and keys, run on the CPU, and the logits are those of the model with every layer on the device (`n` of 0, 1 and the number of layers, in the tests); `AGENTICA_ML_LAYERS_ON_DEVICE` sets it for `generate_granite_moe_check`.
 
 ```agentica
 import GraniteMoe from "pkg/transformers/granite_moe"

@@ -94,7 +94,7 @@ def stepper(m: GraniteMoe.GraniteMoe) -> KvDecoder.Stepper[GraniteMoe.GraniteMoe
     layers: m.config.num_hidden_layers,
     limit: m.config.max_position_embeddings,
     vocab: m.config.vocab_size,
-    backend: Tensor.backend(m.tokens.table),
+    backend: m.device,
     traced: ->(p: GraniteMoe.GraniteMoe) { GraniteMoe.traced(p) },
     stepped: ->(p: GraniteMoe.GraniteMoe, req: KvDecoder.Request) { stepped(p, req) },
   )

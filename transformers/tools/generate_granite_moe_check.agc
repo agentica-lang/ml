@@ -7,7 +7,7 @@
 ##   python -I test/granite_moe_check_golden.py MODEL_DIR > GOLDEN.json
 ##   agentica tools/generate_granite_moe_check.agc MODEL_DIR GOLDEN.json [cpu|vulkan]
 ##
-## `VULKAN_FP16=0` is the default of the check.
+## `VULKAN_FP16=0` is the default of the check, and `AGENTICA_ML_LAYERS_ON_DEVICE=n` runs the layers from the `n`th on on the CPU.
 
 import Generate from "../generate_granite_moe"
 import GraniteMoe from "../granite_moe"
@@ -55,7 +55,7 @@ private
 def run(dir: String, golden: String, backend: Tensor.Backend) -> Result[Void]
   want = try JSON.decode(try Source.read_text(golden), Golden)
   try Load.vulkan_fp16_from_env()
-  m = try GraniteMoe.open(dir, backend)
+  m = try GraniteMoe.open(dir, backend, Tensor.Dtype.F32, try Load.layers_on_device_from_env())
   puts("model_type #{m.config.model_type}, #{m.layers.size} layers")
   g = try Generate.open(m)
   done = checked(g, want)
