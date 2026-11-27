@@ -9,13 +9,21 @@ module {
     %6 = stablehlo.broadcast_in_dim %arg3, dims = [1] : (tensor<3xf32>) -> tensor<4x3xf32>
     %7 = stablehlo.add %5, %6 : tensor<4x3xf32>
     %8 = stablehlo.constant dense<0xFF800000> : tensor<f32>
-    %9 = stablehlo.reduce(%7 init: %8) applies stablehlo.maximum across dimensions = [1] : (tensor<4x3xf32>, tensor<f32>) -> tensor<4xf32>
+    %9 = "stablehlo.reduce"(%7, %8) ({
+    ^bb0(%ir9_0r0_a0: tensor<f32>, %ir9_0r0_a1: tensor<f32>):
+      %ir9_0r0_0_0 = "stablehlo.maximum"(%ir9_0r0_a0, %ir9_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
+      "stablehlo.return"(%ir9_0r0_0_0) : (tensor<f32>) -> ()
+    }) {dimensions = array<i64: 1>} : (tensor<4x3xf32>, tensor<f32>) -> (tensor<4xf32>)
     %10 = stablehlo.reshape %9 : (tensor<4xf32>) -> tensor<4x1xf32>
     %11 = stablehlo.broadcast_in_dim %10, dims = [0, 1] : (tensor<4x1xf32>) -> tensor<4x3xf32>
     %12 = stablehlo.subtract %7, %11 : tensor<4x3xf32>
     %13 = stablehlo.exponential %12 : tensor<4x3xf32>
     %14 = stablehlo.constant dense<0.0> : tensor<f32>
-    %15 = stablehlo.reduce(%13 init: %14) applies stablehlo.add across dimensions = [1] : (tensor<4x3xf32>, tensor<f32>) -> tensor<4xf32>
+    %15 = "stablehlo.reduce"(%13, %14) ({
+    ^bb0(%ir15_0r0_a0: tensor<f32>, %ir15_0r0_a1: tensor<f32>):
+      %ir15_0r0_0_0 = "stablehlo.add"(%ir15_0r0_a0, %ir15_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
+      "stablehlo.return"(%ir15_0r0_0_0) : (tensor<f32>) -> ()
+    }) {dimensions = array<i64: 1>} : (tensor<4x3xf32>, tensor<f32>) -> (tensor<4xf32>)
     %16 = stablehlo.reshape %15 : (tensor<4xf32>) -> tensor<4x1xf32>
     %17 = stablehlo.log %16 : tensor<4x1xf32>
     %18 = stablehlo.broadcast_in_dim %17, dims = [0, 1] : (tensor<4x1xf32>) -> tensor<4x3xf32>
@@ -29,9 +37,17 @@ module {
     %26 = stablehlo.constant dense<0.0> : tensor<4x3xf32>
     %27 = stablehlo.select %25, %19, %26 : tensor<4x3xi1>, tensor<4x3xf32>
     %28 = stablehlo.constant dense<0.0> : tensor<f32>
-    %29 = stablehlo.reduce(%27 init: %28) applies stablehlo.add across dimensions = [1] : (tensor<4x3xf32>, tensor<f32>) -> tensor<4xf32>
+    %29 = "stablehlo.reduce"(%27, %28) ({
+    ^bb0(%ir29_0r0_a0: tensor<f32>, %ir29_0r0_a1: tensor<f32>):
+      %ir29_0r0_0_0 = "stablehlo.add"(%ir29_0r0_a0, %ir29_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
+      "stablehlo.return"(%ir29_0r0_0_0) : (tensor<f32>) -> ()
+    }) {dimensions = array<i64: 1>} : (tensor<4x3xf32>, tensor<f32>) -> (tensor<4xf32>)
     %30 = stablehlo.constant dense<0.0> : tensor<f32>
-    %31 = stablehlo.reduce(%29 init: %30) applies stablehlo.add across dimensions = [0] : (tensor<4xf32>, tensor<f32>) -> tensor<f32>
+    %31 = "stablehlo.reduce"(%29, %30) ({
+    ^bb0(%ir31_0r0_a0: tensor<f32>, %ir31_0r0_a1: tensor<f32>):
+      %ir31_0r0_0_0 = "stablehlo.add"(%ir31_0r0_a0, %ir31_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
+      "stablehlo.return"(%ir31_0r0_0_0) : (tensor<f32>) -> ()
+    }) {dimensions = array<i64: 0>} : (tensor<4xf32>, tensor<f32>) -> (tensor<f32>)
     %32 = stablehlo.constant dense<4.0> : tensor<f32>
     %33 = stablehlo.divide %31, %32 : tensor<f32>
     %34 = stablehlo.negate %33 : tensor<f32>
@@ -47,7 +63,11 @@ module {
     %44 = stablehlo.select %25, %42, %43 : tensor<4x3xi1>, tensor<4x3xf32>
     %45 = stablehlo.negate %44 : tensor<4x3xf32>
     %46 = stablehlo.constant dense<0.0> : tensor<f32>
-    %47 = stablehlo.reduce(%45 init: %46) applies stablehlo.add across dimensions = [1] : (tensor<4x3xf32>, tensor<f32>) -> tensor<4xf32>
+    %47 = "stablehlo.reduce"(%45, %46) ({
+    ^bb0(%ir47_0r0_a0: tensor<f32>, %ir47_0r0_a1: tensor<f32>):
+      %ir47_0r0_0_0 = "stablehlo.add"(%ir47_0r0_a0, %ir47_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
+      "stablehlo.return"(%ir47_0r0_0_0) : (tensor<f32>) -> ()
+    }) {dimensions = array<i64: 1>} : (tensor<4x3xf32>, tensor<f32>) -> (tensor<4xf32>)
     %48 = stablehlo.reshape %47 : (tensor<4xf32>) -> tensor<4x1xf32>
     %49 = stablehlo.reshape %48 : (tensor<4x1xf32>) -> tensor<4x1xf32>
     %50 = stablehlo.divide %49, %16 : tensor<4x1xf32>
@@ -55,7 +75,11 @@ module {
     %52 = stablehlo.multiply %51, %13 : tensor<4x3xf32>
     %53 = stablehlo.add %44, %52 : tensor<4x3xf32>
     %54 = stablehlo.constant dense<0.0> : tensor<f32>
-    %55 = stablehlo.reduce(%53 init: %54) applies stablehlo.add across dimensions = [0] : (tensor<4x3xf32>, tensor<f32>) -> tensor<3xf32>
+    %55 = "stablehlo.reduce"(%53, %54) ({
+    ^bb0(%ir55_0r0_a0: tensor<f32>, %ir55_0r0_a1: tensor<f32>):
+      %ir55_0r0_0_0 = "stablehlo.add"(%ir55_0r0_a0, %ir55_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
+      "stablehlo.return"(%ir55_0r0_0_0) : (tensor<f32>) -> ()
+    }) {dimensions = array<i64: 0>} : (tensor<4x3xf32>, tensor<f32>) -> (tensor<3xf32>)
     %56 = stablehlo.reshape %55 : (tensor<3xf32>) -> tensor<1x3xf32>
     %57 = stablehlo.reshape %56 : (tensor<1x3xf32>) -> tensor<3xf32>
     %58 = stablehlo.transpose %arg2, dims = [1, 0] : (tensor<5x3xf32>) -> tensor<3x5xf32>
@@ -66,7 +90,11 @@ module {
     %63 = stablehlo.compare LT, %62, %2, FLOAT : (tensor<4x5xf32>, tensor<4x5xf32>) -> tensor<4x5xi1>
     %64 = stablehlo.select %63, %59, %62 : tensor<4x5xi1>, tensor<4x5xf32>
     %65 = stablehlo.constant dense<0.0> : tensor<f32>
-    %66 = stablehlo.reduce(%64 init: %65) applies stablehlo.add across dimensions = [0] : (tensor<4x5xf32>, tensor<f32>) -> tensor<5xf32>
+    %66 = "stablehlo.reduce"(%64, %65) ({
+    ^bb0(%ir66_0r0_a0: tensor<f32>, %ir66_0r0_a1: tensor<f32>):
+      %ir66_0r0_0_0 = "stablehlo.add"(%ir66_0r0_a0, %ir66_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
+      "stablehlo.return"(%ir66_0r0_0_0) : (tensor<f32>) -> ()
+    }) {dimensions = array<i64: 0>} : (tensor<4x5xf32>, tensor<f32>) -> (tensor<5xf32>)
     %67 = stablehlo.reshape %66 : (tensor<5xf32>) -> tensor<1x5xf32>
     %68 = stablehlo.reshape %67 : (tensor<1x5xf32>) -> tensor<5xf32>
     %69 = stablehlo.transpose %arg13, dims = [1, 0] : (tensor<4x3xf32>) -> tensor<3x4xf32>

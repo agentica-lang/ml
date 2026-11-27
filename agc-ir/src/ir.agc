@@ -8,8 +8,11 @@ end
 
 enum Element
   I1
+  I8
+  I16
   I32
   I64
+  U8
   F16
   F32
   F64
@@ -99,8 +102,11 @@ end
 def show_type(t: TensorType) -> String
   ty = case t.element
     Element.I1 -> "i1"
+    Element.I8 -> "i8"
+    Element.I16 -> "i16"
     Element.I32 -> "i32"
     Element.I64 -> "i64"
+    Element.U8 -> "ui8"
     Element.F16 -> "f16"
     Element.F32 -> "f32"
     Element.F64 -> "f64"

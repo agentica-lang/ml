@@ -12,6 +12,7 @@ import Graph from "graph"
 import Lower from "lower"
 import Reference from "reference"
 import Pool from "stablehlo_pool"
+import Reduce from "stablehlo_reduce"
 import Delta from "stablehlo_delta"
 import Types from "types"
 
@@ -456,7 +457,7 @@ def ir_lines(b: IR.Block, sources: List[String], first: Int) -> Result[List[Stri
   lines: List[String] = []
   for i in 0...b.ops.size
     op = b.ops[i]
-    lines = lines.push(try IR.operation(op, names, "ir#{first}_#{i}"))
+    lines = lines.push(try IR.operation(op, names, "ir#{first}_#{i}", "    "))
     for value in op.results
       names = names.put(value.id, "%#{first + i}")
     end
@@ -602,10 +603,28 @@ def ir_type(shape: List[Int], dtype: Types.Dtype) -> Result[IR.TensorType]
     Types.Dtype.F16 -> ok(IR.TensorType(shape: shape, element: IR.Element.F16))
     Types.Dtype.F32 -> ok(IR.TensorType(shape: shape, element: IR.Element.F32))
     Types.Dtype.F64 -> ok(IR.TensorType(shape: shape, element: IR.Element.F64))
+    Types.Dtype.I8 -> ok(IR.TensorType(shape: shape, element: IR.Element.I8))
+    Types.Dtype.I16 -> ok(IR.TensorType(shape: shape, element: IR.Element.I16))
     Types.Dtype.I32 -> ok(IR.TensorType(shape: shape, element: IR.Element.I32))
     Types.Dtype.I64 -> ok(IR.TensorType(shape: shape, element: IR.Element.I64))
+    Types.Dtype.U8 -> ok(IR.TensorType(shape: shape, element: IR.Element.U8))
+    Types.Dtype.Bool -> ok(IR.TensorType(shape: shape, element: IR.Element.I1))
     _ -> error("StableHLO IR has no element type for #{Types.dtype_name(dtype)}")
   end
+end
+
+def put_reduce(
+  l: Lines,
+  name: String,
+  x: IR.TensorType,
+  init: String,
+  axes: List[Int],
+  combine: String,
+) -> Result[Lines]
+  entry = IR.block([x, IR.TensorType(shape: [], element: x.element)])
+  built = try Reduce.reduce_op(entry, entry.args[0], entry.args[1], axes, combine)
+  lines = try ir_lines(built.block, [name, init], l.first + l.defs.size)
+  ok(l.with(defs: l.defs + lines))
 end
 
 # Whether one of the indices `name` (the tensor `idx`) is outside `[0, rows)`: an `i1`, the last line. No lines when
@@ -636,12 +655,8 @@ def outside(idx: Types.Tensor, name: String, rows: Int, first: Int) -> Result[Li
   return ok(l.defs) if idx.shape.empty?
   any = last(l)
   l = put(l, try splat(Types.Values.Bool(false), [], Types.Dtype.Bool))
-  axes = ints((0...idx.shape.size).to_a)
-  ok(
-    l.defs.push(
-      "stablehlo.reduce(#{any} init: #{last(l)}) applies stablehlo.or across dimensions = #{axes} : (#{flags}, tensor<i1>) -> tensor<i1>",
-    ),
-  )
+  l = try put_reduce(l, any, try ir_type(idx.shape, Types.Dtype.Bool), last(l), (0...idx.shape.size).to_a, "or")
+  ok(l.defs)
 end
 
 def put(l: Lines, text: String) -> Lines = l.with(defs: l.defs.push(text))
@@ -794,23 +809,16 @@ def softmax_last(l: Lines, name: String, shape: List[Int], dtype: Types.Dtype) -
   q = shape.size - 1
   full = try tensor_type(shape, dtype)
   lead = try tensor_type(shape.take(q), dtype)
-  scalar = try tensor_type([], dtype)
   dims = ints((0...q).to_a)
   l = put(l, try fill_scalar("maximum", dtype))
-  l = put(
-    l,
-    "stablehlo.reduce(#{name} init: #{last(l)}) applies stablehlo.maximum across dimensions = [#{q}] : (#{full}, #{scalar}) -> #{lead}",
-  )
+  l = try put_reduce(l, name, try ir_type(shape, dtype), last(l), [q], "maximum")
 
   l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{full}")
   l = put(l, "stablehlo.subtract #{name}, #{last(l)} : #{full}")
   l = put(l, "stablehlo.exponential #{last(l)} : #{full}")
   powers = last(l)
   l = put(l, try fill_scalar("add", dtype))
-  l = put(
-    l,
-    "stablehlo.reduce(#{powers} init: #{last(l)}) applies stablehlo.add across dimensions = [#{q}] : (#{full}, #{scalar}) -> #{lead}",
-  )
+  l = try put_reduce(l, powers, try ir_type(shape, dtype), last(l), [q], "add")
 
   l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{full}")
   ok(put(l, "stablehlo.divide #{powers}, #{last(l)} : #{full}"))
@@ -863,13 +871,9 @@ end
 def last_mean(l: Lines, name: String, like: Types.Tensor) -> Result[Lines]
   q = like.shape.size - 1
   lead = like.shape.take(q)
-  scalar = try tensor_type([], like.dtype)
   reduced = try tensor_type(lead, like.dtype)
   l = put(l, try fill_scalar("add", like.dtype))
-  l = put(
-    l,
-    "stablehlo.reduce(#{name} init: #{last(l)}) applies stablehlo.add across dimensions = [#{q}] : (#{try type_of(like)}, #{scalar}) -> #{reduced}",
-  )
+  l = try put_reduce(l, name, try ir_type(like.shape, like.dtype), last(l), [q], "add")
 
   total = last(l)
   l = put(l, try splat(Types.Values.Float(like.shape[q].to_f), lead, like.dtype))
@@ -1078,10 +1082,7 @@ def argmax(
   source = last(l)
   top = try tensor_type(lead, x.dtype)
   l = put(l, try fill_scalar("maximum", x.dtype))
-  l = put(
-    l,
-    "stablehlo.reduce(#{source} init: #{last(l)}) applies stablehlo.maximum across dimensions = [#{q}] : (#{rows}, #{try tensor_type([], x.dtype)}) -> #{top}",
-  )
+  l = try put_reduce(l, source, try ir_type(flat, x.dtype), last(l), [q], "maximum")
 
   l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{ints((0...q).to_a)} : (#{top}) -> #{rows}")
 
@@ -1097,10 +1098,7 @@ def argmax(
   chosen = last(l)
   l = put(l, try splat(Types.Values.Int(block), [], t.dtype))
   found = try tensor_type(lead, t.dtype)
-  l = put(
-    l,
-    "stablehlo.reduce(#{chosen} init: #{last(l)}) applies stablehlo.minimum across dimensions = [#{q}] : (#{positions}, #{try tensor_type([], t.dtype)}) -> #{found}",
-  )
+  l = try put_reduce(l, chosen, try ir_type(flat, t.dtype), last(l), [q], "minimum")
 
   if keep_dims
     l = put(l, "stablehlo.reshape #{last(l)} : (#{found}) -> #{try type_of(t)}")
@@ -1147,14 +1145,10 @@ def reduction(
   first: Int,
 ) -> Result[List[String]]
   dropped = Types.reduced_shape(x.shape, axes, false)
-  scalar = try tensor_type([], x.dtype)
-  reduced = try tensor_type(dropped, x.dtype)
-  sig = "(#{try type_of(x)}, #{scalar}) -> #{reduced}"
-  apply = "applies stablehlo.#{combine} across dimensions = #{ints(axes)}"
-  defs = [try fill_scalar(combine, x.dtype), "stablehlo.reduce(#{name} init: %#{first}) #{apply} : #{sig}"]
-
-  return ok(defs) if !keep_dims
-  ok(defs.push("stablehlo.reshape %#{first + 1} : (#{reduced}) -> #{try type_of(t)}"))
+  l = put(Lines(first: first, defs: []), try fill_scalar(combine, x.dtype))
+  l = try put_reduce(l, name, try ir_type(x.shape, x.dtype), last(l), axes, combine)
+  return ok(l.defs) if !keep_dims
+  ok(put(l, "stablehlo.reshape #{last(l)} : (#{try tensor_type(dropped, x.dtype)}) -> #{try type_of(t)}").defs)
 end
 
 def mean(

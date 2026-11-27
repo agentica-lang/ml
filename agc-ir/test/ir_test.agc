@@ -48,6 +48,14 @@ def test_a_bool_attribute_prints_true_or_false() -> Result[Void]
   Test.eq(text, "\"test.flags\"(%arg0) {sorted = false, unique = true} : (tensor<i32>) -> (tensor<i32>)")
 end
 
+def test_the_narrow_integer_elements_print_their_mlir_names() -> Result[Void]
+  shown = [IR.Element.I8, IR.Element.I16, IR.Element.U8].map { |e|
+    IR.show_type(IR.TensorType(shape: [2], element: e))
+  }
+
+  Test.eq(shown, ["tensor<2xi8>", "tensor<2xi16>", "tensor<2xui8>"])
+end
+
 def test_a_function_prints_region_arguments_captures_and_attributes() -> Result[Void]
   outer = IR.block([I32])
   region = IR.block([I32], some(outer))
