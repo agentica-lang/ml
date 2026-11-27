@@ -390,7 +390,7 @@ jobs:
         working-directory: transformers
         env:
           TENSOR_REQUIRE_XLA: '1'
-        run: agentica test --max-steps 200000000 --only xla test/generate_test.agc
+        run: agentica test --max-steps 200000000 --only xla test/generate_test.agc test/bert_weights_test.agc
 
   # The libtorch backend of tensor/ (Backend.Torch) on Ubuntu's own libtorch-dev, the system package: the repository never
   # downloads or vendors libtorch. tools/build-torch.sh finds it, `agentica install` builds the optional native module,
