@@ -376,30 +376,93 @@ def max_pool2d(
   ])
 end
 
-# Gather the selected expert matrices, then contract each input row with its own expert.
+# Gather the selected expert matrices, then contract each input row with its own expert. The ops are built with
+# `agc-ir` and printed in order by `ir_lines`.
 def expert_matmul(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: Int) -> Result[List[String]]
   weights = args[0]
   x = args[1]
   ids = args[2]
   rows = weights.shape[1]
   inner = weights.shape[2]
-  selected = weights.with(shape: ids.shape + [rows, inner])
-  broadcast_x = try tensor_type(ids.shape + [inner], x.dtype)
-  selected_ty = try type_of(selected)
-  gathered = try gather(
-    selected,
-    [weights, ids],
-    [a[0], a[2]],
-    "(#{try type_of(weights)}, #{try type_of(ids)}) -> #{selected_ty}",
+  entry = IR.block([
+    try ir_type(weights.shape, weights.dtype),
+    try ir_type(x.shape, x.dtype),
+    try ir_type(ids.shape, ids.dtype),
+  ])
+
+  selected = try ir_type(ids.shape + [rows, inner], weights.dtype)
+  broadcast_x = try ir_type(ids.shape + [inner], x.dtype)
+  out = try ir_type(t.shape, t.dtype)
+  gathered = try IR.append(
+    entry,
+    "stablehlo.gather",
+    [entry.args[0], entry.args[2]],
+    [selected],
+    gather_attrs(weights.shape, ids.shape.size),
   )
 
-  ok(
-    gathered +
+  spread = try IR.append(
+    gathered.block,
+    "stablehlo.broadcast_in_dim",
+    [entry.args[1]],
+    [broadcast_x],
+    [IR.Attribute(key: "broadcast_dimensions", value: IR.Attr.I64Array([0, 1, 2]))],
+  )
+
+  product = try IR.append(
+    spread.block,
+    "stablehlo.dot_general",
+    [spread.values[0], gathered.values[0]],
+    [out],
     [
-      "stablehlo.broadcast_in_dim #{a[1]}, dims = [0, 1, 2] : (#{try type_of(x)}) -> #{broadcast_x}",
-      "stablehlo.dot_general %#{first + gathered.size}, %#{first + gathered.size - 1}, batching_dims = [0, 1] x [0, 1], contracting_dims = [2] x [3] : (#{broadcast_x}, #{selected_ty}) -> #{try type_of(t)}",
+      IR.Attribute(
+        key: "dot_dimension_numbers",
+        value: IR.Attr.DialectAttr(
+          "stablehlo",
+          "dot",
+          "lhs_batching_dimensions = [0, 1], rhs_batching_dimensions = [0, 1], lhs_contracting_dimensions = [2], rhs_contracting_dimensions = [3]",
+        ),
+      ),
     ],
   )
+
+  ir_lines(product.block, [a[0], a[1], a[2]], first)
+end
+
+# The attributes of the gather of rows of an expert table `source`, by indices of rank `index_rank`: one row slice per
+# index, the index axes first, as `gather` writes them.
+def gather_attrs(source: List[Int], index_rank: Int) -> List[IR.Attribute]
+  rest = source.drop(1)
+  fields = ["collapsed_slice_dims = [0]", "start_index_map = [0]", "index_vector_dim = #{index_rank}"]
+  if !rest.empty?
+    fields = ["offset_dims = #{ints((0...rest.size).to_a.map { |i| index_rank + i })}"] + fields
+  end
+
+  [
+    IR.Attribute(key: "dimension_numbers", value: IR.Attr.DialectAttr("stablehlo", "gather", fields.join(", "))),
+    IR.Attribute(key: "slice_sizes", value: IR.Attr.I64Array([1] + rest)),
+    IR.Attribute(key: "indices_are_sorted", value: IR.Attr.Bool(false)),
+  ]
+end
+
+# The lines of the ops of `b` in order, each with one result: the entry argument `i` is the SSA name `sources[i]`, and
+# the result of op `i` is `%first + i`.
+def ir_lines(b: IR.Block, sources: List[String], first: Int) -> Result[List[String]]
+  names: Map[Ref, String] = {}
+  for i in 0...sources.size
+    names = names.put(b.args[i].id, sources[i])
+  end
+
+  lines: List[String] = []
+  for i in 0...b.ops.size
+    op = b.ops[i]
+    lines = lines.push(try IR.operation(op, names, "ir#{first}_#{i}"))
+    for value in op.results
+      names = names.put(value.id, "%#{first + i}")
+    end
+  end
+
+  ok(lines)
 end
 
 # `adam_step` over `[p, g, m, v, hyper]`: the new `[p, m, v]` stacked on a new first axis, from the ops of

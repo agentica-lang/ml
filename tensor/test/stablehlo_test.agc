@@ -170,6 +170,29 @@ def test_set_rows_text_of_rank_three_moves_the_rows_axis() -> Result[Void]
   )
 end
 
+## The text of `expert_matmul`: the selected expert matrices gathered, the input broadcast over them, then one batched
+## product per row. The golden is the emitter's text before it is built with `agc-ir`.
+def test_expert_matmul_text_gathers_then_contracts_each_row() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([3, 2, 4], Tensor.Dtype.F32), spec([2, 1, 4], Tensor.Dtype.F32), spec([2, 2], Tensor.Dtype.I32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.expert_matmul(xs[0], xs[1], xs[2])]) },
+  )
+
+  Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<3x2x4xf32>, %arg1: tensor<2x1x4xf32>, %arg2: tensor<2x2xi32>) -> (tensor<2x2x2xf32>) {
+          %0 = "stablehlo.gather"(%arg0, %arg2) {dimension_numbers = #stablehlo.gather<offset_dims = [2, 3], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 2>, slice_sizes = array<i64: 1, 2, 4>, indices_are_sorted = false} : (tensor<3x2x4xf32>, tensor<2x2xi32>) -> (tensor<2x2x2x4xf32>)
+          %1 = "stablehlo.broadcast_in_dim"(%arg1) {broadcast_dimensions = array<i64: 0, 1, 2>} : (tensor<2x1x4xf32>) -> (tensor<2x2x4xf32>)
+          %2 = "stablehlo.dot_general"(%1, %0) {dot_dimension_numbers = #stablehlo.dot<lhs_batching_dimensions = [0, 1], rhs_batching_dimensions = [0, 1], lhs_contracting_dimensions = [2], rhs_contracting_dimensions = [3]>} : (tensor<2x2x4xf32>, tensor<2x2x2x4xf32>) -> (tensor<2x2x2xf32>)
+          func.return %2 : tensor<2x2x2xf32>
+        }
+      }
+    MLIR
+  )
+end
+
 def spec(shape: List[Int], dtype: Tensor.Dtype) -> Trace.Spec
   Trace.Spec(shape: shape, dtype: dtype, backend: Tensor.Backend.Reference)
 end
