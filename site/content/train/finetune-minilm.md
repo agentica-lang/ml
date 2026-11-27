@@ -4,7 +4,20 @@ description: A whole program that fine-tunes a sentence-embedding model on score
 weight: 4
 ---
 
-This page is one program, `transformers/tools/finetune_stsb.agc` of the ml repository, that fine-tunes `sentence-transformers/all-MiniLM-L6-v2` on STS-B. STS-B is a set of sentence pairs, each with a score from 0 (unrelated) to 1 (the same meaning), and the model is a sentence-embedding model: it turns a sentence into a vector, and two sentences that mean the same should have vectors with a high cosine. The program reads the pairs, tokenizes them, cuts them into batches, trains with AdamW and the cosine loss of sentence-transformers, measures Spearman's correlation of the cosines with the scores on a validation sample before, after every epoch and after, saves the model, loads it back and measures again. The training is a [`Loop`](_index.md#loop): a trainer, two metrics and two handlers, run over batches. The backend, the number of training pairs, the epochs, the size of the validation sample and a time budget are arguments; the backend is `cpu`, `vulkan`, `xla` or `torch`. It uses the pieces of the [train](_index.md), [data loader](data.md) and [transformers](../transformers/_index.md) pages.
+This page is one program, `transformers/tools/finetune_stsb.agc` of the ml repository, that fine-tunes `sentence-transformers/all-MiniLM-L6-v2` on STS-B. The training is a [`Loop`](_index.md#loop), a pipe of a trainer, two metrics and handlers, run over batches:
+
+```text
+Loop.trainer(loss, params, optimizer)
+|> Loop.metric(spearman)
+|> Loop.handle(Loop.Event.StepCompleted, print_the_step, every: 10)
+|> Loop.run_batches(batch_of, steps, epochs: 2)
+```
+
+STS-B is a set of sentence pairs, each with a score from 0 (unrelated) to 1 (the same meaning), and the model is a sentence-embedding model: it turns a sentence into a vector, and two sentences that mean the same should have vectors with a high cosine.
+
+The program reads the pairs, tokenizes them, cuts them into batches, trains with AdamW and the cosine loss of sentence-transformers, and measures Spearman's correlation of the cosines with the scores on a validation sample before and after (and after every epoch, when there is no time budget). Then it saves the model, loads it back and measures again.
+
+The backend, the number of training pairs, the epochs, the size of the validation sample and a time budget are arguments; the backend is `cpu`, `vulkan`, `xla` or `torch`. The program uses the pieces of the [train](_index.md), [data loader](data.md) and [transformers](../transformers/_index.md) pages.
 
 The code on this page is the program: CI joins the code blocks of the page in order and fails when they differ from the program, ignoring blank lines.
 
@@ -12,7 +25,7 @@ The data is `sentence-transformers/stsb`: 5,749 training pairs and 1,500 validat
 
 ## What it is not
 
-This is the loop, not a recipe for the best score. The program trains on the first rows of a seeded shuffle of the training split, in a new seeded order each epoch, with no gradient clipping and no dropout. The learning rate is 2e-5 with a linear warmup over the first tenth of all the steps and a linear decay to 0 at the last (`Optim.Schedule.WarmupLinear`, the schedule of Hugging Face's `get_linear_schedule_with_warmup`), and the weight decay is 0.01. It measures on a sample of the validation split: the first rows of a seeded shuffle of it, 1,500 (all of it) by default, the same sample before, after every epoch, after and on reload. A run is reproducible from the files and the seed, but not bit for bit: the last digits of a loss change between backends and, on ggml, between runs.
+This is the loop, not a recipe for the best score. The program trains on the first rows of a seeded shuffle of the training split, in a new seeded order each epoch, with no gradient clipping and no dropout. The learning rate is 2e-5 with a linear warmup over the first tenth of all the steps and a linear decay to 0 at the last (`Optim.Schedule.WarmupLinear`, the schedule of Hugging Face's `get_linear_schedule_with_warmup`), and the weight decay is 0.01. It measures on a sample of the validation split: the first rows of a seeded shuffle of it, 500 by default (1,500 is all of it), the same sample before, after every epoch, after and on reload. A run is reproducible from the files and the seed, but not bit for bit: the last digits of a loss change between backends and, on ggml, between runs.
 
 ## Fetch
 
@@ -43,7 +56,7 @@ import WordPiece from "../tokenizer/wordpiece"
 
 TRAIN_ROWS = 1000
 EPOCHS = 1
-VALIDATION_ROWS = 1500
+VALIDATION_ROWS = 500
 LOG_EVERY = 10
 SEED = 1
 BATCH = 16
@@ -143,10 +156,12 @@ def options_of(args: List[String]) -> Result[Options]
   return error("ROWS is at least BATCH (#{BATCH}), got #{options.rows}") if options.rows < BATCH
   return error("EPOCHS is at least 1, got #{options.epochs}") if options.epochs < 1
   return error("VALIDATION is at least 1, got #{options.validation}") if options.validation < 1
+  return ok(options) if args.size < 8
 
-  return ok(options.with(seconds: some(try args[7].to_i))) if args.size > 7
+  seconds = try args[7].to_i
+  return error("SECONDS is at least 1, got #{seconds}") if seconds < 1
 
-  ok(options)
+  ok(options.with(seconds: some(seconds)))
 end
 
 def text_at(args: List[String], at: Int, fallback: String) -> String
@@ -162,7 +177,7 @@ def int_at(args: List[String], at: Int, fallback: Int) -> Result[Int]
 end
 
 # Every weight.
-def trainable(base: Bert.Bert) -> Result[Params.Split] = Params.split(Bert.weights(base), ->(_name: String) { true })
+def trainable(base: Bert.Bert) -> Result[Params.Split] = Params.split(Bert.weights(base), ->(_) { true })
 
 def backend_of(name: String) -> Result[Tensor.Backend]
   case name
@@ -235,7 +250,13 @@ end
 
 ## Batches, loss and AdamW
 
-A batch is the ids of `n` pairs as an `I32` tensor `[n, 2, LENGTH]` and the `n` scores. `train_epochs` is the whole training as one pipe. `Loop.trainer` takes the loss, the parameters and the optimizer: AdamW (`Optim.adamw`) with the schedule above and a weight decay that skips the biases and the layer norms. `Loop.metric` adds the two numbers that the loop measures at the end of every epoch on the validation sample (`gauge`, below). The first `Loop.handle` prints the step and its loss every `LOG_EVERY` steps, and the second prints the epoch with its metrics: each is a function of a `Loop.Info`, with the types of its arguments inferred. `within` adds a handler that stops the run, with `Loop.stop`, at the first step past the time budget, if there is one: `run_batches` then answers what the run trained so far, without an error. `Loop.run_batches` takes the function that makes batch `i` of epoch `epoch` (`picked` takes the pairs of that batch from the order of the epoch), the number of batches and the epochs. A last partial batch is left out.
+A batch is the ids of `n` pairs as an `I32` tensor `[n, 2, LENGTH]` and the `n` scores. `train_epochs` is the whole training as one pipe. `Loop.trainer` takes the loss, the parameters and the optimizer: AdamW (`Optim.adamw`) with the schedule above and a weight decay that skips the biases and the layer norms.
+
+The handlers are functions of a `Loop.Info`, with the types of their arguments inferred. One notes when each step ends, for the line that says how long the steps took (`throughput`), and one prints the step and its loss every `LOG_EVERY` steps. Without a time budget, `measured_each_epoch` adds `Loop.metric` for the two numbers of the validation sample (`gauge`, below) and a handler that prints them at the end of every epoch. With a budget, it adds nothing: the clock counts only the training steps and the batches they take, and the model is measured before and after, outside it.
+
+`within` adds the handler that returns `Loop.stop(info)` at the first step past the budget: `run_batches` then answers what the run trained so far, without an error. A stopped run does not finish its learning rate schedule, so runs on different backends end at different points of it, and their scores are not for comparing.
+
+`Loop.run_batches` takes the function that makes batch `i` of epoch `epoch` (`picked` takes the pairs of that batch from the order of the epoch), the number of batches and the epochs. A last partial batch is left out.
 
 The loss sends both sentences of every pair through the model as one batch of `2 n` rows. `embeddings` is the sentence embedding of sentence-transformers: the mean of the token vectors, the padding masked out, then each vector divided by its length. The mask is a constant of the step, made from the ids, and the model is rebuilt from the parameters (`Bert.with_weights`), so that the gradient reaches every weight. The loss is the mean of the squared gap between the cosine of a pair and its score (`Sentence.cosine_similarity_loss`).
 
@@ -256,8 +277,9 @@ end
 
 # The training: `Loop` runs `epochs` passes of batches of `BATCH` pairs, in a new seeded order each epoch (a
 # last partial
-# batch is left out). The schedule warms up over the first tenth of all the steps and decays to 0 at the last. At the
-# end of each epoch the validation sample is measured, and every `LOG_EVERY` steps the step and its loss are printed.
+# batch is left out). The schedule warms up over the first tenth of all the steps and decays to 0 at the last, which a
+# run stopped by its budget does not reach. Every `LOG_EVERY` steps the step and its loss are printed, and a last line
+# says how many steps ran, in how long, and how many pairs per second.
 def train_epochs(net: Net, rows: List[Pair], validation: List[Pair], options: Options) -> Result[Train.Fit]
   steps = rows.size / BATCH
   total = steps * options.epochs
@@ -274,10 +296,17 @@ def train_epochs(net: Net, rows: List[Pair], validation: List[Pair], options: Op
     schedule: Optim.Schedule.WarmupLinear(total / 10, total),
   )
 
-  (
+  ends: Channel[Int] = Channel.new(total)
+  started = Time.monotonic_ms()
+  fit = (
     Loop.trainer(->(ps, b) { loss(net, ps, b) }, net.split.trainable, optimizer)
-    |> Loop.metric(gauge("spearman", &Loop.spearman, net, validation))
-    |> Loop.metric(gauge("cosine loss", &squared_gap, net, validation))
+    |> Loop.handle(
+      Loop.Event.StepCompleted,
+      ->(_) {
+        _ = ends.send(Time.monotonic_ms(), 0)
+        ok()
+      },
+    )
     |> Loop.handle(
       Loop.Event.StepCompleted,
       ->(info) {
@@ -286,20 +315,65 @@ def train_epochs(net: Net, rows: List[Pair], validation: List[Pair], options: Op
       },
       every: LOG_EVERY,
     )
-    |> Loop.handle(
-      Loop.Event.EpochCompleted,
-      ->(info) {
-        puts("epoch #{info.epoch}: Spearman #{info.metrics["spearman"]}, cosine loss #{info.metrics["cosine loss"]}")
-        ok()
-      },
-    )
-    |> within(options.seconds, Time.monotonic_ms())
-    |> Loop.run_batches(
+    |> measured_each_epoch(net, validation, options.seconds)
+    |> within(options.seconds, started)
+    |> try Loop.run_batches(
       ->(epoch, i) { batch(net.base, picked(rows, orders[epoch - 1], i)) },
       steps,
       epochs: options.epochs,
     )
   )
+
+  puts(throughput(ends, started))
+  ok(fit)
+end
+
+# Without a budget, the two measures of the validation sample at the end of every epoch, printed. With one,
+# nothing: the
+# clock of the budget counts the training steps and not the measuring.
+def measured_each_epoch(t: Loop.Trainer, net: Net, validation: List[Pair], seconds: Optional[Int]) -> Loop.Trainer
+  case seconds
+    some(_) -> t
+    none ->
+      (
+        t
+        |> Loop.metric(gauge("spearman", &Loop.spearman, net, validation))
+        |> Loop.metric(gauge("cosine loss", &squared_gap, net, validation))
+        |> Loop.handle(
+          Loop.Event.EpochCompleted,
+          ->(info) {
+            puts(
+              "epoch #{info.epoch}: Spearman #{info.metrics["spearman"]}, cosine loss #{info.metrics["cosine loss"]}",
+            )
+
+            ok()
+          },
+        )
+      )
+  end
+end
+
+# `trained STEPS steps in MS ms, N pairs/s, N pairs/s after the first step`, from the time at which each step ended and
+# the time the training started. The first step holds the compile and the warmup of the backend.
+def throughput(ends: Channel[Int], started: Int) -> String
+  times: List[Int] = []
+  got = ends.recv(0)
+  while got.ok?
+    times = times.push(got.unwrap!)
+    got = ends.recv(0)
+  end
+
+  return "trained 0 steps" if times.empty?
+
+  ms = times[times.size - 1] - started
+  rest = times[times.size - 1] - times[0]
+  after_first = 0.0
+  if times.size > 1 and rest > 0
+    after_first = ((times.size - 1) * BATCH * 1000).to_f / rest.to_f
+  end
+
+  rate = (times.size * BATCH * 1000).to_f / ms.to_f
+  "trained #{times.size} steps in #{ms} ms, #{rate} pairs/s, #{after_first} pairs/s after the first step"
 end
 
 # With a budget of `seconds`, the trainer that stops after the first step past it, answering what it has trained.
@@ -352,7 +426,7 @@ end
 
 ## Measure
 
-A `Loop.Metric` is a number measured on batches of its own: `gauge` makes one from the validation sample, with a `reduce` function. For each batch `cosines` gives one row per pair, the cosine of its two sentences and its score, and `reduce` turns all the rows into the number: `Loop.spearman` is Spearman's correlation of the cosines with the scores (the Pearson correlation of their ranks), and `squared_gap` is the mean squared gap between them, the loss. The embeddings go through `Trace.eval` with the parameters as inputs, so the loop measures the model with the weights of each epoch, and `evaluate` (`Loop.measure`) the model before the training (with its own weights), after it and on reload, on every backend. The last batch of the sample may be shorter than the others.
+A `Loop.Metric` is a number measured on batches of its own: `gauge` makes one from the validation sample, with a `reduce` function. For each batch `cosines` gives one row per pair, the cosine of its two sentences and its score, and `reduce` turns all the rows into the number: `Loop.spearman` is Spearman's correlation of the cosines with the scores (the Pearson correlation of their ranks), and `squared_gap` is the mean squared gap between them, the loss. The embeddings go through `Trace.eval` with the parameters as inputs, so the loop measures the model with the weights of each epoch, and `evaluate` (`Loop.measure`) the model before the training (with its own weights), after it and on reload, on every backend. The last batch of the sample may be shorter than the others. `evaluate` computes the cosines of the sample once and reduces them twice. Measuring is slow next to a few training steps: on a short run most of the time goes to the sample, so keep it small (500 pairs by default) when the training is short.
 
 ```agentica
 # A number measured on the validation pairs at the end of each epoch: `observe` gives the cosine of each pair and its
@@ -391,14 +465,19 @@ def squared_gap(rows: List[List[Float]]) -> Float
   rows.map { |row: List[Float]| (row[0] - row[1]) * (row[0] - row[1]) }.sum / rows.size.to_f
 end
 
-# The validation measures of the weights `ps`.
+# The validation measures of the weights `ps`: the cosines of the whole sample once, reduced twice.
 def evaluate(net: Net, ps: List[Tensor.Tensor], rows: List[Pair]) -> Result[Score]
-  ok(
-    Score(
-      spearman: try Loop.measure(gauge("spearman", &Loop.spearman, net, rows), ps),
-      loss: try Loop.measure(gauge("cosine loss", &squared_gap, net, rows), ps),
-    ),
-  )
+  all: List[List[Float]] = []
+  for i in 0...((rows.size + EVAL_BATCH - 1) / EVAL_BATCH)
+    b = try batch(net.base, rows.drop(i * EVAL_BATCH).take(EVAL_BATCH))
+    got = cosines(net, ps, b)
+    Data.release(b)
+    for row in try got
+      all = all.push(row)
+    end
+  end
+
+  ok(Score(spearman: Loop.spearman(all), loss: squared_gap(all)))
 end
 ```
 
@@ -467,19 +546,29 @@ agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2
 The optional arguments after the model, the data and the output folders are, in order, the backend, the number of training pairs, the epochs, the size of the validation sample and a training time budget in seconds. The backend is the only thing that changes between machines:
 
 ```sh
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out cpu 2000 2 1500
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out vulkan 2000 2 1500
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out xla 2000 2 1500
-agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out torch 2000 2 1500
+agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out cpu 2000 2 500
+agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out vulkan 2000 2 500
+agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out xla 2000 2 500
+agentica --max-steps 1000000000000 tools/finetune_stsb.agc data/all-minilm-l6-v2 data/stsb out torch 2000 2 500
 ```
 
-With a last argument the run stops after the first step past that many seconds and goes on to measure, save and reload what it has trained: `... out cpu 2000 2 1500 90` trains for 90 seconds at most. Without it, it runs all the epochs.
+With a last argument, the training time budget, the run stops after the first step past that many seconds and goes on to measure, save and reload what it has trained: `... out cpu 2000 2 500 90` trains for 90 seconds at most. The budget counts only the training steps (and the batches they take), not the measuring. It is at least 1 second. Without it, the run goes through all the epochs.
 
 `cpu` and `vulkan` are ggml on the CPU and on the first Vulkan device, `xla` is XLA on the CPU (`tensor/tools/install_xla.agc` installs its plugin) and `torch` is libtorch on the CPU (`tensor/tools/build-torch.sh`). A backend that is not on the machine is an `error` that names it.
 
 ## What it prints
 
-`N training pairs, M validation pairs, E epochs, on BACKEND`, then `before:` with Spearman's correlation and the cosine loss of the model as it comes, a line `step S loss L` every `LOG_EVERY` steps, a line `epoch E: Spearman ..., cosine loss ...` at the end of every epoch, `training loss of each epoch: [...]`, and `after:` and `loaded:` with the same two numbers. `loaded` equals `after` to 1e-6 because the program fails when they differ, and `out` then holds `model.safetensors`, `config.json` and `tokenizer.json`. The numbers depend on the arguments, the backend and the machine, so this page gives none: they are the output of your run.
+`N training pairs, M validation pairs, E epochs, on BACKEND`, then `before:` with Spearman's correlation and the cosine loss of the model as it comes, and a line `step S loss L` every `LOG_EVERY` steps. Without a budget, a line `epoch E: Spearman ..., cosine loss ...` follows the end of every epoch.
+
+After the training comes one fixed line that a benchmark can parse:
+
+```text
+trained STEPS steps in MS ms, RATE pairs/s, RATE_AFTER_FIRST pairs/s after the first step
+```
+
+`MS` runs from the start of the training to the end of its last step, and the rates are the pairs of the steps divided by those times. The first step holds the compile and the warmup of the backend (XLA and libtorch compile there), so `pairs/s after the first step` leaves it out. Then come `training loss of each epoch: [...]` (the last epoch of a stopped run is the mean over the steps it ran), `after:` and `loaded:`, with the same two numbers as `before:`.
+
+`loaded` equals `after` to 1e-6 because the program fails when they differ, and `out` then holds `model.safetensors`, `config.json` and `tokenizer.json`. The numbers depend on the arguments, the backend and the machine, so this page gives none: they are the output of your run.
 
 ## Next steps
 

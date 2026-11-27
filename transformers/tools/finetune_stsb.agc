@@ -3,7 +3,8 @@
 ## AdamW and the cosine loss through `Loop`, measures Spearman's correlation of the cosines with the scores on a sample
 ## of the validation split before, after every epoch and after, saves the weights, loads them back and measures again.
 ## The backend, the number of training pairs, the epochs, the size of the validation sample and an optional time budget
-## are arguments. It is the program of the guide `site/content/train/finetune-minilm.md`. From `transformers/`:
+## are arguments. The budget counts only the training steps (and the batches they take): with it the model is measured
+## before and after, not after each epoch, and a line `trained ... steps in ... ms` says how long the steps took. It is the program of the guide `site/content/train/finetune-minilm.md`. From `transformers/`:
 ##
 ## ```sh
 ## sh tools/fetch_stsb.sh data
@@ -26,7 +27,7 @@ import WordPiece from "../tokenizer/wordpiece"
 
 TRAIN_ROWS = 1000
 EPOCHS = 1
-VALIDATION_ROWS = 1500
+VALIDATION_ROWS = 500
 LOG_EVERY = 10
 SEED = 1
 BATCH = 16
@@ -120,10 +121,12 @@ def options_of(args: List[String]) -> Result[Options]
   return error("ROWS is at least BATCH (#{BATCH}), got #{options.rows}") if options.rows < BATCH
   return error("EPOCHS is at least 1, got #{options.epochs}") if options.epochs < 1
   return error("VALIDATION is at least 1, got #{options.validation}") if options.validation < 1
+  return ok(options) if args.size < 8
 
-  return ok(options.with(seconds: some(try args[7].to_i))) if args.size > 7
+  seconds = try args[7].to_i
+  return error("SECONDS is at least 1, got #{seconds}") if seconds < 1
 
-  ok(options)
+  ok(options.with(seconds: some(seconds)))
 end
 
 def text_at(args: List[String], at: Int, fallback: String) -> String
@@ -139,7 +142,7 @@ def int_at(args: List[String], at: Int, fallback: Int) -> Result[Int]
 end
 
 # Every weight.
-def trainable(base: Bert.Bert) -> Result[Params.Split] = Params.split(Bert.weights(base), ->(_name: String) { true })
+def trainable(base: Bert.Bert) -> Result[Params.Split] = Params.split(Bert.weights(base), ->(_) { true })
 
 def backend_of(name: String) -> Result[Tensor.Backend]
   case name
@@ -219,8 +222,9 @@ end
 
 # The training: `Loop` runs `epochs` passes of batches of `BATCH` pairs, in a new seeded order each epoch (a
 # last partial
-# batch is left out). The schedule warms up over the first tenth of all the steps and decays to 0 at the last. At the
-# end of each epoch the validation sample is measured, and every `LOG_EVERY` steps the step and its loss are printed.
+# batch is left out). The schedule warms up over the first tenth of all the steps and decays to 0 at the last, which a
+# run stopped by its budget does not reach. Every `LOG_EVERY` steps the step and its loss are printed, and a last line
+# says how many steps ran, in how long, and how many pairs per second.
 def train_epochs(net: Net, rows: List[Pair], validation: List[Pair], options: Options) -> Result[Train.Fit]
   steps = rows.size / BATCH
   total = steps * options.epochs
@@ -237,10 +241,17 @@ def train_epochs(net: Net, rows: List[Pair], validation: List[Pair], options: Op
     schedule: Optim.Schedule.WarmupLinear(total / 10, total),
   )
 
-  (
+  ends: Channel[Int] = Channel.new(total)
+  started = Time.monotonic_ms()
+  fit = (
     Loop.trainer(->(ps, b) { loss(net, ps, b) }, net.split.trainable, optimizer)
-    |> Loop.metric(gauge("spearman", &Loop.spearman, net, validation))
-    |> Loop.metric(gauge("cosine loss", &squared_gap, net, validation))
+    |> Loop.handle(
+      Loop.Event.StepCompleted,
+      ->(_) {
+        _ = ends.send(Time.monotonic_ms(), 0)
+        ok()
+      },
+    )
     |> Loop.handle(
       Loop.Event.StepCompleted,
       ->(info) {
@@ -249,20 +260,65 @@ def train_epochs(net: Net, rows: List[Pair], validation: List[Pair], options: Op
       },
       every: LOG_EVERY,
     )
-    |> Loop.handle(
-      Loop.Event.EpochCompleted,
-      ->(info) {
-        puts("epoch #{info.epoch}: Spearman #{info.metrics["spearman"]}, cosine loss #{info.metrics["cosine loss"]}")
-        ok()
-      },
-    )
-    |> within(options.seconds, Time.monotonic_ms())
-    |> Loop.run_batches(
+    |> measured_each_epoch(net, validation, options.seconds)
+    |> within(options.seconds, started)
+    |> try Loop.run_batches(
       ->(epoch, i) { batch(net.base, picked(rows, orders[epoch - 1], i)) },
       steps,
       epochs: options.epochs,
     )
   )
+
+  puts(throughput(ends, started))
+  ok(fit)
+end
+
+# Without a budget, the two measures of the validation sample at the end of every epoch, printed. With one,
+# nothing: the
+# clock of the budget counts the training steps and not the measuring.
+def measured_each_epoch(t: Loop.Trainer, net: Net, validation: List[Pair], seconds: Optional[Int]) -> Loop.Trainer
+  case seconds
+    some(_) -> t
+    none ->
+      (
+        t
+        |> Loop.metric(gauge("spearman", &Loop.spearman, net, validation))
+        |> Loop.metric(gauge("cosine loss", &squared_gap, net, validation))
+        |> Loop.handle(
+          Loop.Event.EpochCompleted,
+          ->(info) {
+            puts(
+              "epoch #{info.epoch}: Spearman #{info.metrics["spearman"]}, cosine loss #{info.metrics["cosine loss"]}",
+            )
+
+            ok()
+          },
+        )
+      )
+  end
+end
+
+# `trained STEPS steps in MS ms, N pairs/s, N pairs/s after the first step`, from the time at which each step ended and
+# the time the training started. The first step holds the compile and the warmup of the backend.
+def throughput(ends: Channel[Int], started: Int) -> String
+  times: List[Int] = []
+  got = ends.recv(0)
+  while got.ok?
+    times = times.push(got.unwrap!)
+    got = ends.recv(0)
+  end
+
+  return "trained 0 steps" if times.empty?
+
+  ms = times[times.size - 1] - started
+  rest = times[times.size - 1] - times[0]
+  after_first = 0.0
+  if times.size > 1 and rest > 0
+    after_first = ((times.size - 1) * BATCH * 1000).to_f / rest.to_f
+  end
+
+  rate = (times.size * BATCH * 1000).to_f / ms.to_f
+  "trained #{times.size} steps in #{ms} ms, #{rate} pairs/s, #{after_first} pairs/s after the first step"
 end
 
 # With a budget of `seconds`, the trainer that stops after the first step past it, answering what it has trained.
@@ -348,14 +404,19 @@ def squared_gap(rows: List[List[Float]]) -> Float
   rows.map { |row: List[Float]| (row[0] - row[1]) * (row[0] - row[1]) }.sum / rows.size.to_f
 end
 
-# The validation measures of the weights `ps`.
+# The validation measures of the weights `ps`: the cosines of the whole sample once, reduced twice.
 def evaluate(net: Net, ps: List[Tensor.Tensor], rows: List[Pair]) -> Result[Score]
-  ok(
-    Score(
-      spearman: try Loop.measure(gauge("spearman", &Loop.spearman, net, rows), ps),
-      loss: try Loop.measure(gauge("cosine loss", &squared_gap, net, rows), ps),
-    ),
-  )
+  all: List[List[Float]] = []
+  for i in 0...((rows.size + EVAL_BATCH - 1) / EVAL_BATCH)
+    b = try batch(net.base, rows.drop(i * EVAL_BATCH).take(EVAL_BATCH))
+    got = cosines(net, ps, b)
+    Data.release(b)
+    for row in try got
+      all = all.push(row)
+    end
+  end
+
+  ok(Score(spearman: Loop.spearman(all), loss: squared_gap(all)))
 end
 
 # `dir` gets the weights, and the config and the tokenizer of `model_dir`, so that it loads as the original does.
