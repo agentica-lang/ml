@@ -127,7 +127,8 @@ def emit(
   if !flags.empty?
     flag = flags[0]
     for f in flags.drop(1)
-      body = body.push("    %#{next} = stablehlo.or #{flag}, #{f} : tensor<i1>")
+      bit = IR.TensorType(shape: [], element: IR.Element.I1)
+      body = body.push(numbered(next, try ir_op("stablehlo.or", [flag, f], [bit, bit], bit, [], next)))
       flag = "%#{next}"
       next = next + 1
     end
@@ -169,8 +170,8 @@ end
 
 # One text per SSA value of the node `t`, the first named `%first`; none means the node is its first argument.
 def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Result[List[String]]
-  out = try type_of(t)
-  sig = try signature(n.args, out)
+  out = try ir_type(t.shape, t.dtype)
+  ins = try ir_types(n.args)
   case n.op
     Types.Op.Full(v) -> ok([try splat(v, t.shape, t.dtype)])
     Types.Op.Copy -> ok([])
@@ -178,52 +179,58 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.ToDevice(Types.Device.Cpu) -> ok([])
     Types.Op.ToDevice(device) ->
       error("XLA runs on the CPU only; cannot lower to_device to #{Types.device_name(device)}")
-    Types.Op.Add -> ok(["stablehlo.add #{a[0]}, #{a[1]} : #{out}"])
-    Types.Op.Sub -> ok(["stablehlo.subtract #{a[0]}, #{a[1]} : #{out}"])
-    Types.Op.Mul -> ok(["stablehlo.multiply #{a[0]}, #{a[1]} : #{out}"])
-    Types.Op.Div -> ok(["stablehlo.divide #{a[0]}, #{a[1]} : #{out}"])
-    Types.Op.Neg -> ok(["stablehlo.negate #{a[0]} : #{out}"])
-    Types.Op.Exp -> ok(["stablehlo.exponential #{a[0]} : #{out}"])
-    Types.Op.Log -> ok(["stablehlo.log #{a[0]} : #{out}"])
-    Types.Op.Sqrt -> ok(["stablehlo.sqrt #{a[0]} : #{out}"])
-    Types.Op.Tanh -> ok(["stablehlo.tanh #{a[0]} : #{out}"])
-    Types.Op.Sigmoid -> ok(["stablehlo.logistic #{a[0]} : #{out}"])
+    Types.Op.Add -> elementwise("add", a, out, first)
+    Types.Op.Sub -> elementwise("subtract", a, out, first)
+    Types.Op.Mul -> elementwise("multiply", a, out, first)
+    Types.Op.Div -> elementwise("divide", a, out, first)
+    Types.Op.Neg -> elementwise("negate", a, out, first)
+    Types.Op.Exp -> elementwise("exponential", a, out, first)
+    Types.Op.Log -> elementwise("log", a, out, first)
+    Types.Op.Sqrt -> elementwise("sqrt", a, out, first)
+    Types.Op.Tanh -> elementwise("tanh", a, out, first)
+    Types.Op.Sigmoid -> elementwise("logistic", a, out, first)
     Types.Op.GeluErf -> gelu_erf(t, a[0], first)
     Types.Op.LayerNorm(eps) -> normalized(t, a[0], eps, true, first)
     Types.Op.RmsNorm(eps) -> normalized(t, a[0], eps, false, first)
     Types.Op.Rope(base, dims, neox, inverse) -> rope(t, n.args, a, base, dims, neox, inverse, first)
-    Types.Op.Pow -> ok(["stablehlo.power #{a[0]}, #{a[1]} : #{out}"])
+    Types.Op.Pow -> elementwise("power", a, out, first)
     Types.Op.Clamp(lo, hi) ->
-      ok([try fill(lo, t), try fill(hi, t), "stablehlo.clamp %#{first}, #{a[0]}, %#{first + 1} : #{out}"])
+      ok([
+        try fill(lo, t),
+        try fill(hi, t),
+        try ir_op("stablehlo.clamp", ["%#{first}", a[0], "%#{first + 1}"], [out, out, out], out, [], first + 2),
+      ])
     Types.Op.ToDtype -> convert(t, n.args[0], a[0], first)
-    Types.Op.Relu -> ok([try fill(0.0, t), "stablehlo.maximum #{a[0]}, %#{first} : #{out}"])
+    Types.Op.Relu ->
+      ok([try fill(0.0, t), try ir_op("stablehlo.maximum", [a[0], "%#{first}"], [out, out], out, [], first + 1)])
     Types.Op.Gelu -> gelu(t, a[0], first)
     Types.Op.StopGrad -> ok([])
     Types.Op.Matmul -> matmul(t, n.args, a, first)
-    Types.Op.Transpose -> ok(["stablehlo.transpose #{a[0]}, dims = #{ints((0...t.shape.size).to_a.reverse)} : #{sig}"])
-    Types.Op.Reshape -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
-    Types.Op.Squeeze(_) -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
-    Types.Op.Unsqueeze(_) -> ok(["stablehlo.reshape #{a[0]} : #{sig}"])
-    Types.Op.Permute(axes) -> ok(["stablehlo.transpose #{a[0]}, dims = #{ints(axes)} : #{sig}"])
-    Types.Op.Concat(axis) -> ok(["stablehlo.concatenate #{a.join(", ")}, dim = #{axis} : #{sig}"])
+    Types.Op.Transpose -> ok([try transpose_op(a[0], ins[0], out, (0...t.shape.size).to_a.reverse, first)])
+    Types.Op.Reshape -> ok([try ir_op("stablehlo.reshape", a, ins, out, [], first)])
+    Types.Op.Squeeze(_) -> ok([try ir_op("stablehlo.reshape", a, ins, out, [], first)])
+    Types.Op.Unsqueeze(_) -> ok([try ir_op("stablehlo.reshape", a, ins, out, [], first)])
+    Types.Op.Permute(axes) -> ok([try transpose_op(a[0], ins[0], out, axes, first)])
+    Types.Op.Concat(axis) -> ok([try ir_op("stablehlo.concatenate", a, ins, out, concat_dim(axis), first)])
     Types.Op.Stack(axis) -> stack(t, n.args, a, axis, first)
     Types.Op.BatchMatmul -> batch_matmul(t, n.args, a, first)
     Types.Op.Conv1d(stride, padding) -> conv1d(t, n.args, a, stride, padding, first)
     Types.Op.Conv2d(stride, padding, groups) -> conv2d(t, n.args, a, stride, padding, groups, first)
-    Types.Op.GatedDeltaRule -> ok(["func.call @gated_delta_#{first}(#{a.join(", ")}) : #{sig}"])
+    Types.Op.GatedDeltaRule ->
+      ok(["func.call @gated_delta_#{first}(#{a.join(", ")}) : #{try signature(n.args, try type_of(t))}"])
     Types.Op.MaxPool2d(kernel, stride, padding) -> max_pool2d(t, n.args[0], a[0], kernel, stride, padding, first)
     Types.Op.AvgPool1d(kernel, stride, padding) -> avg_pool1d(t, n.args[0], a[0], kernel, stride, padding, first)
     Types.Op.AvgPool2d(kernel, stride, padding) -> avg_pool2d(t, n.args[0], a[0], kernel, stride, padding, first)
     Types.Op.ExpertMatmul -> expert_matmul(t, n.args, a, first)
     Types.Op.Argmax(axes, keep_dims) -> argmax(t, n.args[0], a[0], axes, keep_dims, first)
-    Types.Op.Slice(starts, ends) -> ok(["stablehlo.slice #{a[0]} #{extents(starts, ends)} : #{sig}"])
-    Types.Op.BroadcastTo -> broadcast(t, n.args[0], a[0])
+    Types.Op.Slice(starts, ends) -> ok([try slice_op(a[0], ins[0], starts, ends, first)])
+    Types.Op.BroadcastTo -> broadcast(t, n.args[0], a[0], first)
     Types.Op.Sum(axes, keep_dims) -> reduction(t, n.args[0], a[0], axes, keep_dims, "add", first)
     Types.Op.Mean(axes, keep_dims) -> mean(t, n.args[0], a[0], axes, keep_dims, first)
     Types.Op.Max(axes, keep_dims) -> reduction(t, n.args[0], a[0], axes, keep_dims, "maximum", first)
-    Types.Op.Lt -> ok(["stablehlo.compare LT, #{a[0]}, #{a[1]}, #{compare_type(n.args[0].dtype)} : #{sig}"])
-    Types.Op.Eq -> ok(["stablehlo.compare EQ, #{a[0]}, #{a[1]}, #{compare_type(n.args[0].dtype)} : #{sig}"])
-    Types.Op.Where -> ok(["stablehlo.select #{a[0]}, #{a[1]}, #{a[2]} : #{try type_of(n.args[0])}, #{out}"])
+    Types.Op.Lt -> ok([try ir_op("stablehlo.compare", a, ins, out, compare_attrs("LT", n.args[0].dtype), first)])
+    Types.Op.Eq -> ok([try ir_op("stablehlo.compare", a, ins, out, compare_attrs("EQ", n.args[0].dtype), first)])
+    Types.Op.Where -> ok([try ir_op("stablehlo.select", a, [ins[0], out, out], out, [], first)])
     Types.Op.Arange(start, _, step) -> arange(t, start, step, first)
     Types.Op.Gather -> gather(t, n.args, a, first)
     Types.Op.SetRows -> set_rows(t, n.args, a, first)
@@ -234,6 +241,30 @@ def define(t: Types.Tensor, n: Types.Node, a: List[String], first: Int) -> Resul
     Types.Op.AdamPart(i) -> adam_part(t, n.args[0], a[0], i, first)
     _ -> error("StableHLO has no emitter for #{Types.op_name(n.op)} yet")
   end
+end
+
+def elementwise(op: String, a: List[String], out: IR.TensorType, first: Int) -> Result[List[String]]
+  ok([try ir_op("stablehlo.#{op}", a, a.map { |_| out }, out, [], first)])
+end
+
+def transpose_op(name: String, x: IR.TensorType, out: IR.TensorType, axes: List[Int], first: Int) -> Result[String]
+  ir_op(
+    "stablehlo.transpose",
+    [name],
+    [x],
+    out,
+    [IR.Attribute(key: "permutation", value: IR.Attr.I64Array(axes))],
+    first,
+  )
+end
+
+def ir_types(ts: List[Types.Tensor]) -> Result[List[IR.TensorType]]
+  out: List[IR.TensorType] = []
+  for t in ts
+    out = out.push(try ir_type(t.shape, t.dtype))
+  end
+
+  ok(out)
 end
 
 def avg_pool1d(
@@ -358,16 +389,14 @@ def max_pool2d(
   pad: Int,
   first: Int,
 ) -> Result[List[String]]
-  scalar = try tensor_type([], t.dtype)
-  dims = (
-    "window_dimensions = array<i64: 1, 1, #{kernel}, #{kernel}>, window_strides = array<i64: 1, 1, #{stride}, #{stride}>"
-  )
+  input = try ir_type(x.shape, x.dtype)
+  entry = IR.block([input, IR.TensorType(shape: [], element: input.element)])
+  built = try Pool.max_pool2d(entry, entry.args[0], entry.args[1], kernel, stride, pad)
+  if built.values[0].type != try ir_type(t.shape, t.dtype)
+    return error("max_pool2d IR result type does not match the graph")
+  end
 
-  padding = "padding = dense<[[0, 0], [0, 0], [#{pad}, #{pad}], [#{pad}, #{pad}]]> : tensor<4x2xi64>"
-  ok([
-    try fill_scalar("maximum", t.dtype),
-    "\"stablehlo.reduce_window\"(#{a}, %#{first}) ({\n      ^bb0(%lhs: #{scalar}, %rhs: #{scalar}):\n        %max = stablehlo.maximum %lhs, %rhs : #{scalar}\n        stablehlo.return %max : #{scalar}\n    }) {#{dims}, #{padding}} : (#{try type_of(x)}, #{scalar}) -> #{try type_of(t)}",
-  ])
+  ok([try fill_scalar("maximum", t.dtype)] + try ir_lines(built.block, [a, "%#{first}"], first + 1))
 end
 
 # Gather the selected expert matrices, then contract each input row with its own expert. The ops are built with
@@ -568,8 +597,6 @@ def set_rows(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: 
   axes = [axis] + (0...rank).select { |i| i != axis }
   updates_shape = axes.map { |i| args[1].shape[i] }
   indices_shape = [args[2].shape[0], 1]
-  indices_type = try tensor_type(indices_shape, args[2].dtype)
-  updates_type = try tensor_type(updates_shape, args[1].dtype)
   entry = IR.block([
     try ir_type(t.shape, t.dtype),
     try ir_type(indices_shape, args[2].dtype),
@@ -602,8 +629,8 @@ def set_rows(t: Types.Tensor, args: List[Types.Tensor], a: List[String], first: 
   names = names.put(entry.args[0].id, a[0]).put(entry.args[1].id, "%#{first}").put(entry.args[2].id, "%#{first + 1}")
   scatter = try IR.operation(scattered.block.ops[0], names, "set_rows#{first}_", "    ")
   ok([
-    "stablehlo.reshape #{a[2]} : (#{try type_of(args[2])}) -> #{indices_type}",
-    "stablehlo.transpose #{a[1]}, dims = #{ints(axes)} : (#{try type_of(args[1])}) -> #{updates_type}",
+    try ir_op("stablehlo.reshape", [a[2]], [try ir_type(args[2].shape, args[2].dtype)], entry.args[1].type, [], first),
+    try transpose_op(a[1], try ir_type(args[1].shape, args[1].dtype), entry.args[2].type, axes, first + 1),
     scatter,
   ])
 end
@@ -671,32 +698,31 @@ end
 # Whether one of the indices `name` (the tensor `idx`) is outside `[0, rows)`: an `i1`, the last line. No lines when
 # the dtype of `idx` cannot hold such an index: a compare needs its bound in that dtype.
 def outside(idx: Types.Tensor, name: String, rows: Int, first: Int) -> Result[List[String]]
-  shape = try type_of(idx)
-  flags = try tensor_type(idx.shape, Types.Dtype.Bool)
-  kind = compare_type(idx.dtype)
+  shape = try ir_type(idx.shape, idx.dtype)
+  flags = try ir_type(idx.shape, Types.Dtype.Bool)
   l = Lines(first: first, defs: [])
   found: List[String] = []
   if idx.dtype != Types.Dtype.U8
     l = put(l, try splat(Types.Values.Int(0), idx.shape, idx.dtype))
-    l = put(l, "stablehlo.compare LT, #{name}, #{last(l)}, #{kind} : (#{shape}, #{shape}) -> #{flags}")
+    l = try put_ir(l, "stablehlo.compare", [name, last(l)], [shape, shape], flags, compare_attrs("LT", idx.dtype))
     found = found.push(last(l))
   end
 
   if Types.check_int_range(rows, idx.dtype).ok?
     l = put(l, try splat(Types.Values.Int(rows), idx.shape, idx.dtype))
-    l = put(l, "stablehlo.compare GE, #{name}, #{last(l)}, #{kind} : (#{shape}, #{shape}) -> #{flags}")
+    l = try put_ir(l, "stablehlo.compare", [name, last(l)], [shape, shape], flags, compare_attrs("GE", idx.dtype))
     found = found.push(last(l))
   end
 
   return ok([]) if found.empty?
   if found.size == 2
-    l = put(l, "stablehlo.or #{found[0]}, #{found[1]} : #{flags}")
+    l = try put_binary(l, "or", found[0], found[1], flags)
   end
 
   return ok(l.defs) if idx.shape.empty?
   any = last(l)
   l = put(l, try splat(Types.Values.Bool(false), [], Types.Dtype.Bool))
-  l = try put_reduce(l, any, try ir_type(idx.shape, Types.Dtype.Bool), last(l), (0...idx.shape.size).to_a, "or")
+  l = try put_reduce(l, any, flags, last(l), (0...idx.shape.size).to_a, "or")
   ok(l.defs)
 end
 
@@ -939,44 +965,45 @@ end
 
 # The exact GELU, `0.5 x (1 + erf(x / sqrt(2)))`, the form `Reference` computes: `erf` is CHLO's (XLA lowers it).
 def gelu_erf(t: Types.Tensor, x: String, first: Int) -> Result[List[String]]
-  out = try type_of(t)
-  ok([
-    try fill(Reference.INV_SQRT2, t),
-    "stablehlo.multiply #{x}, %#{first} : #{out}",
-    "\"chlo.erf\"(%#{first + 1}) : (#{out}) -> #{out}",
-    try fill(1.0, t),
-    "stablehlo.add %#{first + 3}, %#{first + 2} : #{out}",
-    try fill(0.5, t),
-    "stablehlo.multiply %#{first + 5}, #{x} : #{out}",
-    "stablehlo.multiply %#{first + 6}, %#{first + 4} : #{out}",
-  ])
+  out = try ir_type(t.shape, t.dtype)
+  l = put(Lines(first: first, defs: []), try fill(Reference.INV_SQRT2, t))
+  l = try put_binary(l, "multiply", x, last(l), out)
+  l = try put_ir(l, "chlo.erf", [last(l)], [out], out)
+  erf = last(l)
+  l = put(l, try fill(1.0, t))
+  l = try put_binary(l, "add", last(l), erf, out)
+  sum = last(l)
+  l = put(l, try fill(0.5, t))
+  l = try put_binary(l, "multiply", last(l), x, out)
+  l = try put_binary(l, "multiply", last(l), sum, out)
+  ok(l.defs)
 end
 
 # A layer norm (`center`) or an RMS norm of `x` over its last axis, no affine: `centered / sqrt(mean(centered^2) +
 # eps)`, where `centered` is `x - mean(x)` for the layer norm and `x` for the RMS norm, as
 # `Tensor.layer_norm_composed` and `rms_norm_composed` write them. The sums run in the dtype of `x`.
 def normalized(t: Types.Tensor, x: String, eps: Float, center: Bool, first: Int) -> Result[List[String]]
-  out = try type_of(t)
+  out = try ir_type(t.shape, t.dtype)
   q = t.shape.size - 1
-  dims = ints((0...q).to_a)
-  lead = try tensor_type(t.shape.take(q), t.dtype)
+  dims = broadcast_dims((0...q).to_a)
+  lead = try ir_type(t.shape.take(q), t.dtype)
   l = Lines(first: first, defs: [])
   centered = x
   if center
     l = try last_mean(l, x, t)
-    l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{out}")
-    l = put(l, "stablehlo.subtract #{x}, #{last(l)} : #{out}")
+    l = try put_ir(l, "stablehlo.broadcast_in_dim", [last(l)], [lead], out, dims)
+    l = try put_binary(l, "subtract", x, last(l), out)
     centered = last(l)
   end
 
-  l = put(l, "stablehlo.multiply #{centered}, #{centered} : #{out}")
+  l = try put_binary(l, "multiply", centered, centered, out)
   l = try last_mean(l, last(l), t)
-  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{dims} : (#{lead}) -> #{out}")
+  l = try put_ir(l, "stablehlo.broadcast_in_dim", [last(l)], [lead], out, dims)
   var = last(l)
   l = put(l, try fill(eps, t))
-  l = put(l, "stablehlo.add #{var}, #{last(l)} : #{out}")
-  l = put(l, "stablehlo.sqrt #{last(l)} : #{out}")
-  l = put(l, "stablehlo.divide #{centered}, #{last(l)} : #{out}")
+  l = try put_binary(l, "add", var, last(l), out)
+  l = try put_unary(l, "sqrt", last(l), out)
+  l = try put_binary(l, "divide", centered, last(l), out)
   ok(l.defs)
 end
 
@@ -984,13 +1011,11 @@ end
 def last_mean(l: Lines, name: String, like: Types.Tensor) -> Result[Lines]
   q = like.shape.size - 1
   lead = like.shape.take(q)
-  reduced = try tensor_type(lead, like.dtype)
   l = put(l, try fill_scalar("add", like.dtype))
   l = try put_reduce(l, name, try ir_type(like.shape, like.dtype), last(l), [q], "add")
-
   total = last(l)
   l = put(l, try splat(Types.Values.Float(like.shape[q].to_f), lead, like.dtype))
-  ok(put(l, "stablehlo.divide #{total}, #{last(l)} : #{reduced}"))
+  put_binary(l, "divide", total, last(l), try ir_type(lead, like.dtype))
 end
 
 # Rotary embedding of `x` `[..., seq, width]` by the integer `positions` `[seq]`. The cosines and sines of the
@@ -1125,7 +1150,8 @@ end
 
 # `x` as another dtype: a conversion truncates a float to an integer, and a boolean is `x != 0`.
 def convert(t: Types.Tensor, x: Types.Tensor, name: String, first: Int) -> Result[List[String]]
-  from = try type_of(x)
+  from = try ir_type(x.shape, x.dtype)
+  to = try ir_type(t.shape, t.dtype)
   if t.dtype == Types.Dtype.Bool and x.dtype != Types.Dtype.Bool
     zero = Types.Values.Int(0)
     if Types.is_float_dtype(x.dtype)
@@ -1134,27 +1160,30 @@ def convert(t: Types.Tensor, x: Types.Tensor, name: String, first: Int) -> Resul
 
     return ok([
       try splat(zero, x.shape, x.dtype),
-      "stablehlo.compare NE, #{name}, %#{first}, #{compare_type(x.dtype)} : (#{from}, #{from}) -> #{try type_of(t)}",
+      try ir_op("stablehlo.compare", [name, "%#{first}"], [from, from], to, compare_attrs("NE", x.dtype), first + 1),
     ])
   end
 
-  ok(["stablehlo.convert #{name} : (#{from}) -> #{try type_of(t)}"])
+  ok([try ir_op("stablehlo.convert", [name], [from], to, [], first)])
 end
 
 # The tensors of `args` joined on a new `axis`: each gets a 1 there, and they are concatenated.
 def stack(t: Types.Tensor, args: List[Types.Tensor], a: List[String], axis: Int, first: Int) -> Result[List[String]]
-  one = args[0].shape.take(axis) + [1] + args[0].shape.drop(axis)
-  layer = try tensor_type(one, args[0].dtype)
+  layer = try ir_type(args[0].shape.take(axis) + [1] + args[0].shape.drop(axis), args[0].dtype)
   l = Lines(first: first, defs: [])
   rows: List[String] = []
   for i in 0...args.size
-    l = put(l, "stablehlo.reshape #{a[i]} : (#{try type_of(args[i])}) -> #{layer}")
+    l = try put_ir(l, "stablehlo.reshape", [a[i]], [try ir_type(args[i].shape, args[i].dtype)], layer)
     rows = rows.push(last(l))
   end
 
-  l = put(
+  l = try put_ir(
     l,
-    "stablehlo.concatenate #{rows.join(", ")}, dim = #{axis} : (#{rows.map { |_| layer }.join(", ")}) -> #{try type_of(t)}",
+    "stablehlo.concatenate",
+    rows,
+    rows.map { |_| layer },
+    try ir_type(t.shape, t.dtype),
+    concat_dim(axis),
   )
 
   ok(l.defs)
@@ -1177,39 +1206,34 @@ def argmax(
   lead = kept.map { |i| x.shape[i] }
   flat = lead + [block]
   q = lead.size
+  permuted = try ir_type(order.map { |i| x.shape[i] }, x.dtype)
   l = Lines(first: first, defs: [])
   source = name
   if order != (0...x.shape.size).to_a
-    permuted = try tensor_type(order.map { |i| x.shape[i] }, x.dtype)
-    l = put(l, "stablehlo.transpose #{source}, dims = #{ints(order)} : (#{try type_of(x)}) -> #{permuted}")
+    l = put(l, try transpose_op(source, try ir_type(x.shape, x.dtype), permuted, order, first + l.defs.size))
     source = last(l)
   end
 
-  rows = try tensor_type(flat, x.dtype)
-  l = put(l, "stablehlo.reshape #{source} : (#{try tensor_type(order.map { |i| x.shape[i] }, x.dtype)}) -> #{rows}")
+  rows = try ir_type(flat, x.dtype)
+  l = try put_ir(l, "stablehlo.reshape", [source], [permuted], rows)
   source = last(l)
-  top = try tensor_type(lead, x.dtype)
+  top = try ir_type(lead, x.dtype)
   l = put(l, try fill_scalar("maximum", x.dtype))
-  l = try put_reduce(l, source, try ir_type(flat, x.dtype), last(l), [q], "maximum")
-
-  l = put(l, "stablehlo.broadcast_in_dim #{last(l)}, dims = #{ints((0...q).to_a)} : (#{top}) -> #{rows}")
-
-  flags = try tensor_type(flat, Types.Dtype.Bool)
-  l = put(l, "stablehlo.compare EQ, #{source}, #{last(l)}, #{compare_type(x.dtype)} : (#{rows}, #{rows}) -> #{flags}")
-
+  l = try put_reduce(l, source, rows, last(l), [q], "maximum")
+  l = try put_ir(l, "stablehlo.broadcast_in_dim", [last(l)], [top], rows, broadcast_dims((0...q).to_a))
+  flags = try ir_type(flat, Types.Dtype.Bool)
+  l = try put_ir(l, "stablehlo.compare", [source, last(l)], [rows, rows], flags, compare_attrs("EQ", x.dtype))
   hit = last(l)
-  positions = try tensor_type(flat, t.dtype)
-  l = put(l, "stablehlo.iota dim = #{q} : #{positions}")
+  positions = try ir_type(flat, t.dtype)
+  l = put(l, try iota_op(positions, q, first + l.defs.size))
   index = last(l)
   l = put(l, try splat(Types.Values.Int(block), flat, t.dtype))
-  l = put(l, "stablehlo.select #{hit}, #{index}, #{last(l)} : #{flags}, #{positions}")
+  l = try put_ir(l, "stablehlo.select", [hit, index, last(l)], [flags, positions, positions], positions)
   chosen = last(l)
   l = put(l, try splat(Types.Values.Int(block), [], t.dtype))
-  found = try tensor_type(lead, t.dtype)
-  l = try put_reduce(l, chosen, try ir_type(flat, t.dtype), last(l), [q], "minimum")
-
+  l = try put_reduce(l, chosen, positions, last(l), [q], "minimum")
   if keep_dims
-    l = put(l, "stablehlo.reshape #{last(l)} : (#{found}) -> #{try type_of(t)}")
+    l = try put_ir(l, "stablehlo.reshape", [last(l)], [try ir_type(lead, t.dtype)], try ir_type(t.shape, t.dtype))
   end
 
   ok(l.defs)
@@ -1217,30 +1241,35 @@ end
 
 # `0.5 x (1 + tanh(c (x + k x^3)))`, the form `Reference` computes.
 def gelu(t: Types.Tensor, x: String, first: Int) -> Result[List[String]]
-  out = try type_of(t)
-  ok([
-    "stablehlo.multiply #{x}, #{x} : #{out}",
-    "stablehlo.multiply %#{first}, #{x} : #{out}",
-    try fill(Reference.GELU_C, t),
-    "stablehlo.multiply %#{first + 2}, %#{first + 1} : #{out}",
-    "stablehlo.add #{x}, %#{first + 3} : #{out}",
-    try fill(Reference.SQRT2_OVER_PI, t),
-    "stablehlo.multiply %#{first + 5}, %#{first + 4} : #{out}",
-    "stablehlo.tanh %#{first + 6} : #{out}",
-    try fill(1.0, t),
-    "stablehlo.add %#{first + 8}, %#{first + 7} : #{out}",
-    try fill(0.5, t),
-    "stablehlo.multiply %#{first + 10}, #{x} : #{out}",
-    "stablehlo.multiply %#{first + 11}, %#{first + 9} : #{out}",
-  ])
+  out = try ir_type(t.shape, t.dtype)
+  l = try put_binary(Lines(first: first, defs: []), "multiply", x, x, out)
+  l = try put_binary(l, "multiply", last(l), x, out)
+  cube = last(l)
+  l = put(l, try fill(Reference.GELU_C, t))
+  l = try put_binary(l, "multiply", last(l), cube, out)
+  l = try put_binary(l, "add", x, last(l), out)
+  inner = last(l)
+  l = put(l, try fill(Reference.SQRT2_OVER_PI, t))
+  l = try put_binary(l, "multiply", last(l), inner, out)
+  l = try put_unary(l, "tanh", last(l), out)
+  curve = last(l)
+  l = put(l, try fill(1.0, t))
+  l = try put_binary(l, "add", last(l), curve, out)
+  sum = last(l)
+  l = put(l, try fill(0.5, t))
+  l = try put_binary(l, "multiply", last(l), x, out)
+  l = try put_binary(l, "multiply", last(l), sum, out)
+  ok(l.defs)
 end
 
-def broadcast(t: Types.Tensor, from: Types.Tensor, name: String) -> Result[List[String]]
+def broadcast(t: Types.Tensor, from: Types.Tensor, name: String, first: Int) -> Result[List[String]]
   return ok([]) if t.shape == from.shape
   lead = t.shape.size - from.shape.size
-  dims = ints((0...from.shape.size).to_a.map { |i| lead + i })
-  sig = try signature([from], try type_of(t))
-  ok(["stablehlo.broadcast_in_dim #{name}, dims = #{dims} : #{sig}"])
+  dims = (0...from.shape.size).to_a.map { |i| lead + i }
+  x = try ir_type(from.shape, from.dtype)
+  ok([
+    try ir_op("stablehlo.broadcast_in_dim", [name], [x], try ir_type(t.shape, t.dtype), broadcast_dims(dims), first),
+  ])
 end
 
 def reduction(
@@ -1256,7 +1285,8 @@ def reduction(
   l = put(Lines(first: first, defs: []), try fill_scalar(combine, x.dtype))
   l = try put_reduce(l, name, try ir_type(x.shape, x.dtype), last(l), axes, combine)
   return ok(l.defs) if !keep_dims
-  ok(put(l, "stablehlo.reshape #{last(l)} : (#{try tensor_type(dropped, x.dtype)}) -> #{try type_of(t)}").defs)
+  l = try put_ir(l, "stablehlo.reshape", [last(l)], [try ir_type(dropped, x.dtype)], try ir_type(t.shape, t.dtype))
+  ok(l.defs)
 end
 
 def mean(
@@ -1268,29 +1298,32 @@ def mean(
   first: Int,
 ) -> Result[List[String]]
   dropped = Types.reduced_shape(x.shape, axes, false)
-  sum = try reduction(t, x, name, axes, false, "add", first)
-  count = try splat(Types.Values.Float(Types.reduced_count(x.shape, axes).to_f), dropped, x.dtype)
-  reduced = try tensor_type(dropped, x.dtype)
-  defs = sum + [count, "stablehlo.divide %#{first + 1}, %#{first + 2} : #{reduced}"]
-  return ok(defs) if !keep_dims
-  ok(defs.push("stablehlo.reshape %#{first + 3} : (#{reduced}) -> #{try type_of(t)}"))
+  reduced = try ir_type(dropped, x.dtype)
+  l = Lines(first: first, defs: try reduction(t, x, name, axes, false, "add", first))
+  total = last(l)
+  l = put(l, try splat(Types.Values.Float(Types.reduced_count(x.shape, axes).to_f), dropped, x.dtype))
+  l = try put_binary(l, "divide", total, last(l), reduced)
+  return ok(l.defs) if !keep_dims
+  l = try put_ir(l, "stablehlo.reshape", [last(l)], [reduced], try ir_type(t.shape, t.dtype))
+  ok(l.defs)
 end
 
 def arange(t: Types.Tensor, start: Int, step: Int, first: Int) -> Result[List[String]]
-  out = try type_of(t)
-  defs = ["stablehlo.iota dim = 0 : #{out}"]
+  out = try ir_type(t.shape, t.dtype)
+  l = put(Lines(first: first, defs: []), try iota_op(out, 0, first))
   if step != 1
-    scale = try splat(Types.Values.Int(step), t.shape, t.dtype)
-    defs = defs + [scale, "stablehlo.multiply %#{first}, %#{first + 1} : #{out}"]
+    counted = last(l)
+    l = put(l, try splat(Types.Values.Int(step), t.shape, t.dtype))
+    l = try put_binary(l, "multiply", counted, last(l), out)
   end
 
   if start != 0
-    last = first + defs.size - 1
-    offset = try splat(Types.Values.Int(start), t.shape, t.dtype)
-    defs = defs + [offset, "stablehlo.add %#{last}, %#{last + 1} : #{out}"]
+    scaled = last(l)
+    l = put(l, try splat(Types.Values.Int(start), t.shape, t.dtype))
+    l = try put_binary(l, "add", scaled, last(l), out)
   end
 
-  ok(defs)
+  ok(l.defs)
 end
 
 def fill(x: Float, like: Types.Tensor) -> Result[String] = splat(Types.Values.Float(x), like.shape, like.dtype)
@@ -1405,11 +1438,6 @@ def element_type(dtype: Types.Dtype) -> Result[String]
     Types.Dtype.Q4_K -> error("StableHLO has no element type for Q4_K")
     Types.Dtype.Q6_K -> error("StableHLO has no element type for Q6_K")
   end
-end
-
-# `[0:1, 2:5]`: the start and the end of each dimension.
-def extents(starts: List[Int], ends: List[Int]) -> String
-  "[#{(0...starts.size).map { |i| "#{starts[i]}:#{ends[i]}" }.join(", ")}]"
 end
 
 def ints(xs: List[Int]) -> String = "[#{xs.map { |x| x.to_s }.join(", ")}]"

@@ -16,9 +16,9 @@ def test_a_graph_is_one_function_of_its_inputs_then_its_constants() -> Result[Vo
     <<~MLIR,
       module {
         func.func public @main(%arg0: tensor<3x4xf32>, %arg1: tensor<2xf32>) -> (tensor<6x2xf32>) {
-          %0 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<2xf32>) -> tensor<6x2xf32>
-          %1 = stablehlo.reshape %arg0 : (tensor<3x4xf32>) -> tensor<6x2xf32>
-          %2 = stablehlo.add %1, %0 : tensor<6x2xf32>
+          %0 = "stablehlo.broadcast_in_dim"(%arg1) {broadcast_dimensions = array<i64: 1>} : (tensor<2xf32>) -> (tensor<6x2xf32>)
+          %1 = "stablehlo.reshape"(%arg0) : (tensor<3x4xf32>) -> (tensor<6x2xf32>)
+          %2 = "stablehlo.add"(%1, %0) : (tensor<6x2xf32>, tensor<6x2xf32>) -> (tensor<6x2xf32>)
           func.return %2 : tensor<6x2xf32>
         }
       }
@@ -35,15 +35,15 @@ def test_the_reductions_and_the_comparisons_take_their_neutral_elements_and_type
     <<~MLIR,
       module {
         func.func public @main(%arg0: tensor<2x3xf32>, %arg1: tensor<3xi32>) -> (tensor<2x1xf32>, tensor<3xi1>) {
-          %0 = stablehlo.iota dim = 0 : tensor<3xi32>
+          %0 = "stablehlo.iota"() {iota_dimension = 0 : i64} : () -> (tensor<3xi32>)
           %1 = "stablehlo.constant"() {value = dense<0xFF800000> : tensor<f32>} : () -> (tensor<f32>)
           %2 = "stablehlo.reduce"(%arg0, %1) ({
           ^bb0(%ir2_0r0_a0: tensor<f32>, %ir2_0r0_a1: tensor<f32>):
             %ir2_0r0_0_0 = "stablehlo.maximum"(%ir2_0r0_a0, %ir2_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
             "stablehlo.return"(%ir2_0r0_0_0) : (tensor<f32>) -> ()
           }) {dimensions = array<i64: 1>} : (tensor<2x3xf32>, tensor<f32>) -> (tensor<2xf32>)
-          %3 = stablehlo.reshape %2 : (tensor<2xf32>) -> tensor<2x1xf32>
-          %4 = stablehlo.compare EQ, %arg1, %0, SIGNED : (tensor<3xi32>, tensor<3xi32>) -> tensor<3xi1>
+          %3 = "stablehlo.reshape"(%2) : (tensor<2xf32>) -> (tensor<2x1xf32>)
+          %4 = "stablehlo.compare"(%arg1, %0) {comparison_direction = #stablehlo<comparison_direction EQ>, compare_type = #stablehlo<comparison_type SIGNED>} : (tensor<3xi32>, tensor<3xi32>) -> (tensor<3xi1>)
           func.return %3, %4 : tensor<2x1xf32>, tensor<3xi1>
         }
       }
@@ -60,11 +60,11 @@ def test_an_arange_a_kept_mean_and_a_small_fill() -> Result[Void]
       module {
         func.func public @main(%arg0: tensor<2x3xf32>) -> (tensor<3xi32>, tensor<2x1xf32>) {
           %0 = "stablehlo.constant"() {value = dense<1.0e-8> : tensor<2x1xf32>} : () -> (tensor<2x1xf32>)
-          %1 = stablehlo.iota dim = 0 : tensor<3xi32>
+          %1 = "stablehlo.iota"() {iota_dimension = 0 : i64} : () -> (tensor<3xi32>)
           %2 = "stablehlo.constant"() {value = dense<2> : tensor<3xi32>} : () -> (tensor<3xi32>)
-          %3 = stablehlo.multiply %1, %2 : tensor<3xi32>
+          %3 = "stablehlo.multiply"(%1, %2) : (tensor<3xi32>, tensor<3xi32>) -> (tensor<3xi32>)
           %4 = "stablehlo.constant"() {value = dense<1> : tensor<3xi32>} : () -> (tensor<3xi32>)
-          %5 = stablehlo.add %3, %4 : tensor<3xi32>
+          %5 = "stablehlo.add"(%3, %4) : (tensor<3xi32>, tensor<3xi32>) -> (tensor<3xi32>)
           %6 = "stablehlo.constant"() {value = dense<0.0> : tensor<f32>} : () -> (tensor<f32>)
           %7 = "stablehlo.reduce"(%arg0, %6) ({
           ^bb0(%ir7_0r0_a0: tensor<f32>, %ir7_0r0_a1: tensor<f32>):
@@ -72,9 +72,9 @@ def test_an_arange_a_kept_mean_and_a_small_fill() -> Result[Void]
             "stablehlo.return"(%ir7_0r0_0_0) : (tensor<f32>) -> ()
           }) {dimensions = array<i64: 1>} : (tensor<2x3xf32>, tensor<f32>) -> (tensor<2xf32>)
           %8 = "stablehlo.constant"() {value = dense<3.0> : tensor<2xf32>} : () -> (tensor<2xf32>)
-          %9 = stablehlo.divide %7, %8 : tensor<2xf32>
-          %10 = stablehlo.reshape %9 : (tensor<2xf32>) -> tensor<2x1xf32>
-          %11 = stablehlo.add %10, %0 : tensor<2x1xf32>
+          %9 = "stablehlo.divide"(%7, %8) : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>)
+          %10 = "stablehlo.reshape"(%9) : (tensor<2xf32>) -> (tensor<2x1xf32>)
+          %11 = "stablehlo.add"(%10, %0) : (tensor<2x1xf32>, tensor<2x1xf32>) -> (tensor<2x1xf32>)
           func.return %5, %11 : tensor<3xi32>, tensor<2x1xf32>
         }
       }
@@ -106,7 +106,7 @@ def test_a_slice_names_its_extents() -> Result[Void]
     <<~MLIR,
       module {
         func.func public @main(%arg0: tensor<2x7xf32>) -> (tensor<1x3xf32>) {
-          %0 = stablehlo.slice %arg0 [1:2, 2:5] : (tensor<2x7xf32>) -> tensor<1x3xf32>
+          %0 = "stablehlo.slice"(%arg0) {start_indices = array<i64: 1, 2>, limit_indices = array<i64: 2, 5>, strides = array<i64: 1, 1>} : (tensor<2x7xf32>) -> (tensor<1x3xf32>)
           func.return %0 : tensor<1x3xf32>
         }
       }
@@ -127,36 +127,36 @@ def test_argmax_text_reduces_the_maximum_then_the_first_index() -> Result[Void]
     <<~MLIR,
       module {
         func.func public @main(%arg0: tensor<2x3xf32>) -> (tensor<2xi64>, tensor<i64>) {
-          %0 = stablehlo.reshape %arg0 : (tensor<2x3xf32>) -> tensor<2x3xf32>
+          %0 = "stablehlo.reshape"(%arg0) : (tensor<2x3xf32>) -> (tensor<2x3xf32>)
           %1 = "stablehlo.constant"() {value = dense<0xFF800000> : tensor<f32>} : () -> (tensor<f32>)
           %2 = "stablehlo.reduce"(%0, %1) ({
           ^bb0(%ir2_0r0_a0: tensor<f32>, %ir2_0r0_a1: tensor<f32>):
             %ir2_0r0_0_0 = "stablehlo.maximum"(%ir2_0r0_a0, %ir2_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
             "stablehlo.return"(%ir2_0r0_0_0) : (tensor<f32>) -> ()
           }) {dimensions = array<i64: 1>} : (tensor<2x3xf32>, tensor<f32>) -> (tensor<2xf32>)
-          %3 = stablehlo.broadcast_in_dim %2, dims = [0] : (tensor<2xf32>) -> tensor<2x3xf32>
-          %4 = stablehlo.compare EQ, %0, %3, FLOAT : (tensor<2x3xf32>, tensor<2x3xf32>) -> tensor<2x3xi1>
-          %5 = stablehlo.iota dim = 1 : tensor<2x3xi64>
+          %3 = "stablehlo.broadcast_in_dim"(%2) {broadcast_dimensions = array<i64: 0>} : (tensor<2xf32>) -> (tensor<2x3xf32>)
+          %4 = "stablehlo.compare"(%0, %3) {comparison_direction = #stablehlo<comparison_direction EQ>, compare_type = #stablehlo<comparison_type FLOAT>} : (tensor<2x3xf32>, tensor<2x3xf32>) -> (tensor<2x3xi1>)
+          %5 = "stablehlo.iota"() {iota_dimension = 1 : i64} : () -> (tensor<2x3xi64>)
           %6 = "stablehlo.constant"() {value = dense<3> : tensor<2x3xi64>} : () -> (tensor<2x3xi64>)
-          %7 = stablehlo.select %4, %5, %6 : tensor<2x3xi1>, tensor<2x3xi64>
+          %7 = "stablehlo.select"(%4, %5, %6) : (tensor<2x3xi1>, tensor<2x3xi64>, tensor<2x3xi64>) -> (tensor<2x3xi64>)
           %8 = "stablehlo.constant"() {value = dense<3> : tensor<i64>} : () -> (tensor<i64>)
           %9 = "stablehlo.reduce"(%7, %8) ({
           ^bb0(%ir9_0r0_a0: tensor<i64>, %ir9_0r0_a1: tensor<i64>):
             %ir9_0r0_0_0 = "stablehlo.minimum"(%ir9_0r0_a0, %ir9_0r0_a1) : (tensor<i64>, tensor<i64>) -> (tensor<i64>)
             "stablehlo.return"(%ir9_0r0_0_0) : (tensor<i64>) -> ()
           }) {dimensions = array<i64: 1>} : (tensor<2x3xi64>, tensor<i64>) -> (tensor<2xi64>)
-          %10 = stablehlo.reshape %arg0 : (tensor<2x3xf32>) -> tensor<6xf32>
+          %10 = "stablehlo.reshape"(%arg0) : (tensor<2x3xf32>) -> (tensor<6xf32>)
           %11 = "stablehlo.constant"() {value = dense<0xFF800000> : tensor<f32>} : () -> (tensor<f32>)
           %12 = "stablehlo.reduce"(%10, %11) ({
           ^bb0(%ir12_0r0_a0: tensor<f32>, %ir12_0r0_a1: tensor<f32>):
             %ir12_0r0_0_0 = "stablehlo.maximum"(%ir12_0r0_a0, %ir12_0r0_a1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>)
             "stablehlo.return"(%ir12_0r0_0_0) : (tensor<f32>) -> ()
           }) {dimensions = array<i64: 0>} : (tensor<6xf32>, tensor<f32>) -> (tensor<f32>)
-          %13 = stablehlo.broadcast_in_dim %12, dims = [] : (tensor<f32>) -> tensor<6xf32>
-          %14 = stablehlo.compare EQ, %10, %13, FLOAT : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xi1>
-          %15 = stablehlo.iota dim = 0 : tensor<6xi64>
+          %13 = "stablehlo.broadcast_in_dim"(%12) {broadcast_dimensions = array<i64>} : (tensor<f32>) -> (tensor<6xf32>)
+          %14 = "stablehlo.compare"(%10, %13) {comparison_direction = #stablehlo<comparison_direction EQ>, compare_type = #stablehlo<comparison_type FLOAT>} : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xi1>)
+          %15 = "stablehlo.iota"() {iota_dimension = 0 : i64} : () -> (tensor<6xi64>)
           %16 = "stablehlo.constant"() {value = dense<6> : tensor<6xi64>} : () -> (tensor<6xi64>)
-          %17 = stablehlo.select %14, %15, %16 : tensor<6xi1>, tensor<6xi64>
+          %17 = "stablehlo.select"(%14, %15, %16) : (tensor<6xi1>, tensor<6xi64>, tensor<6xi64>) -> (tensor<6xi64>)
           %18 = "stablehlo.constant"() {value = dense<6> : tensor<i64>} : () -> (tensor<i64>)
           %19 = "stablehlo.reduce"(%17, %18) ({
           ^bb0(%ir19_0r0_a0: tensor<i64>, %ir19_0r0_a1: tensor<i64>):
@@ -180,8 +180,8 @@ def test_products_and_gather_text_name_their_dimensions() -> Result[Void]
       module {
         func.func public @main(%arg0: tensor<2x3xf32>, %arg1: tensor<3x4xf32>, %arg2: tensor<2xi32>) -> (tensor<2x4xf32>, tensor<1x2x4xf32>, tensor<2x4xf32>) {
           %0 = "stablehlo.dot_general"(%arg0, %arg1) {dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>} : (tensor<2x3xf32>, tensor<3x4xf32>) -> (tensor<2x4xf32>)
-          %1 = stablehlo.reshape %arg0 : (tensor<2x3xf32>) -> tensor<1x2x3xf32>
-          %2 = stablehlo.reshape %arg1 : (tensor<3x4xf32>) -> tensor<1x3x4xf32>
+          %1 = "stablehlo.reshape"(%arg0) : (tensor<2x3xf32>) -> (tensor<1x2x3xf32>)
+          %2 = "stablehlo.reshape"(%arg1) : (tensor<3x4xf32>) -> (tensor<1x3x4xf32>)
           %3 = "stablehlo.dot_general"(%1, %2) {dot_dimension_numbers = #stablehlo.dot<lhs_batching_dimensions = [0], rhs_batching_dimensions = [0], lhs_contracting_dimensions = [2], rhs_contracting_dimensions = [1]>} : (tensor<1x2x3xf32>, tensor<1x3x4xf32>) -> (tensor<1x2x4xf32>)
           %4 = "stablehlo.gather"(%arg1, %arg2) {dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1, 4>, indices_are_sorted = false} : (tensor<3x4xf32>, tensor<2xi32>) -> (tensor<2x4xf32>)
           func.return %0, %3, %4 : tensor<2x4xf32>, tensor<1x2x4xf32>, tensor<2x4xf32>
@@ -225,8 +225,8 @@ def test_set_rows_text_of_rank_two_is_a_scatter_of_the_rows() -> Result[Void]
     <<~MLIR,
       module {
         func.func public @main(%arg0: tensor<4x3xf32>, %arg1: tensor<2x3xf32>, %arg2: tensor<2xi32>) -> (tensor<4x3xf32>) {
-          %0 = stablehlo.reshape %arg2 : (tensor<2xi32>) -> tensor<2x1xi32>
-          %1 = stablehlo.transpose %arg1, dims = [0, 1] : (tensor<2x3xf32>) -> tensor<2x3xf32>
+          %0 = "stablehlo.reshape"(%arg2) : (tensor<2xi32>) -> (tensor<2x1xi32>)
+          %1 = "stablehlo.transpose"(%arg1) {permutation = array<i64: 0, 1>} : (tensor<2x3xf32>) -> (tensor<2x3xf32>)
           %2 = "stablehlo.scatter"(%arg0, %0, %1) ({
           ^bb0(%set_rows0_r0_a0: tensor<f32>, %set_rows0_r0_a1: tensor<f32>):
             "stablehlo.return"(%set_rows0_r0_a1) : (tensor<f32>) -> ()
@@ -250,8 +250,8 @@ def test_set_rows_text_of_rank_three_moves_the_rows_axis() -> Result[Void]
     <<~MLIR,
       module {
         func.func public @main(%arg0: tensor<2x4x3xf32>, %arg1: tensor<2x2x3xf32>, %arg2: tensor<2xi32>) -> (tensor<2x4x3xf32>) {
-          %0 = stablehlo.reshape %arg2 : (tensor<2xi32>) -> tensor<2x1xi32>
-          %1 = stablehlo.transpose %arg1, dims = [1, 0, 2] : (tensor<2x2x3xf32>) -> tensor<2x2x3xf32>
+          %0 = "stablehlo.reshape"(%arg2) : (tensor<2xi32>) -> (tensor<2x1xi32>)
+          %1 = "stablehlo.transpose"(%arg1) {permutation = array<i64: 1, 0, 2>} : (tensor<2x2x3xf32>) -> (tensor<2x2x3xf32>)
           %2 = "stablehlo.scatter"(%arg0, %0, %1) ({
           ^bb0(%set_rows0_r0_a0: tensor<f32>, %set_rows0_r0_a1: tensor<f32>):
             "stablehlo.return"(%set_rows0_r0_a1) : (tensor<f32>) -> ()
@@ -325,7 +325,7 @@ def test_the_ops_of_a_transformer_step_are_written() -> Result[Void]
     "stablehlo.logistic",
     "stablehlo.power",
     "stablehlo.clamp",
-    "stablehlo.compare NE",
+    "comparison_direction NE",
     "stablehlo.transpose",
     "stablehlo.concatenate",
     "lhs_batching_dimensions = [0, 1], rhs_batching_dimensions = [0, 1], lhs_contracting_dimensions = [3], rhs_contracting_dimensions = [3]",
