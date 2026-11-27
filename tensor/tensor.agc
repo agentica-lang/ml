@@ -1710,7 +1710,10 @@ def attention(
   _ = try same_backend(q, k, "attention")
   _ = try same_backend(q, v, "attention")
   _ = try same_dtype(k, v, "attention")
-  if k.dtype != q.dtype and !(k.dtype == Types.Dtype.F16 and q.dtype == Types.Dtype.F32 and compiled?(q))
+  if (
+    k.dtype != q.dtype and
+    !((k.dtype == Types.Dtype.F16 or k.dtype == Types.Dtype.BF16) and q.dtype == Types.Dtype.F32 and compiled?(q))
+  )
     return error("attention needs #{Types.dtype_name(q.dtype)} keys and values, got #{Types.dtype_name(k.dtype)}")
   end
 
@@ -2182,7 +2185,7 @@ def same_dtype(a: Types.Tensor, b: Types.Tensor, op: String) -> Result[Bool]
 end
 
 ## `x` and the weight `w` of a product share their dtype, or `w` is a half or
-## quantized weight (`F16`, `Q8_0`, `Q4_K` or `Q6_K`, from `from_file` with that `dtype`) of an
+## quantized weight (`F16`, `BF16`, `Q8_0`, `Q4_K` or `Q6_K`, from `from_file` with that `dtype`) of an
 ## `F32` `x` in a trace: ggml reads the weight and answers `F32`, and XLA widens it in the program.
 def weight_dtype(x: Types.Tensor, w: Types.Tensor, op: String) -> Result[Bool]
   case x.backend

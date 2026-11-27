@@ -175,7 +175,8 @@ struct Side
   name: String
 end
 
-# The operands of a node, the `F16` ones of an `F32` result converted: their lines, their types and their names.
+# The operands of a node, the half (`F16` or `BF16`) ones of an `F32` result converted: their lines, their types and
+# their names.
 struct Widened
   lines: List[String]
   args: List[Types.Tensor]
@@ -183,14 +184,14 @@ struct Widened
 end
 
 # A half weight is stored in 16 bits and read in 32: where a node's result is `F32` (a product, the rows of a table, an
-# attention), each `F16` operand is converted in the program first, so the weight stays half in memory and an op never
-# mixes types. An `F16` result (a transpose or a slice of a weight) keeps its operands as they are.
+# attention), each half operand is converted in the program first, so the weight stays half in memory and an op never
+# mixes types. A half result (a transpose or a slice of a weight) keeps its operands as they are.
 def widened(t: Types.Tensor, n: Types.Node, names: List[String], first: Int) -> Result[Widened]
   out = Widened(lines: [], args: n.args, names: names)
   return ok(out) if t.dtype != Types.Dtype.F32 or converts?(n.op)
   for i in 0...n.args.size
     x = n.args[i]
-    if x.dtype == Types.Dtype.F16
+    if x.dtype == Types.Dtype.F16 or x.dtype == Types.Dtype.BF16
       wide = x.with(dtype: Types.Dtype.F32)
       from = try ir_type(x.shape, x.dtype)
       to = try ir_type(wide.shape, wide.dtype)

@@ -564,7 +564,9 @@ end
   to `F32` exactly and `bf16_bits` narrows it back, keeping the top 7 mantissa bits of a NaN (setting the quiet bit only
   if they are all zero). Any other source (`from_list`, an `F32` or `F16` file) rounds to nearest even once from the
   double, and a value beyond 3.3895313892515355e38, an infinity included, is an error naming its element; a NaN stays.
-  StableHLO spells it `bf16`.
+  StableHLO spells it `bf16`, and the emitter widens a `BF16` operand of an `F32` result as it widens an `F16` one: a
+  product converts the weight, a lookup gathers the rows first and converts only them, and `attention` reads `BF16`
+  keys and values with an `F32` query.
 - **Quantized weights.** `Tensor.from_file(..., format: Q8_0, dtype: Q8_0)` on
   ggml keeps the blocks of a Q8_0 file as they are (`GGML_TYPE_Q8_0`: 34 bytes
   for 32 values, about a quarter of `F32`; the range is copied, nothing is

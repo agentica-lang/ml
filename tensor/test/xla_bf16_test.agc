@@ -1,6 +1,10 @@
 ## BF16 half weights on XLA (`Tensor.from_file(..., dtype: BF16)` and `Tensor.from_list(..., BF16)`): a BF16 file keeps every 16-bit word, including the values F16 loses; a list rounds to
 ## nearest even once, from the double, and refuses a value beyond the largest BF16; a compiled program widens a BF16
-## input with `to_dtype`.
+## input with `to_dtype`; and a compiled product, lookup and attention read BF16 weights.
+##
+## The parity tests write the weights once as BF16 bytes: XLA loads them as `BF16` and the reference loads the same bytes
+## as `F32` (an exact widening), so both compute on the same weights and agree to the rounding of an `F32` sum
+## (`Support.TOL`).
 ##
 ## Without the plugin (`tools/install_xla.agc`) the checks pass by asserting nothing, unless `TENSOR_REQUIRE_XLA` is
 ## set (the `xla` job of CI sets it), and then they fail.
@@ -103,5 +107,72 @@ def test_only_xla_reads_a_file_as_bf16() -> Result[Void]
     end
 
     ok()
+  end
+end
+
+## The bytes of `xs` as BF16 words, each the top half of its `F32` (the low bits dropped): weights BF16 holds exactly.
+def bf16_bytes(xs: List[Float]) -> List[Int] = xs.flat_map { |x: Float| Files.f32_bytes(x).drop(2) }
+
+def same_weights(
+  count: Int,
+  shape: List[Int],
+  seed: Int,
+  body: Fn[Tensor.Tensor, Tensor.Tensor, Result[Void]],
+) -> Result[Void]
+  Files.with_file("xla-bf16", try Bytes.from_list(bf16_bytes(Support.uniform(count, seed, 1.0)))) do |path|
+    half = try Tensor.from_file(path, 0, shape, Tensor.FloatFormat.BF16, Support.XLA, Tensor.Dtype.BF16)
+    wide = try Tensor.from_file(path, 0, shape, Tensor.FloatFormat.BF16, Support.REF)
+    body.call(half, wide)
+  end
+end
+
+## A product with the `[4, 3]` weight read as `[out, in]`, one with it transposed, and the rows of the weight at `ids`,
+## widened to `F32`.
+def model(w: Tensor.Tensor, x: Tensor.Tensor, ids: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
+  rows = try Tensor.embedding(ids, w)
+  back = try Tensor.matmul(x, try Tensor.transpose(w))
+  ok([try Tensor.linear(x, w, none, true), back, try Tensor.to_dtype(rows, Tensor.Dtype.F32)])
+end
+
+def inputs(backend: Tensor.Backend) -> Result[List[Tensor.Tensor]]
+  x = try Support.floats(Support.uniform(6, 7, 2.0), [2, 3], backend)
+  ids = try Tensor.from_list([3, 0, 2].map { |i: Int| Tensor.Values.Int(i) }, [3], Tensor.Dtype.I32, backend)
+  ok([x, ids])
+end
+
+def test_a_bf16_weight_computes_as_the_f32_weight_it_holds() -> Result[Void]
+  return ok() if !try Support.present()
+  same_weights(12, [4, 3], 3) do |half, wide|
+    shared = try inputs(Support.XLA)
+    compiled = try Trace.compile(
+      [Trace.spec_of(shared[0]), Trace.spec_of(shared[1]), Trace.spec_of(half)],
+      ->(xs: List[Tensor.Tensor]) { model(xs[2], xs[0], xs[1]) },
+    )
+
+    got = try Trace.run(compiled, [shared[0], shared[1], half])
+    on_reference = try inputs(Support.REF)
+    Support.close(got, try model(wide, on_reference[0], on_reference[1]))
+  end
+end
+
+def attend(q: Tensor.Tensor, k: Tensor.Tensor, v: Tensor.Tensor) -> Result[List[Tensor.Tensor]]
+  ok([try Tensor.attention(q, k, v), try Tensor.attention(q, k, v, causal: true)])
+end
+
+## Grouped-query attention with BF16 keys and values and an `F32` query.
+def test_attention_reads_bf16_keys_and_values() -> Result[Void]
+  return ok() if !try Support.present()
+  same_weights(24, [1, 1, 3, 8], 5) do |k_half, k_wide|
+    same_weights(24, [1, 1, 3, 8], 11) do |v_half, v_wide|
+      q = try Support.floats(Support.uniform(32, 13, 1.0), [1, 2, 2, 8], Support.XLA)
+      compiled = try Trace.compile(
+        [Trace.spec_of(q), Trace.spec_of(k_half), Trace.spec_of(v_half)],
+        ->(xs: List[Tensor.Tensor]) { attend(xs[0], xs[1], xs[2]) },
+      )
+
+      got = try Trace.run(compiled, [q, k_half, v_half])
+      q_ref = try Support.floats(Support.uniform(32, 13, 1.0), [1, 2, 2, 8], Support.REF)
+      Support.close(got, try attend(q_ref, k_wide, v_wide))
+    end
   end
 end

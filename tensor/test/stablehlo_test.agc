@@ -235,6 +235,47 @@ def test_an_f16_weight_is_widened_where_an_f32_result_reads_it() -> Result[Void]
   ok()
 end
 
+## A `BF16` weight is widened as an `F16` one: `linear` transposes and converts the weight once, then multiplies, and `embedding` gathers
+## the rows of the table first and converts only those.
+def test_a_bf16_weight_is_widened_where_an_f32_result_reads_it() -> Result[Void]
+  m = try Trace.stablehlo(
+    [spec([2, 3], Tensor.Dtype.F32), spec([2, 3], Tensor.Dtype.BF16)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.linear(xs[0], xs[1], none, true)]) },
+  )
+
+  try Test.eq(
+    m.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<2x3xf32>, %arg1: tensor<2x3xbf16>) -> (tensor<2x2xf32>) {
+          %0 = "stablehlo.transpose"(%arg1) {permutation = array<i64: 1, 0>} : (tensor<2x3xbf16>) -> (tensor<3x2xbf16>)
+          %1 = "stablehlo.convert"(%0) : (tensor<3x2xbf16>) -> (tensor<3x2xf32>)
+          %2 = "stablehlo.dot_general"(%arg0, %1) {dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>} : (tensor<2x3xf32>, tensor<3x2xf32>) -> (tensor<2x2xf32>)
+          func.return %2 : tensor<2x2xf32>
+        }
+      }
+    MLIR
+  )
+
+  rows = try Trace.stablehlo(
+    [spec([5, 3], Tensor.Dtype.BF16), spec([2], Tensor.Dtype.I32)],
+    ->(xs: List[Tensor.Tensor]) { ok([try Tensor.to_dtype(try Tensor.embedding(xs[1], xs[0]), Tensor.Dtype.F32)]) },
+  )
+
+  Test.eq(
+    rows.text,
+    <<~MLIR,
+      module {
+        func.func public @main(%arg0: tensor<5x3xbf16>, %arg1: tensor<2xi32>) -> (tensor<2x3xf32>) {
+          %0 = "stablehlo.gather"(%arg0, %arg1) {dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1, 3>, indices_are_sorted = false} : (tensor<5x3xbf16>, tensor<2xi32>) -> (tensor<2x3xbf16>)
+          %1 = "stablehlo.convert"(%0) : (tensor<2x3xbf16>) -> (tensor<2x3xf32>)
+          func.return %1 : tensor<2x3xf32>
+        }
+      }
+    MLIR
+  )
+end
+
 ## The text of `set_rows` on a rank-2 cache: the positions as a column, the rows moved to the scatter layout, and one
 ## scatter that replaces the rows. This golden is the one the emitter must keep when it builds the scatter with `agc-ir`.
 def test_set_rows_text_of_rank_two_is_a_scatter_of_the_rows() -> Result[Void]
