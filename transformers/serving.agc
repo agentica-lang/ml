@@ -1,8 +1,11 @@
 ## One long-lived task serving greedy Qwen3 decodes over `generate.agc`: the first scheduler of ml#90, and only its
 ## first step. Many sequences share one model and one `Generate.Generator`; the scheduler owns every live cache and
-## steps the active sequences round-robin, one decode step each per round, admitting new ones at round boundaries and
-## delivering each sequence's tokens on its own reply channel. No true batched graph, no HTTP, no sampling, no paged
-## KV: each step runs its own graph in turn. A prompt runs as one step; there is no chunked prefill.
+## steps the active sequences round-robin, one row each per round: a prompt (prefill) runs alone through
+## `Generate.step`, and the first two sequences with their prompts done share one decode graph through
+## `Generate.step_pair` (one batch bucket of two rows; further ones step alone). Each tower of the paired graph is the
+## step of its row, with its own positions, mask and cache, so pairing changes no token. New requests join at round
+## boundaries and each sequence hears its tokens on its own reply channel. No HTTP, no sampling, no paged KV: a prompt
+## runs as one step; there is no chunked prefill.
 ##
 ## The contract, which the shape of the code keeps:
 ##
@@ -26,6 +29,7 @@
 ##   with a retriable `busy` error that leaves the server running.
 
 import Generate from "generate"
+import Stepping from "stepping"
 
 ## How long the idle scheduler waits for a command before looking again. A command wakes the wait at once.
 IDLE_WAIT_MS = 30000
@@ -67,11 +71,18 @@ enum Command
   Stop
 end
 
-## The running scheduler: its inbox, its task, and its bounds. `stop` ends the task and closes the inbox.
+## The running scheduler: its inbox, its task, and its bounds. `stop` ends the task and closes the inbox. `pairs`
+## holds the count of completed paired decode steps (one per shared graph execution), which `stats` reads.
 struct Server
   inbox: Channel[Command]
   task: Task[Result[Void]]
   limits: Limits
+  pairs: Channel[Int]
+end
+
+## How many paired decode steps the run has completed: one per shared graph execution, prefills excluded.
+struct Stats
+  pair_runs: Int
 end
 
 ## Starts the scheduler over `g`, which belongs to the scheduler until a `stop` that returns `ok()`. `limits` bounds
@@ -82,7 +93,16 @@ def start(g: Generate.Generator, limits: Limits) -> Result[Server]
   return error("serving: max_pending is #{limits.max_pending}, needs 0 or more") if limits.max_pending < 0
 
   inbox: Channel[Command] = Channel.new(limits.max_pending + 1)
-  ok(Server(inbox: inbox, task: Task.spawn(&serve, Args(g: g, limits: limits, inbox: inbox)), limits: limits))
+  pairs: Channel[Int] = Channel.new(1)
+  try pairs.send(0, COMMAND_WAIT_MS)
+  ok(
+    Server(
+      inbox: inbox,
+      task: Task.spawn(&serve, Args(g: g, limits: limits, inbox: inbox, pairs: pairs)),
+      limits: limits,
+      pairs: pairs,
+    ),
+  )
 end
 
 ## Asks for `max_new` greedy ids after `prompt`, stopping before a `stop` id, with the tokens and the end on `reply`
@@ -133,6 +153,19 @@ def stop(s: Server) -> Result[Void]
   ok()
 end
 
+## How many paired decode steps the server has completed: one per shared graph execution, prefills excluded. The
+## count is exact when the run is idle or stopped: a step in flight has not been counted yet.
+def stats(s: Server) -> Result[Stats]
+  case s.pairs.recv(COMMAND_WAIT_MS)
+    ok(v) ->
+      put = s.pairs.send(v, COMMAND_WAIT_MS)
+      return error("serving: the stats count is busy, retry the stats") if not put.ok?
+
+      ok(Stats(pair_runs: v))
+    error(_) -> error("serving: the stats count is busy, retry the stats")
+  end
+end
+
 private
 
 ## What the scheduler task runs on.
@@ -140,6 +173,7 @@ struct Args
   g: Generate.Generator
   limits: Limits
   inbox: Channel[Command]
+  pairs: Channel[Int]
 end
 
 ## A live sequence: what it asked, the cache after its last step, the ids so far, the last id fed, and whether the
@@ -158,6 +192,14 @@ struct State
   active: List[Live]
   pending: List[Submit]
   stopped: Bool
+end
+
+## What settling one row of a step leaves: the sequences and where the scan goes on (`next` is the row itself when the
+## row was dropped, the one after it otherwise).
+struct Settled
+  active: List[Live]
+  next: Int
+  removed: Bool
 end
 
 def serve(a: Args) -> Result[Void]
@@ -311,58 +353,136 @@ def admit(a: Args, st: State) -> State
   st.with(active: active, pending: pending)
 end
 
-## One step of every active sequence, in order: the prompt first, then one id. A finished sequence hears its last
-## token and `Done` (a stop id is never a token); a slow or gone consumer, and a failing step, end the sequence without
-## stalling the rest. A failing step already consumed its cache, so there is nothing to finish.
+## One step of every active sequence, in order: each prompt first, alone through `Generate.step`, then one decode step
+## each: the first two sequences with their prompts done share one graph through `Generate.step_pair` (the single
+## graph execution of the round, counted in `Args.pairs`), and further ones step alone. A finished sequence hears its
+## last token and `Done` (a stop id is never a token); a slow or gone consumer, and a failing step, end the sequence
+## without stalling the rest. A failing step already consumed its cache, so there is nothing to finish; a failing
+## paired step consumed both caches, so both sequences end.
 def round(a: Args, st: State) -> State
   active = st.active
   i = 0
   while i < active.size
-    r = active[i]
-    feed: List[Int] = []
-    if r.fed
-      feed = [r.last]
-    else
-      feed = r.want.prompt
+    if active[i].fed
+      i += 1
+      next
     end
 
-    case Generate.step(a.g, r.cache, feed)
+    r = active[i]
+    case Generate.step(a.g, r.cache, r.want.prompt)
       ok(p) ->
-        ids = r.ids.push(p.id)
-        if r.want.stop.include?(p.id)
-          Generate.finish(p.cache)
-          _ = r.want.reply.send(Event.Done, 0)
-          active = active.take(i) + active.drop(i + 1)
-          next
-        end
+        settled = settle_row(r, p, i, active)
+        active = settled.active
+        i = settled.next
+      error(e) -> active = fail_row(r, e.message, i, active)
+    end
+  end
 
-        if ids.size >= r.want.max_new
-          Generate.finish(p.cache)
-          kept = r.want.reply.send(Event.Token(p.id), 0)
-          if kept.ok?
-            _ = r.want.reply.send(Event.Done, 0)
-          end
+  ready: List[Int] = []
+  for k in 0...active.size
+    if active[k].fed
+      ready = ready.push(k)
+    end
+  end
 
-          active = active.take(i) + active.drop(i + 1)
-          next
-        end
+  rest: List[Int] = ready
+  if ready.size >= 2
+    before = active.size
+    active = pair_rows(a, active, ready[0], ready[1])
+    rest = []
+    for t in ready.drop(2)
+      rest = rest.push(t - (before - active.size))
+    end
+  end
 
-        sent = r.want.reply.send(Event.Token(p.id), 0)
-        if sent.ok?
-          active = active.set(i, r.with(cache: p.cache, ids: ids, last: p.id, fed: true))
-          i += 1
-        else
-          Generate.finish(p.cache)
-          active = active.take(i) + active.drop(i + 1)
+  off = 0
+  for t in rest
+    r = active[t - off]
+    case Generate.step(a.g, r.cache, [r.last])
+      ok(p) ->
+        settled = settle_row(r, p, t - off, active)
+        active = settled.active
+        if settled.removed
+          off += 1
         end
 
       error(e) ->
-        _ = r.want.reply.send(Event.Failed(e.message), 0)
-        active = active.take(i) + active.drop(i + 1)
+        active = fail_row(r, e.message, t - off, active)
+        off += 1
     end
   end
 
   st.with(active: active)
+end
+
+## Settles the row `r` at `i` with the pick `p` of its step: a stop id ends the sequence without ever becoming a token,
+## `max_new` ids end it after its last token, and a slow or gone consumer ends it without stalling the rest.
+def settle_row(r: Live, p: Stepping.Picked[Generate.Cache], i: Int, active: List[Live]) -> Settled
+  ids = r.ids.push(p.id)
+  if r.want.stop.include?(p.id)
+    Generate.finish(p.cache)
+    _ = r.want.reply.send(Event.Done, 0)
+    return Settled(active: active.take(i) + active.drop(i + 1), next: i, removed: true)
+  end
+
+  if ids.size >= r.want.max_new
+    Generate.finish(p.cache)
+    kept = r.want.reply.send(Event.Token(p.id), 0)
+    if kept.ok?
+      _ = r.want.reply.send(Event.Done, 0)
+    end
+
+    return Settled(active: active.take(i) + active.drop(i + 1), next: i, removed: true)
+  end
+
+  sent = r.want.reply.send(Event.Token(p.id), 0)
+  if sent.ok?
+    return Settled(
+      active: active.set(i, r.with(cache: p.cache, ids: ids, last: p.id, fed: true)),
+      next: i + 1,
+      removed: false,
+    )
+  end
+
+  Generate.finish(p.cache)
+  Settled(active: active.take(i) + active.drop(i + 1), next: i, removed: true)
+end
+
+## Fails the row `r` at `i` with `message`: its cache is already consumed, so there is nothing to finish.
+def fail_row(r: Live, message: String, i: Int, active: List[Live]) -> List[Live]
+  _ = r.want.reply.send(Event.Failed(message), 0)
+  active.take(i) + active.drop(i + 1)
+end
+
+## One shared decode step of the rows at `ia` and `ib`: each row settles its own pick on its own channel, so a slow or
+## gone consumer ends only its row and the peer runs on. A failing step consumed both caches, so both rows fail.
+def pair_rows(a: Args, active: List[Live], ia: Int, ib: Int) -> List[Live]
+  r = active[ia]
+  o = active[ib]
+  case Generate.step_pair(a.g, r.cache, r.last, o.cache, o.last)
+    ok(pair) ->
+      # The single graph execution of the round: one paired step is one graph.
+      note_pair(a)
+      first = settle_row(r, pair.a, ia, active)
+      active = first.active
+      jb = ib
+      if first.removed
+        jb = ib - 1
+      end
+
+      settle_row(active[jb], pair.b, jb, active).active
+    error(e) ->
+      dropped = fail_row(r, e.message, ia, active)
+      fail_row(dropped[ib - 1], e.message, ib - 1, dropped)
+  end
+end
+
+## One paired decode step completed: counts its single graph execution.
+def note_pair(a: Args) -> Void
+  case a.pairs.recv(COMMAND_WAIT_MS)
+    ok(v) -> _ = a.pairs.send(v + 1, COMMAND_WAIT_MS)
+    error(_) -> nil
+  end
 end
 
 ## Nothing to step: waits for the next command, which wakes the wait at once.

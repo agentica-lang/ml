@@ -8,6 +8,7 @@ import Generate from "../generate"
 import Qwen3 from "../qwen3"
 import S from "support"
 import Serving from "../serving"
+import Tensor from "pkg/tensor/tensor"
 
 ## How long a wait for an event may take. The reference steps are quick; the bound only fails a stuck run.
 TIMEOUT_MS = 30000
@@ -37,10 +38,259 @@ def test_a_stop_id_ends_the_sequence_without_a_token() -> Result[Void] = with_pe
 ## submit after it is refused at once.
 def test_the_stop_ends_everything_cleanly() -> Result[Void] = with_peer do |dir| shutdown(dir) end
 
+## The second slice of ml#90: two decode rows share one graph. Mixed prompt lengths decode in pairs, both answers
+## match the standalone greedy ids, and every paired round ran one shared graph (prefills excluded). The standalone
+## ids come from the reference backend once: every serving run, on any backend, must give those same ids.
+def test_paired_decode_matches_standalone_generation() -> Result[Void]
+  with_peer do |dir|
+    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
+    base = try Generate.open(m0)
+    want_a = try Generate.generate(base, [1, 5, 2], 10)
+    want_b = try Generate.generate(base, [4, 4, 9, 2, 7, 1], 8)
+    Generate.close(base)
+    Qwen3.close_model(m0)
+    try paired(dir, S.REF, want_a, want_b)
+    for backend in try S.ggml_backends()
+      try paired(dir, backend, want_a, want_b)
+    end
+
+    ok()
+  end
+end
+
+## B joins while A is in decode: the join pairs them from B's prefill round on, and neither answer changes.
+def test_b_joining_mid_decode_pairs_without_changing_tokens() -> Result[Void]
+  with_peer do |dir|
+    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
+    base = try Generate.open(m0)
+    want_a = try Generate.generate(base, [1, 5, 2], 12)
+    want_b = try Generate.generate(base, [4, 4, 9, 2, 7, 1], 5)
+    Generate.close(base)
+    Qwen3.close_model(m0)
+    try joining(dir, S.REF, want_a, want_b)
+    for backend in try S.ggml_backends()
+      try joining(dir, backend, want_a, want_b)
+    end
+
+    ok()
+  end
+end
+
+## Cancelling A ends only A: B runs on with the same ids, C reuses the free row and pairs with B, and the count holds
+## one shared graph per paired round.
+def test_cancellation_keeps_the_peer_on_paired_tokens() -> Result[Void]
+  with_peer do |dir|
+    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
+    base = try Generate.open(m0)
+    want_b = try Generate.generate(base, [4, 4, 9, 2, 7, 1], 5)
+    want_c = try Generate.generate(base, [1, 2, 3], 4)
+    Generate.close(base)
+    Qwen3.close_model(m0)
+    try cancelled_pair(dir, S.REF, want_b, want_c)
+    for backend in try S.ggml_backends()
+      try cancelled_pair(dir, backend, want_b, want_c)
+    end
+
+    ok()
+  end
+end
+
+## One active row steps alone, through the single path: its ids match the standalone ones and no paired step ran,
+## so prefills and single rows never touch the paired count.
+def test_one_active_row_steps_alone() -> Result[Void]
+  with_peer do |dir|
+    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
+    base = try Generate.open(m0)
+    want = try Generate.generate(base, [2, 7, 1], 5)
+    Generate.close(base)
+    Qwen3.close_model(m0)
+    try solo(dir, S.REF, want)
+    for backend in try S.ggml_backends()
+      try solo(dir, backend, want)
+    end
+
+    ok()
+  end
+end
+
+## A paired step needs two decodes: an empty cache, or an id outside the vocabulary, fails the step and consumes both
+## caches.
+def test_step_pair_needs_two_prefilled_caches() -> Result[Void]
+  with_peer do |dir|
+    try pair_errors(dir, S.REF)
+    for backend in try S.ggml_backends()
+      try pair_errors(dir, backend)
+    end
+
+    ok()
+  end
+end
+
+## A stop id in a paired round ends only its row: A hears Done after its token before the stop id, B runs on with the
+## same ids, and the count holds the single shared graph that ended A.
+def test_a_stop_id_in_a_paired_round_ends_only_that_row() -> Result[Void]
+  with_peer do |dir|
+    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
+    base = try Generate.open(m0)
+    want_a = try Generate.generate(base, [1, 5, 2], 2)
+    want_b = try Generate.generate(base, [4, 4, 9, 2, 7, 1], 5)
+    Generate.close(base)
+    Qwen3.close_model(m0)
+    try Test.assert(want_a.size == 2, "the probe run has #{want_a.size} ids, needs 2 for the stop-id pick")
+    try stopped_pair(dir, S.REF, want_a, want_b)
+    for backend in try S.ggml_backends()
+      try stopped_pair(dir, backend, want_a, want_b)
+    end
+
+    ok()
+  end
+end
+
 private
 
 def with_peer(body: Fn[String, Result[Void]]) -> Result[Void]
   S.with_fixtures("test/qwen_peer.py", "agentica-qwen-", body)
+end
+
+## Mixed prompt lengths (3 and 6 ids) through one paired run: 7 shared graphs for the 7 rounds both rows decode, 2
+## single steps for A's tail, and the ids of the standalone greedy runs. Back-to-back submits admit both rows before
+## either can finish, so the count is exact either way the first round lands: with 10 against 8, A always outlives B.
+def paired(dir: String, backend: Tensor.Backend, want_a: List[Int], want_b: List[Int]) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  a_ch: Channel[Serving.Event] = Channel.new(32)
+  b_ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [1, 5, 2], 10, [], a_ch)
+  try Serving.submit(server, [4, 4, 9, 2, 7, 1], 8, [], b_ch)
+  got_a = try collect(a_ch)
+  got_b = try collect(b_ch)
+  runs = (try Serving.stats(server)).pair_runs
+  try Serving.stop(server)
+  # Two prefills, the paired shapes and A's single tails: no round compiles its graph twice.
+  try check_compiles(backend, Generate.compiles(g), 9)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  try Test.eq(got_a, want_a)
+  try Test.eq(got_b, want_b)
+  Test.eq(runs, 7)
+end
+
+## B joins while A is in decode (A's first two tokens are consumed first): B prefills and pairs in the next round,
+## 4 shared graphs while both need ids, A singles the rest, and neither answer changes.
+def joining(dir: String, backend: Tensor.Backend, want_a: List[Int], want_b: List[Int]) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  a_ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [1, 5, 2], 12, [], a_ch)
+  first_a = try expect_token(a_ch)
+  second_a = try expect_token(a_ch)
+  b_ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [4, 4, 9, 2, 7, 1], 5, [], b_ch)
+  got_a = [first_a, second_a] + try collect(a_ch)
+  got_b = try collect(b_ch)
+  runs = (try Serving.stats(server)).pair_runs
+  try Serving.stop(server)
+  try check_compiles(backend, Generate.compiles(g), 9)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  try Test.eq(got_a, want_a)
+  try Test.eq(got_b, want_b)
+  Test.eq(runs, 4)
+end
+
+## A is cancelled after the first paired round: A hears it, B runs on alone with the same ids, C takes the free row
+## and pairs with B for its last two rounds, and the count holds one shared graph per paired round.
+def cancelled_pair(dir: String, backend: Tensor.Backend, want_b: List[Int], want_c: List[Int]) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  a_ch: Channel[Serving.Event] = Channel.new(32)
+  b_ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [1, 5, 2], 8, [], a_ch)
+  try Serving.submit(server, [4, 4, 9, 2, 7, 1], 5, [], b_ch)
+  _ = try expect_token(a_ch)
+  first_b = try expect_token(b_ch)
+  _ = try expect_token(a_ch)
+  second_b = try expect_token(b_ch)
+  try Serving.cancel(server, a_ch)
+  try expect_failed(a_ch, "cancelled")
+  # The failure synchronizes with the scheduler: A is out, B decoded alone since, and C pairs from its prefill on.
+  c_ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [1, 2, 3], 4, [], c_ch)
+  got_b = [first_b, second_b] + try collect(b_ch)
+  got_c = try collect(c_ch)
+  runs = (try Serving.stats(server)).pair_runs
+  try Serving.stop(server)
+  try check_compiles(backend, Generate.compiles(g), 8)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  try Test.eq(got_b, want_b)
+  try Test.eq(got_c, want_c)
+  Test.eq(runs, 3)
+end
+
+## One row alone: the single path, the standalone ids, and no paired step (prefills never count).
+def solo(dir: String, backend: Tensor.Backend, want: List[Int]) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [2, 7, 1], 5, [], ch)
+  got = try collect(ch)
+  runs = (try Serving.stats(server)).pair_runs
+  try Serving.stop(server)
+  try check_compiles(backend, Generate.compiles(g), 3)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  try Test.eq(got, want)
+  Test.eq(runs, 0)
+end
+
+## A paired step needs two prefills and usable ids: anything else fails and consumes both caches.
+def pair_errors(dir: String, backend: Tensor.Backend) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  try Test.error?(Generate.step_pair(g, Generate.start(), 1, Generate.start(), 2))
+  a = (try Generate.step(g, Generate.start(), [1, 5, 2])).cache
+  b = (try Generate.step(g, Generate.start(), [1, 5, 2])).cache
+  try Test.error?(Generate.step_pair(g, a, 1, b, 99))
+  Generate.close(g)
+  Qwen3.close_model(m)
+  ok()
+end
+
+## A's second standalone id is the stop: the first paired round ends A after its first token (the stop id is never a
+## token) while B decodes on in the same graph, then B singles to its end. One shared graph ran, and neither answer
+## changed.
+def stopped_pair(dir: String, backend: Tensor.Backend, want_a: List[Int], want_b: List[Int]) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  a_ch: Channel[Serving.Event] = Channel.new(32)
+  b_ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [1, 5, 2], 12, [want_a[1]], a_ch)
+  try Serving.submit(server, [4, 4, 9, 2, 7, 1], 5, [], b_ch)
+  got_a = try collect(a_ch)
+  got_b = try collect(b_ch)
+  runs = (try Serving.stats(server)).pair_runs
+  try Serving.stop(server)
+  try check_compiles(backend, Generate.compiles(g), 8)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  try Test.eq(got_a, want_a.take(1))
+  try Test.eq(got_b, want_b)
+  Test.eq(runs, 1)
+end
+
+## The graphs a serving run on `backend` compiled: none on the reference backend, and on ggml no more than `bound`
+## (the prefill, paired and tail shapes, each once: a round that compiled again would overflow it).
+def check_compiles(backend: Tensor.Backend, made: Int, bound: Int) -> Result[Void]
+  case backend
+    Tensor.Backend.Ggml(_) -> Test.assert(made <= bound, "the serving run compiled #{made} graphs, over #{bound}")
+    _ -> Test.eq(made, 0)
+  end
 end
 
 def interleaved(dir: String) -> Result[Void]
