@@ -202,6 +202,23 @@ static ggml_backend_dev_t device_of(int64_t device, char *why, size_t len) {
   return dev;
 }
 
+an_term ggml_device_memory(an_env *env, int64_t device) {
+  char why[160];
+  ggml_backend_dev_t dev;
+  size_t free_bytes = 0, total_bytes = 0;
+  ggml_list_Int_builder out;
+
+  tg_lock_device();
+  dev = device_of(device, why, sizeof why);
+  if (dev != NULL) ggml_backend_dev_memory(dev, &free_bytes, &total_bytes);
+  tg_unlock_device();
+  if (dev == NULL) return tg_error(env, why);
+  ggml_list_Int_begin(env, &out, 2);
+  ggml_list_Int_push(env, &out, (int64_t)free_bytes);
+  ggml_list_Int_push(env, &out, (int64_t)total_bytes);
+  return ggml_result_list_Int_ok(env, ggml_list_Int_end(env, &out));
+}
+
 #define MAX_CPUS 1024
 
 #ifdef __linux__
