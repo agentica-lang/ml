@@ -15,12 +15,13 @@ import Optim from "optim"
 import Tensor from "pkg/tensor/tensor"
 import Trace from "pkg/tensor/trace"
 
-## What `on_epoch` gets after each epoch: its number from 1, the mean loss of its batches, and the parameters the
-## epoch ended with. The parameters are the run's own: use them inside `on_epoch` (the next step frees them), and copy
+## What `on_epoch` gets after each epoch: its number from 1, the mean loss of its batches, the step count of the run so
+## far, and the parameters the epoch ended with. The parameters are the run's own: use them inside `on_epoch` (the next step frees them), and copy
 ## what must outlive it.
 struct Epoch
   epoch: Int
   loss: Float
+  steps: Int
   params: List[Tensor.Tensor]
 end
 
@@ -332,7 +333,7 @@ def run(r: Run, start: Optim.State, params: List[Tensor.Tensor]) -> Ran
     mean = total / r.count.to_f
     history = history.push(mean)
     case r.on_epoch
-      some(f) -> f.call(Epoch(epoch: e, loss: mean, params: current))
+      some(f) -> f.call(Epoch(epoch: e, loss: mean, steps: state.steps, params: current))
       none -> nil
     end
   end

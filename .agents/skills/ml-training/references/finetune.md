@@ -170,7 +170,7 @@ true
 and `Optim.adamw` are the optimizers with their usual knobs). Both answer the same `Train.Fit`.
 `Loop.metric` measures a `Loop.Metric` (its own batches, `observe`, `reduce`) at the end of every epoch, into
 `fit.metrics[name]`. `Loop.handle(event, f, every: n)` calls `f(Loop.Info)` at `Loop.Event.Started`, `StepCompleted` or
-`EpochCompleted`, in order, and an `error` from it ends the run at that step.
+`EpochCompleted`, in order, and an `error` from it ends the run (a step handler's at that step; an epoch handler's, named by its epoch, at the next step).
 
 ```agentica
 import Data from "pkg/train/data"

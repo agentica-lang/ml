@@ -41,7 +41,8 @@ enum Event
 end
 
 ## What a handler gets. `epoch` counts from 1 (0 at `Started`), `batch` is the index in the epoch and `step` the count of
-## the run, from 1; `loss` is the loss of the step, or the mean loss of the epoch at `EpochCompleted` (0 at `Started`).
+## the run, from 1 (the steps so far at `EpochCompleted`, 0 at `Started`); `batch` is 0 at `Started` and `EpochCompleted`.
+## `loss` is the loss of the step, or the mean loss of the epoch at `EpochCompleted` (0 at `Started`).
 ## `params` are the parameters the step or the epoch made, the run's own: use them inside the handler (the next step
 ## frees them). `metrics` holds the values measured at the end of this epoch, by name, at `EpochCompleted`.
 struct Info
@@ -85,8 +86,10 @@ def metric(t: Trainer, m: Metric) -> Trainer = t.with(metrics: t.metrics.push(m)
 
 ## The trainer with `f` called at `event`: before the first step, after every `every`th step, or after every `every`th
 ## epoch (with the metrics of that epoch). Handlers of an event are called in the order they were added, and in the
-## thread of the run. A handler that answers an `error` ends the run with it, at that step; an `every` below 1 is an
-## error of the run.
+## thread of the run. A handler that answers an `error` ends the run with it: a step handler's error is named by the
+## epoch and the batch, an epoch handler's (and a metric's) by the epoch, and a `Started` handler's by "before the first
+## step". An epoch handler's error stops the run one step later, at the next step (or after the last epoch). An `every`
+## below 1 is an error of the run.
 def handle(t: Trainer, event: Event, f: Fn[Info, Result[Void]], every: Int = 1) -> Trainer
   t.with(handlers: t.handlers.push(Handler(event: event, every: every, call: f)))
 end
@@ -229,7 +232,8 @@ def started(t: Trainer) -> Result[Void]
 
   info = Info(event: Event.Started, epoch: 0, batch: 0, step: 0, loss: 0.0, params: t.params)
   for h in handlers_at(t, Event.Started)
-    try h.call.call(info)
+    called = h.call.call(info)
+    return error("before the first step: #{called.message}") if !called.ok?
   end
 
   ok()
@@ -257,11 +261,11 @@ end
 ## next step.
 def after_epoch(t: Trainer, e: Train.Epoch, failed: Channel[String]) -> Result[List[Float]]
   done = epoch_done(t, e)
-  if !done.ok?
-    _ = failed.send(done.message, 0)
-  end
+  return done if done.ok?
 
-  done
+  message = "epoch #{e.epoch}: #{done.message}"
+  _ = failed.send(message, 0)
+  error(message)
 end
 
 def epoch_done(t: Trainer, e: Train.Epoch) -> Result[List[Float]]
@@ -275,7 +279,7 @@ def epoch_done(t: Trainer, e: Train.Epoch) -> Result[List[Float]]
     event: Event.EpochCompleted,
     epoch: e.epoch,
     batch: 0,
-    step: 0,
+    step: e.steps,
     loss: e.loss,
     params: e.params,
     metrics: named,

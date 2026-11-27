@@ -68,7 +68,7 @@ true
 
 ## Progress, metrics, checkpoints
 
-- `on_epoch` gets `Train.Epoch(epoch:, loss:, params:)` (the epoch counts from 1; `params` are the parameters the epoch
+- `on_epoch` gets `Train.Epoch(epoch:, loss:, steps:, params:)` (the epoch counts from 1; `params` are the parameters the epoch
   ended with, valid only inside `on_epoch`: the next step frees them).
 - `on_step` gets `Train.StepInfo(epoch:, batch:, step:, loss:, params:)` after each step and answers `Result[Void]`; an
   `error` stops the fit at once, naming the epoch and the batch.

@@ -107,7 +107,7 @@ fit = try (
 )
 ```
 
-`Loop.handle(trainer, event, f, every: 1)` adds a function that the loop calls at an event, in the order the handlers were added and in the thread of the run: `Loop.Event.Started` (before the first step), `Loop.Event.StepCompleted` (after each step) or `Loop.Event.EpochCompleted` (after each epoch, once its metrics are measured). `every: n` calls it on every `n`th step or epoch. It gets a `Loop.Info` with the `epoch` (from 1), the `batch` and the `step` count of the run, the `loss` (of the step, or the mean of the epoch), the `params` (valid only inside the handler: the next step frees them) and, at `EpochCompleted`, the `metrics` of that epoch by name. A handler answers a `Result`: an `error` ends the run at once, with an error that names the epoch and the batch.
+`Loop.handle(trainer, event, f, every: 1)` adds a function that the loop calls at an event, in the order the handlers were added and in the thread of the run: `Loop.Event.Started` (before the first step), `Loop.Event.StepCompleted` (after each step) or `Loop.Event.EpochCompleted` (after each epoch, once its metrics are measured). `every: n` calls it on every `n`th step or epoch. It gets a `Loop.Info` with the `epoch` (from 1), the `batch` and the `step` count of the run (at `EpochCompleted` the steps so far, with `batch` 0), the `loss` (of the step, or the mean of the epoch), the `params` (valid only inside the handler: the next step frees them) and, at `EpochCompleted`, the `metrics` of that epoch by name. A handler answers a `Result`: an `error` ends the run. A step handler's error is named by the epoch and the batch (`epoch 2, batch 0: ...`) and stops the run at that step. An epoch handler's error, like a metric's, is named by the epoch (`epoch 1: ...`) and stops the run at the next step, so one more step runs first, or after the last epoch; a `Started` handler's is named `before the first step`.
 
 ```agentica
 fit = try (
@@ -131,7 +131,7 @@ fit = try (
 
 - `loss` has the type `Fn[List[Tensor.Tensor], Data.Batch, Result[Tensor.Tensor]]`. It gets the parameters and a batch, and it returns a float scalar.
 - Inside `loss`, the batch `inputs` and `targets` are traced inputs, so the loss is written once, as plain code. `fit` traces and compiles the step once for each batch shape (a smaller last batch is a second one) and runs it on every batch of that shape.
-- `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1), `loss` and `params`, the parameters the epoch ended with (use them inside `on_epoch`: the next step frees them). `fit` prints nothing.
+- `on_epoch` is optional. It gets an `Epoch` with `epoch` (from 1), `loss`, `steps` (the step count of the run so far) and `params`, the parameters the epoch ended with (use them inside `on_epoch`: the next step frees them). `fit` prints nothing.
 - `on_step` is optional. It gets a `StepInfo` after each step, with `epoch` (from 1), `batch` (from 0), `step` (the count of the run, from 1), `loss` and `params` (valid only inside `on_step`), and answers a `Result[Void]`: an `error` stops `fit` with an error that names the epoch and the batch.
 - `metrics` is optional. It is an open [`Metrics.Run`](metrics.md) that gets `train/loss`, `train/lr` and `train/step_ms` for every step. A value it refuses, such as a loss that is not finite, stops `fit` too.
 - A failed step stops `fit` with an error that names the epoch and the batch, for example `epoch 1, batch 0: ...`.

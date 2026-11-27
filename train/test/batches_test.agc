@@ -248,6 +248,48 @@ def test_prefetch_builds_the_batches_on_a_task_and_trains_the_same() -> Result[V
   )
 end
 
+## `on_step` after each step with prefetch on: the epoch from 1, the batch from 0, the step counted across epochs. An
+## error from it at step 3 stops the fit at once with the epoch and the batch, the task ends, the run's own tensors are
+## freed (on ggml and libtorch) and the caller's weights are not.
+def test_on_step_stops_a_prefetching_fit_at_once() -> Result[Void]
+  for backend in try backends()
+    start = try weights(backend)
+    seen: Channel[String] = Channel.new(16)
+    last: Channel[Tensor.Tensor] = Channel.new(1)
+    on_step = ->(s) {
+      _ = seen.send("#{s.epoch}/#{s.batch}/#{s.step}", 0)
+      return error("stop") if s.step == 3 and last.send(s.params[0], 0).ok?
+
+      ok()
+    }
+
+    r = Train.fit_batches(
+      &linear,
+      start,
+      ->(_e: Int, i: Int) { pair(backend, i) },
+      2,
+      adam(),
+      3,
+      prefetch: 2,
+      on_step: some(on_step),
+    )
+
+    try S.expect_error(r, "epoch 2, batch 0: stop")
+    try Test.eq([try seen.recv(0), try seen.recv(0), try seen.recv(0)], ["1/0/1", "1/1/2", "2/0/3"])
+    try Test.error?(seen.recv(0))
+    try S.expect_close(try S.floats_of(start[0]), [0.3, -0.2], 0.0000001, 0.0, "the caller's weights on #{backend}")
+    if backend != S.REF
+      kept = try last.recv(0)
+      try Test.assert(
+        Data.freed?(Data.Batch(inputs: kept, targets: kept)),
+        "the run's own weights are freed on #{backend}",
+      )
+    end
+  end
+
+  ok()
+end
+
 ## The calls the prefetch task made, in order, as `epoch * 10 + i`.
 def calls(log: Channel[Int]) -> List[Int]
   out: List[Int] = []

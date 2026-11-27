@@ -144,6 +144,22 @@ def report(seen: Channel[Train.Epoch], e: Train.Epoch) -> Void
   _ = seen.send(e, 0)
 end
 
+## `on_step` gets the step after each step, counted across epochs (the loader has one batch, so the step is the epoch),
+## and an error from it stops the fit at that step, naming the epoch and the batch.
+def test_on_step_sees_every_step_and_its_error_stops_the_fit() -> Result[Void]
+  seen: Channel[String] = Channel.new(16)
+  on_step = ->(s) {
+    _ = seen.send("#{s.epoch}/#{s.batch}/#{s.step}", 0)
+    return error("stop") if s.step == 3
+
+    ok()
+  }
+
+  try S.expect_error(xor(S.REF, on_step: some(on_step)), "epoch 3, batch 0: stop")
+  try Test.eq([try seen.recv(0), try seen.recv(0), try seen.recv(0)], ["1/0/1", "2/0/2", "3/0/3"])
+  Test.error?(seen.recv(0))
+end
+
 ## Without the native module, a tensor on libtorch is an error, not a halt.
 def absent() -> Result[Void]
   case S.tensor([1.0], [1], Tensor.Dtype.F32, S.TORCH)
@@ -152,7 +168,11 @@ def absent() -> Result[Void]
   end
 end
 
-def xor(backend: Tensor.Backend, on_epoch: Optional[Fn[Train.Epoch, Void]] = none) -> Result[Train.Fit]
+def xor(
+  backend: Tensor.Backend,
+  on_epoch: Optional[Fn[Train.Epoch, Void]] = none,
+  on_step: Optional[Fn[Train.StepInfo, Result[Void]]] = none,
+) -> Result[Train.Fit]
   up = try Nn.init_dense(2, 8, 1, backend)
   down = try Nn.init_dense(8, 1, 2, backend)
   params = [up.w, up.b.unwrap!, down.w, down.b.unwrap!]
@@ -164,6 +184,8 @@ def xor(backend: Tensor.Backend, on_epoch: Optional[Fn[Train.Epoch, Void]] = non
     adam,
     EPOCHS,
     on_epoch,
+    none,
+    on_step,
   )
 end
 

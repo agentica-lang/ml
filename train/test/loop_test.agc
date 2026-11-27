@@ -216,6 +216,14 @@ def failing_at(log: Channel[String], step: Int) -> Fn[Loop.Info, Result[Void]]
   }
 end
 
+def failing_epoch(epoch: Int, message: String) -> Fn[Loop.Info, Result[Void]]
+  ->(i) {
+    return error(message) if i.epoch == epoch
+
+    ok()
+  }
+end
+
 def drained(log: Channel[String], count: Int) -> Result[List[String]]
   out: List[String] = []
   for _ in 0...count
@@ -233,7 +241,7 @@ def test_handlers_run_in_order_at_their_events() -> Result[Void]
     log: Channel[String] = Channel.new(32)
     loader = Data.Loader(dataset: try rows(backend), batch_size: 2, shuffle: false)
     on_epoch = ->(i: Loop.Info) {
-      _ = log.send("e#{i.epoch}:#{i.metrics.size}", 0)
+      _ = log.send("e#{i.epoch}:#{i.metrics.size}@#{i.step}", 0)
       ok()
     }
 
@@ -263,7 +271,7 @@ def test_handlers_run_in_order_at_their_events() -> Result[Void]
 
     try Test.eq(fit.history.size, 3)
     got = try drained(log, 10)
-    try Test.eq(got, ["start", "a1", "a2", "a3", "b3", "a4", "e2:1", "a5", "a6", "b6"])
+    try Test.eq(got, ["start", "a1", "a2", "a3", "b3", "a4", "e2:1@4", "a5", "a6", "b6"])
   end
 
   ok()
@@ -316,6 +324,41 @@ def test_a_failed_metric_stops_the_run_at_the_next_step() -> Result[Void]
   try Test.eq(try drained(log, 2), ["s1", "s2"])
   try Test.eq(try calls.recv(0), 1)
   Test.error?(calls.recv(0))
+end
+
+## An epoch handler that fails stops the run, with the epoch in its error: at the next step here, after the last epoch
+## when it is the last. A `Started` handler that fails stops it before the first step.
+def test_a_failing_epoch_handler_stops_the_run() -> Result[Void]
+  for backend in try backends()
+    log: Channel[String] = Channel.new(32)
+    loader = Data.Loader(dataset: try rows(backend), batch_size: 2, shuffle: false)
+    r = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.handle(Loop.Event.StepCompleted, labelled(log, "s"))
+      |> Loop.handle(Loop.Event.EpochCompleted, failing_epoch(1, "full"))
+      |> Loop.run(loader, epochs: 3)
+    )
+
+    try S.expect_error(r, "epoch 2, batch 0: epoch 1: full")
+    try Test.eq(try drained(log, 2), ["s1", "s2"])
+
+    last = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.handle(Loop.Event.EpochCompleted, failing_epoch(2, "late"))
+      |> Loop.run(loader, epochs: 2)
+    )
+
+    try S.expect_error(last, "epoch 2: late")
+    early = (
+      Loop.trainer(&linear, try weights(backend), adam())
+      |> Loop.handle(Loop.Event.Started, ->(_) { error("no go") })
+      |> Loop.run(loader)
+    )
+
+    try S.expect_error(early, "before the first step: no go")
+  end
+
+  ok()
 end
 
 def test_every_is_one_or_more() -> Result[Void]
