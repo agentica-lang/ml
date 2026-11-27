@@ -360,8 +360,8 @@ headers; the repository never downloads it). So:
   suite with `TENSOR_REQUIRE_TORCH=1`, so a module that did not build fails the
   torch tests instead of passing them as absent. It proves that the C++ compiles
   against that libtorch and that the values agree with the reference. It runs,
-  in parallel with the packages, when `tensor/`, `train/` or the workflow
-  changes. The line coverage of `src/torch.agc`, `src/torch_dtypes.agc` and
+  in parallel with the packages, when `tensor/` or the workflow changes
+  (`tools/plan.py` decides). The line coverage of `src/torch.agc`, `src/torch_dtypes.agc` and
   `src/native.agc` is counted from this job (`tools/coverage_check.py --only
   libtorch`), not from the package job.
 - The release the numbers of this README were measured on is libtorch 2.4.1+cpu
@@ -375,7 +375,7 @@ headers; the repository never downloads it). So:
   device.
 - The `xla` job installs the XLA plugin (cached by its sha256) and runs the XLA
   tests with `TENSOR_REQUIRE_XLA=1`, in parallel with the packages, when
-  `tensor/`, `train/` or the workflow changes.
+  `tensor/`, `train/`, a package they depend on or the workflow changes.
 
 ## Tolerances, and why
 
