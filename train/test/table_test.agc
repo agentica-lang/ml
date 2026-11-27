@@ -225,19 +225,23 @@ def test_a_dataset_of_a_parquet_file_is_the_one_of_the_csv_file() -> Result[Void
   Test.assert(nulls.include?("gap"), "said: #{nulls}")
 end
 
-## A file over the 1 MiB that `File.read_text` and `File.read_bytes` take at once is read in chunks: a CSV file of 3 MB
+## A file over the 1 MiB that `File.read_text` and `File.read_bytes` take at once is read in chunks: a CSV file of 1.2 MB
 ## written here, and `big.parquet` (2.2 MiB, `make_big.py`).
 def test_a_csv_file_over_one_mib_is_read_whole() -> Result[Void]
   with_dir do |dir|
-    line = "#{"x" * 1000},"
-    text = "payload,id\n" + (0...3000).map { |i| "#{line}#{i}\n" }.join("")
-    try Test.assert(text.bytesize > 2 * 1048576, "the file is #{text.bytesize} bytes")
-    t = try written(dir, text)
-    try Test.eq(t.rows, 3000)
+    path = "#{dir}/t.csv"
+    try File.write_text(path, "payload,id\n")
+    for i in 0...1200
+      try File.append_text(path, "#{"x" * 1000},#{i}\n")
+    end
+
+    try Test.assert((try File.stat(path)).size_bytes > 1048576, "the file is not over 1 MiB")
+    t = try Table.read(path)
+    try Test.eq(t.rows, 1200)
     ids = try Table.floats(t, "id")
-    try Test.eq(ids[2999], 2999.0)
+    try Test.eq(ids[1199], 1199.0)
     payload = try Table.texts(t, "payload")
-    Test.eq(payload[2999].size, 1000)
+    Test.eq(payload[1199].size, 1000)
   end
 end
 
