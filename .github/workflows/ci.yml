@@ -36,6 +36,7 @@ jobs:
       packages: ${{ steps.packages.outputs.packages }}
       xla: ${{ steps.xla.outputs.xla }}
       torch: ${{ steps.xla.outputs.xla }}
+      ggml_arm64: ${{ steps.xla.outputs.xla }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -54,7 +55,7 @@ jobs:
           echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
           echo "Packages: $pkgs"
 
-      # The xla and torch jobs run on a push to main, and on a pull request that changes tensor/, train/ or this file.
+      # The xla, torch and ggml-arm64 jobs run on a push to main, and on a pull request that changes tensor/, train/ or this file.
       - name: Does the XLA backend need a run
         id: xla
         shell: bash
@@ -444,9 +445,62 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The ggml engine of tensor/ on linux-arm64 (GitHub's ubuntu-24.04-arm, the architecture of AWS Graviton): the pinned
+  # ggml built by tools/build-engine.sh for the CPU the runner has, and the whole tensor suite with TENSOR_REQUIRE_GGML=1,
+  # so an engine that did not build fails the ggml tests instead of passing them as absent. The Agentica archive is the
+  # linux-arm64 one: its sha256 is the third column of tensor/AGENTICA_VERSION (the second is the x86_64 one).
+  ggml-arm64:
+    needs: plan
+    if: needs.plan.outputs.ggml_arm64 == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: tensor
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: recursive
+
+      - name: Read the pinned Agentica version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version _ sha256 < AGENTICA_VERSION
+          [ -n "$version" ] && [ -n "$sha256" ] || {
+            echo "tensor/AGENTICA_VERSION must hold the version, the sha256 of its linux-x86_64 archive and the sha256 of its linux-arm64 one" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Agentica release
+        uses: agentica-lang/setup-agentica@v1
+        with:
+          version: ${{ steps.pin.outputs.version }}
+          sha256: ${{ steps.pin.outputs.sha256 }}
+
+      - name: Build the pinned ggml
+        shell: bash
+        run: |
+          set -euo pipefail
+          exports=$(sh tools/build-engine.sh | grep '^export ')
+          eval "$exports"
+          echo "C_INCLUDE_PATH=$C_INCLUDE_PATH" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      - name: Install the locked dependencies
+        run: agentica install
+
+      - name: Test
+        env:
+          TENSOR_REQUIRE_GGML: '1'
+        run: agentica test --max-steps 10000000
+
   # `test` is the required check, so it carries the result of the other jobs.
   test:
-    needs: [plan, packages, cchecker, xla, torch]
+    needs: [plan, packages, cchecker, xla, torch, ggml-arm64]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -458,7 +512,9 @@ jobs:
           CCHECKER: ${{ needs.cchecker.result }}
           XLA: ${{ needs.xla.result }}
           TORCH: ${{ needs.torch.result }}
+          GGML_ARM64: ${{ needs.ggml-arm64.result }}
         run: |
-          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER, xla: $XLA, torch: $TORCH"
+          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER, xla: $XLA, torch: $TORCH, ggml-arm64: $GGML_ARM64"
           [ "$PLAN" = success ] && [[ "$PACKAGES" =~ ^(success|skipped)$ ]] && [ "$CCHECKER" = success ] &&
-            [[ "$XLA" =~ ^(success|skipped)$ ]] && [[ "$TORCH" =~ ^(success|skipped)$ ]]
+            [[ "$XLA" =~ ^(success|skipped)$ ]] && [[ "$TORCH" =~ ^(success|skipped)$ ]] &&
+            [[ "$GGML_ARM64" =~ ^(success|skipped)$ ]]
