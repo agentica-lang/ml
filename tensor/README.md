@@ -206,8 +206,12 @@ eval "$(sh tools/build-torch.sh)"   # optional, after it: both modules then buil
 agentica test --max-steps 10000000
 ```
 
-The script runs on Linux x86_64 only (a GNU ld linker script, AVX2 flags) and
-fails early elsewhere. The Vulkan build needs the Vulkan headers and loader, `glslc` and
+The script runs on Linux x86_64 and aarch64 (it writes a GNU ld linker script)
+and fails early elsewhere. On x86_64 the flags pin AVX2; on aarch64 ggml is
+built for the CPU the script runs on (`GGML_NATIVE=ON`: NEON, and SVE and i8mm
+where the CPU has them), and the cache key names that CPU, so build on the
+machine that runs it (an entry copied to another CPU is a miss). The Vulkan
+build is x86_64 only. The Vulkan build needs the Vulkan headers and loader, `glslc` and
 `SPIRV-Headers` (`libvulkan-dev`, `glslc`, `spirv-headers`, or a Vulkan SDK in
 `$VULKAN_SDK` or `$HOME/.local/vulkan-sdk/usr`); the script lists what is
 missing. The exports are `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` (g++ ignores
@@ -226,6 +230,38 @@ a new entry, built through `ccache` when it is installed. `ENGINE_REBUILD=1`
 forces a rebuild, and removing the folder is always safe.
 The package cache keys a module on those paths, and the key holds the ggml
 commit, so a bump of the pin links a new module with no manual cleanup.
+
+### A fresh AWS c8g (Graviton4, Ubuntu 24.04 arm64)
+
+CPU only; no GPU or Vulkan. The same steps run in CI on GitHub's
+`ubuntu-24.04-arm` runner (the `ggml-arm64` job).
+
+```sh
+sudo apt-get update
+sudo apt-get install -y build-essential cmake git ccache curl
+
+cd ~
+git clone https://github.com/agentica-lang/ml
+git -C ml submodule update --init third_party/ggml
+
+# The Agentica release that tensor/AGENTICA_VERSION names: the linux-arm64
+# archive, whose sha256 is the third column of that file.
+read -r v _ sha < ml/tensor/AGENTICA_VERSION
+curl -fsSLO "https://github.com/agentica-lang/agentica/releases/download/$v/agentica-$v-linux-arm64.tar.gz"
+echo "$sha  agentica-$v-linux-arm64.tar.gz" | sha256sum -c -
+tar xzf "agentica-$v-linux-arm64.tar.gz"
+export PATH="$PWD/agentica-$v-linux-arm64/bin:$PATH"
+
+cd ~/ml/tensor
+eval "$(sh tools/build-engine.sh | grep '^export ')"    # the CI runner (4 vCPUs) takes about 20 seconds
+agentica install
+TENSOR_REQUIRE_GGML=1 agentica test --max-steps 10000000
+```
+
+`TENSOR_REQUIRE_GGML=1` makes a ggml that did not build fail the tests. To
+see what the CPU offers ggml, run `grep -m1 Features /proc/cpuinfo` (a
+Graviton4 lists `sve`, `sve2`, `i8mm` and `bf16`). `JOBS=n` sets the build
+parallelism.
 
 What it does: `zeros`, `ones`, `empty`, `full`, `like`, `arange`,
 `scalar_to_tensor`, `from_list`, `to_list` and `to_device` eagerly, plus
@@ -334,7 +370,9 @@ headers; the repository never downloads it). So:
 - CI **does** build ggml's CPU backend (`tools/build-engine.sh`, the
   workflow's engine step), so `native/ggml.c` compiles and the ggml CPU
   checks run there; `TENSOR_REQUIRE_GGML=1` makes a module that did not build
-  fail them. Vulkan runs locally only: no hosted runner has a device.
+  fail them. The `ggml-arm64` job does the same on `ubuntu-24.04-arm`, with the
+  linux-arm64 Agentica archive. Vulkan runs locally only: no hosted runner has a
+  device.
 - The `xla` job installs the XLA plugin (cached by its sha256) and runs the XLA
   tests with `TENSOR_REQUIRE_XLA=1`, in parallel with the packages, when
   `tensor/`, `train/` or the workflow changes.
