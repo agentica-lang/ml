@@ -361,8 +361,10 @@ end
 ## One step of every active sequence, in order: each prompt first, alone through `Generate.step`, then one decode step
 ## each: where the backend pairs (`Generate.pairs`), the first two sequences with their prompts done share one paired
 ## step through `Generate.step_pair` (the one step of the round counted in `Args.pairs`), and further ones step alone.
-## A backend that does not pair — a Vulkan device, XLA, libtorch — takes the singleton path for every row, as it did
-## before pairing existed, so nothing is lost where the step is not there. A finished sequence hears its last token and
+## A backend that does not pair — XLA, libtorch — takes the singleton path for every row, as it did before pairing
+## existed, so nothing is lost where the step is not there. A ggml device pairs whether it is the CPU engine, a card or
+## the software Vulkan device: that is a property of the device the model was opened on, not a mode of the scheduler. A
+## finished sequence hears its last token and
 ## `Done` (a stop id is never a token); a slow or gone consumer, and a failing step, end the sequence without stalling
 ## the rest. A failing step already consumed its cache, so there is nothing to finish; a failing paired step consumed
 ## both caches, so both sequences end.

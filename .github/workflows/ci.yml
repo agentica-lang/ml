@@ -40,6 +40,7 @@ jobs:
       xla: ${{ steps.plan.outputs.xla }}
       torch: ${{ steps.plan.outputs.torch }}
       ggml_arm64: ${{ steps.plan.outputs.ggml_arm64 }}
+      vulkan: ${{ steps.plan.outputs.vulkan }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -510,6 +511,128 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # A ggml Vulkan device on a runner that has no GPU: Mesa's software Vulkan (lavapipe, the llvmpipe device), which is
+  # the device the pairing case of transformers/ runs on. The device is named, never inferred: VK_DRIVER_FILES points at
+  # the lavapipe manifest alone, so no other driver can answer, and GGML_VK_VISIBLE_DEVICES=0 selects it because ggml
+  # leaves out a device of type CPU unless it is asked for by index. TENSOR_REQUIRE_VULKAN=1 turns a run without a device
+  # into a failure instead of a case that runs nowhere; the loader's own summary, under that same VK_DRIVER_FILES, names
+  # the software device and must name no card driver; and the step asserts the two PASS lines of the case, so a run that
+  # skipped it or never paired is not a green run. Only that
+  # case runs here: the software device interprets shaders (about twenty times the CPU engine on these fixtures), and the
+  # packages and ggml-arm64 jobs keep the suites. The engine is the Vulkan build of tensor/tools/build-engine.sh; the
+  # packages it needs are the ones that script names when they are missing (libvulkan-dev, glslc, spirv-headers) plus the
+  # device and the loader (mesa-vulkan-drivers, libvulkan1) and vulkan-tools for the summary in the log.
+  vulkan:
+    needs: plan
+    if: needs.plan.outputs.vulkan == 'true'
+    name: ggml-vulkan (transformers)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    env:
+      AGENTICA_ML_CACHE: /home/runner/.cache/agentica-ml
+      GGML_VK_VISIBLE_DEVICES: '0'
+    defaults:
+      run:
+        working-directory: transformers
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: recursive
+
+      - name: Read the pinned Agentica version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version sha256 _ < AGENTICA_VERSION
+          [ -n "$version" ] && [ -n "$sha256" ] || {
+            echo "AGENTICA_VERSION must hold the version and the sha256 of its linux-x86_64 archive" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Agentica release
+        uses: agentica-lang/setup-agentica@v1
+        with:
+          version: ${{ steps.pin.outputs.version }}
+          sha256: ${{ steps.pin.outputs.sha256 }}
+
+      - name: Install Mesa's software Vulkan
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 libvulkan-dev glslc spirv-headers vulkan-tools
+
+      # The manifest's file name changes across Mesa versions (lvp_icd.json, lvp_icd.x86_64.json): find it and fail when
+      # the package brought none, rather than assume the name.
+      - name: Name the software Vulkan device
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | head -n 1)
+          [ -n "$manifest" ] || {
+            echo "no Lavapipe manifest under /usr/share/vulkan/icd.d: mesa-vulkan-drivers brings it" >&2
+            exit 1
+          }
+          echo "VK_DRIVER_FILES=$manifest" >> "$GITHUB_ENV"
+          echo "software Vulkan device: $manifest"
+
+      - name: Name the engine pin
+        id: engine-pin
+        shell: bash
+        run: |
+          mkdir -p ~/.cache/agentica-ml
+          echo "ggml=$(git rev-parse HEAD:third_party/ggml)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/agentica-ml
+          key: engine-vulkan-${{ steps.engine-pin.outputs.ggml }}-${{ hashFiles('tensor/tools/build-engine.sh') }}
+
+      # The Vulkan build of ggml (CPU and Vulkan backends in one library): the script builds it and prints the include
+      # and library exports that the native module of tensor/ compiles against.
+      - name: Build the pinned ggml engine with Vulkan
+        shell: bash
+        run: |
+          set -euo pipefail
+          exports=$(sh ../tensor/tools/build-engine.sh vulkan | grep '^export ') || true
+          [ -n "$exports" ] || {
+            echo "tensor/tools/build-engine.sh vulkan printed no export lines" >&2
+            exit 1
+          }
+          eval "$exports"
+          echo "C_INCLUDE_PATH=$C_INCLUDE_PATH" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      - name: Install the locked dependencies
+        run: agentica install
+
+      # The device the loader offers, before any test: the software one, whatever the image also ships. This is the
+      # device evidence of the job: `agentica test` keeps a test's own output to itself, so ggml's device line is not in
+      # the test log, and the loader restricted to the lavapipe manifest is what makes the test's Vulkan(0) the software
+      # device.
+      - name: The device Vulkan offers
+        shell: bash
+        run: |
+          set -euo pipefail
+          vulkaninfo --summary | tee "$RUNNER_TEMP/vulkaninfo.txt"
+          grep -qi "llvmpipe" "$RUNNER_TEMP/vulkaninfo.txt"
+          ! grep -qiE "radeon|radv" "$RUNNER_TEMP/vulkaninfo.txt"
+
+      # The pairing case of transformers/ only, and its exact summary: the case fails on its own when the device is not
+      # there (`TENSOR_REQUIRE_VULKAN`), when a row's ids are not its own singleton run on that device, or when the round
+      # paired nothing; the greps keep a filtered-out or shortened run from passing. pipefail keeps the test's status.
+      - name: Test the paired step on the software Vulkan device
+        env:
+          TENSOR_REQUIRE_VULKAN: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          agentica test --max-steps 10000000 test/vulkan_pair_test.agc 2>&1 | tee "$RUNNER_TEMP/vulkan.log"
+          grep -q "2 passed, 0 failed, 0 skipped, 0 not executed, 0 file errors" "$RUNNER_TEMP/vulkan.log"
+          grep -q "PASS .*vulkan_pair_test.agc / a paired step on vulkan gives the rows singleton ids" "$RUNNER_TEMP/vulkan.log"
+          grep -q "PASS .*vulkan_pair_test.agc / a serving round pairs on vulkan" "$RUNNER_TEMP/vulkan.log"
+
   # The ggml engine of tensor/ on linux-arm64 (GitHub's ubuntu-26.04-arm, the architecture of AWS Graviton): the pinned
   # ggml built by tools/build-engine.sh for the CPU the runner has, and the whole suite of tensor/ and of transformers/
   # (the models, Qwen3 among them, on Backend.Ggml) with TENSOR_REQUIRE_GGML=1, so an engine that did not build fails the
@@ -685,7 +808,7 @@ jobs:
 
   # `test` is the required check, so it carries the result of the other jobs.
   test:
-    needs: [plan, packages, cchecker, xla, torch, ggml-arm64, xla-arm64, torch-arm64]
+    needs: [plan, packages, cchecker, xla, torch, vulkan, ggml-arm64, xla-arm64, torch-arm64]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -697,12 +820,14 @@ jobs:
           CCHECKER: ${{ needs.cchecker.result }}
           XLA: ${{ needs.xla.result }}
           TORCH: ${{ needs.torch.result }}
+          VULKAN: ${{ needs.vulkan.result }}
           GGML_ARM64: ${{ needs.ggml-arm64.result }}
           XLA_ARM64: ${{ needs.xla-arm64.result }}
           TORCH_ARM64: ${{ needs.torch-arm64.result }}
         run: |
-          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER, xla: $XLA, torch: $TORCH, ggml-arm64: $GGML_ARM64, xla-arm64: $XLA_ARM64, torch-arm64: $TORCH_ARM64"
+          echo "plan: $PLAN, packages: $PACKAGES, cchecker: $CCHECKER, xla: $XLA, torch: $TORCH, vulkan: $VULKAN, ggml-arm64: $GGML_ARM64, xla-arm64: $XLA_ARM64, torch-arm64: $TORCH_ARM64"
           [ "$PLAN" = success ] && [[ "$PACKAGES" =~ ^(success|skipped)$ ]] && [ "$CCHECKER" = success ] &&
             [[ "$XLA" =~ ^(success|skipped)$ ]] && [[ "$TORCH" =~ ^(success|skipped)$ ]] &&
+            [[ "$VULKAN" =~ ^(success|skipped)$ ]] &&
             [[ "$GGML_ARM64" =~ ^(success|skipped)$ ]] && [[ "$XLA_ARM64" =~ ^(success|skipped)$ ]] &&
             [[ "$TORCH_ARM64" =~ ^(success|skipped)$ ]]

@@ -113,19 +113,19 @@ def test_step_pair_needs_two_prefilled_caches() -> Result[Void]
   end
 end
 
-## Only the backends `Generate.pairable` names pair: the reference backend and ggml's CPU. A Vulkan device, XLA and
-## libtorch take the singleton path, whatever this machine has installed.
-def test_only_the_reference_and_cpu_ggml_pair() -> Result[Void]
+## The reference backend and every ggml device pair, the software Vulkan device included; XLA and libtorch take the
+## singleton path, whatever this machine has installed.
+def test_the_reference_and_the_ggml_devices_pair() -> Result[Void]
   try Test.assert(Generate.pairable(S.REF), "the reference backend does not pair")
   try Test.assert(Generate.pairable(S.GGML), "ggml's CPU does not pair")
-  try Test.assert(not Generate.pairable(S.VULKAN), "a Vulkan device pairs")
+  try Test.assert(Generate.pairable(S.VULKAN), "a Vulkan device does not pair")
   try Test.assert(not Generate.pairable(S.XLA), "XLA pairs")
   Test.assert(not Generate.pairable(S.TORCH), "libtorch pairs")
 end
 
-## Two decode-ready rows on a backend that does not pair (XLA and a Vulkan device, when they are installed): the
-## scheduler keeps both, steps each alone, and both answers are the ids of that backend's own standalone run. Nothing is
-## faked: where no such backend is installed the test says so and runs none.
+## Two decode-ready rows on a backend that does not pair (XLA, when it is installed): the scheduler keeps both, steps
+## each alone, and both answers are the ids of that backend's own standalone run. Nothing is faked: where no such backend
+## is installed the test says so and runs none.
 def test_rows_step_alone_where_the_backend_does_not_pair() -> Result[Void]
   with_peer do |dir|
     backends = try S.unpaired_backends()

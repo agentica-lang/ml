@@ -66,12 +66,14 @@ def torch_backends() -> Result[List[Tensor.Backend]]
   ok([])
 end
 
-## The backends of this machine that pair two decode rows (`Generate.pairable`): the reference backend and ggml's CPU.
-## A case that asks for a paired step runs on these only; a Vulkan device and XLA keep their rows on the singleton path.
+## The ggml devices the pairing cases of `generate_test.agc` and `serving_test.agc` run on: the CPU engine, here and in
+## the two CPU jobs of CI. A Vulkan device pairs too (`Generate.pairable`), but its software form is an interpreter of
+## shaders, roughly twenty times slower on these fixtures, so `vulkan_pair_test.agc` is the case that runs it, and these
+## files keep their step budget.
 def paired_backends() -> Result[List[Tensor.Backend]]
   out: List[Tensor.Backend] = [REF]
   for backend in try ggml_backends()
-    if Generate.pairable(backend)
+    if Generate.pairable(backend) and not vulkan?(backend)
       out = out.push(backend)
     end
   end
@@ -79,13 +81,41 @@ def paired_backends() -> Result[List[Tensor.Backend]]
   ok(out)
 end
 
-## The backends of this machine that do not pair, where a scheduler must step its rows alone: XLA and a Vulkan device,
-## when they are installed. libtorch takes the same singleton path but its job runs no serving test, so it is not here
-## (`unpaired_rule` in `serving_test.agc` checks the rule for it).
+## Whether `backend` is a Vulkan device of ggml, the software one included.
+def vulkan?(backend: Tensor.Backend) -> Bool
+  case backend
+    Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> true
+    _ -> false
+  end
+end
+
+## The Vulkan devices of this machine, for `vulkan_pair_test.agc`: the engine must have the backend and the loader a
+## device. An error when `TENSOR_REQUIRE_VULKAN` is set and there is none, so the software-Vulkan job fails instead of
+## skipping the case; without the flag, an empty list and a note.
+def vulkan_backends() -> Result[List[Tensor.Backend]]
+  out: List[Tensor.Backend] = []
+  for backend in try ggml_backends()
+    if vulkan?(backend)
+      out = out.push(backend)
+    end
+  end
+
+  return ok(out) if out.size > 0
+  flag = System.env("TENSOR_REQUIRE_VULKAN")
+  if flag.ok? and try flag != ""
+    return error("Vulkan required but no Vulkan device is visible (TENSOR_REQUIRE_VULKAN is set)")
+  end
+
+  IO.warn("SKIP no Vulkan device: the pairing case of `vulkan_pair_test.agc` ran nowhere")
+  ok(out)
+end
+
+## The backends of this machine that do not pair, where a scheduler must step its rows alone: XLA, when it is installed.
+## libtorch takes the same singleton path but its job runs no serving test, so it is not here (`serving_test.agc` checks
+## the rule for both).
 def unpaired_backends() -> Result[List[Tensor.Backend]]
   out: List[Tensor.Backend] = []
-  installed = try xla_backends()
-  for backend in installed + try ggml_backends()
+  for backend in try xla_backends()
     if not Generate.pairable(backend)
       out = out.push(backend)
     end

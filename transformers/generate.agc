@@ -74,15 +74,17 @@ def step_top(g: Generator, cache: Cache, ids: List[Int], k: Int) -> Result[Stepp
   KvDecoder.step_top(core(g), cache, ids, k)
 end
 
-## Whether `step_pair` runs on `backend`: the reference backend and ggml's CPU, the two it is built and tested on. Every
-## other backend steps its rows alone, as it did before pairing existed — a Vulkan device, XLA and libtorch included,
-## until one of them is measured and added here. `step_pair` asks this of its backend first, before it reads either
-## cache: a backend left out here is refused with both caches still the caller's, so a direct caller keeps its two rows
-## and a scheduler asks this once per round, as `serving.agc` does.
+## Whether `step_pair` runs on `backend`: the reference backend and every ggml device — the CPU engine, a card, and the
+## software Vulkan device (Mesa's llvmpipe) a CI runner without one has. The device is the ggml device the model was
+## opened on, and a pair runs on that one: software or card is a property of the device, named in its log, never a path
+## this code takes. XLA and libtorch step their rows alone, as they did before pairing existed, until one of them is
+## measured and added here. `step_pair` asks this of its backend first, before it reads either cache: a backend left out
+## here is refused with both caches still the caller's, so a direct caller keeps its two rows and a scheduler asks this
+## once per round, as `serving.agc` does.
 def pairable(backend: Tensor.Backend) -> Bool
   case backend
     Tensor.Backend.Reference -> true
-    Tensor.Backend.Ggml(Tensor.Device.Cpu) -> true
+    Tensor.Backend.Ggml(_) -> true
     _ -> false
   end
 end
@@ -104,7 +106,8 @@ def pairs(g: Generator) -> Bool = pairable(core(g).stepper.backend)
 ## budgets, chunked prefill and pairing on another device are not here (ml#92), and a prompt, a row that decodes alone
 ## and the pick of one row stay in `step`. On a backend `pairable` leaves out the step is refused before either cache is
 ## read, so that refusal leaves both caches to their caller; every other error, of a pair the backend accepted, consumes
-## both as a failed `step` does.
+## both as a failed `step` does. A ggml device pairs as the device it is: the CPU engine, a card and the software Vulkan
+## device all run the same forward, and the tests pin each row's ids to that device's own singleton run.
 def step_pair(g: Generator, a: Cache, a_id: Int, b: Cache, b_id: Int) -> Result[Paired]
   c = core(g)
   s = c.stepper
