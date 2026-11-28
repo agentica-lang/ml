@@ -1,8 +1,11 @@
 ## Two Qwen3 decode rows in one paired step on a Vulkan device of ggml: the device the model was opened on, the rows'
 ## own positions, the ids each row gives when it decodes alone on that same device, and one round of the scheduler that
-## pairs them. Mesa's llvmpipe — the software Vulkan device a CI runner without a card has — runs this case as a card
-## does, because software or card is a property of the device and not a path of the code: the job names the device it
-## got in its log. `TENSOR_REQUIRE_VULKAN` makes a job fail when there is no device instead of running the case nowhere.
+## pairs them. A Vulkan device has the common batch capacity (`MAX_BATCH`, 10), and this smoke stays at two rows with
+## `max_batch: 2` so the software device compiles no wider plan; the wide Vulkan case runs where a card is available
+## (`generate_batch_test.agc`). Mesa's llvmpipe — the software Vulkan device a CI runner without a card has — runs this
+## case as a card does, because software or card is a property of the device and not a path of the code: the job names
+## the device it got in its log. The device the model was opened on names the width (`Generate.batch_width`).
+## `TENSOR_REQUIRE_VULKAN` makes a job fail when there is no device instead of running the case nowhere.
 ##
 ## It is a smoke, and it is short on purpose: the software device interprets every shader of a compiled plan, and the
 ## runner gives a test 30 s, so a case that opens four models and compiles a dozen shapes runs out of it. Each case opens
@@ -42,8 +45,11 @@ end
 ## distinct shape is a plan, every plan compiles its shaders on the software device, and a runner's shader cache starts
 ## empty.
 def pairing(dir: String, backend: Tensor.Backend) -> Result[Void]
+  try Test.eq(Generate.batch_width(backend), Generate.MAX_BATCH)
+  try Test.assert(Generate.pairable(backend), "a Vulkan device does not pair")
   m = try Qwen3.open("#{dir}/tiny", backend)
   g = try Generate.open(m)
+  try Test.eq(Generate.batch_limit(g), Generate.MAX_BATCH)
   # The rows' own runs first, on the generator the pair then uses: a prompt asks for a plan the singleton already made.
   want_a = try Generate.generate(g, [1, 5, 2], 2)
   want_b = try Generate.generate(g, [4, 4, 9, 2, 7, 1], 2)
@@ -67,26 +73,33 @@ def pairing(dir: String, backend: Tensor.Backend) -> Result[Void]
   Test.eq(got_b, want_b)
 end
 
-## Two requests the scheduler admits together on `backend`: both answers are the ids of their own run alone on that
-## device, and the one round they share paired them (`pair_runs` of the run is not zero).
+## Three requests on `backend` with `max_batch` two: the rounds are a batch of two and a singleton remainder, every
+## answer is its own run alone on that device, and the shared batch still counts (`pair_runs` is not zero). The width
+## stays at the smoke's two rows; the common capacity is asserted by `pairing`.
 def serving_pair(dir: String, backend: Tensor.Backend) -> Result[Void]
+  try Test.eq(Generate.batch_width(backend), Generate.MAX_BATCH)
   m = try Qwen3.open("#{dir}/tiny", backend)
   g = try Generate.open(m)
   want_a = try Generate.generate(g, [1, 5, 2], 2)
   want_b = try Generate.generate(g, [4, 4, 9, 2, 7, 1], 2)
-  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  want_c = want_a
+  server = try Serving.start(g, Serving.Limits(max_active: 3, max_pending: 4, max_batch: 2))
   a_ch: Channel[Serving.Event] = Channel.new(32)
   b_ch: Channel[Serving.Event] = Channel.new(32)
+  c_ch: Channel[Serving.Event] = Channel.new(32)
   try Serving.submit(server, [1, 5, 2], 2, [], a_ch)
   try Serving.submit(server, [4, 4, 9, 2, 7, 1], 2, [], b_ch)
+  try Serving.submit(server, [1, 5, 2], 2, [], c_ch)
   got_a = try collect(a_ch)
   got_b = try collect(b_ch)
+  got_c = try collect(c_ch)
   runs = (try Serving.stats(server)).pair_runs
   try Serving.stop(server)
   Generate.close(g)
   Qwen3.close_model(m)
   try Test.eq(got_a, want_a)
   try Test.eq(got_b, want_b)
+  try Test.eq(got_c, want_c)
   Test.assert(runs > 0, "the round on #{backend} paired no rows")
 end
 

@@ -187,6 +187,10 @@ an_term ggml_on_cpu(an_env *env, struct ggml_TensorHandle_state *t);
    the process started: a graph with every leaf in device memory never counts. */
 an_term ggml_mixed_runs(an_env *env);
 
+/* How many graph executions were attempted on a device since the process started, plain or through the scheduler:
+   one per `ggml_run` that reached the compute call, whether or not the compute succeeded, for the tests. */
+an_term ggml_graph_runs(an_env *env);
+
 /* For the tests: of the graph that ran last, the matrix products that sit between each cache write in place
    (`set_rows`) and the first node that reads it, in the node order, summed; -1 when the graph wrote no cache in place.
    0 when a layer makes its keys and its values before writing either. */
@@ -602,6 +606,12 @@ static an_term ggml_native_mixed_runs(an_env *env, int argc, const an_term *argv
   return ggml_mixed_runs(env);
 }
 
+static an_term ggml_native_graph_runs(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  (void)argv;
+  return ggml_graph_runs(env);
+}
+
 static an_term ggml_native_cache_write_products(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   (void)argv;
@@ -829,6 +839,7 @@ static const an_function ggml_native_functions[] = {
   {"filled", "(Int, List[Int], Float, Bool) -> Result[TensorHandle]", ggml_native_filled, AN_DIRTY},
   {"on_cpu", "(TensorHandle) -> Bool", ggml_native_on_cpu, AN_SHORT},
   {"mixed_runs", "() -> Int", ggml_native_mixed_runs, AN_SHORT},
+  {"graph_runs", "() -> Int", ggml_native_graph_runs, AN_SHORT},
   {"cache_write_products", "() -> Int", ggml_native_cache_write_products, AN_SHORT},
   {"mixed_splits", "() -> Int", ggml_native_mixed_splits, AN_SHORT},
   {"readback", "(TensorHandle) -> Result[List[Float]]", ggml_native_readback, AN_DIRTY},
@@ -861,5 +872,5 @@ static const an_function ggml_native_functions[] = {
     {"Lease", sizeof(struct ggml_Lease_state), GGML_Lease_FREE}, \
     {"Pin", sizeof(struct ggml_Pin_state), GGML_Pin_FREE}, \
   }; \
-  AN_MODULE_TABLES("ggml", ggml_native_functions, 30, NULL, 0, ggml_native_resources, 3, LOAD)
+  AN_MODULE_TABLES("ggml", ggml_native_functions, 31, NULL, 0, ggml_native_resources, 3, LOAD)
 #endif

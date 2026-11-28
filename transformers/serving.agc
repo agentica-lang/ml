@@ -1,14 +1,16 @@
 ## One long-lived task serving greedy Qwen3 decodes over `generate.agc`: the first scheduler of ml#90, and only its
 ## first step. Many sequences share one model and one `Generate.Generator`; the scheduler owns every live cache and
-## steps the active sequences round-robin, one row each per round: a prompt (prefill) runs alone through
-## `Generate.step`, and the first two sequences with their prompts done share one decode graph through
-## `Generate.step_pair` (one batch bucket of two rows; further ones step alone). What a round picks — which rows, how
-## long each is, where each one is — stays the scheduler's; the storage is the dense per-row cache it hands over; and
-## `Generate.step_pair` runs one forward over the pair and demultiplexes it by row: the model's projections, attention
-## and MLP see the two rows as one batch, each row with its own positions, mask and half of the cache, so pairing
-## changes no token. New requests join at round boundaries and each sequence hears its tokens on its own reply channel.
-## No HTTP, no sampling, no paged KV: a prompt runs as one step; there is no chunked prefill. Out of scope here, for
-## ml#92: paged KV and physical slots, token budgets, chunked prefill, and a batch wider than the two rows.
+## steps the active sequences round-robin: a prompt (prefill) runs alone through `Generate.step`, and the decode-ready
+## rows share one decode graph per batch through `Generate.step_batch`, up to the effective width: `Limits.max_batch`
+## (2 by default, 10 at most, clamped to the active count). `max_batch: 1` is the explicit singleton: every row steps
+## alone like the first scheduler. What a round picks — which rows, how long each is, where each one is — stays the
+## scheduler's; the storage is the dense per-row cache it hands over; and `Generate.step_batch` runs one forward over
+## the batch and demultiplexes it by row: the model's projections, attention and MLP see the rows as one batch, each
+## row with its own
+## positions, mask and slice of the cache, so batching changes no token. New requests join at round boundaries and each
+## sequence hears its tokens on its own reply channel. No HTTP, no sampling, no paged KV: a prompt runs as one step;
+## there is no chunked prefill. Out of scope here, for ml#92: paged KV and physical slots, token budgets, and chunked
+## prefill.
 ##
 ## The contract, which the shape of the code keeps:
 ##
@@ -43,10 +45,14 @@ IDLE_WAIT_MS = 30000
 SUBMIT_WAIT_MS = 0
 COMMAND_WAIT_MS = 5000
 
-## What one run is owed: at most `max_active` sequences step at once and at most `max_pending` more wait.
+## What one run is owed: at most `max_active` sequences step at once, at most `max_pending` more wait, and at most
+## `max_batch` of the decode-ready ones share one graph (`1..Generate.MAX_BATCH`, 2 by default). The width actually used
+## is clamped to the active rows, so a `max_batch` wider than `max_active` still starts; `max_batch: 1` steps every
+## row alone.
 struct Limits
   max_active: Int
   max_pending: Int
+  max_batch: Int = 2
 end
 
 ## What a request hears: every new id in turn, then the end, or the reason it ended. `Done` carries no ids: the tokens
@@ -75,8 +81,8 @@ enum Command
 end
 
 ## The running scheduler: its inbox, its task, and its bounds. `stop` ends the task and closes the inbox. `pairs`
-## holds the count of completed paired decode steps, which `stats` reads: one per round that stepped two rows in one
-## paired step (one backend execution where the backend compiles the step, an eager forward on the reference backend).
+## holds the count of completed shared decode steps, which `stats` reads: one per batch of two or more rows (one
+## backend execution where the backend compiles the step, an eager forward on the reference backend).
 struct Server
   inbox: Channel[Command]
   task: Task[Result[Void]]
@@ -84,7 +90,7 @@ struct Server
   pairs: Channel[Int]
 end
 
-## How many paired decode steps the run has completed: one per round that paired two rows, prefills excluded. On a
+## How many shared decode steps the run has completed: one per batch of two or more rows, prefills excluded. On a
 ## backend `Generate.pairable` leaves out it stays 0, because every row steps alone there.
 struct Stats
   pair_runs: Int
@@ -97,13 +103,20 @@ def start(g: Generate.Generator, limits: Limits) -> Result[Server]
 
   return error("serving: max_pending is #{limits.max_pending}, needs 0 or more") if limits.max_pending < 0
 
+  return error("serving: max_batch is #{limits.max_batch}, needs 1 or more") if limits.max_batch < 1
+
+  if limits.max_batch > Generate.MAX_BATCH
+    return error("serving: max_batch is #{limits.max_batch}, at most #{Generate.MAX_BATCH}")
+  end
+
+  width = [limits.max_batch, Generate.batch_limit(g)].min.unwrap!
   inbox: Channel[Command] = Channel.new(limits.max_pending + 1)
   pairs: Channel[Int] = Channel.new(1)
   try pairs.send(0, COMMAND_WAIT_MS)
   ok(
     Server(
       inbox: inbox,
-      task: Task.spawn(&serve, Args(g: g, limits: limits, inbox: inbox, pairs: pairs)),
+      task: Task.spawn(&serve, Args(g: g, limits: limits, batch_width: width, inbox: inbox, pairs: pairs)),
       limits: limits,
       pairs: pairs,
     ),
@@ -158,7 +171,7 @@ def stop(s: Server) -> Result[Void]
   ok()
 end
 
-## How many paired decode steps the server has completed: one per shared graph execution, prefills excluded. The
+## How many shared decode steps the server has completed: one per batch of two or more rows, prefills excluded. The
 ## count is exact when the run is idle or stopped: a step in flight has not been counted yet.
 def stats(s: Server) -> Result[Stats]
   case s.pairs.recv(COMMAND_WAIT_MS)
@@ -177,6 +190,8 @@ private
 struct Args
   g: Generate.Generator
   limits: Limits
+  ## `Limits.max_batch` clamped to `Generate.batch_limit` of the backend and at least 1 for a real execution backend.
+  batch_width: Int
   inbox: Channel[Command]
   pairs: Channel[Int]
 end
@@ -191,12 +206,19 @@ struct Live
   fed: Bool
 end
 
-## The sequences of the run: the ones stepping, the ones waiting, and whether the stop (or a closed inbox) ended
-## admission.
+## The sequences of the run: the ones stepping, the ones waiting, whether the stop (or a closed inbox) ended admission,
+## and where the next round starts its batches so a run wider than `max_batch` gives every row a turn.
 struct State
   active: List[Live]
   pending: List[Submit]
   stopped: Bool
+  cursor: Int = 0
+end
+
+## What one batch of a round leaves: the sequences after settling every row, and how many of the batch ended.
+struct Batched
+  active: List[Live]
+  removed: Int
 end
 
 ## What settling one row of a step leaves: the sequences and where the scan goes on (`next` is the row itself when the
@@ -359,15 +381,17 @@ def admit(a: Args, st: State) -> State
 end
 
 ## One step of every active sequence, in order: each prompt first, alone through `Generate.step`, then one decode step
-## each: where the backend pairs (`Generate.pairs`), the first two sequences with their prompts done share one paired
-## step through `Generate.step_pair` (the one step of the round counted in `Args.pairs`), and further ones step alone.
-## A backend that does not pair — XLA, libtorch — takes the singleton path for every row, as it did before pairing
-## existed, so nothing is lost where the step is not there. A ggml device pairs whether it is the CPU engine, a card or
-## the software Vulkan device: that is a property of the device the model was opened on, not a mode of the scheduler. A
-## finished sequence hears its last token and
-## `Done` (a stop id is never a token); a slow or gone consumer, and a failing step, end the sequence without stalling
-## the rest. A failing step already consumed its cache, so there is nothing to finish; a failing paired step consumed
-## both caches, so both sequences end.
+## per batch: where the backend batches (`Generate.pairs`), every decode-ready row shares a graph through
+## `Generate.step_batch`, up to `Args.batch_width` rows in each batch (the one step of a batch of two or more is counted
+## in `Args.pairs`; a lone row and an inevitable remainder of one take `Generate.step`, as before). The batches start at
+## `State.cursor` and wrap, so a run whose active rows are wider than the width moves every row through every position
+## and no row is skipped. Every real execution backend batches: the reference backend and libtorch eagerly, ggml and XLA
+## through their compiled step. A ggml device batches whether it is the CPU engine, a card or the software Vulkan
+## device: that is a property of the device the model was opened on, not a mode of the scheduler. A finished sequence
+## hears its last token and `Done` (a stop id is never a token); a slow or gone consumer, and a failing step, end the
+## sequence without stalling the rest.
+## A failing step already consumed its cache, so there is nothing to finish; a failing batch step consumed every cache
+## of the batch, so every sequence of it ends.
 def round(a: Args, st: State) -> State
   active = st.active
   i = 0
@@ -394,20 +418,30 @@ def round(a: Args, st: State) -> State
     end
   end
 
-  rest: List[Int] = ready
-  # Only where the backend pairs: `step_pair` refuses the other backends with both caches untouched, and a round
-  # that asks it anyway fails the two rows it hears the error for, instead of stepping them.
-  if ready.size >= 2 and Generate.pairs(a.g)
-    before = active.size
-    active = pair_rows(a, active, ready[0], ready[1])
-    rest = []
-    for t in ready.drop(2)
-      rest = rest.push(t - (before - active.size))
+  # Only where the backend batches: every row whose prompt ran is in a batch (every active row after the loop above).
+  # A batch of two or more uses `step_batch`; a lone row or an inevitable remainder of one uses the
+  # old `Generate.step`.
+  if Generate.pairs(a.g) and !active.empty?
+    start = st.cursor % active.size
+    active = active.drop(start) + active.take(start)
+    base = 0
+    while base < active.size
+      take = [a.batch_width, active.size - base].min.unwrap!
+      indices: List[Int] = []
+      for k in 0...take
+        indices = indices.push(base + k)
+      end
+
+      batched = batch_rows(a, active, indices)
+      active = batched.active
+      base = base + take - batched.removed
     end
+
+    return st.with(active: active, cursor: st.cursor + a.batch_width)
   end
 
   off = 0
-  for t in rest
+  for t in ready
     r = active[t - off]
     case Generate.step(a.g, r.cache, [r.last])
       ok(p) ->
@@ -465,31 +499,63 @@ def fail_row(r: Live, message: String, i: Int, active: List[Live]) -> List[Live]
   active.take(i) + active.drop(i + 1)
 end
 
-## One paired decode step of the rows at `ia` and `ib`, on a backend `Generate.pairs` accepts: each row settles its own
-## pick on its own channel, so a slow or gone consumer ends only its row and the peer runs on. A failing step consumed
-## both caches, so both rows fail.
-def pair_rows(a: Args, active: List[Live], ia: Int, ib: Int) -> List[Live]
-  r = active[ia]
-  o = active[ib]
-  case Generate.step_pair(a.g, r.cache, r.last, o.cache, o.last)
-    ok(pair) ->
-      # The paired step of the round: one backend execution where the backend compiles it.
-      note_pair(a)
-      first = settle_row(r, pair.a, ia, active)
-      active = first.active
-      jb = ib
-      if first.removed
-        jb = ib - 1
+## One decode step of the rows at `indices`, on a backend `Generate.pairs` accepts: each row settles its own pick on
+## its own channel, so a slow or gone consumer ends only its row and its peers run on. A lone row is the old
+## `Generate.step`; two or more share one `Generate.step_batch`. A failing step consumed every cache it was given, so
+## every row of it fails.
+def batch_rows(a: Args, active: List[Live], indices: List[Int]) -> Batched
+  if indices.size == 1
+    idx = indices[0]
+    r = active[idx]
+    case Generate.step(a.g, r.cache, [r.last])
+      ok(p) ->
+        settled = settle_row(r, p, idx, active)
+        removed = 0
+        if settled.removed
+          removed = 1
+        end
+
+        return Batched(active: settled.active, removed: removed)
+      error(e) -> return Batched(active: fail_row(r, e.message, idx, active), removed: 1)
+    end
+  end
+
+  reqs: List[Generate.BatchRow] = []
+  for i in indices
+    r = active[i]
+    reqs = reqs.push(Generate.BatchRow(cache: r.cache, id: r.last))
+  end
+
+  case Generate.step_batch(a.g, reqs)
+    ok(picks) ->
+      # A shared batch of two or more rows, one backend execution where the backend compiles it.
+      if indices.size >= 2
+        note_pair(a)
       end
 
-      settle_row(active[jb], pair.b, jb, active).active
+      off = 0
+      for k in 0...indices.size
+        idx = indices[k] - off
+        settled = settle_row(active[idx], picks[k], idx, active)
+        active = settled.active
+        if settled.removed
+          off += 1
+        end
+      end
+
+      Batched(active: active, removed: off)
     error(e) ->
-      dropped = fail_row(r, e.message, ia, active)
-      fail_row(dropped[ib - 1], e.message, ib - 1, dropped)
+      dropped = active
+      for k in 0...indices.size
+        idx = indices[k] - k
+        dropped = fail_row(dropped[idx], e.message, idx, dropped)
+      end
+
+      Batched(active: dropped, removed: indices.size)
   end
 end
 
-## One paired decode step completed: counts it (`Stats.pair_runs`), one per round that paired.
+## One shared decode step completed: counts it (`Stats.pair_runs`), one per batch of two or more rows.
 def note_pair(a: Args) -> Void
   case a.pairs.recv(COMMAND_WAIT_MS)
     ok(v) -> _ = a.pairs.send(v + 1, COMMAND_WAIT_MS)

@@ -71,6 +71,9 @@ extern module "ggml"
   ## How many runs went through the scheduler (a graph on a device with a leaf in host memory, even every leaf), since
   ## the process started: a graph with every leaf in device memory never counts.
   def mixed_runs() -> Int
+  ## How many graph executions were attempted on a device since the process started, plain or through the scheduler:
+  ## one per `ggml_run` that reached the compute call, whether or not the compute succeeded, for the tests.
+  def graph_runs() -> Int
   ## For the tests: of the graph that ran last, the matrix products that sit between each cache write in place
   ## (`set_rows`) and the first node that reads it, in the node order, summed; -1 when the graph wrote no cache in place.
   ## 0 when a layer makes its keys and its values before writing either.

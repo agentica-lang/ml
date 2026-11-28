@@ -67,9 +67,9 @@ def torch_backends() -> Result[List[Tensor.Backend]]
 end
 
 ## The ggml devices the pairing cases of `generate_test.agc` and `serving_test.agc` run on: the CPU engine, here and in
-## the two CPU jobs of CI. A Vulkan device pairs too (`Generate.pairable`), but its software form is an interpreter of
-## shaders, roughly twenty times slower on these fixtures, so `vulkan_pair_test.agc` is the case that runs it, and these
-## files keep their step budget.
+## the two CPU jobs of CI. Every real execution backend pairs (`Generate.pairable`), but a Vulkan device's software
+## form is an interpreter of shaders, roughly twenty times slower on these fixtures, so `vulkan_pair_test.agc` is the
+## case that runs it, and these files keep their step budget; XLA and libtorch have their own cases.
 def paired_backends() -> Result[List[Tensor.Backend]]
   out: List[Tensor.Backend] = [REF]
   for backend in try ggml_backends()
@@ -107,20 +107,6 @@ def vulkan_backends() -> Result[List[Tensor.Backend]]
   end
 
   IO.warn("SKIP no Vulkan device: the pairing case of `vulkan_pair_test.agc` ran nowhere")
-  ok(out)
-end
-
-## The backends of this machine that do not pair, where a scheduler must step its rows alone: XLA, when it is installed.
-## libtorch takes the same singleton path but its job runs no serving test, so it is not here (`serving_test.agc` checks
-## the rule for both).
-def unpaired_backends() -> Result[List[Tensor.Backend]]
-  out: List[Tensor.Backend] = []
-  for backend in try xla_backends()
-    if not Generate.pairable(backend)
-      out = out.push(backend)
-    end
-  end
-
   ok(out)
 end
 
