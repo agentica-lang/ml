@@ -42,17 +42,22 @@ curl -N http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/
 ## The contract
 
 - `messages` (the Qwen3 chat template), `max_tokens` (1 to 512, 128 when absent) and `stream: true` are read, and
-  `model` is accepted and ignored: there is one model. `stream_options.include_usage` adds the choiceless chunk with
-  the token counts. Anything else a greedy streaming server cannot honour is a 400 that names it: sampling knobs
-  (`temperature`, `top_p`, `seed`, `n`), `stop`, a body without `stream: true`, a budget outside the range, a prompt
-  past 8192 characters or past the model's context.
-- The deltas concatenate to the answer, one character at a time at most: a character split between two tokens is held
-  back until the next token completes it, and flushed whole at the end.
-- A `[DONE]` always closes a stream whose deltas are the answer. A failure after the head (a 200) ends the stream with
-  an `error` event and no `[DONE]`; a request the scheduler refuses outright is a 503 before the head.
+  `stream_options.include_usage` adds the choiceless chunk with the token counts. Every other JSON field is ignored,
+  `model` included: there is one model, so a stock OpenAI body decodes. What a greedy streaming server cannot honour
+  is a 400 that names it: `temperature`, `top_p`, `seed` and `n`, `stop`, a body without `stream: true`, a budget
+  outside the range, a prompt past 8192 characters or past the model's context.
+- The deltas concatenate to the answer, one character at a time at most: a character split between tokens is held
+  back until its last byte arrives, and flushed whole at the end, so no replacement character goes out for a
+  character that is still arriving.
+- A `[DONE]` always closes a stream whose deltas are the answer, and an answer that stops before its first token is
+  one of them: the role chunk, `finish_reason` `stop`, the usage when asked, and `[DONE]`. A failure after the head
+  (a 200) ends the stream with an `error` event and no `[DONE]`; a request the scheduler refuses outright is a 503
+  before the head.
 - At most two sequences step at once and four more wait; past that a request is refused as `saturated` with a 503,
   immediately and not as a stall.
-- A client that disconnects is noticed on the next write: the sequence is dropped and its slot freed.
+- A client that disconnects is noticed on the next write that fails or times out, never sooner: the sequence is then
+  dropped and its slot freed. There is no read of the socket to notice it earlier, so a sequence whose client left
+  may hold its slot for a bounded while (the events channel holds 16 pieces, each write waits 10 s at most).
 - No authentication: the server listens on loopback only and refuses any other host.
 
 ## Tests

@@ -107,8 +107,14 @@ def main() -> Void
   host = OP.string(options, "host")
   puts("serving #{model_dir} on #{host}:#{local_port(running)}")
   IO.flush()
-  Bond.wait(running.server).unwrap!
-  stop(running).unwrap!
+  served = Bond.wait(running.server)
+  # The server, the scheduler, the generator and the model close either way; a failed wait is what the caller hears
+  # (a failed stop would hide it).
+  stopped = stop(running)
+  return stopped.unwrap! if served.ok?
+
+  _ = stopped
+  served.unwrap!
 end
 
 private

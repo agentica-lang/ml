@@ -14,15 +14,19 @@
 ##   without stalling the others, and a stalled engine ends the stream with an error event instead of hanging it.
 ## - No silent success. A sequence that fails after the head went out ends with an error event and no `[DONE]`; a
 ##   `[DONE]` always closes a stream whose deltas concatenate to the decoded answer.
-## - UTF-8 across token boundaries. A character split between two tokens decodes with a scrubbed replacement
-##   character (`Bpe.decode` scrubs); the relay holds back a trailing replacement character until the next token
-##   completes it, so the deltas stay exact and only complete characters go out (a stream that ends on one flushes
-##   it whole).
-## - Disconnects are observed on the next write. Bond/`std/http` closes the events channel when the client leaves;
-##   the relay's next send then fails, it closes the reply channel, and the scheduler's next send to that closed
-##   channel drops the sequence (finishing its cache and freeing the slot). A client that disconnects between two
-##   tokens is therefore noticed at most one step later; there is no read of the socket to notice it sooner, by
-##   design of the server.
+## - UTF-8 across token boundaries. A character split between tokens decodes with a scrubbed replacement
+##   character (`Bpe.decode` scrubs); the relay holds back the whole trailing run of replacement characters until the
+##   next tokens resolve it, so the deltas stay exact and only whole characters go out (a stream that ends on one
+##   flushes it whole).
+## - Disconnects are observed on the next write that fails or times out, never sooner. Bond/`std/http` closes the
+##   events channel when the client leaves; the relay's next send then fails (or the client stops reading and the
+##   send times out), it closes the reply channel, and the scheduler's next send to that closed channel drops the
+##   sequence (finishing its cache and freeing the slot). There is no read of the socket to notice it sooner, so a
+##   sequence whose client left may hold its slot for a bounded while: the events channel holds 16 pieces and every
+##   send waits `EVENT_SEND_TIMEOUT_MS` at most.
+## - An answer that ends before its first token still ends honestly. When the first pick is a stop id, the scheduler
+##   sends `Done` alone (`Serving` never turns a stop id into a token); the relay settles the stream there: the role
+##   chunk, `finish_reason` `stop`, the usage when asked, and `[DONE]`, with no wait for an event that never comes.
 
 import Bond from "pkg/bond/bond"
 import Serving from "pkg/transformers/serving"
@@ -69,8 +73,8 @@ struct Api
   counters: ATS[String, Int]
 end
 
-## What the next delta owes the stream: the text to emit now, the text sent so far (holding back a trailing
-## replacement character that the next token may complete), and how many tokens the answer holds.
+## What the next delta owes the stream: the text to emit now, the text sent so far (holding back the trailing run of
+## replacement characters that the next tokens may still complete), and how many tokens the answer holds.
 struct Owed
   emit: String
   sent: String
@@ -98,9 +102,10 @@ def app(api: Api) -> Bond.App
   )
 end
 
-## The text the decoded `generated` adds after `sent`: `final` flushes everything, otherwise a trailing replacement
-## character (a character the next token may still complete) is held back. An error means the decoded text no longer
-## extends what was sent, which is a bug in the relay, never bad input: the caller ends the stream loudly.
+## The text the decoded `generated` adds after `sent`: `final` flushes everything, otherwise the trailing run of
+## replacement characters (the bytes of a character the next tokens may still complete) is held back. An error means
+## the decoded text no longer extends what was sent, which is a bug in the relay, never bad input: the caller ends
+## the stream loudly.
 def emit_text(tok: Bpe.ByteLevelBpe, sent: String, generated: List[Int], final: Bool) -> Result[Owed]
   full = try Bpe.decode(tok, generated)
   # `sent` is the decoded prefix the stream already owes, minus a held-back tail at most: the bytes before the
@@ -109,8 +114,16 @@ def emit_text(tok: Bpe.ByteLevelBpe, sent: String, generated: List[Int], final: 
   return error("the decoded answer no longer extends the sent text") if not full.start_with?(sent)
 
   rest = full.slice(sent.length, full.length - sent.length)
-  if not final and rest.end_with?(REPLACEMENT) and rest.length > 0
-    held = rest.slice(0, rest.length - 1)
+  # A character that is still arriving leaves one or more replacement characters at the end of the decoded text (one
+  # per byte that `Bpe.decode` could not read as a character yet, and one or more already broken ones before them):
+  # emitting part of that run would break the prefix when the character completes.
+  keep = rest.length
+  if not final
+    keep = rest.length - held_tail(rest)
+  end
+
+  if keep < rest.length
+    held = rest.slice(0, keep)
     return ok(Owed(emit: held, sent: sent + held, count: generated.size))
   end
 
@@ -131,7 +144,8 @@ struct InMessage
 end
 
 # What the route reads: the messages, the budget, and the streaming switch. The sampling knobs (`temperature`,
-# `top_p`, `seed`, `n`) and `stop` are read only to be refused: this server is greedy with fixed stops.
+# `top_p`, `seed`, `n`) and `stop` are read only to be refused: this server is greedy with fixed stops. Every other
+# JSON field is ignored, `model` included (the server has one model), so a stock OpenAI client's body decodes.
 struct ChatRequest
   messages: List[InMessage]
   max_tokens: Optional[Int] = none
@@ -174,7 +188,8 @@ end
 
 # What the task that turns scheduler events into SSE needs; it cannot take the `Conn`. It holds no scheduler
 # handle (`Serving.Server` stays with the route): the task owns the two channels, and closing the reply is what
-# drops the sequence.
+# drops the sequence. `settled` says the route already consumed the answer's only event (`Done`), which a sequence
+# whose first pick is a stop id sends before any token.
 struct Pump
   tok: Bpe.ByteLevelBpe
   reply: Channel[Serving.Event]
@@ -187,6 +202,20 @@ struct Pump
   include_usage: Bool
   prompt_tokens: Int
   max_tokens: Int
+  settled: Bool = false
+end
+
+# How many of `text`'s trailing characters are replacement characters: what the bytes of a character whose remaining
+# bytes have not arrived leave at the end of the decoded text. The run may still turn into a character, so none of it
+# can go out yet.
+def held_tail(text: String) -> Int
+  n = 0
+  for i in 0...text.length
+    break if text.slice(text.length - 1 - i, 1) != REPLACEMENT
+    n = n + 1
+  end
+
+  n
 end
 
 def health(conn: Bond.Conn) -> Result[Bond.Conn] = ok(Bond.json(conn, 200, JSON.from({"status": "ok"})))
@@ -303,11 +332,14 @@ def stream_answer(
   end
 end
 
-# The first event belongs to the pump, not to the route: it is already consumed, so it goes in before the task.
+# The first event belongs to the pump, not to the route: it is already consumed, so it goes in before the task. A
+# first `Done` (the first pick was a stop id, so the sequence ends without a token) settles the stream at once.
 def pump_after(pump: Pump, first: Serving.Event) -> Pump
   case first
     Serving.Event.Token(id) -> pump.with(generated: [id])
-    _ -> pump
+    Serving.Event.Done -> pump.with(settled: true)
+    # A first `Failed` is the route's own answer (a 503 or a 500), never a pump's: the enum asks for the arm.
+    Serving.Event.Failed(_) -> pump
   end
 end
 
@@ -342,6 +374,13 @@ def relay(pump: Pump) -> Void
     end
   end
 
+  # The route consumed a first `Done`, so this sequence ends before its first token: settle it here instead of
+  # waiting for an event the scheduler will never send.
+  if pump.settled
+    settle(pump, sent, generated)
+    return
+  end
+
   while true
     case pump.reply.recv(PIECE_WAIT_MS)
       ok(event) ->
@@ -364,21 +403,8 @@ def relay(pump: Pump) -> Void
             end
 
           Serving.Event.Done ->
-            case emit_text(pump.tok, sent, generated, true)
-              ok(owed) ->
-                if (
-                  not owed.emit.empty? and
-                  not send_chunk(pump, Delta(content: JSON.Field.Value(owed.emit)), JSON.Field.Null)
-                )
-                  return
-                end
-
-                finish(pump, owed.count, reason(pump, owed.count))
-                return
-              error(e) ->
-                send_error(pump, e.message)
-                return
-            end
+            settle(pump, sent, generated)
+            return
 
           Serving.Event.Failed(message) ->
             # The head went out as a 200: all that is left is an error event, and no `[DONE]`.
@@ -391,6 +417,20 @@ def relay(pump: Pump) -> Void
         send_error(pump, "the scheduler did not answer")
         return
     end
+  end
+end
+
+# The end of the answer: the last text flushed whole, the finish reason, the usage when asked, and `[DONE]`. A send
+# that fails means the client left: the stream stops there, as it does for any other piece.
+def settle(pump: Pump, sent: String, generated: List[Int]) -> Void
+  case emit_text(pump.tok, sent, generated, true)
+    ok(owed) ->
+      if not owed.emit.empty? and not send_chunk(pump, Delta(content: JSON.Field.Value(owed.emit)), JSON.Field.Null)
+        return
+      end
+
+      finish(pump, owed.count, reason(pump, owed.count))
+    error(e) -> send_error(pump, e.message)
   end
 end
 

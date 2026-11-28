@@ -4,20 +4,36 @@
 ## nor the prompt's bytes. Every wait is a channel wait with a generous bound, never a sleep. Run from `server/`.
 ##
 ## The answers are short on purpose: a reference step of this fixture costs about two million interpreter steps, and
-## CI gives a test file 10M x (its tests + 1) steps, which this file spends whole.
+## CI gives a test file 10M x (its tests + 1) steps, which this file spends whole. The tests that script the scheduler
+## (`Fake`, `BurstJob`) need the tokenizer alone: no model step, and what a refusing, breaking, out-of-vocabulary or
+## gone scheduler leaves a client is still real Bond and real HTTP.
 
 import Api from "../api"
 import Server from "../server"
+import Bond from "pkg/bond/bond"
 import Bpe from "pkg/transformers/tokenizer/bpe"
 import Chat from "pkg/transformers/chat"
 import Generate from "pkg/transformers/generate"
 import Qwen3 from "pkg/transformers/qwen3"
+import Serving from "pkg/transformers/serving"
 import HTTP from "std/http"
 import Tensor from "pkg/tensor/tensor"
 
 ## How long one wait may take: the reference steps are quick, and loading the model takes the longest; the bound
 ## only fails a stuck run.
 WAIT_MS = 180_000
+
+## How long a stream that has nothing to wait for may take: one prefill step of the fixture, so a stream that stalls
+## shows up long before the minute the relay would spend waiting for a piece that cannot come.
+SETTLE_WAIT_MS = 15_000
+
+## How long a sequence whose client left may take to be dropped: the relay notices on a write that fails or times out
+## (10 s of send timeout at worst), so this bound only fails a sequence that is never dropped.
+DROP_WAIT_MS = 30_000
+
+## How long one scripted scheduler send or receive may take: the fake answers at once, so the bound only fails a task
+## that was left behind.
+FAKE_MS = 10_000
 
 ## What a running server under test offers: the fixture folder and the port.
 struct Live
@@ -72,7 +88,7 @@ end
 ## 1..512, a prompt past the character cap or the context, or a body that is not JSON.
 def test_validation_rejects_bad_requests() -> Result[Void]
   with_server do |live|
-    for c in cases().push(long_body())
+    for c in cases().push(long_body()).push(long_chars())
       response = try post(live, c.body)
       try Test.eq(response.status, 400)
       text = try HTTP.text(response.body, response.headers)
@@ -121,8 +137,8 @@ end
 ## text of the one prompt they share.
 def test_two_clients_advance_together() -> Result[Void]
   with_server do |live|
-    texts = try interleaved(live, "hi", 4, "hi", 4)
-    want = try standalone(live.dir, "hi", 4)
+    texts = try interleaved(live, "hi", 6, "hi", 6)
+    want = try standalone(live.dir, "hi", 6)
     for text in texts
       try Test.eq(text, want)
     end
@@ -150,16 +166,16 @@ def test_disconnect_neither_stalls_nor_leaks() -> Result[Void]
     try Test.eq(leaving_first.size >= 2, true)
     # The disconnect is a true close: the server's next write fails and the sequence is dropped.
     HTTP.finish(leaving)
-    peer = try open_stream(live, "hi", 4)
+    peer = try open_stream(live, "hi", 6)
     peer_first = try read_until_content(peer, 1)
     try Test.eq(peer_first.size >= 2, true)
     peer_rest = try drain(peer, "".bytes, peer_first)
     done = Task.await(peer.done)
     try done
     peer_text = try join_text(try decode_chunks(Streamed(payloads: peer_rest)))
-    want = try standalone(live.dir, "hi", 4)
+    want = try standalone(live.dir, "hi", 6)
     try Test.eq(peer_text, want)
-    texts = try interleaved(live, "hi", 4, "hi", 4)
+    texts = try interleaved(live, "hi", 6, "hi", 6)
     for text in texts
       try Test.eq(text, want)
     end
@@ -191,8 +207,8 @@ def test_usage_chunk_reports_counts() -> Result[Void]
   end
 end
 
-## The incremental decoder holds back a trailing replacement character until the next token completes it, flushes it
-## on the final call, and recovers when the completion replaces what was sent.
+## The incremental decoder holds back the whole trailing run of replacement characters until the next tokens resolve
+## it, flushes it whole on the final call, and recovers when the completion replaces part of what was held.
 def test_emit_text_holds_partial_characters() -> Result[Void]
   with_chat do |dir|
     tok = try Bpe.open("#{dir}/chat/tokenizer.json")
@@ -207,11 +223,13 @@ def test_emit_text_holds_partial_characters() -> Result[Void]
     # The final call flushes even the half character.
     flushed = try Api.emit_text(tok, "", [195], true)
     try Test.eq(flushed.emit, "�")
-    # Two halves scrub to two replacements; the first is already sent, so completing the second emits only it.
+    # Two halves scrub to two replacements and the run of both waits: the second may still complete, the first is
+    # one byte of a character of its own. Nothing of the run goes out while it is trailing.
     two = try Api.emit_text(tok, "", [195, 195], false)
-    try Test.eq(two.emit, "�")
+    try Test.eq(two.emit, "")
+    try Test.eq(two.sent, "")
     healed = try Api.emit_text(tok, two.sent, [195, 195, 169], false)
-    try Test.eq(healed.emit, "é")
+    try Test.eq(healed.emit, "�é")
     try Test.eq(healed.sent, "�é")
     # Plain text passes through, and the count is the tokens so far.
     plain = try Api.emit_text(tok, "", [104, 105], false)
@@ -223,6 +241,119 @@ def test_emit_text_holds_partial_characters() -> Result[Void]
     # What was never sent cannot extend it.
     try Test.error?(Api.emit_text(tok, "bye", [104, 105], false))
     ok()
+  end
+end
+
+## A three- and a four-byte character arrive one byte per token: nothing of either goes out before its last byte,
+## and what the stream owes at every step is a prefix of the answer.
+def test_emit_text_holds_a_split_multibyte_character() -> Result[Void]
+  with_chat do |dir|
+    tok = try Bpe.open("#{dir}/chat/tokenizer.json")
+    three = try emitted_split(tok, [227, 129, 130])
+    try Test.eq(three, "hiあ")
+    four = try emitted_split(tok, [240, 159, 152, 128])
+    try Test.eq(four, "hi😀")
+    ok()
+  end
+end
+
+## An answer whose first pick is a stop id ends before its first token (`Serving` sends `Done` alone): the stream
+## settles at once with the role, `finish_reason` `stop`, the usage when asked and `[DONE]`, never an error after a
+## minute of waiting for a token that cannot come.
+def test_a_stop_first_answer_settles_at_once() -> Result[Void]
+  with_chat do |dir|
+    stop = [try first_pick(dir, "hi")]
+    with_stop_server(dir, stop) do |live|
+      streamed = try complete_at_once(live, request_body("hi", 4))
+      chunks = try decode_chunks(streamed)
+      # The role chunk and the finish, nothing between them: the answer holds no token.
+      try Test.eq(chunks.size, 2)
+      try Test.eq(try delta_role(chunks[0]), "assistant")
+      try Test.eq(try delta_content(chunks[0]), "")
+      try Test.eq(last_finish(chunks), some("stop"))
+      try Test.eq(streamed.payloads.last, "[DONE]")
+      counted = try decode_chunks(try complete_at_once(live, usage_body("hi", 4)))
+      usage = try only_usage(counted)
+      try Test.eq(usage.completion_tokens, 0)
+      prompt = try prompt_ids(dir, "hi")
+      try Test.eq(usage.prompt_tokens, prompt.size)
+      try Test.eq(usage.total_tokens, prompt.size)
+      ok()
+    end
+  end
+end
+
+## An id the tokenizer has no piece for (the model's vocabulary outrunning its tokenizer) is never streamed as text
+## nor dropped: the answer that already went out stands and the stream ends with the reason, and no `[DONE]`.
+def test_an_undecodable_id_after_content_is_an_error_event() -> Result[Void]
+  with_chat do |dir|
+    try with_fake(dir, Fake.BadAfter(1000)) do |live|
+      stream = try open_body(live, request_body("hi", 4))
+      try Test.eq(stream.status, 200)
+      payloads = try read_to_close(stream)
+      try Test.eq(payloads.last == "[DONE]", false)
+      chunks = try decode_chunks(Streamed(payloads: payloads.take(payloads.size - 1)))
+      try Test.eq(try join_text(chunks), "h")
+      Test.eq(
+        try JSON.parse(payloads.last),
+        JSON.from({"error": {"message": "no token has the id 1000", "type": "server_error"}}),
+      )
+    end
+
+    ok()
+  end
+end
+
+## The same id as the very first token leaves no content at all: the role chunk and the error event, never a
+## half-written answer, and no `[DONE]`.
+def test_an_undecodable_first_id_is_an_error_event() -> Result[Void]
+  with_chat do |dir|
+    try with_fake(dir, Fake.BadFirst(1000)) do |live|
+      stream = try open_body(live, request_body("hi", 4))
+      try Test.eq(stream.status, 200)
+      payloads = try read_to_close(stream)
+      try Test.eq(payloads.size, 2)
+      try Test.eq(payloads.last == "[DONE]", false)
+      chunks = try decode_chunks(Streamed(payloads: payloads.take(1)))
+      try Test.eq(try delta_role(chunks[0]), "assistant")
+      Test.eq(
+        try JSON.parse(payloads.last),
+        JSON.from({"error": {"message": "no token has the id 1000", "type": "server_error"}}),
+      )
+    end
+
+    ok()
+  end
+end
+
+## A client that leaves mid-stream ends its sequence on the relay's next failed write: the pump closes the reply, the
+## scheduler hears the closed channel on its next send, and no `[DONE]` follows, so nothing claims a success that did
+## not happen.
+def test_a_client_that_leaves_mid_stream_drops_its_sequence() -> Result[Void]
+  with_chat do |dir|
+    closed: Channel[Bool] = Channel.new(1)
+    serving = burst_server(200, closed)
+    result = with_scripted(dir, serving) do |live|
+      leaving = try HTTP.start("http://127.0.0.1:#{live.port}")
+      head = try HTTP.send_request(
+        leaving,
+        "POST",
+        "/v1/chat/completions",
+        request_body("hi", 8).bytes,
+        [HTTP.Header(name: "Content-Type", value: "application/json")],
+      )
+
+      try Test.eq(head.status, 200)
+      first = try read_until_content_conn(leaving, 1)
+      try Test.eq(first.size >= 2, true)
+      # A true close: the relay's next write to this client fails and the sequence is dropped.
+      HTTP.finish(leaving)
+      try Test.eq(try closed.recv(DROP_WAIT_MS), true)
+      ok()
+    end
+
+    try close_fake(serving)
+    result
   end
 end
 
@@ -240,6 +371,80 @@ def test_start_refuses_a_bad_host_or_folder() -> Result[Void]
   with_chat do |dir|
     try Test.error?(Server.start(dir, "chat-test", "0.0.0.0", 0))
     try Test.error?(Server.start("/none-such-dir", "chat-test", "127.0.0.1", 0))
+    ok()
+  end
+end
+
+## A port already taken is an error from `start`, which closes the tokenizer, the model, the generator and the
+## scheduler it opened, so the server on that port is still the only one.
+def test_start_refuses_a_taken_port() -> Result[Void]
+  with_chat do |dir|
+    running = try Server.start("#{dir}/chat", "chat-test", "127.0.0.1", 0)
+    taken = Server.start("#{dir}/chat", "chat-test", "127.0.0.1", Server.local_port(running))
+    try Test.error?(taken)
+    response = try HTTP.get_response("http://127.0.0.1:#{Server.local_port(running)}/health")
+    try Test.eq(response.status, 200)
+    try Server.stop(running)
+    ok()
+  end
+end
+
+## A scheduler that refuses a request is answered before the head, so the client reads a plain body and never a 200
+## stream: a saturated or stopped engine is a 503, anything else a 500, each with the scheduler's own reason.
+def test_a_refused_request_is_a_status_not_a_stream() -> Result[Void]
+  with_chat do |dir|
+    try with_fake(dir, Fake.Refuse("serving: saturated, no room for another request")) do |live|
+      response = try post(live, request_body("hi", 4))
+      try Test.eq(response.status, 503)
+      text = try HTTP.text(response.body, response.headers)
+      try Test.eq(text, "serving: saturated, no room for another request")
+      Test.eq(header_value(response, "content-type").include?("text/event-stream"), false)
+    end
+
+    try with_fake(dir, Fake.Refuse("qwen3: the step failed")) do |live|
+      response = try post(live, request_body("hi", 4))
+      try Test.eq(response.status, 500)
+      text = try HTTP.text(response.body, response.headers)
+      Test.eq(text, "qwen3: the step failed")
+    end
+
+    ok()
+  end
+end
+
+## A queue that takes nothing is a 503 at once, with no wait for an answer no scheduler will send: the inbox is
+## closed, so `Serving.submit` says the server is stopped before the head.
+def test_a_closed_queue_is_a_503_at_once() -> Result[Void]
+  with_chat do |dir|
+    serving = fake_server(Fake.Refuse("unused"))
+    serving.inbox.close
+    result = with_scripted(dir, serving) do |live|
+      response = try post(live, request_body("hi", 4))
+      try Test.eq(response.status, 503)
+      ok()
+    end
+
+    try close_fake(serving)
+    result
+  end
+end
+
+## A scheduler that breaks after a token is never a silent success: the content that went out stands, the stream ends
+## with an `error` event that names the reason, and there is no `[DONE]` after it.
+def test_a_broken_scheduler_ends_the_stream_with_an_error() -> Result[Void]
+  with_chat do |dir|
+    try with_fake(dir, Fake.TokenThen("qwen3: the step failed")) do |live|
+      stream = try open_body(live, request_body("hi", 4))
+      try Test.eq(stream.status, 200)
+      payloads = try read_to_close(stream)
+      try Test.eq(payloads.size >= 3, true)
+      try Test.eq(payloads.last == "[DONE]", false)
+      chunks = try decode_chunks(Streamed(payloads: payloads.take(payloads.size - 1)))
+      try Test.eq(try join_text(chunks), "h")
+      failure = try JSON.parse(payloads.last)
+      Test.eq(failure, JSON.from({"error": {"message": "qwen3: the step failed", "type": "server_error"}}))
+    end
+
     ok()
   end
 end
@@ -270,6 +475,29 @@ struct Reader
   content: String
   max_tokens: Int
   inbox: Channel[Note]
+end
+
+# What the fake scheduler answers a request with: a `Failed` before any token, one token and then a `Failed`, or an id
+# the tokenizer has no piece for (a model whose vocab outruns its tokenizer, which `Bpe.decode` must refuse). Nothing
+# steps a model: each is a thing a scheduler can say that the relay owes an honest answer to.
+enum Fake
+  Refuse(String)
+  TokenThen(String)
+  BadFirst(Int)
+  BadAfter(Int)
+end
+
+struct FakeJob
+  inbox: Channel[Serving.Command]
+  script: Fake
+end
+
+# A scheduler that answers with a long run of one token and reports on `closed` when a send fails: the relay stopped
+# taking events, which is what a client that left looks like from the scheduler's side.
+struct BurstJob
+  inbox: Channel[Serving.Command]
+  count: Int
+  closed: Channel[Bool]
 end
 
 def cases() -> List[Case]
@@ -327,6 +555,12 @@ def long_body() -> Case
   )
 end
 
+# A prompt past the character cap: refused before it is encoded.
+def long_chars() -> Case
+  content = List.repeat("e", Api.MAX_PROMPT_CHARS + 1).join("")
+  Case(body: request_body(content, 1), part: "characters, at most")
+end
+
 # The folder the `chat_peer.py` script (run from `server/`) writes, removed after.
 def with_chat(body: Fn[String, Result[Void]]) -> Result[Void]
   spawned = try Process.spawn_captured("python3", ["-I", "test/chat_peer.py"])
@@ -353,6 +587,149 @@ def with_server(body: Fn[Live, Result[Void]]) -> Result[Void]
   end
 end
 
+# The routes over a scheduler the test scripts (real Bond and real HTTP around it, no model): what a `Failed` before
+# the head, a `Failed` after a token, or a queue that takes nothing looks like to a client.
+def with_fake(dir: String, script: Fake, body: Fn[Live, Result[Void]]) -> Result[Void]
+  serving = fake_server(script)
+  result = with_scripted(dir, serving, body)
+  try close_fake(serving)
+  result
+end
+
+def with_scripted(dir: String, serving: Serving.Server, body: Fn[Live, Result[Void]]) -> Result[Void]
+  tok = try Bpe.open("#{dir}/chat/tokenizer.json")
+  api = Api.Api(
+    tok: tok,
+    serving: serving,
+    model_name: "chat-test",
+    model_type: "qwen3",
+    max_positions: 64,
+    stop: Api.stop_ids(tok),
+    default_max_tokens: Api.DEFAULT_MAX_TOKENS,
+    max_max_tokens: Api.MAX_MAX_TOKENS,
+    counters: ATS.new(),
+  )
+
+  server = try Bond.start(Api.app(api), "127.0.0.1", 0)
+  result = body.call(Live(dir: dir, port: Bond.local_port(server)))
+  Bond.stop(server)
+  result
+end
+
+# A `Serving.Server` whose answers are scripted: one task takes the requests off the inbox and answers each on its own
+# reply channel, so the relay's contract is exercised with no model and no step.
+def fake_server(script: Fake) -> Serving.Server
+  inbox: Channel[Serving.Command] = Channel.new(8)
+  Serving.Server(
+    inbox: inbox,
+    task: Task.spawn(&fake_serve, FakeJob(inbox: inbox, script: script)),
+    limits: Serving.Limits(max_active: Api.MAX_ACTIVE, max_pending: Api.MAX_PENDING),
+    pairs: Channel.new(1),
+  )
+end
+
+# Ends the fake scheduler and joins its task, in the order `Serving.stop` uses.
+def close_fake(serving: Serving.Server) -> Result[Void]
+  serving.inbox.close
+  Task.await(serving.task)
+end
+
+def fake_serve(job: FakeJob) -> Result[Void]
+  while true
+    case job.inbox.recv(FAKE_MS)
+      ok(Serving.Command.Request(request)) -> answer(request.reply, job.script)
+      ok(Serving.Command.Stop) -> return ok()
+      ok(Serving.Command.Cancel(_)) -> nil
+      error(_) -> return ok()
+    end
+  end
+
+  ok()
+end
+
+# A `Serving.Server` whose answer is a run of `count` tokens: the client reads the first, leaves, and the run has to be
+# cut by the relay's own failed writes.
+def burst_server(count: Int, closed: Channel[Bool]) -> Serving.Server
+  inbox: Channel[Serving.Command] = Channel.new(8)
+  Serving.Server(
+    inbox: inbox,
+    task: Task.spawn(&burst_serve, BurstJob(inbox: inbox, count: count, closed: closed)),
+    limits: Serving.Limits(max_active: Api.MAX_ACTIVE, max_pending: Api.MAX_PENDING),
+    pairs: Channel.new(1),
+  )
+end
+
+def burst_serve(job: BurstJob) -> Result[Void]
+  while true
+    case job.inbox.recv(FAKE_MS)
+      ok(Serving.Command.Request(request)) -> burst_answer(request.reply, job.count, job.closed)
+      ok(Serving.Command.Stop) -> return ok()
+      ok(Serving.Command.Cancel(_)) -> nil
+      error(_) -> return ok()
+    end
+  end
+
+  ok()
+end
+
+# Sends `count` tokens, one at a time: `true` on `closed` when a send fails (the relay closed the reply), `false` when
+# every one went out.
+def burst_answer(reply: Address[Serving.Event], count: Int, closed: Channel[Bool]) -> Void
+  for _i in 0...count
+    if not reply.send(Serving.Event.Token(104), FAKE_MS).ok?
+      _ = closed.send(true, FAKE_MS)
+      return
+    end
+  end
+
+  _ = closed.send(false, FAKE_MS)
+end
+
+def answer(reply: Address[Serving.Event], script: Fake) -> Void
+  case script
+    Fake.Refuse(message) -> _ = reply.send(Serving.Event.Failed(message), FAKE_MS)
+    Fake.TokenThen(message) ->
+      _ = reply.send(Serving.Event.Token(104), FAKE_MS)
+      _ = reply.send(Serving.Event.Failed(message), FAKE_MS)
+    Fake.BadFirst(id) -> _ = reply.send(Serving.Event.Token(id), FAKE_MS)
+    Fake.BadAfter(id) ->
+      _ = reply.send(Serving.Event.Token(104), FAKE_MS)
+      _ = reply.send(Serving.Event.Token(id), FAKE_MS)
+  end
+end
+
+# The one value of `name` in a response, or "" when it has none.
+def header_value(response: HTTP.Response, name: String) -> String = HTTP.header_values(response.headers, name).join("")
+
+# The routes over an `Api` whose stop ids are `stop` (`Server.start` takes the tokenizer's): what a sequence that
+# ends before its first token needs.
+def with_stop_server(dir: String, stop: List[Int], body: Fn[Live, Result[Void]]) -> Result[Void]
+  tok = try Bpe.open("#{dir}/chat/tokenizer.json")
+  model = try Qwen3.open("#{dir}/chat", Tensor.Backend.Reference)
+  generator = try Generate.open(model)
+  limits = Serving.Limits(max_active: Api.MAX_ACTIVE, max_pending: Api.MAX_PENDING)
+  serving = try Serving.start(generator, limits)
+  api = Api.Api(
+    tok: tok,
+    serving: serving,
+    model_name: "chat-test",
+    model_type: model.config.model_type,
+    max_positions: model.config.max_position_embeddings,
+    stop: stop,
+    default_max_tokens: Api.DEFAULT_MAX_TOKENS,
+    max_max_tokens: Api.MAX_MAX_TOKENS,
+    counters: ATS.new(),
+  )
+
+  server = try Bond.start(Api.app(api), "127.0.0.1", 0)
+  result = body.call(Live(dir: dir, port: Bond.local_port(server)))
+  Bond.stop(server)
+  try Serving.stop(serving)
+  Generate.close(generator)
+  Qwen3.close_model(model)
+  result
+end
+
 def post(live: Live, body: String) -> Result[HTTP.Response]
   HTTP.post_response(
     "http://127.0.0.1:#{live.port}/v1/chat/completions",
@@ -362,12 +739,14 @@ def post(live: Live, body: String) -> Result[HTTP.Response]
 end
 
 def request_body(content: String, max_tokens: Int) -> String
-  "{\"messages\":[{\"role\":\"user\",\"content\":\"#{content}\"}],\"stream\":true,\"max_tokens\":#{max_tokens}}"
+  (
+    "{\"model\":\"qwen3\",\"messages\":[{\"role\":\"user\",\"content\":\"#{content}\"}],\"stream\":true,\"max_tokens\":#{max_tokens}}"
+  )
 end
 
 def usage_body(content: String, max_tokens: Int) -> String
   (
-    "{\"messages\":[{\"role\":\"user\",\"content\":\"#{content}\"}],\"stream\":true,\"max_tokens\":#{max_tokens},\"stream_options\":{\"include_usage\":true}}"
+    "{\"model\":\"qwen3\",\"messages\":[{\"role\":\"user\",\"content\":\"#{content}\"}],\"stream\":true,\"max_tokens\":#{max_tokens},\"stream_options\":{\"include_usage\":true}}"
   )
 end
 
@@ -386,6 +765,21 @@ def complete_body(live: Live, body: String) -> Result[Streamed]
   read_whole(stream)
 end
 
+# A stream that must settle with no wait: the head at once, then every piece within `SETTLE_WAIT_MS`, so a relay that
+# waits for a piece that cannot come fails the test instead of holding it.
+def complete_at_once(live: Live, body: String) -> Result[Streamed]
+  stream = try HTTP.open(
+    "POST",
+    "http://127.0.0.1:#{live.port}/v1/chat/completions",
+    body.bytes,
+    [HTTP.Header(name: "Content-Type", value: "application/json")],
+    HTTP.ClientOptions(timeout_ms: SETTLE_WAIT_MS, read_timeout_ms: SETTLE_WAIT_MS),
+  )
+
+  try Test.eq(stream.status, 200)
+  read_whole(stream)
+end
+
 def open_stream(live: Live, content: String, max_tokens: Int) -> Result[HTTP.Stream]
   stream = try open_body(live, request_body(content, max_tokens))
   try Test.eq(stream.status, 200)
@@ -400,6 +794,28 @@ def open_body(live: Live, body: String) -> Result[HTTP.Stream]
     [HTTP.Header(name: "Content-Type", value: "application/json")],
     HTTP.ClientOptions(timeout_ms: WAIT_MS, read_timeout_ms: WAIT_MS),
   )
+end
+
+# The `data:` payloads of `stream` until it closes, `[DONE]` or not: what a stream that fails owes its client.
+def read_to_close(stream: HTTP.Stream) -> Result[List[String]]
+  buf = "".bytes
+  payloads: List[String] = []
+  while true
+    taken = try take_lines(buf)
+    buf = taken.rest
+    for line in taken.lines
+      if line.start_with?("data: ")
+        payloads = payloads.push(line.slice(6, line.length - 6))
+      end
+    end
+
+    case stream.body.recv(WAIT_MS)
+      ok(piece) -> buf = buf + piece
+      error(_) -> return ok(payloads)
+    end
+  end
+
+  ok(payloads)
 end
 
 # Reads `stream` to `[DONE]`: the payloads in order. A close without `[DONE]` is a cut stream, never a pass.
@@ -574,8 +990,17 @@ def join_text(chunks: List[TestChunk]) -> Result[String]
   ok(parts.join(""))
 end
 
-# Two streams at once, both read to their end in their own tasks: the joined text of each, by tag. Both advanced
-# while the other ran only when the two notes that arrive first are the two contents.
+def only_usage(chunks: List[TestChunk]) -> Result[TestUsage]
+  for chunk in chunks
+    return chunk.usage.to_result("no usage") if chunk.usage.some?
+  end
+
+  error("no chunk carries usage")
+end
+
+# Two streams at once, each opened by the task that reads it, so both requests are written before either head comes
+# back: the joined text of each, by tag. Both advanced while the other ran only when the two notes that arrive first
+# are the two contents.
 def interleaved(live: Live, first: String, first_n: Int, second: String, second_n: Int) -> Result[List[String]]
   inbox: Channel[Note] = Channel.new(4)
   Task.spawn(&reader, Reader(live: live, tag: 0, content: first, max_tokens: first_n, inbox: inbox))
@@ -650,6 +1075,48 @@ def drained(stream: HTTP.Stream, first: List[String]) -> Result[String]
   payloads = try drain(stream, "".bytes, first)
   try Task.await(stream.done)
   join_text(try decode_chunks(Streamed(payloads: payloads)))
+end
+
+# One character whose bytes arrive one token at a time, after `hi`: nothing of it may go out before its last byte,
+# and what the stream owes at every step stays a prefix of the answer. Answers the text the stream emitted.
+def emitted_split(tok: Bpe.ByteLevelBpe, bytes: List[Int]) -> Result[String]
+  ids: List[Int] = [104, 105]
+  sent = ""
+  acc = ""
+  steps: List[String] = []
+  for i in 0...bytes.size
+    ids = ids.push(bytes[i])
+    owed = try Api.emit_text(tok, sent, ids, false)
+    acc = acc + owed.emit
+    sent = owed.sent
+    steps = steps.push(acc)
+    # Until the character's last byte arrives, only what is before it is whole: `hi`, and no replacement.
+    if i < bytes.size - 1
+      try Test.eq(acc, "hi")
+    end
+  end
+
+  final = try Api.emit_text(tok, sent, ids, true)
+  acc = acc + final.emit
+  full = try Bpe.decode(tok, ids)
+  try Test.eq(acc, full)
+  for step in steps
+    try Test.eq(full.start_with?(step), true)
+  end
+
+  ok(acc)
+end
+
+# The first id the model picks for `content`: the stop id that ends an answer before its first token.
+def first_pick(dir: String, content: String) -> Result[Int]
+  m = try Qwen3.open("#{dir}/chat", Tensor.Backend.Reference)
+  g = try Generate.open(m)
+  ids = try Generate.generate(g, try prompt_ids(dir, content), 1, [])
+  Generate.close(g)
+  Qwen3.close_model(m)
+  return error("the model picked no token") if ids.empty?
+
+  ok(ids[0])
 end
 
 # The prompt ids the server encodes, and the standalone greedy answer beside them: the stream's content must match.
