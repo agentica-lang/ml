@@ -393,8 +393,8 @@ def round(a: Args, st: State) -> State
   end
 
   rest: List[Int] = ready
-  # Only where the backend pairs: a failed `step_pair` consumes both caches, so asking it of the others would end two
-  # live sequences instead of stepping them.
+  # Only where the backend pairs: `step_pair` refuses the other backends with both caches untouched, and a round
+  # that asks it anyway fails the two rows it hears the error for, instead of stepping them.
   if ready.size >= 2 and Generate.pairs(a.g)
     before = active.size
     active = pair_rows(a, active, ready[0], ready[1])

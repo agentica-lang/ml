@@ -759,3 +759,51 @@ def test_a_paired_step_matches_the_rows_decoded_alone() -> Result[Void]
     ok()
   end
 end
+
+## Two prefilled caches of a backend that does not pair, on XLA: the step is refused before either cache is read, so
+## both are still live and each decodes on alone with the ids it would have given without the pair. A Vulkan device
+## takes the same rule (`serving_test.agc` steps two rows alone there).
+def test_step_pair_on_a_backend_that_does_not_pair_on_xla_keeps_both_caches() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.xla_backends()
+      try unpaired_pair(dir, backend)
+    end
+
+    ok()
+  end
+end
+
+## The two caches handed to `step_pair` on `backend`, which does not pair: the refusal names the backend and leaves both
+## caches live, each then decodes on alone, and their ids are the ones of a run that never met a pair.
+def unpaired_pair(dir: String, backend: Tensor.Backend) -> Result[Void]
+  try Test.assert(not Generate.pairable(backend), "#{backend} pairs: this case needs a backend that steps alone")
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  a = try Generate.step(g, Generate.start(), [1, 5, 2])
+  b = try Generate.step(g, Generate.start(), [4, 4, 9, 2, 7, 1])
+  try S.expect_error(Generate.step_pair(g, a.cache, a.id, b.cache, b.id), "steps its rows alone")
+  # The refusal consumed nothing: each of the two caches steps on its own.
+  got_a = try decoded_alone(g, a, 3)
+  got_b = try decoded_alone(g, b, 2)
+  want_a = try Generate.generate(g, [1, 5, 2], 4)
+  want_b = try Generate.generate(g, [4, 4, 9, 2, 7, 1], 3)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  try Test.eq(got_a, want_a)
+  Test.eq(got_b, want_b)
+end
+
+## The id `picked` holds and then `n` more, each the pick of a single step of `g`, from the cache it holds: the cache
+## the last step gives is finished, so none is left.
+def decoded_alone(g: Generate.Generator, picked: Stepping.Picked[Generate.Cache], n: Int) -> Result[List[Int]]
+  ids = [picked.id]
+  cache = picked.cache
+  for _ in 0...n
+    p = try Generate.step(g, cache, [ids[ids.size - 1]])
+    ids = ids.push(p.id)
+    cache = p.cache
+  end
+
+  Generate.finish(cache)
+  ok(ids)
+end

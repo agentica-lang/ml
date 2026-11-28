@@ -76,8 +76,9 @@ end
 
 ## Whether `step_pair` runs on `backend`: the reference backend and ggml's CPU, the two it is built and tested on. Every
 ## other backend steps its rows alone, as it did before pairing existed — a Vulkan device, XLA and libtorch included,
-## until one of them is measured and added here. Callers check this before they hand a cache over: a failed
-## `step_pair` consumes both caches, so a scheduler that pairs where it does not run loses both rows.
+## until one of them is measured and added here. `step_pair` asks this of its backend first, before it reads either
+## cache: a backend left out here is refused with both caches still the caller's, so a direct caller keeps its two rows
+## and a scheduler asks this once per round, as `serving.agc` does.
 def pairable(backend: Tensor.Backend) -> Bool
   case backend
     Tensor.Backend.Reference -> true
@@ -101,10 +102,20 @@ def pairs(g: Generator) -> Bool = pairable(core(g).stepper.backend)
 ## afterwards, even when the step fails, as with `step`, and each cache it gives is the tensors of that row alone. Two
 ## rows are the whole of this step, on the backends `pairable` names: a wider batch, paged KV with physical slots, token
 ## budgets, chunked prefill and pairing on another device are not here (ml#92), and a prompt, a row that decodes alone
-## and the pick of one row stay in `step`.
+## and the pick of one row stay in `step`. On a backend `pairable` leaves out the step is refused before either cache is
+## read, so that refusal leaves both caches to their caller; every other error, of a pair the backend accepted, consumes
+## both as a failed `step` does.
 def step_pair(g: Generator, a: Cache, a_id: Int, b: Cache, b_id: Int) -> Result[Paired]
   c = core(g)
   s = c.stepper
+  # The capability of the backend first, before either cache is checked, prepared or finished: no work is done for a
+  # backend that cannot run the step, and a caller that handed over two live caches still owns both of them.
+  if not pairable(s.backend)
+    return error(
+      "step_pair pairs on the reference backend and ggml's CPU only: this #{s.backend} steps its rows alone",
+    )
+  end
+
   if a.length == 0 or b.length == 0
     finish(a)
     finish(b)
@@ -128,16 +139,6 @@ def step_pair(g: Generator, a: Cache, a_id: Int, b: Cache, b_id: Int) -> Result[
   end
 
   row_b = made_b.unwrap!
-  # The backends `pairable` names, before either cache is worth anything: the step consumes them as a failure does.
-  if not pairable(s.backend)
-    Lift.close(row_a.fed + row_b.fed)
-    finish(a)
-    finish(b)
-    return error(
-      "step_pair pairs on the reference backend and ggml's CPU only: this #{s.backend} steps its rows alone",
-    )
-  end
-
   outs = case s.backend
     Tensor.Backend.Ggml(_) -> compiled_pair(c, row_a, row_b)
     _ -> eager_pair(c, row_a, row_b)
