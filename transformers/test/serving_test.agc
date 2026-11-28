@@ -113,30 +113,50 @@ def test_step_pair_needs_two_prefilled_caches() -> Result[Void]
   end
 end
 
-## The reference backend and every ggml device pair, the software Vulkan device included; XLA and libtorch take the
-## singleton path, whatever this machine has installed.
-def test_the_reference_and_the_ggml_devices_pair() -> Result[Void]
+## Every real execution backend pairs, the software Vulkan device and the XLA/libtorch CPUs included; `Trace` does not
+## execute a served model, so it is not a pairing backend.
+def test_every_real_execution_backend_pairs() -> Result[Void]
   try Test.assert(Generate.pairable(S.REF), "the reference backend does not pair")
   try Test.assert(Generate.pairable(S.GGML), "ggml's CPU does not pair")
   try Test.assert(Generate.pairable(S.VULKAN), "a Vulkan device does not pair")
-  try Test.assert(not Generate.pairable(S.XLA), "XLA pairs")
-  Test.assert(not Generate.pairable(S.TORCH), "libtorch pairs")
+  try Test.assert(Generate.pairable(S.XLA), "XLA does not pair")
+  try Test.assert(Generate.pairable(S.TORCH), "libtorch does not pair")
+  Test.assert(not Generate.pairable(Tensor.Backend.Trace), "Trace pairs")
 end
 
-## Two decode-ready rows on a backend that does not pair (XLA, when it is installed): the scheduler keeps both, steps
-## each alone, and both answers are the ids of that backend's own standalone run. Nothing is faked: where no such backend
-## is installed the test says so and runs none.
-def test_rows_step_alone_where_the_backend_does_not_pair() -> Result[Void]
+## The default `max_batch` is two on XLA and libtorch too: two decode-ready rows share a batch and their answers are
+## the ids of that backend's own standalone run. `max_batch: 1` remains the explicit singleton below.
+def test_two_rows_batch_by_default_on_xla_and_libtorch() -> Result[Void]
   with_peer do |dir|
-    backends = try S.unpaired_backends()
+    backends = try S.xla_backends() + try S.torch_backends()
     if backends.empty?
-      IO.warn("SKIP no backend without pairing is installed (XLA, Vulkan): the fallback ran nowhere")
+      IO.warn("SKIP no XLA or libtorch backend is installed: the default batch ran nowhere")
+    end
+
+    for backend in backends
+      want_a = try standalone(dir, [1, 5, 2], 3, some(backend))
+      want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 3, some(backend))
+      try default_two_rows(dir, backend, want_a, want_b)
+    end
+
+    ok()
+  end
+end
+
+## `max_batch: 1` is the explicit singleton on XLA and libtorch, now that their default width is two: the scheduler
+## keeps both rows, steps each alone, and both answers are the ids of that backend's own standalone run. Where neither
+## backend is installed the test says so and runs none.
+def test_max_batch_one_steps_rows_alone_on_xla_and_libtorch() -> Result[Void]
+  with_peer do |dir|
+    backends = try S.xla_backends() + try S.torch_backends()
+    if backends.empty?
+      IO.warn("SKIP no XLA or libtorch backend is installed: max_batch:1 ran nowhere")
     end
 
     for backend in backends
       want_a = try standalone(dir, [1, 5, 2], 4, some(backend))
       want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 3, some(backend))
-      try unpaired_rows(dir, backend, want_a, want_b)
+      try singleton_rows(dir, backend, want_a, want_b)
     end
 
     ok()
@@ -270,13 +290,33 @@ def cancelled_pair(dir: String, backend: Tensor.Backend, want_b: List[Int], want
   Test.eq(runs, 3)
 end
 
-## Two rows that would pair on a CPU backend, on `backend`, which does not pair: every round steps them alone, both
-## answers are the standalone ids of that backend, and no paired step ran. Before pairing existed this was the only
-## path, and a backend outside `Generate.pairable` keeps it.
-def unpaired_rows(dir: String, backend: Tensor.Backend, want_a: List[Int], want_b: List[Int]) -> Result[Void]
+## Two rows on `backend` with the default `Limits` (`max_batch: 2`): every decode round shares a batch, both answers
+## are the standalone ids of that backend, and the shared count is the two rounds after the prefills.
+def default_two_rows(dir: String, backend: Tensor.Backend, want_a: List[Int], want_b: List[Int]) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", backend)
   g = try Generate.open(m)
   server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  a_ch: Channel[Serving.Event] = Channel.new(32)
+  b_ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [1, 5, 2], 3, [], a_ch)
+  try Serving.submit(server, [4, 4, 9, 2, 7, 1], 3, [], b_ch)
+  got_a = try collect(a_ch)
+  got_b = try collect(b_ch)
+  runs = (try Serving.stats(server)).pair_runs
+  try Serving.stop(server)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  try Test.eq(got_a, want_a)
+  try Test.eq(got_b, want_b)
+  Test.eq(runs, 2)
+end
+
+## Two rows on `backend` with `max_batch: 1`: every round steps them alone, both answers are the standalone ids of
+## that backend, and no paired step ran.
+def singleton_rows(dir: String, backend: Tensor.Backend, want_a: List[Int], want_b: List[Int]) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4, max_batch: 1))
   a_ch: Channel[Serving.Event] = Channel.new(32)
   b_ch: Channel[Serving.Event] = Channel.new(32)
   try Serving.submit(server, [1, 5, 2], 4, [], a_ch)
@@ -296,7 +336,7 @@ end
 def solo(dir: String, backend: Tensor.Backend, want: List[Int]) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", backend)
   g = try Generate.open(m)
-  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4, max_batch: 1))
   ch: Channel[Serving.Event] = Channel.new(32)
   try Serving.submit(server, [2, 7, 1], 5, [], ch)
   got = try collect(ch)

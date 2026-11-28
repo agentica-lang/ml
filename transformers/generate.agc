@@ -83,37 +83,38 @@ def step_top(g: Generator, cache: Cache, ids: List[Int], k: Int) -> Result[Stepp
   KvDecoder.step_top(core(g), cache, ids, k)
 end
 
-## Whether `step_batch` runs on `backend`: the reference backend and every ggml device — the CPU engine, a card, and
-## the software Vulkan device (Mesa's llvmpipe) a CI runner without one has. The device is the ggml device the model was
-## opened on, and a batch runs on that one: software or card is a property of the device, named in its log, never a path
-## this code takes. XLA and libtorch step their rows alone, as they did before batching existed, until one of them is
-## measured and added here. `step_batch` asks this of its backend first, before it reads any cache: a backend left out
-## here is refused with every cache still the caller's, so a direct caller keeps its rows and a scheduler asks this
-## once per round, as `serving.agc` does.
+## Whether `step_batch` runs on `backend`: every real execution backend — the reference backend, every ggml device
+## (the CPU engine, a card, and the software Vulkan device Mesa's llvmpipe a CI runner without one has), libtorch CPU
+## and XLA CPU. The device is the one the model was opened on, and a batch runs on that one: software or card is a
+## property of the device, named in its log, never a path this code takes. `Trace` does not execute a model, so it is
+## not here and its rows would step alone. `step_batch` asks this of its backend first, before it reads any cache: a
+## backend left out is refused with every cache still the caller's, so a direct caller keeps its rows and a scheduler
+## asks this once per round, as `serving.agc` does.
 def pairable(backend: Tensor.Backend) -> Bool
   case backend
     Tensor.Backend.Reference -> true
     Tensor.Backend.Ggml(_) -> true
+    Tensor.Backend.Torch(Tensor.Device.Cpu) -> true
+    Tensor.Backend.Xla(Tensor.Device.Cpu) -> true
     _ -> false
   end
 end
 
-## The widest batch `step_batch` runs on `backend`: `MAX_BATCH` on the reference backend and ggml's CPU engine, 2 on
-## a ggml Vulkan device (the width of its CI smoke, where a wider graph is not measured), and 0 where the rows step
-## alone. `step_batch` refuses a wider batch before it reads any cache, and `serving.agc` clamps its groups to this.
+## The widest batch `step_batch` runs on `backend`: `MAX_BATCH` on every real execution backend — the reference
+## backend, every ggml device, libtorch CPU and XLA CPU — and 0 where a model does not execute (`Trace`). `step_batch`
+## refuses a wider batch before it reads any cache, and `serving.agc` clamps its groups to `Limits.max_batch` and this.
 def batch_width(backend: Tensor.Backend) -> Int
-  case backend
-    Tensor.Backend.Reference -> MAX_BATCH
-    Tensor.Backend.Ggml(Tensor.Device.Cpu) -> MAX_BATCH
-    Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> 2
-    _ -> 0
+  if pairable(backend)
+    MAX_BATCH
+  else
+    0
   end
 end
 
-## Whether the steps of `g` may be batched: `pairable` of its backend.
-def pairs(g: Generator) -> Bool = pairable(core(g).stepper.backend)
+## Whether the steps of `g` may be batched: `batch_limit` is at least one (every real execution backend).
+def pairs(g: Generator) -> Bool = batch_limit(g) > 0
 
-## The widest batch the steps of `g` take: `batch_width` of its backend.
+## The widest batch the steps of `g` take: `batch_width` of its backend (`MAX_BATCH` on every real execution backend).
 def batch_limit(g: Generator) -> Int = batch_width(core(g).stepper.backend)
 
 ## One greedy decode step for the decode-ready `rows` in one graph, on the backends `pairable` names. Every cache holds
@@ -125,29 +126,27 @@ def batch_limit(g: Generator) -> Int = batch_width(core(g).stepper.backend)
 ## its own prompt length, positions, capacity and cache: the batch is as wide as the largest room it pads to, and the
 ## cache each row gets back is cut to that row's own rows.
 ##
-## On a ggml device the step is one graph, compiled once per batch of shapes and kept in the plans of `g` like any
-## other step, so one batch round is one execution of the backend; on the other backends the same forward runs eagerly
-## in an arena. The caches the step takes are dead afterwards, even when the step fails, as with `step`, and each cache
-## it gives is the tensors of that row alone. `rows` is at most `batch_width` of its backend (`MAX_BATCH` on the
-## reference backend and ggml's CPU engine, 2 on a ggml Vulkan device); a wider batch, paged KV with physical slots,
-## token budgets, chunked prefill and batching on another device are not here (ml#92), and a prompt, a
-## row that decodes alone and the pick of one row stay in `step`. On a backend `pairable` leaves out the step is
-## refused before any cache is read, so that refusal leaves every cache to its caller; every other error, of a batch
-## the backend accepted, consumes every cache as a failed `step` does. A ggml device batches as the device it is: the
-## CPU engine, a card and the software Vulkan device all run the same forward, and the tests pin each row's ids to that
-## device's own singleton run.
+## On a ggml device or `Xla` the step is one compiled graph, kept in the plans of `g` like any other step; on the
+## reference backend or libtorch the same forward runs eagerly in an arena, vectorized over the rows and not promised as
+## one kernel. The caches the step takes are dead afterwards, even when the step fails, as with `step`, and each cache
+## it gives is the tensors of that row alone. `rows` is at most `batch_limit(g)`: `MAX_BATCH` on every real execution
+## backend, so the caller's `Limits.max_batch` is what decides a served run. A wider batch, paged KV with physical
+## slots, token budgets, chunked prefill and batching on another device are not here (ml#92), and a prompt, a row that
+## decodes alone and the pick of one row stay in `step`. A generator whose backend does not execute a model (`Trace`)
+## refuses the step before any cache is read, so that refusal leaves every cache to its caller; every other error, of a
+## batch the backend accepted, consumes every cache as a failed `step` does. A ggml device batches as the device it is:
+## the CPU engine, a card and the software Vulkan device all run the same forward, and the tests pin each row's ids to
+## that device's own singleton run.
 def step_batch(g: Generator, rows: List[BatchRow]) -> Result[List[Stepping.Picked[Cache]]]
   c = core(g)
   s = c.stepper
-  # The capability of the backend first, before any cache is checked, prepared or finished: no work is done for a
+  # The capability of the generator first, before any cache is checked, prepared or finished: no work is done for a
   # backend that cannot run the step, and a caller that handed over live caches still owns all of them.
-  if not pairable(s.backend)
-    return error(
-      "step_batch batches on the reference backend and ggml's devices only: this #{s.backend} steps its rows alone",
-    )
+  width = batch_limit(g)
+  if width < 1
+    return error("step_batch batches on a real execution backend only: this #{s.backend} steps its rows alone")
   end
 
-  width = batch_width(s.backend)
   return error("step_batch batches at most #{width} rows on this backend, got #{rows.size}") if rows.size > width
 
   return error("step_batch steps at least one decode") if rows.empty?
@@ -187,6 +186,7 @@ def step_batch(g: Generator, rows: List[BatchRow]) -> Result[List[Stepping.Picke
 
   outs = case s.backend
     Tensor.Backend.Ggml(_) -> compiled_batch(c, built)
+    Tensor.Backend.Xla(_) -> compiled_batch(c, built)
     _ -> eager_batch(c, built)
   end
 
@@ -255,7 +255,8 @@ def step_batch(g: Generator, rows: List[BatchRow]) -> Result[List[Stepping.Picke
 end
 
 ## One greedy decode step for two sequences in one graph: `step_batch` of the two `BatchRow`s, kept for the callers of
-## the first paired step. The refusal of a backend that does not batch leaves both caches with the caller, as it did.
+## the first paired step. The refusal of a backend that does not execute a model (`Trace`) leaves both caches with the
+## caller, as it did.
 def step_pair(g: Generator, a: Cache, a_id: Int, b: Cache, b_id: Int) -> Result[Paired]
   made = try step_batch(g, [BatchRow(cache: a, id: a_id), BatchRow(cache: b, id: b_id)])
   ok(Paired(a: made[0], b: made[1]))
@@ -422,9 +423,9 @@ def hosted_batch(s: KvDecoder.Stepper[Qwen3.Qwen3], outs: List[Tensor.Tensor]) -
   ok(kept)
 end
 
-## One batch step on `Ggml`: one compiled graph over the rows, kept in the plans of `c` under a key of its own (no
-## single-row key has the `batch` prefix, and the rows' shapes are in the key in order). The graph takes the rows as a
-## step that is not in place does and makes the batch's tensors itself (`batch_of_rows`), so a round binds only the
+## One batch step on `Ggml` or `Xla`: one compiled graph over the rows, kept in the plans of `c` under a key of its own
+## (no single-row key has the `batch` prefix, and the rows' shapes are in the key in order). The graph takes the rows as
+## a step that is not in place does and makes the batch's tensors itself (`batch_of_rows`), so a round binds only the
 ## rows' own tensors: one execution of the backend, nothing eager around it.
 def compiled_batch(c: KvDecoder.Core[Qwen3.Qwen3], rows: List[Row]) -> Result[List[Tensor.Tensor]]
   s = c.stepper
@@ -725,6 +726,7 @@ def row_halves(kept: List[Tensor.Tensor], which: Int, compiled: Bool, own: Int) 
 end
 
 ## One batch step elsewhere: one forward over the batch runs now, in an arena that keeps the batch's tensors alone.
+## libtorch reaches this path, vectorized over the rows, and no kernel count is promised.
 def eager_batch(c: KvDecoder.Core[Qwen3.Qwen3], rows: List[Row]) -> Result[List[Tensor.Tensor]]
   ran: Result[List[Tensor.Tensor]] = Native.arena do
     args: List[Tensor.Tensor] = []

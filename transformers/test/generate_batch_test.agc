@@ -2,7 +2,10 @@
 ## forward, on the reference backend and on ggml's CPU. The rows have mixed prompt lengths and positions; each row's
 ## ids are the standalone greedy ones, and on ggml one batch round is one actual execution of the backend (prefills
 ## excluded). The scheduler fills partial batches, reuses a row after a cancellation, and gives every row a turn when
-## more rows are active than `max_batch`; `step_pair` stays the two-row wrapper. Run from `transformers/`.
+## more rows are active than `max_batch`; `step_pair` stays the two-row wrapper. Every real backend can now batch up to
+## `MAX_BATCH`; `Limits.max_batch` (2 by default) is the only served width, and `max_batch: 1` is the explicit singleton.
+## The cases below run Vulkan and libtorch when this machine has them, and say so when they do not; XLA has its own
+## wide case in `generate_test.agc`. Run from `transformers/`.
 
 import Generate from "../generate"
 import GgmlRaw from "pkg/tensor/src/ggml_native"
@@ -78,7 +81,7 @@ def test_rows_beyond_the_batch_cap_take_their_turn() -> Result[Void]
 end
 
 ## `step_pair` is still the two-row wrapper, and a batch over `Generate.MAX_BATCH` is refused before it consumes any
-## cache. A backend that does not batch is refused there too, with its caches still live.
+## cache. Every real backend pairs; only a backend that does not execute a model is refused there.
 def test_step_pair_wrapper_and_batch_preflights() -> Result[Void]
   with_peer do |dir|
     try legacy_step_pair(dir)
@@ -88,12 +91,12 @@ def test_step_pair_wrapper_and_batch_preflights() -> Result[Void]
       try over_cap_refusal(dir, backend)
     end
 
-    for backend in try S.unpaired_backends()
-      try unpaired_batch(dir, backend)
+    for backend in try S.xla_backends() + try S.torch_backends() + try S.vulkan_backends()
+      try over_cap_preflight(dir, backend)
     end
 
-    try Test.assert(not Generate.pairable(S.XLA), "XLA batches")
-    try Test.assert(not Generate.pairable(S.TORCH), "libtorch batches")
+    try Test.assert(Generate.pairable(S.XLA), "XLA does not batch")
+    try Test.assert(Generate.pairable(S.TORCH), "libtorch does not batch")
     ok()
   end
 end
@@ -299,21 +302,27 @@ def legacy_step_pair(dir: String) -> Result[Void]
   ok()
 end
 
-## `Serving.Limits` keeps `max_batch` inside 1..`Generate.MAX_BATCH`; a width over `max_active` is clamped, and the old
-## `max_active: 1` call with defaults still starts. The backend capacities are the one source `batch_width` names.
+## `Serving.Limits` keeps `max_batch` inside 1..`Generate.MAX_BATCH`; every real execution backend has the same
+## capacity (`MAX_BATCH`), `Trace` has none, a width over `max_active` is clamped, and the old `max_active: 1` call with
+## defaults still starts. `max_batch: 1` is the explicit singleton; the default stays 2.
 def test_serving_limits_validate_max_batch() -> Result[Void]
   with_peer do |dir|
     try Test.eq(Generate.batch_width(S.REF), Generate.MAX_BATCH)
     try Test.eq(Generate.batch_width(S.GGML), Generate.MAX_BATCH)
-    try Test.eq(Generate.batch_width(S.VULKAN), 2)
-    try Test.eq(Generate.batch_width(S.XLA), 0)
-    try Test.eq(Generate.batch_width(S.TORCH), 0)
+    try Test.eq(Generate.batch_width(S.VULKAN), Generate.MAX_BATCH)
+    try Test.eq(Generate.batch_width(S.XLA), Generate.MAX_BATCH)
+    try Test.eq(Generate.batch_width(S.TORCH), Generate.MAX_BATCH)
+    try Test.eq(Generate.batch_width(Tensor.Backend.Trace), 0)
     m = try Qwen3.open("#{dir}/tiny", S.REF)
     g = try Generate.open(m)
+    try Test.eq(Generate.batch_limit(g), Generate.MAX_BATCH)
+    try Test.eq(Serving.Limits(max_active: 2, max_pending: 4).max_batch, 2)
     try Test.error?(Serving.start(g, Serving.Limits(max_active: 10, max_pending: 4, max_batch: 11)))
     try Test.error?(Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4, max_batch: 0)))
     old = try Serving.start(g, Serving.Limits(max_active: 1, max_pending: 1))
     try Serving.stop(old)
+    singleton = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4, max_batch: 1))
+    try Serving.stop(singleton)
     wide = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4, max_batch: 3))
     try Serving.stop(wide)
     Generate.close(g)
@@ -322,27 +331,64 @@ def test_serving_limits_validate_max_batch() -> Result[Void]
   end
 end
 
-## A backend that does not batch: `step_batch` refuses two prefilled rows before reading either cache, and both still
-## decode on their own to the backend's standalone ids.
-def unpaired_batch(dir: String, backend: Tensor.Backend) -> Result[Void]
-  try Test.assert(not Generate.pairable(backend), "#{backend} batches: this case needs a backend that steps alone")
+## Four rows on libtorch CPU: the vectorized eager forward gives each row its singleton ids, compiles no plan, and the
+## scheduler puts the four in one `max_batch: 4` round. The case says so and runs nowhere when libtorch is not installed.
+def test_wide_batch_on_libtorch_matches_singleton_and_serving() -> Result[Void]
+  backends = try S.torch_backends()
+  if backends.empty?
+    IO.warn("SKIP libtorch is not installed: the eager wide batch ran nowhere")
+    return ok()
+  end
+
+  with_peer do |dir|
+    for backend in backends
+      try wide_engine(dir, backend, true)
+    end
+
+    ok()
+  end
+end
+
+## Four rows on a Vulkan device: the compiled forward gives each row its singleton ids, one batch round is one backend
+## execution, and the scheduler puts the four in one `max_batch: 4` round. The case says so and runs nowhere without a
+## Vulkan device; the mandatory Lavapipe smoke stays its two focused cases.
+def test_wide_batch_on_vulkan_matches_singleton_and_serving() -> Result[Void]
+  backends = try S.vulkan_backends()
+  if backends.empty?
+    IO.warn("SKIP no Vulkan device is installed: the wide Vulkan batch ran nowhere")
+    return ok()
+  end
+
+  with_peer do |dir|
+    for backend in backends
+      try wide_engine(dir, backend, false)
+    end
+
+    ok()
+  end
+end
+
+## A batch over `Generate.MAX_BATCH` on `backend` is refused before it reads a cache: one live row plus ten empty
+## rows ask for eleven, the refusal names the width, and the live cache still decodes to its singleton ids. The empty
+## rows are finished without ever entering a step.
+def over_cap_preflight(dir: String, backend: Tensor.Backend) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", backend)
   g = try Generate.open(m)
-  a = try Generate.step(g, Generate.start(), [1, 5, 2])
-  b = try Generate.step(g, Generate.start(), [4, 4, 9, 2, 7, 1])
-  try S.expect_error(
-    Generate.step_batch(g, [Generate.BatchRow(cache: a.cache, id: a.id), Generate.BatchRow(cache: b.cache, id: b.id)]),
-    "steps its rows alone",
-  )
+  live = try Generate.step(g, Generate.start(), [1, 5, 2])
+  rows = [Generate.BatchRow(cache: live.cache, id: live.id)]
+  for _ in 0...10
+    rows = rows.push(Generate.BatchRow(cache: Generate.start(), id: 1))
+  end
 
-  want_a = try Generate.generate(g, [1, 5, 2], 2)
-  want_b = try Generate.generate(g, [4, 4, 9, 2, 7, 1], 2)
-  next_a = try Generate.step(g, a.cache, [a.id])
-  next_b = try Generate.step(g, b.cache, [b.id])
-  try Test.eq([a.id, next_a.id], want_a)
-  try Test.eq([b.id, next_b.id], want_b)
-  Generate.finish(next_a.cache)
-  Generate.finish(next_b.cache)
+  try S.expect_error(Generate.step_batch(g, rows), "at most #{Generate.MAX_BATCH}")
+  want = try Generate.generate(g, [1, 5, 2], 2)
+  next = try Generate.step_batch(g, [Generate.BatchRow(cache: live.cache, id: live.id)])
+  try Test.eq([live.id, next[0].id], want)
+  Generate.finish(next[0].cache)
+  for r in 1...rows.size
+    Generate.finish(rows[r].cache)
+  end
+
   Generate.close(g)
   Qwen3.close_model(m)
   ok()
@@ -379,6 +425,76 @@ def over_cap_refusal(dir: String, backend: Tensor.Backend) -> Result[Void]
   Generate.close(g)
   Qwen3.close_model(m)
   ok()
+end
+
+## Four rows of one prompt length on `backend`, two direct batch rounds and one scheduler round of four. Each row's
+## ids are the singleton ids of the same generator; `eager` is libtorch, where no plan may compile, while a compiled
+## backend records one ggml execution per direct round. The scheduler reports two shared decode rounds.
+def wide_engine(dir: String, backend: Tensor.Backend, eager: Bool) -> Result[Void]
+  prompts = [[1, 5, 2], [4, 4, 9], [2, 7, 1], [1, 2, 3]]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  want: List[List[Int]] = []
+  for p in prompts
+    want = want.push(try Generate.generate(g, p, 3))
+  end
+
+  rows: List[Generate.BatchRow] = []
+  ids: List[List[Int]] = []
+  for p in prompts
+    first = try Generate.step(g, Generate.start(), p)
+    rows = rows.push(Generate.BatchRow(cache: first.cache, id: first.id))
+    ids = ids.push([first.id])
+  end
+
+  for _ in 0...2
+    before = GgmlRaw.graph_runs()
+    made = try Generate.step_batch(g, rows)
+    after = GgmlRaw.graph_runs()
+    if eager
+      try Test.eq(after - before, 0)
+    else
+      try Test.eq(after - before, 1)
+    end
+
+    if eager
+      try Test.eq(Generate.compiles(g), 0)
+    end
+
+    rows = []
+    for r in 0...made.size
+      ids = ids.set(r, ids[r].push(made[r].id))
+      rows = rows.push(Generate.BatchRow(cache: made[r].cache, id: made[r].id))
+    end
+  end
+
+  for r in 0...ids.size
+    try Test.eq(ids[r], want[r])
+    Generate.finish(rows[r].cache)
+  end
+
+  server = try Serving.start(g, Serving.Limits(max_active: 4, max_pending: 4, max_batch: 4))
+  chans: List[Channel[Serving.Event]] = []
+  for p in prompts
+    ch: Channel[Serving.Event] = Channel.new(32)
+    chans = chans.push(ch)
+    try Serving.submit(server, p, 3, [], ch)
+  end
+
+  got: List[List[Int]] = []
+  for ch in chans
+    got = got.push(try collect(ch))
+  end
+
+  runs = (try Serving.stats(server)).pair_runs
+  try Serving.stop(server)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  for r in 0...got.size
+    try Test.eq(got[r], want[r])
+  end
+
+  Test.eq(runs, 2)
 end
 
 ## The standalone greedy ids of one prompt on `backend`: the backend the case compares with.

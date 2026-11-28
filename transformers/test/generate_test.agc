@@ -15,6 +15,7 @@ import Placement from "../placement"
 import Qwen3 from "../qwen3"
 import S from "support"
 import Sample from "../sample"
+import Serving from "../serving"
 import Tensor from "pkg/tensor/tensor"
 
 ABS = 0.000000001
@@ -729,6 +730,89 @@ def pairing(dir: String, backend: Tensor.Backend, want_a: List[Int], want_b: Lis
   Test.eq(got_b, want_b)
 end
 
+## Four XLA rows of one prompt length: the first direct round compiles a batch plan, each row's ids are the singleton
+## ids of the same generator, and a scheduler round with `max_batch: 4` puts all four in one shared batch for two
+## decode rounds. The case is XLA's own; `generate_batch_test.agc` runs the same shape on libtorch and Vulkan.
+def wide_xla(dir: String, backend: Tensor.Backend) -> Result[Void]
+  prompts = [[1, 5, 2], [4, 4, 9], [2, 7, 1], [1, 2, 3]]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  want: List[List[Int]] = []
+  for p in prompts
+    want = want.push(try Generate.generate(g, p, 3))
+  end
+
+  rows: List[Generate.BatchRow] = []
+  ids: List[List[Int]] = []
+  for p in prompts
+    first = try Generate.step(g, Generate.start(), p)
+    rows = rows.push(Generate.BatchRow(cache: first.cache, id: first.id))
+    ids = ids.push([first.id])
+  end
+
+  for round in 0...2
+    before = Generate.compiles(g)
+    made = try Generate.step_batch(g, rows)
+    if round == 0
+      try Test.assert(Generate.compiles(g) > before, "the first XLA batch did not compile a batch plan")
+    end
+
+    rows = []
+    for r in 0...made.size
+      ids = ids.set(r, ids[r].push(made[r].id))
+      rows = rows.push(Generate.BatchRow(cache: made[r].cache, id: made[r].id))
+    end
+  end
+
+  for r in 0...ids.size
+    try Test.eq(ids[r], want[r])
+    Generate.finish(rows[r].cache)
+  end
+
+  server = try Serving.start(g, Serving.Limits(max_active: 4, max_pending: 4, max_batch: 4))
+  chans: List[Channel[Serving.Event]] = []
+  for p in prompts
+    ch: Channel[Serving.Event] = Channel.new(32)
+    chans = chans.push(ch)
+    try Serving.submit(server, p, 3, [], ch)
+  end
+
+  got: List[List[Int]] = []
+  for ch in chans
+    got = got.push(try collect(ch))
+  end
+
+  runs = (try Serving.stats(server)).pair_runs
+  try Serving.stop(server)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  for r in 0...got.size
+    try Test.eq(got[r], want[r])
+  end
+
+  Test.eq(runs, 2)
+end
+
+## Every token on `reply` until `Done`.
+def collect(reply: Channel[Serving.Event]) -> Result[List[Int]]
+  out: List[Int] = []
+  going = true
+  while going
+    case reply.recv(30000)
+      ok(ev) ->
+        case ev
+          Serving.Event.Token(id) -> out = out.push(id)
+          Serving.Event.Done -> going = false
+          Serving.Event.Failed(e) -> return error("the sequence failed: #{e}")
+        end
+
+      error(e) -> return error("no event in 30000ms: #{e.message}")
+    end
+  end
+
+  ok(out)
+end
+
 ## `n` ids of `ids` decoded alone, with caches the pair never touches.
 def standalone(dir: String, ids: List[Int], n: Int) -> Result[List[Int]]
   backends = try S.ggml_backends()
@@ -760,50 +844,32 @@ def test_a_paired_step_matches_the_rows_decoded_alone() -> Result[Void]
   end
 end
 
-## Two prefilled caches of a backend that does not pair, on XLA: the step is refused before either cache is read, so
-## both are still live and each decodes on alone with the ids it would have given without the pair. A Vulkan device
-## takes the same rule (`serving_test.agc` steps two rows alone there).
-def test_step_pair_on_a_backend_that_does_not_pair_on_xla_keeps_both_caches() -> Result[Void]
+## The paired step on XLA: the two prefilled caches share a compiled batch, the rows keep their positions and lengths,
+## and each row's ids are the ones it decodes alone. XLA is a real execution backend, so it pairs like the reference
+## backend and ggml instead of refusing.
+def test_a_paired_step_on_xla_matches_the_rows_decoded_alone() -> Result[Void]
   with_peer do |dir|
-    for backend in try S.xla_backends()
-      try unpaired_pair(dir, backend)
+    backends = try S.xla_backends()
+    if not backends.empty?
+      want_a = try standalone(dir, [1, 5, 2], 5)
+      want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 4)
+      for backend in backends
+        try pairing(dir, backend, want_a, want_b)
+      end
     end
 
     ok()
   end
 end
 
-## The two caches handed to `step_pair` on `backend`, which does not pair: the refusal names the backend and leaves both
-## caches live, each then decodes on alone, and their ids are the ones of a run that never met a pair.
-def unpaired_pair(dir: String, backend: Tensor.Backend) -> Result[Void]
-  try Test.assert(not Generate.pairable(backend), "#{backend} pairs: this case needs a backend that steps alone")
-  m = try Qwen3.open("#{dir}/tiny", backend)
-  g = try Generate.open(m)
-  a = try Generate.step(g, Generate.start(), [1, 5, 2])
-  b = try Generate.step(g, Generate.start(), [4, 4, 9, 2, 7, 1])
-  try S.expect_error(Generate.step_pair(g, a.cache, a.id, b.cache, b.id), "steps its rows alone")
-  # The refusal consumed nothing: each of the two caches steps on its own.
-  got_a = try decoded_alone(g, a, 3)
-  got_b = try decoded_alone(g, b, 2)
-  want_a = try Generate.generate(g, [1, 5, 2], 4)
-  want_b = try Generate.generate(g, [4, 4, 9, 2, 7, 1], 3)
-  Generate.close(g)
-  Qwen3.close_model(m)
-  try Test.eq(got_a, want_a)
-  Test.eq(got_b, want_b)
-end
+## A wide XLA batch: four rows share one compiled forward, match their singleton ids, and the scheduler batches all four
+## with `max_batch: 4` instead of stepping them alone.
+def test_a_wide_xla_batch_matches_singleton_and_the_scheduler() -> Result[Void]
+  with_peer do |dir|
+    for backend in try S.xla_backends()
+      try wide_xla(dir, backend)
+    end
 
-## The id `picked` holds and then `n` more, each the pick of a single step of `g`, from the cache it holds: the cache
-## the last step gives is finished, so none is left.
-def decoded_alone(g: Generate.Generator, picked: Stepping.Picked[Generate.Cache], n: Int) -> Result[List[Int]]
-  ids = [picked.id]
-  cache = picked.cache
-  for _ in 0...n
-    p = try Generate.step(g, cache, [ids[ids.size - 1]])
-    ids = ids.push(p.id)
-    cache = p.cache
+    ok()
   end
-
-  Generate.finish(cache)
-  ok(ids)
 end
