@@ -1,0 +1,11 @@
+name = "server"
+agentica = "0.40.0-beta.2"
+
+# Every bare `end` is followed by an empty line (AGENTS.md).
+[style]
+blank_line_after_end = true
+
+[dependencies]
+bond = { git = "https://github.com/agentica-lang/bond", tag = "0.15.1" }
+tensor = { git = "https://github.com/agentica-lang/ml", tag = "tensor-0.7.0", subdir = "tensor" }
+transformers = { git = "https://github.com/agentica-lang/ml", tag = "transformers-0.7.0", subdir = "transformers" }

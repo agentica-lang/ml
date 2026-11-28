@@ -1,0 +1,90 @@
+version = 1
+
+[[package]]
+name = "agc-ir"
+git = "https://github.com/agentica-lang/ml"
+subdir = "agc-ir"
+tag = "agc-ir-0.1.0"
+workspace = true
+
+[[package]]
+name = "bond"
+git = "https://github.com/agentica-lang/bond"
+tag = "0.15.1"
+commit = "451fac5418a698572b9a3834ebd89a2feef01b32"
+hash = "sha256:6e7e4c6a56cf6781338bc541663db67d399e0b772d58530a8433faff4407eaa9"
+
+[[package]]
+name = "csv"
+git = "https://github.com/agentica-lang/packages"
+subdir = "csv"
+tag = "csv-0.1.0"
+commit = "0faedbde510bd91d9b6647867b9e078d0f2cb2a2"
+hash = "sha256:bf982ce1b04c69e4966bbd34e2b41844d9b5f06305edfa7b6f785b5974f811f9"
+
+[[package]]
+name = "hub"
+git = "https://github.com/agentica-lang/ml"
+subdir = "hub"
+tag = "hub-0.7.0"
+workspace = true
+
+[[package]]
+name = "native-gen"
+git = "https://github.com/agentica-lang/packages"
+subdir = "native-gen"
+tag = "native-gen-0.5.0"
+commit = "32ebb6ea25d60e0f7a44e811c1f280db76c3e882"
+hash = "sha256:c1be453b21abab840feaa03242f0be32c1145fefe068dc131c8ce7c1b7b80652"
+
+[[package]]
+name = "nn"
+git = "https://github.com/agentica-lang/ml"
+subdir = "nn"
+tag = "nn-0.7.0"
+workspace = true
+
+[[package]]
+name = "parquet"
+git = "https://github.com/agentica-lang/packages"
+subdir = "parquet"
+tag = "parquet-0.2.0-beta.1"
+commit = "b9b8e7ffd9f489420b30e4c42723957ff702b7e3"
+hash = "sha256:83911fb4d47936cc8e93c77629a505abcf56163b82d451352dc5197a36857a00"
+
+[[package]]
+name = "snappy"
+git = "https://github.com/agentica-lang/packages"
+subdir = "snappy"
+tag = "snappy-0.1.0"
+commit = "bc43dbddcb05ed293115deb4f904f8d66e925b97"
+hash = "sha256:41619cfea17b86fb868b68b2b9be6c7d0b954451bb26f544b1adc6bebea368e4"
+
+[[package]]
+name = "telemetry"
+git = "https://github.com/agentica-lang/packages"
+subdir = "telemetry"
+tag = "telemetry-0.1.0"
+commit = "a0a5b405dfc23e6fcd4ad7007cbe0533daaecfec"
+hash = "sha256:80f33799ca78615fa5cec1b658207de8024f0a01b38bf62e1eecbbe28a191e68"
+
+[[package]]
+name = "tensor"
+git = "https://github.com/agentica-lang/ml"
+subdir = "tensor"
+tag = "tensor-0.7.0"
+workspace = true
+
+[[package]]
+name = "train"
+git = "https://github.com/agentica-lang/ml"
+subdir = "train"
+tag = "train-0.7.0"
+workspace = true
+
+[[package]]
+name = "transformers"
+git = "https://github.com/agentica-lang/ml"
+subdir = "transformers"
+tag = "transformers-0.7.0"
+workspace = true
