@@ -32,7 +32,7 @@ class Selection(unittest.TestCase):
     def test_a_push_runs_everything(self):
         out = self.select("push", "vision/vit.agc")
         self.assertEqual(out["packages"], ALL)
-        self.assertEqual([out[k] for k in ("xla", "torch", "ggml_arm64")], ["true"] * 3)
+        self.assertEqual([out[k] for k in ("xla", "torch", "ggml_arm64", "vulkan")], ["true"] * 4)
 
     def test_a_file_outside_the_packages_runs_everything(self):
         for path in (".github/workflows/ci.yml", "tools/plan.py", "third_party/ggml"):
@@ -41,7 +41,7 @@ class Selection(unittest.TestCase):
     def test_one_leaf_runs_only_its_job(self):
         out = self.select("pull_request", "vision/vit.agc")
         self.assertEqual(out["packages"], ["vision"])
-        self.assertEqual([out[k] for k in ("xla", "torch", "ggml_arm64")], ["false"] * 3)
+        self.assertEqual([out[k] for k in ("xla", "torch", "ggml_arm64", "vulkan")], ["false"] * 4)
 
     def test_no_changed_file_runs_everything(self):
         self.assertEqual(self.select("pull_request")["packages"], ALL)
@@ -50,10 +50,15 @@ class Selection(unittest.TestCase):
         out = self.select("pull_request", "vision/vit.agc", "README.md", "site/content/x.txt")
         self.assertEqual(out["packages"], ["vision"])
 
+    def test_the_vulkan_job_runs_for_transformers_only(self):
+        self.assertEqual(self.select("pull_request", "transformers/qwen3.agc")["vulkan"], "true")
+        # tensor/ brings transformers/ in (it depends on it), so a package that does not is the case that leaves the job out.
+        self.assertEqual(self.select("pull_request", "vision/vit.agc")["vulkan"], "false")
+
     def test_the_arm_job_runs_for_transformers(self):
         out = self.select("pull_request", "transformers/qwen3.agc")
         self.assertEqual(out["packages"], ["transformers", "vision"])
-        self.assertEqual([out[k] for k in ("xla", "torch", "ggml_arm64")], ["false", "false", "true"])
+        self.assertEqual([out[k] for k in ("xla", "torch", "ggml_arm64", "vulkan")], ["false", "false", "true", "true"])
 
 
 if __name__ == "__main__":

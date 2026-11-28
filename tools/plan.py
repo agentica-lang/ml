@@ -17,6 +17,8 @@ EXTRA_JOBS = {
     "xla": {"tensor", "train"},
     "torch": {"tensor"},
     "ggml_arm64": {"tensor", "transformers"},
+    # The software Vulkan job runs the pairing case of transformers/ (test/vulkan_pair_test.agc).
+    "vulkan": {"transformers"},
 }
 
 REPOSITORY = "agentica-lang/ml"
