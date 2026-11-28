@@ -1,13 +1,15 @@
 ## One long-lived task serving greedy Qwen3 decodes over `generate.agc`: the first scheduler of ml#90, and only its
 ## first step. Many sequences share one model and one `Generate.Generator`; the scheduler owns every live cache and
 ## steps the active sequences round-robin: a prompt (prefill) runs alone through `Generate.step`, and the decode-ready
-## rows share one decode graph per batch through `Generate.step_batch`, up to `Limits.max_batch` rows in a batch. What
-## a round picks — which rows, how long each is, where each one is — stays the scheduler's; the storage is the dense
-## per-row cache it hands over; and `Generate.step_batch` runs one forward over the batch and demultiplexes it by row:
-## the model's projections, attention and MLP see the rows as one batch, each row with its own positions, mask and
-## slice of the cache, so batching changes no token. New requests join at round boundaries and each sequence hears its
-## tokens on its own reply channel. No HTTP, no sampling, no paged KV: a prompt runs as one step; there is no chunked
-## prefill. Out of scope here, for ml#92: paged KV and physical slots, token budgets, and chunked prefill.
+## rows share one decode graph per batch through `Generate.step_batch`, up to the effective width: `Limits.max_batch`,
+## `Generate.batch_width` of the backend (10 on the reference backend and ggml CPU, 2 on a ggml Vulkan device) and the
+## active count. What a round picks — which rows, how long each is, where each one is — stays the scheduler's; the
+## storage is the dense per-row cache it hands over; and `Generate.step_batch` runs one forward over the batch and
+## demultiplexes it by row: the model's projections, attention and MLP see the rows as one batch, each row with its own
+## positions, mask and slice of the cache, so batching changes no token. New requests join at round boundaries and each
+## sequence hears its tokens on its own reply channel. No HTTP, no sampling, no paged KV: a prompt runs as one step;
+## there is no chunked prefill. Out of scope here, for ml#92: paged KV and physical slots, token budgets, and chunked
+## prefill.
 ##
 ## The contract, which the shape of the code keeps:
 ##
@@ -43,7 +45,9 @@ SUBMIT_WAIT_MS = 0
 COMMAND_WAIT_MS = 5000
 
 ## What one run is owed: at most `max_active` sequences step at once, at most `max_pending` more wait, and at most
-## `max_batch` of the decode-ready ones share one graph (`Generate.MAX_BATCH` at most).
+## `max_batch` of the decode-ready ones share one graph (`Generate.MAX_BATCH` at most). The width actually used is
+## clamped to the backend (`Generate.batch_width`) and to the active rows, so a `max_batch` wider than `max_active`
+## still starts.
 struct Limits
   max_active: Int
   max_pending: Int
@@ -104,17 +108,14 @@ def start(g: Generate.Generator, limits: Limits) -> Result[Server]
     return error("serving: max_batch is #{limits.max_batch}, at most #{Generate.MAX_BATCH}")
   end
 
-  if limits.max_batch > limits.max_active
-    return error("serving: max_batch is #{limits.max_batch}, over max_active #{limits.max_active}")
-  end
-
+  width = [limits.max_batch, Generate.batch_limit(g)].min.unwrap!
   inbox: Channel[Command] = Channel.new(limits.max_pending + 1)
   pairs: Channel[Int] = Channel.new(1)
   try pairs.send(0, COMMAND_WAIT_MS)
   ok(
     Server(
       inbox: inbox,
-      task: Task.spawn(&serve, Args(g: g, limits: limits, inbox: inbox, pairs: pairs)),
+      task: Task.spawn(&serve, Args(g: g, limits: limits, batch_width: width, inbox: inbox, pairs: pairs)),
       limits: limits,
       pairs: pairs,
     ),
@@ -188,6 +189,8 @@ private
 struct Args
   g: Generate.Generator
   limits: Limits
+  ## `Limits.max_batch` clamped to `Generate.batch_width` of the backend.
+  batch_width: Int
   inbox: Channel[Command]
   pairs: Channel[Int]
 end
@@ -378,9 +381,10 @@ end
 
 ## One step of every active sequence, in order: each prompt first, alone through `Generate.step`, then one decode step
 ## per batch: where the backend batches (`Generate.pairs`), every decode-ready row shares a graph through
-## `Generate.step_batch`, up to `Limits.max_batch` rows in each batch (the one step of a batch of two or more is counted
-## in `Args.pairs`). The batches start at `State.cursor` and wrap, so a run whose active rows are wider than `max_batch`
-## moves every row through every position and no row is skipped. A backend that does not batch — XLA, libtorch — takes
+## `Generate.step_batch`, up to `Args.batch_width` rows in each batch (the one step of a batch of two or more is counted
+## in `Args.pairs`; a lone row and an inevitable remainder of one take `Generate.step`, as before). The batches start at
+## `State.cursor` and wrap, so a run whose active rows are wider than the width moves every row through every position
+## and no row is skipped. A backend that does not batch — XLA, libtorch — takes
 ## the singleton path for every row, as it did before batching existed, so nothing is lost where the step is not there.
 ## A ggml device batches whether it is the CPU engine, a card or the software Vulkan device: that is a property of the
 ## device the model was opened on, not a mode of the scheduler. A finished sequence hears its last token and `Done` (a
@@ -413,14 +417,15 @@ def round(a: Args, st: State) -> State
     end
   end
 
-  # Only where the backend batches: every row whose prompt ran is in a batch (every active row after the loop above),
-  # and a batch of one is still `step_batch`, never the silent singleton path of a backend that cannot batch.
+  # Only where the backend batches: every row whose prompt ran is in a batch (every active row after the loop above).
+  # A batch of two or more uses `step_batch`; a lone row or an inevitable remainder of one uses the
+  # old `Generate.step`.
   if Generate.pairs(a.g) and !active.empty?
     start = st.cursor % active.size
     active = active.drop(start) + active.take(start)
     base = 0
     while base < active.size
-      take = [a.limits.max_batch, active.size - base].min.unwrap!
+      take = [a.batch_width, active.size - base].min.unwrap!
       indices: List[Int] = []
       for k in 0...take
         indices = indices.push(base + k)
@@ -431,7 +436,7 @@ def round(a: Args, st: State) -> State
       base = base + take - batched.removed
     end
 
-    return st.with(active: active, cursor: st.cursor + a.limits.max_batch)
+    return st.with(active: active, cursor: st.cursor + a.batch_width)
   end
 
   off = 0
@@ -493,10 +498,27 @@ def fail_row(r: Live, message: String, i: Int, active: List[Live]) -> List[Live]
   active.take(i) + active.drop(i + 1)
 end
 
-## One batch decode step of the rows at `indices`, on a backend `Generate.pairs` accepts: each row settles its own pick
-## on its own channel, so a slow or gone consumer ends only its row and its peers run on. A failing step consumed every
-## cache of the batch, so every row of it fails.
+## One decode step of the rows at `indices`, on a backend `Generate.pairs` accepts: each row settles its own pick on
+## its own channel, so a slow or gone consumer ends only its row and its peers run on. A lone row is the old
+## `Generate.step`; two or more share one `Generate.step_batch`. A failing step consumed every cache it was given, so
+## every row of it fails.
 def batch_rows(a: Args, active: List[Live], indices: List[Int]) -> Batched
+  if indices.size == 1
+    idx = indices[0]
+    r = active[idx]
+    case Generate.step(a.g, r.cache, [r.last])
+      ok(p) ->
+        settled = settle_row(r, p, idx, active)
+        removed = 0
+        if settled.removed
+          removed = 1
+        end
+
+        return Batched(active: settled.active, removed: removed)
+      error(e) -> return Batched(active: fail_row(r, e.message, idx, active), removed: 1)
+    end
+  end
+
   reqs: List[Generate.BatchRow] = []
   for i in indices
     r = active[i]

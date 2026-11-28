@@ -482,7 +482,8 @@ end
   that a mixed graph needs (`leaf_side`, the saved nodes and sources, the
   sides) are made by the first `place` that finds a leaf in host memory, so a
   graph with no leaf there pays nothing; a device graph whose leaves are all
-  in host memory is mixed too, and counts as a scheduler run (`mixed_runs`).
+  in host memory is mixed too, and counts as a scheduler run (`mixed_runs`);
+  `graph_runs` counts every attempt at a graph execution, plain or mixed.
   Threads: every graph compute, mixed or not, holds the device lock, and no
   other code computes on the shared CPU backend (the tensors move without it),
   so no task can compute on it while the scheduler does.

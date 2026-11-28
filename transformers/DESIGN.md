@@ -81,8 +81,10 @@ changes nothing, and the states of a model with them (`Stepper.states`) stay whe
   `max_position_embeddings`.
 - `serving.agc` runs one generator for many sequences: up to `Limits.max_active` step, `Limits.max_pending` more wait,
   and `Limits.max_batch` (default 2, at most `Generate.MAX_BATCH`) of the decode-ready rows share one graph per batch.
-  A cursor turns the batches so active rows wider than `max_batch` all advance; a backend that does not batch (XLA,
-  libtorch) steps one row at a time, as before.
+  The width used is clamped to `Generate.batch_width` of the backend (10 on the reference backend and ggml CPU, 2 on
+  a ggml Vulkan device) and to the active rows, so `max_batch` over `max_active` still starts. A cursor turns the
+  batches so active rows wider than the width all advance; a lone row takes `Generate.step`, and a backend that does
+  not batch (XLA, libtorch) steps one row at a time, as before.
 
 ## Qwen3
 

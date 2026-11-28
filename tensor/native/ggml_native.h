@@ -187,8 +187,8 @@ an_term ggml_on_cpu(an_env *env, struct ggml_TensorHandle_state *t);
    the process started: a graph with every leaf in device memory never counts. */
 an_term ggml_mixed_runs(an_env *env);
 
-/* How many graphs ran on a device since the process started, plain or through the scheduler: one per execution of
-   a compiled graph, for the tests. */
+/* How many graph executions were attempted on a device since the process started, plain or through the scheduler:
+   one per `ggml_run` that reached the compute call, whether or not the compute succeeded, for the tests. */
 an_term ggml_graph_runs(an_env *env);
 
 /* For the tests: of the graph that ran last, the matrix products that sit between each cache write in place

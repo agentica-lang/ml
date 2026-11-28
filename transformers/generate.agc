@@ -98,8 +98,23 @@ def pairable(backend: Tensor.Backend) -> Bool
   end
 end
 
+## The widest batch `step_batch` runs on `backend`: `MAX_BATCH` on the reference backend and ggml's CPU engine, 2 on
+## a ggml Vulkan device (the width of its CI smoke, where a wider graph is not measured), and 0 where the rows step
+## alone. `step_batch` refuses a wider batch before it reads any cache, and `serving.agc` clamps its groups to this.
+def batch_width(backend: Tensor.Backend) -> Int
+  case backend
+    Tensor.Backend.Reference -> MAX_BATCH
+    Tensor.Backend.Ggml(Tensor.Device.Cpu) -> MAX_BATCH
+    Tensor.Backend.Ggml(Tensor.Device.Vulkan(_)) -> 2
+    _ -> 0
+  end
+end
+
 ## Whether the steps of `g` may be batched: `pairable` of its backend.
 def pairs(g: Generator) -> Bool = pairable(core(g).stepper.backend)
+
+## The widest batch the steps of `g` take: `batch_width` of its backend.
+def batch_limit(g: Generator) -> Int = batch_width(core(g).stepper.backend)
 
 ## One greedy decode step for the decode-ready `rows` in one graph, on the backends `pairable` names. Every cache holds
 ## a prompt already: a prompt runs alone, with `step`. The step is one forward over the batch: the projections, the
@@ -113,8 +128,9 @@ def pairs(g: Generator) -> Bool = pairable(core(g).stepper.backend)
 ## On a ggml device the step is one graph, compiled once per batch of shapes and kept in the plans of `g` like any
 ## other step, so one batch round is one execution of the backend; on the other backends the same forward runs eagerly
 ## in an arena. The caches the step takes are dead afterwards, even when the step fails, as with `step`, and each cache
-## it gives is the tensors of that row alone. `rows` is at most `Generate.MAX_BATCH`; a wider batch, paged KV with
-## physical slots, token budgets, chunked prefill and batching on another device are not here (ml#92), and a prompt, a
+## it gives is the tensors of that row alone. `rows` is at most `batch_width` of its backend (`MAX_BATCH` on the
+## reference backend and ggml's CPU engine, 2 on a ggml Vulkan device); a wider batch, paged KV with physical slots,
+## token budgets, chunked prefill and batching on another device are not here (ml#92), and a prompt, a
 ## row that decodes alone and the pick of one row stay in `step`. On a backend `pairable` leaves out the step is
 ## refused before any cache is read, so that refusal leaves every cache to its caller; every other error, of a batch
 ## the backend accepted, consumes every cache as a failed `step` does. A ggml device batches as the device it is: the
@@ -131,7 +147,8 @@ def step_batch(g: Generator, rows: List[BatchRow]) -> Result[List[Stepping.Picke
     )
   end
 
-  return error("step_batch batches at most #{MAX_BATCH} rows, got #{rows.size}") if rows.size > MAX_BATCH
+  width = batch_width(s.backend)
+  return error("step_batch batches at most #{width} rows on this backend, got #{rows.size}") if rows.size > width
 
   return error("step_batch steps at least one decode") if rows.empty?
 
@@ -185,7 +202,12 @@ def step_batch(g: Generator, rows: List[BatchRow]) -> Result[List[Stepping.Picke
 
   found = try outs
   size = 1 + 2 * s.layers
-  try counted_batch(s, found, rows.size)
+  counted = counted_batch(s, found, rows.size)
+  if not counted.ok?
+    Lift.close(found)
+    return error(counted.message)
+  end
+
   ids: List[Int] = []
   heads: List[Tensor.Tensor] = []
   for r in 0...rows.size

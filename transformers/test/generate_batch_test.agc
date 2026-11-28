@@ -274,7 +274,8 @@ def over_cap(dir: String, backend: Tensor.Backend) -> Result[Void]
   after = GgmlRaw.graph_runs()
   Generate.close(g)
   Qwen3.close_model(m)
-  # Twelve prefills, then two rounds of a batch of ten and a batch of two: four shared batch executions.
+  # Twelve prefills, then two rounds of a batch of ten and a batch of two: four shared batch executions. The delta is
+  # isolated: `standalone` ran before `before`, and this test owns the process's records while it runs.
   try Test.eq(after - before, 16)
   Test.eq(runs, 4)
 end
@@ -298,14 +299,23 @@ def legacy_step_pair(dir: String) -> Result[Void]
   ok()
 end
 
-## `Serving.Limits` keeps `max_batch` inside the hard cap and inside `max_active`, and needs at least one row.
+## `Serving.Limits` keeps `max_batch` inside 1..`Generate.MAX_BATCH`; a width over `max_active` is clamped, and the old
+## `max_active: 1` call with defaults still starts. The backend capacities are the one source `batch_width` names.
 def test_serving_limits_validate_max_batch() -> Result[Void]
   with_peer do |dir|
+    try Test.eq(Generate.batch_width(S.REF), Generate.MAX_BATCH)
+    try Test.eq(Generate.batch_width(S.GGML), Generate.MAX_BATCH)
+    try Test.eq(Generate.batch_width(S.VULKAN), 2)
+    try Test.eq(Generate.batch_width(S.XLA), 0)
+    try Test.eq(Generate.batch_width(S.TORCH), 0)
     m = try Qwen3.open("#{dir}/tiny", S.REF)
     g = try Generate.open(m)
     try Test.error?(Serving.start(g, Serving.Limits(max_active: 10, max_pending: 4, max_batch: 11)))
-    try Test.error?(Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4, max_batch: 3)))
     try Test.error?(Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4, max_batch: 0)))
+    old = try Serving.start(g, Serving.Limits(max_active: 1, max_pending: 1))
+    try Serving.stop(old)
+    wide = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4, max_batch: 3))
+    try Serving.stop(wide)
     Generate.close(g)
     Qwen3.close_model(m)
     ok()
@@ -351,6 +361,10 @@ def over_cap_refusal(dir: String, backend: Tensor.Backend) -> Result[Void]
     ids = ids.push([first.id])
   end
 
+  solo = try Generate.step(g, Generate.start(), PROMPTS[0])
+  single = try Generate.step_batch(g, [Generate.BatchRow(cache: solo.cache, id: solo.id)])
+  try Test.eq([solo.id, single[0].id], want[0])
+  Generate.finish(single[0].cache)
   extra = try Generate.step(g, Generate.start(), [1, 2, 3])
   try S.expect_error(Generate.step_batch(g, []), "at least one decode")
   too_many = rows + [Generate.BatchRow(cache: extra.cache, id: extra.id)]
