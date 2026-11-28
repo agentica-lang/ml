@@ -2,10 +2,13 @@
 ## first step. Many sequences share one model and one `Generate.Generator`; the scheduler owns every live cache and
 ## steps the active sequences round-robin, one row each per round: a prompt (prefill) runs alone through
 ## `Generate.step`, and the first two sequences with their prompts done share one decode graph through
-## `Generate.step_pair` (one batch bucket of two rows; further ones step alone). Each tower of the paired graph is the
-## step of its row, with its own positions, mask and cache, so pairing changes no token. New requests join at round
-## boundaries and each sequence hears its tokens on its own reply channel. No HTTP, no sampling, no paged KV: a prompt
-## runs as one step; there is no chunked prefill.
+## `Generate.step_pair` (one batch bucket of two rows; further ones step alone). What a round picks — which rows, how
+## long each is, where each one is — stays the scheduler's; the storage is the dense per-row cache it hands over; and
+## `Generate.step_pair` runs one forward over the pair and demultiplexes it by row: the model's projections, attention
+## and MLP see the two rows as one batch, each row with its own positions, mask and half of the cache, so pairing
+## changes no token. New requests join at round boundaries and each sequence hears its tokens on its own reply channel.
+## No HTTP, no sampling, no paged KV: a prompt runs as one step; there is no chunked prefill. Out of scope here, for
+## ml#92: paged KV and physical slots, token budgets, chunked prefill, and a batch wider than the two rows.
 ##
 ## The contract, which the shape of the code keeps:
 ##

@@ -1,8 +1,9 @@
 ## Generation with a cache against the tiny Qwen3 of `qwen_peer.py`: the logits
 ## of every step match the peer's forward over the whole row, a prompt padded to
 ## a bucket (of 5, 8 and 9 tokens) and a cache that grows from 8 to 16 to 32 rows
-## included, and the greedy ids are those of the forward without a cache. Run from
-## `transformers/`.
+## included, and the greedy ids are those of the forward without a cache. The
+## paired step of two rows gives the ids each row decodes alone, with the single
+## path in the middle. Run from `transformers/`.
 
 import Generate from "../generate"
 import Stepping from "../stepping"
@@ -698,4 +699,64 @@ def greedy(m: Qwen3.Qwen3, prompt: List[Int], n: Int) -> Result[List[Int]]
   end
 
   ok(out)
+end
+
+## The paired step: two rows of different prompts in one forward, three rounds of it, a row back on the single path
+## between two of them, and that row paired again with the cache its peer got out of the pair. Both rows' ids are the
+## standalone greedy ones, which come from the backend that costs the fewest steps: ggml when it is built (as CI builds
+## it), the reference backend otherwise. The reference pairing is the expensive one, and its ids must be the same.
+def pairing(dir: String, backend: Tensor.Backend, want_a: List[Int], want_b: List[Int]) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  # A cache is dead after a step of it, so each row is prefilled for the pair.
+  a = try Generate.step(g, Generate.start(), [1, 5, 2])
+  b = try Generate.step(g, Generate.start(), [4, 4, 9, 2, 7, 1])
+  p = try Generate.step_pair(g, a.cache, a.id, b.cache, b.id)
+  # A row the pair gave back decodes alone, as the scheduler does with a row whose peer is gone.
+  s = try Generate.step(g, p.a.cache, [p.a.id])
+  # And it pairs again with the peer's cache, which came out of the pair. By the third round the longer row has
+  # outgrown the bucket of the shorter one, so the pair's cache pads it.
+  q = try Generate.step_pair(g, s.cache, s.id, p.b.cache, p.b.id)
+  r = try Generate.step_pair(g, q.a.cache, q.a.id, q.b.cache, q.b.id)
+  # The ids from the pick of the prompt on: the pair consumes the id the prefill left, as a step of one row does.
+  got_a = [a.id, p.a.id, s.id, q.a.id, r.a.id]
+  got_b = [b.id, p.b.id, q.b.id, r.b.id]
+  Generate.finish(r.a.cache)
+  Generate.finish(r.b.cache)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  try Test.eq(got_a, want_a)
+  Test.eq(got_b, want_b)
+end
+
+## `n` ids of `ids` decoded alone, with caches the pair never touches.
+def standalone(dir: String, ids: List[Int], n: Int) -> Result[List[Int]]
+  backends = try S.ggml_backends()
+  backend = S.REF
+  if backends.size > 0
+    backend = backends[0]
+  end
+
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  out = try Generate.generate(g, ids, n)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  ok(out)
+end
+
+## The paired step of `generate.agc` over prompts of 3 and 6 ids, on the reference backend and on ggml: the rows'
+## positions and lengths differ, the singleton path runs between two paired rounds, and each row's ids are the ones
+## it decodes alone.
+def test_a_paired_step_matches_the_rows_decoded_alone() -> Result[Void]
+  with_peer do |dir|
+    want_a = try standalone(dir, [1, 5, 2], 5)
+    want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 4)
+    try pairing(dir, S.REF, want_a, want_b)
+    for backend in try S.ggml_backends()
+      try pairing(dir, backend, want_a, want_b)
+    end
+
+    ok()
+  end
 end
