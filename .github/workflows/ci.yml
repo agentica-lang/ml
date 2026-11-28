@@ -607,17 +607,45 @@ jobs:
       - name: Install the locked dependencies
         run: agentica install
 
-      # The device the loader offers, before any test: the software one, whatever the image also ships. This is the
-      # device evidence of the job: `agentica test` keeps a test's own output to itself, so ggml's device line is not in
-      # the test log, and the loader restricted to the lavapipe manifest is what makes the test's Vulkan(0) the software
-      # device.
+      # The device the loader offers, before any test: the software one, whatever the image also ships.
       - name: The device Vulkan offers
         shell: bash
         run: |
           set -euo pipefail
           vulkaninfo --summary | tee "$RUNNER_TEMP/vulkaninfo.txt"
           grep -qi "llvmpipe" "$RUNNER_TEMP/vulkaninfo.txt"
-          ! grep -qiE "radeon|radv" "$RUNNER_TEMP/vulkaninfo.txt"
+          if grep -qiE "radeon|radv" "$RUNNER_TEMP/vulkaninfo.txt"; then exit 1; fi
+
+      # Mesa's llvmpipe compiles the shaders of every pipeline a plan uses the first time it runs, and it keeps them in a
+      # cache that a runner starts without: the plans of the pairing case cost 81 s cold against 7 s warm, and a test has
+      # 30 s (job 140972534137 ran out of it). So the cold work runs here, once, outside any test bound: a six-line
+      # program imports the case and calls its `warm_pair`, which is the case's own `pairing` — same fixture, same
+      # prompts, same plans, same asserts — so there is no second copy of the shapes to drift from the test. Its log is
+      # also the device evidence ggml itself gives, which `agentica test` keeps to the test: the software device, no card
+      # driver, and the cache the pair gave back on Backend.Ggml(Device.Vulkan(0)). The program lives in the package only
+      # because the imports resolve from there, and the trap removes it whatever happens.
+      - name: Warm the shader cache and read the device from ggml
+        env:
+          TENSOR_REQUIRE_VULKAN: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'rm -f .vulkan_warm_tmp.agc' EXIT
+          cat > .vulkan_warm_tmp.agc <<'PROGRAM'
+          import VulkanPair from "test/vulkan_pair_test"
+
+          def main() -> Void
+            case VulkanPair.warm_pair()
+              ok(_) -> IO.print("WARM ok\n")
+              error(e) -> IO.print("WARM FAILED: #{e.message}\n")
+            end
+          end
+          PROGRAM
+          agentica .vulkan_warm_tmp.agc 2>&1 | tee "$RUNNER_TEMP/warm.log"
+          grep -qi "llvmpipe" "$RUNNER_TEMP/warm.log"
+          if grep -qiE "radeon|radv" "$RUNNER_TEMP/warm.log"; then exit 1; fi
+          grep -qF "pair cache on Backend.Ggml(Device.Vulkan(0))" "$RUNNER_TEMP/warm.log"
+          grep -qxF "WARM ok" "$RUNNER_TEMP/warm.log"
 
       # The pairing case of transformers/ only, and its exact summary: the case fails on its own when the device is not
       # there (`TENSOR_REQUIRE_VULKAN`), when a row's ids are not its own singleton run on that device, or when the round
