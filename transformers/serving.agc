@@ -75,7 +75,8 @@ enum Command
 end
 
 ## The running scheduler: its inbox, its task, and its bounds. `stop` ends the task and closes the inbox. `pairs`
-## holds the count of completed paired decode steps (one per shared graph execution), which `stats` reads.
+## holds the count of completed paired decode steps, which `stats` reads: one per round that stepped two rows in one
+## paired step (one backend execution where the backend compiles the step, an eager forward on the reference backend).
 struct Server
   inbox: Channel[Command]
   task: Task[Result[Void]]
@@ -83,7 +84,8 @@ struct Server
   pairs: Channel[Int]
 end
 
-## How many paired decode steps the run has completed: one per shared graph execution, prefills excluded.
+## How many paired decode steps the run has completed: one per round that paired two rows, prefills excluded. On a
+## backend `Generate.pairable` leaves out it stays 0, because every row steps alone there.
 struct Stats
   pair_runs: Int
 end
@@ -357,11 +359,13 @@ def admit(a: Args, st: State) -> State
 end
 
 ## One step of every active sequence, in order: each prompt first, alone through `Generate.step`, then one decode step
-## each: the first two sequences with their prompts done share one graph through `Generate.step_pair` (the single
-## graph execution of the round, counted in `Args.pairs`), and further ones step alone. A finished sequence hears its
-## last token and `Done` (a stop id is never a token); a slow or gone consumer, and a failing step, end the sequence
-## without stalling the rest. A failing step already consumed its cache, so there is nothing to finish; a failing
-## paired step consumed both caches, so both sequences end.
+## each: where the backend pairs (`Generate.pairs`), the first two sequences with their prompts done share one paired
+## step through `Generate.step_pair` (the one step of the round counted in `Args.pairs`), and further ones step alone.
+## A backend that does not pair — a Vulkan device, XLA, libtorch — takes the singleton path for every row, as it did
+## before pairing existed, so nothing is lost where the step is not there. A finished sequence hears its last token and
+## `Done` (a stop id is never a token); a slow or gone consumer, and a failing step, end the sequence without stalling
+## the rest. A failing step already consumed its cache, so there is nothing to finish; a failing paired step consumed
+## both caches, so both sequences end.
 def round(a: Args, st: State) -> State
   active = st.active
   i = 0
@@ -389,7 +393,9 @@ def round(a: Args, st: State) -> State
   end
 
   rest: List[Int] = ready
-  if ready.size >= 2
+  # Only where the backend pairs: a failed `step_pair` consumes both caches, so asking it of the others would end two
+  # live sequences instead of stepping them.
+  if ready.size >= 2 and Generate.pairs(a.g)
     before = active.size
     active = pair_rows(a, active, ready[0], ready[1])
     rest = []
@@ -457,14 +463,15 @@ def fail_row(r: Live, message: String, i: Int, active: List[Live]) -> List[Live]
   active.take(i) + active.drop(i + 1)
 end
 
-## One shared decode step of the rows at `ia` and `ib`: each row settles its own pick on its own channel, so a slow or
-## gone consumer ends only its row and the peer runs on. A failing step consumed both caches, so both rows fail.
+## One paired decode step of the rows at `ia` and `ib`, on a backend `Generate.pairs` accepts: each row settles its own
+## pick on its own channel, so a slow or gone consumer ends only its row and the peer runs on. A failing step consumed
+## both caches, so both rows fail.
 def pair_rows(a: Args, active: List[Live], ia: Int, ib: Int) -> List[Live]
   r = active[ia]
   o = active[ib]
   case Generate.step_pair(a.g, r.cache, r.last, o.cache, o.last)
     ok(pair) ->
-      # The single graph execution of the round: one paired step is one graph.
+      # The paired step of the round: one backend execution where the backend compiles it.
       note_pair(a)
       first = settle_row(r, pair.a, ia, active)
       active = first.active
@@ -480,7 +487,7 @@ def pair_rows(a: Args, active: List[Live], ia: Int, ib: Int) -> List[Live]
   end
 end
 
-## One paired decode step completed: counts its single graph execution.
+## One paired decode step completed: counts it (`Stats.pair_runs`), one per round that paired.
 def note_pair(a: Args) -> Void
   case a.pairs.recv(COMMAND_WAIT_MS)
     ok(v) -> _ = a.pairs.send(v + 1, COMMAND_WAIT_MS)

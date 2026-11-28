@@ -752,8 +752,7 @@ def test_a_paired_step_matches_the_rows_decoded_alone() -> Result[Void]
   with_peer do |dir|
     want_a = try standalone(dir, [1, 5, 2], 5)
     want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 4)
-    try pairing(dir, S.REF, want_a, want_b)
-    for backend in try S.ggml_backends()
+    for backend in try S.paired_backends()
       try pairing(dir, backend, want_a, want_b)
     end
 

@@ -1,6 +1,7 @@
 ## Helpers of the tests (not a test file itself): editing a fixture file, a
 ## folder of fixtures from a Python peer, tensors from lists, and comparing floats.
 
+import Generate from "../generate"
 import Tensor from "pkg/tensor/tensor"
 
 REF = Tensor.Backend.Reference
@@ -63,6 +64,34 @@ def torch_backends() -> Result[List[Tensor.Backend]]
   flag = System.env("TENSOR_REQUIRE_TORCH")
   return error("libtorch required but not built (TENSOR_REQUIRE_TORCH is set)") if flag.ok? and try flag != ""
   ok([])
+end
+
+## The backends of this machine that pair two decode rows (`Generate.pairable`): the reference backend and ggml's CPU.
+## A case that asks for a paired step runs on these only; a Vulkan device and XLA keep their rows on the singleton path.
+def paired_backends() -> Result[List[Tensor.Backend]]
+  out: List[Tensor.Backend] = [REF]
+  for backend in try ggml_backends()
+    if Generate.pairable(backend)
+      out = out.push(backend)
+    end
+  end
+
+  ok(out)
+end
+
+## The backends of this machine that do not pair, where a scheduler must step its rows alone: XLA and a Vulkan device,
+## when they are installed. libtorch takes the same singleton path but its job runs no serving test, so it is not here
+## (`unpaired_rule` in `serving_test.agc` checks the rule for it).
+def unpaired_backends() -> Result[List[Tensor.Backend]]
+  out: List[Tensor.Backend] = []
+  installed = try xla_backends()
+  for backend in installed + try ggml_backends()
+    if not Generate.pairable(backend)
+      out = out.push(backend)
+    end
+  end
+
+  ok(out)
 end
 
 ## `ggml_backends` for a model with a gated delta rule of head width `width` (Qwen3.5): ggml-vulkan runs that op for

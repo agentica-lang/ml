@@ -49,7 +49,7 @@ def test_paired_decode_matches_standalone_generation() -> Result[Void]
     want_a = try standalone(dir, [1, 5, 2], 10)
     want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 8)
     try paired(dir, S.REF, want_a, want_b)
-    for backend in try S.ggml_backends()
+    for backend in try S.paired_backends()
       try paired(dir, backend, want_a, want_b)
     end
 
@@ -63,7 +63,7 @@ def test_b_joining_mid_decode_pairs_without_changing_tokens() -> Result[Void]
     want_a = try standalone(dir, [1, 5, 2], 12)
     want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 5)
     try joining(dir, S.REF, want_a, want_b)
-    for backend in try S.ggml_backends()
+    for backend in try S.paired_backends()
       try joining(dir, backend, want_a, want_b)
     end
 
@@ -78,7 +78,7 @@ def test_cancellation_keeps_the_peer_on_paired_tokens() -> Result[Void]
     want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 5)
     want_c = try standalone(dir, [1, 2, 3], 4)
     try cancelled_pair(dir, S.REF, want_b, want_c)
-    for backend in try S.ggml_backends()
+    for backend in try S.paired_backends()
       try cancelled_pair(dir, backend, want_b, want_c)
     end
 
@@ -105,8 +105,38 @@ end
 def test_step_pair_needs_two_prefilled_caches() -> Result[Void]
   with_peer do |dir|
     try pair_errors(dir, S.REF)
-    for backend in try S.ggml_backends()
+    for backend in try S.paired_backends()
       try pair_errors(dir, backend)
+    end
+
+    ok()
+  end
+end
+
+## Only the backends `Generate.pairable` names pair: the reference backend and ggml's CPU. A Vulkan device, XLA and
+## libtorch take the singleton path, whatever this machine has installed.
+def test_only_the_reference_and_cpu_ggml_pair() -> Result[Void]
+  try Test.assert(Generate.pairable(S.REF), "the reference backend does not pair")
+  try Test.assert(Generate.pairable(S.GGML), "ggml's CPU does not pair")
+  try Test.assert(not Generate.pairable(S.VULKAN), "a Vulkan device pairs")
+  try Test.assert(not Generate.pairable(S.XLA), "XLA pairs")
+  Test.assert(not Generate.pairable(S.TORCH), "libtorch pairs")
+end
+
+## Two decode-ready rows on a backend that does not pair (XLA and a Vulkan device, when they are installed): the
+## scheduler keeps both, steps each alone, and both answers are the ids of that backend's own standalone run. Nothing is
+## faked: where no such backend is installed the test says so and runs none.
+def test_rows_step_alone_where_the_backend_does_not_pair() -> Result[Void]
+  with_peer do |dir|
+    backends = try S.unpaired_backends()
+    if backends.empty?
+      IO.warn("SKIP no backend without pairing is installed (XLA, Vulkan): the fallback ran nowhere")
+    end
+
+    for backend in backends
+      want_a = try standalone(dir, [1, 5, 2], 4, some(backend))
+      want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 3, some(backend))
+      try unpaired_rows(dir, backend, want_a, want_b)
     end
 
     ok()
@@ -121,7 +151,7 @@ def test_a_stop_id_in_a_paired_round_ends_only_that_row() -> Result[Void]
     want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 5)
     try Test.assert(want_a.size == 2, "the probe run has #{want_a.size} ids, needs 2 for the stop-id pick")
     try stopped_pair(dir, S.REF, want_a, want_b)
-    for backend in try S.ggml_backends()
+    for backend in try S.paired_backends()
       try stopped_pair(dir, backend, want_a, want_b)
     end
 
@@ -136,16 +166,21 @@ def with_peer(body: Fn[String, Result[Void]]) -> Result[Void]
 end
 
 ## The standalone greedy ids of `ids` for `n` tokens, from the backend that costs the fewest steps: ggml when it is
-## built (as CI builds it), the reference backend otherwise. The ids are the backend's own, and the assertion is
-## against them: what a service must give back is this row's greedy ids on the backend it runs on.
-## `generate_test.agc` pins the reference backend's ids to these ones
+## built (as CI builds it), the reference backend otherwise, or `on` when a case names the backend it compares with.
+## The ids are the backend's own, and the assertion is against them: what a service must give back is this row's greedy
+## ids on the backend it runs on. `generate_test.agc` pins the reference backend's ids to these ones
 ## (`test_a_paired_step_matches_the_rows_decoded_alone`), so no case here pays a reference prefill and a reference
 ## decode per row again.
-def standalone(dir: String, ids: List[Int], n: Int) -> Result[List[Int]]
+def standalone(dir: String, ids: List[Int], n: Int, on: Optional[Tensor.Backend] = none) -> Result[List[Int]]
   backends = try S.ggml_backends()
   backend = S.REF
   if backends.size > 0
     backend = backends[0]
+  end
+
+  case on
+    some(b) -> backend = b
+    none -> nil
   end
 
   m = try Qwen3.open("#{dir}/tiny", backend)
@@ -233,6 +268,28 @@ def cancelled_pair(dir: String, backend: Tensor.Backend, want_b: List[Int], want
   try Test.eq(got_b, want_b)
   try Test.eq(got_c, want_c)
   Test.eq(runs, 3)
+end
+
+## Two rows that would pair on a CPU backend, on `backend`, which does not pair: every round steps them alone, both
+## answers are the standalone ids of that backend, and no paired step ran. Before pairing existed this was the only
+## path, and a backend outside `Generate.pairable` keeps it.
+def unpaired_rows(dir: String, backend: Tensor.Backend, want_a: List[Int], want_b: List[Int]) -> Result[Void]
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
+  a_ch: Channel[Serving.Event] = Channel.new(32)
+  b_ch: Channel[Serving.Event] = Channel.new(32)
+  try Serving.submit(server, [1, 5, 2], 4, [], a_ch)
+  try Serving.submit(server, [4, 4, 9, 2, 7, 1], 3, [], b_ch)
+  got_a = try collect(a_ch)
+  got_b = try collect(b_ch)
+  runs = (try Serving.stats(server)).pair_runs
+  try Serving.stop(server)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  try Test.eq(got_a, want_a)
+  try Test.eq(got_b, want_b)
+  Test.eq(runs, 0)
 end
 
 ## One row alone: the single path, the standalone ids, and no paired step (prefills never count).

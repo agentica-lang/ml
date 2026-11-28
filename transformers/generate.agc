@@ -74,17 +74,34 @@ def step_top(g: Generator, cache: Cache, ids: List[Int], k: Int) -> Result[Stepp
   KvDecoder.step_top(core(g), cache, ids, k)
 end
 
-## One greedy decode step for two sequences in one graph. Both caches hold a prompt already: a prompt runs alone, with
-## `step`. The step is one forward over the pair: the projections, the attention and the MLP of every layer run on the
-## two rows `[2, 1, hidden]` at once, with the rows' own positions, additive mask `[2, 1, 1, room]` and cache — each
+## Whether `step_pair` runs on `backend`: the reference backend and ggml's CPU, the two it is built and tested on. Every
+## other backend steps its rows alone, as it did before pairing existed — a Vulkan device, XLA and libtorch included,
+## until one of them is measured and added here. Callers check this before they hand a cache over: a failed
+## `step_pair` consumes both caches, so a scheduler that pairs where it does not run loses both rows.
+def pairable(backend: Tensor.Backend) -> Bool
+  case backend
+    Tensor.Backend.Reference -> true
+    Tensor.Backend.Ggml(Tensor.Device.Cpu) -> true
+    _ -> false
+  end
+end
+
+## Whether the steps of `g` may be paired: `pairable` of its backend.
+def pairs(g: Generator) -> Bool = pairable(core(g).stepper.backend)
+
+## One greedy decode step for two sequences in one graph, on the backends `pairable` names. Both caches hold a prompt
+## already: a prompt runs alone, with `step`. The step is one forward over the pair: the projections, the attention and
+## the MLP of every layer run on the two rows `[2, 1, hidden]` at once, with the rows' own positions, additive mask
+## `[2, 1, 1, room]` and cache — each
 ## row writes its new key and value into its own half of the pair's cache `[2, kv_heads, room, head_dim]` and its
 ## attention reads only its own rows, so one row never reads the keys of the other; the weights are shared, and each
 ## row's answer is the same a step of that row alone gives. On a ggml device the step is one graph, compiled once per
 ## pair of shapes and kept in the plans of `g` like any other step, so one paired round is one execution of the
 ## backend; on the other backends the same forward runs eagerly in an arena. The caches the step takes are dead
 ## afterwards, even when the step fails, as with `step`, and each cache it gives is the tensors of that row alone. Two
-## rows are the whole of this step: a wider batch, paged KV with physical slots, token budgets and chunked prefill are
-## not here (ml#92), and a prompt, a row that decodes alone and the pick of one row stay in `step`.
+## rows are the whole of this step, on the backends `pairable` names: a wider batch, paged KV with physical slots, token
+## budgets, chunked prefill and pairing on another device are not here (ml#92), and a prompt, a row that decodes alone
+## and the pick of one row stay in `step`.
 def step_pair(g: Generator, a: Cache, a_id: Int, b: Cache, b_id: Int) -> Result[Paired]
   c = core(g)
   s = c.stepper
@@ -111,9 +128,18 @@ def step_pair(g: Generator, a: Cache, a_id: Int, b: Cache, b_id: Int) -> Result[
   end
 
   row_b = made_b.unwrap!
+  # The backends `pairable` names, before either cache is worth anything: the step consumes them as a failure does.
+  if not pairable(s.backend)
+    Lift.close(row_a.fed + row_b.fed)
+    finish(a)
+    finish(b)
+    return error(
+      "step_pair pairs on the reference backend and ggml's CPU only: this #{s.backend} steps its rows alone",
+    )
+  end
+
   outs = case s.backend
     Tensor.Backend.Ggml(_) -> compiled_pair(c, row_a, row_b)
-    Tensor.Backend.Xla(_) -> error("step_pair pairs two decodes on the CPU backends: this XLA device is not supported")
     _ -> eager_pair(c, row_a, row_b)
   end
 
