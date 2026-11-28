@@ -1,4 +1,5 @@
-## The scheduler of `serving.agc` against the tiny Qwen3 of `qwen_peer.py`, on the reference backend: B decodes while A
+## The scheduler of `serving.agc` against the tiny Qwen3 of `qwen_peer.py`, on the reference backend and on ggml
+## (`standalone` computes the greedy ids on the backend that costs the fewest steps, see there): B decodes while A
 ## provably still runs, both answers match the standalone greedy ids, a stop id truncates without becoming a token,
 ## cancels and bad steps are isolated with their caches freed, a slow and a disconnected consumer stall nobody, a full
 ## queue refuses, and the stop ends the task (even a submit racing it is answered). Every wait is a channel wait with a
@@ -40,15 +41,13 @@ def test_the_stop_ends_everything_cleanly() -> Result[Void] = with_peer do |dir|
 
 ## The second slice of ml#90: two decode rows share one graph. Mixed prompt lengths decode in pairs, both answers
 ## match the standalone greedy ids, and every paired round ran one shared graph (prefills excluded). The standalone
-## ids come from the reference backend once: every serving run, on any backend, must give those same ids.
+## ids come from `standalone`: the backend that costs the fewest steps, and the one this run of the test serves from.
+## `generate_test.agc` pins the reference backend's ids to those same ids, so this file does not decode every prompt
+## on the reference backend once more.
 def test_paired_decode_matches_standalone_generation() -> Result[Void]
   with_peer do |dir|
-    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
-    base = try Generate.open(m0)
-    want_a = try Generate.generate(base, [1, 5, 2], 10)
-    want_b = try Generate.generate(base, [4, 4, 9, 2, 7, 1], 8)
-    Generate.close(base)
-    Qwen3.close_model(m0)
+    want_a = try standalone(dir, [1, 5, 2], 10)
+    want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 8)
     try paired(dir, S.REF, want_a, want_b)
     for backend in try S.ggml_backends()
       try paired(dir, backend, want_a, want_b)
@@ -61,12 +60,8 @@ end
 ## B joins while A is in decode: the join pairs them from B's prefill round on, and neither answer changes.
 def test_b_joining_mid_decode_pairs_without_changing_tokens() -> Result[Void]
   with_peer do |dir|
-    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
-    base = try Generate.open(m0)
-    want_a = try Generate.generate(base, [1, 5, 2], 12)
-    want_b = try Generate.generate(base, [4, 4, 9, 2, 7, 1], 5)
-    Generate.close(base)
-    Qwen3.close_model(m0)
+    want_a = try standalone(dir, [1, 5, 2], 12)
+    want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 5)
     try joining(dir, S.REF, want_a, want_b)
     for backend in try S.ggml_backends()
       try joining(dir, backend, want_a, want_b)
@@ -80,12 +75,8 @@ end
 ## one shared graph per paired round.
 def test_cancellation_keeps_the_peer_on_paired_tokens() -> Result[Void]
   with_peer do |dir|
-    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
-    base = try Generate.open(m0)
-    want_b = try Generate.generate(base, [4, 4, 9, 2, 7, 1], 5)
-    want_c = try Generate.generate(base, [1, 2, 3], 4)
-    Generate.close(base)
-    Qwen3.close_model(m0)
+    want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 5)
+    want_c = try standalone(dir, [1, 2, 3], 4)
     try cancelled_pair(dir, S.REF, want_b, want_c)
     for backend in try S.ggml_backends()
       try cancelled_pair(dir, backend, want_b, want_c)
@@ -99,11 +90,7 @@ end
 ## so prefills and single rows never touch the paired count.
 def test_one_active_row_steps_alone() -> Result[Void]
   with_peer do |dir|
-    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
-    base = try Generate.open(m0)
-    want = try Generate.generate(base, [2, 7, 1], 5)
-    Generate.close(base)
-    Qwen3.close_model(m0)
+    want = try standalone(dir, [2, 7, 1], 5)
     try solo(dir, S.REF, want)
     for backend in try S.ggml_backends()
       try solo(dir, backend, want)
@@ -130,12 +117,8 @@ end
 ## same ids, and the count holds the single shared graph that ended A.
 def test_a_stop_id_in_a_paired_round_ends_only_that_row() -> Result[Void]
   with_peer do |dir|
-    m0 = try Qwen3.open("#{dir}/tiny", S.REF)
-    base = try Generate.open(m0)
-    want_a = try Generate.generate(base, [1, 5, 2], 2)
-    want_b = try Generate.generate(base, [4, 4, 9, 2, 7, 1], 5)
-    Generate.close(base)
-    Qwen3.close_model(m0)
+    want_a = try standalone(dir, [1, 5, 2], 2)
+    want_b = try standalone(dir, [4, 4, 9, 2, 7, 1], 5)
     try Test.assert(want_a.size == 2, "the probe run has #{want_a.size} ids, needs 2 for the stop-id pick")
     try stopped_pair(dir, S.REF, want_a, want_b)
     for backend in try S.ggml_backends()
@@ -150,6 +133,27 @@ private
 
 def with_peer(body: Fn[String, Result[Void]]) -> Result[Void]
   S.with_fixtures("test/qwen_peer.py", "agentica-qwen-", body)
+end
+
+## The standalone greedy ids of `ids` for `n` tokens, from the backend that costs the fewest steps: ggml when it is
+## built (as CI builds it), the reference backend otherwise. The ids are the backend's own, and the assertion is
+## against them: what a service must give back is this row's greedy ids on the backend it runs on.
+## `generate_test.agc` pins the reference backend's ids to these ones
+## (`test_a_paired_step_matches_the_rows_decoded_alone`), so no case here pays a reference prefill and a reference
+## decode per row again.
+def standalone(dir: String, ids: List[Int], n: Int) -> Result[List[Int]]
+  backends = try S.ggml_backends()
+  backend = S.REF
+  if backends.size > 0
+    backend = backends[0]
+  end
+
+  m = try Qwen3.open("#{dir}/tiny", backend)
+  g = try Generate.open(m)
+  out = try Generate.generate(g, ids, n)
+  Generate.close(g)
+  Qwen3.close_model(m)
+  ok(out)
 end
 
 ## Mixed prompt lengths (3 and 6 ids) through one paired run: 7 shared graphs for the 7 rounds both rows decode, 2
@@ -295,10 +299,8 @@ end
 
 def interleaved(dir: String) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", S.REF)
-  base = try Generate.open(m)
-  want_a = try Generate.generate(base, [1, 5, 2], 5)
-  want_b = try Generate.generate(base, [4, 4, 9], 5)
-  Generate.close(base)
+  want_a = try standalone(dir, [1, 5, 2], 5)
+  want_b = try standalone(dir, [4, 4, 9], 5)
   g = try Generate.open(m)
   server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
   # Two slots: A cannot complete unseen, so whatever is buffered, `Done` needs more sends than could have landed.
@@ -337,10 +339,8 @@ end
 
 def cancelled(dir: String) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", S.REF)
-  base = try Generate.open(m)
-  want_b = try Generate.generate(base, [4, 4, 9], 5)
-  want_c = try Generate.generate(base, [1, 2, 3], 4)
-  Generate.close(base)
+  want_b = try standalone(dir, [4, 4, 9], 5)
+  want_c = try standalone(dir, [1, 2, 3], 4)
   g = try Generate.open(m)
   server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
   a_ch: Channel[Serving.Event] = Channel.new(32)
@@ -364,10 +364,8 @@ end
 
 def slow_and_gone(dir: String) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", S.REF)
-  base = try Generate.open(m)
-  want_c = try Generate.generate(base, [2, 7, 1], 5)
-  want_d = try Generate.generate(base, [1, 2, 3], 4)
-  Generate.close(base)
+  want_c = try standalone(dir, [2, 7, 1], 5)
+  want_d = try standalone(dir, [1, 2, 3], 4)
   g = try Generate.open(m)
   server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
   # Never read: the second token cannot land, so the sequence is dropped.
@@ -400,9 +398,7 @@ end
 
 def bad_steps(dir: String) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", S.REF)
-  base = try Generate.open(m)
-  want = try Generate.generate(base, [1, 5, 2], 5)
-  Generate.close(base)
+  want = try standalone(dir, [1, 5, 2], 5)
   g = try Generate.open(m)
   server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
   empty_ch: Channel[Serving.Event] = Channel.new(8)
@@ -434,11 +430,9 @@ end
 
 def stop_id(dir: String) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", S.REF)
-  base = try Generate.open(m)
-  want = try Generate.generate(base, [1, 5, 2], 4)
-  # The fixture run below picks `want[2]`: fail readably when the tiny model answers with fewer than 3 ids.
+  want = try standalone(dir, [1, 5, 2], 4)
+  # The standalone run picks `want[2]`: fail readably when the tiny model answers with fewer than 3 ids.
   try Test.assert(want.size >= 3, "the probe run has #{want.size} ids, needs at least 3 for the stop-id pick")
-  Generate.close(base)
   g = try Generate.open(m)
   server = try Serving.start(g, Serving.Limits(max_active: 2, max_pending: 4))
   # The stop is the third id of the run: the answer is the ids before its first occurrence.
@@ -463,10 +457,8 @@ end
 
 def saturated(dir: String) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", S.REF)
-  base = try Generate.open(m)
-  want_a = try Generate.generate(base, [1, 5, 2], 8)
-  want_b = try Generate.generate(base, [4, 4, 9], 5)
-  Generate.close(base)
+  want_a = try standalone(dir, [1, 5, 2], 8)
+  want_b = try standalone(dir, [4, 4, 9], 5)
   g = try Generate.open(m)
   server = try Serving.start(g, Serving.Limits(max_active: 1, max_pending: 1))
   a_ch: Channel[Serving.Event] = Channel.new(64)
