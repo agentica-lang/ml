@@ -17,8 +17,10 @@ forward) and is the same for Qwen3, Granite MoE, LFM3 and Qwen3.5: the model fil
 its cache in `F16` then and Granite MoE in `F32` always. `Generate.open(m)` is the generator of a Qwen3 model, which
 holds its compiled steps in a one-slot channel (as `Asr.Model.plans`), and `Generate.generate(g, ids, max_new, stop,
 sampling)` decodes greedily, or by `sample.agc` (below); `start`, then `step` (the id with the largest logit) or
-`step_logits` per call, then `finish`, are the same by hand. `Generate.close(g)` ends the compiled steps, before
-`Qwen3.close_model`. Batch of one, one task at a time. `Generate.open(m, usable = 0)` is how many ids a step may
+`step_logits` per call, then `finish`, are the same by hand. `Generate.step_batch(g, rows)` is one greedy decode
+step for up to `Generate.MAX_BATCH` (10) decode-ready caches in one forward, each row with its own positions, mask,
+capacity and cache; `step_pair` is its two-row wrapper. A prompt still runs alone with `step`, and a generator belongs
+to one task at a time. `Generate.close(g)` ends the compiled steps, before `Qwen3.close_model`. `Generate.open(m, usable = 0)` is how many ids a step may
 answer (below, "The ids the tokenizer cannot decode"): the embedding of Qwen3 has 151,936 rows and its tokenizer
 151,669 tokens, so a caller with a tokenizer opens with `tok.pieces.size` and the sampler never gives an id that
 `Bpe.decode` rejects. The default 0 is no mask, as in Hugging Face. `Generate.open(m, usable, kv)` takes a
@@ -77,6 +79,10 @@ changes nothing, and the states of a model with them (`Stepper.states`) stay whe
   -ctv q8_0`) and is no faster than `F16` on this iGPU, so it is not here.
 - Chunked prefill is not done: a prompt is one step, to the model's
   `max_position_embeddings`.
+- `serving.agc` runs one generator for many sequences: up to `Limits.max_active` step, `Limits.max_pending` more wait,
+  and `Limits.max_batch` (default 2, at most `Generate.MAX_BATCH`) of the decode-ready rows share one graph per batch.
+  A cursor turns the batches so active rows wider than `max_batch` all advance; a backend that does not batch (XLA,
+  libtorch) steps one row at a time, as before.
 
 ## Qwen3
 

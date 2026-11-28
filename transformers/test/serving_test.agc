@@ -517,7 +517,7 @@ def saturated(dir: String) -> Result[Void]
   want_a = try standalone(dir, [1, 5, 2], 8)
   want_b = try standalone(dir, [4, 4, 9], 5)
   g = try Generate.open(m)
-  server = try Serving.start(g, Serving.Limits(max_active: 1, max_pending: 1))
+  server = try Serving.start(g, Serving.Limits(max_active: 1, max_pending: 1, max_batch: 1))
   a_ch: Channel[Serving.Event] = Channel.new(64)
   b_ch: Channel[Serving.Event] = Channel.new(32)
   c_ch: Channel[Serving.Event] = Channel.new(8)
@@ -542,7 +542,7 @@ end
 def shutdown(dir: String) -> Result[Void]
   m = try Qwen3.open("#{dir}/tiny", S.REF)
   g = try Generate.open(m)
-  server = try Serving.start(g, Serving.Limits(max_active: 1, max_pending: 1))
+  server = try Serving.start(g, Serving.Limits(max_active: 1, max_pending: 1, max_batch: 1))
   a_ch: Channel[Serving.Event] = Channel.new(64)
   b_ch: Channel[Serving.Event] = Channel.new(8)
   try Serving.submit(server, [1, 5, 2], 20, [], a_ch)
@@ -555,7 +555,7 @@ def shutdown(dir: String) -> Result[Void]
   # The sequential orderings around the stop, not a true race: a submit buffered before the stop hears the stop,
   # and a submit after the stop is refused at once (the post-stop case is also checked on `server` below).
   g2 = try Generate.open(m)
-  server2 = try Serving.start(g2, Serving.Limits(max_active: 1, max_pending: 1))
+  server2 = try Serving.start(g2, Serving.Limits(max_active: 1, max_pending: 1, max_batch: 1))
   x_ch: Channel[Serving.Event] = Channel.new(8)
   try Serving.submit(server2, [1, 5, 2], 5, [], x_ch)
   try Serving.stop(server2)

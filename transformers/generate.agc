@@ -15,6 +15,9 @@ import Qwen3 from "qwen3"
 import Sample from "sample"
 import Stepping from "stepping"
 
+## The widest batch `step_batch` runs: one compiled graph over at most this many rows.
+MAX_BATCH = 10
+
 ## A model and the compiled steps it has run (on `Ggml`), which every sequence of the model shares: the fields of a
 ## `KvDecoder.Core` (see there), which `core` makes of it.
 struct Generator
@@ -31,10 +34,16 @@ type Cache = KvDecoder.Cache
 
 type Scored = KvDecoder.Scored
 
-## One greedy decode step for two sequences in one graph: the id after each cache, and the cache after the step.
+## The two rows of the compatibility wrapper `step_pair`: the id after each cache, and the cache after the step.
 struct Paired
   a: Stepping.Picked[Cache]
   b: Stepping.Picked[Cache]
+end
+
+## A row of a batch: a decode-ready cache and the id to feed after it, as `step` takes them.
+struct BatchRow
+  cache: Cache
+  id: Int
 end
 
 ## The generator of `m`. `usable` is how many ids it may answer (see `Generator.usable`); the whole vocabulary when it
@@ -74,12 +83,12 @@ def step_top(g: Generator, cache: Cache, ids: List[Int], k: Int) -> Result[Stepp
   KvDecoder.step_top(core(g), cache, ids, k)
 end
 
-## Whether `step_pair` runs on `backend`: the reference backend and every ggml device — the CPU engine, a card, and the
-## software Vulkan device (Mesa's llvmpipe) a CI runner without one has. The device is the ggml device the model was
-## opened on, and a pair runs on that one: software or card is a property of the device, named in its log, never a path
-## this code takes. XLA and libtorch step their rows alone, as they did before pairing existed, until one of them is
-## measured and added here. `step_pair` asks this of its backend first, before it reads either cache: a backend left out
-## here is refused with both caches still the caller's, so a direct caller keeps its two rows and a scheduler asks this
+## Whether `step_batch` runs on `backend`: the reference backend and every ggml device — the CPU engine, a card, and
+## the software Vulkan device (Mesa's llvmpipe) a CI runner without one has. The device is the ggml device the model was
+## opened on, and a batch runs on that one: software or card is a property of the device, named in its log, never a path
+## this code takes. XLA and libtorch step their rows alone, as they did before batching existed, until one of them is
+## measured and added here. `step_batch` asks this of its backend first, before it reads any cache: a backend left out
+## here is refused with every cache still the caller's, so a direct caller keeps its rows and a scheduler asks this
 ## once per round, as `serving.agc` does.
 def pairable(backend: Tensor.Backend) -> Bool
   case backend
@@ -89,108 +98,145 @@ def pairable(backend: Tensor.Backend) -> Bool
   end
 end
 
-## Whether the steps of `g` may be paired: `pairable` of its backend.
+## Whether the steps of `g` may be batched: `pairable` of its backend.
 def pairs(g: Generator) -> Bool = pairable(core(g).stepper.backend)
 
-## One greedy decode step for two sequences in one graph, on the backends `pairable` names. Both caches hold a prompt
-## already: a prompt runs alone, with `step`. The step is one forward over the pair: the projections, the attention and
-## the MLP of every layer run on the two rows `[2, 1, hidden]` at once, with the rows' own positions, additive mask
-## `[2, 1, 1, room]` and cache — each
-## row writes its new key and value into its own half of the pair's cache `[2, kv_heads, room, head_dim]` and its
-## attention reads only its own rows, so one row never reads the keys of the other; the weights are shared, and each
-## row's answer is the same a step of that row alone gives. On a ggml device the step is one graph, compiled once per
-## pair of shapes and kept in the plans of `g` like any other step, so one paired round is one execution of the
-## backend; on the other backends the same forward runs eagerly in an arena. The caches the step takes are dead
-## afterwards, even when the step fails, as with `step`, and each cache it gives is the tensors of that row alone. Two
-## rows are the whole of this step, on the backends `pairable` names: a wider batch, paged KV with physical slots, token
-## budgets, chunked prefill and pairing on another device are not here (ml#92), and a prompt, a row that decodes alone
-## and the pick of one row stay in `step`. On a backend `pairable` leaves out the step is refused before either cache is
-## read, so that refusal leaves both caches to their caller; every other error, of a pair the backend accepted, consumes
-## both as a failed `step` does. A ggml device pairs as the device it is: the CPU engine, a card and the software Vulkan
-## device all run the same forward, and the tests pin each row's ids to that device's own singleton run.
-def step_pair(g: Generator, a: Cache, a_id: Int, b: Cache, b_id: Int) -> Result[Paired]
+## One greedy decode step for the decode-ready `rows` in one graph, on the backends `pairable` names. Every cache holds
+## a prompt already: a prompt runs alone, with `step`. The step is one forward over the batch: the projections, the
+## attention and the MLP of every layer run on the rows `[n, 1, hidden]` at once, with the rows' own positions,
+## additive mask `[n, 1, 1, room]` and cache — each row writes its new key and value into its own slice of the batch's
+## cache `[n, kv_heads, room, head_dim]` and its attention reads only its own rows, so one row never reads the keys of
+## another; the weights are shared, and each row's answer is the same a step of that row alone gives. A row may have
+## its own prompt length, positions, capacity and cache: the batch is as wide as the largest room it pads to, and the
+## cache each row gets back is cut to that row's own rows.
+##
+## On a ggml device the step is one graph, compiled once per batch of shapes and kept in the plans of `g` like any
+## other step, so one batch round is one execution of the backend; on the other backends the same forward runs eagerly
+## in an arena. The caches the step takes are dead afterwards, even when the step fails, as with `step`, and each cache
+## it gives is the tensors of that row alone. `rows` is at most `Generate.MAX_BATCH`; a wider batch, paged KV with
+## physical slots, token budgets, chunked prefill and batching on another device are not here (ml#92), and a prompt, a
+## row that decodes alone and the pick of one row stay in `step`. On a backend `pairable` leaves out the step is
+## refused before any cache is read, so that refusal leaves every cache to its caller; every other error, of a batch
+## the backend accepted, consumes every cache as a failed `step` does. A ggml device batches as the device it is: the
+## CPU engine, a card and the software Vulkan device all run the same forward, and the tests pin each row's ids to that
+## device's own singleton run.
+def step_batch(g: Generator, rows: List[BatchRow]) -> Result[List[Stepping.Picked[Cache]]]
   c = core(g)
   s = c.stepper
-  # The capability of the backend first, before either cache is checked, prepared or finished: no work is done for a
-  # backend that cannot run the step, and a caller that handed over two live caches still owns both of them.
+  # The capability of the backend first, before any cache is checked, prepared or finished: no work is done for a
+  # backend that cannot run the step, and a caller that handed over live caches still owns all of them.
   if not pairable(s.backend)
     return error(
-      "step_pair pairs on the reference backend and ggml's CPU only: this #{s.backend} steps its rows alone",
+      "step_batch batches on the reference backend and ggml's devices only: this #{s.backend} steps its rows alone",
     )
   end
 
-  if a.length == 0 or b.length == 0
-    finish(a)
-    finish(b)
-    return error("step_pair steps two decodes: a cache is empty, prefill it with step first")
+  return error("step_batch batches at most #{MAX_BATCH} rows, got #{rows.size}") if rows.size > MAX_BATCH
+
+  return error("step_batch steps at least one decode") if rows.empty?
+
+  empty = false
+  for r in rows
+    if r.cache.length == 0
+      empty = true
+    end
   end
 
-  made_a = prepared(s, a, a_id)
-  if not made_a.ok?
-    finish(a)
-    finish(b)
-    return error(made_a.message)
+  if empty
+    for r in rows
+      finish(r.cache)
+    end
+
+    return error("step_batch steps decodes: a cache is empty, prefill it with step first")
   end
 
-  row_a = made_a.unwrap!
-  made_b = prepared(s, b, b_id)
-  if not made_b.ok?
-    Lift.close(row_a.fed)
-    finish(a)
-    finish(b)
-    return error(made_b.message)
+  built: List[Row] = []
+  for r in rows
+    made = prepared(s, r.cache, r.id)
+    if not made.ok?
+      for b in built
+        Lift.close(b.fed)
+      end
+
+      for q in rows
+        finish(q.cache)
+      end
+
+      return error(made.message)
+    end
+
+    built = built.push(made.unwrap!)
   end
 
-  row_b = made_b.unwrap!
   outs = case s.backend
-    Tensor.Backend.Ggml(_) -> compiled_pair(c, row_a, row_b)
-    _ -> eager_pair(c, row_a, row_b)
+    Tensor.Backend.Ggml(_) -> compiled_batch(c, built)
+    _ -> eager_batch(c, built)
   end
 
-  Lift.close(row_a.fed + row_b.fed)
-  # A paired step never writes in place: the caches it was given are dead, even when the step fails (a tensor closed
+  for b in built
+    Lift.close(b.fed)
+  end
+
+  # A batch step never writes in place: the caches it was given are dead, even when the step fails (a tensor closed
   # twice is fine, as when the step failed after it closed its outputs).
-  Lift.close(a.keys + a.values + b.keys + b.values)
+  for r in rows
+    Lift.close(r.cache.keys + r.cache.values)
+  end
+
   found = try outs
-  try counted_pair(s, found)
-  n = 1 + 2 * s.layers
-  fa = Tensor.to_list(found[0])
-  fb = Tensor.to_list(found[n])
-  if not fa.ok? or not fb.ok?
-    Lift.close(found)
-    return error("step_pair: the picks are floats")
+  size = 1 + 2 * s.layers
+  try counted_batch(s, found, rows.size)
+  ids: List[Int] = []
+  heads: List[Tensor.Tensor] = []
+  for r in 0...rows.size
+    head = found[r * size]
+    heads = heads.push(head)
+    pick = Tensor.to_list(head)
+    if not pick.ok?
+      Lift.close(heads)
+      Lift.close(found)
+      return error("step_batch: the picks are floats")
+    end
+
+    id = Stepping.chosen(pick.unwrap!, c.usable)
+    if not id.ok?
+      Lift.close(heads)
+      Lift.close(found)
+      return error(id.message)
+    end
+
+    ids = ids.push(id.unwrap!)
   end
 
-  Lift.close([found[0], found[n]])
-  ka = hosted_pair(s, found.drop(1).take(n - 1))
-  if not ka.ok?
-    Lift.close(found.drop(n + 1))
-    return error(ka.message)
+  Lift.close(heads)
+  made: List[List[Tensor.Tensor]] = []
+  for r in 0...rows.size
+    hosted = hosted_batch(s, found.drop(r * size + 1).take(2 * s.layers))
+    if not hosted.ok?
+      for m in made
+        Lift.close(m)
+      end
+
+      Lift.close(found)
+      return error(hosted.message)
+    end
+
+    made = made.push(hosted.unwrap!)
   end
 
-  kb = hosted_pair(s, found.drop(n + 1))
-  if not kb.ok?
-    Lift.close(ka.unwrap!)
-    return error(kb.message)
+  out: List[Stepping.Picked[Cache]] = []
+  for r in 0...rows.size
+    out = out.push(Stepping.Picked(id: ids[r], cache: stepped_cache(s, rows[r].cache, made[r])))
   end
 
-  cache_a = paired_cache(s, a, ka.unwrap!)
-  cache_b = paired_cache(s, b, kb.unwrap!)
-  ida = Stepping.chosen(fa.unwrap!, c.usable)
-  if not ida.ok?
-    finish(cache_a)
-    finish(cache_b)
-    return error(ida.message)
-  end
+  ok(out)
+end
 
-  idb = Stepping.chosen(fb.unwrap!, c.usable)
-  if not idb.ok?
-    finish(cache_a)
-    finish(cache_b)
-    return error(idb.message)
-  end
-
-  ok(Paired(a: Stepping.Picked(id: ida.unwrap!, cache: cache_a), b: Stepping.Picked(id: idb.unwrap!, cache: cache_b)))
+## One greedy decode step for two sequences in one graph: `step_batch` of the two `BatchRow`s, kept for the callers of
+## the first paired step. The refusal of a backend that does not batch leaves both caches with the caller, as it did.
+def step_pair(g: Generator, a: Cache, a_id: Int, b: Cache, b_id: Int) -> Result[Paired]
+  made = try step_batch(g, [BatchRow(cache: a, id: a_id), BatchRow(cache: b, id: b_id)])
+  ok(Paired(a: made[0], b: made[1]))
 end
 
 ## Ends a sequence: closes the tensors of `cache`.
@@ -214,7 +260,7 @@ end
 
 private
 
-## One row of a paired step: its inputs and the room they leave, with the rows the cache already has (for the plan
+## One row of a batch step: its inputs and the room they leave, with the rows the cache already has (for the plan
 ## key). The cache is untouched: the caller finishes it when this is an error.
 struct Row
   fed: List[Tensor.Tensor]
@@ -317,21 +363,21 @@ def prepared(s: KvDecoder.Stepper[Qwen3.Qwen3], cache: Cache, id: Int) -> Result
   ok(Row(fed: fed, keys: cache.keys, values: cache.values, room: room, rows: rows))
 end
 
-## The cache of one row of a paired step after it: the keys, then the values, one token longer, at the same delta.
-def paired_cache(s: KvDecoder.Stepper[Qwen3.Qwen3], old: Cache, kept: List[Tensor.Tensor]) -> Cache
+## The cache of one row of a batch step after it: the keys, then the values, one token longer, at the same delta.
+def stepped_cache(s: KvDecoder.Stepper[Qwen3.Qwen3], old: Cache, kept: List[Tensor.Tensor]) -> Cache
   KvDecoder.Cache(keys: kept.take(s.layers), values: kept.drop(s.layers), length: old.length + 1, delta: old.delta)
 end
 
-## An error when a paired step gave other tensors than two heads with the keys and the values of every layer each.
-def counted_pair(s: KvDecoder.Stepper[Qwen3.Qwen3], outs: List[Tensor.Tensor]) -> Result[Void]
-  want = 2 * (1 + 2 * s.layers)
+## An error when a batch step gave other tensors than one head per row and the keys and values of every layer each.
+def counted_batch(s: KvDecoder.Stepper[Qwen3.Qwen3], outs: List[Tensor.Tensor], rows: Int) -> Result[Void]
+  want = rows * (1 + 2 * s.layers)
   return ok() if outs.size == want
-  error("a paired step gave #{outs.size} tensors, two heads with the keys and values of #{s.layers} layers each")
+  error("a batch step of #{rows} rows gave #{outs.size} tensors, expected #{want}")
 end
 
-## The keys and values of one tower of a paired step in the memory `Stepper.kv` says: a tensor that is somewhere else
+## The keys and values of one row of a batch step in the memory `Stepper.kv` says: a tensor that is somewhere else
 ## is copied and the copy replaces it (the old one is closed), as `KvDecoder.hosted` keeps the one row of one step.
-def hosted_pair(s: KvDecoder.Stepper[Qwen3.Qwen3], outs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
+def hosted_batch(s: KvDecoder.Stepper[Qwen3.Qwen3], outs: List[Tensor.Tensor]) -> Result[List[Tensor.Tensor]]
   kept: List[Tensor.Tensor] = []
   for i in 0...outs.size
     t = outs[i]
@@ -354,21 +400,19 @@ def hosted_pair(s: KvDecoder.Stepper[Qwen3.Qwen3], outs: List[Tensor.Tensor]) ->
   ok(kept)
 end
 
-## One paired step on `Ggml`: one compiled graph over the two rows, kept in the plans of `c` under a key of its own
-## (no single-row key has the `pair` prefix). The graph takes the two rows as a step that is not in place does and
-## makes the pair's tensors itself (`pair_of_rows`), so a round binds only the rows' own tensors: one execution of the
-## backend, nothing eager around it.
-def compiled_pair(c: KvDecoder.Core[Qwen3.Qwen3], a: Row, b: Row) -> Result[List[Tensor.Tensor]]
+## One batch step on `Ggml`: one compiled graph over the rows, kept in the plans of `c` under a key of its own (no
+## single-row key has the `batch` prefix, and the rows' shapes are in the key in order). The graph takes the rows as a
+## step that is not in place does and makes the batch's tensors itself (`batch_of_rows`), so a round binds only the
+## rows' own tensors: one execution of the backend, nothing eager around it.
+def compiled_batch(c: KvDecoder.Core[Qwen3.Qwen3], rows: List[Row]) -> Result[List[Tensor.Tensor]]
   s = c.stepper
   mode = Stepping.Head.Pick
-  key = (
-    "pair " +
-    Stepping.plan_key(1, a.rows, a.room, a.room, mode) +
-    " " +
-    Stepping.plan_key(1, b.rows, b.room, b.room, mode)
-  )
+  key = "batch " + rows.map { |r| Stepping.plan_key(1, r.rows, r.room, r.room, mode) }.join(" ")
+  args: List[Tensor.Tensor] = []
+  for r in rows
+    args = args + r.fed + r.keys + r.values
+  end
 
-  args = a.fed + a.keys + a.values + b.fed + b.keys + b.values
   plan = try Stepping.planned(
     c.plans,
     key,
@@ -376,56 +420,67 @@ def compiled_pair(c: KvDecoder.Core[Qwen3.Qwen3], a: Row, b: Row) -> Result[List
     [],
     args.map { |t| Trace.spec_of(t) },
     ->(xs: List[Tensor.Tensor]) {
-      paired_over(s, c.model, xs, a, b, s.layers, c.usable, Stepping.half_cache?(s.backend))
+      batch_over(s, c.model, xs, rows, s.layers, c.usable, Stepping.half_cache?(s.backend))
     },
   )
 
   Trace.run(plan, args)
 end
 
-## One paired step over `xs`, the two rows one after the other (a's fed, keys and values, then b's): the rows' ids,
-## positions and picks become one batch and the caches one (`pair_of_rows`), one forward runs over the pair
-## (`paired`), and its outputs are the rows apart (`pair_outputs`). On a device the graph fuses all of it; elsewhere
-## the same ops run eagerly.
-def paired_over(
+## One batch step over `xs`, the rows one after the other (each row's fed, keys and values): the rows' ids, positions
+## and picks become one batch and the caches one (`batch_of_rows`), one forward runs over the batch (`batched`), and
+## its outputs are the rows apart (`batch_outputs`). On a device the graph fuses all of it; elsewhere the same ops run
+## eagerly.
+def batch_over(
   s: KvDecoder.Stepper[Qwen3.Qwen3],
   model: Qwen3.Qwen3,
   xs: List[Tensor.Tensor],
-  a: Row,
-  b: Row,
+  rows: List[Row],
   layers: Int,
   usable: Int,
   compiled: Bool,
 ) -> Result[List[Tensor.Tensor]]
-  fed = try pair_of_rows(xs, layers, [a.room, b.room].max.unwrap!)
-  outs = try paired(s.traced.call(model), fed, usable, compiled)
-  pair_outputs(outs, layers, compiled, a.room, b.room)
+  room = rows.map { |r| r.room }.max.unwrap!
+  fed = try batch_of_rows(xs, layers, room)
+  outs = try batched(s.traced.call(model), fed, usable, compiled)
+  batch_outputs(outs, layers, compiled, rows.map { |r| r.room })
 end
 
-## The two rows of a paired step as one batch: the ids `[2]`, the positions `[2]` (row a's, then row b's) and the picks
-## `[2, 1]`, then per layer the keys and the values of the pair's cache `[2, kv_heads, room, head_dim]`, each row
-## zero-padded to the `room` of the pair (the larger room of the rows) and stacked.
-def pair_of_rows(xs: List[Tensor.Tensor], layers: Int, room: Int) -> Result[List[Tensor.Tensor]]
-  at = 3 + 2 * layers
-  fed = [
-    try Tensor.concat([xs[0], xs[at]], 0),
-    try Tensor.concat([xs[1], xs[at + 1]], 0),
-    try Tensor.concat([xs[2], xs[at + 2]], 0),
-  ]
+## The rows of a batch step as one batch: the ids `[n]`, the positions `[n]` (in row order) and the picks `[n, 1]`,
+## then per layer the keys and the values of the batch's cache `[n, kv_heads, room, head_dim]`, each row zero-padded to
+## the `room` of the batch (the larger room of the rows) and stacked.
+def batch_of_rows(xs: List[Tensor.Tensor], layers: Int, room: Int) -> Result[List[Tensor.Tensor]]
+  stride = 3 + 2 * layers
+  n = xs.size / stride
+  ids: List[Tensor.Tensor] = []
+  positions: List[Tensor.Tensor] = []
+  picks: List[Tensor.Tensor] = []
+  parts: List[List[Tensor.Tensor]] = []
+  for r in 0...n
+    base = r * stride
+    ids = ids.push(xs[base])
+    positions = positions.push(xs[base + 1])
+    picks = picks.push(xs[base + 2])
+    parts = parts.push(xs.drop(base + 3).take(2 * layers))
+  end
 
-  caches = try pair_caches(xs.drop(3).take(2 * layers), xs.drop(at + 3).take(2 * layers), room)
+  fed = [try Tensor.concat(ids, 0), try Tensor.concat(positions, 0), try Tensor.concat(picks, 0)]
+  caches = try batch_caches(parts, room)
   ok(fed + caches)
 end
 
-## The keys and the values of one layer (`one` is a's, then `other` is b's) as the pair's `[2, kv_heads, room, head_dim]`,
-## each as F32 (the write and the attention read F32, as a step of one row reads its widened cache), zero-padded to the
-## `room` of the pair and stacked.
-def pair_caches(one: List[Tensor.Tensor], other: List[Tensor.Tensor], room: Int) -> Result[List[Tensor.Tensor]]
+## The keys and the values of one layer (`parts` holds each row's keys then values) as the batch's
+## `[n, kv_heads, room, head_dim]`, each as F32 (the write and the attention read F32, as a step of one row reads its
+## widened cache), zero-padded to the `room` of the batch and stacked.
+def batch_caches(parts: List[List[Tensor.Tensor]], room: Int) -> Result[List[Tensor.Tensor]]
   out: List[Tensor.Tensor] = []
-  for i in 0...one.size
-    a = try padded_to(try as_f32(one[i]), room)
-    b = try padded_to(try as_f32(other[i]), room)
-    out = out.push(try Tensor.concat([a, b], 0))
+  for i in 0...parts[0].size
+    padded: List[Tensor.Tensor] = []
+    for part in parts
+      padded = padded.push(try padded_to(try as_f32(part[i]), room))
+    end
+
+    out = out.push(try Tensor.concat(padded, 0))
   end
 
   ok(out)
@@ -440,50 +495,52 @@ def padded_to(t: Tensor.Tensor, room: Int) -> Result[Tensor.Tensor]
   Tensor.concat([t, gap], 2)
 end
 
-## One forward over the pair. `xs` are the ids `[2]`, their positions `[2]` and the picks `[2, 1]`, then per layer the
-## keys and the values of the pair's cache `[2, kv_heads, room, head_dim]` (each row its own tokens: the rows past its
-## length are zero, and a row never reads the keys of the other). The outputs are the pick of row a `[1]`, row b's,
-## then per layer the keys and the values of the pair's cache.
-def paired(m: Qwen3.Qwen3, xs: List[Tensor.Tensor], usable: Int, compiled: Bool) -> Result[List[Tensor.Tensor]]
+## One forward over the batch. `xs` are the ids `[n]`, their positions `[n]` and the picks `[n, 1]`, then per layer
+## the keys and the values of the batch's cache `[n, kv_heads, room, head_dim]` (each row its own tokens: the rows past
+## its length are zero, and a row never reads the keys of another). The outputs are the picks `[1]` in row order, then
+## per layer the keys and the values of the batch's cache.
+def batched(m: Qwen3.Qwen3, xs: List[Tensor.Tensor], usable: Int, compiled: Bool) -> Result[List[Tensor.Tensor]]
   layers = m.config.num_hidden_layers
   d = m.config.hidden_size
   tokens = xs[0]
   positions = xs[1]
   pick = xs[2]
+  n = Tensor.shape(tokens)[0]
+  room = Tensor.shape(xs[3])[2]
   keys_in = xs.drop(3).take(layers)
   values_in = xs.drop(3 + layers).take(layers)
-  h = try Tensor.reshape(try Nn.embedding(m.tokens, tokens), [2, 1, d])
+  h = try Tensor.reshape(try Nn.embedding(m.tokens, tokens), [n, 1, d])
   mask = try Tensor.reshape(
-    try Padded.padded_mask(Padded.Slots(positions: positions, capacity: Tensor.shape(keys_in[0])[2]), Tensor.dtype(h)),
-    [2, 1, 1, Tensor.shape(keys_in[0])[2]],
+    try Padded.padded_mask(Padded.Slots(positions: positions, capacity: room), Tensor.dtype(h)),
+    [n, 1, 1, room],
   )
 
-  spread = try pair_spread(positions, Tensor.shape(keys_in[0])[2], Tensor.dtype(h))
+  spread = try batch_spread(positions, room, Tensor.dtype(h))
   keys_out: List[Tensor.Tensor] = []
   values_out: List[Tensor.Tensor] = []
   for i in 0...layers
-    r = try paired_layer(m.stack.blocks[i], h, keys_in[i], values_in[i], spread, mask, positions)
+    r = try batch_layer(m.stack.blocks[i], h, keys_in[i], values_in[i], spread, mask, positions)
     h = r.hidden
     keys_out = keys_out.push(r.key)
     values_out = values_out.push(r.value)
   end
 
-  last = try Tensor.batch_matmul(try Tensor.reshape(pick, [2, 1, 1]), h)
+  last = try Tensor.batch_matmul(try Tensor.reshape(pick, [n, 1, 1]), h)
   case m.stack.final_norm
-    some(n) -> last = try Nn.layer_norm(n, last)
+    some(norm) -> last = try Nn.layer_norm(norm, last)
     none -> nil
   end
 
-  logits = try Tensor.reshape(try Nn.dense(m.head, last), [2, m.config.vocab_size])
-  heads = try pair_heads(logits, usable)
+  logits = try Tensor.reshape(try Nn.dense(m.head, last), [n, m.config.vocab_size])
+  heads = try batch_picks(logits, usable)
   ok(heads + keys_out + values_out)
 end
 
-## One block of the pair over the new rows `h` `[2, 1, d]`, as `Nn.encoder_block` with `norm_first`, the pair's cache in
+## One block of the batch over the new rows `h` `[n, 1, d]`, as `Nn.encoder_block` with `norm_first`, the batch's cache in
 ## the place of the block's own: the rows are projected per row, the keys and values of each row are written into its
-## own half of the cache (a product with the `spread` of its position, exact in F32 as `Padded.written` is), and each
+## own slice of the cache (a product with the `spread` of its position, exact in F32 as `Padded.written` is), and each
 ## row's query attends over its own rows of the cache under the rows' additive `mask`.
-def paired_layer(
+def batch_layer(
   b: Nn.EncoderBlock,
   h: Tensor.Tensor,
   old_keys: Tensor.Tensor,
@@ -494,14 +551,14 @@ def paired_layer(
 ) -> Result[KvDecoder.Layer]
   x = try Nn.layer_norm(b.norm1, h)
   a = b.attention
-  q = try batch_heads(try Nn.dense(a.query, x), a.heads, a.query_norm)
+  q = try split_heads(try Nn.dense(a.query, x), a.heads, a.query_norm)
   kv_heads = a.kv_heads.unwrap_or(a.heads)
-  k = try batch_heads(try Nn.dense(a.key, x), kv_heads, a.key_norm)
-  v = try batch_heads(try Nn.dense(a.value, x), kv_heads, none)
+  k = try split_heads(try Nn.dense(a.key, x), kv_heads, a.key_norm)
+  v = try split_heads(try Nn.dense(a.value, x), kv_heads, none)
   case a.rope
     some(r) ->
-      q = try rotated_pair(q, r, positions)
-      k = try rotated_pair(k, r, positions)
+      q = try rotated_batch(q, r, positions)
+      k = try rotated_batch(k, r, positions)
     none -> nil
   end
 
@@ -517,7 +574,7 @@ end
 
 ## `[batch, 1, heads * head_width]` to `[batch, heads, 1, head_width]`: the heads split by head, each head normed
 ## (`norm`) before the permute, as `Nn.split_heads` of a step of one row.
-def batch_heads(projected: Tensor.Tensor, heads: Int, norm: Optional[Nn.LayerNorm]) -> Result[Tensor.Tensor]
+def split_heads(projected: Tensor.Tensor, heads: Int, norm: Optional[Nn.LayerNorm]) -> Result[Tensor.Tensor]
   shape = Tensor.shape(projected)
   split = try Tensor.reshape(projected, [shape[0], shape[1], heads, shape[2] / heads])
   case norm
@@ -528,13 +585,13 @@ def batch_heads(projected: Tensor.Tensor, heads: Int, norm: Optional[Nn.LayerNor
   Tensor.permute(split, [0, 2, 1, 3])
 end
 
-## The heads of the pair `x` `[2, heads, 1, head_width]` turned by the rows' positions: the rows are swapped with the
-## seq, which makes `[1, heads, 2, head_width]` whose seq is the pair with one position per row, and the same
-## permutation puts the rows back. A rope of another kind (`Nn.Rope.zero_tail`, `sections`) is an error: the paired
+## The heads of the batch `x` `[n, heads, 1, head_width]` turned by the rows' positions: the rows are swapped with the
+## seq, which makes `[1, heads, n, head_width]` whose seq is the batch with one position per row, and the same
+## permutation puts the rows back. A rope of another kind (`Nn.Rope.zero_tail`, `sections`) is an error: the batch
 ## step is Qwen3's plain rope.
-def rotated_pair(x: Tensor.Tensor, r: Nn.Rope, positions: Tensor.Tensor) -> Result[Tensor.Tensor]
+def rotated_batch(x: Tensor.Tensor, r: Nn.Rope, positions: Tensor.Tensor) -> Result[Tensor.Tensor]
   if r.zero_tail.some? or r.sections.some?
-    return error("a paired step turns by a plain rope: zero_tail and sections pair no rows")
+    return error("a batch step turns by a plain rope: zero_tail and sections batch no rows")
   end
 
   brought = try Tensor.permute(x, [2, 1, 0, 3])
@@ -542,10 +599,10 @@ def rotated_pair(x: Tensor.Tensor, r: Nn.Rope, positions: Tensor.Tensor) -> Resu
   Tensor.permute(turned, [2, 1, 0, 3])
 end
 
-## The one-hot of the rows' positions over the `room` of the pair: `[2, 1, room, 1]`, 1 where the key's row is that
-## row's new token, 0 elsewhere. A product with it writes each row's token into its own half of the cache, exact in
+## The one-hot of the rows' positions over the `room` of the batch: `[n, 1, room, 1]`, 1 where the key's row is that
+## row's new token, 0 elsewhere. A product with it writes each row's token into its own slice of the cache, exact in
 ## F32 as `Padded.written` is.
-def pair_spread(positions: Tensor.Tensor, room: Int, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
+def batch_spread(positions: Tensor.Tensor, room: Int, dtype: Tensor.Dtype) -> Result[Tensor.Tensor]
   n = Tensor.shape(positions)[0]
   grid = [n, room]
   backend = Tensor.backend(positions)
@@ -564,11 +621,12 @@ def as_f32(t: Tensor.Tensor) -> Result[Tensor.Tensor]
   Tensor.to_dtype(t, Tensor.Dtype.F32)
 end
 
-## The pick of each row: the logits `[2, vocab]` with the ids from `usable` on given a logit of `Nn.MASKED`
-## (`Stepping.masked` of both rows), then the first id of the maximum of each row (exact in F32 below 2^24,
-## `Stepping.picked` of both rows), as `[1]` floats.
-def pair_heads(logits: Tensor.Tensor, usable: Int) -> Result[List[Tensor.Tensor]]
+## The pick of each row: the logits `[n, vocab]` with the ids from `usable` on given a logit of `Nn.MASKED`
+## (`Stepping.masked` of every row), then the first id of the maximum of each row (exact in F32 below 2^24,
+## `Stepping.picked` of every row), as `[1]` floats in row order.
+def batch_picks(logits: Tensor.Tensor, usable: Int) -> Result[List[Tensor.Tensor]]
   shape = Tensor.shape(logits)
+  n = shape[0]
   vocab = shape[1]
   scores = logits
   if usable < vocab
@@ -591,41 +649,49 @@ def pair_heads(logits: Tensor.Tensor, usable: Int) -> Result[List[Tensor.Tensor]
   best = try Tensor.max(try Tensor.mul(hit, try Tensor.sub(count, ids)), some([1]), true)
   picks = try Tensor.reshape(
     try Tensor.sub(
-      try Tensor.full([2, 1], Tensor.Values.Float(vocab.to_f), Tensor.Dtype.F32, Tensor.backend(scores)),
+      try Tensor.full([n, 1], Tensor.Values.Float(vocab.to_f), Tensor.Dtype.F32, Tensor.backend(scores)),
       best,
     ),
-    [2],
+    [n],
   )
 
-  a = try Tensor.slice(picks, [0], [1])
-  b = try Tensor.slice(picks, [1], [2])
-  ok([a, b])
+  out: List[Tensor.Tensor] = []
+  for r in 0...n
+    out = out.push(try Tensor.slice(picks, [r], [r + 1]))
+  end
+
+  ok(out)
 end
 
-## The batched outputs of a paired step as the rows apart, the order the step's outputs answer: the pick of row a
-## `[1]`, then its keys and values, then row b's pick, keys and values — each cache `[1, kv_heads, own, head_dim]`.
-## Each slice is a tensor of the row's own: it shares nothing with the other row's, so one sequence may be finished
-## (or kept) without the other, and it is kept as the cache of a step is (`Stepping.cached`, F16 on ggml). Each row's
-## cache is cut to the `room` of that row (the pair's cache is as wide as the larger room), so the cache a step gives
-## has the rows the next step of the row reads.
-def pair_outputs(
+## The batched outputs of a batch step as the rows apart, the order the step's outputs answer: each row's pick `[1]`,
+## then its keys and values — each cache `[1, kv_heads, own, head_dim]`. Each slice is a tensor of the row's own: it
+## shares nothing with another row's, so one sequence may be finished (or kept) without the others, and it is kept as
+## the cache of a step is (`Stepping.cached`, F16 on ggml). Each row's cache is cut to the `room` of that row (the
+## batch's cache is as wide as the largest room), so the cache a step gives has the rows the next step of the row reads.
+def batch_outputs(
   outs: List[Tensor.Tensor],
   layers: Int,
   compiled: Bool,
-  a_room: Int,
-  b_room: Int,
+  rooms: List[Int],
 ) -> Result[List[Tensor.Tensor]]
-  keys = outs.drop(2).take(layers)
-  values = outs.drop(2 + layers).take(layers)
-  a = try halves(keys, 0, compiled, a_room) + try halves(values, 0, compiled, a_room)
-  b = try halves(keys, 1, compiled, b_room) + try halves(values, 1, compiled, b_room)
-  ok([outs[0]] + a + [outs[1]] + b)
+  n = rooms.size
+  keys = outs.drop(n).take(layers)
+  values = outs.drop(n + layers).take(layers)
+  out: List[Tensor.Tensor] = []
+  for r in 0...n
+    a = try row_halves(keys, r, compiled, rooms[r])
+    b = try row_halves(values, r, compiled, rooms[r])
+    out = out.push(outs[r])
+    out = out + a + b
+  end
+
+  ok(out)
 end
 
-## Each tensor `t` `[2, kv_heads, room, head_width]` of a pair's step as the slot `which` names:
+## Each tensor `t` `[n, kv_heads, room, head_width]` of a batch's step as the slot `which` names:
 ## `[1, kv_heads, own, head_width]`, the cache of that row alone over its `own` rows, kept as `Stepping.cached` keeps
 ## a cache.
-def halves(kept: List[Tensor.Tensor], which: Int, compiled: Bool, own: Int) -> Result[List[Tensor.Tensor]]
+def row_halves(kept: List[Tensor.Tensor], which: Int, compiled: Bool, own: Int) -> Result[List[Tensor.Tensor]]
   out: List[Tensor.Tensor] = []
   for t in kept
     shape = Tensor.shape(t)
@@ -636,17 +702,18 @@ def halves(kept: List[Tensor.Tensor], which: Int, compiled: Bool, own: Int) -> R
   ok(out)
 end
 
-## One paired step elsewhere: one forward over the pair runs now, in an arena that keeps the batch's tensors alone.
-def eager_pair(c: KvDecoder.Core[Qwen3.Qwen3], a: Row, b: Row) -> Result[List[Tensor.Tensor]]
+## One batch step elsewhere: one forward over the batch runs now, in an arena that keeps the batch's tensors alone.
+def eager_batch(c: KvDecoder.Core[Qwen3.Qwen3], rows: List[Row]) -> Result[List[Tensor.Tensor]]
   ran: Result[List[Tensor.Tensor]] = Native.arena do
-    fed = try pair_of_rows(
-      a.fed + a.keys + a.values + b.fed + b.keys + b.values,
-      c.stepper.layers,
-      [a.room, b.room].max.unwrap!,
-    )
+    args: List[Tensor.Tensor] = []
+    for r in rows
+      args = args + r.fed + r.keys + r.values
+    end
 
-    outs = try paired(c.model, fed, c.usable, false)
-    pair_outputs(outs, c.stepper.layers, false, a.room, b.room)
+    room = rows.map { |r| r.room }.max.unwrap!
+    fed = try batch_of_rows(args, c.stepper.layers, room)
+    outs = try batched(c.model, fed, c.usable, false)
+    batch_outputs(outs, c.stepper.layers, false, rows.map { |r| r.room })
   end
 
   ran

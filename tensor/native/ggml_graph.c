@@ -227,6 +227,7 @@ struct device_state {
 static int64_t mixed_split_count; /* the splits of the scheduler in the last mixed run, atomic */
 static int64_t last_cache_write_products = -1; /* of the graph that ran last: see `note_cache_writes`, atomic */
 static int64_t mixed_run_count; /* the runs through a scheduler, for the tests: atomic, so reading it never waits */
+static int64_t graph_run_count; /* every graph execution on a device, plain or mixed, for the tests: atomic */
 
 /* Lock order: the device lock (1), then cache_lock (2). Pins and the pin count of an entry are under cache_lock alone;
    the memory of a tensor that the last holder lets go of is queued (`tg_defer`, no lock) and freed at the next hold of
@@ -2125,6 +2126,10 @@ an_term ggml_mixed_runs(an_env *env) {
   return an_int(env, __atomic_load_n(&mixed_run_count, __ATOMIC_RELAXED));
 }
 
+an_term ggml_graph_runs(an_env *env) {
+  return an_int(env, __atomic_load_n(&graph_run_count, __ATOMIC_RELAXED));
+}
+
 an_term ggml_cache_write_products(an_env *env) { return an_int(env, __atomic_load_n(&last_cache_write_products, __ATOMIC_RELAXED)); }
 
 an_term ggml_mixed_splits(an_env *env) { return an_int(env, __atomic_load_n(&mixed_split_count, __ATOMIC_RELAXED)); }
@@ -2418,7 +2423,10 @@ an_term ggml_run(an_env *env, struct ggml_Lease_state *lease, ggml_list_Float fi
   }
   d = &devices[p->device + 1];
   if (why == NULL) why = place(p);
-  if (why == NULL) why = p->mixed ? compute_mixed(p, d) : compute_plain(p, d);
+  if (why == NULL) {
+    __atomic_fetch_add(&graph_run_count, 1, __ATOMIC_RELAXED);
+    why = p->mixed ? compute_mixed(p, d) : compute_plain(p, d);
+  }
   if (why == NULL) {
     ggml_backend_tensor_get(p->checks, checks, 0, (size_t)(p->output_count + p->guard_count) * sizeof(float));
   }
